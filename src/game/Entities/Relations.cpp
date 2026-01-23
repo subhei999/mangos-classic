@@ -25,6 +25,7 @@
 #include "Globals/ObjectMgr.h"
 #include "Globals/ObjectAccessor.h"
 #include "Tools/Formulas.h"
+#include "Maps/GridMap.h"
 
 /////////////////////////////////////////////////
 /// @file       Relations.cpp
@@ -225,6 +226,37 @@ ReputationRank Unit::GetReactionTo(Unit const* unit) const
             if (thisPlayer->IsInGroup(unitPlayer))
                 return REP_FRIENDLY;
 
+            // Hardcore Mode: Force Hostility in Hardcore Zones (Takes priority over standard FFA)
+            if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
+            {
+                // We calculate zone ID on the fly to be robust against missing flags
+                uint32 thisZoneId = sTerrainMgr.GetZoneId(thisPlayer->GetMapId(), thisPlayer->GetPositionX(), thisPlayer->GetPositionY(), thisPlayer->GetPositionZ());
+                uint32 unitZoneId = sTerrainMgr.GetZoneId(unitPlayer->GetMapId(), unitPlayer->GetPositionX(), unitPlayer->GetPositionY(), unitPlayer->GetPositionZ());
+                
+                if (sWorld.IsHardcoreZone(thisZoneId) && sWorld.IsHardcoreZone(unitZoneId))
+                {
+                    // Level Protection: High level players see low level players as Friendly (Protected)
+                    // They cannot attack, but can assist.
+                    uint32 levelDiff = sWorld.getConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF);
+                    
+                    sLog.outString("HARDCORE DEBUG: GetReactionTo Check. AttackerLvl: %u, TargetLvl: %u, Zone1: %u, Zone2: %u, MaxDiff: %u", 
+                        thisPlayer->GetLevel(), unitPlayer->GetLevel(), thisZoneId, unitZoneId, levelDiff);
+
+                    if (unitPlayer->GetLevel() < (thisPlayer->GetLevel() > levelDiff ? thisPlayer->GetLevel() - levelDiff : 0))
+                    {
+                        sLog.outString("HARDCORE DEBUG: Reaction -> FRIENDLY (Protected)");
+                        return REP_FRIENDLY;
+                    }
+
+                    sLog.outString("HARDCORE DEBUG: Reaction -> HOSTILE (Allowed)");
+                    return REP_HOSTILE;
+                }
+                else
+                {
+                     // sLog.outString("HARDCORE DEBUG: Not in Hardcore Zone. Zone1: %u (%u), Zone2: %u (%u)", thisZoneId, sWorld.IsHardcoreZone(thisZoneId), unitZoneId, sWorld.IsHardcoreZone(unitZoneId));
+                }
+            }
+
             // Pre-WotLK FFA check, known limitation: FFA doesn't work with totem elementals both client-side and server-side
             if (thisPlayer->IsPvPFreeForAll() && unitPlayer->IsPvPFreeForAll())
                 return REP_HOSTILE;
@@ -400,12 +432,29 @@ bool Unit::CanAttack(const Unit* unit) const
             if (!unitPlayer)
                 return true;
 
+            // Hardcore Mode: Zone and Level Checks (Critical Priority)
+            // Note: Major logic moved to GetReactionTo. CanAttack calls IsFriend() which calls GetReactionTo().
+            // If GetReactionTo returns REP_FRIENDLY (Protected), IsFriend is true, and we return false above.
+            
             if (thisPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && unitPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && thisPlayer->GetGuidValue(PLAYER_DUEL_ARBITER) == unitPlayer->GetGuidValue(PLAYER_DUEL_ARBITER))
                 return true;
 
             if (unitPlayer->IsPvP())
                 return true;
 
+            // Fallback for Hardcore Zones if flags aren't set but we are in the zone (redundant safety)
+            if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
+            {
+                 uint32 thisZoneId = sTerrainMgr.GetZoneId(GetMapId(), GetPositionX(), GetPositionY(), GetPositionZ());
+                 uint32 unitZoneId = sTerrainMgr.GetZoneId(unit->GetMapId(), unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ());
+                 if (sWorld.IsHardcoreZone(thisZoneId) && sWorld.IsHardcoreZone(unitZoneId))
+                 {
+                     // If we reached here, IsFriend() was false, so we are HOSTILE.
+                     // Thus we allow attack.
+                     return true;
+                 }
+            }
+            
             if (thisPlayer->IsPvPFreeForAll() && unitPlayer->IsPvPFreeForAll())
                 return true;
 

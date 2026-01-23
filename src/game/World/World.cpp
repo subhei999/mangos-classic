@@ -839,6 +839,26 @@ void World::LoadConfigSettings(bool reload)
 
     setConfig(CONFIG_BOOL_REGEN_ZONE_AREA_ON_STARTUP, "Spawns.ZoneArea", false);
 
+    setConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED, "Game.HardcoreMode.Enabled", false);
+    setConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF, "Game.HardcoreMode.LevelDiff", 5);
+
+    m_hardcoreZones.clear();
+    std::string hardcoreZonesStr = sConfig.GetStringDefault("Game.HardcoreMode.ZoneIds", "");
+    if (!hardcoreZonesStr.empty())
+    {
+        std::stringstream ss(hardcoreZonesStr);
+        std::string zoneIdStr;
+        while (std::getline(ss, zoneIdStr, ','))
+        {
+            try {
+                m_hardcoreZones.insert(std::stoi(zoneIdStr));
+            } catch (...) {
+                sLog.outError("Invalid zone ID in Game.HardcoreMode.ZoneIds: %s", zoneIdStr.c_str());
+            }
+        }
+        sLog.outString("WORLD: Hardcore Mode Enabled. Zones loaded: %u", (uint32)m_hardcoreZones.size());
+    }
+
     sLog.outString();
 }
 

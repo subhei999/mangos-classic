@@ -200,6 +200,7 @@ enum eConfigUInt32Values
     CONFIG_UINT32_CREATURE_PICKPOCKET_RESTOCK_DELAY,
     CONFIG_UINT32_CHANNEL_STATIC_AUTO_TRESHOLD,
     CONFIG_UINT32_LFG_MATCHMAKING_TIMER,
+    CONFIG_UINT32_HARDCORE_LEVEL_DIFF,
     CONFIG_UINT32_VALUE_COUNT
 };
 
@@ -355,6 +356,7 @@ enum eConfigBoolValues
     CONFIG_BOOL_DISABLE_INSTANCE_RELOCATE,
     CONFIG_BOOL_PRELOAD_MMAP_TILES,
     CONFIG_BOOL_REGEN_ZONE_AREA_ON_STARTUP,
+    CONFIG_BOOL_HARDCORE_MODE_ENABLED,
     CONFIG_BOOL_VALUE_COUNT
 };
 
@@ -526,6 +528,8 @@ class World
         /// Are we on a "Player versus Player" server?
         bool IsPvPRealm() const { return (getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_RPPVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP); }
         bool IsFFAPvPRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP; }
+
+        bool IsHardcoreZone(uint32 zoneId) const { return m_hardcoreZones.find(zoneId) != m_hardcoreZones.end(); }
 
         void KickAll(bool save);
         void KickAllLess(AccountTypes sec);
@@ -700,6 +704,9 @@ class World
 
         // List of Maps that should be force-loaded on startup
         std::set<uint32> m_configForceLoadMapIds;
+        
+        // List of Zones that are Hardcore (Arena)
+        std::set<uint32> m_hardcoreZones;
 
         std::vector<std::string> m_spamRecords;
 

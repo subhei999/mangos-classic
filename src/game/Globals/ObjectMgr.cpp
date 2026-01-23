@@ -3697,6 +3697,47 @@ void ObjectMgr::LoadPlayerInfo()
         sLog.outString(">> Loaded %u xp for level definitions", count);
     }
 
+    // Apply custom XP multipliers
+    for (uint32 level = 1; level < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL); ++level)
+    {
+        float multiplier = 1.0f;
+
+        if (level <= 10)
+        {
+            multiplier = 1.0f;
+        }
+        else if (level > 10 && level <= 20)
+        {
+            // Linear ramp from 1.0 to 0.5
+            float progress = (level - 10) / 10.0f;
+            multiplier = 1.0f - 0.5f * progress;
+        }
+        else if (level > 20 && level <= 30)
+        {
+            // Constant 2x less
+            multiplier = 0.5f;
+        }
+        else if (level > 30 && level <= 40)
+        {
+            // Ramp from 0.5 to 0.3333
+            float progress = (level - 30) / 10.0f;
+            multiplier = 0.5f + (0.3333f - 0.5f) * progress;
+        }
+        else if (level > 40)
+        {
+            // Constant 3x less
+            multiplier = 0.3333f;
+        }
+
+        if (multiplier != 1.0f && mPlayerXPperLevel[level] > 0)
+        {
+            mPlayerXPperLevel[level] = uint32(mPlayerXPperLevel[level] * multiplier);
+            // Ensure we don't accidentally set it to 0 if it was non-zero
+            if (mPlayerXPperLevel[level] == 0)
+                mPlayerXPperLevel[level] = 1; 
+        }
+    }
+
     // fill level gaps
     for (uint32 level = 1; level < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL); ++level)
     {
@@ -3706,6 +3747,8 @@ void ObjectMgr::LoadPlayerInfo()
             mPlayerXPperLevel[level] = mPlayerXPperLevel[level - 1] + 100;
         }
     }
+
+
 }
 void ObjectMgr::LoadStandingList(uint32 dateBegin)
 {

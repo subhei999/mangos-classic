@@ -4426,6 +4426,9 @@ void Player::KillPlayer()
 
     // update visibility
     UpdateObjectVisibility();
+    
+    // Hardcore Mode: Clear aggressor list on death
+    ClearHardcoreAggressors();
 }
 
 Corpse* Player::CreateCorpse()
@@ -6827,28 +6830,24 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea, bool force)
             break;
         default:                                            // 6 in fact
             pvpInfo.inPvPEnforcedArea = false;
-            break;
     }
 
-    // Hardcore Mode: Force FFA PvP in configured zones
-    // We do this AFTER the switch so we override any default zone behavior
+    // Hardcore Mode: Simple FFA PvP in configured zones
+    // All players in the zone are hostile to each other. Level restrictions are enforced server-side in CanAttack.
     if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(newZone))
     {
         pvpInfo.inPvPEnforcedArea = true;
         SetPvP(true);
         SetFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
     }
-    else
+    else if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
     {
-        // If we are LEAVING a hardcore zone, we might need to remove the flag
-        // But only remove it if it wasn't set by something else (like Gurubashi Arena)
-        // This is a simplification; for a perfect system we'd check if we are in ANY FFA area
-        // For now, if Hardcore Mode is enabled, and we are NOT in a hardcore zone, we clear it if it's not a standard arena
-        if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
-        {
-             if (!(zone->flags & AREA_FLAG_ARENA))
-                 RemoveFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
-        }
+        // Leaving a Hardcore zone - remove FFA flag if not in a standard FFA area
+        if (!(zone->flags & AREA_FLAG_ARENA))
+            RemoveFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
+        
+        // Clear aggressor list when leaving Hardcore zone
+        ClearHardcoreAggressors();
     }
 
     if (pvpInfo.inPvPEnforcedArea)                              // in hostile area

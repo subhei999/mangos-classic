@@ -1214,6 +1214,25 @@ void Unit::HandleDamageDealt(Unit* dealer, Unit* victim, uint32& damage, CleanDa
             }
         }
 
+        // Hardcore Mode: Track aggressor for retaliation feature
+        // This is OUTSIDE CanAttack check because victim might not be able to attack dealer (level protection)
+        // but we still need to record that dealer attacked victim for retaliation purposes
+        if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && 
+            dealer->IsPlayer() && victim->IsPlayer() &&
+            damagetype != DOT && damagetype != SPELL_DAMAGE_SHIELD)
+        {
+            Player* dealerPlayer = static_cast<Player*>(dealer);
+            Player* victimPlayer = static_cast<Player*>(victim);
+            uint32 dealerZone = dealerPlayer->GetZoneId();
+            uint32 victimZone = victimPlayer->GetZoneId();
+            if (sWorld.IsHardcoreZone(dealerZone) && sWorld.IsHardcoreZone(victimZone))
+            {
+                victimPlayer->AddHardcoreAggressor(dealer->GetObjectGuid());
+                sLog.outString("HARDCORE: %s attacked %s - added to aggressor list", 
+                    dealerPlayer->GetName(), victimPlayer->GetName());
+            }
+        }
+
         if (dealer->GetTypeId() == TYPEID_PLAYER)
         {
             // random durability for items (HIT DONE)
@@ -8025,7 +8044,12 @@ void Unit::ClearInCombat()
     RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
 
     if (GetTypeId() == TYPEID_PLAYER)
+    {
         static_cast<Player*>(this)->pvpInfo.inPvPCombat = false;
+        
+        // Hardcore Mode: Clear aggressor list when exiting combat
+        static_cast<Player*>(this)->ClearHardcoreAggressors();
+    }
 }
 
 void Unit::HandleExitCombat(bool customLeash, bool pvpCombat)

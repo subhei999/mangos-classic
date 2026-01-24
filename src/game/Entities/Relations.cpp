@@ -56,6 +56,66 @@
 /// Tiers 2 and 3 are serverside APIs and will be extended in the future as demand arises during actual rollout.
 /////////////////////////////////////////////////
 
+/////////////////////////////////////////////////
+/// Hardcore Mode: Level Protection Helper
+/// Returns: 1 = Allow attack, 0 = Block attack (protected), -1 = Not in Hardcore zone (use standard rules)
+/////////////////////////////////////////////////
+static int CheckHardcoreLevelProtection(Unit const* attacker, Unit const* target)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
+        return -1;  // Hardcore not enabled
+
+    const Player* attackerPlayer = attacker->GetControllingPlayer();
+    const Player* targetPlayer = target->GetControllingPlayer();
+    
+    if (!attackerPlayer || !targetPlayer)
+        return -1;  // Not player vs player
+
+    uint32 attackerZone = attackerPlayer->GetZoneId();
+    uint32 targetZone = targetPlayer->GetZoneId();
+    
+    if (!sWorld.IsHardcoreZone(attackerZone) || !sWorld.IsHardcoreZone(targetZone))
+        return -1;  // Not in Hardcore zone, use standard rules
+
+    uint32 levelDiff = sWorld.getConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF);
+    uint32 attackerLevel = attacker->GetLevel();
+    uint32 targetLevel = target->GetLevel();
+    
+    sLog.outString("HARDCORE: CheckLevelProtection - Attacker: %s (Lvl %u) -> Target: %s (Lvl %u), LevelDiff: %u",
+        attackerPlayer->GetName(), attackerLevel, targetPlayer->GetName(), targetLevel, levelDiff);
+    
+    // Check if target is protected (too low level)
+    uint32 minAllowedLevel = (attackerLevel > levelDiff ? attackerLevel - levelDiff : 0);
+    if (targetLevel < minAllowedLevel)
+    {
+        sLog.outString("HARDCORE: Target %s is PROTECTED (lvl %u < min %u)", 
+            targetPlayer->GetName(), targetLevel, minAllowedLevel);
+        
+        // Allow retaliation if target attacked us first
+        // Check if the target has attacked the attacker (attacker is on target's aggressor list)
+        if (attacker->IsPlayer() && target->IsPlayer())
+        {
+            const Player* attackerAsPlayer = static_cast<const Player*>(attacker);
+            bool hasAttacked = attackerAsPlayer->HasHardcoreAggressor(target->GetObjectGuid());
+            sLog.outString("HARDCORE: Has %s attacked %s? (is %s in %s's aggressor list?): %s", 
+                targetPlayer->GetName(), attackerPlayer->GetName(),
+                targetPlayer->GetName(), attackerPlayer->GetName(),
+                hasAttacked ? "YES" : "NO");
+            
+            if (hasAttacked)
+            {
+                sLog.outString("HARDCORE: RETALIATION ALLOWED - %s attacked first!", targetPlayer->GetName());
+                return 1;  // They attacked us first - allow retaliation!
+            }
+        }
+        sLog.outString("HARDCORE: BLOCKED - target is protected");
+        return 0;  // Target is protected, block attack
+    }
+    
+    sLog.outString("HARDCORE: ALLOWED - target level within range");
+    return 1;  // Level is within range, allow attack
+}
+
 /*##########################
 ########            ########
 ########   TIER 1   ########
@@ -226,35 +286,15 @@ ReputationRank Unit::GetReactionTo(Unit const* unit) const
             if (thisPlayer->IsInGroup(unitPlayer))
                 return REP_FRIENDLY;
 
-            // Hardcore Mode: Force Hostility in Hardcore Zones (Takes priority over standard FFA)
+            // Hardcore Mode: Force Hostility in Hardcore Zones
+            // Level protection is enforced in CanAttack, not here (visual stays red for all)
             if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
             {
-                // We calculate zone ID on the fly to be robust against missing flags
-                uint32 thisZoneId = sTerrainMgr.GetZoneId(thisPlayer->GetMapId(), thisPlayer->GetPositionX(), thisPlayer->GetPositionY(), thisPlayer->GetPositionZ());
-                uint32 unitZoneId = sTerrainMgr.GetZoneId(unitPlayer->GetMapId(), unitPlayer->GetPositionX(), unitPlayer->GetPositionY(), unitPlayer->GetPositionZ());
+                uint32 thisZoneId = thisPlayer->GetZoneId();
+                uint32 unitZoneId = unitPlayer->GetZoneId();
                 
                 if (sWorld.IsHardcoreZone(thisZoneId) && sWorld.IsHardcoreZone(unitZoneId))
-                {
-                    // Level Protection: High level players see low level players as Friendly (Protected)
-                    // They cannot attack, but can assist.
-                    uint32 levelDiff = sWorld.getConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF);
-                    
-                    sLog.outString("HARDCORE DEBUG: GetReactionTo Check. AttackerLvl: %u, TargetLvl: %u, Zone1: %u, Zone2: %u, MaxDiff: %u", 
-                        thisPlayer->GetLevel(), unitPlayer->GetLevel(), thisZoneId, unitZoneId, levelDiff);
-
-                    if (unitPlayer->GetLevel() < (thisPlayer->GetLevel() > levelDiff ? thisPlayer->GetLevel() - levelDiff : 0))
-                    {
-                        sLog.outString("HARDCORE DEBUG: Reaction -> FRIENDLY (Protected)");
-                        return REP_FRIENDLY;
-                    }
-
-                    sLog.outString("HARDCORE DEBUG: Reaction -> HOSTILE (Allowed)");
                     return REP_HOSTILE;
-                }
-                else
-                {
-                     // sLog.outString("HARDCORE DEBUG: Not in Hardcore Zone. Zone1: %u (%u), Zone2: %u (%u)", thisZoneId, sWorld.IsHardcoreZone(thisZoneId), unitZoneId, sWorld.IsHardcoreZone(unitZoneId));
-                }
             }
 
             // Pre-WotLK FFA check, known limitation: FFA doesn't work with totem elementals both client-side and server-side
@@ -431,29 +471,17 @@ bool Unit::CanAttack(const Unit* unit) const
             const Player* unitPlayer = unit->GetControllingPlayer();
             if (!unitPlayer)
                 return true;
-
-            // Hardcore Mode: Zone and Level Checks (Critical Priority)
-            // Note: Major logic moved to GetReactionTo. CanAttack calls IsFriend() which calls GetReactionTo().
-            // If GetReactionTo returns REP_FRIENDLY (Protected), IsFriend is true, and we return false above.
             
             if (thisPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && unitPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && thisPlayer->GetGuidValue(PLAYER_DUEL_ARBITER) == unitPlayer->GetGuidValue(PLAYER_DUEL_ARBITER))
                 return true;
 
+            // Hardcore Mode: Level protection - MUST CHECK BEFORE IsPvP/FFA checks
+            int hardcoreResult = CheckHardcoreLevelProtection(this, unit);
+            if (hardcoreResult == 1) return true;   // Hardcore: allowed
+            if (hardcoreResult == 0) return false;  // Hardcore: blocked (protected)
+
             if (unitPlayer->IsPvP())
                 return true;
-
-            // Fallback for Hardcore Zones if flags aren't set but we are in the zone (redundant safety)
-            if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
-            {
-                 uint32 thisZoneId = sTerrainMgr.GetZoneId(GetMapId(), GetPositionX(), GetPositionY(), GetPositionZ());
-                 uint32 unitZoneId = sTerrainMgr.GetZoneId(unit->GetMapId(), unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ());
-                 if (sWorld.IsHardcoreZone(thisZoneId) && sWorld.IsHardcoreZone(unitZoneId))
-                 {
-                     // If we reached here, IsFriend() was false, so we are HOSTILE.
-                     // Thus we allow attack.
-                     return true;
-                 }
-            }
             
             if (thisPlayer->IsPvPFreeForAll() && unitPlayer->IsPvPFreeForAll())
                 return true;
@@ -1313,6 +1341,11 @@ bool Unit::CanAttackServerside(Unit const* unit, bool ignoreFlagsSource, bool ig
 
             if (thisPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && unitPlayer->GetUInt32Value(PLAYER_DUEL_TEAM) && thisPlayer->GetGuidValue(PLAYER_DUEL_ARBITER) == unitPlayer->GetGuidValue(PLAYER_DUEL_ARBITER))
                 return true;
+
+            // Hardcore Mode: Level protection for spell attacks
+            int hardcoreResult = CheckHardcoreLevelProtection(this, unit);
+            if (hardcoreResult == 1) return true;   // Hardcore: allowed
+            if (hardcoreResult == 0) return false;  // Hardcore: blocked (protected)
 
             if (unitPlayer->IsPvP())
                 return true;

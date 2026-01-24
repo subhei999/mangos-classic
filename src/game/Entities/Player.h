@@ -2566,6 +2566,16 @@ class Player : public Unit
         std::map<uint32, ItemSetEffect> m_itemSetEffects;
 
         uint32 m_lastDbGuid; bool m_lastGameObject;
+
+        // Hardcore Mode: Track who has attacked this player (for retaliation)
+        std::set<ObjectGuid> m_hardcoreAggressors;
+
+    public:
+        // Hardcore Mode: Aggressor tracking
+        void AddHardcoreAggressor(ObjectGuid guid) { m_hardcoreAggressors.insert(guid); }
+        void RemoveHardcoreAggressor(ObjectGuid guid) { m_hardcoreAggressors.erase(guid); }
+        bool HasHardcoreAggressor(ObjectGuid guid) const { return m_hardcoreAggressors.find(guid) != m_hardcoreAggressors.end(); }
+        void ClearHardcoreAggressors() { m_hardcoreAggressors.clear(); }
 };
 
 void AddItemsSetItem(Player* player, Item* item);

@@ -28,6 +28,7 @@
 
 #define LOOT_ROLL_TIMEOUT  (1*MINUTE*IN_MILLISECONDS)
 
+// Forward declarations
 class Player;
 class Group;
 class LootStore;
@@ -354,6 +355,7 @@ class Loot
         friend struct LootItem;
         friend class GroupLootRoll;
         friend class LootMgr;
+        friend class Player;
 
         Loot(Player* player, Creature* creature, LootType type);
         Loot(Player* player, GameObject* gameObject, LootType type);

@@ -97,3 +97,5 @@ cmake_install.cmake
 # Module files
 #
 src/modules/
+
+compile_commands.json

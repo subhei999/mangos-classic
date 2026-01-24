@@ -4465,8 +4465,10 @@ Corpse* Player::CreateCorpse()
         flags |= CORPSE_FLAG_HIDE_HELM;
     if (HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_HIDE_CLOAK))
         flags |= CORPSE_FLAG_HIDE_CLOAK;
-    if (InBattleGround())
-        flags |= CORPSE_FLAG_LOOTABLE;                      // to be able to remove insignia
+    
+    // Hardcore Mode: Always make player corpses lootable
+    flags |= CORPSE_FLAG_LOOTABLE;
+    
     corpse->SetUInt32Value(CORPSE_FIELD_FLAGS, flags);
 
     corpse->SetUInt32Value(CORPSE_FIELD_DISPLAY_ID, GetNativeDisplayId());
@@ -4489,6 +4491,9 @@ Corpse* Player::CreateCorpse()
     if (!GetMap()->IsBattleGround())
         corpse->SaveToDB();
 
+    // Hardcore Mode: Spawn loot crate instead of making corpse lootable
+    SpawnPlayerLootCrate();
+
     // register for player, but not show
     sObjectAccessor.AddCorpse(corpse);
     return corpse;
@@ -4505,6 +4510,45 @@ Corpse* Player::GetCorpse() const
 {
     return sObjectAccessor.GetCorpseForPlayerGUID(GetObjectGuid());
 }
+
+void Player::SpawnPlayerLootCrate()
+{
+    // Hardcore Mode: Spawn a loot crate at player's death location
+    
+    // Entry 2843 = Battered Chest (small chest model from vanilla WoW)
+    const uint32 LOOT_CRATE_ENTRY = 2843;
+    
+    // Create the GameObject
+    GameObject* lootCrate = new GameObject;
+    
+    // Generate a unique GUID for this GameObject
+    uint32 guidLow = GetMap()->GenerateLocalLowGuid(HIGHGUID_GAMEOBJECT);
+    
+    // Create the GameObject at the player's death position
+    if (!lootCrate->Create(guidLow, guidLow, LOOT_CRATE_ENTRY, GetMap(),
+                           GetPositionX(), GetPositionY(), GetPositionZ(), GetOrientation()))
+    {
+        delete lootCrate;
+        sLog.outError("Player::SpawnPlayerLootCrate> Failed to create loot crate for player %s", GetName());
+        return;
+    }
+    
+    // Set the crate to despawn after 10 minutes (600 seconds)
+    lootCrate->SetRespawnTime(600);
+    lootCrate->SetSpellId(0);
+    lootCrate->SetLootState(GO_READY);
+    
+    // Mark this as a player loot crate by setting owner GUID
+    // This will be checked in the loot creation code (LootMgr.cpp)
+    lootCrate->SetOwnerGuid(GetObjectGuid());
+    
+    // Add the crate to the map
+    GetMap()->Add(lootCrate);
+    
+    sLog.outString("Player::SpawnPlayerLootCrate> Spawned loot crate (entry %u, guid %u) for player %s [%s] at (%.2f, %.2f, %.2f)",
+                   LOOT_CRATE_ENTRY, guidLow, GetName(), GetObjectGuid().GetString().c_str(), GetPositionX(), GetPositionY(), GetPositionZ());
+}
+
 
 void Player::DurabilityLossAll(double percent, bool inventory)
 {

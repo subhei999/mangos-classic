@@ -276,6 +276,21 @@ ObjectAccessor::ConvertCorpseForPlayer(ObjectGuid player_guid, bool insignia)
                 bones->SetUInt32Value(CORPSE_FIELD_ITEM + i, 0);
         }
 
+        // Hardcore Mode: Transfer loot from corpse to bones
+        if (corpse->m_loot)
+        {
+            bones->m_loot = corpse->m_loot;
+            corpse->m_loot = nullptr; // Prevent double deletion
+            
+            // Update the loot's target pointer to point to bones instead of the deleted corpse
+            bones->m_loot->UpdateLootTarget(bones);
+            
+            // Make loot free-for-all so anyone can loot the bones (including the resurrected player)
+            bones->m_loot->ClearOwners();
+            bones->m_loot->SetLootMethod(NOT_GROUP_TYPE_LOOT);
+            bones->m_loot->MakeAllItemsFreeForAll();  // Clear per-item permissions
+        }
+
         // add bones in grid store if grid loaded where corpse placed
         map->Add(bones);
     }

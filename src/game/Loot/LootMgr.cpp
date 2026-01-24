@@ -948,6 +948,19 @@ void Loot::AddItem(uint32 itemid, uint32 count, uint32 randomSuffix, int32 rando
     }
 }
 
+void Loot::MakeAllItemsFreeForAll()
+{
+    // Iterate through all loot items and make them free-for-all
+    for (LootItem* item : m_lootItems)
+    {
+        if (item)
+        {
+            item->freeForAll = true;      // Mark as free-for-all
+            item->allowedGuid.clear();    // Clear per-player permissions
+        }
+    }
+}
+
 // Calls processor of corresponding LootTemplate (which handles everything including references)
 bool Loot::FillLoot(uint32 loot_id, LootStore const& store, Player* lootOwner, bool /*personal*/, bool noEmptyError)
 {
@@ -1078,6 +1091,13 @@ bool Loot::IsLootedForAll() const
 bool Loot::CanLoot(Player const* player)
 {
     ObjectGuid const& playerGuid = player->GetObjectGuid();
+
+    // If owner set is empty, allow anyone to loot (for bones free-for-all loot)
+    if (m_ownerSet.empty())
+    {
+        uint32 lootStatus = GetLootStatusFor(player);
+        return (lootStatus != 0); // Can loot if there's anything to loot
+    }
 
     // not in Guid list of possible owner mean cheat
     GuidSet::const_iterator itr = m_ownerSet.find(playerGuid);
@@ -1329,6 +1349,8 @@ void Loot::Release(Player* player)
             if (!corpse || !corpse->IsWithinDistInMap(player, INTERACTION_DISTANCE))
                 return;
 
+            SetPlayerIsNotLooting(player);
+            
             if (IsLootedFor(player))
             {
                 Clear();
@@ -1833,8 +1855,73 @@ Loot::Loot(Player* player, GameObject* gameObject, LootType type) :
             }
             default:
             {
-                if (uint32 lootid = gameObject->GetGOInfo()->GetLootId())
+                // Hardcore Mode: Check if this is a player loot crate (entry 2843)
+                // Player loot crates have the dead player's GUID set as owner
+                const uint32 PLAYER_LOOT_CRATE_ENTRY = 2843;
+                
+                if (gameObject->GetEntry() == PLAYER_LOOT_CRATE_ENTRY && gameObject->GetOwnerGuid().IsPlayer())
                 {
+                    // This is a player loot crate - populate with player's items and gold
+                    m_isChest = true;
+                    m_lootMethod = FREE_FOR_ALL; // Make it free-for-all by default
+                    m_clientLootType = CLIENT_LOOT_PICKPOCKETING;
+                    
+                    // Check if loot was already created for this crate (prevent duplicate loot on re-open)
+                    // We check if the gameObject already has a loot object
+                    if (gameObject->m_loot)
+                    {
+                        sLog.outString("Loot::Loot> Player loot crate already has loot, skipping recreation");
+                        // Don't recreate loot - it's already been populated
+                        // The existing loot will be shown to the player
+                    }
+                    else
+                    {
+                        // Try to find the dead player
+                        if (Player* deadPlayer = sObjectAccessor.FindPlayer(gameObject->GetOwnerGuid()))
+                        {
+                            sLog.outString("Loot::Loot> Creating player loot for crate owned by %s [%s]",
+                                           deadPlayer->GetName(), deadPlayer->GetObjectGuid().GetString().c_str());
+                            
+                            // Add 50% of player's money
+                            uint32 playerMoney = deadPlayer->GetMoney();
+                            if (playerMoney > 0)
+                            {
+                                m_gold = playerMoney / 2;
+                                deadPlayer->ModifyMoney(-int32(m_gold));
+                                sLog.outString("Loot::Loot> Added %u copper to loot crate (50%% of %u)", m_gold, playerMoney);
+                            }
+                            
+                            // Add all equipped items
+                            for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+                            {
+                                Item* item = deadPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+                                if (item)
+                                {
+                                    // Log item info BEFORE destroying it (to avoid use-after-free)
+                                    sLog.outString("Loot::Loot> Adding item %u (%s) to loot crate", 
+                                                   item->GetEntry(), item->GetProto()->Name1);
+                                    
+                                    // Add item to loot
+                                    AddItem(item->GetEntry(), 1, 0, 0);
+                                    
+                                    // Remove item from dead player's equipment
+                                    deadPlayer->DestroyItem(INVENTORY_SLOT_BAG_0, i, true);
+                                }
+                            }
+                            
+                            // Make all items free-for-all
+                            MakeAllItemsFreeForAll();
+                        }
+                        else
+                        {
+                            sLog.outError("Loot::Loot> Could not find dead player %s for loot crate",
+                                          gameObject->GetOwnerGuid().GetString().c_str());
+                        }
+                    }
+                }
+                else if (uint32 lootid = gameObject->GetGOInfo()->GetLootId())
+                {
+                    // Default chest/GameObject loot handling
                     if (gameObject->GetGOInfo()->type == GAMEOBJECT_TYPE_CHEST)
                         m_isChest = true;
 
@@ -1879,10 +1966,61 @@ Loot::Loot(Player* player, Corpse* corpse, LootType type) :
     if (type != LOOT_INSIGNIA && corpse->GetType() == CORPSE_BONES)
         return;
 
-    MANGOS_ASSERT(player->GetBattleGround());
-
-    if (!corpse->lootForBody)
+    // Hardcore Mode: Support player corpse looting outside battlegrounds
+    if (type == LOOT_CORPSE && !corpse->lootForBody)
     {
+        corpse->lootForBody = true;
+        
+        // Get the dead player's info
+        Player* deadPlayer = sObjectAccessor.FindPlayer(corpse->GetOwnerGuid());
+        
+        m_ownerSet.insert(player->GetObjectGuid());
+        m_lootMethod = NOT_GROUP_TYPE_LOOT;
+        m_clientLootType = CLIENT_LOOT_CORPSE;
+        
+        // If in battleground, add insignia loot
+        if (player->GetBattleGround())
+        {
+            if (uint32 refLootId = player->GetBattleGround()->GetPlayerSkinRefLootId())
+                FillLoot(refLootId, LootTemplates_Reference, player, true);
+            
+            // Battleground money formula
+            uint32 pLevel = deadPlayer ? deadPlayer->GetLevel() : player->GetLevel();
+            m_gold = (uint32)(urand(50, 150) * 0.016f * pow(((float)pLevel) / 5.76f, 2.5f) * sWorld.getConfig(CONFIG_FLOAT_RATE_DROP_MONEY));
+        }
+        else if (deadPlayer)
+        {
+            // Hardcore Mode: Drop 50% of player's money
+            uint32 playerMoney = deadPlayer->GetMoney();
+            if (playerMoney > 0)
+            {
+                uint32 moneyToDrop = playerMoney / 2; // 50% of player's original money
+                m_gold = moneyToDrop;
+                
+                // Remove the money from the dead player
+                deadPlayer->ModifyMoney(-int32(moneyToDrop));
+            }
+            
+            // Hardcore Mode: Drop all equipped items
+            for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+            {
+                Item* item = deadPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+                if (item)
+                {
+                    // Add item to corpse loot
+                    AddItem(item->GetEntry(), 1, 0, 0);
+                    
+                    // Remove item from dead player's equipment
+                    deadPlayer->DestroyItem(INVENTORY_SLOT_BAG_0, i, true);
+                }
+            }
+        }
+    }
+    // Old battleground-only insignia code (deprecated path, preserved for compatibility)
+    else if (type == LOOT_INSIGNIA && !corpse->lootForBody)
+    {
+        MANGOS_ASSERT(player->GetBattleGround());
+        
         corpse->lootForBody = true;
         uint32 pLevel;
         Player* plr = sObjectAccessor.FindPlayer(corpse->GetOwnerGuid());
@@ -3042,7 +3180,14 @@ Loot* LootMgr::GetLoot(Player* player, ObjectGuid const& targetGuid) const
             Corpse* bones = player->GetMap()->GetCorpse(lguid);
 
             if (bones)
+            {
+                // Hardcore Mode: Create loot on-demand for player corpses
+                if (!bones->m_loot && bones->HasFlag(CORPSE_FIELD_DYNAMIC_FLAGS, CORPSE_DYNFLAG_LOOTABLE))
+                {
+                    bones->m_loot = new Loot(player, bones, LOOT_CORPSE);
+                }
                 loot = bones->m_loot;
+            }
 
             break;
         }

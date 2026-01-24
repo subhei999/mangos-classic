@@ -1654,6 +1654,7 @@ class Player : public Unit
         Corpse* GetCorpse() const;
         void SpawnCorpseBones();
         Corpse* CreateCorpse();
+        void SpawnPlayerLootCrate();  // Hardcore Mode: Spawn loot crate for player items/gold
         void KillPlayer();
         uint32 GetResurrectionSpellId() const;
         void ResurrectPlayer(float restore_percent, bool applySickness = false);

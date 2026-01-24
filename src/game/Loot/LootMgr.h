@@ -395,6 +395,10 @@ class Loot
         std::tuple<uint32, uint32, uint32> GetQualifiedWeapons();
 
         bool IsLootedFor(Player const* player) const;
+        void UpdateLootTarget(WorldObject* newTarget) { m_lootTarget = newTarget; m_guidTarget = newTarget->GetObjectGuid(); }
+        void SetLootMethod(LootMethod method) { m_lootMethod = method; }
+        void ClearOwners() { m_ownerSet.clear(); }
+        void MakeAllItemsFreeForAll();  // Make all items in loot free-for-all
 
     private:
         Loot(): m_lootTarget(nullptr), m_itemTarget(nullptr), m_gold(0), m_maxSlot(0), m_lootType(),

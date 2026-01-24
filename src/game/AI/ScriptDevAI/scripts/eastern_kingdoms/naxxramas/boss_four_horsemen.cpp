@@ -406,7 +406,16 @@ struct HorsemenMark : public AuraScript
         }
 
         if (Unit* caster = aura->GetCaster())
-            caster->CastCustomSpell(aura->GetTarget(), 28836, &damage, nullptr, nullptr, TRIGGERED_OLD_TRIGGERED, nullptr, aura);
+        {
+            ObjectGuid targetGuid = aura->GetTarget()->GetObjectGuid();
+            caster->m_events.AddEvent(new UnitLambdaEvent(*caster, [targetGuid, damage](Unit& owner)
+            {
+                if (Unit* target = ObjectAccessor::GetUnit(owner, targetGuid))
+                {
+                    owner.CastCustomSpell(target, 28836, &damage, nullptr, nullptr, TRIGGERED_OLD_TRIGGERED);
+                }
+            }), caster->m_events.CalculateTime(1));
+        }
     }
 };
 

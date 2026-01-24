@@ -51,6 +51,7 @@
 #include "Entities/Transports.h"
 #include "Anticheat/Anticheat.hpp"
 #include "Spells/SpellStacking.h"
+#include "Chat/Chat.h"
 
 #ifdef BUILD_METRICS
  #include "Metric/Metric.h"
@@ -1160,6 +1161,32 @@ void Unit::Kill(Unit* killer, Unit* victim, DamageEffectType damagetype, SpellEn
         {
             DEBUG_FILTER_LOG(LOG_FILTER_DAMAGE, "SET JUST_DIED");
             victim->SetDeathState(JUST_DIED);
+            
+            // Server-wide death announcement
+            char message[256];
+            const char* victimName = playerVictim->GetName();
+            
+            if (killer && killer->IsPlayer())
+            {
+                // Player killed by another player
+                const char* killerName = static_cast<Player*>(killer)->GetName();
+                snprintf(message, sizeof(message), "%s killed %s", killerName, victimName);
+            }
+            else if (killer && killer->GetTypeId() == TYPEID_UNIT)
+            {
+                // Player killed by creature
+                const char* killerName = static_cast<Creature*>(killer)->GetName();
+                snprintf(message, sizeof(message), "%s killed %s", killerName, victimName);
+            }
+            else
+            {
+                // Environmental death or unknown
+                snprintf(message, sizeof(message), "%s died", victimName);
+            }
+            
+            WorldPacket data;
+            ChatHandler::BuildChatPacket(data, CHAT_MSG_SYSTEM, message);
+            sWorld.SendGlobalMessage(data);
         }
 
         // playerVictim was in duel, duel must be interrupted

@@ -877,6 +877,29 @@ Motd = "Welcome to the Continued Massive Network Game Object Server."
 PlayerCommands = 1
 
 ###################################################################################################################
+# HARDCORE MODE SETTINGS
+#
+#    Game.HardcoreMode.Enabled
+#        Enable Hardcore Mode (Arena-style FFA PvP + Level Restriction).
+#        Default: 0 (Disable)
+#
+#    Game.HardcoreMode.ZoneIds
+#        Comma-separated list of Zone IDs to EXCLUDE from Hardcore Mode.
+#        When empty and HardcoreMode is enabled, ALL zones are treated as Hardcore.
+#        Default: "" (no exclusions)
+#        Example: "1,12" to exclude Dun Morogh and Elwynn Forest.
+#
+#    Game.HardcoreMode.LevelDiff
+#        Level difference required to attack another player.
+#        Target must be at least (AttackerLevel - LevelDiff).
+#        Default: 5
+#
+###################################################################################################################
+Game.HardcoreMode.Enabled = 0
+Game.HardcoreMode.ZoneIds = ""
+Game.HardcoreMode.LevelDiff = 5
+
+###################################################################################################################
 # PLAYER INTERACTION
 #
 #    AllowTwoSide.Accounts

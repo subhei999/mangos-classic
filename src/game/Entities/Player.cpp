@@ -4510,8 +4510,8 @@ void Player::SpawnPlayerLootCrate()
 {
     // Hardcore Mode: Spawn a loot crate at player's death location
 
-    // Entry 2843 = Battered Chest (small chest model from vanilla WoW)
-    const uint32 LOOT_CRATE_ENTRY = 2843;
+    // Money bag
+    const uint32 LOOT_CRATE_ENTRY = 186736;
 
     // Create the GameObject
     GameObject* lootCrate = new GameObject;
@@ -6904,7 +6904,7 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea, bool force)
             pvpInfo.inPvPEnforcedArea = false;
     }
 
-    // Hardcore Mode: Simple FFA PvP in configured zones
+    // Hardcore Mode: Simple FFA PvP in all zones (except excluded zones)
     // All players in the zone are hostile to each other. Level restrictions are enforced server-side in CanAttack.
     if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(newZone))
     {

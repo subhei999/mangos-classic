@@ -475,6 +475,9 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_UINT32_CREATURE_LINKING_AGGRO_DELAY,             "CreatureLinkingAggroDelay",     2000);
     setConfigPos(CONFIG_FLOAT_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS, "CreatureFamilyFleeAssistanceRadius", 30.0f);
 
+    // Hardcore: refund percentage of XP lost on death when resurrected by non-spirit-healer means
+    setConfigPos(CONFIG_FLOAT_HARDCORE_DEATH_XP_REFUND_PCT, "Game.HardcoreMode.DeathXpRefundPct", 0.5f);
+
     ///- Read other configuration items from the config file
     setConfigMinMax(CONFIG_UINT32_COMPRESSION, "Compression", 1, 1, 9);
     setConfig(CONFIG_BOOL_ADDON_CHANNEL, "AddonChannel", true);
@@ -840,6 +843,7 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_REGEN_ZONE_AREA_ON_STARTUP, "Spawns.ZoneArea", false);
 
     setConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED, "Game.HardcoreMode.Enabled", false);
+    setConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS, "Game.HardcoreMode.DeathXpLoss", false);
     setConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF, "Game.HardcoreMode.LevelDiff", 5);
 
     m_hardcoreExcludedZones.clear();

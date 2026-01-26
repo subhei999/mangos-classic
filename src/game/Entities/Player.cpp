@@ -1658,6 +1658,15 @@ void Player::SetDeathState(DeathState s)
 
     if (s == JUST_DIED && cur)
     {
+        // Hardcore: lose all current (in-level) XP on death, but never delevel
+        if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) &&
+            sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS) &&
+            GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+        {
+            HardcoreStoreDeathXpLoss(GetUInt32Value(PLAYER_XP));
+            SetUInt32Value(PLAYER_XP, 0);
+        }
+
         // drunken state is cleared on death
         SetDrunkValue(0);
         // lost combo points at any target (targeted combo points clear in Unit::SetDeathState)
@@ -1699,6 +1708,44 @@ void Player::SetDeathState(DeathState s)
 
     if (GetGroup())
         SetGroupUpdateFlag(GROUP_UPDATE_FLAG_STATUS);
+}
+
+void Player::HardcoreRefundDeathXpLossPct(float pct)
+{
+    // Always clear any pending refund state when a "refund attempt" happens (even if pct is 0.0),
+    // to avoid carrying it across multiple resurrections.
+    if (!(pct > 0.0f))
+    {
+        ClearHardcoreDeathXpLoss();
+        return;
+    }
+    if (pct > 1.0f)
+        pct = 1.0f;
+
+    if (!sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) ||
+        !sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS))
+        return;
+
+    if (GetLevel() >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    {
+        ClearHardcoreDeathXpLoss();
+        return;
+    }
+
+    if (m_hardcoreLostXpOnDeath == 0)
+        return;
+
+    uint32 const nextLvlXP = GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+    uint32 const curXP = GetUInt32Value(PLAYER_XP);
+
+    uint32 refund = uint32(float(m_hardcoreLostXpOnDeath) * pct);
+    // Since m_hardcoreLostXpOnDeath was in-level XP, refunding a fraction should never level;
+    // still clamp to stay safe.
+    uint32 const maxInLevelXP = (nextLvlXP > 0) ? (nextLvlXP - 1) : 0;
+    uint32 const newXP = std::min(maxInLevelXP, curXP + refund);
+    SetUInt32Value(PLAYER_XP, newXP);
+
+    ClearHardcoreDeathXpLoss();
 }
 
 bool Player::BuildEnumData(QueryResult* result, WorldPacket& p_data)
@@ -18910,6 +18957,8 @@ void Player::ResurrectUsingRequestDataInit()
 void Player::ResurrectUsingRequestDataFinish()
 {
     ResurrectPlayer(0.0f, false);
+    // Hardcore: accepting a normal resurrection (not spirit healer) refunds half of the XP lost on death (in-memory only)
+    HardcoreRefundDeathXpLossPct(sWorld.getConfig(CONFIG_FLOAT_HARDCORE_DEATH_XP_REFUND_PCT));
 
     if (GetMaxHealth() > m_resurrectHealth)
         SetHealth(m_resurrectHealth);

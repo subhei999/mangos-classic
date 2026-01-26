@@ -894,10 +894,22 @@ PlayerCommands = 1
 #        Target must be at least (AttackerLevel - LevelDiff).
 #        Default: 5
 #
+#    Game.HardcoreMode.DeathXpLoss
+#        If enabled, when a player dies their current (in-level) XP is reset to 0.
+#        This does NOT delevel the character.
+#        Default: 0 (Disabled)
+#
+#    Game.HardcoreMode.DeathXpRefundPct
+#        Percent (0.0 - 1.0) of the XP lost on death that is refunded when resurrected by non-spirit-healer means
+#        (corpse reclaim and resurrection spells). Refund state is in-memory only (lost on logout/crash/restart).
+#        Default: 0.5
+#
 ###################################################################################################################
 Game.HardcoreMode.Enabled = 0
 Game.HardcoreMode.ZoneIds = ""
 Game.HardcoreMode.LevelDiff = 5
+Game.HardcoreMode.DeathXpLoss = 0
+Game.HardcoreMode.DeathXpRefundPct = 0.5
 
 ###################################################################################################################
 # PLAYER INTERACTION

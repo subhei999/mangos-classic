@@ -1,0 +1,153 @@
+-- Tome that teaches: Frostbolt (Rank 1) spell 116
+-- Requirements: none (no level requirement, no class requirement)
+-- Implementation: clone Tome of Arcane Brilliance (18600) and override key fields
+--
+-- NOTE:
+-- - Requires ScriptDevAI + script `item_hardcore_ability` enabled/loaded
+-- - Script reads `spellid_2` (index 1) and consumes the item itself
+
+SET @TEMPLATE_ENTRY := 18600; -- Tome of Arcane Brilliance
+SET @NEW_ENTRY      := 90010;
+SET @SPELL_TO_LEARN := 116;  -- Frostbolt (Rank 1)
+SET @ITEM_NAME      := 'Tome of Frostbolt (Rank 1)';
+SET @DUMMY_SPELL    := 483;  -- client-recognized, allows item use
+SET @SCRIPT_NAME    := 'item_hardcore_ability';
+
+DELETE FROM `item_template` WHERE `entry` = @NEW_ENTRY;
+
+INSERT INTO `item_template` (
+  `entry`,`class`,`subclass`,`name`,`displayid`,`Quality`,`Flags`,`BuyCount`,`BuyPrice`,`SellPrice`,`InventoryType`,`AllowableClass`,`AllowableRace`,`ItemLevel`,`RequiredLevel`,`RequiredSkill`,`RequiredSkillRank`,`requiredspell`,`requiredhonorrank`,`RequiredCityRank`,`RequiredReputationFaction`,`RequiredReputationRank`,`maxcount`,`stackable`,`ContainerSlots`,`stat_type1`,`stat_value1`,`stat_type2`,`stat_value2`,`stat_type3`,`stat_value3`,`stat_type4`,`stat_value4`,`stat_type5`,`stat_value5`,`stat_type6`,`stat_value6`,`stat_type7`,`stat_value7`,`stat_type8`,`stat_value8`,`stat_type9`,`stat_value9`,`stat_type10`,`stat_value10`,`dmg_min1`,`dmg_max1`,`dmg_type1`,`dmg_min2`,`dmg_max2`,`dmg_type2`,`dmg_min3`,`dmg_max3`,`dmg_type3`,`dmg_min4`,`dmg_max4`,`dmg_type4`,`dmg_min5`,`dmg_max5`,`dmg_type5`,`armor`,`holy_res`,`fire_res`,`nature_res`,`frost_res`,`shadow_res`,`arcane_res`,`delay`,`ammo_type`,`RangedModRange`,`spellid_1`,`spelltrigger_1`,`spellcharges_1`,`spellppmRate_1`,`spellcooldown_1`,`spellcategory_1`,`spellcategorycooldown_1`,`spellid_2`,`spelltrigger_2`,`spellcharges_2`,`spellppmRate_2`,`spellcooldown_2`,`spellcategory_2`,`spellcategorycooldown_2`,`spellid_3`,`spelltrigger_3`,`spellcharges_3`,`spellppmRate_3`,`spellcooldown_3`,`spellcategory_3`,`spellcategorycooldown_3`,`spellid_4`,`spelltrigger_4`,`spellcharges_4`,`spellppmRate_4`,`spellcooldown_4`,`spellcategory_4`,`spellcategorycooldown_4`,`spellid_5`,`spelltrigger_5`,`spellcharges_5`,`spellppmRate_5`,`spellcooldown_5`,`spellcategory_5`,`spellcategorycooldown_5`,`bonding`,`description`,`PageText`,`LanguageID`,`PageMaterial`,`startquest`,`lockid`,`Material`,`sheath`,`RandomProperty`,`block`,`itemset`,`MaxDurability`,`area`,`Map`,`BagFamily`,`ScriptName`,`DisenchantID`,`FoodType`,`minMoneyLoot`,`maxMoneyLoot`,`Duration`,`ExtraFlags`
+)
+SELECT
+  @NEW_ENTRY AS `entry`,
+  `class`,
+  `subclass`,
+  @ITEM_NAME AS `name`,
+  `displayid`,
+  `Quality`,
+  `Flags`,
+  `BuyCount`,
+  `BuyPrice`,
+  `SellPrice`,
+  `InventoryType`,
+  -1 AS `AllowableClass`, -- all classes
+  -1 AS `AllowableRace`,  -- all races
+  `ItemLevel`,
+  0 AS `RequiredLevel`,   -- no level requirement
+  `RequiredSkill`,
+  `RequiredSkillRank`,
+  `requiredspell`,
+  `requiredhonorrank`,
+  `RequiredCityRank`,
+  `RequiredReputationFaction`,
+  `RequiredReputationRank`,
+  `maxcount`,
+  `stackable`,
+  `ContainerSlots`,
+  `stat_type1`,
+  `stat_value1`,
+  `stat_type2`,
+  `stat_value2`,
+  `stat_type3`,
+  `stat_value3`,
+  `stat_type4`,
+  `stat_value4`,
+  `stat_type5`,
+  `stat_value5`,
+  `stat_type6`,
+  `stat_value6`,
+  `stat_type7`,
+  `stat_value7`,
+  `stat_type8`,
+  `stat_value8`,
+  `stat_type9`,
+  `stat_value9`,
+  `stat_type10`,
+  `stat_value10`,
+  `dmg_min1`,
+  `dmg_max1`,
+  `dmg_type1`,
+  `dmg_min2`,
+  `dmg_max2`,
+  `dmg_type2`,
+  `dmg_min3`,
+  `dmg_max3`,
+  `dmg_type3`,
+  `dmg_min4`,
+  `dmg_max4`,
+  `dmg_type4`,
+  `dmg_min5`,
+  `dmg_max5`,
+  `dmg_type5`,
+  `armor`,
+  `holy_res`,
+  `fire_res`,
+  `nature_res`,
+  `frost_res`,
+  `shadow_res`,
+  `arcane_res`,
+  `delay`,
+  `ammo_type`,
+  `RangedModRange`,
+  @DUMMY_SPELL AS `spellid_1`,
+  0 AS `spelltrigger_1`,
+  -1 AS `spellcharges_1`,
+  `spellppmRate_1`,
+  `spellcooldown_1`,
+  `spellcategory_1`,
+  `spellcategorycooldown_1`,
+  @SPELL_TO_LEARN AS `spellid_2`,
+  0 AS `spelltrigger_2`,
+  0 AS `spellcharges_2`,
+  `spellppmRate_2`,
+  `spellcooldown_2`,
+  `spellcategory_2`,
+  `spellcategorycooldown_2`,
+  `spellid_3`,
+  `spelltrigger_3`,
+  `spellcharges_3`,
+  `spellppmRate_3`,
+  `spellcooldown_3`,
+  `spellcategory_3`,
+  `spellcategorycooldown_3`,
+  `spellid_4`,
+  `spelltrigger_4`,
+  `spellcharges_4`,
+  `spellppmRate_4`,
+  `spellcooldown_4`,
+  `spellcategory_4`,
+  `spellcategorycooldown_4`,
+  `spellid_5`,
+  `spelltrigger_5`,
+  `spellcharges_5`,
+  `spellppmRate_5`,
+  `spellcooldown_5`,
+  `spellcategory_5`,
+  `spellcategorycooldown_5`,
+  `bonding`,
+  `description`,
+  `PageText`,
+  `LanguageID`,
+  `PageMaterial`,
+  `startquest`,
+  `lockid`,
+  `Material`,
+  `sheath`,
+  `RandomProperty`,
+  `block`,
+  `itemset`,
+  `MaxDurability`,
+  `area`,
+  `Map`,
+  `BagFamily`,
+  @SCRIPT_NAME AS `ScriptName`,
+  `DisenchantID`,
+  `FoodType`,
+  `minMoneyLoot`,
+  `maxMoneyLoot`,
+  `Duration`,
+  `ExtraFlags`
+FROM `item_template`
+WHERE `entry` = @TEMPLATE_ENTRY;
+
+

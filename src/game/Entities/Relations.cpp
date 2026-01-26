@@ -80,16 +80,23 @@ static int CheckHardcoreLevelProtection(Unit const* attacker, Unit const* target
     uint32 levelDiff = sWorld.getConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF);
     uint32 attackerLevel = attacker->GetLevel();
     uint32 targetLevel = target->GetLevel();
-    
-    sLog.outString("HARDCORE: CheckLevelProtection - Attacker: %s (Lvl %u) -> Target: %s (Lvl %u), LevelDiff: %u",
-        attackerPlayer->GetName(), attackerLevel, targetPlayer->GetName(), targetLevel, levelDiff);
+
+    bool const debugLogging = sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING);
+    if (debugLogging)
+    {
+        sLog.outString("HARDCORE: CheckLevelProtection - Attacker: %s (Lvl %u) -> Target: %s (Lvl %u), LevelDiff: %u",
+            attackerPlayer->GetName(), attackerLevel, targetPlayer->GetName(), targetLevel, levelDiff);
+    }
     
     // Check if target is protected (too low level)
     uint32 minAllowedLevel = (attackerLevel > levelDiff ? attackerLevel - levelDiff : 0);
     if (targetLevel < minAllowedLevel)
     {
-        sLog.outString("HARDCORE: Target %s is PROTECTED (lvl %u < min %u)", 
-            targetPlayer->GetName(), targetLevel, minAllowedLevel);
+        if (debugLogging)
+        {
+            sLog.outString("HARDCORE: Target %s is PROTECTED (lvl %u < min %u)",
+                targetPlayer->GetName(), targetLevel, minAllowedLevel);
+        }
         
         // Allow retaliation if target attacked us first
         // Check if the target has attacked the attacker (attacker is on target's aggressor list)
@@ -97,22 +104,28 @@ static int CheckHardcoreLevelProtection(Unit const* attacker, Unit const* target
         {
             const Player* attackerAsPlayer = static_cast<const Player*>(attacker);
             bool hasAttacked = attackerAsPlayer->HasHardcoreAggressor(target->GetObjectGuid());
-            sLog.outString("HARDCORE: Has %s attacked %s? (is %s in %s's aggressor list?): %s", 
-                targetPlayer->GetName(), attackerPlayer->GetName(),
-                targetPlayer->GetName(), attackerPlayer->GetName(),
-                hasAttacked ? "YES" : "NO");
+            if (debugLogging)
+            {
+                sLog.outString("HARDCORE: Has %s attacked %s? (is %s in %s's aggressor list?): %s",
+                    targetPlayer->GetName(), attackerPlayer->GetName(),
+                    targetPlayer->GetName(), attackerPlayer->GetName(),
+                    hasAttacked ? "YES" : "NO");
+            }
             
             if (hasAttacked)
             {
-                sLog.outString("HARDCORE: RETALIATION ALLOWED - %s attacked first!", targetPlayer->GetName());
+                if (debugLogging)
+                    sLog.outString("HARDCORE: RETALIATION ALLOWED - %s attacked first!", targetPlayer->GetName());
                 return 1;  // They attacked us first - allow retaliation!
             }
         }
-        sLog.outString("HARDCORE: BLOCKED - target is protected");
+        if (debugLogging)
+            sLog.outString("HARDCORE: BLOCKED - target is protected");
         return 0;  // Target is protected, block attack
     }
-    
-    sLog.outString("HARDCORE: ALLOWED - target level within range");
+
+    if (debugLogging)
+        sLog.outString("HARDCORE: ALLOWED - target level within range");
     return 1;  // Level is within range, allow attack
 }
 

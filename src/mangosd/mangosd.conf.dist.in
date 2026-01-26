@@ -904,12 +904,17 @@ PlayerCommands = 1
 #        (corpse reclaim and resurrection spells). Refund state is in-memory only (lost on logout/crash/restart).
 #        Default: 0.5
 #
+#    Game.HardcoreMode.DebugLogging
+#        Enable verbose Hardcore-related debug logging (level protection checks, aggressor tracking, loot crate spawn).
+#        Default: 0 (Disabled)
+#
 ###################################################################################################################
 Game.HardcoreMode.Enabled = 0
 Game.HardcoreMode.ZoneIds = ""
 Game.HardcoreMode.LevelDiff = 5
 Game.HardcoreMode.DeathXpLoss = 0
 Game.HardcoreMode.DeathXpRefundPct = 0.5
+Game.HardcoreMode.DebugLogging = 0
 
 ###################################################################################################################
 # PLAYER INTERACTION

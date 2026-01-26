@@ -844,6 +844,7 @@ void World::LoadConfigSettings(bool reload)
 
     setConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED, "Game.HardcoreMode.Enabled", false);
     setConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS, "Game.HardcoreMode.DeathXpLoss", false);
+    setConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING, "Game.HardcoreMode.DebugLogging", false);
     setConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF, "Game.HardcoreMode.LevelDiff", 5);
 
     m_hardcoreExcludedZones.clear();

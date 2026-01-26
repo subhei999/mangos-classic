@@ -4560,6 +4560,8 @@ void Player::SpawnPlayerLootCrate()
     // Money bag
     const uint32 LOOT_CRATE_ENTRY = 186736;
 
+    bool const debugLogging = sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING);
+
     // Create the GameObject
     GameObject* lootCrate = new GameObject;
 
@@ -4591,7 +4593,8 @@ void Player::SpawnPlayerLootCrate()
     lootCrate->m_loot->SetLootMethod(FREE_FOR_ALL);
     // Note: m_clientLootType will be set by Loot constructor based on context
 
-    sLog.outString("Player::SpawnPlayerLootCrate> Pre-creating loot for player %s [%s]", GetName(), GetObjectGuid().GetString().c_str());
+    if (debugLogging)
+        sLog.outString("Player::SpawnPlayerLootCrate> Pre-creating loot for player %s [%s]", GetName(), GetObjectGuid().GetString().c_str());
 
     // Add 50% of player's money
     uint32 playerMoney = GetMoney();
@@ -4600,7 +4603,8 @@ void Player::SpawnPlayerLootCrate()
         uint32 moneyToDrop = playerMoney / 2;
         lootCrate->m_loot->m_gold = moneyToDrop; // Set directly - SetGoldAmount() only works for LOOT_SKINNING
         ModifyMoney(-int32(moneyToDrop));
-        sLog.outString("Player::SpawnPlayerLootCrate> Added %u copper to loot crate (50%% of %u)", moneyToDrop, playerMoney);
+        if (debugLogging)
+            sLog.outString("Player::SpawnPlayerLootCrate> Added %u copper to loot crate (50%% of %u)", moneyToDrop, playerMoney);
     }
 
     // Add all equipped items
@@ -4610,9 +4614,12 @@ void Player::SpawnPlayerLootCrate()
         if (item)
         {
             // Log item info BEFORE destroying it (to avoid use-after-free)
-            sLog.outString("Player::SpawnPlayerLootCrate> Adding item %u (%s) to loot crate",
-                item->GetEntry(),
-                item->GetProto()->Name1);
+            if (debugLogging)
+            {
+                sLog.outString("Player::SpawnPlayerLootCrate> Adding item %u (%s) to loot crate",
+                    item->GetEntry(),
+                    item->GetProto()->Name1);
+            }
 
             // Add item to loot
             lootCrate->m_loot->AddItem(item->GetEntry(), 1, 0, 0);
@@ -4628,14 +4635,17 @@ void Player::SpawnPlayerLootCrate()
     // Add the crate to the map
     GetMap()->Add(lootCrate);
 
-    sLog.outString("Player::SpawnPlayerLootCrate> Spawned loot crate (entry %u, guid %u) for player %s [%s] at (%.2f, %.2f, %.2f)",
-        LOOT_CRATE_ENTRY,
-        guidLow,
-        GetName(),
-        GetObjectGuid().GetString().c_str(),
-        GetPositionX(),
-        GetPositionY(),
-        GetPositionZ());
+    if (debugLogging)
+    {
+        sLog.outString("Player::SpawnPlayerLootCrate> Spawned loot crate (entry %u, guid %u) for player %s [%s] at (%.2f, %.2f, %.2f)",
+            LOOT_CRATE_ENTRY,
+            guidLow,
+            GetName(),
+            GetObjectGuid().GetString().c_str(),
+            GetPositionX(),
+            GetPositionY(),
+            GetPositionZ());
+    }
 }
 
 void Player::DurabilityLossAll(double percent, bool inventory)

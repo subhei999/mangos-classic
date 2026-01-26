@@ -29,9 +29,12 @@ namespace
     // Custom spell 50000 has EquippedItemClass = -1 to allow any item class.
     constexpr uint32 SLAMROCK_TARGETING_SPELL = 33394;
 
-    // Store slamrock modifiers in PROP slots so we don't overwrite PERM or TEMP enchants.
+    // Store slamrock data in PROP slots so we don't overwrite PERM or TEMP enchants.
     // NOTE: These slots are used by RandomSuffix/RandomProperty items. We therefore reject such items.
-    constexpr EnchantmentSlot SLAMROCK_ENCHANT_SLOTS[] = { PROP_ENCHANTMENT_SLOT_0, PROP_ENCHANTMENT_SLOT_1, PROP_ENCHANTMENT_SLOT_2 };
+    constexpr uint32 SLAMROCK_MARKER_ENCHANT_ID = 900000; // SpellItemEnchantment.dbc (client): "|cffff2020Slammed|r"
+    constexpr EnchantmentSlot SLAMROCK_MARKER_SLOT = PROP_ENCHANTMENT_SLOT_0;
+    constexpr EnchantmentSlot SLAMROCK_MODIFIER_SLOTS[] = { PROP_ENCHANTMENT_SLOT_1, PROP_ENCHANTMENT_SLOT_2, PROP_ENCHANTMENT_SLOT_3 };
+    constexpr EnchantmentSlot SLAMROCK_ALL_PROP_SLOTS[] = { PROP_ENCHANTMENT_SLOT_0, PROP_ENCHANTMENT_SLOT_1, PROP_ENCHANTMENT_SLOT_2, PROP_ENCHANTMENT_SLOT_3 };
     constexpr uint32 SLAMROCK_MAX_MODIFIERS = 3;
     constexpr uint32 SLAMROCK_DOWNGRADE_CHANCE_PCT = 25;
 
@@ -179,6 +182,10 @@ namespace
             {
                 SpellItemEnchantmentEntry const* ench = sSpellItemEnchantmentStore.LookupEntry(i);
                 if (!ench)
+                    continue;
+
+                // Reserve this enchant for the "Slammed" marker only.
+                if (ench->ID == SLAMROCK_MARKER_ENCHANT_ID)
                     continue;
 
                 if (EnchantHasUsableEffectForTarget(ench, true))
@@ -389,11 +396,11 @@ namespace
         // Remove effects first (if equipped), then clear.
         if (targetItem->GetSlot() < EQUIPMENT_SLOT_END)
         {
-            for (EnchantmentSlot slot : SLAMROCK_ENCHANT_SLOTS)
+            for (EnchantmentSlot slot : SLAMROCK_ALL_PROP_SLOTS)
                 player->ApplyEnchantment(targetItem, slot, false);
         }
 
-        for (EnchantmentSlot slot : SLAMROCK_ENCHANT_SLOTS)
+        for (EnchantmentSlot slot : SLAMROCK_ALL_PROP_SLOTS)
             targetItem->ClearEnchantment(slot);
     }
 }
@@ -537,9 +544,11 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
     // Clear previous slamrock enchants (safe because we reject RandomPropertyId != 0).
     ClearSlamrockEnchants(pPlayer, targetItem);
 
-    // Apply into multiple slots.
+    // Apply marker (always) + modifiers.
+    targetItem->SetEnchantment(SLAMROCK_MARKER_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
+
     for (uint32 i = 0; i < rolled.size() && i < SLAMROCK_MAX_MODIFIERS; ++i)
-        targetItem->SetEnchantment(SLAMROCK_ENCHANT_SLOTS[i], rolled[i], 0, 0, pPlayer->GetObjectGuid());
+        targetItem->SetEnchantment(SLAMROCK_MODIFIER_SLOTS[i], rolled[i], 0, 0, pPlayer->GetObjectGuid());
 
     targetItem->SetState(ITEM_CHANGED, pPlayer);
     sLog.outBasic("SLAMROCK: set %u enchants on target_item_guid=%u (e0=%u e1=%u e2=%u)",
@@ -551,8 +560,10 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
 
     if (targetItem->GetSlot() < EQUIPMENT_SLOT_END)
     {
+        // Apply marker first, then modifiers
+        pPlayer->ApplyEnchantment(targetItem, SLAMROCK_MARKER_SLOT, true);
         for (uint32 i = 0; i < rolled.size() && i < SLAMROCK_MAX_MODIFIERS; ++i)
-            pPlayer->ApplyEnchantment(targetItem, SLAMROCK_ENCHANT_SLOTS[i], true);
+            pPlayer->ApplyEnchantment(targetItem, SLAMROCK_MODIFIER_SLOTS[i], true);
     }
 
     // Consume the Slamrock

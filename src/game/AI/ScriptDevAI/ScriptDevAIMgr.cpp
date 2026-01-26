@@ -382,12 +382,23 @@ GameObjectAI* ScriptDevAIMgr::GetGameObjectAI(GameObject* gameobject) const
 
 bool ScriptDevAIMgr::OnItemUse(Player* pPlayer, Item* pItem, SpellCastTargets const& targets)
 {
-    Script* pTempScript = GetScript(pItem->GetProto()->ScriptId);
+    uint32 scriptId = pItem->GetProto()->ScriptId;
+    Script* pTempScript = GetScript(scriptId);
+    uint32 entry = pItem->GetEntry();
+    if (entry == 90001)
+    {
+        sLog.outBasic("SLAMROCK: OnItemUse entry=%u scriptId=%u scriptName=%s hasItemUse=%s",
+            entry, scriptId, GetScriptName(scriptId),
+            (pTempScript && pTempScript->pItemUse) ? "true" : "false");
+    }
 
     if (!pTempScript || !pTempScript->pItemUse)
         return false;
 
-    return pTempScript->pItemUse(pPlayer, pItem, targets);
+    bool handled = pTempScript->pItemUse(pPlayer, pItem, targets);
+    if (entry == 90001)
+        sLog.outBasic("SLAMROCK: OnItemUse script handled=%s", handled ? "true" : "false");
+    return handled;
 }
 
 bool ScriptDevAIMgr::OnItemLoot(Player* pPlayer, Item* pItem, bool apply)

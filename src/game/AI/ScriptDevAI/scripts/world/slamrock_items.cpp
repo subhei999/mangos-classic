@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <map>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "Database/DatabaseEnv.h"
@@ -161,6 +163,175 @@ namespace
                     break;
                 default:
                     break;
+            }
+        }
+
+        return false;
+    }
+
+    // --- Whitelist table (World DB) ---
+    // Goal: let you prune/tune the roll table in HeidiSQL without rebuilding.
+    // NOTE: The table is created/populated via DB updates (not by this script).
+    constexpr char const* SLAMROCK_WHITELIST_TABLE = "slamrock_enchant_whitelist";
+
+    struct SlamrockWhitelistRow
+    {
+        uint32 enchantId;
+        std::string groupKey;
+        uint16 rank;
+        uint16 minIlvl;
+        uint16 weight;
+    };
+
+    struct SlamrockWhitelistCache
+    {
+        bool attemptedLoad = false;
+        bool loaded = false;
+        std::vector<SlamrockWhitelistRow> weapon;
+        std::vector<SlamrockWhitelistRow> armor;
+    };
+
+    SlamrockWhitelistCache& GetWhitelistCache()
+    {
+        static SlamrockWhitelistCache cache;
+        return cache;
+    }
+
+    void LoadWhitelistFromDB()
+    {
+        SlamrockWhitelistCache& cache = GetWhitelistCache();
+        cache.weapon.clear();
+        cache.armor.clear();
+
+        // Load enabled rows only, filtered by target flags.
+        auto loadSide = [&](bool isWeapon, std::vector<SlamrockWhitelistRow>& out)
+        {
+            std::unique_ptr<QueryResult> result(WorldDatabase.PQuery(
+                "SELECT enchant_id, group_key, rank, min_ilvl, weight "
+                "FROM %s "
+                "WHERE enabled=1 AND %s=1",
+                SLAMROCK_WHITELIST_TABLE,
+                isWeapon ? "can_apply_to_weapon" : "can_apply_to_armor"));
+
+            if (!result)
+                return;
+
+            out.reserve(result->GetRowCount());
+            do
+            {
+                Field* f = result->Fetch();
+                SlamrockWhitelistRow row;
+                row.enchantId = f[0].GetUInt32();
+                row.groupKey = f[1].GetCppString();
+                row.rank = uint16(f[2].GetUInt16());
+                row.minIlvl = uint16(f[3].GetUInt16());
+                row.weight = uint16(f[4].GetUInt16());
+                out.push_back(row);
+            }
+            while (result->NextRow());
+        };
+
+        loadSide(true, cache.weapon);
+        loadSide(false, cache.armor);
+        cache.loaded = true;
+    }
+
+    static std::string GetEffectiveGroupKey(SlamrockWhitelistRow const& row)
+    {
+        // If group_key is blank, treat the enchant itself as its own group.
+        if (!row.groupKey.empty())
+            return row.groupKey;
+        return std::to_string(row.enchantId);
+    }
+
+    bool PickWeightedGroupFromWhitelist(std::vector<SlamrockWhitelistRow> const& pool, uint32 itemLevel, std::vector<std::string> const& excludeGroups, std::string& outGroupKey)
+    {
+        // Group weight is the max row.weight inside the group, so multiple ranks don't multiply odds.
+        std::map<std::string, uint32> groupWeights;
+        for (SlamrockWhitelistRow const& row : pool)
+        {
+            if (row.weight == 0 || row.minIlvl > itemLevel)
+                continue;
+
+            std::string key = GetEffectiveGroupKey(row);
+            if (!excludeGroups.empty())
+            {
+                bool excluded = false;
+                for (std::string const& ex : excludeGroups)
+                {
+                    if (ex == key)
+                    {
+                        excluded = true;
+                        break;
+                    }
+                }
+                if (excluded)
+                    continue;
+            }
+
+            auto itr = groupWeights.find(key);
+            if (itr == groupWeights.end())
+                groupWeights[key] = row.weight;
+            else if (row.weight > itr->second)
+                itr->second = row.weight;
+        }
+
+        uint32 totalWeight = 0;
+        for (auto const& kv : groupWeights)
+            totalWeight += kv.second;
+
+        if (totalWeight == 0 || groupWeights.empty())
+            return false;
+
+        uint32 roll = urand(1, totalWeight);
+        uint32 running = 0;
+        for (auto const& kv : groupWeights)
+        {
+            running += kv.second;
+            if (roll <= running)
+            {
+                outGroupKey = kv.first;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool PickRandomEligibleRankEnchantForGroup(std::vector<SlamrockWhitelistRow> const& pool, uint32 itemLevel, std::string const& groupKey, uint32& outEnchantId)
+    {
+        // "1 chance per eligible rank": choose uniformly among eligible rows in the group.
+        // Eligibility is controlled by min_ilvl (and weight > 0).
+        uint32 eligibleCount = 0;
+        for (SlamrockWhitelistRow const& row : pool)
+        {
+            if (row.weight == 0 || row.minIlvl > itemLevel)
+                continue;
+
+            if (GetEffectiveGroupKey(row) != groupKey)
+                continue;
+
+            ++eligibleCount;
+        }
+
+        if (eligibleCount == 0)
+            return false;
+
+        uint32 roll = urand(1, eligibleCount);
+        uint32 seen = 0;
+        for (SlamrockWhitelistRow const& row : pool)
+        {
+            if (row.weight == 0 || row.minIlvl > itemLevel)
+                continue;
+
+            if (GetEffectiveGroupKey(row) != groupKey)
+                continue;
+
+            ++seen;
+            if (seen >= roll)
+            {
+                outEnchantId = row.enchantId;
+                return true;
             }
         }
 
@@ -398,6 +569,15 @@ namespace
         {
             for (EnchantmentSlot slot : SLAMROCK_ALL_PROP_SLOTS)
                 player->ApplyEnchantment(targetItem, slot, false);
+
+            // Some enchant display types (notably ITEM_ENCHANTMENT_TYPE_TOTEM / Rockbiter) rely on weapon damage refresh
+            // for the change to be immediately reflected.
+            if (targetItem->GetSlot() == EQUIPMENT_SLOT_MAINHAND)
+                player->UpdateDamagePhysical(BASE_ATTACK);
+            else if (targetItem->GetSlot() == EQUIPMENT_SLOT_OFFHAND)
+                player->UpdateDamagePhysical(OFF_ATTACK);
+            else if (targetItem->GetSlot() == EQUIPMENT_SLOT_RANGED)
+                player->UpdateDamagePhysical(RANGED_ATTACK);
         }
 
         for (EnchantmentSlot slot : SLAMROCK_ALL_PROP_SLOTS)
@@ -501,14 +681,24 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
         // If no downgrade target exists or replacement fails, fall through to normal empower behavior.
     }
 
-    // Roll 1..3 random enchantments from DBC so the tooltip always exists,
-    // and apply them into multiple enchantment slots.
-    std::vector<uint32> const& candidates = GetAllEnchantCandidatesForTarget(targetItem);
-
-    if (candidates.empty())
+    // Roll 1..3 modifiers from DB whitelist (maintained via DB updates; editable in HeidiSQL).
+    SlamrockWhitelistCache& cache = GetWhitelistCache();
+    if (!cache.loaded && !cache.attemptedLoad)
     {
-        sLog.outError("SLAMROCK: no usable DBC enchantments found for target item entry=%u class=%u", targetItem->GetEntry(), targetItem->GetProto()->Class);
-        pPlayer->GetSession()->SendNotification("Slamrock: no usable enchantments found (cannot apply).");
+        cache.attemptedLoad = true;
+        LoadWhitelistFromDB();
+    }
+
+    ItemPrototype const* targetProto = targetItem->GetProto();
+    uint32 itemLevel = targetProto ? targetProto->ItemLevel : 0;
+    bool isWeapon = IsWeaponTarget(targetItem);
+    std::vector<SlamrockWhitelistRow> const& pool = isWeapon ? cache.weapon : cache.armor;
+    if (pool.empty())
+    {
+        sLog.outError("SLAMROCK: whitelist empty/missing for %s (table=%s).",
+            isWeapon ? "weapon" : "armor",
+            SLAMROCK_WHITELIST_TABLE);
+        pPlayer->GetSession()->SendNotification("Slamrock: whitelist table is empty/missing (cannot roll).");
         pPlayer->SendEquipError(EQUIP_ERR_NONE, pItem, nullptr);
         if (targetingSpell)
             Spell::SendCastResult(pPlayer, targetingSpell, SPELL_FAILED_ERROR);
@@ -521,24 +711,51 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
 
     // Pick without replacement (avoid duplicates) for better UX.
     // If the candidate pool is tiny, cap the modifier count.
-    if (modifierCount > candidates.size())
-        modifierCount = uint32(candidates.size());
+    if (!pool.empty())
+    {
+        // Only cap if there are no eligible groups at all.
+        std::map<std::string, bool> groups;
+        for (SlamrockWhitelistRow const& row : pool)
+        {
+            if (row.weight == 0 || row.minIlvl > itemLevel)
+                continue;
+            groups[GetEffectiveGroupKey(row)] = true;
+        }
+        if (groups.empty())
+            modifierCount = 0;
+    }
+    // pool is guaranteed non-empty above
+
+    if (modifierCount == 0)
+    {
+        sLog.outError("SLAMROCK: no eligible enchants (item=%u ilvl=%u isWeapon=%u)", targetItem->GetEntry(), itemLevel, isWeapon ? 1u : 0u);
+        pPlayer->GetSession()->SendNotification("Slamrock: no eligible enchantments found (cannot apply).");
+        pPlayer->SendEquipError(EQUIP_ERR_NONE, pItem, nullptr);
+        if (targetingSpell)
+            Spell::SendCastResult(pPlayer, targetingSpell, SPELL_FAILED_ERROR);
+        return true;
+    }
 
     while (rolled.size() < modifierCount)
     {
-        uint32 idx = urand(0, candidates.size() - 1);
-        uint32 enchantId = candidates[idx];
-        bool exists = false;
-        for (uint32 x : rolled)
-        {
-            if (x == enchantId)
-            {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists)
-            rolled.push_back(enchantId);
+        uint32 picked = 0;
+        std::string groupKey;
+        static std::vector<std::string> noExclusions;
+        if (!PickWeightedGroupFromWhitelist(pool, itemLevel, noExclusions, groupKey))
+            break;
+        if (!PickRandomEligibleRankEnchantForGroup(pool, itemLevel, groupKey, picked))
+            break;
+        rolled.push_back(picked);
+    }
+
+    if (rolled.empty())
+    {
+        sLog.outError("SLAMROCK: failed to roll any enchantments (item=%u ilvl=%u isWeapon=%u)", targetItem->GetEntry(), itemLevel, isWeapon ? 1u : 0u);
+        pPlayer->GetSession()->SendNotification("Slamrock: no eligible enchantments found (cannot apply).");
+        pPlayer->SendEquipError(EQUIP_ERR_NONE, pItem, nullptr);
+        if (targetingSpell)
+            Spell::SendCastResult(pPlayer, targetingSpell, SPELL_FAILED_ERROR);
+        return true;
     }
 
     // Clear previous slamrock enchants (safe because we reject RandomPropertyId != 0).
@@ -564,6 +781,14 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
         pPlayer->ApplyEnchantment(targetItem, SLAMROCK_MARKER_SLOT, true);
         for (uint32 i = 0; i < rolled.size() && i < SLAMROCK_MAX_MODIFIERS; ++i)
             pPlayer->ApplyEnchantment(targetItem, SLAMROCK_MODIFIER_SLOTS[i], true);
+
+        // Ensure weapon damage is refreshed immediately for enchant types that affect weapon damage (e.g. Rockbiter/Totem).
+        if (targetItem->GetSlot() == EQUIPMENT_SLOT_MAINHAND)
+            pPlayer->UpdateDamagePhysical(BASE_ATTACK);
+        else if (targetItem->GetSlot() == EQUIPMENT_SLOT_OFFHAND)
+            pPlayer->UpdateDamagePhysical(OFF_ATTACK);
+        else if (targetItem->GetSlot() == EQUIPMENT_SLOT_RANGED)
+            pPlayer->UpdateDamagePhysical(RANGED_ATTACK);
     }
 
     // Consume the Slamrock

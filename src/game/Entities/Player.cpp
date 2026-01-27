@@ -1510,6 +1510,16 @@ void Player::Update(const uint32 diff)
                         SetPvPFreeForAll(true);
                 }
 
+                // Bots/players can have flags cleared by other flows (reset, teleport edge cases, etc).
+                // Re-assert Hardcore Mode PvP/FFA periodically even if zone/area didn't change.
+                if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(newzone) && !IsGameMaster())
+                {
+                    if (!IsPvP())
+                        UpdatePvP(true, true);
+                    if (!IsPvPFreeForAll())
+                        SetPvPFreeForAll(true);
+                }
+
                 m_zoneUpdateTimer = ZONE_UPDATE_INTERVAL;
             }
         }
@@ -6896,7 +6906,11 @@ void Player::UpdateArea(uint32 newArea)
     if (area && (area->flags & AREA_FLAG_ARENA))
     {
         if (!IsGameMaster())
+        {
+            // Arena areas are always PvP + FFA
+            UpdatePvP(true, true);
             SetPvPFreeForAll(true);
+        }
     }
     else if (area)
     {

@@ -1503,6 +1503,12 @@ void Player::Update(const uint32 diff)
                 // Use area updates as well
                 if (m_areaUpdateId != newarea)
                     UpdateArea(newarea);
+                else
+                {
+                    AreaTableEntry const* area = GetAreaEntryByAreaID(newarea);
+                    if (area && (area->flags & AREA_FLAG_ARENA) && !IsGameMaster() && !IsPvPFreeForAll())
+                        SetPvPFreeForAll(true);
+                }
 
                 m_zoneUpdateTimer = ZONE_UPDATE_INTERVAL;
             }
@@ -6892,12 +6898,16 @@ void Player::UpdateArea(uint32 newArea)
         if (!IsGameMaster())
             SetPvPFreeForAll(true);
     }
-    else
+    else if (area)
     {
         // remove ffa flag only if not ffapvp realm
         // removal in sanctuaries and capitals is handled in zone update
-        if (IsPvPFreeForAll() && !sWorld.IsFFAPvPRealm())
+        // avoid clearing while in a hardcore zone (handled in UpdateZone)
+        if (IsPvPFreeForAll() && !sWorld.IsFFAPvPRealm() &&
+            !(sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(GetZoneId())))
+        {
             SetPvPFreeForAll(false);
+        }
     }
 
     UpdateAreaDependentAuras();
@@ -6967,13 +6977,13 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea, bool force)
     {
         pvpInfo.inPvPEnforcedArea = true;
         SetPvP(true);
-        SetFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
+        SetPvPFreeForAll(true);
     }
     else if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
     {
         // Leaving a Hardcore zone - remove FFA flag if not in a standard FFA area
         if (!(zone->flags & AREA_FLAG_ARENA))
-            RemoveFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
+            SetPvPFreeForAll(false);
 
         // Clear aggressor list when leaving Hardcore zone
         ClearHardcoreAggressors();

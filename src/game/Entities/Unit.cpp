@@ -38,6 +38,9 @@
 #include "Entities/Totem.h"
 #include "BattleGround/BattleGround.h"
 #include "Maps/InstanceData.h"
+#ifdef ENABLE_PLAYERBOTS
+#include "playerbot/RecentPvpAttackers.h"
+#endif
 #include "OutdoorPvP/OutdoorPvP.h"
 #include "Maps/GridDefines.h"
 #include "Grids/GridNotifiersImpl.h"
@@ -878,6 +881,11 @@ void Unit::DealDamageMods(Unit* dealer, Unit* victim, uint32& damage, uint32* ab
     // Script Event damage taken
     if (victim->AI())
         victim->AI()->DamageTaken(dealer, damage, damagetype, spellInfo);
+
+#ifdef ENABLE_PLAYERBOTS
+    if (dealer && damage > 0)
+        ai::RecordRecentPvpAttacker(victim, dealer);
+#endif
 
     if (absorb && originalDamage > damage)
         *absorb += (originalDamage - damage);

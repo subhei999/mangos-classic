@@ -1255,8 +1255,11 @@ void Unit::HandleDamageDealt(Unit* dealer, Unit* victim, uint32& damage, CleanDa
             if (sWorld.IsHardcoreZone(dealerZone) && sWorld.IsHardcoreZone(victimZone))
             {
                 victimPlayer->AddHardcoreAggressor(dealer->GetObjectGuid());
-                sLog.outString("HARDCORE: %s attacked %s - added to aggressor list", 
-                    dealerPlayer->GetName(), victimPlayer->GetName());
+                if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING))
+                {
+                    sLog.outString("HARDCORE: %s attacked %s - added to aggressor list",
+                        dealerPlayer->GetName(), victimPlayer->GetName());
+                }
             }
         }
 

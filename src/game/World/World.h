@@ -286,6 +286,7 @@ enum eConfigFloatValues
     CONFIG_FLOAT_GHOST_RUN_SPEED_WORLD,
     CONFIG_FLOAT_GHOST_RUN_SPEED_BG,
     CONFIG_FLOAT_LEASH_RADIUS,
+    CONFIG_FLOAT_HARDCORE_DEATH_XP_REFUND_PCT,
     CONFIG_FLOAT_VALUE_COUNT
 };
 
@@ -357,6 +358,8 @@ enum eConfigBoolValues
     CONFIG_BOOL_PRELOAD_MMAP_TILES,
     CONFIG_BOOL_REGEN_ZONE_AREA_ON_STARTUP,
     CONFIG_BOOL_HARDCORE_MODE_ENABLED,
+    CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS,
+    CONFIG_BOOL_HARDCORE_DEBUG_LOGGING,
     CONFIG_BOOL_VALUE_COUNT
 };
 
@@ -529,7 +532,16 @@ class World
         bool IsPvPRealm() const { return (getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_RPPVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP); }
         bool IsFFAPvPRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP; }
 
-        bool IsHardcoreZone(uint32 zoneId) const { return m_hardcoreZones.find(zoneId) != m_hardcoreZones.end(); }
+        // Hardcore Mode zones:
+        // - When Hardcore Mode is enabled, ALL zones are treated as Hardcore (Arena/FFA)
+        // - Except the zones listed in Game.HardcoreMode.ZoneIds (exclusion list)
+        bool IsHardcoreZone(uint32 zoneId) const
+        {
+            if (!getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) || zoneId == 0)
+                return false;
+
+            return m_hardcoreExcludedZones.find(zoneId) == m_hardcoreExcludedZones.end();
+        }
 
         void KickAll(bool save);
         void KickAllLess(AccountTypes sec);
@@ -705,8 +717,9 @@ class World
         // List of Maps that should be force-loaded on startup
         std::set<uint32> m_configForceLoadMapIds;
         
-        // List of Zones that are Hardcore (Arena)
-        std::set<uint32> m_hardcoreZones;
+        // Zones excluded from Hardcore Mode (Arena/FFA) when Game.HardcoreMode.Enabled=1.
+        // Populated from Game.HardcoreMode.ZoneIds (exclusion list).
+        std::set<uint32> m_hardcoreExcludedZones;
 
         std::vector<std::string> m_spamRecords;
 

@@ -25,9 +25,11 @@ endif()
 if(BUILD_PLAYERBOTS)
   include(FetchContent)
 
+  set(PLAYERBOTS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/modules/PlayerBots" CACHE PATH "Path to PlayerBots source")
+
   FetchContent_Declare(
     PlayerBots
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/modules/PlayerBots"
+    SOURCE_DIR "${PLAYERBOTS_SOURCE_DIR}"
     GIT_REPOSITORY "https://github.com/cmangos/playerbots.git"
     GIT_TAG "master"
   )

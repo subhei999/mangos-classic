@@ -475,6 +475,9 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_UINT32_CREATURE_LINKING_AGGRO_DELAY,             "CreatureLinkingAggroDelay",     2000);
     setConfigPos(CONFIG_FLOAT_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS, "CreatureFamilyFleeAssistanceRadius", 30.0f);
 
+    // Hardcore: refund percentage of XP lost on death when resurrected by non-spirit-healer means
+    setConfigPos(CONFIG_FLOAT_HARDCORE_DEATH_XP_REFUND_PCT, "Game.HardcoreMode.DeathXpRefundPct", 0.5f);
+
     ///- Read other configuration items from the config file
     setConfigMinMax(CONFIG_UINT32_COMPRESSION, "Compression", 1, 1, 9);
     setConfig(CONFIG_BOOL_ADDON_CHANNEL, "AddonChannel", true);
@@ -840,9 +843,11 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_REGEN_ZONE_AREA_ON_STARTUP, "Spawns.ZoneArea", false);
 
     setConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED, "Game.HardcoreMode.Enabled", false);
+    setConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS, "Game.HardcoreMode.DeathXpLoss", false);
+    setConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING, "Game.HardcoreMode.DebugLogging", false);
     setConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF, "Game.HardcoreMode.LevelDiff", 5);
 
-    m_hardcoreZones.clear();
+    m_hardcoreExcludedZones.clear();
     std::string hardcoreZonesStr = sConfig.GetStringDefault("Game.HardcoreMode.ZoneIds", "");
     if (!hardcoreZonesStr.empty())
     {
@@ -850,13 +855,23 @@ void World::LoadConfigSettings(bool reload)
         std::string zoneIdStr;
         while (std::getline(ss, zoneIdStr, ','))
         {
-            try {
-                m_hardcoreZones.insert(std::stoi(zoneIdStr));
-            } catch (...) {
-                sLog.outError("Invalid zone ID in Game.HardcoreMode.ZoneIds: %s", zoneIdStr.c_str());
+            try
+            {
+                m_hardcoreExcludedZones.insert(std::stoi(zoneIdStr));
+            }
+            catch (...)
+            {
+                sLog.outError("Invalid zone ID in Game.HardcoreMode.ZoneIds (exclusion list): %s", zoneIdStr.c_str());
             }
         }
-        sLog.outString("WORLD: Hardcore Mode Enabled. Zones loaded: %u", (uint32)m_hardcoreZones.size());
+    }
+
+    if (getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
+    {
+        if (m_hardcoreExcludedZones.empty())
+            sLog.outString("WORLD: Hardcore Mode Enabled. No excluded zones configured (all zones active).");
+        else
+            sLog.outString("WORLD: Hardcore Mode Enabled. Excluded zones loaded: %u", (uint32)m_hardcoreExcludedZones.size());
     }
 
     sLog.outString();

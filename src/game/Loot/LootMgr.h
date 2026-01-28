@@ -28,6 +28,7 @@
 
 #define LOOT_ROLL_TIMEOUT  (1*MINUTE*IN_MILLISECONDS)
 
+// Forward declarations
 class Player;
 class Group;
 class LootStore;
@@ -354,6 +355,7 @@ class Loot
         friend struct LootItem;
         friend class GroupLootRoll;
         friend class LootMgr;
+        friend class Player;
 
         Loot(Player* player, Creature* creature, LootType type);
         Loot(Player* player, GameObject* gameObject, LootType type);
@@ -395,6 +397,10 @@ class Loot
         std::tuple<uint32, uint32, uint32> GetQualifiedWeapons();
 
         bool IsLootedFor(Player const* player) const;
+        void UpdateLootTarget(WorldObject* newTarget) { m_lootTarget = newTarget; m_guidTarget = newTarget->GetObjectGuid(); }
+        void SetLootMethod(LootMethod method) { m_lootMethod = method; }
+        void ClearOwners() { m_ownerSet.clear(); }
+        void MakeAllItemsFreeForAll();  // Make all items in loot free-for-all
 
     private:
         Loot(): m_lootTarget(nullptr), m_itemTarget(nullptr), m_gold(0), m_maxSlot(0), m_lootType(),

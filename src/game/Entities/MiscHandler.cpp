@@ -628,6 +628,8 @@ void WorldSession::HandleReclaimCorpseOpcode(WorldPacket& recv_data)
 
     // resurrect
     GetPlayer()->ResurrectPlayer(GetPlayer()->InBattleGround() ? 1.0f : 0.5f);
+    // Hardcore: reclaiming your corpse refunds half of the XP lost on death (in-memory only)
+    GetPlayer()->HardcoreRefundDeathXpLossPct(sWorld.getConfig(CONFIG_FLOAT_HARDCORE_DEATH_XP_REFUND_PCT));
 
     // spawn bones
     GetPlayer()->SpawnCorpseBones();

@@ -415,6 +415,8 @@ void WorldSession::HandleSpiritHealerActivateOpcode(WorldPacket& recv_data)
 
 void WorldSession::SendSpiritResurrect() const
 {
+    // Hardcore: spirit healer resurrect should not refund death XP loss
+    _player->ClearHardcoreDeathXpLoss();
     _player->ResurrectPlayer(0.5f, true);
 
     _player->DurabilityLossAll(0.25f, true);

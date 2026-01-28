@@ -1654,6 +1654,7 @@ class Player : public Unit
         Corpse* GetCorpse() const;
         void SpawnCorpseBones();
         Corpse* CreateCorpse();
+        void SpawnPlayerLootCrate();  // Hardcore Mode: Spawn loot crate for player items/gold
         void KillPlayer();
         uint32 GetResurrectionSpellId() const;
         void ResurrectPlayer(float restore_percent, bool applySickness = false);
@@ -2569,6 +2570,8 @@ class Player : public Unit
 
         // Hardcore Mode: Track who has attacked this player (for retaliation)
         std::set<ObjectGuid> m_hardcoreAggressors;
+        // Hardcore Mode: XP lost on last death (in-memory only; cleared on logout/restart)
+        uint32 m_hardcoreLostXpOnDeath = 0;
 
     public:
         // Hardcore Mode: Aggressor tracking
@@ -2576,6 +2579,11 @@ class Player : public Unit
         void RemoveHardcoreAggressor(ObjectGuid guid) { m_hardcoreAggressors.erase(guid); }
         bool HasHardcoreAggressor(ObjectGuid guid) const { return m_hardcoreAggressors.find(guid) != m_hardcoreAggressors.end(); }
         void ClearHardcoreAggressors() { m_hardcoreAggressors.clear(); }
+
+        // Hardcore Mode: Death XP loss/refund helpers
+        void ClearHardcoreDeathXpLoss() { m_hardcoreLostXpOnDeath = 0; }
+        void HardcoreStoreDeathXpLoss(uint32 xp) { m_hardcoreLostXpOnDeath = xp; }
+        void HardcoreRefundDeathXpLossPct(float pct);
 };
 
 void AddItemsSetItem(Player* player, Item* item);

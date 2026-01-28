@@ -56,6 +56,8 @@ void WorldSession::HandleUseItemOpcode(WorldPacket& recvPacket)
     }
 
     DETAIL_LOG("WORLD: CMSG_USE_ITEM packet, bagIndex: %u, slot: %u, spell_index: %u , Item: %u, data length = %u", bagIndex, slot, spell_index, pItem->GetEntry(), (uint32)recvPacket.size());
+    if (pItem->GetEntry() == 90001)
+        sLog.outString("SLAMROCK: HandleUseItemOpcode fired (bag=%u slot=%u spell_index=%u)", bagIndex, slot, spell_index);
 
     ItemPrototype const* proto = pItem->GetProto();
     if (!proto)
@@ -120,6 +122,8 @@ void WorldSession::HandleUseItemOpcode(WorldPacket& recvPacket)
     recvPacket >> targets.ReadForCaster(pUser);
 
     targets.Update(pUser);
+    if (pItem->GetEntry() == 90000)
+        sLog.outString("SLAMROCK: targets mask=%u itemTarget=%s unitTarget=%s", uint32(targets.m_targetMask), targets.getItemTargetGuid().GetString().c_str(), targets.getUnitTargetGuid().GetString().c_str());
 
     if (!pItem->IsTargetValidForItemUse(targets.getUnitTarget()))
     {

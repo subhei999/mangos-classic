@@ -22,7 +22,8 @@ add_definitions(-DDT_POLYREF64)
 add_definitions(-D__ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES=0)
 
 # Find all the input files
-FILE(GLOB_RECURSE LIBRARY_SRCS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "*.h" "*.cpp")
+# CONFIGURE_DEPENDS ensures CMake re-scans when new files are added/removed (important for ScriptDevAI scripts).
+FILE(GLOB_RECURSE LIBRARY_SRCS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "*.h" "*.cpp")
 
 # Remove Anticheat.cpp.
 if(NOT USE_ANTICHEAT)

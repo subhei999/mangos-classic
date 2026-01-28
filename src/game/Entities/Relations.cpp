@@ -323,6 +323,20 @@ ReputationRank Unit::GetReactionTo(Unit const* unit) const
             }
         }
     }
+    // Custom: Make all Cats hostile to Critters (excluding Quest Givers)
+    if (GetTypeId() == TYPEID_UNIT && unit->GetTypeId() == TYPEID_UNIT)
+    {
+        const Creature* me = static_cast<const Creature*>(this);
+        const Creature* target = static_cast<const Creature*>(unit);
+
+        if (me->GetCreatureInfo()->Family == CREATURE_FAMILY_CAT && target->GetCreatureInfo()->CreatureType == CREATURE_TYPE_CRITTER)
+        {
+            // Protect Quest Givers from being slaughtered
+            if (!(target->GetCreatureInfo()->NpcFlags & UNIT_NPC_FLAG_QUESTGIVER))
+                return REP_HOSTILE;
+        }
+    }
+
     // Default fallback if player-specific checks didn't catch anything: facton to unit
     ReputationRank reaction = GetFactionReaction(GetFactionTemplateEntry(), unit);
 

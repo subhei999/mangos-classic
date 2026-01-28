@@ -21,14 +21,18 @@
 #include "Grids/GridNotifiersImpl.h"
 #include "Grids/CellImpl.h"
 #include "World/World.h"
+#include "Globals/ObjectAccessor.h"
 #include "Entities/Creature.h"
+#include "MotionGenerators/MotionMaster.h"
+#include "MotionGenerators/WaypointMovementGenerator.h"
+#include "Movement/MoveSpline.h"
 
 CreatureAI::CreatureAI(Creature* creature) : CreatureAI(creature, 0) { }
 
 CreatureAI::CreatureAI(Creature* creature, uint32 combatActions) :
     UnitAI(creature, combatActions),
     m_creature(creature),
-    m_deathPrevented(false), m_followAngle(0.f), m_followDist(0.f)
+    m_deathPrevented(false), m_followAngle(PET_FOLLOW_ANGLE), m_followDist(0.f)
 {
     m_dismountOnAggro = !(m_creature->GetCreatureInfo()->HasFlag(CreatureTypeFlags::ALLOW_MOUNTED_COMBAT));
     SetMeleeEnabled(!(m_creature->GetSettings().HasFlag(CreatureStaticFlags::NO_MELEE_FLEE)
@@ -66,12 +70,14 @@ void CreatureAI::EnterCombat(Unit* enemy)
 void CreatureAI::EnterEvadeMode()
 {
     UnitAI::EnterEvadeMode();
+
     ResetTimersOnEvade();
     Reset();
 }
 
 void CreatureAI::AttackStart(Unit* who)
 {
+
     if (m_creature->GetSettings().HasFlag(CreatureStaticFlags::COMBAT_PING))
     {
         if (Player* owner = dynamic_cast<Player*>(m_creature->GetSpawner()))
@@ -97,6 +103,10 @@ void CreatureAI::AttackStart(Unit* who)
 
         HandleMovementOnAttackStart(who, targetChange);
     }
+}
+
+void CreatureAI::DamageDeal(Unit* victim, uint32& damage, DamageEffectType damagetype, SpellEntry const* spellInfo)
+{
 }
 
 void CreatureAI::DamageTaken(Unit* dealer, uint32& damage, DamageEffectType damageType, SpellEntry const* /*spellInfo*/)
@@ -219,6 +229,14 @@ void CreatureAI::OnCallForHelp(Unit* enemy)
             return;
     }
     AttackStart(enemy);
+}
+
+void CreatureAI::KilledUnit(Unit* victim)
+{
+}
+
+void CreatureAI::MovementInform(uint32 type, uint32 id)
+{
 }
 
 void CreatureAI::HandleAssistanceCall(Unit* sender, Unit* invoker)
@@ -370,12 +388,17 @@ void CreatureAI::HandleSpawnGuard()
         counter++;
     }
 
-    // Spawn Guards only if we have random position.
-    if (foundPosition && guardEntry != 0)
+    if (foundPosition)
     {
-        Creature* guard = caster->SummonCreature(guardEntry, pointX, pointY, pointZ, caster->GetOrientation(), TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 30 * IN_MILLISECONDS);
-
-        if (guard)
-            guard->AI()->AttackStart(caster->getAttackerForHelper());
+        if (Creature* guard = caster->SummonCreature(guardEntry, pointX, pointY, pointZ, 0, TEMPSPAWN_TIMED_OR_DEAD_DESPAWN, 60000))
+        {
+            guard->AI()->AttackStart(m_creature);
+            m_creature->AddThreat(guard, 10000.0f); // Make sure the guard attacks the player
+        }
     }
+}
+
+void CreatureAI::UpdateAI(const uint32 diff)
+{
+    UnitAI::UpdateAI(diff);
 }

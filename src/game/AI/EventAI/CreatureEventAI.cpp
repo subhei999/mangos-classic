@@ -1469,7 +1469,7 @@ void CreatureEventAI::JustReachedHome()
 
 void CreatureEventAI::EnterEvadeMode()
 {
-    UnitAI::EnterEvadeMode();
+    CreatureAI::EnterEvadeMode();
 
     // Handle Evade events
     IncreaseDepthIfNecessary();
@@ -1510,6 +1510,7 @@ void CreatureEventAI::JustDied(Unit* killer)
 
 void CreatureEventAI::KilledUnit(Unit* victim)
 {
+    CreatureAI::KilledUnit(victim);
     IncreaseDepthIfNecessary();
     for (auto& i : m_CreatureEventAIList)
     {

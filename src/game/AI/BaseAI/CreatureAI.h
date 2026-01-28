@@ -36,10 +36,14 @@ class CreatureAI : public UnitAI
         virtual void EnterCombat(Unit* enemy) override;
         virtual void EnterEvadeMode() override;
         virtual void AttackStart(Unit* who) override;
+        virtual void DamageDeal(Unit* doneTo, uint32& damage, DamageEffectType damageType, SpellEntry const* spellInfo) override;
         virtual void DamageTaken(Unit* dealer, uint32& damage, DamageEffectType damageType, SpellEntry const* spellInfo) override;
         virtual void JustPreventedDeath(Unit* /*attacker*/) {}
         virtual void JustReachedHome() override;
         virtual void JustRespawned() override;
+
+        virtual void KilledUnit(Unit* victim) override;
+        virtual void MovementInform(uint32 type, uint32 id) override;
 
         void DoFakeDeath(uint32 spellId = 0);
         void SetDeathPrevention(bool state);
@@ -59,6 +63,9 @@ class CreatureAI : public UnitAI
 
         void TimedFleeingEnded() override;
 
+        void UpdateAI(const uint32 diff) override;
+
+    protected:
         void OnCallForHelp(Unit* enemy) override;
 
         // Starts follow and in case of player engages player based formation

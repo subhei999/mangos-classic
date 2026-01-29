@@ -873,14 +873,21 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
     // Clear previous slamrock enchants (safe because we reject RandomPropertyId != 0).
     ClearSlamrockEnchants(pPlayer, targetItem);
 
-    // Apply marker (always) + modifiers.
-    targetItem->SetEnchantment(SLAMROCK_MARKER_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
+    // Apply marker + modifiers.
+    // Prefer perm slot for the marker when free (better link/trade visibility).
+    // If perm is already occupied, fall back to prop marker slot.
+    bool markerInPerm = false;
+    if (targetItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == 0)
+    {
+        targetItem->SetEnchantment(PERM_ENCHANTMENT_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
+        markerInPerm = true;
+    }
+    if (!markerInPerm)
+        targetItem->SetEnchantment(SLAMROCK_MARKER_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
 
     for (uint32 i = 0; i < rolled.size() && i < SLAMROCK_MAX_MODIFIERS; ++i)
         targetItem->SetEnchantment(SLAMROCK_MODIFIER_SLOTS[i], rolled[i], 0, 0, pPlayer->GetObjectGuid());
 
-    if (targetItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == 0)
-        targetItem->SetEnchantment(PERM_ENCHANTMENT_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
 
     targetItem->SetState(ITEM_CHANGED, pPlayer);
     sLog.outBasic("SLAMROCK: set %u enchants on target_item_guid=%u (e0=%u e1=%u e2=%u)",

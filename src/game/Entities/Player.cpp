@@ -10339,7 +10339,10 @@ void Player::SetVisibleItemSlot(uint8 slot, Item* pItem)
         uint32 visibleEnchant1 = pItem->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT);
 
         constexpr uint32 SLAMROCK_MARKER_ENCHANT_ID = 900000;
-        if (pItem->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0) == SLAMROCK_MARKER_ENCHANT_ID)
+        bool hasSlamrockMarker = (pItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == SLAMROCK_MARKER_ENCHANT_ID) ||
+            (pItem->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0) == SLAMROCK_MARKER_ENCHANT_ID);
+
+        if (hasSlamrockMarker)
         {
             if (!visibleEnchant0)
                 visibleEnchant0 = SLAMROCK_MARKER_ENCHANT_ID;

@@ -1221,6 +1221,18 @@ struct npc_predator_catAI : public ScriptedAI
 
     void UpdateAI(const uint32 diff) override
     {
+        if (m_creature->SelectHostileTarget() && m_creature->GetVictim())
+        {
+            // Player interrupt: clear hunting/victory states
+            m_victoryPhase = false;
+            m_victoryTimer = 0;
+            m_isWandering = false;
+            m_creature->SetTarget(nullptr);
+            
+            DoMeleeAttackIfReady();
+            return;
+        }
+
         if (m_victoryPhase)
         {
             if (m_victoryTimer) // We are in the "staring" part of victory
@@ -1237,13 +1249,6 @@ struct npc_predator_catAI : public ScriptedAI
                     m_victoryTimer -= diff;
             }
             return; // Block other AI logic while walking to or staring at corpse
-        }
-
-        if (m_creature->SelectHostileTarget() && m_creature->GetVictim())
-        {
-            m_isWandering = false; // Interrupt wander if we enter combat
-            DoMeleeAttackIfReady();
-            return;
         }
 
         // Verify if we have a valid critter target selected

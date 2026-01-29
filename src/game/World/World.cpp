@@ -80,6 +80,7 @@
 
 #ifdef ENABLE_PLAYERBOTS
 #include "ahbot/AhBot.h"
+#include "ahbot/AhBotConfig.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/RandomPlayerbotMgr.h"
 #endif
@@ -1475,9 +1476,13 @@ void World::SetInitialWorldSettings()
 #endif
 
 #ifdef ENABLE_PLAYERBOTS
-    sPlayerbotAIConfig.Initialize();
+    const bool playerbotsEnabled = sPlayerbotAIConfig.Initialize();
 #ifndef BUILD_AHBOT
-    auctionbot.Init();
+    if (playerbotsEnabled)
+    {
+        if (sAhBotConfig.Initialize())
+            auctionbot.Init();
+    }
 #endif
 #endif
 
@@ -1623,8 +1628,11 @@ void World::Update(uint32 diff)
     /// <li> Handle AHBot operations
     if (m_timers[WUPDATE_AHBOT].Passed())
     {
-        auctionbot.Update();
-        m_timers[WUPDATE_AHBOT].Reset();
+        if (sPlayerbotAIConfig.enabled && sAhBotConfig.enabled)
+        {
+            auctionbot.Update();
+            m_timers[WUPDATE_AHBOT].Reset();
+        }
     }
 #endif
     sRandomPlayerbotMgr.UpdateAI(diff);

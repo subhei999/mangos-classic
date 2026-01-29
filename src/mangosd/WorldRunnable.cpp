@@ -96,7 +96,8 @@ void WorldRunnable::run()
         else
         {
             ++overCounter;
-            sLog.outString("WorldRunnable:run Long loop #%d : %dms (total : %d loop(s), %.3f%%)", World::m_worldLoopCounter, diffTime, overCounter, (float)(100*overCounter) / (float)World::m_worldLoopCounter);
+            const uint32 loopCounter = World::m_worldLoopCounter.load();
+            sLog.outString("WorldRunnable:run Long loop #%d : %dms (total : %d loop(s), %.3f%%)", loopCounter, diffTime, overCounter, (float)(100*overCounter) / (float)loopCounter);
         }
 #endif
 

@@ -38,6 +38,8 @@ namespace
     constexpr EnchantmentSlot SLAMROCK_MODIFIER_SLOTS[] = { PROP_ENCHANTMENT_SLOT_1, PROP_ENCHANTMENT_SLOT_2, PROP_ENCHANTMENT_SLOT_3 };
     constexpr EnchantmentSlot SLAMROCK_ALL_PROP_SLOTS[] = { PROP_ENCHANTMENT_SLOT_0, PROP_ENCHANTMENT_SLOT_1, PROP_ENCHANTMENT_SLOT_2, PROP_ENCHANTMENT_SLOT_3 };
     constexpr uint32 SLAMROCK_MAX_MODIFIERS = 3;
+    constexpr uint32 SLAMROCK_UPGRADE_CHANCE_PCT = 2;
+    constexpr uint32 SLAMROCK_UPGRADE_MAX_ILVL_DELTA = 5;
     constexpr uint32 SLAMROCK_DOWNGRADE_CHANCE_PCT = 25;
 
     bool IsReasonableGearTarget(Item* target)
@@ -450,6 +452,72 @@ namespace
         return candidates[urand(0, candidates.size() - 1)];
     }
 
+    uint32 PickUpgradeEntrySameClass(ItemPrototype const* targetProto, uint32 maxIlvlDelta, uint32* outSameClassTotal = nullptr, uint32* outEligibleCount = nullptr)
+    {
+        if (!targetProto)
+            return 0;
+
+        uint32 targetIlvl = targetProto->ItemLevel;
+        uint32 maxIlvl = targetIlvl + maxIlvlDelta;
+
+        static bool initialized = false;
+        static std::map<uint32, std::vector<std::pair<uint32, uint32>>> byClass; // (ItemLevel, entry)
+
+        if (!initialized)
+        {
+            for (uint32 entry = 1; entry < sItemStorage.GetMaxEntry(); ++entry)
+            {
+                ItemPrototype const* proto = sItemStorage.LookupEntry<ItemPrototype>(entry);
+                if (!proto)
+                    continue;
+
+                if (proto->InventoryType == INVTYPE_NON_EQUIP || proto->InventoryType == INVTYPE_BAG)
+                    continue;
+
+                byClass[proto->Class].push_back({ proto->ItemLevel, proto->ItemId });
+            }
+
+            for (auto& kv : byClass)
+            {
+                auto& vec = kv.second;
+                std::sort(vec.begin(), vec.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+            }
+
+            initialized = true;
+        }
+
+        auto itr = byClass.find(targetProto->Class);
+        if (itr == byClass.end())
+            return 0;
+
+        auto const& vec = itr->second;
+        if (outSameClassTotal)
+            *outSameClassTotal = uint32(vec.size());
+        if (vec.empty())
+            return 0;
+
+        std::vector<uint32> candidates;
+        candidates.reserve(64);
+        for (auto const& it : vec)
+        {
+            if (it.first < targetIlvl)
+                continue;
+            if (it.first > maxIlvl)
+                break;
+            if (it.second == targetProto->ItemId)
+                continue;
+            candidates.push_back(it.second);
+        }
+
+        if (candidates.empty())
+            return 0;
+
+        if (outEligibleCount)
+            *outEligibleCount = uint32(candidates.size());
+
+        return candidates[urand(0, candidates.size() - 1)];
+    }
+
     bool TryDowngradeItemInPlace(Player* player, Item* targetItem, uint32 newEntry, InventoryResult* outFailReason = nullptr, bool* outWasEquipped = nullptr)
     {
         if (!player || !targetItem || !newEntry)
@@ -582,6 +650,12 @@ namespace
 
         for (EnchantmentSlot slot : SLAMROCK_ALL_PROP_SLOTS)
             targetItem->ClearEnchantment(slot);
+
+    if (targetItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == SLAMROCK_MARKER_ENCHANT_ID)
+        targetItem->ClearEnchantment(PERM_ENCHANTMENT_SLOT);
+
+    if (targetItem->GetSlot() < EQUIPMENT_SLOT_END)
+        player->SetVisibleItemSlot(targetItem->GetSlot(), targetItem);
     }
 }
 
@@ -639,6 +713,44 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
         if (targetingSpell)
             Spell::SendCastResult(pPlayer, targetingSpell, SPELL_FAILED_BAD_TARGETS);
         return true;
+    }
+
+    // 2% chance: upgrade the target item into another item of the same class, +0..+5 ilvl.
+    if (urand(1, 100) <= SLAMROCK_UPGRADE_CHANCE_PCT)
+    {
+        ItemPrototype const* targetProto = targetItem->GetProto();
+        uint32 sameClassTotal = 0;
+        uint32 eligibleCount = 0;
+        uint32 newEntry = PickUpgradeEntrySameClass(targetProto, SLAMROCK_UPGRADE_MAX_ILVL_DELTA, &sameClassTotal, &eligibleCount);
+
+        sLog.outBasic("SLAMROCK: upgrade roll for target entry=%u ilvl=%u class=%u bag=%u slot=%u sameClassTotal=%u eligible=%u picked=%u",
+            targetProto ? targetProto->ItemId : 0,
+            targetProto ? targetProto->ItemLevel : 0,
+            targetProto ? targetProto->Class : 0,
+            targetItem->GetBagSlot(),
+            targetItem->GetSlot(),
+            sameClassTotal,
+            eligibleCount,
+            newEntry);
+
+        if (newEntry)
+        {
+            ItemPrototype const* newProto = ObjectMgr::GetItemPrototype(newEntry);
+            InventoryResult failReason = EQUIP_ERR_OK;
+            bool wasEquipped = false;
+            if (TryDowngradeItemInPlace(pPlayer, targetItem, newEntry, &failReason, &wasEquipped))
+            {
+                pPlayer->DestroyItemCount(pItem->GetEntry(), 1, true);
+                pPlayer->GetSession()->SendNotification("Slamrock: your item upgrades into %s (entry %u).",
+                    newProto && newProto->Name1 ? newProto->Name1 : "a different item",
+                    newEntry);
+                return true;
+            }
+
+            sLog.outBasic("SLAMROCK: upgrade replace failed for newEntry=%u (wasEquipped=%s failReason=%u)",
+                newEntry, wasEquipped ? "true" : "false", uint32(failReason));
+        }
+        // If no upgrade target exists or replacement fails, fall through to downgrade/normal behavior.
     }
 
     // 25% chance: downgrade the target item into another (lower item level) item of the same type.
@@ -767,6 +879,9 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
     for (uint32 i = 0; i < rolled.size() && i < SLAMROCK_MAX_MODIFIERS; ++i)
         targetItem->SetEnchantment(SLAMROCK_MODIFIER_SLOTS[i], rolled[i], 0, 0, pPlayer->GetObjectGuid());
 
+    if (targetItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == 0)
+        targetItem->SetEnchantment(PERM_ENCHANTMENT_SLOT, SLAMROCK_MARKER_ENCHANT_ID, 0, 0, pPlayer->GetObjectGuid());
+
     targetItem->SetState(ITEM_CHANGED, pPlayer);
     sLog.outBasic("SLAMROCK: set %u enchants on target_item_guid=%u (e0=%u e1=%u e2=%u)",
         uint32(rolled.size()),
@@ -789,6 +904,8 @@ bool ItemUse_item_slamrock(Player* pPlayer, Item* pItem, SpellCastTargets const&
             pPlayer->UpdateDamagePhysical(OFF_ATTACK);
         else if (targetItem->GetSlot() == EQUIPMENT_SLOT_RANGED)
             pPlayer->UpdateDamagePhysical(RANGED_ATTACK);
+
+        pPlayer->SetVisibleItemSlot(targetItem->GetSlot(), targetItem);
     }
 
     // Consume the Slamrock

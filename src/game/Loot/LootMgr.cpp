@@ -426,6 +426,10 @@ LootItem::LootItem(LootStoreItem const& li, uint32 _lootSlot, uint32 threshold)
     count = urand(li.mincountOrRef, li.maxcount); // constructor called for mincountOrRef > 0 only
     randomSuffix = 0;                             // TODO:: do we need to implement it? GenerateEnchSuffixFactor(itemId);
     randomPropertyId = Item::GenerateItemRandomPropertyId(itemId);
+    enchantId.fill(0);
+    enchantDuration.fill(0);
+    enchantCharges.fill(0);
+    hasEnchantmentData = false;
     isBlocked = false;
     currentLooterPass = false;
     isReleased = false;
@@ -453,6 +457,10 @@ LootItem::LootItem(uint32 _itemId, uint32 _count, uint32 _randomSuffix, int32 _r
     count = _count;
     randomSuffix = _randomSuffix;
     randomPropertyId = _randomPropertyId;
+    enchantId.fill(0);
+    enchantDuration.fill(0);
+    enchantCharges.fill(0);
+    hasEnchantmentData = false;
     isBlocked = false;
     isUnderThreshold = false;
     currentLooterPass = false;
@@ -936,6 +944,27 @@ void Loot::AddItem(uint32 itemid, uint32 count, uint32 randomSuffix, int32 rando
     if (m_lootItems.size() < MAX_NR_LOOT_ITEMS) // Normal drop
     {
         LootItem* lootItem = new LootItem(itemid, count, randomSuffix, randomPropertyId, m_maxSlot++);
+
+        m_lootItems.push_back(lootItem);
+
+        // add permission to pick this item to loot owner
+        for (auto allowedGuid : m_ownerSet)
+            lootItem->allowedGuid.emplace(allowedGuid);
+    }
+}
+
+void Loot::AddItem(uint32 itemid, uint32 count, uint32 randomSuffix, int32 randomPropertyId,
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantIds,
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantDurations,
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantCharges)
+{
+    if (m_lootItems.size() < MAX_NR_LOOT_ITEMS) // Normal drop
+    {
+        LootItem* lootItem = new LootItem(itemid, count, randomSuffix, randomPropertyId, m_maxSlot++);
+        lootItem->enchantId = enchantIds;
+        lootItem->enchantDuration = enchantDurations;
+        lootItem->enchantCharges = enchantCharges;
+        lootItem->hasEnchantmentData = true;
 
         m_lootItems.push_back(lootItem);
 
@@ -2008,6 +2037,21 @@ void Loot::SendAllowedLooter()
         return;
 }
 
+static void ApplyLootItemEnchantments(LootItem const* lootItem, Item* item)
+{
+    if (!lootItem || !item || !lootItem->hasEnchantmentData)
+        return;
+
+    for (uint8 i = 0; i < MAX_ENCHANTMENT_SLOT; ++i)
+    {
+        uint32 enchantId = lootItem->enchantId[i];
+        if (!enchantId)
+            continue;
+
+        item->SetEnchantment(EnchantmentSlot(i), enchantId, lootItem->enchantDuration[i], lootItem->enchantCharges[i]);
+    }
+}
+
 InventoryResult Loot::SendItem(Player* target, uint32 itemSlot)
 {
     LootItem* lootItem = GetLootItemInSlot(itemSlot);
@@ -2035,6 +2079,7 @@ InventoryResult Loot::SendItem(Player* target, LootItem* lootItem, bool sendErro
         if (msg == EQUIP_ERR_OK)
         {
             Item* newItem = target->StoreNewItem(dest, lootItem->itemId, true, lootItem->randomPropertyId);
+            ApplyLootItemEnchantments(lootItem, newItem);
 
             if (lootItem->freeForAll)
             {
@@ -2196,6 +2241,7 @@ bool Loot::AutoStore(Player* player, bool broadcast /*= false*/, uint32 bag /*= 
             lootItem->allowedGuid.clear();
 
         Item* pItem = player->StoreNewItem(dest, lootItem->itemId, true, lootItem->randomPropertyId);
+        ApplyLootItemEnchantments(lootItem, pItem);
         player->SendNewItem(pItem, lootItem->count, false, false, broadcast);
         m_isChanged = true;
     }

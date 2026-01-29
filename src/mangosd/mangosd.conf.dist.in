@@ -908,6 +908,15 @@ PlayerCommands = 1
 #        Enable verbose Hardcore-related debug logging (level protection checks, aggressor tracking, loot crate spawn).
 #        Default: 0 (Disabled)
 #
+#    Game.HardcoreMode.BotLootCrateGoldPct
+#        Percent (0.0 - 1.0) of a bot player's gold that drops in the loot crate.
+#        Default: 0.1
+#
+#    Game.HardcoreMode.BotLootCrateMaxItems
+#        Cap on equipped items a bot player drops in the loot crate (0 disables item drops).
+#        Bot drop count is still randomized (1-3) and then capped by this value.
+#        Default: 3
+#
 ###################################################################################################################
 Game.HardcoreMode.Enabled = 0
 Game.HardcoreMode.ZoneIds = ""
@@ -915,6 +924,8 @@ Game.HardcoreMode.LevelDiff = 5
 Game.HardcoreMode.DeathXpLoss = 0
 Game.HardcoreMode.DeathXpRefundPct = 0.5
 Game.HardcoreMode.DebugLogging = 0
+Game.HardcoreMode.BotLootCrateGoldPct = 0.1
+Game.HardcoreMode.BotLootCrateMaxItems = 3
 
 ###################################################################################################################
 # PLAYER INTERACTION

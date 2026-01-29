@@ -847,6 +847,8 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_HARDCORE_DEATH_XP_LOSS, "Game.HardcoreMode.DeathXpLoss", false);
     setConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING, "Game.HardcoreMode.DebugLogging", false);
     setConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF, "Game.HardcoreMode.LevelDiff", 5);
+    setConfigPos(CONFIG_FLOAT_HARDCORE_BOT_LOOT_CRATE_GOLD_PCT, "Game.HardcoreMode.BotLootCrateGoldPct", 0.1f);
+    setConfig(CONFIG_UINT32_HARDCORE_BOT_LOOT_CRATE_MAX_ITEMS, "Game.HardcoreMode.BotLootCrateMaxItems", 3);
 
     m_hardcoreExcludedZones.clear();
     std::string hardcoreZonesStr = sConfig.GetStringDefault("Game.HardcoreMode.ZoneIds", "");

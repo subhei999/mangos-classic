@@ -23,6 +23,7 @@
 #include "Entities/ObjectGuid.h"
 #include "Globals/SharedDefines.h"
 
+#include <array>
 #include <vector>
 #include "Entities/Bag.h"
 
@@ -228,6 +229,10 @@ struct LootItem
     int32        randomPropertyId;
     uint32       displayID;
     LootItemType lootItemType;
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantId;
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantDuration;
+    std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantCharges;
+    bool         hasEnchantmentData;
     GuidSet      allowedGuid;                                       // player's that have right to loot this item
     uint32       lootSlot;                                          // the slot number will be send to client
     uint16       conditionId       : 16;                            // allow compiler pack structure
@@ -370,6 +375,10 @@ class Loot
         // Inserts the item into the loot (called by LootTemplate processors)
         void AddItem(LootStoreItem const& item);
         void AddItem(uint32 itemid, uint32 count, uint32 randomSuffix, int32 randomPropertyId);             // used in item.cpp to explicitly load a saved item
+        void AddItem(uint32 itemid, uint32 count, uint32 randomSuffix, int32 randomPropertyId,
+            std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantIds,
+            std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantDurations,
+            std::array<uint32, MAX_ENCHANTMENT_SLOT> const& enchantCharges);
         bool AutoStore(Player* player, bool broadcast = false, uint32 bag = NULL_BAG, uint32 slot = NULL_SLOT);
         bool CanLoot(Player const* player);
         void ShowContentTo(Player* plr);

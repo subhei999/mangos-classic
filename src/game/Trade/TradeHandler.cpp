@@ -29,6 +29,26 @@
 #include "Social/SocialMgr.h"
 #include "Server/DBCStores.h"
 
+namespace
+{
+    constexpr uint32 SLAMROCK_MARKER_ENCHANT_ID = 900000;
+
+    uint32 GetTradeDisplayEnchantId(Item* item)
+    {
+        if (!item)
+            return 0;
+
+        uint32 perm = item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT);
+        if (perm)
+            return perm;
+
+        if (item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0) == SLAMROCK_MARKER_ENCHANT_ID)
+            return SLAMROCK_MARKER_ENCHANT_ID;
+
+        return 0;
+    }
+}
+
 void WorldSession::SendTradeStatus(TradeStatusInfo const& info) const
 {
     WorldPacket data(SMSG_TRADE_STATUS, 13);
@@ -92,7 +112,7 @@ void WorldSession::SendUpdateTrade(bool trader_state /*= true*/) const
             data << uint32(item->HasFlag(ITEM_FIELD_FLAGS, ITEM_DYNFLAG_WRAPPED) ? 1 : 0);
             data << item->GetGuidValue(ITEM_FIELD_GIFTCREATOR);
 
-            data << uint32(item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT));
+            data << uint32(GetTradeDisplayEnchantId(item));
             data << item->GetGuidValue(ITEM_FIELD_CREATOR);
             data << uint32(item->GetSpellCharges());        // charges
             data << uint32(item->GetItemSuffixFactor());    // SuffixFactor

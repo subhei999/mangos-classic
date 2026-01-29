@@ -77,6 +77,7 @@
 #endif
 
 #include <cmath>
+#include <array>
 
 #define ZONE_UPDATE_INTERVAL (1 * IN_MILLISECONDS)
 
@@ -4577,6 +4578,10 @@ void Player::SpawnPlayerLootCrate()
     const uint32 LOOT_CRATE_ENTRY = 186736;
 
     bool const debugLogging = sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING);
+    bool isBot = false;
+#ifdef ENABLE_PLAYERBOTS
+    isBot = (GetPlayerbotAI() != nullptr);
+#endif
 
     // Create the GameObject
     GameObject* lootCrate = new GameObject;
@@ -4612,37 +4617,100 @@ void Player::SpawnPlayerLootCrate()
     if (debugLogging)
         sLog.outString("Player::SpawnPlayerLootCrate> Pre-creating loot for player %s [%s]", GetName(), GetObjectGuid().GetString().c_str());
 
-    // Add 50% of player's money
+    // Add gold (player: 50%, bot: configurable)
     uint32 playerMoney = GetMoney();
-    if (playerMoney > 0)
+    float goldPct = 0.5f;
+    if (isBot)
+        goldPct = sWorld.getConfig(CONFIG_FLOAT_HARDCORE_BOT_LOOT_CRATE_GOLD_PCT);
+
+    if (goldPct > 1.0f)
+        goldPct = 1.0f;
+
+    if (playerMoney > 0 && goldPct > 0.0f)
     {
-        uint32 moneyToDrop = playerMoney / 2;
+        uint32 moneyToDrop = uint32(playerMoney * goldPct);
         lootCrate->m_loot->m_gold = moneyToDrop; // Set directly - SetGoldAmount() only works for LOOT_SKINNING
         ModifyMoney(-int32(moneyToDrop));
         if (debugLogging)
-            sLog.outString("Player::SpawnPlayerLootCrate> Added %u copper to loot crate (50%% of %u)", moneyToDrop, playerMoney);
+        {
+            sLog.outString("Player::SpawnPlayerLootCrate> Added %u copper to loot crate (%.0f%% of %u)%s",
+                moneyToDrop,
+                goldPct * 100.0f,
+                playerMoney,
+                isBot ? " [bot]" : "");
+        }
     }
 
-    // Add all equipped items
-    for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+    auto addLootItemFromEquipment = [&](Item* item)
     {
-        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
-        if (item)
+        if (!item)
+            return;
+
+        std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantIds{};
+        std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantDurations{};
+        std::array<uint32, MAX_ENCHANTMENT_SLOT> enchantCharges{};
+
+        for (uint8 enchantSlot = 0; enchantSlot < MAX_ENCHANTMENT_SLOT; ++enchantSlot)
         {
-            // Log item info BEFORE destroying it (to avoid use-after-free)
-            if (debugLogging)
-            {
-                sLog.outString("Player::SpawnPlayerLootCrate> Adding item %u (%s) to loot crate",
-                    item->GetEntry(),
-                    item->GetProto()->Name1);
-            }
-
-            // Add item to loot
-            lootCrate->m_loot->AddItem(item->GetEntry(), 1, 0, 0);
-
-            // Remove item from player's equipment immediately
-            DestroyItem(INVENTORY_SLOT_BAG_0, i, true);
+            EnchantmentSlot slot = EnchantmentSlot(enchantSlot);
+            enchantIds[enchantSlot] = item->GetEnchantmentId(slot);
+            enchantDurations[enchantSlot] = item->GetEnchantmentDuration(slot);
+            enchantCharges[enchantSlot] = item->GetEnchantmentCharges(slot);
         }
+
+        // Log item info BEFORE destroying it (to avoid use-after-free)
+        if (debugLogging)
+        {
+            sLog.outString("Player::SpawnPlayerLootCrate> Adding item %u (%s) to loot crate",
+                item->GetEntry(),
+                item->GetProto()->Name1);
+        }
+
+        lootCrate->m_loot->AddItem(item->GetEntry(), 1, item->GetItemSuffixFactor(),
+            item->GetItemRandomPropertyId(), enchantIds, enchantDurations, enchantCharges);
+
+        // Remove item from player's equipment immediately
+        DestroyItem(INVENTORY_SLOT_BAG_0, item->GetSlot(), true);
+    };
+
+    // Add equipped items (player: all, bot: random selection)
+    if (isBot)
+    {
+        std::vector<uint8> equippedSlots;
+        equippedSlots.reserve(EQUIPMENT_SLOT_END - EQUIPMENT_SLOT_START);
+        for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+        {
+            if (GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                equippedSlots.push_back(i);
+        }
+
+        if (!equippedSlots.empty())
+        {
+            uint32 roll = urand(1, 100);
+            uint32 itemsToDrop = (roll <= 75) ? 1 : ((roll <= 90) ? 2 : 3);
+
+            uint32 maxItemsToDrop = sWorld.getConfig(CONFIG_UINT32_HARDCORE_BOT_LOOT_CRATE_MAX_ITEMS);
+            if (maxItemsToDrop > 0 && itemsToDrop > maxItemsToDrop)
+                itemsToDrop = maxItemsToDrop;
+
+            if (itemsToDrop > equippedSlots.size())
+                itemsToDrop = equippedSlots.size();
+
+            for (uint32 dropIndex = 0; dropIndex < itemsToDrop; ++dropIndex)
+            {
+                uint32 slotIndex = urand(0, equippedSlots.size() - 1);
+                uint8 slot = equippedSlots[slotIndex];
+                equippedSlots[slotIndex] = equippedSlots.back();
+                equippedSlots.pop_back();
+
+                addLootItemFromEquipment(GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+            }
+        }
+    }
+    else
+    {
+        for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+            addLootItemFromEquipment(GetItemByPos(INVENTORY_SLOT_BAG_0, i));
     }
 
     // Make all items free-for-all
@@ -10267,8 +10335,20 @@ void Player::SetVisibleItemSlot(uint8 slot, Item* pItem)
         int VisibleBase = PLAYER_VISIBLE_ITEM_1_0 + (slot * MAX_VISIBLE_ITEM_OFFSET);
         SetUInt32Value(VisibleBase + 0, pItem->GetEntry());
 
-        for (int i = 0; i < MAX_INSPECTED_ENCHANTMENT_SLOT; ++i)
-            SetUInt32Value(VisibleBase + 1 + i, pItem->GetEnchantmentId(EnchantmentSlot(i)));
+        uint32 visibleEnchant0 = pItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT);
+        uint32 visibleEnchant1 = pItem->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT);
+
+        constexpr uint32 SLAMROCK_MARKER_ENCHANT_ID = 900000;
+        if (pItem->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0) == SLAMROCK_MARKER_ENCHANT_ID)
+        {
+            if (!visibleEnchant0)
+                visibleEnchant0 = SLAMROCK_MARKER_ENCHANT_ID;
+            if (!visibleEnchant1)
+                visibleEnchant1 = pItem->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_1);
+        }
+
+        SetUInt32Value(VisibleBase + 1 + 0, visibleEnchant0);
+        SetUInt32Value(VisibleBase + 1 + 1, visibleEnchant1);
 
         // Use SetInt16Value to prevent set high part to FFFF for negative value
         SetInt16Value(PLAYER_VISIBLE_ITEM_1_PROPERTIES + (slot * MAX_VISIBLE_ITEM_OFFSET), 0, pItem->GetItemRandomPropertyId());
@@ -11515,6 +11595,12 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
     {
         int VisibleBase = PLAYER_VISIBLE_ITEM_1_0 + (item->GetSlot() * MAX_VISIBLE_ITEM_OFFSET);
         SetUInt32Value(VisibleBase + 1 + slot, apply ? item->GetEnchantmentId(slot) : 0);
+    }
+    else if (item->GetSlot() < EQUIPMENT_SLOT_END)
+    {
+        constexpr uint32 SLAMROCK_MARKER_ENCHANT_ID = 900000;
+        if (item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_0) == SLAMROCK_MARKER_ENCHANT_ID)
+            SetVisibleItemSlot(item->GetSlot(), item);
     }
 
     if (apply_dur)

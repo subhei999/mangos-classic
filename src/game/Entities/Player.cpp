@@ -4686,24 +4686,33 @@ void Player::SpawnPlayerLootCrate()
 
         if (!equippedSlots.empty())
         {
-            uint32 roll = urand(1, 100);
-            uint32 itemsToDrop = (roll <= 75) ? 1 : ((roll <= 90) ? 2 : 3);
-
             uint32 maxItemsToDrop = sWorld.getConfig(CONFIG_UINT32_HARDCORE_BOT_LOOT_CRATE_MAX_ITEMS);
-            if (maxItemsToDrop > 0 && itemsToDrop > maxItemsToDrop)
-                itemsToDrop = maxItemsToDrop;
+            uint32 dropChance = sWorld.getConfig(CONFIG_UINT32_HARDCORE_BOT_LOOT_CRATE_ITEM_CHANCE);
+            if (dropChance > 100)
+                dropChance = 100;
 
-            if (itemsToDrop > equippedSlots.size())
-                itemsToDrop = equippedSlots.size();
+            bool shouldDropItems = maxItemsToDrop > 0 && urand(1, 100) <= dropChance;
 
-            for (uint32 dropIndex = 0; dropIndex < itemsToDrop; ++dropIndex)
+            if (shouldDropItems)
             {
-                uint32 slotIndex = urand(0, equippedSlots.size() - 1);
-                uint8 slot = equippedSlots[slotIndex];
-                equippedSlots[slotIndex] = equippedSlots.back();
-                equippedSlots.pop_back();
+                uint32 roll = urand(1, 100);
+                uint32 itemsToDrop = (roll <= 75) ? 1 : ((roll <= 90) ? 2 : 3);
 
-                addLootItemFromEquipment(GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+                if (itemsToDrop > maxItemsToDrop)
+                    itemsToDrop = maxItemsToDrop;
+
+                if (itemsToDrop > equippedSlots.size())
+                    itemsToDrop = equippedSlots.size();
+
+                for (uint32 dropIndex = 0; dropIndex < itemsToDrop; ++dropIndex)
+                {
+                    uint32 slotIndex = urand(0, equippedSlots.size() - 1);
+                    uint8 slot = equippedSlots[slotIndex];
+                    equippedSlots[slotIndex] = equippedSlots.back();
+                    equippedSlots.pop_back();
+
+                    addLootItemFromEquipment(GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+                }
             }
         }
     }

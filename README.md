@@ -1,7 +1,41 @@
-# C(ontinued)-MaNGOS -- README
+# Slamrock Hardcore (CMaNGOS Classic) — Fork README
 [![Windows](../../actions/workflows/windows.yml/badge.svg)](../../actions/workflows/windows.yml) [![Ubuntu](../../actions/workflows/ubuntu.yml/badge.svg)](../../actions/workflows/ubuntu.yml) [![MacOS](../../actions/workflows/macos.yml/badge.svg)](../../actions/workflows/macos.yml)
 
 This file is part of the CMaNGOS Project. See [AUTHORS](AUTHORS.md) and [COPYRIGHT](COPYRIGHT.md) files for Copyright information
+
+## This fork: Slamrock Hardcore PvPvE
+
+This fork’s goal is to build a **World of Warcraft (1.12.1) Hardcore-style mode** with **high replayability** that can be enjoyed with a **small group of friends**, and that **incorporates and encourages PvPvE** through **playerbots**.
+
+### Design pillars
+
+* **Hardcore stakes**: death matters (progress and gear risk) without removing all recovery paths.
+* **Replayability**: unpredictable encounters, meaningful loot outcomes, and emergent PvP.
+* **PvPvE with playerbots**: the world is dangerous even without a large player population.
+
+### Current gameplay modifications (high level)
+
+1. **Open-world FFA PvP**: all zones outside capital cities and starting areas are treated as FFA arena.
+2. **Anti-grief level band**: you can only initiate attacks within a **5 level** difference.
+   * Higher levels cannot engage targets more than 5 levels below them.
+   * If the lower-level player initiates combat, the higher-level player may fight back.
+3. **Playerbot aggression**:
+   * Playerbots have a chance to be aggressive and attack first.
+   * All playerbots will defend themselves.
+   * Playerbot vs playerbot combat requires **both** bots to be in an aggressive state.
+4. **Death consequences / recovery**:
+   * Players drop **all equipped items** and **half their money** into a lootable bag (lootable by players or playerbots).
+   * Players also lose XP on death; you can recover **half** the lost XP if you reclaim your body (i.e. not spirit rez).
+   * Playerbots also drop gear, but at a **low chance** (typically 1–3 items).
+5. **Slamrock item (gear gambling)**:
+   * Added the item **Slamrock** which allows players to **SLAM** an item.
+   * Outcomes:
+     * **1–3 random enchantments** appropriate for the item’s ilevel, **or**
+     * **25%** chance to **brick** the item, **or**
+     * **2%** chance to **upgrade** it by up to **+5 ilevel** (same gear type).
+6. **Convenience addons (separate repo)**:
+   * Click-to-teleport on the map (useful when playing with GM powers).
+   * BotMap overlay showing playerbot locations on the world map.
 
 ## Welcome to C(ontinued)-MaNGOS
 
@@ -58,6 +92,18 @@ To be able to accomplish these goals, we support and promote:
   * [Wiki](https://github.com/cmangos/issues/wiki) with additional information on installation
   * [Contributing Guidelines](CONTRIBUTING.md)
   * Documentation can be found in the doc/ subdirectory and on the GitHub wiki
+
+## Related repositories (forks)
+
+  This core repository is typically used together with:
+
+  * [classic-db (world database)](https://github.com/subhei999/classic-db)
+  * [playerbots (bot AI)](https://github.com/subhei999/playerbots)
+  * [SubsAddons (convenience addons)](https://github.com/subhei999/SubsAddons)
+
+  This fork of the core:
+
+  * [mangos-classic (core)](https://github.com/subhei999/mangos-classic)
 
 ## License
 

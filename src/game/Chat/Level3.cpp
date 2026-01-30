@@ -65,6 +65,134 @@
 
 #include "MotionGenerators/MoveMap.h"
 
+#ifdef ENABLE_PLAYERBOTS
+namespace
+{
+    static std::string ToLowerCopy(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+
+    static std::string TrimCopy(std::string s)
+    {
+        auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+        while (!s.empty() && isSpace(static_cast<unsigned char>(s.front())))
+            s.erase(s.begin());
+        while (!s.empty() && isSpace(static_cast<unsigned char>(s.back())))
+            s.pop_back();
+        return s;
+    }
+
+    static uint32 FindAreaIdByExactName(std::string const& zoneName)
+    {
+        if (zoneName.empty())
+            return 0;
+
+        std::string const needle = ToLowerCopy(zoneName);
+
+        for (uint32 id = 0; id <= sAreaStore.GetNumRows(); ++id)
+        {
+            if (AreaTableEntry const* area = sAreaStore.LookupEntry(id))
+            {
+                for (uint32 loc = 0; loc < MAX_LOCALE; ++loc)
+                {
+                    if (!area->area_name[loc])
+                        continue;
+
+                    std::string const candidate = ToLowerCopy(std::string(area->area_name[loc]));
+                    if (!candidate.empty() && candidate == needle)
+                        return area->ID;
+                }
+            }
+        }
+
+        return 0;
+    }
+}
+
+bool ChatHandler::HandleBotMapCommand(char* args)
+{
+    // Usage:
+    // .botmap "Dun Morogh"
+    // If empty, falls back to your current zone id.
+
+    uint32 zoneId = 0;
+
+    std::string zoneName = args ? TrimCopy(std::string(args)) : std::string();
+    if (!zoneName.empty())
+    {
+        // Strip optional surrounding quotes for convenience
+        if (zoneName.size() >= 2 && ((zoneName.front() == '"' && zoneName.back() == '"') || (zoneName.front() == '\'' && zoneName.back() == '\'')))
+            zoneName = zoneName.substr(1, zoneName.size() - 2);
+        zoneName = TrimCopy(zoneName);
+    }
+
+    if (!zoneName.empty())
+        zoneId = FindAreaIdByExactName(zoneName);
+    else if (m_session && m_session->GetPlayer())
+        zoneId = m_session->GetPlayer()->GetZoneId();
+
+    if (!zoneId)
+    {
+        SendSysMessage("BOTMAP:ERR zone_not_found");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    AreaTableEntry const* area = GetAreaEntryByAreaID(zoneId);
+    if (!area)
+    {
+        SendSysMessage("BOTMAP:ERR area_lookup_failed");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const mapId = area->mapid;
+
+    PSendSysMessage("BOTMAP:BEGIN zone=%u map=%u", zoneId, mapId);
+
+    uint32 count = 0;
+    HashMapHolder<Player>::ReadGuard g(HashMapHolder<Player>::GetLock());
+    HashMapHolder<Player>::MapType const& players = sObjectAccessor.GetPlayers();
+    for (auto const& it : players)
+    {
+        Player* p = it.second;
+        if (!p || !p->IsInWorld())
+            continue;
+
+        if (!p->GetPlayerbotAI())
+            continue;
+
+        if (p->GetZoneId() != zoneId)
+            continue;
+
+        // be explicit: some zone ids can theoretically exist on other maps (instances, BGs)
+        if (p->GetMapId() != mapId)
+            continue;
+
+        // Include basic tooltip info for client addon:
+        // lvl/class/race are raw integers.
+        // team is normalized to 0=Alliance, 1=Horde for easy Lua parsing.
+        uint32 team01 = (Player::TeamForRace(p->getRace()) == HORDE) ? 1u : 0u;
+        PSendSysMessage("BOTMAP:BOT name=%s map=%u x=%.2f y=%.2f z=%.2f lvl=%u class=%u race=%u team=%u",
+            p->GetName(),
+            p->GetMapId(),
+            p->GetPositionX(),
+            p->GetPositionY(),
+            p->GetPositionZ(),
+            p->GetLevel(),
+            uint32(p->getClass()),
+            uint32(p->getRace()),
+            team01);
+        ++count;
+    }
+
+    PSendSysMessage("BOTMAP:END count=%u", count);
+    return true;
+}
+#endif
+
 #ifdef BUILD_AHBOT
 #include "AuctionHouseBot/AuctionHouseBot.h"
 

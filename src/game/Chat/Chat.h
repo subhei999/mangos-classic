@@ -760,6 +760,7 @@ class ChatHandler
         bool HandleRandomPlayerbotCommand(char* args);
         bool HandleAhBotCommand(char* args);
         bool HandlePerfMonCommand(char* args);
+        bool HandleBotMapCommand(char* args);
 #endif
 
         bool HandleMmapPathCommand(char* args);

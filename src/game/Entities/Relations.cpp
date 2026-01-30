@@ -73,8 +73,11 @@ static int CheckHardcoreLevelProtection(Unit const* attacker, Unit const* target
 
     uint32 attackerZone = attackerPlayer->GetZoneId();
     uint32 targetZone = targetPlayer->GetZoneId();
+    uint32 attackerArea = attackerPlayer->GetAreaId();
+    uint32 targetArea = targetPlayer->GetAreaId();
     
-    if (!sWorld.IsHardcoreZone(attackerZone) || !sWorld.IsHardcoreZone(targetZone))
+    if (!sWorld.IsHardcoreLocation(attackerZone, attackerArea) ||
+        !sWorld.IsHardcoreLocation(targetZone, targetArea))
         return -1;  // Not in Hardcore zone, use standard rules
 
     uint32 levelDiff = sWorld.getConfig(CONFIG_UINT32_HARDCORE_LEVEL_DIFF);
@@ -305,8 +308,11 @@ ReputationRank Unit::GetReactionTo(Unit const* unit) const
             {
                 uint32 thisZoneId = thisPlayer->GetZoneId();
                 uint32 unitZoneId = unitPlayer->GetZoneId();
+                uint32 thisAreaId = thisPlayer->GetAreaId();
+                uint32 unitAreaId = unitPlayer->GetAreaId();
                 
-                if (sWorld.IsHardcoreZone(thisZoneId) && sWorld.IsHardcoreZone(unitZoneId))
+                if (sWorld.IsHardcoreLocation(thisZoneId, thisAreaId) &&
+                    sWorld.IsHardcoreLocation(unitZoneId, unitAreaId))
                     return REP_HOSTILE;
             }
 

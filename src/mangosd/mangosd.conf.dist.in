@@ -889,6 +889,12 @@ PlayerCommands = 1
 #        Default: "" (no exclusions)
 #        Example: "1,12" to exclude Dun Morogh and Elwynn Forest.
 #
+#    Game.HardcoreMode.AreaIds
+#        Comma-separated list of Area IDs to EXCLUDE from Hardcore Mode.
+#        Areas override zone behavior (useful for towns inside an active zone).
+#        Default: "" (no exclusions)
+#        Example: "442" to exclude Auberdine.
+#
 #    Game.HardcoreMode.LevelDiff
 #        Level difference required to attack another player.
 #        Target must be at least (AttackerLevel - LevelDiff).
@@ -924,6 +930,7 @@ PlayerCommands = 1
 ###################################################################################################################
 Game.HardcoreMode.Enabled = 0
 Game.HardcoreMode.ZoneIds = ""
+Game.HardcoreMode.AreaIds = ""
 Game.HardcoreMode.LevelDiff = 5
 Game.HardcoreMode.DeathXpLoss = 0
 Game.HardcoreMode.DeathXpRefundPct = 0.5

@@ -870,12 +870,36 @@ void World::LoadConfigSettings(bool reload)
         }
     }
 
+    m_hardcoreExcludedAreas.clear();
+    std::string hardcoreAreasStr = sConfig.GetStringDefault("Game.HardcoreMode.AreaIds", "");
+    if (!hardcoreAreasStr.empty())
+    {
+        std::stringstream ss(hardcoreAreasStr);
+        std::string areaIdStr;
+        while (std::getline(ss, areaIdStr, ','))
+        {
+            try
+            {
+                m_hardcoreExcludedAreas.insert(std::stoi(areaIdStr));
+            }
+            catch (...)
+            {
+                sLog.outError("Invalid area ID in Game.HardcoreMode.AreaIds (exclusion list): %s", areaIdStr.c_str());
+            }
+        }
+    }
+
     if (getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
     {
-        if (m_hardcoreExcludedZones.empty())
-            sLog.outString("WORLD: Hardcore Mode Enabled. No excluded zones configured (all zones active).");
+        if (m_hardcoreExcludedZones.empty() && m_hardcoreExcludedAreas.empty())
+        {
+            sLog.outString("WORLD: Hardcore Mode Enabled. No excluded zones/areas configured (all zones active).");
+        }
         else
-            sLog.outString("WORLD: Hardcore Mode Enabled. Excluded zones loaded: %u", (uint32)m_hardcoreExcludedZones.size());
+        {
+            sLog.outString("WORLD: Hardcore Mode Enabled. Excluded zones: %u, excluded areas: %u",
+                (uint32)m_hardcoreExcludedZones.size(), (uint32)m_hardcoreExcludedAreas.size());
+        }
     }
 
     sLog.outString();

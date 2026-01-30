@@ -535,15 +535,27 @@ class World
         bool IsPvPRealm() const { return (getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_RPPVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP); }
         bool IsFFAPvPRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP; }
 
-        // Hardcore Mode zones:
+        // Hardcore Mode locations:
         // - When Hardcore Mode is enabled, ALL zones are treated as Hardcore (Arena/FFA)
         // - Except the zones listed in Game.HardcoreMode.ZoneIds (exclusion list)
-        bool IsHardcoreZone(uint32 zoneId) const
+        // - And areas listed in Game.HardcoreMode.AreaIds (exclusion list)
+        bool IsHardcoreLocation(uint32 zoneId, uint32 areaId) const
         {
             if (!getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) || zoneId == 0)
                 return false;
 
-            return m_hardcoreExcludedZones.find(zoneId) == m_hardcoreExcludedZones.end();
+            if (m_hardcoreExcludedZones.find(zoneId) != m_hardcoreExcludedZones.end())
+                return false;
+
+            if (areaId != 0 && m_hardcoreExcludedAreas.find(areaId) != m_hardcoreExcludedAreas.end())
+                return false;
+
+            return true;
+        }
+
+        bool IsHardcoreZone(uint32 zoneId) const
+        {
+            return IsHardcoreLocation(zoneId, 0);
         }
 
         void KickAll(bool save);
@@ -723,6 +735,9 @@ class World
         // Zones excluded from Hardcore Mode (Arena/FFA) when Game.HardcoreMode.Enabled=1.
         // Populated from Game.HardcoreMode.ZoneIds (exclusion list).
         std::set<uint32> m_hardcoreExcludedZones;
+        // Areas excluded from Hardcore Mode (Arena/FFA) when Game.HardcoreMode.Enabled=1.
+        // Populated from Game.HardcoreMode.AreaIds (exclusion list).
+        std::set<uint32> m_hardcoreExcludedAreas;
 
         std::vector<std::string> m_spamRecords;
 

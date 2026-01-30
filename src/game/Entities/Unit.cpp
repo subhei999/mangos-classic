@@ -1260,7 +1260,9 @@ void Unit::HandleDamageDealt(Unit* dealer, Unit* victim, uint32& damage, CleanDa
             Player* victimPlayer = static_cast<Player*>(victim);
             uint32 dealerZone = dealerPlayer->GetZoneId();
             uint32 victimZone = victimPlayer->GetZoneId();
-            if (sWorld.IsHardcoreZone(dealerZone) && sWorld.IsHardcoreZone(victimZone))
+            uint32 dealerArea = dealerPlayer->GetAreaId();
+            uint32 victimArea = victimPlayer->GetAreaId();
+            if (sWorld.IsHardcoreLocation(dealerZone, dealerArea) && sWorld.IsHardcoreLocation(victimZone, victimArea))
             {
                 victimPlayer->AddHardcoreAggressor(dealer->GetObjectGuid());
                 if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_DEBUG_LOGGING))

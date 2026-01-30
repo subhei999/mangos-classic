@@ -1513,7 +1513,7 @@ void Player::Update(const uint32 diff)
 
                 // Bots/players can have flags cleared by other flows (reset, teleport edge cases, etc).
                 // Re-assert Hardcore Mode PvP/FFA periodically even if zone/area didn't change.
-                if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(newzone) && !IsGameMaster())
+                if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreLocation(newzone, newarea) && !IsGameMaster())
                 {
                     if (!IsPvP())
                         UpdatePvP(true, true);
@@ -6995,7 +6995,7 @@ void Player::UpdateArea(uint32 newArea)
         // removal in sanctuaries and capitals is handled in zone update
         // avoid clearing while in a hardcore zone (handled in UpdateZone)
         if (IsPvPFreeForAll() && !sWorld.IsFFAPvPRealm() &&
-            !(sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(GetZoneId())))
+            !(sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreLocation(GetZoneId(), newArea)))
         {
             SetPvPFreeForAll(false);
         }
@@ -7064,7 +7064,7 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea, bool force)
 
     // Hardcore Mode: Simple FFA PvP in all zones (except excluded zones)
     // All players in the zone are hostile to each other. Level restrictions are enforced server-side in CanAttack.
-    if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreZone(newZone))
+    if (sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED) && sWorld.IsHardcoreLocation(newZone, newArea))
     {
         pvpInfo.inPvPEnforcedArea = true;
         SetPvP(true);

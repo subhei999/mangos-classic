@@ -1139,62 +1139,72 @@ private:
 
 struct npc_predator_catAI : public ScriptedAI
 {
+    enum PredatorState
+    {
+        STATE_IDLE,
+        STATE_STALKING,
+        STATE_VICTORY_WALK,
+        STATE_VICTORY_STARE,
+        STATE_WANDERING
+    };
+
+    // Constants
+    static constexpr float SCAN_RANGE = 100.0f;
+    static constexpr float LOST_INTEREST_RANGE = 120.0f;
+    static constexpr float AGGRO_RADIUS = 10.0f;
+    static constexpr float WANDER_RADIUS = 20.0f;
+    static constexpr uint32 SCAN_INTERVAL = 2500;
+    static constexpr uint32 STALK_PATH_UPDATE = 2000;
+    static constexpr uint32 VICTORY_STARE_DURATION = 10000;
+
     npc_predator_catAI(Creature* creature) : ScriptedAI(creature)
     {
-        m_scanTimer = 3000;
-        m_victoryTimer = 0;
-        m_victoryPhase = false;
-        m_lastTarget.Clear();
+        m_state = STATE_IDLE;
+        m_scanTimer = SCAN_INTERVAL;
+        m_stateTimer = 0;
     }
 
+    PredatorState m_state;
     uint32 m_scanTimer;
-    uint32 m_victoryTimer;
-    bool m_victoryPhase;
-    bool m_isWandering;
-    ObjectGuid m_lastTarget;
+    uint32 m_stateTimer;
 
     void Reset() override
     {
-        // Do not reset variables if we are currently enjoying a kill
-        if (m_victoryPhase)
+        // Don't reset if enjoying a kill
+        if (m_state == STATE_VICTORY_WALK || m_state == STATE_VICTORY_STARE)
             return;
 
-        m_scanTimer = 3000;
-        m_victoryTimer = 0;
-        m_victoryPhase = false;
-        m_isWandering = false;
-        m_lastTarget.Clear();
+        m_state = STATE_IDLE;
+        m_scanTimer = SCAN_INTERVAL;
+        m_stateTimer = 0;
         m_creature->SetTarget(nullptr);
     }
 
     void KilledUnit(Unit* victim) override
     {
-        if (!victim || m_victoryPhase)
+        if (!victim || m_state == STATE_VICTORY_WALK || m_state == STATE_VICTORY_STARE)
             return;
 
-        m_victoryPhase = true;
-        m_isWandering = false; // Transition from wander/hunt to victory walk
-        m_victoryTimer = 0;
+        m_state = STATE_VICTORY_WALK;
+        m_stateTimer = 0;
         
-        // Break combat cleanly
-        m_creature->AttackStop();
+        // Exit combat to allow player aggro during victory phase
+        m_creature->CombatStop(true);
         m_creature->StopMoving();
         m_creature->GetMotionMaster()->Clear();
-        
         m_creature->SetTarget(nullptr);
         m_creature->SetSelectionGuid(ObjectGuid());
         
         m_creature->SetWalk(true);
-        // Victory Walk: Walk to the victim's position
         m_creature->GetMotionMaster()->MovePoint(1, victim->GetPositionX(), victim->GetPositionY(), victim->GetPositionZ(), FORCED_MOVEMENT_WALK);
     }
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        if (type == POINT_MOTION_TYPE && id == 1 && m_victoryPhase)
+        if (type == POINT_MOTION_TYPE && id == 1 && m_state == STATE_VICTORY_WALK)
         {
-            // Reached victim. Start the 10s stare timer.
-            m_victoryTimer = 10000;
+            m_state = STATE_VICTORY_STARE;
+            m_stateTimer = VICTORY_STARE_DURATION;
             m_creature->SetWalk(true);
             m_creature->GetMotionMaster()->MoveIdle();
             m_creature->SetStandState(UNIT_STAND_STATE_STAND);
@@ -1203,14 +1213,13 @@ struct npc_predator_catAI : public ScriptedAI
 
     void EnterEvadeMode() override
     {
-        // Block core evade while we are in victory phase or wandering
-        if (m_victoryPhase)
+        // Block evade during victory or wandering
+        if (m_state == STATE_VICTORY_WALK || m_state == STATE_VICTORY_STARE)
             return;
 
-        if (m_isWandering)
+        if (m_state == STATE_WANDERING)
         {
-            m_creature->SetWalk(true);
-            m_creature->GetMotionMaster()->MoveRandomAroundPoint(m_creature->GetPositionX(), m_creature->GetPositionY(), m_creature->GetPositionZ(), 20.0f, 0.0f, 0, true);
+            StartWandering();
             m_creature->AttackStop();
             m_creature->ClearInCombat();
             return;
@@ -1221,77 +1230,125 @@ struct npc_predator_catAI : public ScriptedAI
 
     void UpdateAI(const uint32 diff) override
     {
-        if (m_creature->SelectHostileTarget() && m_creature->GetVictim())
+        // Manual aggro check - MoveInLineOfSight doesn't work during scripted movement
+        // Check for nearby hostile players during all custom states
+        if (!m_creature->GetVictim() && m_creature->CanInitiateAttack())
         {
-            // Player interrupt: clear hunting/victory states
-            m_victoryPhase = false;
-            m_victoryTimer = 0;
-            m_isWandering = false;
-            m_creature->SetTarget(nullptr);
+            // Find nearest hostile player within aggro range
+            Player* nearestPlayer = nullptr;
             
+            MaNGOS::AnyPlayerInObjectRangeCheck check(m_creature, AGGRO_RADIUS);
+            MaNGOS::PlayerSearcher<MaNGOS::AnyPlayerInObjectRangeCheck> searcher(nearestPlayer, check);
+            Cell::VisitWorldObjects(m_creature, searcher, AGGRO_RADIUS);
+            
+            if (nearestPlayer && m_creature->CanAttackOnSight(nearestPlayer))
+            {
+                AttackStart(nearestPlayer);
+                if (m_state != STATE_IDLE)
+                {
+                    m_state = STATE_IDLE;
+                    m_stateTimer = 0;
+                    m_creature->SetTarget(nullptr);
+                }
+            }
+        }
+
+        m_creature->SelectHostileTarget();
+
+        // Player/mob aggro interrupts all custom behavior
+        if (m_creature->GetVictim())
+        {
+            if (m_state != STATE_IDLE)
+            {
+                m_state = STATE_IDLE;
+                m_stateTimer = 0;
+                m_creature->SetTarget(nullptr);
+            }
             DoMeleeAttackIfReady();
             return;
         }
 
-        if (m_victoryPhase)
+        // State machine
+        switch (m_state)
         {
-            if (m_victoryTimer) // We are in the "staring" part of victory
-            {
-                if (m_victoryTimer <= diff)
+            case STATE_VICTORY_STARE:
+                if (m_stateTimer <= diff)
                 {
-                    m_victoryTimer = 0;
-                    m_victoryPhase = false; 
-                    m_isWandering = true; // Now we are in wandering mode
-                    m_creature->SetWalk(true);
-                    m_creature->GetMotionMaster()->MoveRandomAroundPoint(m_creature->GetPositionX(), m_creature->GetPositionY(), m_creature->GetPositionZ(), 20.0f, 0.0f, 0, true);
+                    m_state = STATE_WANDERING;
+                    m_stateTimer = 0;
+                    StartWandering();
                 }
                 else
-                    m_victoryTimer -= diff;
-            }
-            return; // Block other AI logic while walking to or staring at corpse
-        }
+                    m_stateTimer -= diff;
+                return;
 
-        // Verify if we have a valid critter target selected
-        if (Unit* target = ObjectAccessor::GetUnit(*m_creature, m_creature->GetSelectionGuid()))
+            case STATE_VICTORY_WALK:
+                return; // Wait for MovementInform
+
+            case STATE_STALKING:
+                UpdateStalking(diff);
+                return;
+
+            case STATE_WANDERING:
+            case STATE_IDLE:
+                UpdateScanning(diff);
+                break;
+        }
+    }
+
+private:
+    void StartWandering()
+    {
+        m_creature->SetWalk(true);
+        m_creature->GetMotionMaster()->MoveRandomAroundPoint(
+            m_creature->GetPositionX(), 
+            m_creature->GetPositionY(), 
+            m_creature->GetPositionZ(), 
+            WANDER_RADIUS, 0.0f, 0, true);
+    }
+
+    void UpdateStalking(uint32 diff)
+    {
+        Unit* target = ObjectAccessor::GetUnit(*m_creature, m_creature->GetSelectionGuid());
+        if (!target || target->GetTypeId() != TYPEID_UNIT || target->GetCreatureType() != CREATURE_TYPE_CRITTER)
         {
-            if (target->GetTypeId() == TYPEID_UNIT && target->GetCreatureType() == CREATURE_TYPE_CRITTER)
-            {
-                if (!target->IsAlive() || m_creature->GetDistance(target) > 120.0f) // Lost interest
-                {
-                    m_creature->SetTarget(nullptr);
-                    m_isWandering = true;
-                    m_creature->GetMotionMaster()->MoveRandomAroundPoint(m_creature->GetPositionX(), m_creature->GetPositionY(), m_creature->GetPositionZ(), 20.0f, 0.0f, 0, true);
-                }
-                else
-                {
-                    float dist = m_creature->GetDistance(target);
-                    // "walks till its inside aggro radius then does the normal a[ttack]"
-                    if (dist < 10.0f) // 10 yards approx aggro radius
-                    {
-                        AttackStart(target); // This will switch to Run and Chase
-                    }
-                    else
-                    {
-                        if (m_scanTimer <= diff)
-                        {
-                            // Stalking: Walk towards prey
-                            // We use MovePoint instead of MoveChase(walk) to avoid "Combat" state before aggro
-                             m_creature->GetMotionMaster()->MovePoint(0, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), FORCED_MOVEMENT_WALK);
-                             m_scanTimer = 2000; // Update path every 2s
-                        }
-                        else
-                            m_scanTimer -= diff;
-                    }
-                    return; // Stalking or Attacking, skip new scan
-                }
-            }
+            m_state = STATE_IDLE;
+            m_creature->SetTarget(nullptr);
+            return;
         }
 
-        // Periodic Scan for new prey
+        if (!target->IsAlive() || m_creature->GetDistance(target) > LOST_INTEREST_RANGE)
+        {
+            m_state = STATE_WANDERING;
+            m_creature->SetTarget(nullptr);
+            StartWandering();
+            return;
+        }
+
+        float dist = m_creature->GetDistance(target);
+        if (dist < AGGRO_RADIUS)
+        {
+            AttackStart(target);
+            m_state = STATE_IDLE;
+        }
+        else
+        {
+            if (m_scanTimer <= diff)
+            {
+                m_creature->GetMotionMaster()->MovePoint(0, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), FORCED_MOVEMENT_WALK);
+                m_scanTimer = STALK_PATH_UPDATE;
+            }
+            else
+                m_scanTimer -= diff;
+        }
+    }
+
+    void UpdateScanning(uint32 diff)
+    {
         if (m_scanTimer <= diff)
         {
             ScanForPrey();
-            m_scanTimer = 2500;
+            m_scanTimer = SCAN_INTERVAL;
         }
         else
             m_scanTimer -= diff;
@@ -1299,15 +1356,15 @@ struct npc_predator_catAI : public ScriptedAI
 
     void ScanForPrey()
     {
-        NearestCritterCheck check(m_creature, 100.0f); // Scan range 100y
+        NearestCritterCheck check(m_creature, SCAN_RANGE);
         Creature* prey = nullptr;
         MaNGOS::CreatureLastSearcher<NearestCritterCheck> searcher(prey, check);
-        Cell::VisitAllObjects(m_creature, searcher, 100.0f);
+        Cell::VisitAllObjects(m_creature, searcher, SCAN_RANGE);
 
         if (prey)
         {
-            m_creature->SetTarget(prey); // Mark as selected (stalk target)
-            m_isWandering = false; // Interrupt wander to hunt!
+            m_state = STATE_STALKING;
+            m_creature->SetTarget(prey);
         }
     }
 };

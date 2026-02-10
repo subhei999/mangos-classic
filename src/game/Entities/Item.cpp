@@ -195,7 +195,7 @@ Item::Item()
     m_lootState = ITEM_LOOT_NONE;
     m_enchantmentModifier = 0;
 
-    m_usedInSpell = false;
+    m_usedInSpellCount = 0;
 }
 
 Item::~Item()

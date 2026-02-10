@@ -506,16 +506,19 @@ Spell::Spell(WorldObject* caster, SpellEntry const* info, uint32 triggeredFlags,
 
 Spell::~Spell()
 {
-    if (!m_IsTriggeredSpell && m_CastItem)
+    if (m_CastItem)
     {
         m_CastItem->SetUsedInSpell(false);
 
         // If Loot::Release deferred destruction of this item because the spell
-        // was still referencing it, complete the deferred destruction now.
-        if (m_CastItem->GetLootState() == ITEM_LOOT_REMOVED)
+        // was still referencing it, complete the deferred destruction now that
+        // no more spells hold a reference. Guard with IsInWorld() since the
+        // owner may be mid-teleport or logging out when the SpellEvent fires.
+        if (!m_CastItem->IsUsedInSpell() && m_CastItem->GetLootState() == ITEM_LOOT_REMOVED)
         {
             if (Player* owner = m_CastItem->GetOwner())
-                owner->DestroyItem(m_CastItem->GetBagSlot(), m_CastItem->GetSlot(), true);
+                if (owner->IsInWorld())
+                    owner->DestroyItem(m_CastItem->GetBagSlot(), m_CastItem->GetSlot(), true);
         }
     }
 }
@@ -3410,9 +3413,16 @@ void Spell::_handle_finish_phase()
 
 void Spell::SetCastItem(Item* item)
 {
+    if (m_CastItem == item)
+        return;
+    if (m_CastItem)
+        m_CastItem->SetUsedInSpell(false);
     m_CastItem = item;
     if (item)
+    {
         m_itemCastSpell = true;
+        item->SetUsedInSpell(true);
+    }
 }
 
 void Spell::SendSpellCooldown()

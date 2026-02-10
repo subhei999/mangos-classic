@@ -4575,17 +4575,15 @@ void Player::SpawnPlayerLootCrate()
     if (!sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
         return;
 
-    // Hardcore Mode: Spawn a loot crate at player's death location
-
-    if (!sWorld.getConfig(CONFIG_BOOL_HARDCORE_MODE_ENABLED))
-        return;
-
     // Don't spawn loot crates during logout teardown (LogoutPlayer → BuildPlayerRepop
     // → CreateCorpse). DestroyItem inside this function can trigger reactive damage
     // (thorns/shields) which re-enters DealDamageMods and iterates group members that
     // may have already been freed earlier in the same LogoutAllBots loop.
     if (GetSession()->isLogingOut())
+    {
+        sLog.outString("Player::SpawnPlayerLootCrate> Skipped for %s (session is logging out)", GetName());
         return;
+    }
 
     // Money bag
     const uint32 LOOT_CRATE_ENTRY = 186736;
@@ -4615,9 +4613,11 @@ void Player::SpawnPlayerLootCrate()
     lootCrate->SetSpellId(0);
     lootCrate->SetLootState(GO_READY);
 
-    // Register with owner's GO list so RemoveFromWorld can properly clean up.
-    // AddGameObject sets owner GUID (required for loot checks in LootMgr.cpp).
-    AddGameObject(lootCrate);
+    // Set owner GUID so LootMgr can identify this as a player loot crate.
+    // Do NOT use AddGameObject() here — that registers the crate in m_gameObj,
+    // coupling its lifecycle to the player. The crate must persist independently
+    // in the world after the player becomes a ghost or logs out.
+    lootCrate->SetOwnerGuid(GetObjectGuid());
 
     // CRITICAL: Pre-create and populate the loot NOW (before adding to map)
     // This ensures items/gold are removed immediately, preventing duplication if player resurrects

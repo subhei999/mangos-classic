@@ -1869,10 +1869,10 @@ Loot::Loot(Player* player, GameObject* gameObject, LootType type) : m_lootTarget
                 break;
             }
             default: {
-                // Hardcore Mode: Check if this is a player loot crate (entry 2843)
+                // Hardcore Mode: Check if this is a player loot crate (entry 186736 "Money Bag")
                 // Player loot crates have the dead player's GUID set as owner
                 // Note: Loot should already be pre-created in Player::SpawnPlayerLootCrate()
-                const uint32 PLAYER_LOOT_CRATE_ENTRY = 2843;
+                const uint32 PLAYER_LOOT_CRATE_ENTRY = 186736;
 
                 if (gameObject->GetEntry() == PLAYER_LOOT_CRATE_ENTRY && gameObject->GetOwnerGuid().IsPlayer())
                 {

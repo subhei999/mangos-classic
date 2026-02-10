@@ -306,6 +306,7 @@ class Item : public Object
         void SetSpellCharges(uint8 index/*0..5*/, int32 value) { SetInt32Value(ITEM_FIELD_SPELL_CHARGES + index, value); }
 
         void SetLootState(ItemLootUpdateState state);
+        ItemLootUpdateState GetLootState() const { return m_lootState; }
         bool HasGeneratedLoot() const { return m_loot && m_lootState != ITEM_LOOT_NONE && m_lootState != ITEM_LOOT_REMOVED; }
         bool HasTemporaryLoot() const { return m_loot && m_lootState == ITEM_LOOT_TEMPORARY; }
 

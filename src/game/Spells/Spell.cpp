@@ -507,7 +507,17 @@ Spell::Spell(WorldObject* caster, SpellEntry const* info, uint32 triggeredFlags,
 Spell::~Spell()
 {
     if (!m_IsTriggeredSpell && m_CastItem)
+    {
         m_CastItem->SetUsedInSpell(false);
+
+        // If Loot::Release deferred destruction of this item because the spell
+        // was still referencing it, complete the deferred destruction now.
+        if (m_CastItem->GetLootState() == ITEM_LOOT_REMOVED)
+        {
+            if (Player* owner = m_CastItem->GetOwner())
+                owner->DestroyItem(m_CastItem->GetBagSlot(), m_CastItem->GetSlot(), true);
+        }
+    }
 }
 
 template<typename T>

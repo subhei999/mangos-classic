@@ -1395,7 +1395,10 @@ void Loot::Release(Player* player)
                     // reset loot for allow repeat looting if stack > 5
                     Clear();
                     m_itemTarget->SetLootState(ITEM_LOOT_REMOVED);
-                    player->DestroyItemCount(*m_itemTarget, count, true);
+                    // Defer destruction if a spell still references this item (e.g. Prospecting spell
+                    // event pending in EventProcessor). Spell::~Spell will complete the destruction.
+                    if (!m_itemTarget->IsUsedInSpell())
+                        player->DestroyItemCount(*m_itemTarget, count, true);
                     break;
                 }
                 // temporary loot, auto loot move
@@ -1404,7 +1407,10 @@ void Loot::Release(Player* player)
                         AutoStore(player); // can be lost if no space
                     Clear();
                     m_itemTarget->SetLootState(ITEM_LOOT_REMOVED);
-                    player->DestroyItem(m_itemTarget->GetBagSlot(), m_itemTarget->GetSlot(), true);
+                    // Defer destruction if a spell still references this item.
+                    // Spell::~Spell will complete the destruction.
+                    if (!m_itemTarget->IsUsedInSpell())
+                        player->DestroyItem(m_itemTarget->GetBagSlot(), m_itemTarget->GetSlot(), true);
                     break;
                 }
                 // normal persistence loot
@@ -1413,7 +1419,10 @@ void Loot::Release(Player* player)
                     if (IsLootedFor(player))
                     {
                         m_itemTarget->SetLootState(ITEM_LOOT_REMOVED);
-                        player->DestroyItem(m_itemTarget->GetBagSlot(), m_itemTarget->GetSlot(), true);
+                        // Defer destruction if a spell still references this item.
+                        // Spell::~Spell will complete the destruction.
+                        if (!m_itemTarget->IsUsedInSpell())
+                            player->DestroyItem(m_itemTarget->GetBagSlot(), m_itemTarget->GetSlot(), true);
                     }
                     break;
                 }

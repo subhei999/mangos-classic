@@ -971,6 +971,7 @@ ChatCommand* ChatHandler::getCommandTable()
         { "los",            SEC_ADMINISTRATOR,  false, &ChatHandler::HandleGetLosCommand,              "", nullptr },
         { "recall",         SEC_MODERATOR,      false, &ChatHandler::HandleRecallCommand,              "", nullptr },
         { "save",           SEC_PLAYER,         false, &ChatHandler::HandleSaveCommand,                "", nullptr },
+        { "draft",          SEC_PLAYER,         false, &ChatHandler::HandleDraftCommand,               "", nullptr },
         { "saveall",        SEC_MODERATOR,      true,  &ChatHandler::HandleSaveAllCommand,             "", nullptr },
         { "kick",           SEC_GAMEMASTER,     true,  &ChatHandler::HandleKickPlayerCommand,          "", nullptr },
         { "ban",            SEC_GAMEMASTER,     true,  nullptr,                                        "", banCommandTable      },

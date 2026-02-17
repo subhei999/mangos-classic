@@ -155,6 +155,10 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(QueryResult* dummy, SqlQueryH
     {
         allowed = true;
     }
+    else if (sPlayerbotAIConfig.IsFreeAltBot(guid))
+    {
+        allowed = true;
+    }
 
     if (allowed)
     {

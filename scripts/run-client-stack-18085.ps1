@@ -56,7 +56,9 @@ if ($status -ne "healthy") {
 }
 
 Invoke-MariaDb "" "CREATE DATABASE IF NOT EXISTS characters DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;"
+Invoke-MariaDb "" "CREATE DATABASE IF NOT EXISTS mangos DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;"
 Invoke-MariaDb "" "GRANT ALL PRIVILEGES ON characters.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
+Invoke-MariaDb "" "GRANT ALL PRIVILEGES ON mangos.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
 
 $characterTableCount = docker exec cmangos-rust-realmd mariadb -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='characters' AND table_name='characters';"
 if ($LASTEXITCODE -ne 0) {
@@ -68,6 +70,19 @@ if (($characterTableCount | Select-Object -First 1).Trim() -eq "0") {
     & cmd.exe /c "docker exec -i cmangos-rust-realmd mariadb -uroot -proot characters < `"$charactersSql`""
     if ($LASTEXITCODE -ne 0) {
         throw "failed to import sql/base/characters.sql"
+    }
+}
+
+$worldTableCount = docker exec cmangos-rust-realmd mariadb -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mangos' AND table_name='playercreateinfo';"
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to check mangos schema"
+}
+
+if (($worldTableCount | Select-Object -First 1).Trim() -eq "0") {
+    $mangosSql = Join-Path $repoRoot "sql\base\mangos.sql"
+    & cmd.exe /c "docker exec -i cmangos-rust-realmd mariadb -uroot -proot mangos < `"$mangosSql`""
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to import sql/base/mangos.sql"
     }
 }
 

@@ -5,18 +5,21 @@ Update this file before ending any substantial Rust migration session.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: `8a3bbf416`
-- Uncommitted session changes: expanded auth-flow negative coverage, schema
-  compatibility fixes, real 1.12.1 client smoke-test support, worldserver
-  skeleton, DB-backed character enum support, the first enter-world skeleton,
-  in-memory movement/logout handling, DB-backed position persistence, and the
-  first DB-backed character creation slice plus post-login probe cleanup.
+- Latest commit: `cd23db319`
+- Uncommitted session changes: first CMaNGOS starter-default parity slice:
+  world-DB-backed `playercreateinfo` loading for new character create, starter
+  spell/skill/action persistence, DB-backed initial spell/action bootstrap
+  packets, first starter outfit/item persistence, login inventory GUID update
+  fields, and minimal login item create update blocks; local `mangos` schema
+  import in the client-stack helper; and `world_database=mangos` local config
+  wiring.
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
 
-Move from first real-client enter-world success into movement/world-session
-hardening.
+Move through CMaNGOS starter-default parity for newly created characters while
+keeping the client-proven create -> enum -> enter world -> move -> logout path
+intact.
 
 ## What Changed Recently
 
@@ -97,6 +100,36 @@ hardening.
   `CMSG_GMTICKET_GETTICKET` returns no-ticket status, account-data updates are
   explicitly ignored, and known bootstrap chatter is logged as expected instead
   of unhandled warnings.
+- Started CMaNGOS starter-default parity for newly created characters:
+  - `worldserver` now opens a separate world DB pool and local config points it
+    at the Docker `mangos` database.
+  - `wow_db::create_character` now reads `playercreateinfo` from the world DB
+    instead of using hardcoded Rust fallback spawn data.
+  - New characters now get starter rows in `character_spell`,
+    `character_action`, and `character_skills` from
+    `playercreateinfo_spell`, `playercreateinfo_action`, and
+    `playercreateinfo_skills`.
+  - Login bootstrap now loads `character_spell` and `character_action` and
+    sends non-empty CMaNGOS-shaped `SMSG_INITIAL_SPELLS` and
+    `SMSG_ACTION_BUTTONS`.
+  - Fixed Human Warrior starter action bar visibility by setting Battle Stance
+    in `UNIT_FIELD_BYTES_1` during the minimal self-spawn update; CMaNGOS
+    stores warrior starter buttons on stance-bar slots `72`, `73`, and `83`.
+  - Added first starter outfit/item slice:
+    - source-derived starter item rows from archived CMaNGOS
+      `playercreateinfo_item` data,
+    - new `item_instance` and `character_inventory` rows for newly created
+      characters,
+    - `equipmentCache` item/enchant pairs for character enum,
+    - Human Warrior enum visual metadata for starter shirt/pants/boots/sword
+      and shield,
+    - visible equipped item update fields in the minimal self-spawn packet,
+    - equipment/backpack item GUID update fields in the minimal self-spawn
+      packet,
+    - minimal `UPDATETYPE_CREATE_OBJECT` item blocks appended to the login
+      update so the client receives owned item objects for starter inventory.
+  - `scripts/run-client-stack-18085.ps1` now creates/imports the local `mangos`
+    schema when needed so the worldserver can read starter defaults.
 
 ## Tests Last Run
 
@@ -104,6 +137,7 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+.\scripts\test-rust-db.cmd
 ```
 
 Previously passing locally:
@@ -112,6 +146,58 @@ Previously passing locally:
 .\scripts\test-rust-db.cmd
 .\scripts\test-auth-flow.cmd
 ```
+
+World stack helper smoke after starter-default slice:
+
+```powershell
+.\scripts\run-client-stack-18085.cmd
+```
+
+Verified logs:
+
+```text
+Authserver listening on 127.0.0.1:13724
+Configuration loaded bind=127.0.0.1:18085 login_database=realmd character_database=characters world_database=mangos
+World server listening on 127.0.0.1:18085
+```
+
+Real-client starter-default smoke:
+
+```text
+Fresh Human Warrior created through the WoW 1.12.1 client.
+Spellbook showed the expected starter spells.
+Initial action bar was empty before the Battle Stance self-spawn fix.
+After restarting the patched stack and re-entering the character, the starter
+action bar looked good.
+```
+
+Starter outfit stack smoke:
+
+```text
+.\scripts\run-client-stack-18085.cmd
+Authserver listening on 127.0.0.1:13724
+World server listening on 127.0.0.1:18085
+```
+
+Unit/build coverage added for Human Warrior starter outfit rows,
+`equipmentCache` formatting, equipment-cache parsing, and Human Warrior
+starter visual metadata. User real-client smoke confirmed pants/boots after the
+equipment/backpack GUID update-field fix; hearthstone still did not appear even
+though DB rows showed item `6948` in backpack slot `24`, so the latest follow-up
+adds minimal item create update blocks during self-spawn. Real-client
+hearthstone visibility needs one fresh relog/create pass after this fix.
+
+Inventory GUID follow-up:
+
+```powershell
+cargo test -p wow-db -p wow-network
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+```
+
+Both passed locally after adding `character_inventory` loading for login,
+player update-field coverage for equipment/backpack slots, and minimal item
+create blocks with owner/contained GUIDs, item entry, stack count, and
+durability.
 
 The DB smoke test starts MariaDB through Docker and verifies the Rust authserver
 can start against it.
@@ -207,6 +293,10 @@ Note: the app shell did not have Cargo on PATH, so the workspace test was run
 with Cargo from `%USERPROFILE%\.cargo\bin`. The project scripts pass after
 prepending that directory to PATH.
 
+Note: Docker access needed elevated approval in the app shell. The initial
+non-elevated DB smoke failed with access denied on Docker config/pipe, then
+passed when rerun with elevated Docker access.
+
 ## Local Environment Notes
 
 - Rust installed with rustup.
@@ -234,17 +324,21 @@ docker compose -f docker-compose.local.yml down
 
 Harden the in-world skeleton:
 
-Next recommended milestone: CMaNGOS starter-default parity for newly created
-characters.
+Continue CMaNGOS starter-default parity for newly created characters.
 
-- Re-run `.\scripts\run-client-stack-18085.cmd` and one quick real-client login
-  to confirm the post-login probe cleanup quiets expected warnings.
+- Real-client smoke the new starter outfit path with a fresh Human Warrior:
+  confirm character select shows starter equipment, the in-world model has the
+  starter sword/shield/clothing, and `character_inventory`/`item_instance` rows
+  exist. After the latest item create-block fix, first try a full relog on the
+  existing test Human Warrior; create a fresh Human Warrior only if the client
+  still has stale state.
 - Add `CMSG_CHAR_CREATE` negative/manual coverage for duplicate names, invalid
   names, invalid race/class combos, and character-count limit responses.
-- Fill out CMaNGOS `Player::Create` parity: default spells, action buttons,
-  starter items/equipment, skills, health/power/stat initialization, cinematic
-  flags, and race/class create info from world data instead of hardcoded Rust
-  fallback data.
+- Continue filling out CMaNGOS `Player::Create` parity: starter
+  health/power/stat initialization, cinematic flags, fuller skill-range
+  parity, and broader enum visual metadata beyond the first Human Warrior
+  bridge. Race/class create info, starter spells, action buttons, and starter
+  skill rows now have a client-proven first Rust implementation.
 - Keep the client-proven vertical path intact: create character -> enum refresh
   -> enter world -> move -> logout -> persisted relog position.
 
@@ -272,6 +366,9 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 - `scripts/run-client-stack-18085.cmd`
 - `config/worldserver.local.toml`
 - `crates/wow-network/src/world/mod.rs`
+- `sql/base/mangos.sql`
+- `src/game/Globals/ObjectMgr.cpp`
+- `src/game/Entities/Player.cpp`
 - `auth-client-13724.log`
 - `world-client-18085.log`
 
@@ -285,10 +382,19 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
   session state and logout/disconnect persists position to the database, but
   broader world state, validation, and delayed logout semantics are not yet
   implemented.
-- Character creation is a minimal Rust vertical slice: it is client-proven for
-  a Human Warrior and schema-compatible enough for current enum/login, but it
-  does not yet populate the full CMaNGOS starter inventory, spells, skills,
-  action bars, stats, or DBC-backed appearance validation.
+- Character creation now persists starter spells, starter skills, and action
+  buttons from the CMaNGOS world DB tables. A real-client Human Warrior smoke
+  confirmed starter spellbook entries and visible starter action bar after the
+  Battle Stance update-field fix.
+- Starter inventory/equipment now has a first implementation, but it is only
+  unit/build and stack-start tested after the latest inventory GUID fix. It
+  needs real-client visual verification. The enum visual bridge currently
+  covers Human Warrior starter gear metadata;
+  the DB rows are source-derived for all classic race/class starter outfits,
+  but broader enum visual metadata should come from `item_template` or a shared
+  world-data cache instead of hardcoded item visuals.
+- Exact DBC skill ranges, health/power/stat initialization, cinematic flags,
+  and DBC-backed appearance validation remain open.
 - Post-login probe cleanup is unit-tested, but should still get one quick
   real-client smoke pass at the start of the next session.
 - The minimal self-spawn `SMSG_UPDATE_OBJECT` is enough for the real client to

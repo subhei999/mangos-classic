@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
         bind = %bind_addr,
         login_database = %config.login_database.database,
         character_database = %config.character_database.database,
+        world_database = %config.world_database.database,
         "Configuration loaded",
     );
 
@@ -88,7 +89,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to connect to character database")?;
 
-    let server = WorldServer::new(bind_addr, login_pool, character_pool);
+    let world_url = database_url(&config.world_database);
+    let world_pool = create_pool(&world_url, 10)
+        .await
+        .context("Failed to connect to world database")?;
+
+    let server = WorldServer::new(bind_addr, login_pool, character_pool, world_pool);
     info!("World server skeleton is ready. Waiting for connections...");
     server.run().await
 }

@@ -8,12 +8,17 @@ use tracing::{error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
-use wow_db::{CharacterEnumEntry, CharacterNameQuery, NewCharacter};
+use wow_db::{
+    CharacterAction, CharacterEnumEntry, CharacterInventoryItem, CharacterNameQuery,
+    CharacterSpell, NewCharacter,
+};
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
+const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const SMSG_CHAR_CREATE: u16 = 0x003A;
+const SMSG_CHAR_DELETE: u16 = 0x003C;
 const CMSG_PLAYER_LOGOUT: u32 = 0x004A;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
 const SMSG_LOGOUT_RESPONSE: u16 = 0x004C;
@@ -22,6 +27,8 @@ const CMSG_LOGOUT_CANCEL: u32 = 0x004E;
 const SMSG_LOGOUT_CANCEL_ACK: u16 = 0x004F;
 const CMSG_NAME_QUERY: u32 = 0x0050;
 const SMSG_NAME_QUERY_RESPONSE: u16 = 0x0051;
+const CMSG_ITEM_QUERY_SINGLE: u32 = 0x0056;
+const SMSG_ITEM_QUERY_SINGLE_RESPONSE: u16 = 0x0058;
 const CMSG_JOIN_CHANNEL: u32 = 0x0097;
 const MSG_MOVE_START_FORWARD: u32 = 0x00B5;
 const MSG_MOVE_START_BACKWARD: u32 = 0x00B6;
@@ -88,6 +95,8 @@ const CHAR_CREATE_SUCCESS: u8 = 0x2E;
 const CHAR_CREATE_FAILED: u8 = 0x30;
 const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
 const CHAR_CREATE_SERVER_LIMIT: u8 = 0x34;
+const CHAR_DELETE_SUCCESS: u8 = 0x39;
+const CHAR_DELETE_FAILED: u8 = 0x3A;
 const CHAR_NAME_NO_NAME: u8 = 0x43;
 const CHAR_NAME_TOO_SHORT: u8 = 0x44;
 const CHAR_NAME_TOO_LONG: u8 = 0x45;
@@ -108,13 +117,17 @@ const ENUM_EQUIPMENT_SLOTS: usize = 20;
 const ACCOUNT_DATA_TYPES: usize = 8;
 const MD5_DIGEST_LEN: usize = 16;
 const MAX_ACTION_BUTTONS: usize = 120;
+const TYPEID_ITEM: u8 = 1;
 const TYPEID_PLAYER: u8 = 4;
+const TYPEMASK_OBJECT_ITEM: u32 = 0x0003;
 const TYPEMASK_OBJECT_UNIT_PLAYER: u32 = 0x0019;
+const UPDATE_TYPE_CREATE_OBJECT: u8 = 2;
 const UPDATE_TYPE_CREATE_OBJECT2: u8 = 3;
 const UPDATEFLAG_SELF: u8 = 0x01;
 const UPDATEFLAG_ALL: u8 = 0x10;
 const UPDATEFLAG_LIVING: u8 = 0x20;
 const UPDATEFLAG_HAS_POSITION: u8 = 0x40;
+const ITEM_END_FIELDS: usize = 0x30;
 const PLAYER_END_FIELDS: usize = 0x502;
 const MOVEFLAG_JUMPING: u32 = 0x0000_2000;
 const MOVEFLAG_SWIMMING: u32 = 0x0020_0000;
@@ -122,11 +135,19 @@ const MOVEFLAG_ONTRANSPORT: u32 = 0x0200_0000;
 const MOVEFLAG_SPLINE_ELEVATION: u32 = 0x0400_0000;
 const REALM_ID: u32 = 1;
 const MAX_CHARACTERS_PER_REALM: u8 = 10;
+const FORM_BATTLESTANCE: u8 = 0x11;
+const EQUIPMENT_SLOT_END: u8 = 19;
+const PLAYER_FIELD_INV_SLOT_HEAD: usize = 0x1E6;
+const PLAYER_FIELD_PACK_SLOT_1: usize = 0x214;
+const INVENTORY_SLOT_BAG_0: u8 = 0;
+const INVENTORY_SLOT_ITEM_START: u8 = 23;
+const INVENTORY_SLOT_ITEM_END: u8 = 39;
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
+    world_db_pool: MySqlPool,
 }
 
 impl WorldServer {
@@ -134,11 +155,13 @@ impl WorldServer {
         bind_addr: SocketAddr,
         login_db_pool: MySqlPool,
         character_db_pool: MySqlPool,
+        world_db_pool: MySqlPool,
     ) -> Self {
         Self {
             bind_addr,
             login_db_pool,
             character_db_pool,
+            world_db_pool,
         }
     }
 
@@ -152,8 +175,11 @@ impl WorldServer {
                     info!(%peer, "Accepted world connection");
                     let login_pool = self.login_db_pool.clone();
                     let character_pool = self.character_db_pool.clone();
+                    let world_pool = self.world_db_pool.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_client(socket, login_pool, character_pool).await {
+                        if let Err(e) =
+                            handle_client(socket, login_pool, character_pool, world_pool).await
+                        {
                             warn!(%peer, "World session ended with error: {}", e);
                         }
                     });
@@ -168,6 +194,7 @@ async fn handle_client(
     mut stream: TcpStream,
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
+    world_db_pool: MySqlPool,
 ) -> anyhow::Result<()> {
     send_packet(
         &mut stream,
@@ -236,6 +263,7 @@ async fn handle_client(
                             &mut stream,
                             &login_db_pool,
                             &character_db_pool,
+                            &world_db_pool,
                             account.id,
                             &body,
                             &mut header_crypto,
@@ -252,6 +280,17 @@ async fn handle_client(
                             "Sending character enum"
                         );
                         send_char_enum(&mut stream, &characters, Some(&mut header_crypto)).await?;
+                    }
+                    CMSG_CHAR_DELETE => {
+                        handle_char_delete(
+                            &mut stream,
+                            &login_db_pool,
+                            &character_db_pool,
+                            account.id,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_PLAYER_LOGIN => {
                         handle_player_login(
@@ -271,6 +310,15 @@ async fn handle_client(
                         handle_name_query(
                             &mut stream,
                             &character_db_pool,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_ITEM_QUERY_SINGLE => {
+                        handle_item_query_single(
+                            &mut stream,
+                            &world_db_pool,
                             &body,
                             &mut header_crypto,
                         )
@@ -446,10 +494,46 @@ async fn send_char_enum(
     send_packet(stream, SMSG_CHAR_ENUM, &body, header_crypto).await
 }
 
+async fn handle_char_delete(
+    stream: &mut TcpStream,
+    login_db_pool: &MySqlPool,
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if body.len() != 8 {
+        warn!("Rejected malformed CMSG_CHAR_DELETE bytes={}", body.len());
+        return send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await;
+    }
+
+    let raw_guid = u64::from_le_bytes(body.try_into()?);
+    let guid = ObjectGuid::from_raw(raw_guid).counter();
+    let deleted = wow_db::delete_character(character_db_pool, account_id, guid).await?;
+    if deleted {
+        let count = wow_db::character_count_for_account(character_db_pool, account_id).await?;
+        wow_db::set_realm_character_count(login_db_pool, REALM_ID, account_id, count).await?;
+        info!(account_id, guid, count, "Deleted character");
+        send_char_delete_result(stream, CHAR_DELETE_SUCCESS, Some(header_crypto)).await
+    } else {
+        warn!(account_id, guid, "Rejected character delete");
+        send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await
+    }
+}
+
+async fn send_char_delete_result(
+    stream: &mut TcpStream,
+    result: u8,
+    header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    send_packet(stream, SMSG_CHAR_DELETE, &[result], header_crypto).await
+}
+
 async fn handle_char_create(
     stream: &mut TcpStream,
     login_db_pool: &MySqlPool,
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     account_id: u32,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
@@ -496,6 +580,7 @@ async fn handle_char_create(
 
     let created = wow_db::create_character(
         character_db_pool,
+        world_db_pool,
         NewCharacter {
             account_id,
             name,
@@ -594,7 +679,16 @@ async fn handle_player_login(
         client_time: 0,
         fall_time: 0,
     });
-    send_enter_world_bootstrap(stream, character, Some(header_crypto)).await
+    let inventory =
+        wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+    send_enter_world_bootstrap(
+        stream,
+        character_db_pool,
+        character,
+        &inventory,
+        Some(header_crypto),
+    )
+    .await
 }
 
 async fn handle_logout_request(
@@ -717,7 +811,9 @@ fn handle_movement(
 
 async fn send_enter_world_bootstrap(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
     character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut header_crypto = header_crypto;
@@ -725,11 +821,13 @@ async fn send_enter_world_bootstrap(
     send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, character, header_crypto.as_deref_mut()).await?;
     send_tutorial_flags(stream, header_crypto.as_deref_mut()).await?;
-    send_initial_spells(stream, header_crypto.as_deref_mut()).await?;
-    send_action_buttons(stream, header_crypto.as_deref_mut()).await?;
+    let spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
+    send_initial_spells(stream, &spells, header_crypto.as_deref_mut()).await?;
+    let actions = wow_db::get_character_actions(character_db_pool, character.guid).await?;
+    send_action_buttons(stream, &actions, header_crypto.as_deref_mut()).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, character, header_crypto.as_deref_mut()).await?;
-    send_self_spawn_update(stream, character, header_crypto).await?;
+    send_self_spawn_update(stream, character, inventory, header_crypto).await?;
     Ok(())
 }
 
@@ -779,21 +877,58 @@ async fn send_tutorial_flags(
 
 async fn send_initial_spells(
     stream: &mut TcpStream,
+    spells: &[CharacterSpell],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(5);
-    body.push(0); // unknown flags byte
-    body.extend_from_slice(&0u16.to_le_bytes()); // spell count
-    body.extend_from_slice(&0u16.to_le_bytes()); // cooldown count
+    let body = build_initial_spells_body(spells);
     send_packet(stream, SMSG_INITIAL_SPELLS, &body, header_crypto).await
+}
+
+fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {
+    let active_spells = spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+        .count();
+    let mut body = Vec::with_capacity(5 + active_spells * 4);
+    body.push(0); // unknown flags byte
+    body.extend_from_slice(&(active_spells as u16).to_le_bytes());
+    for spell in spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+    {
+        body.extend_from_slice(&(spell.spell as u16).to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes()); // CMaNGOS writes zero, not an action slot.
+    }
+    body.extend_from_slice(&0u16.to_le_bytes()); // cooldown count
+    body
 }
 
 async fn send_action_buttons(
     stream: &mut TcpStream,
+    actions: &[CharacterAction],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = vec![0u8; MAX_ACTION_BUTTONS * 4];
+    let body = build_action_buttons_body(actions);
     send_packet(stream, SMSG_ACTION_BUTTONS, &body, header_crypto).await
+}
+
+fn build_action_buttons_body(actions: &[CharacterAction]) -> Vec<u8> {
+    let mut buttons = vec![0u32; MAX_ACTION_BUTTONS];
+    for action in actions {
+        if (action.button as usize) < MAX_ACTION_BUTTONS {
+            buttons[action.button as usize] = pack_action_button(action.action, action.action_type);
+        }
+    }
+
+    let mut body = Vec::with_capacity(MAX_ACTION_BUTTONS * 4);
+    for button in buttons {
+        body.extend_from_slice(&button.to_le_bytes());
+    }
+    body
+}
+
+fn pack_action_button(action: u32, action_type: u8) -> u32 {
+    action | ((action_type as u32) << 24)
 }
 
 async fn send_login_set_time_speed(
@@ -822,9 +957,10 @@ async fn send_init_world_states(
 async fn send_self_spawn_update(
     stream: &mut TcpStream,
     character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_self_spawn_update_body(character)?;
+    let body = build_self_spawn_update_body(character, inventory)?;
     info!(
         guid = character.guid,
         name = %character.name,
@@ -834,7 +970,10 @@ async fn send_self_spawn_update(
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, header_crypto).await
 }
 
-fn build_self_spawn_update_body(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {
+fn build_self_spawn_update_body(
+    character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Vec<u8>> {
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -857,12 +996,17 @@ fn build_self_spawn_update_body(character: &CharacterEnumEntry) -> anyhow::Resul
     block.extend_from_slice(&std::f32::consts::PI.to_le_bytes()); // turn rate
     block.extend_from_slice(&1u32.to_le_bytes()); // UPDATEFLAG_ALL payload
 
-    write_minimal_player_update_values(&mut block, guid, character)?;
+    write_minimal_player_update_values(&mut block, guid, character, inventory)?;
 
+    let item_blocks = build_backpack_item_create_blocks(character, inventory)?;
+    let block_count = 1 + item_blocks.len() as u32;
     let mut body = Vec::with_capacity(5 + block.len());
-    body.extend_from_slice(&1u32.to_le_bytes()); // update block count
+    body.extend_from_slice(&block_count.to_le_bytes());
     body.push(0); // has transport
     body.extend_from_slice(&block);
+    for item_block in item_blocks {
+        body.extend_from_slice(&item_block);
+    }
     Ok(body)
 }
 
@@ -870,6 +1014,7 @@ fn write_minimal_player_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
@@ -881,6 +1026,7 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, 0x022, character.level as u32)?;
     set_update_value(&mut values, 0x023, faction_for_race(character.race))?;
     set_update_value(&mut values, 0x024, unit_bytes_0(character))?;
+    set_update_value(&mut values, 0x08A, unit_bytes_1(character))?;
     set_update_value(&mut values, 0x081, 0.389f32.to_bits())?;
     set_update_value(&mut values, 0x082, 1.5f32.to_bits())?;
     set_update_value(&mut values, 0x083, display_id_for_character(character))?;
@@ -890,10 +1036,18 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, 0x0C1, character.player_bytes)?;
     set_update_value(&mut values, 0x0C2, character.player_bytes2)?;
     set_update_value(&mut values, 0x0C3, 0)?;
+    set_visible_item_update_values(&mut values, character)?;
+    set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, 0x2CC, 0)?;
     set_update_value(&mut values, 0x2CD, 400)?;
     set_update_value(&mut values, 0x4C8, 0)?;
 
+    write_update_values(body, &values)?;
+
+    Ok(())
+}
+
+fn write_update_values(body: &mut Vec<u8>, values: &[Option<u32>]) -> anyhow::Result<()> {
     let block_count = values.len().div_ceil(32);
     body.push(block_count as u8);
     let mask_start = body.len();
@@ -932,6 +1086,172 @@ fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
         | ((character.class as u32) << 8)
         | ((character.gender as u32) << 16)
         | (power_type << 24)
+}
+
+fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
+    let pet_loyalty = match character.class {
+        1 | 8 => 0xEE, // CMaNGOS initializes this for rage and mana users.
+        _ => 0,
+    };
+    let shapeshift_form = match character.class {
+        1 => FORM_BATTLESTANCE,
+        _ => 0,
+    };
+
+    ((pet_loyalty as u32) << 8) | ((shapeshift_form as u32) << 16)
+}
+
+fn set_visible_item_update_values(
+    values: &mut [Option<u32>],
+    character: &CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    let equipment = parse_equipment_cache(character.equipment_cache.as_deref());
+    for (slot, item_id) in equipment.iter().take(19).enumerate() {
+        if *item_id == 0 {
+            continue;
+        }
+
+        let visible_base = 0x104 + slot * 12;
+        set_update_value(values, visible_base, *item_id)?;
+    }
+
+    Ok(())
+}
+
+fn set_inventory_slot_update_values(
+    values: &mut [Option<u32>],
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<()> {
+    for item in inventory {
+        if item.bag != INVENTORY_SLOT_BAG_0 as u32 {
+            continue;
+        }
+
+        let Some(field) = inventory_slot_update_field(item.slot) else {
+            continue;
+        };
+        let guid = ObjectGuid::new(HighGuid::Item, 0, item.item);
+        set_update_value(values, field, guid.raw() as u32)?;
+        set_update_value(values, field + 1, (guid.raw() >> 32) as u32)?;
+    }
+
+    Ok(())
+}
+
+fn inventory_slot_update_field(slot: u8) -> Option<usize> {
+    match slot {
+        0..EQUIPMENT_SLOT_END => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),
+        INVENTORY_SLOT_ITEM_START..=INVENTORY_SLOT_ITEM_END => {
+            Some(PLAYER_FIELD_PACK_SLOT_1 + (slot - INVENTORY_SLOT_ITEM_START) as usize * 2)
+        }
+        _ => None,
+    }
+}
+
+fn build_backpack_item_create_blocks(
+    character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut blocks = Vec::new();
+
+    for item in inventory {
+        if item.bag != INVENTORY_SLOT_BAG_0 as u32 {
+            continue;
+        }
+
+        if !(INVENTORY_SLOT_ITEM_START..=INVENTORY_SLOT_ITEM_END).contains(&item.slot) {
+            continue;
+        }
+
+        blocks.push(build_item_create_update_block(owner_guid, item)?);
+    }
+
+    Ok(blocks)
+}
+
+fn build_item_create_update_block(
+    owner_guid: ObjectGuid,
+    item: &CharacterInventoryItem,
+) -> anyhow::Result<Vec<u8>> {
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, item.item);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT);
+    PackedGuid::write(&mut block, item_guid)?;
+    block.push(TYPEID_ITEM);
+    block.push(UPDATEFLAG_ALL);
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    let mut values = vec![None; ITEM_END_FIELDS];
+    set_update_value(&mut values, 0x000, item_guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (item_guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_ITEM)?;
+    set_update_value(&mut values, 0x003, item.item_template)?;
+    set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
+    set_update_value(&mut values, 0x006, owner_guid.raw() as u32)?;
+    set_update_value(&mut values, 0x007, (owner_guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x008, owner_guid.raw() as u32)?;
+    set_update_value(&mut values, 0x009, (owner_guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x00E, item.count)?;
+    set_update_value(&mut values, 0x02E, item.durability)?;
+    set_update_value(&mut values, 0x02F, item.durability)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(block)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StarterItemVisual {
+    display_id: u32,
+    inventory_type: u8,
+}
+
+fn parse_equipment_cache(cache: Option<&str>) -> [u32; ENUM_EQUIPMENT_SLOTS] {
+    let mut equipment = [0u32; ENUM_EQUIPMENT_SLOTS];
+    let Some(cache) = cache else {
+        return equipment;
+    };
+
+    for (slot, chunk) in cache
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .take(ENUM_EQUIPMENT_SLOTS)
+        .enumerate()
+    {
+        if let Some(item_id) = chunk.first() {
+            equipment[slot] = *item_id;
+        }
+    }
+
+    equipment
+}
+
+fn starter_item_visual(item_id: u32) -> Option<StarterItemVisual> {
+    match item_id {
+        25 => Some(StarterItemVisual {
+            display_id: 1542,
+            inventory_type: 21,
+        }),
+        38 => Some(StarterItemVisual {
+            display_id: 9891,
+            inventory_type: 4,
+        }),
+        39 => Some(StarterItemVisual {
+            display_id: 9892,
+            inventory_type: 7,
+        }),
+        40 => Some(StarterItemVisual {
+            display_id: 10141,
+            inventory_type: 8,
+        }),
+        2362 => Some(StarterItemVisual {
+            display_id: 18730,
+            inventory_type: 14,
+        }),
+        _ => None,
+    }
 }
 
 fn faction_for_race(race: u8) -> u32 {
@@ -1015,6 +1335,137 @@ fn build_name_query_response(
         }
     }
     body
+}
+
+async fn handle_item_query_single(
+    stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if body.len() < 4 {
+        anyhow::bail!(
+            "CMSG_ITEM_QUERY_SINGLE payload too short: {} bytes",
+            body.len()
+        );
+    }
+
+    let item = u32::from_le_bytes(body[0..4].try_into()?);
+    let template = wow_db::get_item_template_query(world_db_pool, item).await?;
+    info!(
+        item,
+        found = template.is_some(),
+        "Answering item template query"
+    );
+    let response = build_item_query_single_response(item, template.as_ref());
+    send_packet(
+        stream,
+        SMSG_ITEM_QUERY_SINGLE_RESPONSE,
+        &response,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn build_item_query_single_response(
+    item: u32,
+    template: Option<&wow_db::ItemTemplateQuery>,
+) -> Vec<u8> {
+    let Some(template) = template else {
+        return (item | 0x8000_0000).to_le_bytes().to_vec();
+    };
+
+    let mut body = Vec::with_capacity(600);
+    write_u32(&mut body, template.entry);
+    write_u32(&mut body, template.class);
+    write_u32(&mut body, item_query_subclass(template));
+    write_c_string(&mut body, &template.name);
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    write_u32(&mut body, template.displayid);
+    write_u32(&mut body, template.quality);
+    write_u32(&mut body, template.flags);
+    write_u32(&mut body, template.buy_price);
+    write_u32(&mut body, template.sell_price);
+    write_u32(&mut body, template.inventory_type);
+    write_i32(&mut body, template.allowable_class);
+    write_i32(&mut body, template.allowable_race);
+    write_u32(&mut body, template.item_level);
+    write_u32(&mut body, template.required_level);
+    write_u32(&mut body, template.required_skill);
+    write_u32(&mut body, template.required_skill_rank);
+    write_u32(&mut body, template.required_spell);
+    write_u32(&mut body, template.required_honor_rank);
+    write_u32(&mut body, template.required_city_rank);
+    write_u32(&mut body, template.required_reputation_faction);
+    write_u32(
+        &mut body,
+        if template.required_reputation_faction > 0 {
+            template.required_reputation_rank
+        } else {
+            0
+        },
+    );
+    write_u32(&mut body, template.max_count);
+    write_u32(&mut body, template.stackable);
+    write_u32(&mut body, template.container_slots);
+
+    for _ in 0..10 {
+        write_u32(&mut body, 0);
+        write_u32(&mut body, 0);
+    }
+    for _ in 0..5 {
+        write_f32(&mut body, 0.0);
+        write_f32(&mut body, 0.0);
+        write_u32(&mut body, 0);
+    }
+
+    write_u32(&mut body, template.armor);
+    write_u32(&mut body, template.holy_res);
+    write_u32(&mut body, template.fire_res);
+    write_u32(&mut body, template.nature_res);
+    write_u32(&mut body, template.frost_res);
+    write_u32(&mut body, template.shadow_res);
+    write_u32(&mut body, template.arcane_res);
+    write_u32(&mut body, template.delay);
+    write_u32(&mut body, template.ammo_type);
+    write_f32(&mut body, template.ranged_mod_range);
+
+    for _ in 0..5 {
+        write_u32(&mut body, 0);
+        write_u32(&mut body, 0);
+        write_u32(&mut body, 0);
+        write_u32(&mut body, u32::MAX);
+        write_u32(&mut body, 0);
+        write_u32(&mut body, u32::MAX);
+    }
+
+    write_u32(&mut body, template.bonding);
+    write_c_string(&mut body, &template.description);
+    write_u32(&mut body, template.page_text);
+    write_u32(&mut body, template.language_id);
+    write_u32(&mut body, template.page_material);
+    write_u32(&mut body, template.start_quest);
+    write_u32(&mut body, template.lock_id);
+    write_i32(&mut body, template.material);
+    write_u32(&mut body, template.sheath);
+    write_u32(&mut body, template.random_property);
+    write_u32(&mut body, template.block);
+    write_u32(&mut body, template.itemset);
+    write_u32(&mut body, template.max_durability);
+    write_u32(&mut body, template.area);
+    write_i32(&mut body, template.map);
+    write_i32(&mut body, template.bag_family);
+    body
+}
+
+fn item_query_subclass(template: &wow_db::ItemTemplateQuery) -> u32 {
+    if template.class == 0 {
+        0
+    } else {
+        template.subclass
+    }
 }
 
 async fn handle_query_time(
@@ -1322,9 +1773,15 @@ fn write_character_enum_entry(
     body.extend_from_slice(&pet_level.to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes()); // pet family requires creature template data.
 
-    for _ in 0..ENUM_EQUIPMENT_SLOTS {
-        body.extend_from_slice(&0u32.to_le_bytes()); // display id
-        body.push(0); // inventory type
+    let equipment = parse_equipment_cache(character.equipment_cache.as_deref());
+    for item_id in equipment {
+        if let Some(visual) = starter_item_visual(item_id) {
+            body.extend_from_slice(&visual.display_id.to_le_bytes());
+            body.push(visual.inventory_type);
+        } else {
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.push(0);
+        }
     }
 
     Ok(())
@@ -1333,6 +1790,18 @@ fn write_character_enum_entry(
 fn write_c_string(body: &mut Vec<u8>, value: &str) {
     body.extend_from_slice(value.as_bytes());
     body.push(0);
+}
+
+fn write_u32(body: &mut Vec<u8>, value: u32) {
+    body.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_i32(body: &mut Vec<u8>, value: i32) {
+    body.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_f32(body: &mut Vec<u8>, value: f32) {
+    body.extend_from_slice(&value.to_le_bytes());
 }
 
 fn character_flags(character: &CharacterEnumEntry) -> u32 {
@@ -1671,12 +2140,191 @@ mod tests {
 
     #[test]
     fn empty_initial_spells_shape() {
-        let mut body = Vec::new();
-        body.push(0);
-        body.extend_from_slice(&0u16.to_le_bytes());
-        body.extend_from_slice(&0u16.to_le_bytes());
-
+        let body = build_initial_spells_body(&[]);
         assert_eq!(body, [0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn initial_spells_include_active_enabled_spells() {
+        let body = build_initial_spells_body(&[
+            CharacterSpell {
+                spell: 78,
+                active: 1,
+                disabled: 0,
+            },
+            CharacterSpell {
+                spell: 81,
+                active: 0,
+                disabled: 0,
+            },
+            CharacterSpell {
+                spell: 107,
+                active: 1,
+                disabled: 1,
+            },
+        ]);
+
+        assert_eq!(body, [0, 1, 0, 78, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn action_buttons_pack_cmangos_action_type_layout() {
+        let body = build_action_buttons_body(&[
+            CharacterAction {
+                button: 0,
+                action: 6603,
+                action_type: 0,
+            },
+            CharacterAction {
+                button: 11,
+                action: 117,
+                action_type: 128,
+            },
+        ]);
+
+        assert_eq!(body.len(), MAX_ACTION_BUTTONS * 4);
+        assert_eq!(&body[0..4], &6603u32.to_le_bytes());
+        assert_eq!(&body[44..48], &(0x8000_0075u32).to_le_bytes());
+    }
+
+    #[test]
+    fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
+        let character = CharacterEnumEntry {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            player_bytes: 0,
+            player_bytes2: 0,
+            level: 1,
+            zone: 12,
+            map: 0,
+            position_x: -8949.95,
+            position_y: -132.493,
+            position_z: 83.5312,
+            orientation: 0.0,
+            guildid: None,
+            player_flags: 0,
+            at_login: 0,
+            pet_entry: None,
+            pet_modelid: None,
+            pet_level: None,
+            equipment_cache: None,
+        };
+
+        assert_eq!(unit_bytes_1(&character), 0x0011_EE00);
+    }
+
+    #[test]
+    fn parses_equipment_cache_item_ids() {
+        let equipment = parse_equipment_cache(Some("0 0 0 0 0 0 38 0 0 0 0 0 39 0"));
+
+        assert_eq!(equipment[3], 38);
+        assert_eq!(equipment[6], 39);
+    }
+
+    #[test]
+    fn maps_inventory_slots_to_player_update_guid_fields() {
+        assert_eq!(
+            inventory_slot_update_field(3),
+            Some(PLAYER_FIELD_INV_SLOT_HEAD + 6)
+        );
+        assert_eq!(
+            inventory_slot_update_field(23),
+            Some(PLAYER_FIELD_PACK_SLOT_1)
+        );
+        assert_eq!(inventory_slot_update_field(40), None);
+    }
+
+    #[test]
+    fn writes_inventory_item_guid_update_values() {
+        let mut values = vec![None; PLAYER_END_FIELDS];
+        let item = CharacterInventoryItem {
+            bag: 0,
+            slot: 15,
+            item: 42,
+            item_template: 25,
+            count: 1,
+            durability: 10,
+        };
+
+        set_inventory_slot_update_values(&mut values, &[item]).unwrap();
+
+        let guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+        let field = PLAYER_FIELD_INV_SLOT_HEAD + 15 * 2;
+        assert_eq!(values[field], Some(guid.raw() as u32));
+        assert_eq!(values[field + 1], Some((guid.raw() >> 32) as u32));
+    }
+
+    #[test]
+    fn builds_create_blocks_for_backpack_items_only() {
+        let character = CharacterEnumEntry {
+            guid: 11,
+            name: "Tester".to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            player_bytes: 0,
+            player_bytes2: 0,
+            level: 1,
+            zone: 12,
+            map: 0,
+            position_x: -8949.95,
+            position_y: -132.493,
+            position_z: 83.5312,
+            orientation: 0.0,
+            guildid: None,
+            player_flags: 0,
+            at_login: 0,
+            pet_entry: None,
+            pet_modelid: None,
+            pet_level: None,
+            equipment_cache: None,
+        };
+        let items = [
+            CharacterInventoryItem {
+                bag: 0,
+                slot: 16,
+                item: 40,
+                item_template: 2362,
+                count: 1,
+                durability: 18,
+            },
+            CharacterInventoryItem {
+                bag: 0,
+                slot: 24,
+                item: 41,
+                item_template: 6948,
+                count: 1,
+                durability: 0,
+            },
+        ];
+
+        let blocks = build_backpack_item_create_blocks(&character, &items).unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0][0], UPDATE_TYPE_CREATE_OBJECT);
+        assert_eq!(blocks[0][4], TYPEID_ITEM);
+        assert_eq!(blocks[0][5], UPDATEFLAG_ALL);
+    }
+
+    #[test]
+    fn starter_item_visuals_cover_human_warrior_equipment() {
+        assert_eq!(
+            starter_item_visual(25),
+            Some(StarterItemVisual {
+                display_id: 1542,
+                inventory_type: 21
+            })
+        );
+        assert_eq!(
+            starter_item_visual(2362),
+            Some(StarterItemVisual {
+                display_id: 18730,
+                inventory_type: 14
+            })
+        );
     }
 
     #[test]

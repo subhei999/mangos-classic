@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
-use sqlx::FromRow;
+use sqlx::{FromRow, Row};
 use wow_common::position::WorldPosition;
 
 use crate::pool::DbError;
@@ -68,6 +68,85 @@ pub struct CharacterNameQuery {
     pub class: u8,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CharacterSpell {
+    pub spell: u32,
+    pub active: u8,
+    pub disabled: u8,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CharacterAction {
+    pub button: u8,
+    pub action: u32,
+    #[sqlx(rename = "type")]
+    pub action_type: u8,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CharacterInventoryItem {
+    pub bag: u32,
+    pub slot: u8,
+    pub item: u32,
+    pub item_template: u32,
+    pub count: u32,
+    pub durability: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemTemplateQuery {
+    pub entry: u32,
+    pub class: u32,
+    pub subclass: u32,
+    pub name: String,
+    pub displayid: u32,
+    pub quality: u32,
+    pub flags: u32,
+    pub buy_price: u32,
+    pub sell_price: u32,
+    pub inventory_type: u32,
+    pub allowable_class: i32,
+    pub allowable_race: i32,
+    pub item_level: u32,
+    pub required_level: u32,
+    pub required_skill: u32,
+    pub required_skill_rank: u32,
+    pub required_spell: u32,
+    pub required_honor_rank: u32,
+    pub required_city_rank: u32,
+    pub required_reputation_faction: u32,
+    pub required_reputation_rank: u32,
+    pub max_count: u32,
+    pub stackable: u32,
+    pub container_slots: u32,
+    pub armor: u32,
+    pub holy_res: u32,
+    pub fire_res: u32,
+    pub nature_res: u32,
+    pub frost_res: u32,
+    pub shadow_res: u32,
+    pub arcane_res: u32,
+    pub delay: u32,
+    pub ammo_type: u32,
+    pub ranged_mod_range: f32,
+    pub bonding: u32,
+    pub description: String,
+    pub page_text: u32,
+    pub language_id: u32,
+    pub page_material: u32,
+    pub start_quest: u32,
+    pub lock_id: u32,
+    pub material: i32,
+    pub sheath: u32,
+    pub random_property: u32,
+    pub block: u32,
+    pub itemset: u32,
+    pub max_durability: u32,
+    pub area: u32,
+    pub map: i32,
+    pub bag_family: i32,
+}
+
 pub async fn get_character_enum_entries(
     pool: &MySqlPool,
     account_id: u32,
@@ -126,12 +205,89 @@ pub async fn character_count_for_account(pool: &MySqlPool, account_id: u32) -> R
     Ok(count.min(u8::MAX as i64) as u8)
 }
 
-pub async fn create_character(
+pub async fn delete_character(
     pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+) -> Result<bool, DbError> {
+    let owner: Option<u32> = sqlx::query_scalar("SELECT account FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_optional(pool)
+        .await?;
+    if owner != Some(account_id) {
+        return Ok(false);
+    }
+
+    let item_guids: Vec<u32> =
+        sqlx::query_scalar("SELECT item FROM character_inventory WHERE guid = ?")
+            .bind(guid)
+            .fetch_all(pool)
+            .await?;
+
+    for table in [
+        "character_account_data",
+        "character_action",
+        "character_aura",
+        "character_battleground_data",
+        "character_homebind",
+        "character_honor_cp",
+        "character_instance",
+        "character_inventory",
+        "character_queststatus",
+        "character_queststatus_weekly",
+        "character_reputation",
+        "character_skills",
+        "character_forgotten_skills",
+        "character_spell",
+        "character_spell_cooldown",
+        "character_stats",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE guid = ?"))
+            .bind(guid)
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query("DELETE FROM character_social WHERE guid = ? OR friend = ?")
+        .bind(guid)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM character_pet WHERE owner = ?")
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM mail WHERE receiver = ?")
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM mail_items WHERE receiver = ?")
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    for item_guid in item_guids {
+        sqlx::query("DELETE FROM item_instance WHERE guid = ?")
+            .bind(item_guid)
+            .execute(pool)
+            .await?;
+    }
+
+    let result = sqlx::query("DELETE FROM characters WHERE guid = ? AND account = ?")
+        .bind(guid)
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn create_character(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
     character: NewCharacter,
 ) -> Result<CreatedCharacter, DbError> {
-    let guid = next_character_guid(pool).await?;
-    let create_info = player_create_info(character.race, character.class);
+    let guid = next_character_guid(character_pool).await?;
+    let create_info = get_player_create_info(world_pool, character.race, character.class).await?;
     let player_bytes = player_bytes(
         character.skin,
         character.face,
@@ -163,7 +319,7 @@ pub async fn create_character(
     .bind(player_bytes)
     .bind(player_bytes2)
     .bind(AT_LOGIN_FIRST)
-    .execute(pool)
+    .execute(character_pool)
     .await?;
 
     sqlx::query(
@@ -176,7 +332,40 @@ pub async fn create_character(
     .bind(create_info.position.x)
     .bind(create_info.position.y)
     .bind(create_info.position.z)
-    .execute(pool)
+    .execute(character_pool)
+    .await?;
+
+    seed_character_spells(
+        character_pool,
+        world_pool,
+        guid,
+        character.race,
+        character.class,
+    )
+    .await?;
+    seed_character_actions(
+        character_pool,
+        world_pool,
+        guid,
+        character.race,
+        character.class,
+    )
+    .await?;
+    seed_character_skills(
+        character_pool,
+        world_pool,
+        guid,
+        character.race,
+        character.class,
+    )
+    .await?;
+    seed_character_starter_items(
+        character_pool,
+        world_pool,
+        guid,
+        character.race,
+        character.class,
+    )
     .await?;
 
     Ok(CreatedCharacter {
@@ -214,6 +403,126 @@ pub async fn update_character_position(
     Ok(result.rows_affected())
 }
 
+pub async fn get_character_spells(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterSpell>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterSpell>(
+        "SELECT spell, active, disabled FROM character_spell WHERE guid = ? ORDER BY spell",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_actions(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterAction>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterAction>(
+        "SELECT button, action, type FROM character_action WHERE guid = ? ORDER BY button",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_inventory_items(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterInventoryItem>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterInventoryItem>(
+        "SELECT ci.bag, ci.slot, ci.item, ci.item_template, ii.count, ii.durability \
+         FROM character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         WHERE ci.guid = ? ORDER BY ci.bag, ci.slot",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_item_template_query(
+    pool: &MySqlPool,
+    entry: u32,
+) -> Result<Option<ItemTemplateQuery>, DbError> {
+    let Some(row) = sqlx::query(
+        "SELECT entry, class, subclass, name, displayid, Quality, Flags, BuyPrice, SellPrice, \
+         InventoryType, AllowableClass, AllowableRace, ItemLevel, RequiredLevel, RequiredSkill, \
+         RequiredSkillRank, requiredspell, requiredhonorrank, RequiredCityRank, \
+         RequiredReputationFaction, RequiredReputationRank, maxcount, stackable, ContainerSlots, \
+         armor, holy_res, fire_res, nature_res, frost_res, shadow_res, arcane_res, delay, \
+         ammo_type, RangedModRange, bonding, description, PageText, LanguageID, PageMaterial, \
+         startquest, lockid, Material, sheath, RandomProperty, block, itemset, MaxDurability, \
+         area, Map, BagFamily FROM item_template WHERE entry = ?",
+    )
+    .bind(entry)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(ItemTemplateQuery {
+        entry: row.try_get("entry")?,
+        class: row.try_get::<u8, _>("class")? as u32,
+        subclass: row.try_get::<u8, _>("subclass")? as u32,
+        name: row.try_get("name")?,
+        displayid: row.try_get("displayid")?,
+        quality: row.try_get::<u8, _>("Quality")? as u32,
+        flags: row.try_get("Flags")?,
+        buy_price: row.try_get("BuyPrice")?,
+        sell_price: row.try_get("SellPrice")?,
+        inventory_type: row.try_get::<u8, _>("InventoryType")? as u32,
+        allowable_class: row.try_get("AllowableClass")?,
+        allowable_race: row.try_get("AllowableRace")?,
+        item_level: row.try_get::<u8, _>("ItemLevel")? as u32,
+        required_level: row.try_get::<u8, _>("RequiredLevel")? as u32,
+        required_skill: row.try_get::<u16, _>("RequiredSkill")? as u32,
+        required_skill_rank: row.try_get::<u16, _>("RequiredSkillRank")? as u32,
+        required_spell: row.try_get("requiredspell")?,
+        required_honor_rank: row.try_get("requiredhonorrank")?,
+        required_city_rank: row.try_get("RequiredCityRank")?,
+        required_reputation_faction: row.try_get::<u16, _>("RequiredReputationFaction")? as u32,
+        required_reputation_rank: row.try_get::<u16, _>("RequiredReputationRank")? as u32,
+        max_count: row.try_get::<u16, _>("maxcount")? as u32,
+        stackable: row.try_get::<u16, _>("stackable")? as u32,
+        container_slots: row.try_get::<u8, _>("ContainerSlots")? as u32,
+        armor: row.try_get::<u16, _>("armor")? as u32,
+        holy_res: row.try_get::<u8, _>("holy_res")? as u32,
+        fire_res: row.try_get::<u8, _>("fire_res")? as u32,
+        nature_res: row.try_get::<u8, _>("nature_res")? as u32,
+        frost_res: row.try_get::<u8, _>("frost_res")? as u32,
+        shadow_res: row.try_get::<u8, _>("shadow_res")? as u32,
+        arcane_res: row.try_get::<u8, _>("arcane_res")? as u32,
+        delay: row.try_get::<u16, _>("delay")? as u32,
+        ammo_type: row.try_get::<u8, _>("ammo_type")? as u32,
+        ranged_mod_range: row.try_get("RangedModRange")?,
+        bonding: row.try_get::<u8, _>("bonding")? as u32,
+        description: row.try_get("description")?,
+        page_text: row.try_get("PageText")?,
+        language_id: row.try_get::<u8, _>("LanguageID")? as u32,
+        page_material: row.try_get::<u8, _>("PageMaterial")? as u32,
+        start_quest: row.try_get("startquest")?,
+        lock_id: row.try_get("lockid")?,
+        material: row.try_get::<i8, _>("Material")? as i32,
+        sheath: row.try_get::<u8, _>("sheath")? as u32,
+        random_property: row.try_get("RandomProperty")?,
+        block: row.try_get("block")?,
+        itemset: row.try_get("itemset")?,
+        max_durability: row.try_get::<u16, _>("MaxDurability")? as u32,
+        area: row.try_get("area")?,
+        map: row.try_get::<i16, _>("Map")? as i32,
+        bag_family: row.try_get("BagFamily")?,
+    }))
+}
+
 async fn next_character_guid(pool: &MySqlPool) -> Result<u32, DbError> {
     let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM characters")
         .fetch_one(pool)
@@ -233,42 +542,754 @@ struct PlayerCreateInfo {
 }
 
 const AT_LOGIN_FIRST: u32 = 0x20;
+const LEVEL_ONE_SKILL_MAX: u16 = 5;
 
-fn player_create_info(race: u8, class: u8) -> PlayerCreateInfo {
-    match race {
-        1 => PlayerCreateInfo {
-            zone: 12,
-            position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
-        },
-        2 | 8 => PlayerCreateInfo {
-            zone: 14,
-            position: WorldPosition::new(1, -618.518, -4251.67, 38.718, 0.0),
-        },
-        3 | 7 => PlayerCreateInfo {
-            zone: 1,
-            position: WorldPosition::new(0, -6240.32, 331.033, 382.758, 0.0),
-        },
-        4 => PlayerCreateInfo {
-            zone: 141,
-            position: WorldPosition::new(1, 10311.3, 832.463, 1326.41, 0.0),
-        },
-        5 => PlayerCreateInfo {
-            zone: 85,
-            position: WorldPosition::new(0, 1676.35, 1677.45, 121.67, 0.0),
-        },
-        6 => PlayerCreateInfo {
-            zone: 215,
-            position: WorldPosition::new(1, -2917.58, -257.98, 52.9968, 0.0),
-        },
-        _ => {
-            let _ = class;
-            PlayerCreateInfo {
-                zone: 12,
-                position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
-            }
+async fn get_player_create_info(
+    world_pool: &MySqlPool,
+    race: u8,
+    class: u8,
+) -> Result<PlayerCreateInfo, DbError> {
+    let info = sqlx::query_as::<_, PlayerCreateInfoRow>(
+        "SELECT map, zone, position_x, position_y, position_z, orientation \
+         FROM playercreateinfo WHERE race = ? AND class = ?",
+    )
+    .bind(race)
+    .bind(class)
+    .fetch_one(world_pool)
+    .await?;
+
+    Ok(PlayerCreateInfo {
+        zone: info.zone,
+        position: WorldPosition::new(
+            info.map as u32,
+            info.position_x,
+            info.position_y,
+            info.position_z,
+            info.orientation,
+        ),
+    })
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerCreateInfoRow {
+    map: u16,
+    zone: u32,
+    position_x: f32,
+    position_y: f32,
+    position_z: f32,
+    orientation: f32,
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerCreateSpellRow {
+    #[sqlx(rename = "Spell")]
+    spell: u32,
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerCreateActionRow {
+    button: u16,
+    action: u32,
+    #[sqlx(rename = "type")]
+    action_type: u16,
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerCreateSkillRow {
+    skill: u16,
+    note: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct ItemTemplateRow {
+    entry: u32,
+    #[sqlx(rename = "MaxDurability")]
+    max_durability: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StarterItem {
+    item_id: u32,
+    slot: u8,
+    amount: u32,
+}
+
+async fn seed_character_spells(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    guid: u32,
+    race: u8,
+    class: u8,
+) -> Result<(), DbError> {
+    let spells = sqlx::query_as::<_, PlayerCreateSpellRow>(
+        "SELECT Spell FROM playercreateinfo_spell WHERE race = ? AND class = ? ORDER BY Spell",
+    )
+    .bind(race)
+    .bind(class)
+    .fetch_all(world_pool)
+    .await?;
+
+    for spell in spells {
+        sqlx::query(
+            "INSERT INTO character_spell (guid, spell, active, disabled) VALUES (?, ?, 1, 0)",
+        )
+        .bind(guid)
+        .bind(spell.spell)
+        .execute(character_pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn seed_character_actions(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    guid: u32,
+    race: u8,
+    class: u8,
+) -> Result<(), DbError> {
+    let actions = sqlx::query_as::<_, PlayerCreateActionRow>(
+        "SELECT button, action, type FROM playercreateinfo_action \
+         WHERE race = ? AND class = ? ORDER BY button",
+    )
+    .bind(race)
+    .bind(class)
+    .fetch_all(world_pool)
+    .await?;
+
+    for action in actions {
+        if action.button >= 120 || action.action_type > u8::MAX as u16 {
+            continue;
         }
+
+        sqlx::query(
+            "INSERT INTO character_action (guid, button, action, type) VALUES (?, ?, ?, ?)",
+        )
+        .bind(guid)
+        .bind(action.button as u8)
+        .bind(action.action)
+        .bind(action.action_type as u8)
+        .execute(character_pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn seed_character_skills(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    guid: u32,
+    race: u8,
+    class: u8,
+) -> Result<(), DbError> {
+    let race_mask = 1u32 << (race - 1);
+    let class_mask = 1u32 << (class - 1);
+    let skills = sqlx::query_as::<_, PlayerCreateSkillRow>(
+        "SELECT skill, note FROM playercreateinfo_skills \
+         WHERE (raceMask = 0 OR (raceMask & ?) <> 0) \
+           AND (classMask = 0 OR (classMask & ?) <> 0) \
+         ORDER BY skill",
+    )
+    .bind(race_mask)
+    .bind(class_mask)
+    .fetch_all(world_pool)
+    .await?;
+
+    for skill in skills {
+        let (value, max) = starter_skill_value(skill.note.as_deref());
+        sqlx::query("INSERT INTO character_skills (guid, skill, value, max) VALUES (?, ?, ?, ?)")
+            .bind(guid)
+            .bind(skill.skill)
+            .bind(value)
+            .bind(max)
+            .execute(character_pool)
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn starter_skill_value(note: Option<&str>) -> (u16, u16) {
+    match note {
+        Some(note) if note.starts_with("Language:") => (300, 300),
+        Some(note) if note.starts_with("Misc: GENERIC") => (1, 1),
+        Some(note) if note.starts_with("Armor:") => (1, 1),
+        Some(note) if note.starts_with("Racial:") => (1, 1),
+        _ => (1, LEVEL_ONE_SKILL_MAX),
     }
 }
+
+async fn seed_character_starter_items(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    guid: u32,
+    race: u8,
+    class: u8,
+) -> Result<(), DbError> {
+    let Some(items) = starter_outfit_items(race, class) else {
+        return Ok(());
+    };
+
+    let mut equipment_cache = [0u32; ENUM_EQUIPMENT_CACHE_SLOTS];
+    for starter_item in items {
+        let Some(template) = get_item_template(world_pool, starter_item.item_id).await? else {
+            continue;
+        };
+
+        let item_guid = next_item_guid(character_pool).await?;
+        sqlx::query(
+            "INSERT INTO item_instance \
+             (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+              charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+             VALUES (?, ?, ?, 0, 0, ?, 0, ?, 0, ?, 0, ?, 0)",
+        )
+        .bind(item_guid)
+        .bind(guid)
+        .bind(template.entry)
+        .bind(starter_item.amount)
+        .bind(default_item_charges())
+        .bind(default_item_enchantments())
+        .bind(template.max_durability)
+        .execute(character_pool)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
+             VALUES (?, 0, ?, ?, ?)",
+        )
+        .bind(guid)
+        .bind(starter_item.slot)
+        .bind(item_guid)
+        .bind(template.entry)
+        .execute(character_pool)
+        .await?;
+
+        if (starter_item.slot as usize) < EQUIPMENT_SLOT_END {
+            equipment_cache[starter_item.slot as usize] = template.entry;
+        }
+    }
+
+    sqlx::query("UPDATE characters SET equipmentCache = ? WHERE guid = ?")
+        .bind(format_equipment_cache(&equipment_cache))
+        .bind(guid)
+        .execute(character_pool)
+        .await?;
+
+    Ok(())
+}
+
+async fn get_item_template(
+    world_pool: &MySqlPool,
+    item_id: u32,
+) -> Result<Option<ItemTemplateRow>, DbError> {
+    let row = sqlx::query_as::<_, ItemTemplateRow>(
+        "SELECT entry, MaxDurability FROM item_template WHERE entry = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(world_pool)
+    .await?;
+
+    Ok(row)
+}
+
+async fn next_item_guid(pool: &MySqlPool) -> Result<u32, DbError> {
+    let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM item_instance")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(max_guid.unwrap_or(0).saturating_add(1))
+}
+
+const EQUIPMENT_SLOT_END: usize = 19;
+const ENUM_EQUIPMENT_CACHE_SLOTS: usize = 20;
+
+fn starter_outfit_items(race: u8, class: u8) -> Option<&'static [StarterItem]> {
+    match (race, class) {
+        (1, 1) => Some(&HUMAN_WARRIOR_ITEMS),
+        (1, 2) => Some(&HUMAN_PALADIN_ITEMS),
+        (1, 4) => Some(&HUMAN_ROGUE_ITEMS),
+        (1, 5) => Some(&HUMAN_PRIEST_ITEMS),
+        (1, 8) => Some(&HUMAN_MAGE_ITEMS),
+        (1, 9) => Some(&HUMAN_WARLOCK_ITEMS),
+        (2, 1) => Some(&ORC_WARRIOR_ITEMS),
+        (2, 3) => Some(&ORC_HUNTER_ITEMS),
+        (2, 4) => Some(&ORC_ROGUE_ITEMS),
+        (2, 7) => Some(&ORC_SHAMAN_ITEMS),
+        (2, 9) => Some(&ORC_WARLOCK_ITEMS),
+        (3, 1) => Some(&DWARF_WARRIOR_ITEMS),
+        (3, 2) => Some(&DWARF_PALADIN_ITEMS),
+        (3, 3) => Some(&DWARF_HUNTER_ITEMS),
+        (3, 4) => Some(&DWARF_ROGUE_ITEMS),
+        (3, 5) => Some(&DWARF_PRIEST_ITEMS),
+        (4, 1) => Some(&NIGHTELF_WARRIOR_ITEMS),
+        (4, 3) => Some(&NIGHTELF_HUNTER_ITEMS),
+        (4, 4) => Some(&NIGHTELF_ROGUE_ITEMS),
+        (4, 5) => Some(&NIGHTELF_PRIEST_ITEMS),
+        (4, 11) => Some(&NIGHTELF_DRUID_ITEMS),
+        (5, 1) => Some(&UNDEAD_WARRIOR_ITEMS),
+        (5, 4) => Some(&UNDEAD_ROGUE_ITEMS),
+        (5, 5) => Some(&UNDEAD_PRIEST_ITEMS),
+        (5, 8) => Some(&UNDEAD_MAGE_ITEMS),
+        (5, 9) => Some(&UNDEAD_WARLOCK_ITEMS),
+        (6, 1) => Some(&TAUREN_WARRIOR_ITEMS),
+        (6, 3) => Some(&TAUREN_HUNTER_ITEMS),
+        (6, 7) => Some(&TAUREN_SHAMAN_ITEMS),
+        (6, 11) => Some(&TAUREN_DRUID_ITEMS),
+        (7, 1) => Some(&GNOME_WARRIOR_ITEMS),
+        (7, 4) => Some(&GNOME_ROGUE_ITEMS),
+        (7, 8) => Some(&GNOME_MAGE_ITEMS),
+        (7, 9) => Some(&GNOME_WARLOCK_ITEMS),
+        (8, 1) => Some(&TROLL_WARRIOR_ITEMS),
+        (8, 3) => Some(&TROLL_HUNTER_ITEMS),
+        (8, 4) => Some(&TROLL_ROGUE_ITEMS),
+        (8, 5) => Some(&TROLL_PRIEST_ITEMS),
+        (8, 7) => Some(&TROLL_SHAMAN_ITEMS),
+        (8, 8) => Some(&TROLL_MAGE_ITEMS),
+        _ => None,
+    }
+}
+
+fn format_equipment_cache(equipment: &[u32; ENUM_EQUIPMENT_CACHE_SLOTS]) -> String {
+    let mut cache = String::new();
+    for item_id in equipment {
+        cache.push_str(&item_id.to_string());
+        cache.push_str(" 0 ");
+    }
+    cache
+}
+
+fn default_item_charges() -> &'static str {
+    "0 0 0 0 0 "
+}
+
+fn default_item_enchantments() -> &'static str {
+    "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "
+}
+
+const fn item(item_id: u32, slot: u8, amount: u32) -> StarterItem {
+    StarterItem {
+        item_id,
+        slot,
+        amount,
+    }
+}
+
+const HUMAN_WARRIOR_ITEMS: [StarterItem; 8] = [
+    item(38, 3, 1),
+    item(39, 6, 1),
+    item(40, 7, 1),
+    item(25, 15, 1),
+    item(2362, 16, 1),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14646, 25, 1),
+];
+const HUMAN_PALADIN_ITEMS: [StarterItem; 7] = [
+    item(45, 3, 1),
+    item(44, 6, 1),
+    item(43, 7, 1),
+    item(2361, 15, 1),
+    item(6948, 23, 1),
+    item(65021, 24, 2),
+    item(65022, 25, 4),
+];
+const HUMAN_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(49, 3, 1),
+    item(48, 6, 1),
+    item(47, 7, 1),
+    item(2092, 15, 1),
+    item(65023, 17, 100),
+    item(65022, 23, 4),
+    item(6948, 24, 1),
+    item(14646, 25, 1),
+];
+const HUMAN_PRIEST_ITEMS: [StarterItem; 9] = [
+    item(53, 3, 1),
+    item(6098, 4, 1),
+    item(52, 6, 1),
+    item(51, 7, 1),
+    item(36, 15, 1),
+    item(65021, 23, 2),
+    item(65022, 24, 4),
+    item(6948, 25, 1),
+    item(14646, 26, 1),
+];
+const HUMAN_MAGE_ITEMS: [StarterItem; 9] = [
+    item(6096, 3, 1),
+    item(56, 4, 1),
+    item(1395, 6, 1),
+    item(55, 7, 1),
+    item(35, 15, 1),
+    item(65022, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14646, 26, 1),
+];
+const HUMAN_WARLOCK_ITEMS: [StarterItem; 9] = [
+    item(6097, 3, 1),
+    item(57, 4, 1),
+    item(1396, 6, 1),
+    item(59, 7, 1),
+    item(2092, 15, 1),
+    item(65027, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14646, 26, 1),
+];
+const ORC_WARRIOR_ITEMS: [StarterItem; 7] = [
+    item(6125, 3, 1),
+    item(139, 6, 1),
+    item(140, 7, 1),
+    item(12282, 15, 1),
+    item(6948, 23, 1),
+    item(65020, 24, 4),
+    item(14649, 25, 1),
+];
+const ORC_HUNTER_ITEMS: [StarterItem; 11] = [
+    item(127, 3, 1),
+    item(6126, 6, 1),
+    item(6127, 7, 1),
+    item(37, 15, 1),
+    item(2504, 17, 1),
+    item(65021, 23, 2),
+    item(65020, 24, 4),
+    item(6948, 25, 1),
+    item(14649, 26, 1),
+    item(2512, 27, 200),
+    item(2101, 28, 1),
+];
+const ORC_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(2105, 3, 1),
+    item(120, 6, 1),
+    item(121, 7, 1),
+    item(2092, 15, 1),
+    item(65024, 17, 100),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14649, 25, 1),
+];
+const ORC_SHAMAN_ITEMS: [StarterItem; 7] = [
+    item(154, 3, 1),
+    item(153, 6, 1),
+    item(36, 15, 1),
+    item(6948, 23, 1),
+    item(65020, 24, 4),
+    item(65021, 25, 2),
+    item(14649, 26, 1),
+];
+const ORC_WARLOCK_ITEMS: [StarterItem; 8] = [
+    item(6129, 4, 1),
+    item(1396, 6, 1),
+    item(59, 7, 1),
+    item(2092, 15, 1),
+    item(6948, 23, 1),
+    item(65020, 24, 4),
+    item(65021, 25, 2),
+    item(14649, 26, 1),
+];
+const DWARF_WARRIOR_ITEMS: [StarterItem; 7] = [
+    item(38, 3, 1),
+    item(39, 6, 1),
+    item(40, 7, 1),
+    item(12282, 15, 1),
+    item(6948, 23, 1),
+    item(65020, 24, 4),
+    item(14647, 25, 1),
+];
+const DWARF_PALADIN_ITEMS: [StarterItem; 8] = [
+    item(45, 3, 1),
+    item(44, 6, 1),
+    item(43, 7, 1),
+    item(2361, 15, 1),
+    item(65026, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14647, 26, 1),
+];
+const DWARF_HUNTER_ITEMS: [StarterItem; 11] = [
+    item(148, 3, 1),
+    item(147, 6, 1),
+    item(129, 7, 1),
+    item(37, 15, 1),
+    item(2508, 17, 1),
+    item(65021, 23, 2),
+    item(65020, 24, 4),
+    item(6948, 25, 1),
+    item(14647, 26, 1),
+    item(2516, 27, 200),
+    item(2102, 28, 1),
+];
+const DWARF_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(49, 3, 1),
+    item(48, 6, 1),
+    item(47, 7, 1),
+    item(2092, 15, 1),
+    item(65024, 17, 100),
+    item(65026, 23, 4),
+    item(6948, 24, 1),
+    item(14647, 25, 1),
+];
+const DWARF_PRIEST_ITEMS: [StarterItem; 9] = [
+    item(53, 3, 1),
+    item(6098, 4, 1),
+    item(52, 6, 1),
+    item(51, 7, 1),
+    item(36, 15, 1),
+    item(65021, 23, 2),
+    item(65026, 24, 4),
+    item(6948, 25, 1),
+    item(14647, 26, 1),
+];
+const NIGHTELF_WARRIOR_ITEMS: [StarterItem; 8] = [
+    item(38, 3, 1),
+    item(39, 6, 1),
+    item(40, 7, 1),
+    item(25, 15, 1),
+    item(2362, 16, 1),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14648, 25, 1),
+];
+const NIGHTELF_HUNTER_ITEMS: [StarterItem; 10] = [
+    item(148, 3, 1),
+    item(147, 6, 1),
+    item(129, 7, 1),
+    item(2092, 15, 1),
+    item(2504, 17, 1),
+    item(65021, 23, 2),
+    item(65020, 24, 4),
+    item(6948, 25, 1),
+    item(14648, 26, 1),
+    item(2512, 27, 200),
+];
+const NIGHTELF_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(49, 3, 1),
+    item(48, 6, 1),
+    item(47, 7, 1),
+    item(2092, 15, 1),
+    item(65023, 17, 100),
+    item(65026, 23, 4),
+    item(6948, 24, 1),
+    item(14648, 25, 1),
+];
+const NIGHTELF_PRIEST_ITEMS: [StarterItem; 9] = [
+    item(53, 3, 1),
+    item(6119, 4, 1),
+    item(52, 6, 1),
+    item(51, 7, 1),
+    item(36, 15, 1),
+    item(65022, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14648, 26, 1),
+];
+const NIGHTELF_DRUID_ITEMS: [StarterItem; 7] = [
+    item(6123, 4, 1),
+    item(44, 6, 1),
+    item(3661, 15, 1),
+    item(65021, 23, 2),
+    item(65025, 24, 4),
+    item(6948, 25, 1),
+    item(14648, 26, 1),
+];
+const UNDEAD_WARRIOR_ITEMS: [StarterItem; 8] = [
+    item(6125, 3, 1),
+    item(139, 6, 1),
+    item(140, 7, 1),
+    item(25, 15, 1),
+    item(2362, 16, 1),
+    item(65027, 23, 4),
+    item(6948, 24, 1),
+    item(14651, 25, 1),
+];
+const UNDEAD_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(2105, 3, 1),
+    item(120, 6, 1),
+    item(121, 7, 1),
+    item(2092, 15, 1),
+    item(65023, 17, 100),
+    item(65027, 23, 4),
+    item(6948, 24, 1),
+    item(14651, 25, 1),
+];
+const UNDEAD_PRIEST_ITEMS: [StarterItem; 9] = [
+    item(53, 3, 1),
+    item(6144, 4, 1),
+    item(52, 6, 1),
+    item(51, 7, 1),
+    item(36, 15, 1),
+    item(65027, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14651, 26, 1),
+];
+const UNDEAD_MAGE_ITEMS: [StarterItem; 9] = [
+    item(6096, 3, 1),
+    item(6140, 4, 1),
+    item(1395, 6, 1),
+    item(55, 7, 1),
+    item(35, 15, 1),
+    item(65027, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14651, 26, 1),
+];
+const UNDEAD_WARLOCK_ITEMS: [StarterItem; 8] = [
+    item(6129, 4, 1),
+    item(1396, 6, 1),
+    item(59, 7, 1),
+    item(2092, 15, 1),
+    item(65027, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14651, 26, 1),
+];
+const TAUREN_WARRIOR_ITEMS: [StarterItem; 6] = [
+    item(6125, 3, 1),
+    item(139, 6, 1),
+    item(2361, 15, 1),
+    item(6948, 23, 1),
+    item(65026, 24, 4),
+    item(14650, 25, 1),
+];
+const TAUREN_HUNTER_ITEMS: [StarterItem; 10] = [
+    item(127, 3, 1),
+    item(6126, 6, 1),
+    item(37, 15, 1),
+    item(2508, 17, 1),
+    item(65021, 23, 2),
+    item(65020, 24, 4),
+    item(6948, 25, 1),
+    item(14650, 26, 1),
+    item(2516, 27, 200),
+    item(2102, 28, 1),
+];
+const TAUREN_SHAMAN_ITEMS: [StarterItem; 7] = [
+    item(154, 3, 1),
+    item(153, 6, 1),
+    item(36, 15, 1),
+    item(6948, 23, 1),
+    item(65027, 24, 4),
+    item(65021, 25, 2),
+    item(14650, 26, 1),
+];
+const TAUREN_DRUID_ITEMS: [StarterItem; 7] = [
+    item(6139, 4, 1),
+    item(6124, 6, 1),
+    item(35, 15, 1),
+    item(65021, 23, 2),
+    item(65025, 24, 4),
+    item(6948, 25, 1),
+    item(14650, 26, 1),
+];
+const GNOME_WARRIOR_ITEMS: [StarterItem; 8] = [
+    item(38, 4, 1),
+    item(39, 6, 1),
+    item(40, 7, 1),
+    item(25, 15, 1),
+    item(2362, 16, 1),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14647, 25, 1),
+];
+const GNOME_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(49, 3, 1),
+    item(48, 6, 1),
+    item(47, 7, 1),
+    item(2092, 15, 1),
+    item(65023, 17, 100),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14647, 25, 1),
+];
+const GNOME_MAGE_ITEMS: [StarterItem; 9] = [
+    item(6096, 3, 1),
+    item(56, 4, 1),
+    item(1395, 6, 1),
+    item(55, 7, 1),
+    item(35, 15, 1),
+    item(65025, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14647, 26, 1),
+];
+const GNOME_WARLOCK_ITEMS: [StarterItem; 9] = [
+    item(6097, 3, 1),
+    item(57, 4, 1),
+    item(1396, 6, 1),
+    item(59, 7, 1),
+    item(2092, 15, 1),
+    item(65021, 23, 2),
+    item(65027, 24, 4),
+    item(6948, 25, 1),
+    item(14647, 26, 1),
+];
+const TROLL_WARRIOR_ITEMS: [StarterItem; 9] = [
+    item(6125, 3, 1),
+    item(139, 6, 1),
+    item(140, 7, 1),
+    item(37, 15, 1),
+    item(2362, 16, 1),
+    item(65024, 17, 100),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14649, 25, 1),
+];
+const TROLL_HUNTER_ITEMS: [StarterItem; 11] = [
+    item(127, 3, 1),
+    item(6126, 6, 1),
+    item(6127, 7, 1),
+    item(37, 15, 1),
+    item(2504, 17, 1),
+    item(65027, 23, 4),
+    item(65021, 24, 2),
+    item(2512, 27, 200),
+    item(2101, 28, 1),
+    item(14649, 26, 1),
+    item(6948, 25, 1),
+];
+const TROLL_ROGUE_ITEMS: [StarterItem; 8] = [
+    item(2105, 3, 1),
+    item(120, 6, 1),
+    item(121, 7, 1),
+    item(2092, 15, 1),
+    item(65024, 17, 100),
+    item(65020, 23, 4),
+    item(6948, 24, 1),
+    item(14649, 25, 1),
+];
+const TROLL_PRIEST_ITEMS: [StarterItem; 8] = [
+    item(53, 3, 1),
+    item(6144, 4, 1),
+    item(52, 6, 1),
+    item(36, 15, 1),
+    item(65026, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14649, 26, 1),
+];
+const TROLL_SHAMAN_ITEMS: [StarterItem; 7] = [
+    item(6134, 3, 1),
+    item(6135, 6, 1),
+    item(36, 15, 1),
+    item(65020, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14649, 26, 1),
+];
+const TROLL_MAGE_ITEMS: [StarterItem; 9] = [
+    item(6096, 3, 1),
+    item(6140, 4, 1),
+    item(1395, 6, 1),
+    item(55, 7, 1),
+    item(35, 15, 1),
+    item(65020, 23, 4),
+    item(65021, 24, 2),
+    item(6948, 25, 1),
+    item(14649, 26, 1),
+];
 
 #[cfg(test)]
 mod tests {
@@ -280,11 +1301,38 @@ mod tests {
     }
 
     #[test]
-    fn human_create_info_matches_seed_position() {
-        let info = player_create_info(1, 1);
+    fn starter_skill_values_match_basic_cmangos_ranges() {
+        assert_eq!(starter_skill_value(Some("Language: Common")), (300, 300));
+        assert_eq!(starter_skill_value(Some("Armor: Cloth")), (1, 1));
+        assert_eq!(starter_skill_value(Some("Warrior: Arms")), (1, 5));
+    }
 
-        assert_eq!(info.zone, 12);
-        assert_eq!(info.position.map_id, 0);
-        assert_eq!(info.position.x, -8949.95);
+    #[test]
+    fn human_warrior_outfit_matches_archived_cmangos_rows() {
+        let items = starter_outfit_items(1, 1).unwrap();
+
+        assert_eq!(items[0].item_id, 38);
+        assert_eq!(items[0].slot, 3);
+        assert!(items
+            .iter()
+            .any(|item| item.item_id == 25 && item.slot == 15));
+        assert!(items
+            .iter()
+            .any(|item| item.item_id == 2362 && item.slot == 16));
+    }
+
+    #[test]
+    fn equipment_cache_uses_item_id_enchant_pairs() {
+        let mut equipment = [0u32; ENUM_EQUIPMENT_CACHE_SLOTS];
+        equipment[3] = 38;
+        equipment[15] = 25;
+
+        let cache = format_equipment_cache(&equipment);
+
+        assert!(cache.starts_with("0 0 0 0 0 0 38 0"));
+        assert_eq!(
+            cache.split_whitespace().count(),
+            ENUM_EQUIPMENT_CACHE_SLOTS * 2
+        );
     }
 }

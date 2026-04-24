@@ -120,6 +120,16 @@ that cannot be run. Each milestone must leave the repo in a testable state.
      instead of hardcoded Rust fallback values.
    - Add negative/manual coverage for duplicate names, invalid names, invalid
      race/class combos, and character-count limits.
+   - Current status: first Rust slice reads `playercreateinfo` from the world
+     DB, persists starter spells/skills/action buttons from CMaNGOS source
+     tables, sends those spell/action rows during login bootstrap, and has a
+     first starter outfit/item persistence path based on archived CMaNGOS
+     `playercreateinfo_item` rows. Human Warrior enum/in-world gear visuals have
+     a first bridge, and the self-spawn update now includes equipment/backpack
+     item GUID fields plus minimal owned item create blocks from
+     `character_inventory`; broader item visual metadata, exact DBC skill
+     ranges, stats, power/health, cinematic flags, and real-client starter-gear
+     verification remain open.
 8. World bootstrap packet parity
    - Expand the current minimal post-login responses toward CMaNGOS behavior.
    - Keep `CMSG_NAME_QUERY`, account-data, tutorial state, channels,
@@ -213,7 +223,8 @@ New AI agents should start by reading, in order:
   map/physics/anticheat behavior.
 - Character creation is schema-compatible enough for the current enum/login
   path, but not yet full CMaNGOS `Player::Create` parity. Starter spells,
-  skills, items/equipment, action bars, stats, DBC-backed appearance
-  validation, and source-data-driven create info remain open.
+  skills, items/equipment, and action bars now have a first source-derived
+  bridge; stats, DBC-backed appearance validation, broader item visual metadata,
+  and fuller create-info parity remain open.
 - Future worldserver work will need a strict packet compatibility harness before
   gameplay code grows.

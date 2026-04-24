@@ -75,6 +75,12 @@ const CMSG_ATTACKSTOP: u32 = 0x0142;
 const SMSG_ATTACKSTART: u16 = 0x0143;
 const SMSG_ATTACKSTOP: u16 = 0x0144;
 const SMSG_ATTACKERSTATEUPDATE: u16 = 0x014A;
+const CMSG_LOOT: u32 = 0x015D;
+const CMSG_LOOT_MONEY: u32 = 0x015E;
+const CMSG_LOOT_RELEASE: u32 = 0x015F;
+const SMSG_LOOT_RESPONSE: u16 = 0x0160;
+const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x0161;
+const SMSG_LOOT_CLEAR_MONEY: u16 = 0x0165;
 const CMSG_GOSSIP_HELLO: u32 = 0x017B;
 const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
 const SMSG_GOSSIP_MESSAGE: u16 = 0x017D;
@@ -210,6 +216,7 @@ const UNIT_FIELD_NATIVEDISPLAYID: usize = 0x084;
 const UNIT_FIELD_MINDAMAGE: usize = 0x086;
 const UNIT_FIELD_MAXDAMAGE: usize = 0x087;
 const UNIT_FIELD_BYTES_1: usize = 0x08A;
+const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
 const UNIT_MOD_CAST_SPEED: usize = 0x091;
 const UNIT_NPC_FLAGS: usize = 0x093;
 const UNIT_NPC_EMOTESTATE: usize = 0x094;
@@ -240,6 +247,7 @@ const INVENTORY_SLOT_BAG_0: u8 = 0;
 const INVENTORY_SLOT_ITEM_START: u8 = 23;
 const INVENTORY_SLOT_ITEM_END: u8 = 39;
 const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
+const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
 const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
 const VICTIMSTATE_NORMAL: u32 = 1;
 const RUST_GUIDE_ENTRY: u32 = 900_001;
@@ -260,6 +268,7 @@ const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
 const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
 const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
 const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
+const CLIENT_LOOT_CORPSE: u8 = 1;
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -518,6 +527,16 @@ async fn handle_client(
                     CMSG_ATTACKSTOP => {
                         handle_attack_stop(&mut stream, &mut session, &mut header_crypto).await?;
                     }
+                    CMSG_LOOT => {
+                        handle_loot(&mut stream, &body, &mut session, &mut header_crypto).await?;
+                    }
+                    CMSG_LOOT_MONEY => {
+                        handle_loot_money(&mut stream, &mut session, &mut header_crypto).await?;
+                    }
+                    CMSG_LOOT_RELEASE => {
+                        handle_loot_release(&mut stream, &body, &mut session, &mut header_crypto)
+                            .await?;
+                    }
                     CMSG_GMTICKET_GETTICKET => {
                         handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
                     }
@@ -586,6 +605,8 @@ struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
     combat_dummy_health: u32,
     active_combat_target: Option<ObjectGuid>,
+    combat_dummy_lootable: bool,
+    combat_dummy_looting: bool,
 }
 
 #[derive(Debug)]
@@ -933,6 +954,8 @@ async fn handle_player_login(
         fall_time: 0,
     });
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
+    session.combat_dummy_lootable = false;
+    session.combat_dummy_looting = false;
     let inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     let world_stats = wow_db::get_player_world_stats(
@@ -2491,6 +2514,10 @@ async fn handle_attack_swing(
         );
         return Ok(());
     }
+    if session.combat_dummy_lootable || session.combat_dummy_health == 0 {
+        warn!("Ignoring attack swing against dead combat dummy");
+        return Ok(());
+    }
 
     session.active_combat_target = Some(target);
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
@@ -2541,21 +2568,29 @@ async fn send_combat_dummy_swing(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_combat_dummy_health_update_body(session.combat_dummy_health)?,
+        &build_combat_dummy_state_update_body(session.combat_dummy_health, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
 
     if session.combat_dummy_health == 0 {
+        session.combat_dummy_lootable = true;
+        session.combat_dummy_looting = false;
         send_packet(
             stream,
             SMSG_ATTACKSTOP,
             &build_attack_stop_body(attacker, target, true)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_combat_dummy_state_update_body(0, UNIT_DYNFLAG_LOOTABLE)?,
             Some(header_crypto),
         )
         .await?;
         session.active_combat_target = None;
-        session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     }
 
     Ok(())
@@ -2580,6 +2615,77 @@ async fn handle_attack_stop(
     .await
 }
 
+async fn handle_loot(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let target = read_packet_guid(body, "CMSG_LOOT")?;
+    if target != rust_combat_dummy_guid() {
+        warn!(
+            target = format_args!("0x{:016X}", target.raw()),
+            "Ignoring loot request for unknown target"
+        );
+        return Ok(());
+    }
+    if !session.combat_dummy_lootable {
+        warn!("Ignoring loot request for combat dummy before it is lootable");
+        return Ok(());
+    }
+
+    session.combat_dummy_looting = true;
+    let response = build_combat_dummy_loot_response_body();
+    send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
+}
+
+async fn handle_loot_money(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if !session.combat_dummy_looting {
+        warn!("Ignoring loot money request without an open combat dummy loot window");
+        return Ok(());
+    }
+
+    send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(header_crypto)).await
+}
+
+async fn handle_loot_release(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let target = read_packet_guid(body, "CMSG_LOOT_RELEASE")?;
+    if target != rust_combat_dummy_guid() {
+        warn!(
+            target = format_args!("0x{:016X}", target.raw()),
+            "Ignoring loot release for unknown target"
+        );
+        return Ok(());
+    }
+
+    session.combat_dummy_looting = false;
+    session.combat_dummy_lootable = false;
+    session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
+    send_packet(
+        stream,
+        SMSG_LOOT_RELEASE_RESPONSE,
+        &build_loot_release_response_body(target, true),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_combat_dummy_state_update_body(RUST_COMBAT_DUMMY_HEALTH, 0)?,
+        Some(header_crypto),
+    )
+    .await
+}
+
 fn build_attack_start_body(attacker: ObjectGuid, victim: ObjectGuid) -> Vec<u8> {
     let mut body = Vec::with_capacity(16);
     body.extend_from_slice(&attacker.raw().to_le_bytes());
@@ -2597,6 +2703,22 @@ fn build_attack_stop_body(
     PackedGuid::write(&mut body, victim)?;
     body.extend_from_slice(&(dead as u32).to_le_bytes());
     Ok(body)
+}
+
+fn build_combat_dummy_loot_response_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(14);
+    body.extend_from_slice(&rust_combat_dummy_guid().raw().to_le_bytes());
+    body.push(CLIENT_LOOT_CORPSE);
+    body.extend_from_slice(&0u32.to_le_bytes()); // gold
+    body.push(0); // item count
+    body
+}
+
+fn build_loot_release_response_body(target: ObjectGuid, released: bool) -> Vec<u8> {
+    let mut body = Vec::with_capacity(9);
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.push(released as u8);
+    body
 }
 
 fn build_attacker_state_update_body(
@@ -2622,13 +2744,17 @@ fn build_attacker_state_update_body(
     Ok(body)
 }
 
-fn build_combat_dummy_health_update_body(health: u32) -> anyhow::Result<Vec<u8>> {
+fn build_combat_dummy_state_update_body(
+    health: u32,
+    dynamic_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
     let guid = rust_combat_dummy_guid();
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, guid)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());
@@ -3654,8 +3780,8 @@ mod tests {
     }
 
     #[test]
-    fn combat_dummy_health_update_sets_unit_health() {
-        let body = build_combat_dummy_health_update_body(20).unwrap();
+    fn combat_dummy_state_update_sets_health_and_dynamic_flags() {
+        let body = build_combat_dummy_state_update_body(20, UNIT_DYNFLAG_LOOTABLE).unwrap();
         let packed_guid_mask = body[6];
         let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
         let values = decode_update_values(&body[values_start..]);
@@ -3664,18 +3790,45 @@ mod tests {
         assert_eq!(body[4], 0);
         assert_eq!(body[5], UPDATE_TYPE_VALUES);
         assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
+        assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
     }
 
     #[test]
-    fn combat_session_tracks_active_dummy_target() {
+    fn combat_dummy_loot_packets_match_empty_corpse_shape() {
+        let loot = build_combat_dummy_loot_response_body();
+        assert_eq!(&loot[0..8], &rust_combat_dummy_guid().raw().to_le_bytes());
+        assert_eq!(loot[8], CLIENT_LOOT_CORPSE);
+        assert_eq!(&loot[9..13], &0u32.to_le_bytes());
+        assert_eq!(loot[13], 0);
+
+        let release = build_loot_release_response_body(rust_combat_dummy_guid(), true);
+        assert_eq!(
+            &release[0..8],
+            &rust_combat_dummy_guid().raw().to_le_bytes()
+        );
+        assert_eq!(release[8], 1);
+    }
+
+    #[test]
+    fn combat_session_tracks_active_dummy_target_and_loot_state() {
         let mut session = WorldSessionState::default();
         assert_eq!(session.active_combat_target, None);
+        assert!(!session.combat_dummy_lootable);
+        assert!(!session.combat_dummy_looting);
 
         session.active_combat_target = Some(rust_combat_dummy_guid());
+        session.combat_dummy_lootable = true;
+        session.combat_dummy_looting = true;
         assert_eq!(session.active_combat_target, Some(rust_combat_dummy_guid()));
+        assert!(session.combat_dummy_lootable);
+        assert!(session.combat_dummy_looting);
 
         session.active_combat_target = None;
+        session.combat_dummy_lootable = false;
+        session.combat_dummy_looting = false;
         assert_eq!(session.active_combat_target, None);
+        assert!(!session.combat_dummy_lootable);
+        assert!(!session.combat_dummy_looting);
     }
 
     #[test]

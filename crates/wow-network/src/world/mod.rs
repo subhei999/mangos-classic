@@ -509,10 +509,20 @@ async fn handle_char_delete(
 
     let raw_guid = u64::from_le_bytes(body.try_into()?);
     let guid = ObjectGuid::from_raw(raw_guid).counter();
+    if wow_db::is_guild_leader(character_db_pool, guid).await? {
+        warn!(account_id, guid, "Rejected guild leader character delete");
+        return send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await;
+    }
+
     let deleted = wow_db::delete_character(character_db_pool, account_id, guid).await?;
     if deleted {
-        let count = wow_db::character_count_for_account(character_db_pool, account_id).await?;
-        wow_db::set_realm_character_count(login_db_pool, REALM_ID, account_id, count).await?;
+        let count = wow_db::refresh_realm_character_count(
+            login_db_pool,
+            character_db_pool,
+            account_id,
+            REALM_ID,
+        )
+        .await?;
         info!(account_id, guid, count, "Deleted character");
         send_char_delete_result(stream, CHAR_DELETE_SUCCESS, Some(header_crypto)).await
     } else {
@@ -596,8 +606,13 @@ async fn handle_char_create(
     )
     .await?;
 
-    let new_count = char_count.saturating_add(1);
-    wow_db::set_realm_character_count(login_db_pool, account_id, REALM_ID, new_count).await?;
+    let new_count = wow_db::refresh_realm_character_count(
+        login_db_pool,
+        character_db_pool,
+        account_id,
+        REALM_ID,
+    )
+    .await?;
 
     info!(
         account_id,

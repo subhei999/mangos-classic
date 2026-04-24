@@ -6,13 +6,13 @@ Update this file before ending any substantial Rust migration session.
 
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: `fac4f2ff7`
-- Uncommitted session changes: none; branch was clean after pushing
-  `fac4f2ff7 Add CMaNGOS starter default parity`.
+- Uncommitted session changes: character lifecycle coverage in progress; not
+  committed yet.
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
 
-Start Character Lifecycle Coverage while keeping the client-proven create ->
+Expand Character Lifecycle Coverage while keeping the client-proven create ->
 enum -> enter world -> move -> logout/delete path intact.
 
 ## What Changed Recently
@@ -125,6 +125,41 @@ enum -> enter world -> move -> logout/delete path intact.
       update so the client receives owned item objects for starter inventory.
   - `scripts/run-client-stack-18085.ps1` now creates/imports the local `mangos`
     schema when needed so the worldserver can read starter defaults.
+- Fixed Rust worldserver delete count refresh to update
+  `realmcharacters(realmid=1, acctid=<account>)`; the delete path previously
+  passed realm/account arguments in the wrong order.
+- Added `wow_db::refresh_realm_character_count` so create/delete share one
+  source of truth for character count refresh.
+- Added `bins/character-lifecycle-test` plus
+  `scripts/test-character-lifecycle.cmd` / `.ps1`. The Docker-backed smoke
+  creates a Human Warrior through the Rust DB path, verifies enum visibility,
+  verifies `realmcharacters` count and absence of the reversed row, verifies
+  starter hearthstone/weapon inventory, deletes the character, then verifies
+  count and starter item cleanup.
+- Added `bins/world-flow-test` plus `scripts/test-world-flow.cmd` / `.ps1`.
+  The packet-level smoke seeds and authenticates an SRP account through the
+  Rust authserver, connects to Rust worldserver, completes
+  `CMSG_AUTH_SESSION`, sends `CMSG_CHAR_ENUM`, creates `Worldlife` through
+  `CMSG_CHAR_CREATE`, verifies `SMSG_CHAR_CREATE`, enum visibility,
+  `realmcharacters` count, and starter inventory, deletes through
+  `CMSG_CHAR_DELETE`, then verifies the final enum/count cleanup.
+- Expanded `world-flow-test` with negative character-screen packet coverage:
+  one-character-too-short name, invalid-character name, invalid race/class
+  combo, duplicate name, character-limit response, malformed delete packet, and
+  deleting another account's character. These cases assert response codes and
+  count/ownership invariants.
+- Added guild leader delete parity: Rust worldserver now rejects
+  `CMSG_CHAR_DELETE` when `guild.leaderguid` matches the selected character,
+  mirroring CMaNGOS `sGuildMgr.GetGuildByLeader(guid)`. `world-flow-test`
+  seeds a temporary guild/guild_member row, asserts delete failure, verifies
+  the character remains in enum, and checks count stability.
+- Added non-leader guild delete cleanup parity: `wow_db::delete_character`
+  removes `guild_member` rows for the deleted character and `guild_eventlog`
+  rows where the character appears as `PlayerGuid1` or `PlayerGuid2`.
+  `world-flow-test` seeds those rows before the successful delete and asserts
+  they are gone afterward.
+- Updated `scripts/test-world-flow.ps1` to tear down child `authserver.exe` and
+  `worldserver.exe` processes after the smoke test finishes.
 
 ## Tests Last Run
 
@@ -194,6 +229,25 @@ Both passed locally after adding `character_inventory` loading for login,
 player update-field coverage for equipment/backpack slots, and minimal item
 create blocks with owner/contained GUIDs, item entry, stack count, and
 durability.
+
+Character lifecycle coverage:
+
+```powershell
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-character-lifecycle.cmd
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust-db.cmd
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
+```
+
+All passed locally after stopping stale `authserver.exe` / `worldserver.exe`
+processes that were holding `target\debug\authserver.exe`. Docker-backed tests
+needed elevated Docker access in the Codex app shell. The lifecycle smoke
+printed:
+
+```text
+character lifecycle check passed: create, enum, count refresh, starter items, delete cleanup
+world flow check passed: auth session, create/delete happy path, negative create/delete cases, guild leader rejection, guild cleanup, enum/count refresh
+```
 
 The DB smoke test starts MariaDB through Docker and verifies the Rust authserver
 can start against it.
@@ -320,13 +374,16 @@ docker compose -f docker-compose.local.yml down
 
 Next recommended milestone: Character Lifecycle Coverage.
 
-- Add automated/scripted coverage around character create/delete/enum count
-  refresh so the client-proven lifecycle path cannot regress.
-- Add `CMSG_CHAR_CREATE` negative/manual coverage for duplicate names, invalid
-  names, invalid race/class combos, and character-count limit responses.
-- Exercise delete cleanup semantics for characters with starter equipment and
-  backpack items, including `item_instance` cleanup and
-  `realmd.realmcharacters` count refresh.
+- Important: character deletion is not complete CMaNGOS parity yet. Current
+  coverage proves happy-path packet create/delete, negative character-screen
+  responses, guild leader rejection, and guild member/eventlog cleanup only.
+  Keep documenting delete behavior as partial until the remaining gaps below
+  are resolved.
+- Exercise fuller CMaNGOS delete semantics: loaded character rejection, group
+  cleanup, social cleanup, mail/item cleanup, and config-dependent hard-delete
+  versus unlink behavior.
+- Broaden lifecycle coverage beyond the first Human Warrior happy path,
+  especially starter equipment/backpack cleanup for more race/class rows.
 - Keep the client-proven vertical path intact: create character -> enum refresh
   -> enter world -> starter gear/items visible -> move -> logout/delete.
 
@@ -347,8 +404,12 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 - `crates/wow-db/src/character.rs`
 - `crates/wow-db/src/realm.rs`
 - `bins/auth-flow-test/src/main.rs`
+- `bins/character-lifecycle-test/src/main.rs`
+- `bins/world-flow-test/src/main.rs`
 - `bins/worldserver/src/main.rs`
 - `scripts/test-auth-flow.ps1`
+- `scripts/test-character-lifecycle.ps1`
+- `scripts/test-world-flow.ps1`
 - `scripts/run-auth-client-13724.cmd`
 - `scripts/run-client-stack-18085.ps1`
 - `scripts/run-client-stack-18085.cmd`
@@ -383,6 +444,12 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
   world-data cache instead of hardcoded item visuals.
 - Exact DBC skill ranges, health/power/stat initialization, cinematic flags,
   and DBC-backed appearance validation remain open.
+- Character delete parity remains partial. Known remaining gaps: group cleanup
+  (`group_member`, `group_instance`, leader behavior), explicit social cleanup
+  tests, CMaNGOS mail/COD/item-return behavior, pet cleanup coverage,
+  auction-related cleanup, config-dependent hard-delete versus
+  unlink/soft-delete behavior, and loaded-character delete rejection once
+  online character tracking exists.
 - Post-login probe cleanup is unit-tested, but should still get one quick
   real-client smoke pass at the start of the next session.
 - The minimal self-spawn `SMSG_UPDATE_OBJECT` is enough for the real client to

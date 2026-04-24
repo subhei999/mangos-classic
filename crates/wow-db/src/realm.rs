@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
 use sqlx::FromRow;
 
+use crate::character::character_count_for_account;
 use crate::pool::{DbError, DbResult};
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,17 @@ pub async fn set_realm_character_count(
     .await?;
 
     Ok(())
+}
+
+pub async fn refresh_realm_character_count(
+    login_pool: &MySqlPool,
+    character_pool: &MySqlPool,
+    account_id: u32,
+    realm_id: u32,
+) -> Result<u8, DbError> {
+    let count = character_count_for_account(character_pool, account_id).await?;
+    set_realm_character_count(login_pool, account_id, realm_id, count).await?;
+    Ok(count)
 }
 
 #[cfg(test)]

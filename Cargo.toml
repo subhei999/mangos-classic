@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "bins/auth-flow-test",
+    "bins/character-lifecycle-test",
+    "bins/world-flow-test",
     "bins/authserver",
     "bins/worldserver",
     "crates/wow-common",

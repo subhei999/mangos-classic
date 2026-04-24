@@ -22,6 +22,9 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - Local unit/lint/build entrypoint: `scripts/test-rust.cmd`
 - Local MariaDB smoke entrypoint: `scripts/test-rust-db.cmd`
 - Local auth flow entrypoint: `scripts/test-auth-flow.cmd`
+- Local character lifecycle DB smoke entrypoint:
+  `scripts/test-character-lifecycle.cmd`
+- Local packet-level world flow entrypoint: `scripts/test-world-flow.cmd`
 - Local DB config: `config/authserver.local.toml`
 - Local world skeleton config: `config/worldserver.local.toml`
 - Docker DB harness: `docker-compose.local.yml`
@@ -139,9 +142,27 @@ that cannot be run. Each milestone must leave the repo in a testable state.
      rename/delete cleanup semantics, and a scripted world/character harness so
      character-screen behavior is not only manually tested through the WoW
      client.
-   - Current status: `CMSG_CHAR_DELETE` is implemented and manually proven
-     after fixing `character_tutorial` cleanup; next work is automated coverage
-     for create/delete/count refresh and negative character-screen behavior.
+   - Current status: `CMSG_CHAR_DELETE` is implemented and manually proven.
+     A first Docker-backed `character-lifecycle-test` now creates a Human
+     Warrior through the Rust DB path, verifies enum visibility, refreshes the
+     `realmcharacters` count, verifies starter inventory, deletes the
+     character, and verifies count/item cleanup. A packet-level
+     `world-flow-test` now authenticates through the Rust authserver, completes
+     world `CMSG_AUTH_SESSION`, sends `CMSG_CHAR_ENUM`, creates a Human
+     Warrior through `CMSG_CHAR_CREATE`, verifies enum/count/starter inventory
+     refresh, covers duplicate name, invalid name, invalid race/class,
+     character-limit, malformed delete, cross-account delete, and guild leader
+     delete failures, deletes a non-leader guild member through
+     `CMSG_CHAR_DELETE`, verifies `guild_member` / `guild_eventlog` cleanup,
+     and verifies enum/count refresh. Next work is broader CMaNGOS delete
+     cleanup semantics.
+   - Delete parity is explicitly not complete yet. Remaining known gaps:
+     group cleanup (`group_member`, `group_instance`, and leader behavior),
+     explicit social cleanup coverage, mail cleanup parity including COD/item
+     return behavior, pet-related cleanup coverage, auction-related character
+     cleanup, config-dependent hard-delete versus unlink/soft-delete behavior,
+     and loaded-character delete rejection once the Rust worldserver tracks
+     online characters across sessions.
 10. Gameplay slices
    - Movement, chat, inventory, combat, spells, NPCs, loot, groups, guilds.
    - Each slice gets packet tests and DB fixture coverage.
@@ -166,6 +187,18 @@ Run when auth protocol behavior changes:
 
 ```powershell
 .\scripts\test-auth-flow.cmd
+```
+
+Run when character create/delete/count-refresh behavior changes:
+
+```powershell
+.\scripts\test-character-lifecycle.cmd
+```
+
+Run when authenticated world character-screen packet behavior changes:
+
+```powershell
+.\scripts\test-world-flow.cmd
 ```
 
 Expected local services:
@@ -228,5 +261,9 @@ New AI agents should start by reading, in order:
   skills, items/equipment, and action bars now have a first source-derived
   bridge; stats, DBC-backed appearance validation, broader item visual metadata,
   and fuller create-info parity remain open.
+- Character deletion now has packet-level happy-path, negative create/delete,
+  guild leader rejection, and guild member/eventlog cleanup coverage. It is not
+  full CMaNGOS `Player::DeleteFromDB` parity yet; group, social, mail, pet,
+  auction, soft-delete, and loaded-character semantics remain open.
 - Future worldserver work will need a strict packet compatibility harness before
   gameplay code grows.

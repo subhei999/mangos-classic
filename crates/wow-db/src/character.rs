@@ -205,6 +205,15 @@ pub async fn character_count_for_account(pool: &MySqlPool, account_id: u32) -> R
     Ok(count.min(u8::MAX as i64) as u8)
 }
 
+pub async fn is_guild_leader(pool: &MySqlPool, guid: u32) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild WHERE leaderguid = ?")
+        .bind(guid)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(count > 0)
+}
+
 pub async fn delete_character(
     pool: &MySqlPool,
     account_id: u32,
@@ -249,6 +258,15 @@ pub async fn delete_character(
     }
 
     sqlx::query("DELETE FROM character_social WHERE guid = ? OR friend = ?")
+        .bind(guid)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM guild_member WHERE guid = ?")
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM guild_eventlog WHERE PlayerGuid1 = ? OR PlayerGuid2 = ?")
         .bind(guid)
         .bind(guid)
         .execute(pool)

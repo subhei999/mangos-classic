@@ -120,16 +120,15 @@ that cannot be run. Each milestone must leave the repo in a testable state.
      instead of hardcoded Rust fallback values.
    - Add negative/manual coverage for duplicate names, invalid names, invalid
      race/class combos, and character-count limits.
-   - Current status: first Rust slice reads `playercreateinfo` from the world
-     DB, persists starter spells/skills/action buttons from CMaNGOS source
-     tables, sends those spell/action rows during login bootstrap, and has a
-     first starter outfit/item persistence path based on archived CMaNGOS
-     `playercreateinfo_item` rows. Human Warrior enum/in-world gear visuals have
-     a first bridge, and the self-spawn update now includes equipment/backpack
-     item GUID fields plus minimal owned item create blocks from
-     `character_inventory`; broader item visual metadata, exact DBC skill
-     ranges, stats, power/health, cinematic flags, and real-client starter-gear
-     verification remain open.
+   - Current status: first real-client Human Warrior slice is complete and
+     pushed in `fac4f2ff7`. Rust reads `playercreateinfo` from the world DB,
+     persists starter spells/skills/action buttons from CMaNGOS source tables,
+     sends those spell/action rows during login bootstrap, and persists starter
+     outfit/items from archived CMaNGOS `playercreateinfo_item` rows. Real
+     client verification confirmed starter spellbook, action bar, visible
+     shirt/pants/boots/sword/shield, hearthstone, and gift voucher. Broader
+     race/class item visuals, exact DBC skill ranges, stats, power/health,
+     cinematic flags, and DBC-backed validation remain open.
 8. World bootstrap packet parity
    - Expand the current minimal post-login responses toward CMaNGOS behavior.
    - Keep `CMSG_NAME_QUERY`, account-data, tutorial state, channels,
@@ -140,6 +139,9 @@ that cannot be run. Each milestone must leave the repo in a testable state.
      rename/delete cleanup semantics, and a scripted world/character harness so
      character-screen behavior is not only manually tested through the WoW
      client.
+   - Current status: `CMSG_CHAR_DELETE` is implemented and manually proven
+     after fixing `character_tutorial` cleanup; next work is automated coverage
+     for create/delete/count refresh and negative character-screen behavior.
 10. Gameplay slices
    - Movement, chat, inventory, combat, spells, NPCs, loot, groups, guilds.
    - Each slice gets packet tests and DB fixture coverage.

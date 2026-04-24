@@ -5,21 +5,15 @@ Update this file before ending any substantial Rust migration session.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: `cd23db319`
-- Uncommitted session changes: first CMaNGOS starter-default parity slice:
-  world-DB-backed `playercreateinfo` loading for new character create, starter
-  spell/skill/action persistence, DB-backed initial spell/action bootstrap
-  packets, first starter outfit/item persistence, login inventory GUID update
-  fields, and minimal login item create update blocks; local `mangos` schema
-  import in the client-stack helper; and `world_database=mangos` local config
-  wiring.
+- Latest commit: `fac4f2ff7`
+- Uncommitted session changes: none; branch was clean after pushing
+  `fac4f2ff7 Add CMaNGOS starter default parity`.
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
 
-Move through CMaNGOS starter-default parity for newly created characters while
-keeping the client-proven create -> enum -> enter world -> move -> logout path
-intact.
+Start Character Lifecycle Coverage while keeping the client-proven create ->
+enum -> enter world -> move -> logout/delete path intact.
 
 ## What Changed Recently
 
@@ -100,7 +94,8 @@ intact.
   `CMSG_GMTICKET_GETTICKET` returns no-ticket status, account-data updates are
   explicitly ignored, and known bootstrap chatter is logged as expected instead
   of unhandled warnings.
-- Started CMaNGOS starter-default parity for newly created characters:
+- Completed the first real-client CMaNGOS starter-default parity slice for newly
+  created Human Warriors:
   - `worldserver` now opens a separate world DB pool and local config points it
     at the Docker `mangos` database.
   - `wow_db::create_character` now reads `playercreateinfo` from the world DB
@@ -169,6 +164,8 @@ Spellbook showed the expected starter spells.
 Initial action bar was empty before the Battle Stance self-spawn fix.
 After restarting the patched stack and re-entering the character, the starter
 action bar looked good.
+Follow-up client smoke confirmed pants, boots, hearthstone, and gift voucher
+visible after the inventory GUID and item create-block fixes.
 ```
 
 Starter outfit stack smoke:
@@ -182,10 +179,9 @@ World server listening on 127.0.0.1:18085
 Unit/build coverage added for Human Warrior starter outfit rows,
 `equipmentCache` formatting, equipment-cache parsing, and Human Warrior
 starter visual metadata. User real-client smoke confirmed pants/boots after the
-equipment/backpack GUID update-field fix; hearthstone still did not appear even
-though DB rows showed item `6948` in backpack slot `24`, so the latest follow-up
-adds minimal item create update blocks during self-spawn. Real-client
-hearthstone visibility needs one fresh relog/create pass after this fix.
+equipment/backpack GUID update-field fix and confirmed hearthstone plus the
+starter gift voucher after minimal owned item create blocks were added during
+self-spawn.
 
 Inventory GUID follow-up:
 
@@ -322,25 +318,17 @@ docker compose -f docker-compose.local.yml down
 
 ## Next Recommended Task
 
-Harden the in-world skeleton:
+Next recommended milestone: Character Lifecycle Coverage.
 
-Continue CMaNGOS starter-default parity for newly created characters.
-
-- Real-client smoke the new starter outfit path with a fresh Human Warrior:
-  confirm character select shows starter equipment, the in-world model has the
-  starter sword/shield/clothing, and `character_inventory`/`item_instance` rows
-  exist. After the latest item create-block fix, first try a full relog on the
-  existing test Human Warrior; create a fresh Human Warrior only if the client
-  still has stale state.
+- Add automated/scripted coverage around character create/delete/enum count
+  refresh so the client-proven lifecycle path cannot regress.
 - Add `CMSG_CHAR_CREATE` negative/manual coverage for duplicate names, invalid
   names, invalid race/class combos, and character-count limit responses.
-- Continue filling out CMaNGOS `Player::Create` parity: starter
-  health/power/stat initialization, cinematic flags, fuller skill-range
-  parity, and broader enum visual metadata beyond the first Human Warrior
-  bridge. Race/class create info, starter spells, action buttons, and starter
-  skill rows now have a client-proven first Rust implementation.
+- Exercise delete cleanup semantics for characters with starter equipment and
+  backpack items, including `item_instance` cleanup and
+  `realmd.realmcharacters` count refresh.
 - Keep the client-proven vertical path intact: create character -> enum refresh
-  -> enter world -> move -> logout -> persisted relog position.
+  -> enter world -> starter gear/items visible -> move -> logout/delete.
 
 Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 `realmd` run for extra confidence.

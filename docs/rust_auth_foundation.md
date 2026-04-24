@@ -3,6 +3,9 @@
 This branch adds a parallel Rust authserver workspace while leaving the C++
 CMaNGOS server untouched.
 
+For the long-running migration map and AI-agent handoff protocol, see
+`docs/rust_migration_plan.md` and `docs/session_handoff.md`.
+
 ## Local configuration
 
 The Rust authserver reads TOML configuration from `config/authserver.toml` by

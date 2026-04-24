@@ -10,7 +10,7 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use sqlx::mysql::MySqlPool;
 use std::io::{Cursor, Read, Write};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use wow_crypto::srp::SrpAuth;
 
@@ -45,6 +45,10 @@ pub struct AuthSession {
     username: Option<String>,
     /// Database account ID.
     account_id: Option<u32>,
+    /// Client build from CMD_AUTH_LOGON_CHALLENGE.
+    build: Option<u16>,
+    /// Whether the TCP handler should close after sending the next response.
+    close_after_response: bool,
 }
 
 impl AuthSession {
@@ -56,12 +60,20 @@ impl AuthSession {
             srp: None,
             username: None,
             account_id: None,
+            build: None,
+            close_after_response: false,
         }
     }
 
     /// Return the current state.
     pub fn state(&self) -> AuthState {
         self.state
+    }
+
+    pub fn take_close_after_response(&mut self) -> bool {
+        let close = self.close_after_response;
+        self.close_after_response = false;
+        close
     }
 
     // -----------------------------------------------------------------------
@@ -100,8 +112,13 @@ impl AuthSession {
         let mut cursor = Cursor::new(data);
         // Skip cmd(1) + error(1) + size(2).
         cursor.set_position(4);
-        // Skip game_name(4) + version(3) + build(2) + platform(4) + os(4) +
-        // locale(4) + timezone_bias(4) + ip(4) = 29 bytes.
+        // Skip game_name(4) + version(3), then read build.
+        cursor.set_position(4 + 4 + 3);
+        let mut build_bytes = [0u8; 2];
+        cursor.read_exact(&mut build_bytes)?;
+        let build = u16::from_le_bytes(build_bytes);
+
+        // Skip platform(4) + os(4) + locale(4) + timezone_bias(4) + ip(4).
         cursor.set_position(4 + 29);
 
         let mut name_len_buf = [0u8; 1];
@@ -116,7 +133,7 @@ impl AuthSession {
         cursor.read_exact(&mut name_bytes)?;
         let username = wow_db::account::normalize_username(&String::from_utf8(name_bytes)?);
 
-        debug!("Auth challenge for account: {}", username);
+        info!(%username, build, "Auth challenge received");
 
         // Look up the account.
         let account = wow_db::account::get_account_by_username(&self.db_pool, &username).await?;
@@ -143,6 +160,7 @@ impl AuthSession {
 
         self.username = Some(username);
         self.account_id = Some(account.id);
+        self.build = Some(build);
 
         // Build response bytes.
         let mut resp = Vec::with_capacity(119);
@@ -213,12 +231,30 @@ impl AuthSession {
             .take()
             .ok_or_else(|| anyhow::anyhow!("SRP state missing during proof"))?;
 
+        if !matches!(self.build, Some(5875 | 6005 | 6141)) {
+            warn!(
+                "Unsupported client build {} for account {}",
+                self.build
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                self.username.as_deref().unwrap_or("?")
+            );
+            self.state = AuthState::Connected;
+            self.close_after_response = true;
+            return Ok(build_challenge_error(0x09)); // AUTH_LOGON_FAILED_VERSION_INVALID
+        }
+
         let (auth_result, _server) = match srp.verify_client_proof(a, m1) {
             Ok(r) => r,
             Err(_) => {
-                warn!("Client proof verification failed");
+                warn!(
+                    username = %self.username.as_deref().unwrap_or("?"),
+                    build = ?self.build,
+                    "Client proof verification failed"
+                );
                 self.state = AuthState::Connected;
-                return Ok(build_proof_error(0x04)); // WOW_FAIL_UNKNOWN_ACCOUNT
+                self.close_after_response = true;
+                return Ok(build_proof_error_for_build(self.build, 0x04)); // WOW_FAIL_UNKNOWN_ACCOUNT
             }
         };
 
@@ -336,6 +372,15 @@ impl AuthSession {
 
         Ok(resp)
     }
+
+    pub async fn handle_reconnect_challenge(&mut self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        warn!(
+            bytes = data.len(),
+            "Reconnect challenge is not implemented; closing connection"
+        );
+        self.close_after_response = true;
+        Ok(vec![0x02, 0x04])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +395,13 @@ fn build_challenge_error(error_code: u8) -> Vec<u8> {
 /// Build a CMD_AUTH_LOGON_PROOF error response.
 fn build_proof_error(error_code: u8) -> Vec<u8> {
     vec![0x01, error_code, 0x00, 0x00]
+}
+
+fn build_proof_error_for_build(build: Option<u16>, error_code: u8) -> Vec<u8> {
+    match build {
+        Some(5875 | 6005) => vec![0x01, error_code],
+        _ => build_proof_error(error_code),
+    }
 }
 
 /// Parse a 64-character hex string into a 32-byte array.
@@ -414,5 +466,11 @@ mod tests {
     fn proof_error_format() {
         let err = build_proof_error(0x04);
         assert_eq!(err, vec![0x01, 0x04, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn vanilla_proof_error_format() {
+        let err = build_proof_error_for_build(Some(5875), 0x04);
+        assert_eq!(err, vec![0x01, 0x04]);
     }
 }

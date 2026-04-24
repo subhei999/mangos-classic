@@ -88,17 +88,22 @@ pub async fn handle_client(mut stream: TcpStream, db_pool: MySqlPool) -> anyhow:
             0x00 => session.handle_logon_challenge(data).await,
             // CMD_AUTH_LOGON_PROOF
             0x01 => session.handle_logon_proof(data).await,
+            // CMD_AUTH_RECONNECT_CHALLENGE
+            0x02 => session.handle_reconnect_challenge(data).await,
             // CMD_REALM_LIST
             0x10 => session.handle_realm_list(data).await,
             other => {
                 warn!("Unknown auth opcode: 0x{:02X}", other);
-                continue;
+                return Ok(());
             }
         };
 
         match response {
             Ok(response_bytes) => {
                 stream.write_all(&response_bytes).await?;
+                if session.take_close_after_response() {
+                    return Ok(());
+                }
             }
             Err(e) => {
                 warn!("Error handling auth opcode 0x{:02X}: {}", opcode, e);

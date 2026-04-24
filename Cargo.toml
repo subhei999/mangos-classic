@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "bins/auth-flow-test",
     "bins/authserver",
+    "bins/worldserver",
     "crates/wow-common",
     "crates/wow-proto",
     "crates/wow-crypto",

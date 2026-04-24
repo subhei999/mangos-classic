@@ -27,13 +27,13 @@ pub struct Account {
 /// A row from the `account_banned` table.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AccountBanned {
-    pub id: u32,
-    pub account_id: u32,
+    pub id: i32,
+    pub account_id: i32,
     pub banned_at: i64,
     pub expires_at: i64,
     pub banned_by: String,
     pub reason: String,
-    pub active: u8,
+    pub active: i8,
 }
 
 /// A row from the `ip_banned` table.

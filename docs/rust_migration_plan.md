@@ -17,11 +17,13 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - Branch: `codex/rust-auth-foundation`
 - Base: `master`
 - C++ tree: untouched and still the canonical behavior reference
-- Rust status: authserver foundation exists and builds locally
+- Rust status: authserver foundation exists and builds locally; worldserver
+  skeleton can carry a real 1.12.1 client into a minimal in-world state
 - Local unit/lint/build entrypoint: `scripts/test-rust.cmd`
 - Local MariaDB smoke entrypoint: `scripts/test-rust-db.cmd`
 - Local auth flow entrypoint: `scripts/test-auth-flow.cmd`
 - Local DB config: `config/authserver.local.toml`
+- Local world skeleton config: `config/worldserver.local.toml`
 - Docker DB harness: `docker-compose.local.yml`
 
 ## Crate Map
@@ -30,6 +32,10 @@ that cannot be run. Each milestone must leave the repo in a testable state.
   - Runnable Rust login/auth server.
   - Owns CLI parsing, config loading, tracing setup, DB pool creation, and
     server startup.
+- `bins/worldserver`
+  - Runnable Rust worldserver skeleton.
+  - Current focus is accepting the real client's world TCP connection and
+    bootstrapping auth, character enum, character login, and minimal self-spawn.
 - `crates/wow-config`
   - TOML and environment configuration.
   - `AUTH_` environment variables override authserver TOML.
@@ -41,10 +47,12 @@ that cannot be run. Each milestone must leave the repo in a testable state.
   - Current focus is realmd/auth packets only.
 - `crates/wow-db`
   - Database models and queries against existing CMaNGOS schemas.
-  - Current focus is `realmd`: accounts, bans, realms, character counts.
+  - Current focus is `realmd`: accounts, bans, realms, character counts, plus
+    enough `characters` schema access for character select.
 - `crates/wow-network`
   - Async TCP servers and per-connection session state machines.
-  - Current focus is auth handshake and realm-list flow.
+  - Current focus is auth handshake, realm-list flow, and early world session
+    bootstrap.
 - `crates/wow-common`
   - Shared enums, GUIDs, positions, and cross-crate primitives.
 
@@ -77,12 +85,23 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 3. Worldserver skeleton
    - Add `bins/worldserver` only after auth compatibility is stable.
    - Accept world TCP connections and perform header/session bootstrap.
+   - Current status: binary and TCP skeleton exist; it sends
+     `SMSG_AUTH_CHALLENGE`, parses/verifies `CMSG_AUTH_SESSION`, and returns
+     initial auth-ok. It also decrypts/encrypts post-auth world headers and
+     responds to `CMSG_CHAR_ENUM`.
 4. Character list vertical slice
    - Load account session key from `realmd`.
    - Read character database enough to answer character list requests.
+   - Current status: worldserver reads `characters.characters` joined to
+     current pet/guild rows and serializes the CMaNGOS character enum field
+     order. The local client-stack helper imports `sql/base/characters.sql` and
+     seeds `RUSTAUTH` with `Rustone` for manual testing.
 5. Enter-world vertical slice
    - Load player, map, position, and minimum update packets.
    - Client can enter a static world state.
+   - Current status: real client can select seeded `Rustone`, leave loading
+     screen, enter the world, and walk around. The server sends an early login
+     packet burst plus a minimal self-spawn `SMSG_UPDATE_OBJECT`.
 6. Gameplay slices
    - Movement, chat, inventory, combat, spells, NPCs, loot, groups, guilds.
    - Each slice gets packet tests and DB fixture coverage.
@@ -114,6 +133,10 @@ Expected local services:
 - MariaDB container: `cmangos-rust-realmd`
 - DB port: `127.0.0.1:3307`
 - Smoke-test auth port: `127.0.0.1:13724`
+- World skeleton local config port: `127.0.0.1:8085` (blocked on the current
+  Windows machine; `WORLD_BIND_PORT=18085` was used for process smoke testing)
+- Manual client-stack helper creates a `characters` schema in the same MariaDB
+  container and grants the `mangos` user access.
 
 CI currently runs the Rust workflow on pushes to this branch and pull requests
 targeting `master`.
@@ -122,6 +145,7 @@ targeting `master`.
 
 - Auth command codes: `src/realmd/AuthCodes.h`
 - Auth session behavior: `src/realmd/AuthSocket.cpp`
+- World session bootstrap: `src/game/Server/WorldSocket.cpp`
 - Realm list behavior: `src/realmd/RealmList.*`
 - Login schema: `sql/base/realmd.sql`
 - Rust auth notes: `docs/rust_auth_foundation.md`
@@ -150,8 +174,13 @@ New AI agents should start by reading, in order:
 - SRP verifier byte order is now proven through the local compatibility test
   client; it still needs validation against a real 1.12.1 client.
 - The authserver now proves successful TCP login and realm-list flow against
-  local DB fixtures; negative/failure cases still need harness coverage.
+  local DB fixtures, including common negative/failure cases.
 - CMaNGOS schema variants may differ across forks; keep DB queries close to
   `sql/base/realmd.sql` unless a migration is explicitly added.
+- Character enum packet shape is source-derived and unit-tested, but DB-backed
+  character select and enter-world have now been manually proven with the real
+  client.
+- Movement is not yet decoded into session state or persisted; observed
+  movement packets are logged but not handled.
 - Future worldserver work will need a strict packet compatibility harness before
   gameplay code grows.

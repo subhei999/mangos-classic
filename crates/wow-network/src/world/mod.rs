@@ -1029,12 +1029,7 @@ async fn send_login_verify_world(
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(20);
-    body.extend_from_slice(&character.map.to_le_bytes());
-    body.extend_from_slice(&character.position_x.to_le_bytes());
-    body.extend_from_slice(&character.position_y.to_le_bytes());
-    body.extend_from_slice(&character.position_z.to_le_bytes());
-    body.extend_from_slice(&character.orientation.to_le_bytes());
+    let body = build_login_verify_world_body(character);
     send_packet(stream, SMSG_LOGIN_VERIFY_WORLD, &body, header_crypto).await
 }
 
@@ -1042,7 +1037,7 @@ async fn send_account_data_times(
     stream: &mut TcpStream,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = vec![0u8; ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN];
+    let body = build_account_data_times_body();
     send_packet(stream, SMSG_ACCOUNT_DATA_TIMES, &body, header_crypto).await
 }
 
@@ -1051,13 +1046,32 @@ async fn send_bindpoint_update(
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
+    let body = build_bindpoint_update_body(character);
+    send_packet(stream, SMSG_BINDPOINTUPDATE, &body, header_crypto).await
+}
+
+fn build_login_verify_world_body(character: &CharacterEnumEntry) -> Vec<u8> {
+    let mut body = Vec::with_capacity(20);
+    body.extend_from_slice(&character.map.to_le_bytes());
+    body.extend_from_slice(&character.position_x.to_le_bytes());
+    body.extend_from_slice(&character.position_y.to_le_bytes());
+    body.extend_from_slice(&character.position_z.to_le_bytes());
+    body.extend_from_slice(&character.orientation.to_le_bytes());
+    body
+}
+
+fn build_bindpoint_update_body(character: &CharacterEnumEntry) -> Vec<u8> {
     let mut body = Vec::with_capacity(20);
     body.extend_from_slice(&character.position_x.to_le_bytes());
     body.extend_from_slice(&character.position_y.to_le_bytes());
     body.extend_from_slice(&character.position_z.to_le_bytes());
     body.extend_from_slice(&character.map.to_le_bytes());
     body.extend_from_slice(&character.zone.to_le_bytes());
-    send_packet(stream, SMSG_BINDPOINTUPDATE, &body, header_crypto).await
+    body
+}
+
+fn build_account_data_times_body() -> Vec<u8> {
+    vec![0u8; ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN]
 }
 
 async fn send_tutorial_flags(
@@ -2827,6 +2841,40 @@ mod tests {
     }
 
     #[test]
+    fn account_data_times_packet_matches_placeholder_shape() {
+        let body = build_account_data_times_body();
+
+        assert_eq!(body.len(), ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN);
+        assert!(body.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn login_verify_world_packet_keeps_map_and_position_order() {
+        let character = test_character(1, 1);
+        let body = build_login_verify_world_body(&character);
+
+        assert_eq!(body.len(), 20);
+        assert_eq!(&body[0..4], &character.map.to_le_bytes());
+        assert_eq!(&body[4..8], &character.position_x.to_le_bytes());
+        assert_eq!(&body[8..12], &character.position_y.to_le_bytes());
+        assert_eq!(&body[12..16], &character.position_z.to_le_bytes());
+        assert_eq!(&body[16..20], &character.orientation.to_le_bytes());
+    }
+
+    #[test]
+    fn bindpointupdate_packet_keeps_position_map_zone_order() {
+        let character = test_character(1, 1);
+        let body = build_bindpoint_update_body(&character);
+
+        assert_eq!(body.len(), 20);
+        assert_eq!(&body[0..4], &character.position_x.to_le_bytes());
+        assert_eq!(&body[4..8], &character.position_y.to_le_bytes());
+        assert_eq!(&body[8..12], &character.position_z.to_le_bytes());
+        assert_eq!(&body[12..16], &character.map.to_le_bytes());
+        assert_eq!(&body[16..20], &character.zone.to_le_bytes());
+    }
+
+    #[test]
     fn tutorial_flag_updates_match_cmangos_word_bits() {
         let mut tutorials = [0u32; 8];
 
@@ -3008,6 +3056,43 @@ mod tests {
             assert_eq!(display_id_for_character(&character), male_display);
             character.gender = 1;
             assert_eq!(display_id_for_character(&character), female_display);
+        }
+
+        for (race, male_display, female_display) in [
+            (1u8, 49u32, 50u32),
+            (2, 51, 52),
+            (3, 53, 54),
+            (4, 55, 56),
+            (5, 57, 58),
+            (6, 59, 60),
+            (7, 1563, 1564),
+            (8, 1478, 1479),
+        ] {
+            character.race = race;
+
+            for (gender, display_id) in [(0u8, male_display), (1u8, female_display)] {
+                character.gender = gender;
+                let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+                let mut body = Vec::new();
+
+                write_minimal_player_update_values(
+                    &mut body,
+                    guid,
+                    &character,
+                    &[],
+                    &PlayerWorldStats {
+                        base_health: 20,
+                        base_mana: 0,
+                        stats: [23, 20, 22, 20, 21],
+                        next_level_xp: 400,
+                    },
+                )
+                .unwrap();
+
+                let values = decode_update_values(&body);
+                assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(display_id));
+                assert_eq!(values[UNIT_FIELD_NATIVEDISPLAYID], Some(display_id));
+            }
         }
     }
 

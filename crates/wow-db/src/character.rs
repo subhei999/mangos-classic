@@ -1863,6 +1863,28 @@ mod tests {
     }
 
     #[test]
+    fn non_human_starter_outfit_rows_cover_existing_race_class_pairs() {
+        let cases: &[(u8, u8, u32, u8)] = &[
+            (2, 1, 6125, 3),
+            (2, 3, 127, 3),
+            (3, 2, 45, 3),
+            (4, 11, 6123, 4),
+            (5, 8, 6096, 3),
+            (7, 1, 38, 4),
+            (8, 7, 6134, 3),
+        ];
+
+        for (race, class, item_id, slot) in cases {
+            let items = starter_outfit_items(*race, *class)
+                .unwrap_or_else(|| panic!("missing starter outfit for {race}/{class}"));
+            assert!(items
+                .iter()
+                .any(|item| item.item_id == *item_id && item.slot == *slot));
+            assert!(!items.is_empty());
+        }
+    }
+
+    #[test]
     fn equipment_cache_uses_item_id_enchant_pairs() {
         let mut equipment = [0u32; ENUM_EQUIPMENT_CACHE_SLOTS];
         equipment[3] = 38;

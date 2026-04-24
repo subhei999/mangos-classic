@@ -35,6 +35,8 @@ pub struct CharacterEnumEntry {
     pub power3: u32,
     pub power4: u32,
     pub power5: u32,
+    #[sqlx(rename = "watchedFaction")]
+    pub watched_faction: u32,
     pub pet_entry: Option<u32>,
     pub pet_modelid: Option<u32>,
     pub pet_level: Option<u32>,
@@ -112,6 +114,13 @@ pub struct CharacterAction {
     pub action: u32,
     #[sqlx(rename = "type")]
     pub action_type: u8,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CharacterReputation {
+    pub faction: u32,
+    pub standing: i32,
+    pub flags: i32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -214,6 +223,7 @@ pub async fn get_character_enum_entries(
                 characters.money, characters.cinematic, \
                 characters.health, characters.power1, characters.power2, \
                 characters.power3, characters.power4, characters.power5, \
+                characters.watchedFaction, \
                 character_pet.entry AS pet_entry, character_pet.modelid AS pet_modelid, \
                 character_pet.level AS pet_level, characters.equipmentCache \
          FROM characters \
@@ -662,8 +672,8 @@ pub async fn create_character(
          (guid, account, name, race, class, gender, level, zone, map, \
           position_x, position_y, position_z, orientation, playerBytes, \
           playerBytes2, playerFlags, at_login, equipmentCache, taximask, taxi_path, \
-          exploredZones, health, power1) \
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', '', '', '', ?, ?)",
+          exploredZones, health, power1, watchedFaction) \
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', '', '', '', ?, ?, ?)",
     )
     .bind(guid)
     .bind(character.account_id)
@@ -682,6 +692,7 @@ pub async fn create_character(
     .bind(AT_LOGIN_FIRST)
     .bind(world_stats.max_health())
     .bind(world_stats.max_mana())
+    .bind(u32::MAX)
     .execute(character_pool)
     .await?;
 
@@ -865,6 +876,20 @@ pub async fn get_character_actions(
     Ok(rows)
 }
 
+pub async fn get_character_reputations(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterReputation>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterReputation>(
+        "SELECT faction, standing, flags FROM character_reputation WHERE guid = ? ORDER BY faction",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 pub async fn get_character_inventory_items(
     pool: &MySqlPool,
     guid: u32,
@@ -880,6 +905,18 @@ pub async fn get_character_inventory_items(
     .await?;
 
     Ok(rows)
+}
+
+pub async fn character_has_unread_mail(pool: &MySqlPool, guid: u32) -> Result<bool, DbError> {
+    let unread: Option<u8> = sqlx::query_scalar(
+        "SELECT 1 FROM mail \
+         WHERE receiver = ? AND checked = 0 AND deliver_time <= UNIX_TIMESTAMP() LIMIT 1",
+    )
+    .bind(guid)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(unread.is_some())
 }
 
 pub async fn get_item_template_query(

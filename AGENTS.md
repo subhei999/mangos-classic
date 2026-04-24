@@ -106,8 +106,25 @@ as a GitHub issue or append it to the backlog section described below.
 
 ### GitHub Issue Logging Requirement
 
-For every non-blocking P2/P3/P4 issue discovered, create or update a GitHub
-issue when GitHub tooling is available.
+For every non-blocking P2/P3/P4 issue discovered, GitHub is the primary issue
+tracker. Do not use `docs/session_handoff.md` as a substitute unless GitHub
+tooling is unavailable or the GitHub attempt fails.
+
+Logging order:
+
+1. First search for an existing matching GitHub issue.
+2. If a matching issue exists, update it with a comment containing the new
+   evidence, current slice, and do-not-fix-now rationale.
+3. If no matching issue exists, create a new GitHub issue using the required
+   title/body template below.
+4. Only append to `docs/session_handoff.md` if GitHub tooling is unavailable or
+   the GitHub issue/comment attempt fails.
+5. If falling back to `docs/session_handoff.md`, explicitly state in the final
+   response why GitHub logging was unavailable and where the fallback entry was
+   recorded.
+
+`docs/session_handoff.md` may summarize GitHub issue numbers for next-agent
+orientation, but it must not be the primary record for P2/P3/P4 issues.
 
 Use this issue title format:
 
@@ -194,8 +211,9 @@ Smallest likely vertical-slice-safe fix.
 Explain why this is outside the current task.
 ```
 
-If GitHub issue creation is unavailable, append the same entry to
-`docs/session_handoff.md` under a `Non-blocking Backlog` section.
+If GitHub issue creation or commenting is unavailable, append the same entry to
+`docs/session_handoff.md` under a `Non-blocking Backlog` section and clearly
+mark it as a GitHub logging fallback.
 
 ### Current-Task Final Response Requirement
 
@@ -204,7 +222,9 @@ At the end of every task, report:
 - What was implemented.
 - Tests run and results.
 - P0/P1 bugs fixed immediately.
-- P2/P3/P4 issues logged, with GitHub issue numbers or file references.
+- P2/P3/P4 issues logged, with GitHub issue numbers or updated issue numbers.
+- If GitHub logging failed, the exact reason it failed and the
+  `docs/session_handoff.md` fallback location.
 - Any discovered issues intentionally not fixed.
 
 Do not silently ignore non-blocking issues. Do not expand the task scope to fix

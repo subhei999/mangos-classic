@@ -7,13 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterSpell, NewCharacter, PlayerWorldStats,
+    CharacterNameQuery, CharacterReputation, CharacterSpell, NewCharacter, PlayerWorldStats,
 };
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
@@ -32,6 +33,10 @@ const CMSG_NAME_QUERY: u32 = 0x0050;
 const SMSG_NAME_QUERY_RESPONSE: u16 = 0x0051;
 const CMSG_ITEM_QUERY_SINGLE: u32 = 0x0056;
 const SMSG_ITEM_QUERY_SINGLE_RESPONSE: u16 = 0x0058;
+const CMSG_CREATURE_QUERY: u32 = 0x0060;
+const SMSG_CREATURE_QUERY_RESPONSE: u16 = 0x0061;
+const CMSG_MESSAGECHAT: u32 = 0x0095;
+const SMSG_MESSAGECHAT: u16 = 0x0096;
 const CMSG_JOIN_CHANNEL: u32 = 0x0097;
 const MSG_MOVE_START_FORWARD: u32 = 0x00B5;
 const MSG_MOVE_START_BACKWARD: u32 = 0x00B6;
@@ -58,9 +63,24 @@ const CMSG_MOVE_FALL_RESET: u32 = 0x02CA;
 const CMSG_TUTORIAL_FLAG: u32 = 0x00FE;
 const CMSG_TUTORIAL_CLEAR: u32 = 0x00FF;
 const CMSG_TUTORIAL_RESET: u32 = 0x0100;
+const CMSG_TEXT_EMOTE: u32 = 0x0104;
+const SMSG_EMOTE: u16 = 0x0103;
+const SMSG_TEXT_EMOTE: u16 = 0x0105;
+const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
 const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
 const CMSG_SET_SELECTION: u32 = 0x013D;
+const CMSG_ATTACKSWING: u32 = 0x0141;
+const CMSG_ATTACKSTOP: u32 = 0x0142;
+const SMSG_ATTACKSTART: u16 = 0x0143;
+const SMSG_ATTACKSTOP: u16 = 0x0144;
+const SMSG_ATTACKERSTATEUPDATE: u16 = 0x014A;
+const CMSG_GOSSIP_HELLO: u32 = 0x017B;
+const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
+const SMSG_GOSSIP_MESSAGE: u16 = 0x017D;
+const SMSG_GOSSIP_COMPLETE: u16 = 0x017E;
+const CMSG_NPC_TEXT_QUERY: u32 = 0x017F;
+const SMSG_NPC_TEXT_UPDATE: u16 = 0x0180;
 const CMSG_QUERY_TIME: u32 = 0x01CE;
 const SMSG_QUERY_TIME_RESPONSE: u16 = 0x01CF;
 const CMSG_ZONEUPDATE: u32 = 0x01F4;
@@ -95,6 +115,18 @@ const AUTH_OK: u8 = 0x0C;
 const AUTH_FAILED: u8 = 0x0D;
 const AUTH_VERSION_MISMATCH: u8 = 0x14;
 const AUTH_UNKNOWN_ACCOUNT: u8 = 0x15;
+const CHAT_MSG_SAY: u32 = 0x00;
+const CHAT_MSG_YELL: u32 = 0x05;
+const CHAT_MSG_EMOTE: u32 = 0x08;
+const CHAT_TAG_NONE: u8 = 0;
+const TEXTEMOTE_DANCE: u32 = 34;
+const TEXTEMOTE_POINT: u32 = 72;
+const TEXTEMOTE_SLEEP: u32 = 87;
+const TEXTEMOTE_WAVE: u32 = 101;
+const EMOTE_ONESHOT_WAVE: u32 = 3;
+const EMOTE_STATE_DANCE: u32 = 10;
+const EMOTE_STATE_SLEEP: u32 = 12;
+const EMOTE_ONESHOT_POINT: u32 = 25;
 const CHAR_CREATE_SUCCESS: u8 = 0x2E;
 const CHAR_CREATE_FAILED: u8 = 0x30;
 const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
@@ -122,9 +154,12 @@ const ACCOUNT_DATA_TYPES: usize = 8;
 const MD5_DIGEST_LEN: usize = 16;
 const MAX_ACTION_BUTTONS: usize = 120;
 const TYPEID_ITEM: u8 = 1;
+const TYPEID_UNIT: u8 = 3;
 const TYPEID_PLAYER: u8 = 4;
 const TYPEMASK_OBJECT_ITEM: u32 = 0x0003;
+const TYPEMASK_OBJECT_UNIT: u32 = 0x0009;
 const TYPEMASK_OBJECT_UNIT_PLAYER: u32 = 0x0019;
+const UPDATE_TYPE_VALUES: u8 = 0;
 const UPDATE_TYPE_CREATE_OBJECT: u8 = 2;
 const UPDATE_TYPE_CREATE_OBJECT2: u8 = 3;
 const UPDATEFLAG_SELF: u8 = 0x01;
@@ -176,6 +211,8 @@ const UNIT_FIELD_MINDAMAGE: usize = 0x086;
 const UNIT_FIELD_MAXDAMAGE: usize = 0x087;
 const UNIT_FIELD_BYTES_1: usize = 0x08A;
 const UNIT_MOD_CAST_SPEED: usize = 0x091;
+const UNIT_NPC_FLAGS: usize = 0x093;
+const UNIT_NPC_EMOTESTATE: usize = 0x094;
 const UNIT_FIELD_STAT0: usize = 0x096;
 const UNIT_FIELD_BASE_MANA: usize = 0x0A2;
 const UNIT_FIELD_BASE_HEALTH: usize = 0x0A3;
@@ -198,9 +235,31 @@ const PLAYER_FIELD_MOD_DAMAGE_DONE_POS: usize = 0x4B1;
 const PLAYER_FIELD_MOD_DAMAGE_DONE_NEG: usize = 0x4B8;
 const PLAYER_FIELD_MOD_DAMAGE_DONE_PCT: usize = 0x4BF;
 const PLAYER_FIELD_BYTES: usize = 0x4C6;
+const PLAYER_FIELD_WATCHED_FACTION_INDEX: usize = 0x4ED;
 const INVENTORY_SLOT_BAG_0: u8 = 0;
 const INVENTORY_SLOT_ITEM_START: u8 = 23;
 const INVENTORY_SLOT_ITEM_END: u8 = 39;
+const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
+const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
+const VICTIMSTATE_NORMAL: u32 = 1;
+const RUST_GUIDE_ENTRY: u32 = 900_001;
+const RUST_GUIDE_COUNTER: u32 = 1;
+const RUST_GUIDE_NAME: &str = "Rust Guide";
+const RUST_GUIDE_SUBNAME: &str = "Checkpoint 1";
+const RUST_GUIDE_DISPLAY_ID: u32 = 49;
+const RUST_GUIDE_FACTION_TEMPLATE: u32 = 35;
+const RUST_GUIDE_GOSSIP_TEXT_ID: u32 = 900_001;
+const RUST_GUIDE_GOSSIP_OPTION: &str = "Keep going.";
+const RUST_GUIDE_GOSSIP_TEXT: &str = "The Rust world stack is answering NPC gossip now.";
+const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
+const RUST_COMBAT_DUMMY_COUNTER: u32 = 2;
+const RUST_COMBAT_DUMMY_NAME: &str = "Rust Combat Dummy";
+const RUST_COMBAT_DUMMY_SUBNAME: &str = "Checkpoint 1";
+const RUST_COMBAT_DUMMY_DISPLAY_ID: u32 = 51;
+const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
+const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
+const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
+const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -330,8 +389,13 @@ async fn handle_client(
     let mut session = WorldSessionState::default();
 
     loop {
-        match read_client_packet(&mut stream, Some(&mut header_crypto)).await {
-            Ok((opcode, body)) => {
+        match timeout(
+            Duration::from_millis(RUST_COMBAT_SWING_MILLIS),
+            read_client_packet(&mut stream, Some(&mut header_crypto)),
+        )
+        .await
+        {
+            Ok(Ok((opcode, body))) => {
                 info!(
                     opcode = format_args!("0x{opcode:04X}"),
                     bytes = body.len(),
@@ -410,6 +474,13 @@ async fn handle_client(
                         )
                         .await?;
                     }
+                    CMSG_CREATURE_QUERY => {
+                        handle_creature_query(&mut stream, &body, &mut header_crypto).await?;
+                    }
+                    CMSG_MESSAGECHAT => {
+                        handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
+                            .await?;
+                    }
                     CMSG_QUERY_TIME => {
                         handle_query_time(&mut stream, &mut header_crypto).await?;
                     }
@@ -428,8 +499,39 @@ async fn handle_client(
                     CMSG_TUTORIAL_RESET => {
                         handle_tutorial_reset(&character_db_pool, account.id).await?;
                     }
+                    CMSG_TEXT_EMOTE => {
+                        handle_text_emote(&mut stream, &body, &session, &mut header_crypto).await?;
+                    }
+                    CMSG_GOSSIP_HELLO => {
+                        handle_gossip_hello(&mut stream, &body, &mut header_crypto).await?;
+                    }
+                    CMSG_GOSSIP_SELECT_OPTION => {
+                        handle_gossip_select_option(&mut stream, &mut header_crypto).await?;
+                    }
+                    CMSG_NPC_TEXT_QUERY => {
+                        handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
+                    }
+                    CMSG_ATTACKSWING => {
+                        handle_attack_swing(&mut stream, &body, &mut session, &mut header_crypto)
+                            .await?;
+                    }
+                    CMSG_ATTACKSTOP => {
+                        handle_attack_stop(&mut stream, &mut session, &mut header_crypto).await?;
+                    }
                     CMSG_GMTICKET_GETTICKET => {
                         handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
+                    }
+                    CMSG_SET_ACTIVE_MOVER => {
+                        handle_set_active_mover(&body, &session)?;
+                    }
+                    MSG_QUERY_NEXT_MAIL_TIME => {
+                        handle_query_next_mail_time(
+                            &mut stream,
+                            &character_db_pool,
+                            &session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_LOGOUT_REQUEST => {
                         handle_logout_request(
@@ -466,11 +568,14 @@ async fn handle_client(
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 persist_active_character_position(&character_db_pool, account.id, &session).await?;
                 unregister_active_character(&runtime_state.online_characters, &mut session).await;
                 info!("World client disconnected or read failed: {}", e);
                 return Ok(());
+            }
+            Err(_) => {
+                handle_combat_tick(&mut stream, &mut session, &mut header_crypto).await?;
             }
         }
     }
@@ -479,6 +584,8 @@ async fn handle_client(
 #[derive(Debug, Default)]
 struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
+    combat_dummy_health: u32,
+    active_combat_target: Option<ObjectGuid>,
 }
 
 #[derive(Debug)]
@@ -825,6 +932,7 @@ async fn handle_player_login(
         client_time: 0,
         fall_time: 0,
     });
+    session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     let inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     let world_stats = wow_db::get_player_world_stats(
@@ -835,6 +943,11 @@ async fn handle_player_login(
     )
     .await?;
     let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
+    let cinematic_sequence = if character.cinematic == 0 {
+        cinematic_sequence_for_race(character.race)
+    } else {
+        None
+    };
     if character.cinematic == 0 || character.at_login & AT_LOGIN_FIRST != 0 {
         let rows = wow_db::mark_character_first_login_seen(
             deps.character_db_pool,
@@ -853,11 +966,14 @@ async fn handle_player_login(
 
     send_enter_world_bootstrap(
         stream,
-        deps.character_db_pool,
-        character,
-        &inventory,
-        &world_stats,
-        &tutorial_flags,
+        EnterWorldBootstrap {
+            character_db_pool: deps.character_db_pool,
+            character,
+            inventory: &inventory,
+            world_stats: &world_stats,
+            tutorial_flags: &tutorial_flags,
+            cinematic_sequence,
+        },
         Some(header_crypto),
     )
     .await?;
@@ -999,28 +1115,54 @@ fn handle_movement(
     Ok(())
 }
 
+struct EnterWorldBootstrap<'a> {
+    character_db_pool: &'a MySqlPool,
+    character: &'a CharacterEnumEntry,
+    inventory: &'a [CharacterInventoryItem],
+    world_stats: &'a PlayerWorldStats,
+    tutorial_flags: &'a [u32; 8],
+    cinematic_sequence: Option<u32>,
+}
+
 async fn send_enter_world_bootstrap(
     stream: &mut TcpStream,
-    character_db_pool: &MySqlPool,
-    character: &CharacterEnumEntry,
-    inventory: &[CharacterInventoryItem],
-    world_stats: &PlayerWorldStats,
-    tutorial_flags: &[u32; 8],
+    bootstrap: EnterWorldBootstrap<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut header_crypto = header_crypto;
-    send_login_verify_world(stream, character, header_crypto.as_deref_mut()).await?;
+    send_login_verify_world(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
-    send_bindpoint_update(stream, character, header_crypto.as_deref_mut()).await?;
-    send_tutorial_flags(stream, tutorial_flags, header_crypto.as_deref_mut()).await?;
-    let spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
+    send_bindpoint_update(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
+    send_tutorial_flags(
+        stream,
+        bootstrap.tutorial_flags,
+        header_crypto.as_deref_mut(),
+    )
+    .await?;
+    let spells =
+        wow_db::get_character_spells(bootstrap.character_db_pool, bootstrap.character.guid).await?;
     send_initial_spells(stream, &spells, header_crypto.as_deref_mut()).await?;
-    let actions = wow_db::get_character_actions(character_db_pool, character.guid).await?;
+    let actions =
+        wow_db::get_character_actions(bootstrap.character_db_pool, bootstrap.character.guid)
+            .await?;
     send_action_buttons(stream, &actions, header_crypto.as_deref_mut()).await?;
-    send_initial_reputations(stream, header_crypto.as_deref_mut()).await?;
+    let reputations =
+        wow_db::get_character_reputations(bootstrap.character_db_pool, bootstrap.character.guid)
+            .await?;
+    send_initial_reputations(stream, &reputations, header_crypto.as_deref_mut()).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
-    send_init_world_states(stream, character, header_crypto.as_deref_mut()).await?;
-    send_self_spawn_update(stream, character, inventory, world_stats, header_crypto).await?;
+    send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
+    if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
+        send_trigger_cinematic(stream, cinematic_sequence, header_crypto.as_deref_mut()).await?;
+    }
+    send_self_spawn_update(
+        stream,
+        bootstrap.character,
+        bootstrap.inventory,
+        bootstrap.world_stats,
+        header_crypto,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1200,20 +1342,66 @@ fn pack_action_button(action: u32, action_type: u8) -> u32 {
 
 async fn send_initial_reputations(
     stream: &mut TcpStream,
+    reputations: &[CharacterReputation],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_initial_reputations_body();
+    let body = build_initial_reputations_body(reputations);
     send_packet(stream, SMSG_INITIALIZE_FACTIONS, &body, header_crypto).await
 }
 
-fn build_initial_reputations_body() -> Vec<u8> {
+fn build_initial_reputations_body(reputations: &[CharacterReputation]) -> Vec<u8> {
+    let mut slots = vec![(0u8, 0i32); REPUTATION_LIST_SLOTS];
+    for reputation in reputations {
+        let Some(slot) = reputation_list_slot_for_faction(reputation.faction) else {
+            continue;
+        };
+        if slot < REPUTATION_LIST_SLOTS {
+            slots[slot] = (reputation.flags as u8, reputation.standing);
+        }
+    }
+
     let mut body = Vec::with_capacity(4 + REPUTATION_LIST_SLOTS * 5);
     body.extend_from_slice(&(REPUTATION_LIST_SLOTS as u32).to_le_bytes());
-    for _ in 0..REPUTATION_LIST_SLOTS {
-        body.push(0);
-        body.extend_from_slice(&0u32.to_le_bytes());
+    for (flags, standing) in slots {
+        body.push(flags);
+        body.extend_from_slice(&standing.to_le_bytes());
     }
     body
+}
+
+fn reputation_list_slot_for_faction(_faction: u32) -> Option<usize> {
+    // Faction.dbc IDs are not the same as the client's 0..63 reputationListID
+    // slots. Keep saved reputation rows quiet until the DBC-backed mapping is
+    // ported; otherwise the client displays unrelated factions such as
+    // Bloodsail Buccaneers for starter city reputations.
+    None
+}
+
+async fn send_trigger_cinematic(
+    stream: &mut TcpStream,
+    sequence: u32,
+    header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    let body = build_trigger_cinematic_body(sequence);
+    send_packet(stream, SMSG_TRIGGER_CINEMATIC, &body, header_crypto).await
+}
+
+fn build_trigger_cinematic_body(sequence: u32) -> Vec<u8> {
+    sequence.to_le_bytes().to_vec()
+}
+
+fn cinematic_sequence_for_race(race: u8) -> Option<u32> {
+    match race {
+        1 => Some(81),  // Human
+        2 => Some(21),  // Orc
+        3 => Some(41),  // Dwarf
+        4 => Some(61),  // Night Elf
+        5 => Some(2),   // Undead
+        6 => Some(141), // Tauren
+        7 => Some(101), // Gnome
+        8 => Some(121), // Troll
+        _ => None,
+    }
 }
 
 async fn send_login_set_time_speed(
@@ -1285,16 +1473,167 @@ fn build_self_spawn_update_body(
 
     write_minimal_player_update_values(&mut block, guid, character, inventory, world_stats)?;
 
+    let npc_block = build_rust_guide_create_block(character)?;
+    let combat_dummy_block = build_rust_combat_dummy_create_block(character)?;
     let item_blocks = build_backpack_item_create_blocks(character, inventory)?;
-    let block_count = 1 + item_blocks.len() as u32;
+    let block_count = 3 + item_blocks.len() as u32;
     let mut body = Vec::with_capacity(5 + block.len());
     body.extend_from_slice(&block_count.to_le_bytes());
     body.push(0); // has transport
     body.extend_from_slice(&block);
+    body.extend_from_slice(&npc_block);
+    body.extend_from_slice(&combat_dummy_block);
     for item_block in item_blocks {
         body.extend_from_slice(&item_block);
     }
     Ok(body)
+}
+
+fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {
+    let guid = rust_guide_guid();
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
+    PackedGuid::write(&mut block, guid)?;
+    block.push(TYPEID_UNIT);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&0u32.to_le_bytes()); // movement flags
+    block.extend_from_slice(&0u32.to_le_bytes()); // server time placeholder
+    block.extend_from_slice(&(character.position_x + 4.0).to_le_bytes());
+    block.extend_from_slice(&(character.position_y + 2.0).to_le_bytes());
+    block.extend_from_slice(&character.position_z.to_le_bytes());
+    block.extend_from_slice(&character.orientation.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes()); // fall time
+    block.extend_from_slice(&2.5f32.to_le_bytes()); // walk
+    block.extend_from_slice(&7.0f32.to_le_bytes()); // run
+    block.extend_from_slice(&4.5f32.to_le_bytes()); // run back
+    block.extend_from_slice(&4.722222f32.to_le_bytes()); // swim
+    block.extend_from_slice(&2.5f32.to_le_bytes()); // swim back
+    block.extend_from_slice(&std::f32::consts::PI.to_le_bytes()); // turn rate
+    block.extend_from_slice(&1u32.to_le_bytes()); // UPDATEFLAG_ALL payload
+
+    write_rust_guide_update_values(&mut block, guid)?;
+    Ok(block)
+}
+
+fn write_rust_guide_update_values(body: &mut Vec<u8>, guid: ObjectGuid) -> anyhow::Result<()> {
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, 0x000, guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT)?;
+    set_update_value(&mut values, 0x003, RUST_GUIDE_ENTRY)?;
+    set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, 42)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, 42)?;
+    set_update_value(&mut values, UNIT_FIELD_LEVEL, 1)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FACTIONTEMPLATE,
+        RUST_GUIDE_FACTION_TEMPLATE,
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_0, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_DISPLAYID, RUST_GUIDE_DISPLAY_ID)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_NATIVEDISPLAYID,
+        RUST_GUIDE_DISPLAY_ID,
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, 0.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, 0.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP)?;
+    write_update_values(body, &values)
+}
+
+fn rust_guide_guid() -> ObjectGuid {
+    ObjectGuid::new(HighGuid::Unit, RUST_GUIDE_ENTRY, RUST_GUIDE_COUNTER)
+}
+
+fn build_rust_combat_dummy_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {
+    let guid = rust_combat_dummy_guid();
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
+    PackedGuid::write(&mut block, guid)?;
+    block.push(TYPEID_UNIT);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&(character.position_x + 8.0).to_le_bytes());
+    block.extend_from_slice(&(character.position_y + 2.0).to_le_bytes());
+    block.extend_from_slice(&character.position_z.to_le_bytes());
+    block.extend_from_slice(&character.orientation.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&7.0f32.to_le_bytes());
+    block.extend_from_slice(&4.5f32.to_le_bytes());
+    block.extend_from_slice(&4.722222f32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&std::f32::consts::PI.to_le_bytes());
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    write_rust_combat_dummy_update_values(&mut block, guid, RUST_COMBAT_DUMMY_HEALTH)?;
+    Ok(block)
+}
+
+fn write_rust_combat_dummy_update_values(
+    body: &mut Vec<u8>,
+    guid: ObjectGuid,
+    health: u32,
+) -> anyhow::Result<()> {
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, 0x000, guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT)?;
+    set_update_value(&mut values, 0x003, RUST_COMBAT_DUMMY_ENTRY)?;
+    set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, RUST_COMBAT_DUMMY_HEALTH)?;
+    set_update_value(&mut values, UNIT_FIELD_LEVEL, 1)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FACTIONTEMPLATE,
+        RUST_COMBAT_DUMMY_FACTION_TEMPLATE,
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_0, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_DISPLAYID,
+        RUST_COMBAT_DUMMY_DISPLAY_ID,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_NATIVEDISPLAYID,
+        RUST_COMBAT_DUMMY_DISPLAY_ID,
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, 1.0f32.to_bits())?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MAXDAMAGE,
+        (RUST_COMBAT_DUMMY_HIT_DAMAGE as f32).to_bits(),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    write_update_values(body, &values)
+}
+
+fn rust_combat_dummy_guid() -> ObjectGuid {
+    ObjectGuid::new(
+        HighGuid::Unit,
+        RUST_COMBAT_DUMMY_ENTRY,
+        RUST_COMBAT_DUMMY_COUNTER,
+    )
 }
 
 fn write_minimal_player_update_values(
@@ -1358,13 +1697,18 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, PLAYER_BYTES, character.player_bytes)?;
     set_update_value(&mut values, PLAYER_BYTES_2, character.player_bytes2)?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
-    set_visible_item_update_values(&mut values, character)?;
+    set_visible_item_update_values(&mut values, character, inventory)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, PLAYER_XP, 0)?;
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
     set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
     set_player_damage_mod_update_values(&mut values)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_WATCHED_FACTION_INDEX,
+        character.watched_faction,
+    )?;
 
     write_update_values(body, &values)?;
 
@@ -1529,9 +1873,20 @@ fn create_power_for_class_power(class: u8, power: u8) -> u32 {
 fn set_visible_item_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<()> {
-    let equipment = parse_equipment_cache(character.equipment_cache.as_deref());
-    for (slot, item_id) in equipment.iter().take(19).enumerate() {
+    let mut equipment = parse_equipment_cache(character.equipment_cache.as_deref());
+    for item in inventory {
+        if item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot < EQUIPMENT_SLOT_END {
+            equipment[item.slot as usize] = item.item_template;
+        }
+    }
+
+    for (slot, item_id) in equipment
+        .iter()
+        .take(EQUIPMENT_SLOT_END as usize)
+        .enumerate()
+    {
         if *item_id == 0 {
             continue;
         }
@@ -1776,6 +2131,183 @@ fn build_name_query_response(
     body
 }
 
+async fn handle_message_chat(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let chat = ChatMessage::read(body)?;
+    if !matches!(
+        chat.chat_type,
+        CHAT_MSG_SAY | CHAT_MSG_YELL | CHAT_MSG_EMOTE
+    ) {
+        info!(
+            chat_type = chat.chat_type,
+            language = chat.language,
+            "Ignoring unsupported chat message type"
+        );
+        return Ok(());
+    }
+
+    let Some(character) = &session.active_character else {
+        warn!(
+            chat_type = chat.chat_type,
+            "Ignoring chat before character login"
+        );
+        return Ok(());
+    };
+    if chat.message.is_empty() {
+        return Ok(());
+    }
+
+    let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, character);
+    send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChatMessage {
+    chat_type: u32,
+    language: u32,
+    message: String,
+}
+
+impl ChatMessage {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let mut cursor = 0;
+        let chat_type = read_u32(body, &mut cursor)?;
+        let language = read_u32(body, &mut cursor)?;
+        let message = read_c_string(body, &mut cursor)?;
+        Ok(Self {
+            chat_type,
+            language,
+            message,
+        })
+    }
+}
+
+fn build_message_chat_body(
+    chat_type: u32,
+    language: u32,
+    message: &str,
+    character: &ActiveCharacter,
+) -> Vec<u8> {
+    let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut body = Vec::with_capacity(1 + 4 + 16 + 4 + message.len() + 2);
+    body.push(chat_type as u8);
+    body.extend_from_slice(&language.to_le_bytes());
+    match chat_type {
+        CHAT_MSG_SAY | CHAT_MSG_YELL => {
+            body.extend_from_slice(&sender.raw().to_le_bytes());
+            body.extend_from_slice(&sender.raw().to_le_bytes());
+        }
+        _ => {
+            body.extend_from_slice(&sender.raw().to_le_bytes());
+        }
+    }
+    body.extend_from_slice(&((message.len() + 1) as u32).to_le_bytes());
+    write_c_string(&mut body, message);
+    body.push(CHAT_TAG_NONE);
+    body
+}
+
+async fn handle_text_emote(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let emote = TextEmote::read(body)?;
+    let Some(character) = &session.active_character else {
+        warn!(
+            text_emote = emote.text_emote,
+            "Ignoring text emote before character login"
+        );
+        return Ok(());
+    };
+    if let Some(animation) = animation_emote_for_text_emote(emote.text_emote) {
+        if matches!(emote.text_emote, TEXTEMOTE_DANCE | TEXTEMOTE_SLEEP) {
+            let body = build_emote_state_update_body(character, animation)?;
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+        } else {
+            let body = build_emote_body(character, animation);
+            send_packet(stream, SMSG_EMOTE, &body, Some(header_crypto)).await?;
+        }
+    }
+    let body = build_text_emote_body(character, emote.text_emote, emote.emote_num);
+    send_packet(stream, SMSG_TEXT_EMOTE, &body, Some(header_crypto)).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEmote {
+    text_emote: u32,
+    emote_num: u32,
+    target_guid: u64,
+}
+
+impl TextEmote {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let mut cursor = 0;
+        let text_emote = read_u32(body, &mut cursor)?;
+        let emote_num = read_u32(body, &mut cursor)?;
+        ensure_available(body, cursor + 8)?;
+        let target_guid = u64::from_le_bytes(body[cursor..cursor + 8].try_into()?);
+        Ok(Self {
+            text_emote,
+            emote_num,
+            target_guid,
+        })
+    }
+}
+
+fn build_text_emote_body(character: &ActiveCharacter, text_emote: u32, emote_num: u32) -> Vec<u8> {
+    let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + 1);
+    body.extend_from_slice(&sender.raw().to_le_bytes());
+    body.extend_from_slice(&text_emote.to_le_bytes());
+    body.extend_from_slice(&emote_num.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body
+}
+
+fn animation_emote_for_text_emote(text_emote: u32) -> Option<u32> {
+    match text_emote {
+        TEXTEMOTE_WAVE => Some(EMOTE_ONESHOT_WAVE),
+        TEXTEMOTE_POINT => Some(EMOTE_ONESHOT_POINT),
+        TEXTEMOTE_DANCE => Some(EMOTE_STATE_DANCE),
+        TEXTEMOTE_SLEEP => Some(EMOTE_STATE_SLEEP),
+        _ => None,
+    }
+}
+
+fn build_emote_body(character: &ActiveCharacter, emote: u32) -> Vec<u8> {
+    let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&emote.to_le_bytes());
+    body.extend_from_slice(&sender.raw().to_le_bytes());
+    body
+}
+
+fn build_emote_state_update_body(
+    character: &ActiveCharacter,
+    emote: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_NPC_EMOTESTATE, emote)?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
 async fn handle_item_query_single(
     stream: &mut TcpStream,
     world_db_pool: &MySqlPool,
@@ -1804,6 +2336,350 @@ async fn handle_item_query_single(
         Some(header_crypto),
     )
     .await
+}
+
+async fn handle_creature_query(
+    stream: &mut TcpStream,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let query = CreatureQuery::read(body)?;
+    info!(
+        entry = query.entry,
+        guid = format_args!("0x{:016X}", query.guid.raw()),
+        found = matches!(query.entry, RUST_GUIDE_ENTRY | RUST_COMBAT_DUMMY_ENTRY),
+        "Answering creature template query"
+    );
+    let response = build_creature_query_response(query.entry);
+    send_packet(
+        stream,
+        SMSG_CREATURE_QUERY_RESPONSE,
+        &response,
+        Some(header_crypto),
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreatureQuery {
+    entry: u32,
+    guid: ObjectGuid,
+}
+
+impl CreatureQuery {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let mut cursor = 0;
+        let entry = read_u32(body, &mut cursor)?;
+        ensure_available(body, cursor + 8)?;
+        let guid = ObjectGuid::from_raw(u64::from_le_bytes(body[cursor..cursor + 8].try_into()?));
+        Ok(Self { entry, guid })
+    }
+}
+
+fn build_creature_query_response(entry: u32) -> Vec<u8> {
+    let Some(template) = fixture_creature_template(entry) else {
+        return (entry | 0x8000_0000).to_le_bytes().to_vec();
+    };
+
+    let mut body = Vec::with_capacity(100);
+    body.extend_from_slice(&entry.to_le_bytes());
+    write_c_string(&mut body, template.name);
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    write_c_string(&mut body, template.subname);
+    body.extend_from_slice(&0u32.to_le_bytes()); // type flags
+    body.extend_from_slice(&7u32.to_le_bytes()); // humanoid
+    body.extend_from_slice(&0u32.to_le_bytes()); // family
+    body.extend_from_slice(&0u32.to_le_bytes()); // rank
+    body.extend_from_slice(&0u32.to_le_bytes()); // unknown
+    body.extend_from_slice(&0u32.to_le_bytes()); // pet spell data id
+    body.extend_from_slice(&template.display_id.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes()); // civilian
+    body
+}
+
+struct FixtureCreatureTemplate {
+    name: &'static str,
+    subname: &'static str,
+    display_id: u32,
+}
+
+fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
+    match entry {
+        RUST_GUIDE_ENTRY => Some(FixtureCreatureTemplate {
+            name: RUST_GUIDE_NAME,
+            subname: RUST_GUIDE_SUBNAME,
+            display_id: RUST_GUIDE_DISPLAY_ID,
+        }),
+        RUST_COMBAT_DUMMY_ENTRY => Some(FixtureCreatureTemplate {
+            name: RUST_COMBAT_DUMMY_NAME,
+            subname: RUST_COMBAT_DUMMY_SUBNAME,
+            display_id: RUST_COMBAT_DUMMY_DISPLAY_ID,
+        }),
+        _ => None,
+    }
+}
+
+async fn handle_gossip_hello(
+    stream: &mut TcpStream,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let guid = read_packet_guid(body, "CMSG_GOSSIP_HELLO")?;
+    if guid != rust_guide_guid() {
+        warn!(
+            guid = format_args!("0x{:016X}", guid.raw()),
+            "Ignoring gossip hello for unknown creature"
+        );
+        return Ok(());
+    }
+
+    let text_update = build_rust_guide_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID);
+    send_packet(
+        stream,
+        SMSG_NPC_TEXT_UPDATE,
+        &text_update,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let response = build_rust_guide_gossip_message();
+    send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await
+}
+
+async fn handle_gossip_select_option(
+    stream: &mut TcpStream,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await
+}
+
+async fn handle_npc_text_query(
+    stream: &mut TcpStream,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let mut cursor = 0;
+    let text_id = read_u32(body, &mut cursor)?;
+    ensure_available(body, cursor + 8)?;
+    let guid = ObjectGuid::from_raw(u64::from_le_bytes(body[cursor..cursor + 8].try_into()?));
+    info!(
+        text_id,
+        guid = format_args!("0x{:016X}", guid.raw()),
+        "Answering NPC text query"
+    );
+    let response = build_rust_guide_npc_text_update(text_id);
+    send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
+}
+
+async fn handle_attack_swing(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let target = read_packet_guid(body, "CMSG_ATTACKSWING")?;
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring attack swing before character login");
+        return Ok(());
+    };
+
+    if target != rust_combat_dummy_guid() {
+        warn!(
+            target = format_args!("0x{:016X}", target.raw()),
+            "Ignoring attack swing against unknown target"
+        );
+        return Ok(());
+    }
+
+    session.active_combat_target = Some(target);
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    send_packet(
+        stream,
+        SMSG_ATTACKSTART,
+        &build_attack_start_body(attacker, target),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_combat_dummy_swing(stream, session, header_crypto).await
+}
+
+async fn handle_combat_tick(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if session.active_combat_target != Some(rust_combat_dummy_guid()) {
+        return Ok(());
+    }
+    send_combat_dummy_swing(stream, session, header_crypto).await
+}
+
+async fn send_combat_dummy_swing(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let target = rust_combat_dummy_guid();
+
+    let damage = session
+        .combat_dummy_health
+        .min(RUST_COMBAT_DUMMY_HIT_DAMAGE);
+    session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
+
+    send_packet(
+        stream,
+        SMSG_ATTACKERSTATEUPDATE,
+        &build_attacker_state_update_body(attacker, target, damage)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_combat_dummy_health_update_body(session.combat_dummy_health)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    if session.combat_dummy_health == 0 {
+        send_packet(
+            stream,
+            SMSG_ATTACKSTOP,
+            &build_attack_stop_body(attacker, target, true)?,
+            Some(header_crypto),
+        )
+        .await?;
+        session.active_combat_target = None;
+        session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
+    }
+
+    Ok(())
+}
+
+async fn handle_attack_stop(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    session.active_combat_target = None;
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    send_packet(
+        stream,
+        SMSG_ATTACKSTOP,
+        &build_attack_stop_body(attacker, rust_combat_dummy_guid(), false)?,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn build_attack_start_body(attacker: ObjectGuid, victim: ObjectGuid) -> Vec<u8> {
+    let mut body = Vec::with_capacity(16);
+    body.extend_from_slice(&attacker.raw().to_le_bytes());
+    body.extend_from_slice(&victim.raw().to_le_bytes());
+    body
+}
+
+fn build_attack_stop_body(
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    dead: bool,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(20);
+    PackedGuid::write(&mut body, attacker)?;
+    PackedGuid::write(&mut body, victim)?;
+    body.extend_from_slice(&(dead as u32).to_le_bytes());
+    Ok(body)
+}
+
+fn build_attacker_state_update_body(
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    damage: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(42);
+    body.extend_from_slice(&HITINFO_NORMALSWING2.to_le_bytes());
+    PackedGuid::write(&mut body, attacker)?;
+    PackedGuid::write(&mut body, victim)?;
+    body.extend_from_slice(&damage.to_le_bytes());
+    body.push(1);
+    body.extend_from_slice(&0u32.to_le_bytes()); // normal school
+    body.extend_from_slice(&(damage as f32).to_le_bytes());
+    body.extend_from_slice(&damage.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes()); // absorb
+    body.extend_from_slice(&0i32.to_le_bytes()); // resist
+    body.extend_from_slice(&VICTIMSTATE_NORMAL.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes()); // unknown
+    body.extend_from_slice(&0u32.to_le_bytes()); // spell id
+    body.extend_from_slice(&0u32.to_le_bytes()); // blocked
+    Ok(body)
+}
+
+fn build_combat_dummy_health_update_body(health: u32) -> anyhow::Result<Vec<u8>> {
+    let guid = rust_combat_dummy_guid();
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn read_packet_guid(body: &[u8], packet_name: &str) -> anyhow::Result<ObjectGuid> {
+    if body.len() < 8 {
+        anyhow::bail!("{packet_name} payload must include an 8-byte GUID");
+    }
+    Ok(ObjectGuid::from_raw(u64::from_le_bytes(
+        body[0..8].try_into()?,
+    )))
+}
+
+fn build_rust_guide_gossip_message() -> Vec<u8> {
+    let guid = rust_guide_guid();
+    let mut body = Vec::with_capacity(32 + RUST_GUIDE_GOSSIP_OPTION.len());
+    body.extend_from_slice(&guid.raw().to_le_bytes());
+    body.extend_from_slice(&RUST_GUIDE_GOSSIP_TEXT_ID.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes()); // gossip option count
+    body.extend_from_slice(&0u32.to_le_bytes()); // option index
+    body.push(0); // icon
+    body.push(0); // coded
+    write_c_string(&mut body, RUST_GUIDE_GOSSIP_OPTION);
+    body.extend_from_slice(&0u32.to_le_bytes()); // quest option count
+    body
+}
+
+fn build_rust_guide_npc_text_update(text_id: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(220);
+    body.extend_from_slice(&text_id.to_le_bytes());
+    for index in 0..8 {
+        body.extend_from_slice(&(if index == 0 { 1.0f32 } else { 0.0f32 }).to_le_bytes());
+        let text = if index == 0 {
+            RUST_GUIDE_GOSSIP_TEXT
+        } else {
+            ""
+        };
+        write_c_string(&mut body, text);
+        write_c_string(&mut body, text);
+        body.extend_from_slice(&0u32.to_le_bytes()); // language
+        for _ in 0..3 {
+            body.extend_from_slice(&0u32.to_le_bytes()); // emote delay
+            body.extend_from_slice(&0u32.to_le_bytes()); // emote id
+        }
+    }
+    body
 }
 
 fn build_item_query_single_response(
@@ -1977,6 +2853,54 @@ async fn handle_gmticket_getticket(
     .await
 }
 
+fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::Result<()> {
+    if body.len() != 8 {
+        anyhow::bail!(
+            "CMSG_SET_ACTIVE_MOVER payload must be 8 bytes, got {}",
+            body.len()
+        );
+    }
+
+    let raw_guid = u64::from_le_bytes(body.try_into()?);
+    let mover = ObjectGuid::from_raw(raw_guid);
+    if let Some(character) = &session.active_character {
+        if mover.counter() != character.guid {
+            warn!(
+                active_guid = character.guid,
+                mover_guid = mover.counter(),
+                "Client selected unexpected active mover"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_query_next_mail_time(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let has_unread = if let Some(character) = &session.active_character {
+        wow_db::character_has_unread_mail(character_db_pool, character.guid).await?
+    } else {
+        false
+    };
+    let body = build_query_next_mail_time_body(has_unread);
+    send_packet(
+        stream,
+        MSG_QUERY_NEXT_MAIL_TIME as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn build_query_next_mail_time_body(has_unread: bool) -> Vec<u8> {
+    let delay = if has_unread { 0.0f32 } else { -86400.0f32 };
+    delay.to_le_bytes().to_vec()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct MovementInfo {
     flags: u32,
@@ -2035,6 +2959,17 @@ fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
     Ok(value)
 }
 
+fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
+    let end = body[*cursor..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| anyhow::anyhow!("C string is not NUL-terminated"))?
+        + *cursor;
+    let value = String::from_utf8(body[*cursor..end].to_vec())?;
+    *cursor = end + 1;
+    Ok(value)
+}
+
 fn read_f32(body: &[u8], cursor: &mut usize) -> anyhow::Result<f32> {
     ensure_available(body, *cursor + 4)?;
     let value = f32::from_le_bytes(body[*cursor..*cursor + 4].try_into()?);
@@ -2088,8 +3023,6 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
             | CMSG_CANCEL_TRADE
             | CMSG_SET_SELECTION
             | CMSG_ZONEUPDATE
-            | CMSG_SET_ACTIVE_MOVER
-            | MSG_QUERY_NEXT_MAIL_TIME
             | CMSG_MEETINGSTONE_INFO
             | CMSG_REQUEST_RAID_INFO
             | CMSG_MOVE_TIME_SKIPPED
@@ -2457,6 +3390,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2527,6 +3461,224 @@ mod tests {
     }
 
     #[test]
+    fn creature_query_response_matches_cmangos_shape() {
+        let body = build_creature_query_response(RUST_GUIDE_ENTRY);
+        let mut cursor = 0;
+
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), RUST_GUIDE_ENTRY);
+        assert_eq!(read_c_string(&body, &mut cursor).unwrap(), RUST_GUIDE_NAME);
+        assert_eq!(body[cursor], 0);
+        assert_eq!(body[cursor + 1], 0);
+        assert_eq!(body[cursor + 2], 0);
+        cursor += 3;
+        assert_eq!(
+            read_c_string(&body, &mut cursor).unwrap(),
+            RUST_GUIDE_SUBNAME
+        );
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 7);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), RUST_GUIDE_DISPLAY_ID);
+        assert_eq!(&body[cursor..cursor + 2], &0u16.to_le_bytes());
+    }
+
+    #[test]
+    fn missing_creature_query_marks_entry_unknown() {
+        assert_eq!(
+            build_creature_query_response(1234),
+            (1234u32 | 0x8000_0000).to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn rust_guide_gossip_message_has_empty_menu_shape() {
+        let body = build_rust_guide_gossip_message();
+        let option_start = 16;
+        let option_text_start = option_start + 4 + 1 + 1;
+
+        assert_eq!(&body[0..8], &rust_guide_guid().raw().to_le_bytes());
+        assert_eq!(&body[8..12], &RUST_GUIDE_GOSSIP_TEXT_ID.to_le_bytes());
+        assert_eq!(&body[12..16], &1u32.to_le_bytes());
+        assert_eq!(&body[option_start..option_start + 4], &0u32.to_le_bytes());
+        assert_eq!(body[option_start + 4], 0);
+        assert_eq!(body[option_start + 5], 0);
+        assert_eq!(
+            &body[option_text_start..option_text_start + 12],
+            b"Keep going.\0"
+        );
+        assert_eq!(
+            &body[option_text_start + 12..option_text_start + 16],
+            &0u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn rust_guide_npc_text_update_matches_cmangos_eight_option_shape() {
+        let body = build_rust_guide_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID);
+        let mut cursor = 0;
+
+        assert_eq!(
+            read_u32(&body, &mut cursor).unwrap(),
+            RUST_GUIDE_GOSSIP_TEXT_ID
+        );
+        assert_eq!(
+            f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+            1.0
+        );
+        cursor += 4;
+        assert_eq!(
+            read_c_string(&body, &mut cursor).unwrap(),
+            RUST_GUIDE_GOSSIP_TEXT
+        );
+        assert_eq!(
+            read_c_string(&body, &mut cursor).unwrap(),
+            RUST_GUIDE_GOSSIP_TEXT
+        );
+        assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        for _ in 0..3 {
+            assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+            assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+        }
+
+        for _ in 1..8 {
+            assert_eq!(
+                f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+                0.0
+            );
+            cursor += 4;
+            assert_eq!(read_c_string(&body, &mut cursor).unwrap(), "");
+            assert_eq!(read_c_string(&body, &mut cursor).unwrap(), "");
+            assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+            for _ in 0..3 {
+                assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+                assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+            }
+        }
+        assert_eq!(cursor, body.len());
+    }
+
+    #[test]
+    fn rust_guide_create_block_has_gossip_unit_fields() {
+        let character = test_character(1, 1);
+        let block = build_rust_guide_create_block(&character).unwrap();
+        let packed_guid_mask = block[1];
+        let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+        let values_start = update_flags_offset + 1 + 56;
+        let values = decode_update_values(&block[values_start..]);
+
+        assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+        assert_eq!(
+            block[update_flags_offset],
+            UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION
+        );
+        assert_eq!(values[0], Some(rust_guide_guid().raw() as u32));
+        assert_eq!(values[1], Some((rust_guide_guid().raw() >> 32) as u32));
+        assert_eq!(values[2], Some(TYPEMASK_OBJECT_UNIT));
+        assert_eq!(values[3], Some(RUST_GUIDE_ENTRY));
+        assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(RUST_GUIDE_DISPLAY_ID));
+        assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
+    }
+
+    #[test]
+    fn rust_combat_dummy_create_block_has_hostile_unit_fields() {
+        let character = test_character(1, 1);
+        let block = build_rust_combat_dummy_create_block(&character).unwrap();
+        let packed_guid_mask = block[1];
+        let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+        let values_start = update_flags_offset + 1 + 56;
+        let values = decode_update_values(&block[values_start..]);
+
+        assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+        assert_eq!(
+            block[update_flags_offset],
+            UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION
+        );
+        assert_eq!(values[0], Some(rust_combat_dummy_guid().raw() as u32));
+        assert_eq!(
+            values[1],
+            Some((rust_combat_dummy_guid().raw() >> 32) as u32)
+        );
+        assert_eq!(values[2], Some(TYPEMASK_OBJECT_UNIT));
+        assert_eq!(values[3], Some(RUST_COMBAT_DUMMY_ENTRY));
+        assert_eq!(values[UNIT_FIELD_HEALTH], Some(RUST_COMBAT_DUMMY_HEALTH));
+        assert_eq!(
+            values[UNIT_FIELD_DISPLAYID],
+            Some(RUST_COMBAT_DUMMY_DISPLAY_ID)
+        );
+        assert_eq!(
+            values[UNIT_FIELD_FACTIONTEMPLATE],
+            Some(RUST_COMBAT_DUMMY_FACTION_TEMPLATE)
+        );
+    }
+
+    #[test]
+    fn combat_packets_match_cmangos_melee_shapes() {
+        let attacker = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let victim = rust_combat_dummy_guid();
+
+        let start = build_attack_start_body(attacker, victim);
+        assert_eq!(&start[0..8], &attacker.raw().to_le_bytes());
+        assert_eq!(&start[8..16], &victim.raw().to_le_bytes());
+
+        let stop = build_attack_stop_body(attacker, victim, false).unwrap();
+        assert_eq!(&stop[stop.len() - 4..], &0u32.to_le_bytes());
+
+        let state =
+            build_attacker_state_update_body(attacker, victim, RUST_COMBAT_DUMMY_HIT_DAMAGE)
+                .unwrap();
+        let mut cursor = 0;
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
+        cursor += PackedGuid::packed_size(attacker) + PackedGuid::packed_size(victim);
+        assert_eq!(
+            read_u32(&state, &mut cursor).unwrap(),
+            RUST_COMBAT_DUMMY_HIT_DAMAGE
+        );
+        assert_eq!(state[cursor], 1);
+        cursor += 1;
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), 0);
+        assert_eq!(
+            f32::from_le_bytes(state[cursor..cursor + 4].try_into().unwrap()),
+            RUST_COMBAT_DUMMY_HIT_DAMAGE as f32
+        );
+        cursor += 4;
+        assert_eq!(
+            read_u32(&state, &mut cursor).unwrap(),
+            RUST_COMBAT_DUMMY_HIT_DAMAGE
+        );
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), 0);
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), VICTIMSTATE_NORMAL);
+    }
+
+    #[test]
+    fn combat_dummy_health_update_sets_unit_health() {
+        let body = build_combat_dummy_health_update_body(20).unwrap();
+        let packed_guid_mask = body[6];
+        let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+        let values = decode_update_values(&body[values_start..]);
+
+        assert_eq!(&body[0..4], &1u32.to_le_bytes());
+        assert_eq!(body[4], 0);
+        assert_eq!(body[5], UPDATE_TYPE_VALUES);
+        assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
+    }
+
+    #[test]
+    fn combat_session_tracks_active_dummy_target() {
+        let mut session = WorldSessionState::default();
+        assert_eq!(session.active_combat_target, None);
+
+        session.active_combat_target = Some(rust_combat_dummy_guid());
+        assert_eq!(session.active_combat_target, Some(rust_combat_dummy_guid()));
+
+        session.active_combat_target = None;
+        assert_eq!(session.active_combat_target, None);
+    }
+
+    #[test]
     fn normalizes_character_names_like_cmangos_create_path() {
         assert_eq!(normalize_character_name("rUSTY").unwrap(), "Rusty");
         assert_eq!(normalize_character_name("").unwrap_err(), CHAR_NAME_NO_NAME);
@@ -2580,6 +3732,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2632,6 +3785,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2727,6 +3881,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2767,6 +3922,7 @@ mod tests {
         assert_eq!(values[PLAYER_NEXT_LEVEL_XP], Some(400));
         assert_eq!(values[UNIT_FIELD_BYTES_2], Some(unit_bytes_2()));
         assert_eq!(values[PLAYER_FIELD_COINAGE], Some(12345));
+        assert_eq!(values[PLAYER_FIELD_WATCHED_FACTION_INDEX], Some(u32::MAX));
         assert_eq!(
             values[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT],
             Some(1.0f32.to_bits())
@@ -2821,11 +3977,45 @@ mod tests {
 
     #[test]
     fn initial_reputations_packet_matches_cmangos_empty_shape() {
-        let body = build_initial_reputations_body();
+        let body = build_initial_reputations_body(&[]);
 
         assert_eq!(body.len(), 4 + REPUTATION_LIST_SLOTS * 5);
         assert_eq!(&body[0..4], &(REPUTATION_LIST_SLOTS as u32).to_le_bytes());
         assert!(body[4..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn initial_reputations_packet_ignores_rows_without_dbc_slot_mapping() {
+        let body = build_initial_reputations_body(&[
+            CharacterReputation {
+                faction: 72,
+                standing: 0,
+                flags: 1,
+            },
+            CharacterReputation {
+                faction: 47,
+                standing: 500,
+                flags: 1,
+            },
+            CharacterReputation {
+                faction: 999_999,
+                standing: 42,
+                flags: 1,
+            },
+        ]);
+
+        assert!(body[4..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn trigger_cinematic_packet_uses_vanilla_chrraces_sequence() {
+        assert_eq!(cinematic_sequence_for_race(1), Some(81));
+        assert_eq!(cinematic_sequence_for_race(2), Some(21));
+        assert_eq!(cinematic_sequence_for_race(8), Some(121));
+        assert_eq!(cinematic_sequence_for_race(9), None);
+
+        let body = build_trigger_cinematic_body(cinematic_sequence_for_race(1).unwrap());
+        assert_eq!(body, 81u32.to_le_bytes());
     }
 
     #[test]
@@ -2910,6 +4100,25 @@ mod tests {
     }
 
     #[test]
+    fn visible_item_updates_prefer_live_equipped_inventory() {
+        let mut character = test_character(1, 1);
+        character.equipment_cache = Some("25 0".to_string());
+        let inventory = [CharacterInventoryItem {
+            bag: 0,
+            slot: 0,
+            item: 99,
+            item_template: 2362,
+            count: 1,
+            durability: 18,
+        }];
+        let mut values = vec![None; PLAYER_END_FIELDS];
+
+        set_visible_item_update_values(&mut values, &character, &inventory).unwrap();
+
+        assert_eq!(values[0x104], Some(2362));
+    }
+
+    #[test]
     fn writes_inventory_item_guid_update_values() {
         let mut values = vec![None; PLAYER_END_FIELDS];
         let item = CharacterInventoryItem {
@@ -2957,6 +4166,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -3035,6 +4245,7 @@ mod tests {
             power3: 0,
             power4: 0,
             power5: 0,
+            watched_faction: u32::MAX,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -3147,6 +4358,161 @@ mod tests {
     }
 
     #[test]
+    fn active_mover_rejects_truncated_payload() {
+        let err = handle_set_active_mover(&[0; 4], &WorldSessionState::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("CMSG_SET_ACTIVE_MOVER payload must be 8 bytes"));
+    }
+
+    #[test]
+    fn query_next_mail_time_matches_cmangos_shape() {
+        assert_eq!(build_query_next_mail_time_body(true), 0.0f32.to_le_bytes());
+        assert_eq!(
+            build_query_next_mail_time_body(false),
+            (-86400.0f32).to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn parses_basic_chat_message() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&CHAT_MSG_SAY.to_le_bytes());
+        body.extend_from_slice(&7u32.to_le_bytes());
+        write_c_string(&mut body, "hello checkpoint");
+
+        let chat = ChatMessage::read(&body).unwrap();
+
+        assert_eq!(
+            chat,
+            ChatMessage {
+                chat_type: CHAT_MSG_SAY,
+                language: 7,
+                message: "hello checkpoint".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn message_chat_body_matches_cmangos_say_shape() {
+        let character = ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        };
+        let body = build_message_chat_body(CHAT_MSG_SAY, 7, "hello", &character);
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
+
+        assert_eq!(body[0], CHAT_MSG_SAY as u8);
+        assert_eq!(&body[1..5], &7u32.to_le_bytes());
+        assert_eq!(&body[5..13], &guid.to_le_bytes());
+        assert_eq!(&body[13..21], &guid.to_le_bytes());
+        assert_eq!(&body[21..25], &6u32.to_le_bytes());
+        assert_eq!(&body[25..31], b"hello\0");
+        assert_eq!(body[31], CHAT_TAG_NONE);
+    }
+
+    #[test]
+    fn parses_text_emote_packet() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&12u32.to_le_bytes());
+        body.extend_from_slice(&33u32.to_le_bytes());
+        body.extend_from_slice(&99u64.to_le_bytes());
+
+        let emote = TextEmote::read(&body).unwrap();
+
+        assert_eq!(
+            emote,
+            TextEmote {
+                text_emote: 12,
+                emote_num: 33,
+                target_guid: 99
+            }
+        );
+    }
+
+    #[test]
+    fn text_emote_body_matches_cmangos_empty_target_shape() {
+        let character = ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        };
+        let body = build_text_emote_body(&character, 12, 33);
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
+
+        assert_eq!(&body[0..8], &guid.to_le_bytes());
+        assert_eq!(&body[8..12], &12u32.to_le_bytes());
+        assert_eq!(&body[12..16], &33u32.to_le_bytes());
+        assert_eq!(&body[16..20], &1u32.to_le_bytes());
+        assert_eq!(body[20], 0);
+    }
+
+    #[test]
+    fn maps_common_text_emotes_to_animation_emotes() {
+        assert_eq!(
+            animation_emote_for_text_emote(TEXTEMOTE_WAVE),
+            Some(EMOTE_ONESHOT_WAVE)
+        );
+        assert_eq!(
+            animation_emote_for_text_emote(TEXTEMOTE_POINT),
+            Some(EMOTE_ONESHOT_POINT)
+        );
+        assert_eq!(
+            animation_emote_for_text_emote(TEXTEMOTE_DANCE),
+            Some(EMOTE_STATE_DANCE)
+        );
+        assert_eq!(
+            animation_emote_for_text_emote(TEXTEMOTE_SLEEP),
+            Some(EMOTE_STATE_SLEEP)
+        );
+    }
+
+    #[test]
+    fn emote_animation_body_matches_cmangos_command_shape() {
+        let character = ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        };
+        let body = build_emote_body(&character, EMOTE_ONESHOT_WAVE);
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
+
+        assert_eq!(&body[0..4], &EMOTE_ONESHOT_WAVE.to_le_bytes());
+        assert_eq!(&body[4..12], &guid.to_le_bytes());
+    }
+
+    #[test]
+    fn emote_state_update_sets_unit_emote_state() {
+        let character = ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        };
+        let body = build_emote_state_update_body(&character, EMOTE_STATE_DANCE).unwrap();
+        let packed_guid_mask = body[6];
+        let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+        let values = decode_update_values(&body[values_start..]);
+
+        assert_eq!(&body[0..4], &1u32.to_le_bytes());
+        assert_eq!(body[4], 0);
+        assert_eq!(body[5], UPDATE_TYPE_VALUES);
+        assert_eq!(values[UNIT_NPC_EMOTESTATE], Some(EMOTE_STATE_DANCE));
+    }
+
+    #[test]
     fn recognizes_observed_movement_opcodes() {
         for opcode in [
             0x00B5, 0x00B7, 0x00B8, 0x00B9, 0x00BA, 0x00BB, 0x00BD, 0x00BE, 0x00C9, 0x00DA, 0x00EE,
@@ -3161,8 +4527,6 @@ mod tests {
             CMSG_JOIN_CHANNEL,
             CMSG_CANCEL_TRADE,
             CMSG_ZONEUPDATE,
-            CMSG_SET_ACTIVE_MOVER,
-            MSG_QUERY_NEXT_MAIL_TIME,
             CMSG_MEETINGSTONE_INFO,
             CMSG_REQUEST_RAID_INFO,
             CMSG_MOVE_TIME_SKIPPED,

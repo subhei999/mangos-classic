@@ -1054,7 +1054,7 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
 
-        for _ in 0..10 {
+        for _ in 0..11 {
             let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         }
         Ok(())

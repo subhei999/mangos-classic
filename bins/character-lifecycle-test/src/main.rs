@@ -1,6 +1,6 @@
 use anyhow::{ensure, Context};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use wow_db::{CreatedCharacter, NewCharacter};
+use wow_db::{CharacterDeleteMethod, CharacterDeleteOptions, CreatedCharacter, NewCharacter};
 
 const LOGIN_DATABASE_URL: &str = "mysql://mangos:mangos@127.0.0.1:3307/realmd";
 const CHARACTER_DATABASE_URL: &str = "mysql://mangos:mangos@127.0.0.1:3307/characters";
@@ -44,7 +44,10 @@ async fn main() -> anyhow::Result<()> {
     assert_character_deleted(&character_pool, account_id, created.guid).await?;
     assert_starter_inventory_deleted(&character_pool, created.guid).await?;
 
-    println!("character lifecycle check passed: create, enum, count refresh, starter items, delete cleanup");
+    assert_soft_delete_unlinks_character(&character_pool, &world_pool, account_id).await?;
+    assert_race_class_matrix_cleanup(&character_pool, &world_pool, account_id).await?;
+
+    println!("character lifecycle check passed: create, enum, count refresh, starter items, delete cleanup, soft delete, race/class cleanup");
     Ok(())
 }
 
@@ -125,6 +128,122 @@ async fn create_lifecycle_character(
     )
     .await
     .context("create lifecycle character")
+}
+
+async fn create_character(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    account_id: u32,
+    name: &str,
+    race: u8,
+    class: u8,
+) -> anyhow::Result<CreatedCharacter> {
+    wow_db::create_character(
+        character_pool,
+        world_pool,
+        NewCharacter {
+            account_id,
+            name: name.to_string(),
+            race,
+            class,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await
+    .with_context(|| format!("create matrix character {name}"))
+}
+
+async fn assert_soft_delete_unlinks_character(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    account_id: u32,
+) -> anyhow::Result<()> {
+    let created =
+        create_character(character_pool, world_pool, account_id, "Softlife", 1, 1).await?;
+    ensure!(
+        wow_db::delete_character_with_options(
+            character_pool,
+            account_id,
+            created.guid,
+            CharacterDeleteOptions {
+                method: CharacterDeleteMethod::Unlink,
+                min_level_for_unlink: 1,
+                force_hard_delete: false,
+            },
+        )
+        .await?,
+        "soft delete returned false for owned test character"
+    );
+
+    let row: (u32, String, Option<u32>, Option<String>, Option<u64>) = sqlx::query_as(
+        "SELECT account, name, deleteInfos_Account, deleteInfos_Name, deleteDate \
+         FROM characters WHERE guid = ?",
+    )
+    .bind(created.guid)
+    .fetch_one(character_pool)
+    .await?;
+    ensure!(
+        row.0 == 0,
+        "soft-deleted character account was not unlinked"
+    );
+    ensure!(
+        row.1.is_empty(),
+        "soft-deleted character name was not cleared"
+    );
+    ensure!(
+        row.2 == Some(account_id),
+        "soft-deleted character account backup was wrong"
+    );
+    ensure!(
+        row.3.as_deref() == Some("Softlife"),
+        "soft-deleted character name backup was wrong"
+    );
+    ensure!(row.4.is_some(), "soft-deleted character deleteDate missing");
+
+    ensure!(
+        wow_db::delete_character_with_options(
+            character_pool,
+            0,
+            created.guid,
+            CharacterDeleteOptions::hard_delete(),
+        )
+        .await?,
+        "hard cleanup of soft-deleted character failed"
+    );
+    Ok(())
+}
+
+async fn assert_race_class_matrix_cleanup(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    account_id: u32,
+) -> anyhow::Result<()> {
+    for (name, race, class, expected_items) in [
+        ("Matrixorc", 2, 3, &[6948, 2512, 2101][..]),
+        ("Matrixdruid", 4, 11, &[6948, 3661][..]),
+        ("Matrixmage", 7, 8, &[6948, 35][..]),
+    ] {
+        let created =
+            create_character(character_pool, world_pool, account_id, name, race, class).await?;
+        let inventory = wow_db::get_character_inventory_items(character_pool, created.guid).await?;
+        for expected in expected_items {
+            ensure!(
+                inventory.iter().any(|item| item.item_template == *expected),
+                "starter item {expected} missing for {name}"
+            );
+        }
+        ensure!(
+            wow_db::delete_character(character_pool, account_id, created.guid).await?,
+            "matrix delete failed for {name}"
+        );
+        assert_starter_inventory_deleted(character_pool, created.guid).await?;
+    }
+    Ok(())
 }
 
 async fn assert_count_row(

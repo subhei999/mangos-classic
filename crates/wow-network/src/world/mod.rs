@@ -1,16 +1,19 @@
 use sha1::{Digest, Sha1};
 use sqlx::mysql::MySqlPool;
+use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
-    CharacterAction, CharacterEnumEntry, CharacterInventoryItem, CharacterNameQuery,
-    CharacterSpell, NewCharacter,
+    CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
+    CharacterNameQuery, CharacterSpell, NewCharacter,
 };
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
@@ -148,6 +151,15 @@ pub struct WorldServer {
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
     world_db_pool: MySqlPool,
+    runtime_state: WorldRuntimeState,
+}
+
+type OnlineCharacters = Arc<Mutex<HashSet<u32>>>;
+
+#[derive(Clone)]
+struct WorldRuntimeState {
+    online_characters: OnlineCharacters,
+    delete_options: CharacterDeleteOptions,
 }
 
 impl WorldServer {
@@ -156,12 +168,17 @@ impl WorldServer {
         login_db_pool: MySqlPool,
         character_db_pool: MySqlPool,
         world_db_pool: MySqlPool,
+        delete_options: CharacterDeleteOptions,
     ) -> Self {
         Self {
             bind_addr,
             login_db_pool,
             character_db_pool,
             world_db_pool,
+            runtime_state: WorldRuntimeState {
+                online_characters: Arc::new(Mutex::new(HashSet::new())),
+                delete_options,
+            },
         }
     }
 
@@ -176,9 +193,16 @@ impl WorldServer {
                     let login_pool = self.login_db_pool.clone();
                     let character_pool = self.character_db_pool.clone();
                     let world_pool = self.world_db_pool.clone();
+                    let runtime_state = self.runtime_state.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            handle_client(socket, login_pool, character_pool, world_pool).await
+                        if let Err(e) = handle_client(
+                            socket,
+                            login_pool,
+                            character_pool,
+                            world_pool,
+                            runtime_state,
+                        )
+                        .await
                         {
                             warn!(%peer, "World session ended with error: {}", e);
                         }
@@ -195,6 +219,7 @@ async fn handle_client(
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
     world_db_pool: MySqlPool,
+    runtime_state: WorldRuntimeState,
 ) -> anyhow::Result<()> {
     send_packet(
         &mut stream,
@@ -289,6 +314,7 @@ async fn handle_client(
                             account.id,
                             &body,
                             &mut header_crypto,
+                            &runtime_state,
                         )
                         .await?;
                     }
@@ -300,6 +326,7 @@ async fn handle_client(
                             &body,
                             &mut header_crypto,
                             &mut session,
+                            &runtime_state.online_characters,
                         )
                         .await?;
                     }
@@ -343,6 +370,7 @@ async fn handle_client(
                             account.id,
                             &mut header_crypto,
                             &mut session,
+                            &runtime_state.online_characters,
                         )
                         .await?;
                     }
@@ -372,6 +400,7 @@ async fn handle_client(
             }
             Err(e) => {
                 persist_active_character_position(&character_db_pool, account.id, &session).await?;
+                unregister_active_character(&runtime_state.online_characters, &mut session).await;
                 info!("World client disconnected or read failed: {}", e);
                 return Ok(());
             }
@@ -501,6 +530,7 @@ async fn handle_char_delete(
     account_id: u32,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
+    runtime_state: &WorldRuntimeState,
 ) -> anyhow::Result<()> {
     if body.len() != 8 {
         warn!("Rejected malformed CMSG_CHAR_DELETE bytes={}", body.len());
@@ -509,12 +539,22 @@ async fn handle_char_delete(
 
     let raw_guid = u64::from_le_bytes(body.try_into()?);
     let guid = ObjectGuid::from_raw(raw_guid).counter();
+    if runtime_state.online_characters.lock().await.contains(&guid) {
+        warn!(account_id, guid, "Rejected loaded character delete");
+        return send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await;
+    }
     if wow_db::is_guild_leader(character_db_pool, guid).await? {
         warn!(account_id, guid, "Rejected guild leader character delete");
         return send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await;
     }
 
-    let deleted = wow_db::delete_character(character_db_pool, account_id, guid).await?;
+    let deleted = wow_db::delete_character_with_options(
+        character_db_pool,
+        account_id,
+        guid,
+        runtime_state.delete_options,
+    )
+    .await?;
     if deleted {
         let count = wow_db::refresh_realm_character_count(
             login_db_pool,
@@ -642,6 +682,7 @@ async fn handle_player_login(
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
     session: &mut WorldSessionState,
+    online_characters: &OnlineCharacters,
 ) -> anyhow::Result<()> {
     if body.len() != 8 {
         anyhow::bail!(
@@ -673,6 +714,22 @@ async fn handle_player_login(
         return Ok(());
     };
 
+    if online_characters.lock().await.contains(&character.guid) {
+        warn!(
+            account_id,
+            guid = character.guid,
+            "Character login rejected: character already loaded"
+        );
+        send_packet(
+            stream,
+            SMSG_CHARACTER_LOGIN_FAILED,
+            &[CHAR_LOGIN_NO_CHARACTER],
+            Some(header_crypto),
+        )
+        .await?;
+        return Ok(());
+    }
+
     info!(
         account_id,
         guid = character.guid,
@@ -680,6 +737,8 @@ async fn handle_player_login(
         map = character.map,
         "Character login selected"
     );
+    unregister_active_character(online_characters, session).await;
+    online_characters.lock().await.insert(character.guid);
     session.active_character = Some(ActiveCharacter {
         guid: character.guid,
         name: character.name.clone(),
@@ -712,6 +771,7 @@ async fn handle_logout_request(
     account_id: u32,
     header_crypto: &mut HeaderCrypto,
     session: &mut WorldSessionState,
+    online_characters: &OnlineCharacters,
 ) -> anyhow::Result<()> {
     if let Some(character) = &session.active_character {
         info!(
@@ -739,8 +799,17 @@ async fn handle_logout_request(
     .await?;
     send_packet(stream, SMSG_LOGOUT_COMPLETE, &[], Some(header_crypto)).await?;
     persist_active_character_position(character_db_pool, account_id, session).await?;
-    session.active_character = None;
+    unregister_active_character(online_characters, session).await;
     Ok(())
+}
+
+async fn unregister_active_character(
+    online_characters: &OnlineCharacters,
+    session: &mut WorldSessionState,
+) {
+    if let Some(character) = session.active_character.take() {
+        online_characters.lock().await.remove(&character.guid);
+    }
 }
 
 async fn persist_active_character_position(
@@ -1281,6 +1350,20 @@ fn display_id_for_character(character: &CharacterEnumEntry) -> u32 {
     match (character.race, character.gender) {
         (1, 0) => 49,
         (1, 1) => 50,
+        (2, 0) => 51,
+        (2, 1) => 52,
+        (3, 0) => 53,
+        (3, 1) => 54,
+        (4, 0) => 55,
+        (4, 1) => 56,
+        (5, 0) => 57,
+        (5, 1) => 58,
+        (6, 0) => 59,
+        (6, 1) => 60,
+        (7, 0) => 1563,
+        (7, 1) => 1564,
+        (8, 0) => 1478,
+        (8, 1) => 1479,
         _ => 49,
     }
 }
@@ -2340,6 +2423,50 @@ mod tests {
                 inventory_type: 14
             })
         );
+    }
+
+    #[test]
+    fn maps_classic_race_gender_display_ids() {
+        let mut character = CharacterEnumEntry {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            player_bytes: 0,
+            player_bytes2: 0,
+            level: 1,
+            zone: 12,
+            map: 0,
+            position_x: -8949.95,
+            position_y: -132.493,
+            position_z: 83.5312,
+            orientation: 0.0,
+            guildid: None,
+            player_flags: 0,
+            at_login: 0,
+            pet_entry: None,
+            pet_modelid: None,
+            pet_level: None,
+            equipment_cache: None,
+        };
+
+        for (race, male_display, female_display) in [
+            (1, 49, 50),
+            (2, 51, 52),
+            (3, 53, 54),
+            (4, 55, 56),
+            (5, 57, 58),
+            (6, 59, 60),
+            (7, 1563, 1564),
+            (8, 1478, 1479),
+        ] {
+            character.race = race;
+            character.gender = 0;
+            assert_eq!(display_id_for_character(&character), male_display);
+            character.gender = 1;
+            assert_eq!(display_id_for_character(&character), female_display);
+        }
     }
 
     #[test]

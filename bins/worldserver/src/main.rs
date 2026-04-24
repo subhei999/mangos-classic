@@ -4,6 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 use wow_config::WorldServerConfig;
 use wow_db::create_pool;
+use wow_db::{CharacterDeleteMethod, CharacterDeleteOptions};
 use wow_network::WorldServer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -94,7 +95,22 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to connect to world database")?;
 
-    let server = WorldServer::new(bind_addr, login_pool, character_pool, world_pool);
+    let delete_options = CharacterDeleteOptions {
+        method: match config.world.char_delete_method {
+            1 => CharacterDeleteMethod::Unlink,
+            _ => CharacterDeleteMethod::HardDelete,
+        },
+        min_level_for_unlink: config.world.char_delete_min_level,
+        force_hard_delete: false,
+    };
+
+    let server = WorldServer::new(
+        bind_addr,
+        login_pool,
+        character_pool,
+        world_pool,
+        delete_options,
+    );
     info!("World server skeleton is ready. Waiting for connections...");
     server.run().await
 }

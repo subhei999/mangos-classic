@@ -48,6 +48,10 @@ pub struct WorldConfig {
     pub visibility_distance: f32,
     #[serde(default = "default_motd")]
     pub motd: String,
+    #[serde(default = "default_char_delete_method")]
+    pub char_delete_method: u8,
+    #[serde(default = "default_char_delete_min_level")]
+    pub char_delete_min_level: u8,
 }
 
 fn default_update_interval_ms() -> u32 {
@@ -64,6 +68,12 @@ fn default_visibility_distance() -> f32 {
 }
 fn default_motd() -> String {
     "Welcome to CMaNGOS Rust!".to_string()
+}
+fn default_char_delete_method() -> u8 {
+    0
+}
+fn default_char_delete_min_level() -> u8 {
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +132,8 @@ impl Default for WorldConfig {
             player_save_interval_secs: default_player_save_interval_secs(),
             visibility_distance: default_visibility_distance(),
             motd: default_motd(),
+            char_delete_method: default_char_delete_method(),
+            char_delete_min_level: default_char_delete_min_level(),
         }
     }
 }
@@ -188,5 +200,7 @@ database = "realmd"
         assert_eq!(wc.player_save_interval_secs, 900);
         assert!((wc.visibility_distance - 90.0).abs() < f32::EPSILON);
         assert_eq!(wc.motd, "Welcome to CMaNGOS Rust!");
+        assert_eq!(wc.char_delete_method, 0);
+        assert_eq!(wc.char_delete_min_level, 0);
     }
 }

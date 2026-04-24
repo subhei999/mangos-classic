@@ -154,20 +154,208 @@ that cannot be run. Each milestone must leave the repo in a testable state.
      character-limit, malformed delete, cross-account delete, and guild leader
      delete failures, deletes a non-leader guild member through
      `CMSG_CHAR_DELETE`, verifies `guild_member` / `guild_eventlog` cleanup,
-     and verifies enum/count refresh. Next work is broader CMaNGOS delete
-     cleanup semantics.
-   - Delete parity is explicitly not complete yet. Remaining known gaps:
-     group cleanup (`group_member`, `group_instance`, and leader behavior),
-     explicit social cleanup coverage, mail cleanup parity including COD/item
-     return behavior, pet-related cleanup coverage, auction-related character
-     cleanup, config-dependent hard-delete versus unlink/soft-delete behavior,
-     and loaded-character delete rejection once the Rust worldserver tracks
-     online characters across sessions.
+     verifies group membership cleanup plus group-leader transfer and
+     `group_instance` bind preservation, verifies social cleanup, pet child
+     cleanup, basic received-mail cleanup, COD mail/item return-to-sender, and
+     auction cleanup, loaded-character delete rejection, config-dependent
+     hard-delete versus unlink/soft-delete behavior, broader race/class
+     starter cleanup, and verifies enum/count refresh.
+   - Current status: milestone complete. Remaining deeper group/LFG/reset
+     nuance and full auction/mail gameplay behavior should be handled in future
+     subsystem milestones rather than blocking Character Lifecycle Coverage.
 10. Gameplay slices
    - Movement, chat, inventory, combat, spells, NPCs, loot, groups, guilds.
    - Each slice gets packet tests and DB fixture coverage.
 11. Slamrock/Hardcore fork behavior
    - Port fork-specific mechanics after baseline classic behavior has coverage.
+
+## Checkpoint Roadmap
+
+The numbered milestones above track implementation history and near-term
+vertical slices. The checkpoints below describe demo-quality product states.
+Each checkpoint should be proven with a real WoW 1.12.1 client plus scripted
+packet/DB harness coverage where practical.
+
+### Checkpoint 1: First Playable World
+
+Goal: the Rust server supports the first real playable loop in the WoW client,
+not just authentication, character lifecycle, and a skeletal empty-world login.
+
+Success looks like:
+
+- A real client can authenticate, create/select/delete characters, enter world,
+  move, logout, relog, and preserve character state.
+- Multiple Classic race/gender combinations render with correct in-world body
+  display ids.
+- New characters have believable starter state: spawn position, bind point,
+  race/class metadata, starter spells, action buttons, skills, starter items,
+  equipment visuals, health, power, stats, faction/reputation basics, and
+  cinematic/tutorial flags close enough that the client behaves normally.
+- Startup packets are quiet and CMaNGOS-shaped enough that the client is not
+  repeatedly probing missing account data, tutorial, time, raid, battleground,
+  name, faction, or world-state data.
+- The player can do first-minute gameplay: move, chat, see/query a simple NPC,
+  open a basic gossip/vendor/trainer interaction, fight a simple creature,
+  cast at least one starter spell, loot money/items, equip or move starter
+  inventory, logout, and relog with durable DB state.
+- Scripted tests protect the core loop: auth flow, character lifecycle, world
+  character-screen flow, player bootstrap packet shapes, movement persistence,
+  basic chat, basic inventory, basic NPC interaction, basic combat/spell, and
+  basic loot.
+
+Detailed path:
+
+1. Real-client smoke gate
+   - Relaunch with `scripts/run-client-stack-18085.cmd`.
+   - Verify auth, enum, create/select, enter world, movement, logout/relog,
+     non-loaded delete, and non-human display ids.
+   - Capture any fresh client startup opcodes that still look noisy or missing.
+2. Player object update parity
+   - Expand the minimal `SMSG_UPDATE_OBJECT` self-spawn toward CMaNGOS player
+     fields: health, power, max values, stats, faction, bytes, flags, display
+     ids, scale, level, money, inventory slots, visible equipment, attack
+     speeds, and aura placeholders.
+   - Keep field indexes source-derived from `src/game/Entities/Player.cpp` and
+     update-field definitions.
+   - Add packet-builder tests for representative race/class/gender entries.
+3. Starter/default parity completion
+   - Replace remaining hardcoded Human Warrior assumptions with DB/DBC-backed
+     or source-derived data.
+   - Cover health/power/stat initialization, class power type, skill ranges,
+     cinematic flags, tutorial flags, homebind, race/class validation, and
+     item visual metadata from `item_template` or a shared world-data cache.
+   - Expand the lifecycle matrix only after each golden case is proven.
+4. Bootstrap packet polish
+   - Make account data, tutorial, bind point, time, name query, zone update,
+     raid info, battlefield status, GM ticket, active mover, faction/reputation
+     init, mail timing, and world-state responses closer to CMaNGOS.
+   - Add a packet smoke harness that logs and asserts the expected startup
+     sequence after `CMSG_PLAYER_LOGIN`.
+5. Movement v1
+   - Handle observed walk/run/turn/jump/fall/swim movement packets without
+     disconnects.
+   - Persist position on logout/disconnect and reject obviously invalid
+     character ownership/session cases.
+   - Defer full anticheat and map collision, but keep the API ready for it.
+6. Chat v1
+   - Implement say/yell/whisper/system-message basics with language/faction
+     checks sufficient for solo local testing.
+   - Add packet tests for accepted/rejected message shapes.
+7. Inventory v1
+   - Support item query responses, basic equip/unequip, bag/backpack moves,
+     destroy item, stack counts, durability fields, and DB persistence.
+   - Keep item operations conservative and schema-compatible with
+     `characters.item_instance` / `character_inventory`.
+8. NPC interaction v1
+   - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
+     or a controlled test fixture.
+   - Implement enough `CMSG_CREATURE_QUERY`, `CMSG_GAMEOBJECT_QUERY`,
+     gossip hello, vendor list, and trainer list for a real client to open
+     simple interactions.
+9. Combat and spell v1
+   - Implement target selection, auto-attack start/stop, swing timing basics,
+     health updates, death/respawn basics, and one or two starter instant spell
+     casts.
+   - Keep combat deterministic in harness tests before adding broader spell
+     mechanics.
+10. Loot v1
+    - Support opening loot, taking money/items, updating inventory, and
+      persisting creature loot state enough for a single-player demo.
+11. First Playable demo pass
+    - Run the real client through the full loop on a fresh account/character.
+    - Run `test-rust.cmd`, `test-auth-flow.cmd`,
+      `test-character-lifecycle.cmd`, `test-world-flow.cmd`, and any new
+      Checkpoint 1 harnesses.
+    - Update `docs/session_handoff.md` with exactly what was demonstrated and
+      what remains outside Checkpoint 1.
+
+### Checkpoint 2: Starter Zone Playability
+
+Goal: one starter zone can be played as a coherent early-game experience rather
+than a handpicked interaction demo.
+
+Success looks like:
+
+- A chosen starter zone has creature spawns, gameobjects, vendors, trainers,
+  graveyard/respawn flow, loot tables, basic aggro/leashing, and enough class
+  spells to play several opening minutes.
+- A player can accept, progress, and complete a small set of starter quests.
+- Creature respawn, XP gain, level-up basics, money, inventory, and trainer
+  learning persist correctly.
+- The implementation uses CMaNGOS DB/script data where possible, with explicit
+  fixture shortcuts documented.
+
+### Checkpoint 3: Core Solo Leveling Loop
+
+Goal: the Rust server supports the ordinary solo PvE loop across multiple low
+level areas.
+
+Success looks like:
+
+- Quest, creature, gameobject, loot, vendor, trainer, XP, level-up, rest,
+  durability, death, resurrection, and hearthstone flows are functional.
+- More class starter spell families work, including cooldowns, resource costs,
+  aura application/removal, and simple periodic effects.
+- Movement, visibility, and object updates are stable enough for longer client
+  sessions without frequent protocol surprises.
+
+### Checkpoint 4: Social And Economy Basics
+
+Goal: the world feels persistent and multiplayer-capable beyond solo combat.
+
+Success looks like:
+
+- Friends/ignore, whispers, channels, party invite/leave/leadership, guild
+  roster/chat basics, mail send/receive/COD, auction browsing/bid/buyout, and
+  trade-window basics work with durable DB state.
+- Character lifecycle cleanup remains compatible with these systems.
+- Multi-client smoke tests prove at least two real clients can see each other,
+  chat, group, trade, and persist state.
+
+### Checkpoint 5: Dungeons And Group PvE
+
+Goal: grouped PvE works well enough for a small dungeon-style demo.
+
+Success looks like:
+
+- Instance creation/binding/reset basics, group visibility, elite creature
+  combat, threat, loot methods, party XP, corpse/ghost flow, and basic boss
+  scripting are functional.
+- Pathing/collision is good enough for controlled dungeon fixtures, with known
+  gaps documented.
+
+### Checkpoint 6: Broad Classic Systems Coverage
+
+Goal: most major Classic systems have faithful Rust coverage, even if long-tail
+edge cases remain.
+
+Success looks like:
+
+- Talents, trainers, professions, banks, pets, transports/taxis, reputations,
+  battleground queue/status basics, weather/time, GM commands needed for
+  testing, and broader spell/aura families are implemented with packet and DB
+  tests.
+- Real-client regression passes cover several races/classes and multiple zones.
+
+### Alpha: Feature-Complete CMaNGOS Parity
+
+Goal: Rust can be treated as a feature-complete replacement candidate for the
+Classic CMaNGOS gameplay surface, with known bugs rather than known missing
+subsystems.
+
+Success looks like:
+
+- Auth, character lifecycle, world bootstrap, movement, chat, inventory, items,
+  spells, auras, combat, creatures, gameobjects, quests, loot, groups, guilds,
+  mail, auction house, trade, vendors, trainers, pets, taxis/transports,
+  instances, battleground basics, GM/admin operations, persistence, and cleanup
+  semantics are implemented against CMaNGOS-compatible schemas.
+- Existing CMaNGOS data can boot without Rust-specific migrations beyond
+  documented compatibility configuration.
+- Automated tests include unit tests, packet-shape tests, DB fixture tests,
+  multi-client smoke tests, and long-running real-client regression scripts.
+- Remaining gaps are tracked as bugs or fidelity differences, not whole missing
+  feature areas.
 
 ## Testing Contract
 
@@ -261,9 +449,9 @@ New AI agents should start by reading, in order:
   skills, items/equipment, and action bars now have a first source-derived
   bridge; stats, DBC-backed appearance validation, broader item visual metadata,
   and fuller create-info parity remain open.
-- Character deletion now has packet-level happy-path, negative create/delete,
-  guild leader rejection, and guild member/eventlog cleanup coverage. It is not
-  full CMaNGOS `Player::DeleteFromDB` parity yet; group, social, mail, pet,
-  auction, soft-delete, and loaded-character semantics remain open.
+- Character Lifecycle Coverage is closed for the current milestone, with
+  packet-level happy-path, negative create/delete, loaded/guild leader
+  rejection, guild/group/social/pet/mail/auction cleanup, COD mail return,
+  config-dependent soft-delete/unlink, and broader race/class cleanup coverage.
 - Future worldserver work will need a strict packet compatibility harness before
   gameplay code grows.

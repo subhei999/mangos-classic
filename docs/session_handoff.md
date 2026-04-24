@@ -6,14 +6,22 @@ Update this file before ending any substantial Rust migration session.
 
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: `fac4f2ff7`
-- Uncommitted session changes: character lifecycle coverage in progress; not
+- Uncommitted session changes: character lifecycle coverage completed; not
   committed yet.
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
 
-Expand Character Lifecycle Coverage while keeping the client-proven create ->
-enum -> enter world -> move -> logout/delete path intact.
+Character Lifecycle Coverage is complete for this milestone. The project is
+now aiming at **Checkpoint 1: First Playable World**: a real WoW 1.12.1 client
+can run the first playable loop through Rust auth/world, including character
+create/select/delete, correct race/gender display, enter world, move, chat,
+basic NPC interaction, basic combat/spell, basic loot, inventory persistence,
+logout, and relog.
+
+The detailed Checkpoint 1 path and higher-level roadmap through Alpha
+feature-complete CMaNGOS parity now live in
+`docs/rust_migration_plan.md`.
 
 ## What Changed Recently
 
@@ -158,8 +166,55 @@ enum -> enter world -> move -> logout/delete path intact.
   rows where the character appears as `PlayerGuid1` or `PlayerGuid2`.
   `world-flow-test` seeds those rows before the successful delete and asserts
   they are gone afterward.
+- Added first group delete cleanup parity: `wow_db::delete_character` now
+  removes `group_member` membership, disbands two-character groups, transfers
+  group leadership for larger groups, moves `group_instance` binds to the new
+  leader, and clears stale binds for the deleted character. `world-flow-test`
+  seeds a three-character group with the deleted character as leader and asserts
+  membership cleanup, leader transfer, and instance-bind preservation.
+- Added explicit social, pet, and basic mail cleanup coverage for packet
+  character delete. `wow_db::delete_character` now mirrors CMaNGOS pet child
+  cleanup by deleting `pet_aura`, `pet_spell`, and `pet_spell_cooldown` rows
+  for each `character_pet.id`, and hard-deletes `item_instance` rows owned by
+  the deleted character. `world-flow-test` now seeds and verifies cleanup for
+  `character_social`, `character_pet`, pet child rows, received `mail`,
+  `mail_items`, and an owned mailed `item_instance`.
+- Added COD mail return parity for character hard-delete. Before the generic
+  cleanup removes received mail, `wow_db::delete_character` now finds
+  normal-player COD mail with attached items, deletes the original mail,
+  creates a returned normal mail back to the original sender with
+  `checked = MAIL_CHECK_MASK_RETURNED`, clears COD, preserves money/items, and
+  moves attached `mail_items` plus `item_instance.owner_guid` back to the
+  sender. `world-flow-test` asserts the original COD mail is gone and the
+  returned mail/item ownership shape matches the CMaNGOS `Player::DeleteFromDB`
+  path. Non-player COD mail still falls through to deletion like CMaNGOS.
+- Closed the remaining Character Lifecycle Coverage items:
+  - worldserver now tracks loaded characters process-wide and rejects
+    `CMSG_CHAR_DELETE` for a character currently logged into another world
+    session;
+  - worldserver config now exposes CMaNGOS-style
+    `world.char_delete_method` / `world.char_delete_min_level`, and
+    `wow_db::delete_character_with_options` supports hard-delete and unlink /
+    soft-delete shape (`deleteInfos_Name`, `deleteInfos_Account`,
+    `deleteDate`, `name=''`, `account=0`);
+  - hard-delete now removes auction rows where the deleted character is owner
+    or bidder and deletes the owned auction item through existing
+    `owner_guid` cleanup;
+  - `character-lifecycle-test` now covers soft-delete/unlink and a small
+    race/class starter cleanup matrix for Orc Hunter, Night Elf Druid, and
+    Gnome Mage.
 - Updated `scripts/test-world-flow.ps1` to tear down child `authserver.exe` and
   `worldserver.exe` processes after the smoke test finishes.
+- Added checkpoint roadmap documentation:
+  - Checkpoint 1 is named **First Playable World** and has a detailed slice
+    plan covering real-client smoke, player update-object parity,
+    starter/default parity, bootstrap packet polish, movement, chat,
+    inventory, NPC interaction, combat/spells, loot, and a final demo pass;
+  - Checkpoints 2 through 6 describe Starter Zone Playability, Core Solo
+    Leveling Loop, Social/Economy Basics, Dungeons/Group PvE, and Broad Classic
+    Systems Coverage;
+  - Alpha is defined as feature-complete CMaNGOS parity, where remaining work
+    should be bugs or fidelity differences rather than missing subsystems.
 
 ## Tests Last Run
 
@@ -234,19 +289,22 @@ Character lifecycle coverage:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-db -p world-flow-test
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-character-lifecycle.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust-db.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p world-flow-test
 ```
 
-All passed locally after stopping stale `authserver.exe` / `worldserver.exe`
-processes that were holding `target\debug\authserver.exe`. Docker-backed tests
-needed elevated Docker access in the Codex app shell. The lifecycle smoke
-printed:
+All passed locally in recent sessions; the current group-cleanup slice reran
+`test-rust.cmd`, targeted `wow-db` / `world-flow-test` cargo tests,
+`test-character-lifecycle.cmd`, `test-world-flow.cmd`, and the final
+`world-flow-test` compile after formatting. Docker-backed tests needed elevated
+Docker access in the Codex app shell. The lifecycle smoke printed:
 
 ```text
-character lifecycle check passed: create, enum, count refresh, starter items, delete cleanup
-world flow check passed: auth session, create/delete happy path, negative create/delete cases, guild leader rejection, guild cleanup, enum/count refresh
+character lifecycle check passed: create, enum, count refresh, starter items, delete cleanup, soft delete, race/class cleanup
+world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh
 ```
 
 The DB smoke test starts MariaDB through Docker and verifies the Rust authserver
@@ -372,20 +430,19 @@ docker compose -f docker-compose.local.yml down
 
 ## Next Recommended Task
 
-Next recommended milestone: Character Lifecycle Coverage.
+Next recommended milestone: **Checkpoint 1: First Playable World**.
 
-- Important: character deletion is not complete CMaNGOS parity yet. Current
-  coverage proves happy-path packet create/delete, negative character-screen
-  responses, guild leader rejection, and guild member/eventlog cleanup only.
-  Keep documenting delete behavior as partial until the remaining gaps below
-  are resolved.
-- Exercise fuller CMaNGOS delete semantics: loaded character rejection, group
-  cleanup, social cleanup, mail/item cleanup, and config-dependent hard-delete
-  versus unlink behavior.
-- Broaden lifecycle coverage beyond the first Human Warrior happy path,
-  especially starter equipment/backpack cleanup for more race/class rows.
-- Keep the client-proven vertical path intact: create character -> enum refresh
-  -> enter world -> starter gear/items visible -> move -> logout/delete.
+- Run `scripts/run-client-stack-18085.cmd` and verify the real WoW 1.12.1
+  client can still authenticate, create/select a character, enter world, move,
+  logout to character select, and delete a non-loaded character.
+- Specifically smoke loaded-character delete rejection manually: log a
+  character into world, try deleting it from another character-select session
+  if practical, then logout and confirm delete succeeds afterward.
+- Verify non-human race/gender display ids in-world after the Rust display-id
+  mapping fix.
+- After that, start the first Checkpoint 1 vertical slice: player
+  `SMSG_UPDATE_OBJECT` parity plus starter/default leftovers, keeping the
+  lifecycle path intact.
 
 Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 `realmd` run for extra confidence.
@@ -418,6 +475,8 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 - `sql/base/mangos.sql`
 - `src/game/Globals/ObjectMgr.cpp`
 - `src/game/Entities/Player.cpp`
+- `src/game/Entities/Pet.cpp`
+- `src/game/Mails/Mail.cpp`
 - `auth-client-13724.log`
 - `world-client-18085.log`
 
@@ -444,12 +503,9 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
   world-data cache instead of hardcoded item visuals.
 - Exact DBC skill ranges, health/power/stat initialization, cinematic flags,
   and DBC-backed appearance validation remain open.
-- Character delete parity remains partial. Known remaining gaps: group cleanup
-  (`group_member`, `group_instance`, leader behavior), explicit social cleanup
-  tests, CMaNGOS mail/COD/item-return behavior, pet cleanup coverage,
-  auction-related cleanup, config-dependent hard-delete versus
-  unlink/soft-delete behavior, and loaded-character delete rejection once
-  online character tracking exists.
+- Character Lifecycle Coverage is now closed for this milestone. Remaining
+  deeper group/LFG/reset nuances and full auction/mail gameplay behavior should
+  move into their future subsystem milestones rather than blocking lifecycle.
 - Post-login probe cleanup is unit-tested, but should still get one quick
   real-client smoke pass at the start of the next session.
 - The minimal self-spawn `SMSG_UPDATE_OBJECT` is enough for the real client to

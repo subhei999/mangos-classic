@@ -4,6 +4,7 @@ use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::thread;
 use std::time::Duration;
 use wow_common::guid::{HighGuid, ObjectGuid};
 use wow_crypto::HeaderCrypto;
@@ -33,6 +34,8 @@ const REALM_ID: u32 = 1;
 const CMSG_CHAR_CREATE: u32 = 0x0036;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_CHAR_DELETE: u32 = 0x0038;
+const CMSG_PLAYER_LOGIN: u32 = 0x003D;
+const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
@@ -144,6 +147,22 @@ async fn main() -> anyhow::Result<()> {
     );
     assert_count_row(&login_pool, account_id, 1).await?;
 
+    let mut loaded_world = WorldClient::connect(&session_key)?;
+    loaded_world.login_character(created.guid)?;
+    let mut delete_world = WorldClient::connect(&session_key)?;
+    delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
+    ensure!(
+        wow_db::get_character_enum_entries(&character_pool, account_id)
+            .await?
+            .iter()
+            .any(|character| character.guid == created.guid),
+        "loaded character was deleted by packet delete"
+    );
+    loaded_world.logout()?;
+    drop(loaded_world);
+    drop(delete_world);
+    thread::sleep(Duration::from_millis(50));
+
     seed_limit_characters(&character_pool, &world_pool, account_id).await?;
     wow_db::refresh_realm_character_count(&login_pool, &character_pool, account_id, REALM_ID)
         .await?;
@@ -173,6 +192,13 @@ async fn main() -> anyhow::Result<()> {
     clear_guild_fixture(&character_pool).await?;
 
     seed_guild_member_fixture(&character_pool, created.guid).await?;
+    seed_group_leader_fixture(&character_pool, account_id, created.guid).await?;
+    seed_social_fixture(&character_pool, account_id, created.guid).await?;
+    seed_pet_fixture(&character_pool, created.guid).await?;
+    seed_mail_fixture(&character_pool, created.guid).await?;
+    let cod_sender_guid =
+        seed_cod_mail_return_fixture(&character_pool, account_id, created.guid).await?;
+    seed_auction_fixture(&character_pool, created.guid).await?;
     world.expect_delete_character_result(created.guid, CHAR_DELETE_SUCCESS)?;
     let after_delete = world.char_enum()?;
     ensure!(
@@ -193,13 +219,26 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     ensure!(leaked == 0, "deleted packet-flow character row remained");
     assert_guild_member_cleanup(&character_pool, created.guid).await?;
+    assert_group_leader_cleanup(&character_pool, created.guid).await?;
+    assert_social_cleanup(&character_pool, created.guid).await?;
+    assert_pet_cleanup(&character_pool, 93_001).await?;
+    assert_mail_cleanup(&character_pool, created.guid, 94_001, 94_101).await?;
+    assert_cod_mail_return(
+        &character_pool,
+        created.guid,
+        cod_sender_guid,
+        94_002,
+        94_201,
+    )
+    .await?;
+    assert_auction_cleanup(&character_pool, created.guid, 95_001, 95_101).await?;
 
     cleanup_account(&login_pool, &character_pool, account_id).await?;
     cleanup_account(&login_pool, &character_pool, other_account_id).await?;
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, guild leader rejection, guild cleanup, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -353,6 +392,73 @@ async fn seed_guild_member_fixture(
     Ok(())
 }
 
+async fn seed_group_leader_fixture(
+    character_pool: &MySqlPool,
+    account_id: u32,
+    leader_guid: u32,
+) -> anyhow::Result<()> {
+    let member_guids: Vec<u32> = sqlx::query_scalar(
+        "SELECT guid FROM characters WHERE account = ? AND guid <> ? ORDER BY guid LIMIT 2",
+    )
+    .bind(account_id)
+    .bind(leader_guid)
+    .fetch_all(character_pool)
+    .await?;
+    ensure!(
+        member_guids.len() == 2,
+        "group fixture needs two extra characters"
+    );
+
+    sqlx::query("DELETE FROM group_instance WHERE leaderGuid IN (?, ?, ?)")
+        .bind(leader_guid)
+        .bind(member_guids[0])
+        .bind(member_guids[1])
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM group_member WHERE groupId = ?")
+        .bind(91_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM `groups` WHERE groupId = ?")
+        .bind(91_001u32)
+        .execute(character_pool)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO `groups` \
+         (groupId, leaderGuid, mainTank, mainAssistant, lootMethod, looterGuid, lootThreshold, \
+          icon1, icon2, icon3, icon4, icon5, icon6, icon7, icon8, isRaid) \
+         VALUES (?, ?, 0, 0, 0, ?, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+    )
+    .bind(91_001u32)
+    .bind(leader_guid)
+    .bind(leader_guid)
+    .execute(character_pool)
+    .await?;
+
+    for (subgroup, member_guid) in [leader_guid, member_guids[0], member_guids[1]]
+        .into_iter()
+        .enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO group_member (groupId, memberGuid, assistant, subgroup) VALUES (?, ?, 0, ?)",
+        )
+        .bind(91_001u32)
+        .bind(member_guid)
+        .bind(subgroup as u16)
+        .execute(character_pool)
+        .await?;
+    }
+
+    sqlx::query("INSERT INTO group_instance (leaderGuid, instance, permanent) VALUES (?, ?, 0)")
+        .bind(leader_guid)
+        .bind(92_001u32)
+        .execute(character_pool)
+        .await?;
+
+    Ok(())
+}
+
 async fn assert_guild_member_cleanup(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
     let member_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_member WHERE guid = ?")
         .bind(guid)
@@ -368,6 +474,422 @@ async fn assert_guild_member_cleanup(character_pool: &MySqlPool, guid: u32) -> a
 
     ensure!(member_rows == 0, "guild_member row remained after delete");
     ensure!(event_rows == 0, "guild_eventlog rows remained after delete");
+    Ok(())
+}
+
+async fn assert_group_leader_cleanup(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
+    let member_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM group_member WHERE memberGuid = ?")
+            .bind(guid)
+            .fetch_one(character_pool)
+            .await?;
+    let old_leader_instances: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM group_instance WHERE leaderGuid = ?")
+            .bind(guid)
+            .fetch_one(character_pool)
+            .await?;
+    let new_leader: Option<u32> =
+        sqlx::query_scalar("SELECT leaderGuid FROM `groups` WHERE groupId = ?")
+            .bind(91_001u32)
+            .fetch_optional(character_pool)
+            .await?;
+    let transferred_instances: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM group_instance WHERE instance = ?")
+            .bind(92_001u32)
+            .fetch_one(character_pool)
+            .await?;
+
+    ensure!(member_rows == 0, "group_member row remained after delete");
+    ensure!(
+        old_leader_instances == 0,
+        "group_instance row remained on deleted leader"
+    );
+    ensure!(
+        new_leader.is_some_and(|leader| leader != guid),
+        "group leader was not transferred away from deleted character"
+    );
+    ensure!(
+        transferred_instances == 1,
+        "group instance bind was not preserved during leader transfer"
+    );
+    Ok(())
+}
+
+async fn seed_social_fixture(
+    character_pool: &MySqlPool,
+    account_id: u32,
+    deleted_guid: u32,
+) -> anyhow::Result<()> {
+    let friend_guid: u32 = sqlx::query_scalar(
+        "SELECT guid FROM characters WHERE account = ? AND guid <> ? ORDER BY guid LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(deleted_guid)
+    .fetch_one(character_pool)
+    .await?;
+
+    sqlx::query("DELETE FROM character_social WHERE guid IN (?, ?) OR friend IN (?, ?)")
+        .bind(deleted_guid)
+        .bind(friend_guid)
+        .bind(deleted_guid)
+        .bind(friend_guid)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("INSERT INTO character_social (guid, friend, flags) VALUES (?, ?, 1), (?, ?, 1)")
+        .bind(deleted_guid)
+        .bind(friend_guid)
+        .bind(friend_guid)
+        .bind(deleted_guid)
+        .execute(character_pool)
+        .await?;
+
+    Ok(())
+}
+
+async fn seed_pet_fixture(character_pool: &MySqlPool, owner_guid: u32) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM pet_aura WHERE guid = ?")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM pet_spell WHERE guid = ?")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM pet_spell_cooldown WHERE guid = ?")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM character_pet WHERE id = ?")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO character_pet (id, entry, owner, modelid, PetType, level, name, slot) \
+         VALUES (?, 416, ?, 416, 1, 1, 'Worldflow', 0)",
+    )
+    .bind(93_001u32)
+    .bind(owner_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO pet_aura (guid, caster_guid, item_guid, spell, stackcount) \
+         VALUES (?, 0, 0, 197, 1)",
+    )
+    .bind(93_001u32)
+    .execute(character_pool)
+    .await?;
+    sqlx::query("INSERT INTO pet_spell (guid, spell, active) VALUES (?, 172, 1)")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("INSERT INTO pet_spell_cooldown (guid, spell, time) VALUES (?, 172, 1)")
+        .bind(93_001u32)
+        .execute(character_pool)
+        .await?;
+
+    Ok(())
+}
+
+async fn seed_mail_fixture(character_pool: &MySqlPool, receiver_guid: u32) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM mail_items WHERE mail_id = ? OR item_guid = ?")
+        .bind(94_001u32)
+        .bind(94_101u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM mail WHERE id = ?")
+        .bind(94_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM item_instance WHERE guid = ?")
+        .bind(94_101u32)
+        .execute(character_pool)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO item_instance \
+         (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+          charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+         VALUES (?, ?, 6948, 0, 0, 1, 0, '0 0 0 0 0 ', 0, \
+                 '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0, 0, 0)",
+    )
+    .bind(94_101u32)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO mail \
+         (id, messageType, sender, receiver, subject, itemTextId, has_items, expire_time, \
+          deliver_time, money, cod, checked) \
+         VALUES (?, 0, 0, ?, 'world-flow-delete', 0, 1, UNIX_TIMESTAMP() + 2592000, \
+                 UNIX_TIMESTAMP(), 0, 0, 0)",
+    )
+    .bind(94_001u32)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO mail_items (mail_id, item_guid, item_template, receiver) VALUES (?, ?, 6948, ?)",
+    )
+    .bind(94_001u32)
+    .bind(94_101u32)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn seed_cod_mail_return_fixture(
+    character_pool: &MySqlPool,
+    account_id: u32,
+    receiver_guid: u32,
+) -> anyhow::Result<u32> {
+    let sender_guid: u32 = sqlx::query_scalar(
+        "SELECT guid FROM characters WHERE account = ? AND guid <> ? ORDER BY guid DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(receiver_guid)
+    .fetch_one(character_pool)
+    .await?;
+
+    sqlx::query("DELETE FROM mail_items WHERE mail_id = ? OR item_guid = ?")
+        .bind(94_002u32)
+        .bind(94_201u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query(
+        "DELETE FROM mail WHERE id = ? OR (sender = ? AND receiver = ? AND subject = 'world-flow-cod-return')",
+    )
+    .bind(94_002u32)
+    .bind(receiver_guid)
+    .bind(sender_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query("DELETE FROM item_instance WHERE guid = ?")
+        .bind(94_201u32)
+        .execute(character_pool)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO item_instance \
+         (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+          charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+         VALUES (?, ?, 6948, 0, 0, 1, 0, '0 0 0 0 0 ', 0, \
+                 '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0, 0, 0)",
+    )
+    .bind(94_201u32)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO mail \
+         (id, messageType, sender, receiver, subject, itemTextId, has_items, expire_time, \
+          deliver_time, money, cod, checked) \
+         VALUES (?, 0, ?, ?, 'world-flow-cod-return', 0, 1, UNIX_TIMESTAMP() + 259200, \
+                 UNIX_TIMESTAMP(), 1234, 5678, 0)",
+    )
+    .bind(94_002u32)
+    .bind(sender_guid)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO mail_items (mail_id, item_guid, item_template, receiver) VALUES (?, ?, 6948, ?)",
+    )
+    .bind(94_002u32)
+    .bind(94_201u32)
+    .bind(receiver_guid)
+    .execute(character_pool)
+    .await?;
+
+    Ok(sender_guid)
+}
+
+async fn seed_auction_fixture(character_pool: &MySqlPool, owner_guid: u32) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM auction WHERE id = ?")
+        .bind(95_001u32)
+        .execute(character_pool)
+        .await?;
+    sqlx::query("DELETE FROM item_instance WHERE guid = ?")
+        .bind(95_101u32)
+        .execute(character_pool)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO item_instance \
+         (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+          charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+         VALUES (?, ?, 6948, 0, 0, 1, 0, '0 0 0 0 0 ', 0, \
+                 '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0, 0, 0)",
+    )
+    .bind(95_101u32)
+    .bind(owner_guid)
+    .execute(character_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO auction \
+         (id, houseid, itemguid, item_template, item_count, itemowner, buyoutprice, \
+          time, buyguid, lastbid, startbid, deposit) \
+         VALUES (?, 1, ?, 6948, 1, ?, 0, UNIX_TIMESTAMP() + 3600, 0, 0, 1, 0)",
+    )
+    .bind(95_001u32)
+    .bind(95_101u32)
+    .bind(owner_guid)
+    .execute(character_pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn assert_social_cleanup(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM character_social WHERE guid = ? OR friend = ?")
+            .bind(guid)
+            .bind(guid)
+            .fetch_one(character_pool)
+            .await?;
+
+    ensure!(rows == 0, "character_social rows remained after delete");
+    Ok(())
+}
+
+async fn assert_pet_cleanup(character_pool: &MySqlPool, pet_id: u32) -> anyhow::Result<()> {
+    let pet_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM character_pet WHERE id = ?")
+        .bind(pet_id)
+        .fetch_one(character_pool)
+        .await?;
+    let aura_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pet_aura WHERE guid = ?")
+        .bind(pet_id)
+        .fetch_one(character_pool)
+        .await?;
+    let spell_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pet_spell WHERE guid = ?")
+        .bind(pet_id)
+        .fetch_one(character_pool)
+        .await?;
+    let cooldown_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pet_spell_cooldown WHERE guid = ?")
+            .bind(pet_id)
+            .fetch_one(character_pool)
+            .await?;
+
+    ensure!(pet_rows == 0, "character_pet row remained after delete");
+    ensure!(aura_rows == 0, "pet_aura rows remained after delete");
+    ensure!(spell_rows == 0, "pet_spell rows remained after delete");
+    ensure!(
+        cooldown_rows == 0,
+        "pet_spell_cooldown rows remained after delete"
+    );
+    Ok(())
+}
+
+async fn assert_mail_cleanup(
+    character_pool: &MySqlPool,
+    receiver_guid: u32,
+    mail_id: u32,
+    item_guid: u32,
+) -> anyhow::Result<()> {
+    let mail_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mail WHERE receiver = ?")
+        .bind(receiver_guid)
+        .fetch_one(character_pool)
+        .await?;
+    let mail_item_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mail_items WHERE receiver = ? OR mail_id = ?")
+            .bind(receiver_guid)
+            .bind(mail_id)
+            .fetch_one(character_pool)
+            .await?;
+    let item_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item_instance WHERE guid = ?")
+        .bind(item_guid)
+        .fetch_one(character_pool)
+        .await?;
+
+    ensure!(mail_rows == 0, "mail rows remained after delete");
+    ensure!(mail_item_rows == 0, "mail_items rows remained after delete");
+    ensure!(
+        item_rows == 0,
+        "owned mail item_instance row remained after delete"
+    );
+    Ok(())
+}
+
+async fn assert_cod_mail_return(
+    character_pool: &MySqlPool,
+    deleted_guid: u32,
+    sender_guid: u32,
+    old_mail_id: u32,
+    item_guid: u32,
+) -> anyhow::Result<()> {
+    let old_mail_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mail WHERE id = ?")
+        .bind(old_mail_id)
+        .fetch_one(character_pool)
+        .await?;
+    let returned_mail: Option<(u32, u32, u32, u8, u8)> = sqlx::query_as(
+        "SELECT id, money, cod, checked, has_items \
+         FROM mail WHERE sender = ? AND receiver = ? AND subject = 'world-flow-cod-return'",
+    )
+    .bind(deleted_guid)
+    .bind(sender_guid)
+    .fetch_optional(character_pool)
+    .await?;
+    let returned_item_receiver: Option<u32> =
+        sqlx::query_scalar("SELECT receiver FROM mail_items WHERE item_guid = ?")
+            .bind(item_guid)
+            .fetch_optional(character_pool)
+            .await?;
+    let item_owner: Option<u32> =
+        sqlx::query_scalar("SELECT owner_guid FROM item_instance WHERE guid = ?")
+            .bind(item_guid)
+            .fetch_optional(character_pool)
+            .await?;
+
+    ensure!(
+        old_mail_rows == 0,
+        "original COD mail remained after delete"
+    );
+    let Some((returned_id, money, cod, checked, has_items)) = returned_mail else {
+        anyhow::bail!("COD mail was not returned to sender");
+    };
+    ensure!(
+        returned_id != old_mail_id,
+        "COD return reused the original mail id"
+    );
+    ensure!(money == 1234, "returned COD mail did not preserve money");
+    ensure!(cod == 0, "returned COD mail kept COD charge");
+    ensure!(checked == 0x02, "returned COD mail was not marked returned");
+    ensure!(has_items == 1, "returned COD mail lost has_items flag");
+    ensure!(
+        returned_item_receiver == Some(sender_guid),
+        "returned COD mail item receiver was not sender"
+    );
+    ensure!(
+        item_owner == Some(sender_guid),
+        "returned COD item owner was not sender"
+    );
+    Ok(())
+}
+
+async fn assert_auction_cleanup(
+    character_pool: &MySqlPool,
+    owner_guid: u32,
+    auction_id: u32,
+    item_guid: u32,
+) -> anyhow::Result<()> {
+    let auction_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auction WHERE id = ? OR itemowner = ? OR buyguid = ?",
+    )
+    .bind(auction_id)
+    .bind(owner_guid)
+    .bind(owner_guid)
+    .fetch_one(character_pool)
+    .await?;
+    let item_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item_instance WHERE guid = ?")
+        .bind(item_guid)
+        .fetch_one(character_pool)
+        .await?;
+
+    ensure!(auction_rows == 0, "auction rows remained after delete");
+    ensure!(item_rows == 0, "auction item remained after delete");
     Ok(())
 }
 
@@ -477,6 +999,34 @@ impl WorldClient {
         let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         ensure!(opcode == SMSG_CHAR_ENUM, "expected SMSG_CHAR_ENUM");
         parse_char_enum(&body)
+    }
+
+    fn login_character(&mut self, guid: u32) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(HighGuid::Player, 0, guid);
+        write_client_packet(
+            &mut self.stream,
+            CMSG_PLAYER_LOGIN,
+            &guid.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+
+        for _ in 0..9 {
+            let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        }
+        Ok(())
+    }
+
+    fn logout(&mut self) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LOGOUT_REQUEST,
+            &[],
+            Some(&mut self.crypto),
+        )?;
+        for _ in 0..2 {
+            let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        }
+        Ok(())
     }
 
     fn expect_create_result(

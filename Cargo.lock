@@ -48,6 +48,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "auth-flow-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "sqlx",
+ "tokio",
+ "wow-proto",
+ "wow_srp",
+]
+
+[[package]]
 name = "authserver"
 version = "0.1.0"
 dependencies = [

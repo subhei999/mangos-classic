@@ -31,6 +31,12 @@ If the task touches authserver database behavior or TCP startup, also run:
 .\scripts\test-rust-db.cmd
 ```
 
+If the task touches auth protocol behavior, also run:
+
+```powershell
+.\scripts\test-auth-flow.cmd
+```
+
 ## Working Rules
 
 - Keep the C++ CMaNGOS tree as the behavior reference unless the user explicitly
@@ -50,10 +56,9 @@ If the task touches authserver database behavior or TCP startup, also run:
 
 ## Current Next Task
 
-Build the auth compatibility harness:
+Expand the auth compatibility harness toward drop-in replacement coverage:
 
-- Start the Rust authserver against the local MariaDB fixture.
-- Connect over TCP as a test client.
-- Verify logon challenge, logon proof, and realm-list behavior against seeded
-  `realmd` data.
-- Add the harness to the local testing workflow once stable.
+- Add negative cases for unknown account, bad proof, banned account, and
+  unsupported build behavior.
+- Compare packet shapes against the C++ `realmd` reference.
+- Keep the harness runnable through `scripts/test-auth-flow.cmd`.

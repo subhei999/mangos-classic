@@ -63,3 +63,13 @@ This starts MariaDB on local port `3307`, initializes it with
 `127.0.0.1:13724` with `config/authserver.local.toml`. Use
 `.\scripts\test-rust-db.cmd -KeepRunning` to leave the authserver process
 attached for manual client testing.
+
+For a TCP-level auth compatibility check, run:
+
+```powershell
+.\scripts\test-auth-flow.cmd
+```
+
+This seeds a known SRP account into the local `realmd` fixture, starts the Rust
+authserver, completes logon challenge/proof over TCP, verifies the server proof,
+and requests the realm list.

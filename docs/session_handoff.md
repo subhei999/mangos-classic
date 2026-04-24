@@ -5,7 +5,7 @@ Update this file before ending any substantial Rust migration session.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest pushed commit: `d481038fd`
+- Latest pushed commit: this commit (run git log -1 --oneline for exact hash)
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
@@ -21,6 +21,9 @@ multi-session development.
 - Added local DB config: `config/authserver.local.toml`.
 - Fixed Rust DB mappings to match `sql/base/realmd.sql`.
 - Added this long-running migration map: `docs/rust_migration_plan.md`.
+- Added TCP auth compatibility harness: `bins/auth-flow-test`.
+- Added auth flow script: `scripts/test-auth-flow.cmd`.
+- Proved seeded-account SRP challenge/proof and realm-list over TCP.
 
 ## Tests Last Run
 
@@ -29,6 +32,7 @@ Passing locally:
 ```powershell
 .\scripts\test-rust.cmd
 .\scripts\test-rust-db.cmd
+.\scripts\test-auth-flow.cmd
 ```
 
 The DB smoke test starts MariaDB through Docker and verifies the Rust authserver
@@ -50,14 +54,12 @@ docker compose -f docker-compose.local.yml down
 
 ## Next Recommended Task
 
-Build an auth compatibility harness:
+Expand auth compatibility harness failure coverage:
 
-- Add a small Rust integration test or test client that connects to the
-  authserver over TCP.
-- Seed/use a known account from `sql/base/realmd.sql`.
-- Verify the login challenge response, proof response, and realm-list response.
-- Keep this test runnable from `scripts/test-rust-db.cmd` or a new
-  `scripts/test-auth-flow.cmd`.
+- Unknown account should return the expected CMaNGOS failure packet.
+- Bad proof should fail without authenticating.
+- Banned account should return the expected banned response.
+- Unsupported build behavior should match `src/realmd/AuthSocket.cpp`.
 
 ## Key Files
 
@@ -71,10 +73,13 @@ Build an auth compatibility harness:
 - `crates/wow-crypto/src/srp.rs`
 - `crates/wow-db/src/account.rs`
 - `crates/wow-db/src/realm.rs`
+- `bins/auth-flow-test/src/main.rs`
+- `scripts/test-auth-flow.ps1`
 
 ## Known Blockers
 
 - Full real-client login has not been proven yet.
-- SRP byte-order compatibility still needs a TCP-level auth flow test.
+- SRP byte-order compatibility is proven with the local TCP harness, but still
+  needs validation against a real 1.12.1 client.
 - Port `3724` was blocked on this Windows machine during local smoke testing,
   so local config uses `13724`.

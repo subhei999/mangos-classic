@@ -28,3 +28,4 @@ if (-not $SkipClippy) {
 
 Invoke-Cargo @("test", "--workspace")
 Invoke-Cargo @("build", "-p", "authserver")
+Invoke-Cargo @("build", "-p", "auth-flow-test")

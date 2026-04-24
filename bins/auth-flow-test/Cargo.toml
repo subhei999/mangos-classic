@@ -1,0 +1,16 @@
+[package]
+name = "auth-flow-test"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "auth-flow-test"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+wow-proto = { path = "../../crates/wow-proto" }
+wow_srp = { workspace = true }

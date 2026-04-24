@@ -14,7 +14,7 @@ pub struct RealmEntry {
     pub id: u32,
     pub name: String,
     pub address: String,
-    pub port: u16,
+    pub port: i32,
     pub icon: u8,
     pub realmflags: u8,
     pub timezone: u8,
@@ -35,7 +35,7 @@ pub struct RealmCharacterCount {
 // ---------------------------------------------------------------------------
 
 /// Format a realm network endpoint in the form the 1.12.x client expects.
-pub fn realm_address(address: &str, port: u16) -> String {
+pub fn realm_address(address: &str, port: i32) -> String {
     format!("{address}:{port}")
 }
 

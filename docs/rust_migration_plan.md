@@ -20,6 +20,7 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - Rust status: authserver foundation exists and builds locally
 - Local unit/lint/build entrypoint: `scripts/test-rust.cmd`
 - Local MariaDB smoke entrypoint: `scripts/test-rust-db.cmd`
+- Local auth flow entrypoint: `scripts/test-auth-flow.cmd`
 - Local DB config: `config/authserver.local.toml`
 - Docker DB harness: `docker-compose.local.yml`
 
@@ -70,8 +71,9 @@ that cannot be run. Each milestone must leave the repo in a testable state.
    - Handles SRP challenge/proof and realm-list packet construction.
    - Local and CI tests pass.
 2. Auth compatibility harness
-   - Add scripted test client or captured-packet tests for 1.12.1 login flow.
-   - Verify successful login and known failure responses against seeded DB data.
+   - Scripted TCP test client exists for the happy path.
+   - Verify known failure responses against seeded DB data.
+   - Compare packet shapes against C++ `realmd`.
 3. Worldserver skeleton
    - Add `bins/worldserver` only after auth compatibility is stable.
    - Accept world TCP connections and perform header/session bootstrap.
@@ -99,6 +101,12 @@ Run when DB/authserver behavior changes:
 
 ```powershell
 .\scripts\test-rust-db.cmd
+```
+
+Run when auth protocol behavior changes:
+
+```powershell
+.\scripts\test-auth-flow.cmd
 ```
 
 Expected local services:
@@ -139,9 +147,10 @@ New AI agents should start by reading, in order:
 
 ## Open Technical Risks
 
-- SRP verifier byte order must be proven against a real 1.12.1 client or a
-  compatibility test client.
-- The authserver currently proves startup against the DB, not a full login.
+- SRP verifier byte order is now proven through the local compatibility test
+  client; it still needs validation against a real 1.12.1 client.
+- The authserver now proves successful TCP login and realm-list flow against
+  local DB fixtures; negative/failure cases still need harness coverage.
 - CMaNGOS schema variants may differ across forks; keep DB queries close to
   `sql/base/realmd.sql` unless a migration is explicitly added.
 - Future worldserver work will need a strict packet compatibility harness before

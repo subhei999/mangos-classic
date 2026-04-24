@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "bins/auth-flow-test",
     "bins/authserver",
     "crates/wow-common",
     "crates/wow-proto",

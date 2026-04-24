@@ -39,11 +39,12 @@ and SRP verifier/salt columns to already exist.
 Once Rust is installed, run:
 
 ```powershell
-cargo fmt --check
-cargo clippy --workspace --all-targets
-cargo test --workspace
+.\scripts\test-rust.ps1
 ```
 
 The included unit tests cover auth packet round trips, SRP challenge creation,
 configuration defaults, and database helper behavior that does not require a
 live database.
+
+The same checks also run in GitHub Actions through the `Rust Auth Foundation`
+workflow on pushes to this branch and on pull requests targeting `master`.

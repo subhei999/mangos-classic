@@ -99,3 +99,12 @@ cmake_install.cmake
 src/modules/
 
 compile_commands.json
+
+#
+# Rust build output
+#
+/target
+*.swp
+*.swo
+.env
+*.log

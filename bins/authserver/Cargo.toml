@@ -1,0 +1,17 @@
+[package]
+name = "authserver"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "authserver"
+path = "src/main.rs"
+
+[dependencies]
+wow-network = { path = "../../crates/wow-network" }
+wow-config = { path = "../../crates/wow-config" }
+wow-db = { path = "../../crates/wow-db" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

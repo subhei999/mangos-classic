@@ -1,0 +1,21 @@
+# ============================================================================
+# CMaNGOS Rust -- Auth Server Configuration
+# ============================================================================
+# Network settings for the authentication (login) server.
+# Override any value with environment variables prefixed AUTH_
+# (use double-underscore for nested keys, e.g. AUTH_DATABASE__HOST).
+# ============================================================================
+
+# Address and port the auth server listens on.
+bind_address = "0.0.0.0"
+bind_port = 3724
+
+# --------------------------------------------------------------------------
+# Realmd / auth database connection
+# --------------------------------------------------------------------------
+[database]
+host     = "127.0.0.1"
+port     = 3306
+user     = "mangos"
+password = "mangos"
+database = "realmd"

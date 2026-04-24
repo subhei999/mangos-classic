@@ -1,0 +1,10 @@
+[package]
+name = "wow-crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wow_srp = { workspace = true }
+sha1 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }

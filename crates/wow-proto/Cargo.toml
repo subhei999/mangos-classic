@@ -1,0 +1,11 @@
+[package]
+name = "wow-proto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wow-common = { path = "../wow-common" }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }

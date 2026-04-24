@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "bins/authserver",
+    "crates/wow-common",
+    "crates/wow-proto",
+    "crates/wow-crypto",
+    "crates/wow-db",
+    "crates/wow-network",
+    "crates/wow-config",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["mysql", "runtime-tokio", "tls-rustls"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+byteorder = "1"
+wow_srp = "0.7"
+wow_login_messages = "0.3"
+figment = { version = "0.10", features = ["toml", "env"] }
+thiserror = "2"
+anyhow = "1"
+rand = "0.8"
+sha1 = "0.10"
+flate2 = "1"

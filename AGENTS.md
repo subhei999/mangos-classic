@@ -54,6 +54,174 @@ If the task touches auth protocol behavior, also run:
 - Do not leave a session without a clean explanation of what is tested and what
   remains unproven.
 
+## Bug Triage And Non-Blocker Logging Policy
+
+This project is a vertical-slice Rust rewrite of CMaNGOS Classic. Do not let
+testing discoveries expand the task into unrelated horizontal work.
+
+When you discover a bug, missing behavior, protocol mismatch, DB cleanup gap, or
+fidelity issue during implementation or testing, classify it before fixing it.
+
+### Fix Immediately Only If It Is P0/P1
+
+P0 Current-slice blocker:
+
+- Prevents the current requested vertical slice from passing.
+- Prevents the real WoW 1.12.1 client from continuing the tested flow.
+- Causes crash, panic, disconnect, protocol desync, or test harness failure.
+- Corrupts DB state used by the current slice.
+- Invalidates the result currently being proven.
+
+P1 Guardrail:
+
+- Could silently corrupt persistent state.
+- Could make future tests unreliable.
+- Is a small, local, low-risk fix with clear source reference.
+- Is required to keep auth/session/DB invariants trustworthy.
+
+Fix P0/P1 issues in the current task if the fix is local and directly supports
+the requested slice.
+
+### Do Not Fix P2/P3/P4 During The Current Task
+
+P2 Out-of-scope functional bug:
+
+- Real bug, but outside the current slice.
+- Example: testing Human Warrior wolf combat reveals Mage mana regen is wrong.
+
+P3 Fidelity polish:
+
+- Behavior differs from CMaNGOS but does not block the current slice.
+- Example: exact stat formula, cinematic flag, obscure packet field, visual
+  polish.
+
+P4 Refactor / architecture desire:
+
+- Code organization improvement not required for the current slice.
+- Example: `world/mod.rs` should be split before combat systems, unless the
+  current change would make it worse.
+
+For P2/P3/P4, do not implement the fix unless the user explicitly asks. Log it
+as a GitHub issue or append it to the backlog section described below.
+
+### GitHub Issue Logging Requirement
+
+For every non-blocking P2/P3/P4 issue discovered, create or update a GitHub
+issue when GitHub tooling is available.
+
+Use this issue title format:
+
+```text
+[Rust Rewrite][P2|P3|P4][Subsystem] Short description
+```
+
+Examples:
+
+- `[Rust Rewrite][P2][Inventory] Bag move does not persist after relog`
+- `[Rust Rewrite][P3][PlayerCreate] Human Warrior stats are hardcoded instead of DBC/source-derived`
+- `[Rust Rewrite][P4][World] Split world/mod.rs before adding combat systems`
+
+Apply labels when available:
+
+- `rust-rewrite`
+- `parity`
+- `bug` or `tech-debt`
+- subsystem label if obvious: `auth`, `world`, `characters`, `movement`,
+  `inventory`, `combat`, `spells`, `quests`, `db`, `protocol`
+- priority label: `P2`, `P3`, or `P4`
+
+Preferred repo labels for this project:
+
+- `rust-rewrite`
+- `parity`
+- `protocol`
+- `db`
+- `auth`
+- `world`
+- `characters`
+- `movement`
+- `inventory`
+- `combat`
+- `spells`
+- `quests`
+- `npc`
+- `loot`
+- `P0`
+- `P1`
+- `P2`
+- `P3`
+- `P4`
+- `tech-debt`
+- `real-client`
+- `cmangos-diff`
+
+Issue body template:
+
+```md
+## Summary
+
+One or two sentences describing the issue.
+
+## Classification
+
+Priority: P2 / P3 / P4
+Subsystem:
+Discovered while working on:
+Current slice blocked? No
+
+## Observed behavior
+
+What happened.
+
+## Expected CMaNGOS / Classic behavior
+
+What should happen, with source path if known.
+
+## Evidence
+
+- Test command:
+- Real client observation:
+- Relevant logs:
+- Relevant packet/opcode:
+- Relevant DB tables/rows:
+
+## Suggested future fix
+
+Smallest likely vertical-slice-safe fix.
+
+## Do not fix now rationale
+
+Explain why this is outside the current task.
+```
+
+If GitHub issue creation is unavailable, append the same entry to
+`docs/session_handoff.md` under a `Non-blocking Backlog` section.
+
+### Current-Task Final Response Requirement
+
+At the end of every task, report:
+
+- What was implemented.
+- Tests run and results.
+- P0/P1 bugs fixed immediately.
+- P2/P3/P4 issues logged, with GitHub issue numbers or file references.
+- Any discovered issues intentionally not fixed.
+
+Do not silently ignore non-blocking issues. Do not expand the task scope to fix
+logged non-blockers.
+
+### Per-Task Scope Reminder
+
+Use this reminder when starting a new slice:
+
+```md
+Important scope rule:
+We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
+Do not chase unrelated horizontal parity issues. For any non-blocking bug,
+mismatch, missing subsystem, or cleanup gap you discover, create a GitHub issue
+using the repo's bug triage policy, then continue the requested task.
+```
+
 ## Fast Model Delegation
 
 A very fast, lower-reasoning model can be useful after the senior agent has

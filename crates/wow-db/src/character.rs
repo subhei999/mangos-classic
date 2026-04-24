@@ -28,6 +28,7 @@ pub struct CharacterEnumEntry {
     pub player_flags: u32,
     pub at_login: u32,
     pub money: u32,
+    pub cinematic: u8,
     pub health: u32,
     pub power1: u32,
     pub power2: u32,
@@ -177,6 +178,28 @@ pub struct ItemTemplateQuery {
     pub bag_family: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerWorldStats {
+    pub base_health: u32,
+    pub base_mana: u32,
+    pub stats: [u32; 5],
+    pub next_level_xp: u32,
+}
+
+impl PlayerWorldStats {
+    pub fn max_health(self) -> u32 {
+        self.base_health + health_bonus_from_stamina(self.stats[2])
+    }
+
+    pub fn max_mana(self) -> u32 {
+        if self.base_mana == 0 {
+            return 0;
+        }
+
+        self.base_mana + mana_bonus_from_intellect(self.stats[3])
+    }
+}
+
 pub async fn get_character_enum_entries(
     pool: &MySqlPool,
     account_id: u32,
@@ -188,7 +211,8 @@ pub async fn get_character_enum_entries(
                 characters.position_x, characters.position_y, characters.position_z, \
                 characters.orientation, \
                 guild_member.guildid, characters.playerFlags, characters.at_login, \
-                characters.money, characters.health, characters.power1, characters.power2, \
+                characters.money, characters.cinematic, \
+                characters.health, characters.power1, characters.power2, \
                 characters.power3, characters.power4, characters.power5, \
                 character_pet.entry AS pet_entry, character_pet.modelid AS pet_modelid, \
                 character_pet.level AS pet_level, characters.equipmentCache \
@@ -623,6 +647,8 @@ pub async fn create_character(
 ) -> Result<CreatedCharacter, DbError> {
     let guid = next_character_guid(character_pool).await?;
     let create_info = get_player_create_info(world_pool, character.race, character.class).await?;
+    let world_stats =
+        get_player_world_stats(world_pool, character.race, character.class, 1).await?;
     let player_bytes = player_bytes(
         character.skin,
         character.face,
@@ -637,7 +663,7 @@ pub async fn create_character(
           position_x, position_y, position_z, orientation, playerBytes, \
           playerBytes2, playerFlags, at_login, equipmentCache, taximask, taxi_path, \
           exploredZones, health, power1) \
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', '', '', '', 1, 0)",
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', '', '', '', ?, ?)",
     )
     .bind(guid)
     .bind(character.account_id)
@@ -654,6 +680,8 @@ pub async fn create_character(
     .bind(player_bytes)
     .bind(player_bytes2)
     .bind(AT_LOGIN_FIRST)
+    .bind(world_stats.max_health())
+    .bind(world_stats.max_mana())
     .execute(character_pool)
     .await?;
 
@@ -736,6 +764,77 @@ pub async fn update_character_position(
     .await?;
 
     Ok(result.rows_affected())
+}
+
+pub async fn mark_character_first_login_seen(
+    pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE characters SET cinematic = 1, at_login = at_login & ? \
+         WHERE guid = ? AND account = ?",
+    )
+    .bind(u32::MAX ^ AT_LOGIN_FIRST)
+    .bind(guid)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn get_tutorial_flags(pool: &MySqlPool, account_id: u32) -> Result<[u32; 8], DbError> {
+    let Some(row) = sqlx::query(
+        "SELECT tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7 \
+         FROM character_tutorial WHERE account = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok([0; 8]);
+    };
+
+    Ok([
+        row.try_get("tut0")?,
+        row.try_get("tut1")?,
+        row.try_get("tut2")?,
+        row.try_get("tut3")?,
+        row.try_get("tut4")?,
+        row.try_get("tut5")?,
+        row.try_get("tut6")?,
+        row.try_get("tut7")?,
+    ])
+}
+
+pub async fn save_tutorial_flags(
+    pool: &MySqlPool,
+    account_id: u32,
+    tutorials: [u32; 8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO character_tutorial \
+         (account, tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE \
+         tut0 = VALUES(tut0), tut1 = VALUES(tut1), tut2 = VALUES(tut2), \
+         tut3 = VALUES(tut3), tut4 = VALUES(tut4), tut5 = VALUES(tut5), \
+         tut6 = VALUES(tut6), tut7 = VALUES(tut7)",
+    )
+    .bind(account_id)
+    .bind(tutorials[0])
+    .bind(tutorials[1])
+    .bind(tutorials[2])
+    .bind(tutorials[3])
+    .bind(tutorials[4])
+    .bind(tutorials[5])
+    .bind(tutorials[6])
+    .bind(tutorials[7])
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn get_character_spells(
@@ -858,6 +957,66 @@ pub async fn get_item_template_query(
     }))
 }
 
+pub async fn get_player_world_stats(
+    world_pool: &MySqlPool,
+    race: u8,
+    class: u8,
+    level: u8,
+) -> Result<PlayerWorldStats, DbError> {
+    let class_stats = sqlx::query_as::<_, PlayerClassLevelStatsRow>(
+        "SELECT basehp, basemana FROM player_classlevelstats WHERE class = ? AND level = ?",
+    )
+    .bind(class)
+    .bind(level)
+    .fetch_one(world_pool)
+    .await?;
+
+    let level_stats = sqlx::query_as::<_, PlayerLevelStatsRow>(
+        "SELECT str, agi, sta, inte, spi FROM player_levelstats \
+         WHERE race = ? AND class = ? AND level = ?",
+    )
+    .bind(race)
+    .bind(class)
+    .bind(level)
+    .fetch_one(world_pool)
+    .await?;
+    let next_level_xp = get_player_next_level_xp(world_pool, level).await?;
+
+    Ok(PlayerWorldStats {
+        base_health: class_stats.base_health,
+        base_mana: class_stats.base_mana,
+        stats: [
+            level_stats.strength,
+            level_stats.agility,
+            level_stats.stamina,
+            level_stats.intellect,
+            level_stats.spirit,
+        ],
+        next_level_xp,
+    })
+}
+
+async fn get_player_next_level_xp(world_pool: &MySqlPool, level: u8) -> Result<u32, DbError> {
+    let xp = sqlx::query_scalar("SELECT xp_for_next_level FROM player_xp_for_level WHERE lvl = ?")
+        .bind(level)
+        .fetch_optional(world_pool)
+        .await?;
+
+    Ok(xp.unwrap_or(0))
+}
+
+fn health_bonus_from_stamina(stamina: u32) -> u32 {
+    let base = stamina.min(20);
+    let more = stamina.saturating_sub(base);
+    base + more * 10
+}
+
+fn mana_bonus_from_intellect(intellect: u32) -> u32 {
+    let base = intellect.min(20);
+    let more = intellect.saturating_sub(base);
+    base + more * 15
+}
+
 async fn next_character_guid(pool: &MySqlPool) -> Result<u32, DbError> {
     let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM characters")
         .fetch_one(pool)
@@ -917,6 +1076,28 @@ struct PlayerCreateInfoRow {
     position_y: f32,
     position_z: f32,
     orientation: f32,
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerClassLevelStatsRow {
+    #[sqlx(rename = "basehp")]
+    base_health: u32,
+    #[sqlx(rename = "basemana")]
+    base_mana: u32,
+}
+
+#[derive(Debug, FromRow)]
+struct PlayerLevelStatsRow {
+    #[sqlx(rename = "str")]
+    strength: u32,
+    #[sqlx(rename = "agi")]
+    agility: u32,
+    #[sqlx(rename = "sta")]
+    stamina: u32,
+    #[sqlx(rename = "inte")]
+    intellect: u32,
+    #[sqlx(rename = "spi")]
+    spirit: u32,
 }
 
 #[derive(Debug, FromRow)]
@@ -1644,6 +1825,27 @@ mod tests {
         assert_eq!(starter_skill_value(Some("Language: Common")), (300, 300));
         assert_eq!(starter_skill_value(Some("Armor: Cloth")), (1, 1));
         assert_eq!(starter_skill_value(Some("Warrior: Arms")), (1, 5));
+    }
+
+    #[test]
+    fn player_world_stats_apply_cmangos_stamina_and_intellect_bonuses() {
+        let warrior = PlayerWorldStats {
+            base_health: 20,
+            base_mana: 0,
+            stats: [23, 20, 22, 20, 21],
+            next_level_xp: 400,
+        };
+        let mage = PlayerWorldStats {
+            base_health: 31,
+            base_mana: 100,
+            stats: [15, 23, 19, 26, 22],
+            next_level_xp: 400,
+        };
+
+        assert_eq!(warrior.max_health(), 60);
+        assert_eq!(warrior.max_mana(), 0);
+        assert_eq!(mage.max_health(), 50);
+        assert_eq!(mage.max_mana(), 210);
     }
 
     #[test]

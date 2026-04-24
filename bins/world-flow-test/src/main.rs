@@ -51,6 +51,7 @@ const CHAR_DELETE_SUCCESS: u8 = 0x39;
 const CHAR_DELETE_FAILED: u8 = 0x3A;
 const CHAR_NAME_TOO_SHORT: u8 = 0x44;
 const CHAR_NAME_INVALID_CHARACTER: u8 = 0x46;
+const AT_LOGIN_FIRST: u32 = 0x20;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -98,6 +99,26 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .find(|character| character.name == CHARACTER_NAME)
         .context("created character was missing from SMSG_CHAR_ENUM")?;
+    let created_db = wow_db::get_character_enum_entries(&character_pool, account_id)
+        .await?
+        .into_iter()
+        .find(|character| character.guid == created.guid)
+        .context("created character was missing from DB enum rows")?;
+    let expected_stats = wow_db::get_player_world_stats(
+        &world_pool,
+        created_db.race,
+        created_db.class,
+        created_db.level,
+    )
+    .await?;
+    ensure!(
+        created_db.health == expected_stats.max_health(),
+        "packet-created character health did not match derived player_classlevelstats/player_levelstats health"
+    );
+    ensure!(
+        created_db.power1 == expected_stats.max_mana(),
+        "packet-created character mana did not match derived player_classlevelstats/player_levelstats mana"
+    );
     ensure!(
         wow_db::character_count_for_account(&character_pool, account_id).await? == 1,
         "character DB count did not refresh after packet create"
@@ -149,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut loaded_world = WorldClient::connect(&session_key)?;
     loaded_world.login_character(created.guid)?;
+    assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
     let mut delete_world = WorldClient::connect(&session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
@@ -318,6 +340,28 @@ async fn seed_limit_characters(
         )
         .await?;
     }
+    Ok(())
+}
+
+async fn assert_first_login_state_seen(
+    character_pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+) -> anyhow::Result<()> {
+    let character = wow_db::get_character_enum_entries(character_pool, account_id)
+        .await?
+        .into_iter()
+        .find(|character| character.guid == guid)
+        .context("logged-in character was missing while checking first-login state")?;
+
+    ensure!(
+        character.cinematic == 1,
+        "first-login character cinematic flag was not marked seen"
+    );
+    ensure!(
+        character.at_login & AT_LOGIN_FIRST == 0,
+        "first-login AT_LOGIN_FIRST flag remained set"
+    );
     Ok(())
 }
 
@@ -1010,7 +1054,7 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
 
-        for _ in 0..9 {
+        for _ in 0..10 {
             let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         }
         Ok(())

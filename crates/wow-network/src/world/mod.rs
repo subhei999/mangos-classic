@@ -13,7 +13,7 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterSpell, NewCharacter,
+    CharacterNameQuery, CharacterSpell, NewCharacter, PlayerWorldStats,
 };
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
@@ -59,6 +59,7 @@ const CMSG_TUTORIAL_FLAG: u32 = 0x00FE;
 const CMSG_TUTORIAL_CLEAR: u32 = 0x00FF;
 const CMSG_TUTORIAL_RESET: u32 = 0x0100;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
+const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
 const CMSG_SET_SELECTION: u32 = 0x013D;
 const CMSG_QUERY_TIME: u32 = 0x01CE;
 const SMSG_QUERY_TIME_RESPONSE: u16 = 0x01CF;
@@ -140,6 +141,14 @@ const REALM_ID: u32 = 1;
 const MAX_CHARACTERS_PER_REALM: u8 = 10;
 const FORM_BATTLESTANCE: u8 = 0x11;
 const EQUIPMENT_SLOT_END: u8 = 19;
+const POWER_MANA: u8 = 0;
+const POWER_RAGE: u8 = 1;
+const POWER_FOCUS: u8 = 2;
+const POWER_ENERGY: u8 = 3;
+const POWER_HAPPINESS: u8 = 4;
+const POWER_RAGE_DEFAULT: u32 = 1000;
+const POWER_ENERGY_DEFAULT: u32 = 100;
+const REPUTATION_LIST_SLOTS: usize = 64;
 const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
 const UNIT_FIELD_HEALTH: usize = 0x016;
 const UNIT_FIELD_POWER1: usize = 0x017;
@@ -368,12 +377,15 @@ async fn handle_client(
                     CMSG_PLAYER_LOGIN => {
                         handle_player_login(
                             &mut stream,
-                            &character_db_pool,
+                            PlayerLoginDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                online_characters: &runtime_state.online_characters,
+                            },
                             account.id,
                             &body,
                             &mut header_crypto,
                             &mut session,
-                            &runtime_state.online_characters,
                         )
                         .await?;
                     }
@@ -406,6 +418,15 @@ async fn handle_client(
                     }
                     CMSG_UPDATE_ACCOUNT_DATA => {
                         handle_update_account_data(&body);
+                    }
+                    CMSG_TUTORIAL_FLAG => {
+                        handle_tutorial_flag(&character_db_pool, account.id, &body).await?;
+                    }
+                    CMSG_TUTORIAL_CLEAR => {
+                        handle_tutorial_clear(&character_db_pool, account.id).await?;
+                    }
+                    CMSG_TUTORIAL_RESET => {
+                        handle_tutorial_reset(&character_db_pool, account.id).await?;
                     }
                     CMSG_GMTICKET_GETTICKET => {
                         handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
@@ -724,12 +745,11 @@ async fn send_char_create_result(
 
 async fn handle_player_login(
     stream: &mut TcpStream,
-    character_db_pool: &MySqlPool,
+    deps: PlayerLoginDeps<'_>,
     account_id: u32,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
     session: &mut WorldSessionState,
-    online_characters: &OnlineCharacters,
 ) -> anyhow::Result<()> {
     if body.len() != 8 {
         anyhow::bail!(
@@ -741,7 +761,7 @@ async fn handle_player_login(
     let guid_raw = u64::from_le_bytes(body.try_into()?);
     let guid = ObjectGuid::from_raw(guid_raw);
     let character_guid = guid.counter();
-    let characters = wow_db::get_character_enum_entries(character_db_pool, account_id).await?;
+    let characters = wow_db::get_character_enum_entries(deps.character_db_pool, account_id).await?;
     let Some(character) = characters
         .iter()
         .find(|character| character.guid == character_guid)
@@ -761,7 +781,12 @@ async fn handle_player_login(
         return Ok(());
     };
 
-    if online_characters.lock().await.contains(&character.guid) {
+    if deps
+        .online_characters
+        .lock()
+        .await
+        .contains(&character.guid)
+    {
         warn!(
             account_id,
             guid = character.guid,
@@ -784,8 +809,8 @@ async fn handle_player_login(
         map = character.map,
         "Character login selected"
     );
-    unregister_active_character(online_characters, session).await;
-    online_characters.lock().await.insert(character.guid);
+    unregister_active_character(deps.online_characters, session).await;
+    deps.online_characters.lock().await.insert(character.guid);
     session.active_character = Some(ActiveCharacter {
         guid: character.guid,
         name: character.name.clone(),
@@ -801,15 +826,49 @@ async fn handle_player_login(
         fall_time: 0,
     });
     let inventory =
-        wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+        wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
+    let world_stats = wow_db::get_player_world_stats(
+        deps.world_db_pool,
+        character.race,
+        character.class,
+        character.level,
+    )
+    .await?;
+    let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
+    if character.cinematic == 0 || character.at_login & AT_LOGIN_FIRST != 0 {
+        let rows = wow_db::mark_character_first_login_seen(
+            deps.character_db_pool,
+            account_id,
+            character.guid,
+        )
+        .await?;
+        if rows == 0 {
+            warn!(
+                account_id,
+                guid = character.guid,
+                "No character row updated while marking first-login state seen"
+            );
+        }
+    }
+
     send_enter_world_bootstrap(
         stream,
-        character_db_pool,
+        deps.character_db_pool,
         character,
         &inventory,
+        &world_stats,
+        &tutorial_flags,
         Some(header_crypto),
     )
-    .await
+    .await?;
+
+    Ok(())
+}
+
+struct PlayerLoginDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    online_characters: &'a OnlineCharacters,
 }
 
 async fn handle_logout_request(
@@ -945,20 +1004,23 @@ async fn send_enter_world_bootstrap(
     character_db_pool: &MySqlPool,
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    world_stats: &PlayerWorldStats,
+    tutorial_flags: &[u32; 8],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut header_crypto = header_crypto;
     send_login_verify_world(stream, character, header_crypto.as_deref_mut()).await?;
     send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, character, header_crypto.as_deref_mut()).await?;
-    send_tutorial_flags(stream, header_crypto.as_deref_mut()).await?;
+    send_tutorial_flags(stream, tutorial_flags, header_crypto.as_deref_mut()).await?;
     let spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
     send_initial_spells(stream, &spells, header_crypto.as_deref_mut()).await?;
     let actions = wow_db::get_character_actions(character_db_pool, character.guid).await?;
     send_action_buttons(stream, &actions, header_crypto.as_deref_mut()).await?;
+    send_initial_reputations(stream, header_crypto.as_deref_mut()).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, character, header_crypto.as_deref_mut()).await?;
-    send_self_spawn_update(stream, character, inventory, header_crypto).await?;
+    send_self_spawn_update(stream, character, inventory, world_stats, header_crypto).await?;
     Ok(())
 }
 
@@ -1000,10 +1062,70 @@ async fn send_bindpoint_update(
 
 async fn send_tutorial_flags(
     stream: &mut TcpStream,
+    tutorial_flags: &[u32; 8],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = vec![0u8; 8 * 4];
+    let body = build_tutorial_flags_body(tutorial_flags);
     send_packet(stream, SMSG_TUTORIAL_FLAGS, &body, header_crypto).await
+}
+
+fn build_tutorial_flags_body(tutorial_flags: &[u32; 8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(tutorial_flags.len() * 4);
+    for flag in tutorial_flags {
+        body.extend_from_slice(&flag.to_le_bytes());
+    }
+    body
+}
+
+async fn handle_tutorial_flag(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    body: &[u8],
+) -> anyhow::Result<()> {
+    if body.len() < 4 {
+        warn!(
+            account_id,
+            bytes = body.len(),
+            "Ignoring malformed tutorial flag"
+        );
+        return Ok(());
+    }
+
+    let flag = u32::from_le_bytes(body[0..4].try_into()?);
+    let mut tutorials = wow_db::get_tutorial_flags(character_db_pool, account_id).await?;
+    if !apply_tutorial_flag(&mut tutorials, flag) {
+        warn!(account_id, flag, "Ignoring out-of-range tutorial flag");
+        return Ok(());
+    }
+
+    wow_db::save_tutorial_flags(character_db_pool, account_id, tutorials).await?;
+    Ok(())
+}
+
+fn apply_tutorial_flag(tutorials: &mut [u32; 8], flag: u32) -> bool {
+    let index = (flag / 32) as usize;
+    if index >= tutorials.len() {
+        return false;
+    }
+
+    tutorials[index] |= 1u32 << (flag % 32);
+    true
+}
+
+async fn handle_tutorial_clear(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+) -> anyhow::Result<()> {
+    wow_db::save_tutorial_flags(character_db_pool, account_id, [u32::MAX; 8]).await?;
+    Ok(())
+}
+
+async fn handle_tutorial_reset(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+) -> anyhow::Result<()> {
+    wow_db::save_tutorial_flags(character_db_pool, account_id, [0; 8]).await?;
+    Ok(())
 }
 
 async fn send_initial_spells(
@@ -1062,6 +1184,24 @@ fn pack_action_button(action: u32, action_type: u8) -> u32 {
     action | ((action_type as u32) << 24)
 }
 
+async fn send_initial_reputations(
+    stream: &mut TcpStream,
+    header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    let body = build_initial_reputations_body();
+    send_packet(stream, SMSG_INITIALIZE_FACTIONS, &body, header_crypto).await
+}
+
+fn build_initial_reputations_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(4 + REPUTATION_LIST_SLOTS * 5);
+    body.extend_from_slice(&(REPUTATION_LIST_SLOTS as u32).to_le_bytes());
+    for _ in 0..REPUTATION_LIST_SLOTS {
+        body.push(0);
+        body.extend_from_slice(&0u32.to_le_bytes());
+    }
+    body
+}
+
 async fn send_login_set_time_speed(
     stream: &mut TcpStream,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -1089,9 +1229,10 @@ async fn send_self_spawn_update(
     stream: &mut TcpStream,
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    world_stats: &PlayerWorldStats,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_self_spawn_update_body(character, inventory)?;
+    let body = build_self_spawn_update_body(character, inventory, world_stats)?;
     info!(
         guid = character.guid,
         name = %character.name,
@@ -1104,6 +1245,7 @@ async fn send_self_spawn_update(
 fn build_self_spawn_update_body(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<Vec<u8>> {
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
@@ -1127,7 +1269,7 @@ fn build_self_spawn_update_body(
     block.extend_from_slice(&std::f32::consts::PI.to_le_bytes()); // turn rate
     block.extend_from_slice(&1u32.to_le_bytes()); // UPDATEFLAG_ALL payload
 
-    write_minimal_player_update_values(&mut block, guid, character, inventory)?;
+    write_minimal_player_update_values(&mut block, guid, character, inventory, world_stats)?;
 
     let item_blocks = build_backpack_item_create_blocks(character, inventory)?;
     let block_count = 1 + item_blocks.len() as u32;
@@ -1146,13 +1288,14 @@ fn write_minimal_player_update_values(
     guid: ObjectGuid,
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT_PLAYER)?;
     set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
-    set_player_vital_update_values(&mut values, character)?;
+    set_player_vital_update_values(&mut values, character, world_stats)?;
     set_update_value(&mut values, UNIT_FIELD_LEVEL, character.level as u32)?;
     set_update_value(
         &mut values,
@@ -1180,7 +1323,7 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, 0.0f32.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, unit_bytes_1(character))?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
-    set_player_stat_update_values(&mut values, character)?;
+    set_player_stat_update_values(&mut values, world_stats)?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, unit_bytes_2())?;
     set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, 0)?;
     set_update_value(
@@ -1204,7 +1347,7 @@ fn write_minimal_player_update_values(
     set_visible_item_update_values(&mut values, character)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, PLAYER_XP, 0)?;
-    set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, 400)?;
+    set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
     set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
     set_player_damage_mod_update_values(&mut values)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
@@ -1217,65 +1360,71 @@ fn write_minimal_player_update_values(
 fn set_player_vital_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
+    world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
-    let max_health = character
-        .health
-        .max(class_base_health(character.class, character.level));
-    let max_mana = class_base_mana(character.class, character.level);
+    let max_health = character.health.max(world_stats.max_health());
+    let max_mana = world_stats.max_mana();
     let power1 = if character.power1 > 0 {
         character.power1
     } else {
         max_mana
     };
-    let power4 = if character.class == 4 {
-        character.power4.max(100)
-    } else {
+    let power2 = character
+        .power2
+        .min(create_power_for_class_power(character.class, POWER_RAGE));
+    let power4 = if character.power4 > 0 {
         character.power4
+    } else {
+        create_power_for_class_power(character.class, POWER_ENERGY)
     };
 
     set_update_value(values, UNIT_FIELD_HEALTH, max_health)?;
     set_update_value(values, UNIT_FIELD_POWER1, power1)?;
-    set_update_value(values, UNIT_FIELD_POWER2, character.power2)?;
-    set_update_value(values, UNIT_FIELD_POWER3, character.power3)?;
+    set_update_value(values, UNIT_FIELD_POWER2, power2)?;
+    set_update_value(
+        values,
+        UNIT_FIELD_POWER3,
+        create_power_for_class_power(character.class, POWER_FOCUS),
+    )?;
     set_update_value(values, UNIT_FIELD_POWER4, power4)?;
-    set_update_value(values, UNIT_FIELD_POWER5, character.power5)?;
+    set_update_value(
+        values,
+        UNIT_FIELD_POWER5,
+        create_power_for_class_power(character.class, POWER_HAPPINESS),
+    )?;
     set_update_value(values, UNIT_FIELD_MAXHEALTH, max_health)?;
     set_update_value(values, UNIT_FIELD_MAXPOWER1, max_mana)?;
     set_update_value(
         values,
         UNIT_FIELD_MAXPOWER2,
-        max_power_for_class(character.class, 1),
+        create_power_for_class_power(character.class, POWER_RAGE),
     )?;
     set_update_value(
         values,
         UNIT_FIELD_MAXPOWER3,
-        max_power_for_class(character.class, 2),
+        create_power_for_class_power(character.class, POWER_FOCUS),
     )?;
     set_update_value(
         values,
         UNIT_FIELD_MAXPOWER4,
-        max_power_for_class(character.class, 3),
+        create_power_for_class_power(character.class, POWER_ENERGY),
     )?;
     set_update_value(
         values,
         UNIT_FIELD_MAXPOWER5,
-        max_power_for_class(character.class, 4),
+        create_power_for_class_power(character.class, POWER_HAPPINESS),
     )?;
-    set_update_value(values, UNIT_FIELD_BASE_MANA, max_mana)?;
-    set_update_value(values, UNIT_FIELD_BASE_HEALTH, max_health)?;
+    set_update_value(values, UNIT_FIELD_BASE_MANA, world_stats.base_mana)?;
+    set_update_value(values, UNIT_FIELD_BASE_HEALTH, world_stats.base_health)?;
 
     Ok(())
 }
 
 fn set_player_stat_update_values(
     values: &mut [Option<u32>],
-    character: &CharacterEnumEntry,
+    world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
-    for (offset, stat) in level_one_stats(character.race, character.class)
-        .unwrap_or([20, 20, 20, 20, 20])
-        .into_iter()
-        .enumerate()
-    {
+    for (offset, stat) in world_stats.stats.into_iter().enumerate() {
         set_update_value(values, UNIT_FIELD_STAT0 + offset, stat)?;
     }
 
@@ -1354,57 +1503,12 @@ fn unit_bytes_2() -> u32 {
     (0x08 | 0x20) << 8
 }
 
-fn class_base_health(class: u8, level: u8) -> u32 {
-    if level != 1 {
-        return 1;
-    }
-
-    match class {
-        1 => 20,
-        2 => 28,
-        3 => 26,
-        4 => 25,
-        5 => 31,
-        7 => 27,
-        8 => 31,
-        9 => 23,
-        11 => 33,
-        _ => 1,
-    }
-}
-
-fn class_base_mana(class: u8, level: u8) -> u32 {
-    if level != 1 {
-        return 0;
-    }
-
-    match class {
-        2 => 59,
-        3 => 63,
-        5 => 110,
-        7 => 53,
-        8 => 100,
-        9 => 59,
-        11 => 17,
-        _ => 0,
-    }
-}
-
-fn max_power_for_class(class: u8, power: u8) -> u32 {
+fn create_power_for_class_power(class: u8, power: u8) -> u32 {
     match (class, power) {
-        (1, 1) => 1000,
-        (4, 3) => 100,
+        (_, POWER_MANA) => 0,
+        (1, POWER_RAGE) => POWER_RAGE_DEFAULT,
+        (4, POWER_ENERGY) => POWER_ENERGY_DEFAULT,
         _ => 0,
-    }
-}
-
-fn level_one_stats(race: u8, class: u8) -> Option<[u32; 5]> {
-    match (race, class) {
-        (1, 1) => Some([23, 20, 22, 20, 21]),
-        (2, 3) => Some([23, 20, 23, 17, 24]),
-        (4, 11) => Some([18, 25, 19, 22, 22]),
-        (7, 8) => Some([15, 23, 19, 26, 22]),
-        _ => None,
     }
 }
 
@@ -1967,9 +2071,6 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
     matches!(
         opcode,
         CMSG_JOIN_CHANNEL
-            | CMSG_TUTORIAL_FLAG
-            | CMSG_TUTORIAL_CLEAR
-            | CMSG_TUTORIAL_RESET
             | CMSG_CANCEL_TRADE
             | CMSG_SET_SELECTION
             | CMSG_ZONEUPDATE
@@ -1985,9 +2086,6 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
 fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_JOIN_CHANNEL => "CMSG_JOIN_CHANNEL",
-        CMSG_TUTORIAL_FLAG => "CMSG_TUTORIAL_FLAG",
-        CMSG_TUTORIAL_CLEAR => "CMSG_TUTORIAL_CLEAR",
-        CMSG_TUTORIAL_RESET => "CMSG_TUTORIAL_RESET",
         CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
         CMSG_SET_SELECTION => "CMSG_SET_SELECTION",
         CMSG_ZONEUPDATE => "CMSG_ZONEUPDATE",
@@ -2318,6 +2416,40 @@ mod tests {
         values
     }
 
+    fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
+        CharacterEnumEntry {
+            guid: 7,
+            name: "Ada".to_string(),
+            race,
+            class,
+            gender: 0,
+            player_bytes: 0x0403_0201,
+            player_bytes2: 5,
+            level: 1,
+            zone: 12,
+            map: 0,
+            position_x: -8949.95,
+            position_y: -132.493,
+            position_z: 83.5312,
+            orientation: 0.0,
+            guildid: None,
+            player_flags: 0,
+            at_login: 0,
+            money: 12345,
+            cinematic: 0,
+            health: 0,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
+            pet_entry: None,
+            pet_modelid: None,
+            pet_level: None,
+            equipment_cache: None,
+        }
+    }
+
     #[test]
     fn server_packet_header_matches_world_shape() {
         let mut packet = Vec::new();
@@ -2427,6 +2559,7 @@ mod tests {
             player_flags: PLAYER_FLAGS_HIDE_HELM,
             at_login: AT_LOGIN_FIRST,
             money: 0,
+            cinematic: 0,
             health: 20,
             power1: 0,
             power2: 0,
@@ -2478,6 +2611,7 @@ mod tests {
             player_flags: 0,
             at_login: 0,
             money: 0,
+            cinematic: 0,
             health: 20,
             power1: 0,
             power2: 0,
@@ -2572,6 +2706,7 @@ mod tests {
             player_flags: 0,
             at_login: 0,
             money: 0,
+            cinematic: 0,
             health: 20,
             power1: 0,
             power2: 0,
@@ -2590,43 +2725,21 @@ mod tests {
     #[test]
     fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
         let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
-        let character = CharacterEnumEntry {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            gender: 0,
-            player_bytes: 0x0403_0201,
-            player_bytes2: 5,
-            level: 1,
-            zone: 12,
-            map: 0,
-            position_x: -8949.95,
-            position_y: -132.493,
-            position_z: 83.5312,
-            orientation: 0.0,
-            guildid: None,
-            player_flags: 0,
-            at_login: 0,
-            money: 12345,
-            health: 0,
-            power1: 0,
-            power2: 0,
-            power3: 0,
-            power4: 0,
-            power5: 0,
-            pet_entry: None,
-            pet_modelid: None,
-            pet_level: None,
-            equipment_cache: None,
-        };
+        let character = test_character(1, 1);
 
         let mut body = Vec::new();
-        write_minimal_player_update_values(&mut body, guid, &character, &[]).unwrap();
+        let world_stats = PlayerWorldStats {
+            base_health: 20,
+            base_mana: 0,
+            stats: [23, 20, 22, 20, 21],
+            next_level_xp: 400,
+        };
+
+        write_minimal_player_update_values(&mut body, guid, &character, &[], &world_stats).unwrap();
         let values = decode_update_values(&body);
 
-        assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
-        assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(20));
+        assert_eq!(values[UNIT_FIELD_HEALTH], Some(60));
+        assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(60));
         assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(1000));
         assert_eq!(values[UNIT_FIELD_LEVEL], Some(1));
         assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
@@ -2637,12 +2750,94 @@ mod tests {
         assert_eq!(values[UNIT_FIELD_STAT0 + 2], Some(22));
         assert_eq!(values[UNIT_FIELD_BASE_HEALTH], Some(20));
         assert_eq!(values[UNIT_FIELD_BASE_MANA], Some(0));
+        assert_eq!(values[PLAYER_NEXT_LEVEL_XP], Some(400));
         assert_eq!(values[UNIT_FIELD_BYTES_2], Some(unit_bytes_2()));
         assert_eq!(values[PLAYER_FIELD_COINAGE], Some(12345));
         assert_eq!(
             values[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT],
             Some(1.0f32.to_bits())
         );
+    }
+
+    #[test]
+    fn class_power_defaults_match_cmangos_create_powers() {
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+        let mut body = Vec::new();
+        let mage_stats = PlayerWorldStats {
+            base_health: 31,
+            base_mana: 100,
+            stats: [15, 23, 19, 26, 22],
+            next_level_xp: 400,
+        };
+        write_minimal_player_update_values(
+            &mut body,
+            guid,
+            &test_character(7, 8),
+            &[],
+            &mage_stats,
+        )
+        .unwrap();
+        let values = decode_update_values(&body);
+        assert_eq!(values[UNIT_FIELD_POWER1], Some(210));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER1], Some(210));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(0));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER4], Some(0));
+
+        let mut body = Vec::new();
+        let rogue_stats = PlayerWorldStats {
+            base_health: 25,
+            base_mana: 0,
+            stats: [21, 23, 21, 20, 20],
+            next_level_xp: 400,
+        };
+        write_minimal_player_update_values(
+            &mut body,
+            guid,
+            &test_character(1, 4),
+            &[],
+            &rogue_stats,
+        )
+        .unwrap();
+        let values = decode_update_values(&body);
+        assert_eq!(values[UNIT_FIELD_POWER4], Some(POWER_ENERGY_DEFAULT));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER4], Some(POWER_ENERGY_DEFAULT));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(0));
+    }
+
+    #[test]
+    fn initial_reputations_packet_matches_cmangos_empty_shape() {
+        let body = build_initial_reputations_body();
+
+        assert_eq!(body.len(), 4 + REPUTATION_LIST_SLOTS * 5);
+        assert_eq!(&body[0..4], &(REPUTATION_LIST_SLOTS as u32).to_le_bytes());
+        assert!(body[4..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn tutorial_flags_packet_serializes_account_state() {
+        let body =
+            build_tutorial_flags_body(&[1, 0x8000_0000, 0x0102_0304, 0, 0, 0, 0, 0xFFFF_FFFF]);
+
+        assert_eq!(body.len(), 8 * 4);
+        assert_eq!(&body[0..4], &1u32.to_le_bytes());
+        assert_eq!(&body[4..8], &0x8000_0000u32.to_le_bytes());
+        assert_eq!(&body[8..12], &0x0102_0304u32.to_le_bytes());
+        assert_eq!(&body[28..32], &0xFFFF_FFFFu32.to_le_bytes());
+    }
+
+    #[test]
+    fn tutorial_flag_updates_match_cmangos_word_bits() {
+        let mut tutorials = [0u32; 8];
+
+        assert!(apply_tutorial_flag(&mut tutorials, 0));
+        assert!(apply_tutorial_flag(&mut tutorials, 33));
+        assert!(apply_tutorial_flag(&mut tutorials, 255));
+        assert!(!apply_tutorial_flag(&mut tutorials, 256));
+
+        assert_eq!(tutorials[0], 1);
+        assert_eq!(tutorials[1], 2);
+        assert_eq!(tutorials[7], 0x8000_0000);
     }
 
     #[test]
@@ -2707,6 +2902,7 @@ mod tests {
             player_flags: 0,
             at_login: 0,
             money: 0,
+            cinematic: 0,
             health: 20,
             power1: 0,
             power2: 0,
@@ -2784,6 +2980,7 @@ mod tests {
             player_flags: 0,
             at_login: 0,
             money: 0,
+            cinematic: 0,
             health: 20,
             power1: 0,
             power2: 0,
@@ -2877,7 +3074,6 @@ mod tests {
     fn recognizes_expected_world_bootstrap_noise() {
         for opcode in [
             CMSG_JOIN_CHANNEL,
-            CMSG_TUTORIAL_FLAG,
             CMSG_CANCEL_TRADE,
             CMSG_ZONEUPDATE,
             CMSG_SET_ACTIVE_MOVER,
@@ -2888,6 +3084,13 @@ mod tests {
             CMSG_BATTLEFIELD_STATUS,
         ] {
             assert!(is_expected_noop_opcode(opcode), "opcode 0x{opcode:04X}");
+        }
+
+        for opcode in [CMSG_TUTORIAL_FLAG, CMSG_TUTORIAL_CLEAR, CMSG_TUTORIAL_RESET] {
+            assert!(
+                !is_expected_noop_opcode(opcode),
+                "tutorial opcode 0x{opcode:04X} should be handled, not ignored"
+            );
         }
     }
 

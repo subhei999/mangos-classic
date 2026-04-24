@@ -27,6 +27,13 @@ pub struct CharacterEnumEntry {
     #[sqlx(rename = "playerFlags")]
     pub player_flags: u32,
     pub at_login: u32,
+    pub money: u32,
+    pub health: u32,
+    pub power1: u32,
+    pub power2: u32,
+    pub power3: u32,
+    pub power4: u32,
+    pub power5: u32,
     pub pet_entry: Option<u32>,
     pub pet_modelid: Option<u32>,
     pub pet_level: Option<u32>,
@@ -181,6 +188,8 @@ pub async fn get_character_enum_entries(
                 characters.position_x, characters.position_y, characters.position_z, \
                 characters.orientation, \
                 guild_member.guildid, characters.playerFlags, characters.at_login, \
+                characters.money, characters.health, characters.power1, characters.power2, \
+                characters.power3, characters.power4, characters.power5, \
                 character_pet.entry AS pet_entry, character_pet.modelid AS pet_modelid, \
                 character_pet.level AS pet_level, characters.equipmentCache \
          FROM characters \

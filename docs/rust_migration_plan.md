@@ -422,6 +422,13 @@ At the end of meaningful work, update `docs/session_handoff.md` with:
 - recommended next task,
 - files most likely relevant next.
 
+Keep `docs/session_handoff.md` as a concise current-session operating brief,
+not a running changelog. Target about 120 lines and keep it under 180 lines.
+When handoff detail becomes durable history, summarize it here in the roadmap
+or replace it with a one-line pointer to the relevant milestone section.
+Prune stale test narratives, old manual-smoke transcripts, and completed
+implementation logs instead of appending indefinitely.
+
 New AI agents should start by reading, in order:
 
 1. `docs/session_handoff.md`

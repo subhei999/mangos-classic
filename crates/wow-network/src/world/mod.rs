@@ -140,8 +140,55 @@ const REALM_ID: u32 = 1;
 const MAX_CHARACTERS_PER_REALM: u8 = 10;
 const FORM_BATTLESTANCE: u8 = 0x11;
 const EQUIPMENT_SLOT_END: u8 = 19;
+const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
+const UNIT_FIELD_HEALTH: usize = 0x016;
+const UNIT_FIELD_POWER1: usize = 0x017;
+const UNIT_FIELD_POWER2: usize = 0x018;
+const UNIT_FIELD_POWER3: usize = 0x019;
+const UNIT_FIELD_POWER4: usize = 0x01A;
+const UNIT_FIELD_POWER5: usize = 0x01B;
+const UNIT_FIELD_MAXHEALTH: usize = 0x01C;
+const UNIT_FIELD_MAXPOWER1: usize = 0x01D;
+const UNIT_FIELD_MAXPOWER2: usize = 0x01E;
+const UNIT_FIELD_MAXPOWER3: usize = 0x01F;
+const UNIT_FIELD_MAXPOWER4: usize = 0x020;
+const UNIT_FIELD_MAXPOWER5: usize = 0x021;
+const UNIT_FIELD_LEVEL: usize = 0x022;
+const UNIT_FIELD_FACTIONTEMPLATE: usize = 0x023;
+const UNIT_FIELD_BYTES_0: usize = 0x024;
+const UNIT_FIELD_FLAGS: usize = 0x02E;
+const UNIT_FIELD_BASEATTACKTIME: usize = 0x07E;
+const UNIT_FIELD_RANGEDATTACKTIME: usize = 0x080;
+const UNIT_FIELD_BOUNDINGRADIUS: usize = 0x081;
+const UNIT_FIELD_COMBATREACH: usize = 0x082;
+const UNIT_FIELD_DISPLAYID: usize = 0x083;
+const UNIT_FIELD_NATIVEDISPLAYID: usize = 0x084;
+const UNIT_FIELD_MINDAMAGE: usize = 0x086;
+const UNIT_FIELD_MAXDAMAGE: usize = 0x087;
+const UNIT_FIELD_BYTES_1: usize = 0x08A;
+const UNIT_MOD_CAST_SPEED: usize = 0x091;
+const UNIT_FIELD_STAT0: usize = 0x096;
+const UNIT_FIELD_BASE_MANA: usize = 0x0A2;
+const UNIT_FIELD_BASE_HEALTH: usize = 0x0A3;
+const UNIT_FIELD_BYTES_2: usize = 0x0A4;
+const UNIT_FIELD_ATTACK_POWER: usize = 0x0A5;
+const UNIT_FIELD_ATTACK_POWER_MULTIPLIER: usize = 0x0A7;
+const UNIT_FIELD_RANGED_ATTACK_POWER: usize = 0x0A8;
+const UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER: usize = 0x0AA;
+const UNIT_FIELD_POWER_COST_MULTIPLIER: usize = 0x0B4;
+const PLAYER_FLAGS_FIELD: usize = 0x0BE;
+const PLAYER_BYTES: usize = 0x0C1;
+const PLAYER_BYTES_2: usize = 0x0C2;
+const PLAYER_BYTES_3: usize = 0x0C3;
 const PLAYER_FIELD_INV_SLOT_HEAD: usize = 0x1E6;
 const PLAYER_FIELD_PACK_SLOT_1: usize = 0x214;
+const PLAYER_XP: usize = 0x2CC;
+const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
+const PLAYER_FIELD_COINAGE: usize = 0x498;
+const PLAYER_FIELD_MOD_DAMAGE_DONE_POS: usize = 0x4B1;
+const PLAYER_FIELD_MOD_DAMAGE_DONE_NEG: usize = 0x4B8;
+const PLAYER_FIELD_MOD_DAMAGE_DONE_PCT: usize = 0x4BF;
+const PLAYER_FIELD_BYTES: usize = 0x4C6;
 const INVENTORY_SLOT_BAG_0: u8 = 0;
 const INVENTORY_SLOT_ITEM_START: u8 = 23;
 const INVENTORY_SLOT_ITEM_END: u8 = 39;
@@ -1105,28 +1152,146 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT_PLAYER)?;
     set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
-    set_update_value(&mut values, 0x016, 1)?;
-    set_update_value(&mut values, 0x01C, 1)?;
-    set_update_value(&mut values, 0x022, character.level as u32)?;
-    set_update_value(&mut values, 0x023, faction_for_race(character.race))?;
-    set_update_value(&mut values, 0x024, unit_bytes_0(character))?;
-    set_update_value(&mut values, 0x08A, unit_bytes_1(character))?;
-    set_update_value(&mut values, 0x081, 0.389f32.to_bits())?;
-    set_update_value(&mut values, 0x082, 1.5f32.to_bits())?;
-    set_update_value(&mut values, 0x083, display_id_for_character(character))?;
-    set_update_value(&mut values, 0x084, display_id_for_character(character))?;
-    set_update_value(&mut values, 0x091, 1.0f32.to_bits())?;
-    set_update_value(&mut values, 0x0BE, character.player_flags)?;
-    set_update_value(&mut values, 0x0C1, character.player_bytes)?;
-    set_update_value(&mut values, 0x0C2, character.player_bytes2)?;
-    set_update_value(&mut values, 0x0C3, 0)?;
+    set_player_vital_update_values(&mut values, character)?;
+    set_update_value(&mut values, UNIT_FIELD_LEVEL, character.level as u32)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FACTIONTEMPLATE,
+        faction_for_race(character.race),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_0, unit_bytes_0(character))?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, 2000)?;
+    set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_DISPLAYID,
+        display_id_for_character(character),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_NATIVEDISPLAYID,
+        display_id_for_character(character),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, 0.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, 0.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_1, unit_bytes_1(character))?;
+    set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    set_player_stat_update_values(&mut values, character)?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_2, unit_bytes_2())?;
+    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_ATTACK_POWER_MULTIPLIER,
+        0.0f32.to_bits(),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_RANGED_ATTACK_POWER, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER,
+        0.0f32.to_bits(),
+    )?;
+    for index in UNIT_FIELD_POWER_COST_MULTIPLIER..UNIT_FIELD_POWER_COST_MULTIPLIER + 7 {
+        set_update_value(&mut values, index, 0.0f32.to_bits())?;
+    }
+    set_update_value(&mut values, PLAYER_FLAGS_FIELD, character.player_flags)?;
+    set_update_value(&mut values, PLAYER_BYTES, character.player_bytes)?;
+    set_update_value(&mut values, PLAYER_BYTES_2, character.player_bytes2)?;
+    set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values(&mut values, character)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
-    set_update_value(&mut values, 0x2CC, 0)?;
-    set_update_value(&mut values, 0x2CD, 400)?;
-    set_update_value(&mut values, 0x4C8, 0)?;
+    set_update_value(&mut values, PLAYER_XP, 0)?;
+    set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, 400)?;
+    set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
+    set_player_damage_mod_update_values(&mut values)?;
+    set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
 
     write_update_values(body, &values)?;
+
+    Ok(())
+}
+
+fn set_player_vital_update_values(
+    values: &mut [Option<u32>],
+    character: &CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    let max_health = character
+        .health
+        .max(class_base_health(character.class, character.level));
+    let max_mana = class_base_mana(character.class, character.level);
+    let power1 = if character.power1 > 0 {
+        character.power1
+    } else {
+        max_mana
+    };
+    let power4 = if character.class == 4 {
+        character.power4.max(100)
+    } else {
+        character.power4
+    };
+
+    set_update_value(values, UNIT_FIELD_HEALTH, max_health)?;
+    set_update_value(values, UNIT_FIELD_POWER1, power1)?;
+    set_update_value(values, UNIT_FIELD_POWER2, character.power2)?;
+    set_update_value(values, UNIT_FIELD_POWER3, character.power3)?;
+    set_update_value(values, UNIT_FIELD_POWER4, power4)?;
+    set_update_value(values, UNIT_FIELD_POWER5, character.power5)?;
+    set_update_value(values, UNIT_FIELD_MAXHEALTH, max_health)?;
+    set_update_value(values, UNIT_FIELD_MAXPOWER1, max_mana)?;
+    set_update_value(
+        values,
+        UNIT_FIELD_MAXPOWER2,
+        max_power_for_class(character.class, 1),
+    )?;
+    set_update_value(
+        values,
+        UNIT_FIELD_MAXPOWER3,
+        max_power_for_class(character.class, 2),
+    )?;
+    set_update_value(
+        values,
+        UNIT_FIELD_MAXPOWER4,
+        max_power_for_class(character.class, 3),
+    )?;
+    set_update_value(
+        values,
+        UNIT_FIELD_MAXPOWER5,
+        max_power_for_class(character.class, 4),
+    )?;
+    set_update_value(values, UNIT_FIELD_BASE_MANA, max_mana)?;
+    set_update_value(values, UNIT_FIELD_BASE_HEALTH, max_health)?;
+
+    Ok(())
+}
+
+fn set_player_stat_update_values(
+    values: &mut [Option<u32>],
+    character: &CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    for (offset, stat) in level_one_stats(character.race, character.class)
+        .unwrap_or([20, 20, 20, 20, 20])
+        .into_iter()
+        .enumerate()
+    {
+        set_update_value(values, UNIT_FIELD_STAT0 + offset, stat)?;
+    }
+
+    Ok(())
+}
+
+fn set_player_damage_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Result<()> {
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_POS..PLAYER_FIELD_MOD_DAMAGE_DONE_POS + 7 {
+        set_update_value(values, index, 0)?;
+    }
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_NEG..PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + 7 {
+        set_update_value(values, index, 0)?;
+    }
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_PCT..PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + 7 {
+        set_update_value(values, index, 1.0f32.to_bits())?;
+    }
 
     Ok(())
 }
@@ -1183,6 +1348,64 @@ fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
     };
 
     ((pet_loyalty as u32) << 8) | ((shapeshift_form as u32) << 16)
+}
+
+fn unit_bytes_2() -> u32 {
+    (0x08 | 0x20) << 8
+}
+
+fn class_base_health(class: u8, level: u8) -> u32 {
+    if level != 1 {
+        return 1;
+    }
+
+    match class {
+        1 => 20,
+        2 => 28,
+        3 => 26,
+        4 => 25,
+        5 => 31,
+        7 => 27,
+        8 => 31,
+        9 => 23,
+        11 => 33,
+        _ => 1,
+    }
+}
+
+fn class_base_mana(class: u8, level: u8) -> u32 {
+    if level != 1 {
+        return 0;
+    }
+
+    match class {
+        2 => 59,
+        3 => 63,
+        5 => 110,
+        7 => 53,
+        8 => 100,
+        9 => 59,
+        11 => 17,
+        _ => 0,
+    }
+}
+
+fn max_power_for_class(class: u8, power: u8) -> u32 {
+    match (class, power) {
+        (1, 1) => 1000,
+        (4, 3) => 100,
+        _ => 0,
+    }
+}
+
+fn level_one_stats(race: u8, class: u8) -> Option<[u32; 5]> {
+    match (race, class) {
+        (1, 1) => Some([23, 20, 22, 20, 21]),
+        (2, 3) => Some([23, 20, 23, 17, 24]),
+        (4, 11) => Some([18, 25, 19, 22, 22]),
+        (7, 8) => Some([15, 23, 19, 26, 22]),
+        _ => None,
+    }
 }
 
 fn set_visible_item_update_values(
@@ -2066,6 +2289,35 @@ fn hex_nibble(c: u8) -> anyhow::Result<u8> {
 mod tests {
     use super::*;
 
+    fn decode_update_values(body: &[u8]) -> Vec<Option<u32>> {
+        let block_count = body[0] as usize;
+        let mask_start = 1;
+        let mut value_cursor = mask_start + block_count * 4;
+        let mut values = vec![None; block_count * 32];
+
+        for (index, value_slot) in values.iter_mut().enumerate() {
+            let mask_offset = mask_start + (index / 32) * 4;
+            let mask = u32::from_le_bytes(
+                body[mask_offset..mask_offset + 4]
+                    .try_into()
+                    .expect("update mask block"),
+            );
+            if mask & (1 << (index % 32)) == 0 {
+                continue;
+            }
+
+            let value = u32::from_le_bytes(
+                body[value_cursor..value_cursor + 4]
+                    .try_into()
+                    .expect("update value"),
+            );
+            *value_slot = Some(value);
+            value_cursor += 4;
+        }
+
+        values
+    }
+
     #[test]
     fn server_packet_header_matches_world_shape() {
         let mut packet = Vec::new();
@@ -2174,6 +2426,13 @@ mod tests {
             guildid: Some(0),
             player_flags: PLAYER_FLAGS_HIDE_HELM,
             at_login: AT_LOGIN_FIRST,
+            money: 0,
+            health: 20,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2218,6 +2477,13 @@ mod tests {
             guildid: None,
             player_flags: 0,
             at_login: 0,
+            money: 0,
+            health: 20,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2305,6 +2571,13 @@ mod tests {
             guildid: None,
             player_flags: 0,
             at_login: 0,
+            money: 0,
+            health: 20,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2312,6 +2585,64 @@ mod tests {
         };
 
         assert_eq!(unit_bytes_1(&character), 0x0011_EE00);
+    }
+
+    #[test]
+    fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let character = CharacterEnumEntry {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            player_bytes: 0x0403_0201,
+            player_bytes2: 5,
+            level: 1,
+            zone: 12,
+            map: 0,
+            position_x: -8949.95,
+            position_y: -132.493,
+            position_z: 83.5312,
+            orientation: 0.0,
+            guildid: None,
+            player_flags: 0,
+            at_login: 0,
+            money: 12345,
+            health: 0,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
+            pet_entry: None,
+            pet_modelid: None,
+            pet_level: None,
+            equipment_cache: None,
+        };
+
+        let mut body = Vec::new();
+        write_minimal_player_update_values(&mut body, guid, &character, &[]).unwrap();
+        let values = decode_update_values(&body);
+
+        assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
+        assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(20));
+        assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(1000));
+        assert_eq!(values[UNIT_FIELD_LEVEL], Some(1));
+        assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+        assert_eq!(values[UNIT_FIELD_BASEATTACKTIME], Some(2000));
+        assert_eq!(values[UNIT_FIELD_BASEATTACKTIME + 1], Some(2000));
+        assert_eq!(values[UNIT_FIELD_STAT0], Some(23));
+        assert_eq!(values[UNIT_FIELD_STAT0 + 1], Some(20));
+        assert_eq!(values[UNIT_FIELD_STAT0 + 2], Some(22));
+        assert_eq!(values[UNIT_FIELD_BASE_HEALTH], Some(20));
+        assert_eq!(values[UNIT_FIELD_BASE_MANA], Some(0));
+        assert_eq!(values[UNIT_FIELD_BYTES_2], Some(unit_bytes_2()));
+        assert_eq!(values[PLAYER_FIELD_COINAGE], Some(12345));
+        assert_eq!(
+            values[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT],
+            Some(1.0f32.to_bits())
+        );
     }
 
     #[test]
@@ -2375,6 +2706,13 @@ mod tests {
             guildid: None,
             player_flags: 0,
             at_login: 0,
+            money: 0,
+            health: 20,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,
@@ -2445,6 +2783,13 @@ mod tests {
             guildid: None,
             player_flags: 0,
             at_login: 0,
+            money: 0,
+            health: 20,
+            power1: 0,
+            power2: 0,
+            power3: 0,
+            power4: 0,
+            power5: 0,
             pet_entry: None,
             pet_modelid: None,
             pet_level: None,

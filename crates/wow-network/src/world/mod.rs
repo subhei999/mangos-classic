@@ -1,6 +1,7 @@
 use sha1::{Digest, Sha1};
 use sqlx::mysql::MySqlPool;
 use std::collections::HashSet;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -69,6 +70,10 @@ const SMSG_TEXT_EMOTE: u16 = 0x0105;
 const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
 const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
+const CMSG_CAST_SPELL: u32 = 0x012E;
+const CMSG_CANCEL_CAST: u32 = 0x012F;
+const SMSG_CAST_RESULT: u16 = 0x0130;
+const SMSG_SPELL_GO: u16 = 0x0132;
 const CMSG_SET_SELECTION: u32 = 0x013D;
 const CMSG_ATTACKSWING: u32 = 0x0141;
 const CMSG_ATTACKSTOP: u32 = 0x0142;
@@ -96,6 +101,7 @@ const SMSG_UPDATE_ACCOUNT_DATA: u16 = 0x020C;
 const CMSG_GMTICKET_GETTICKET: u32 = 0x0211;
 const SMSG_GMTICKET_GETTICKET: u16 = 0x0212;
 const CMSG_SET_ACTIVE_MOVER: u32 = 0x026A;
+const CMSG_CANCEL_AUTO_REPEAT_SPELL: u32 = 0x026D;
 const MSG_QUERY_NEXT_MAIL_TIME: u32 = 0x0284;
 const CMSG_MEETINGSTONE_INFO: u32 = 0x0296;
 const CMSG_REQUEST_RAID_INFO: u32 = 0x02CD;
@@ -133,6 +139,7 @@ const EMOTE_ONESHOT_WAVE: u32 = 3;
 const EMOTE_STATE_DANCE: u32 = 10;
 const EMOTE_STATE_SLEEP: u32 = 12;
 const EMOTE_ONESHOT_POINT: u32 = 25;
+const WARRIOR_HEROIC_STRIKE_RANK_1: u32 = 78;
 const CHAR_CREATE_SUCCESS: u8 = 0x2E;
 const CHAR_CREATE_FAILED: u8 = 0x30;
 const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
@@ -269,6 +276,9 @@ const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
 const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
 const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
 const CLIENT_LOOT_CORPSE: u8 = 1;
+const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
+const SPELL_CAST_TARGET_UNIT_ENEMY: u16 = 0x0080;
+const CAST_FLAG_SPELL_GO: u16 = 0x0100;
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -510,6 +520,15 @@ async fn handle_client(
                     }
                     CMSG_TEXT_EMOTE => {
                         handle_text_emote(&mut stream, &body, &session, &mut header_crypto).await?;
+                    }
+                    CMSG_CAST_SPELL => {
+                        handle_cast_spell(&mut stream, &body, &session, &mut header_crypto).await?;
+                    }
+                    CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
+                        info!(
+                            opcode = expected_noop_opcode_name(opcode),
+                            "Ignoring spell cancel opcode for fixture spell slice"
+                        );
                     }
                     CMSG_GOSSIP_HELLO => {
                         handle_gossip_hello(&mut stream, &body, &mut header_crypto).await?;
@@ -2283,6 +2302,53 @@ impl TextEmote {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CastSpellPacket {
+    spell_id: u32,
+    targets: SpellCastTargets,
+}
+
+impl CastSpellPacket {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let mut cursor = 0;
+        let spell_id = read_u32(body, &mut cursor)?;
+        let targets = SpellCastTargets::read(body, &mut cursor)?;
+        Ok(Self { spell_id, targets })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpellCastTargets {
+    target_mask: u16,
+    unit_target: Option<ObjectGuid>,
+}
+
+impl SpellCastTargets {
+    fn read(body: &[u8], cursor: &mut usize) -> anyhow::Result<Self> {
+        let target_mask = read_u16(body, cursor)?;
+        let unit_target =
+            if target_mask & (SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY) != 0 {
+                Some(read_packed_guid(body, cursor)?)
+            } else {
+                None
+            };
+
+        Ok(Self {
+            target_mask,
+            unit_target,
+        })
+    }
+
+    fn write(&self, body: &mut Vec<u8>) -> anyhow::Result<()> {
+        let target_mask = self.target_mask & !SPELL_CAST_TARGET_UNIT_ENEMY;
+        body.extend_from_slice(&target_mask.to_le_bytes());
+        if target_mask & SPELL_CAST_TARGET_UNIT != 0 {
+            PackedGuid::write(body, self.unit_target.unwrap_or(ObjectGuid::EMPTY))?;
+        }
+        Ok(())
+    }
+}
+
 fn build_text_emote_body(character: &ActiveCharacter, text_emote: u32, emote_num: u32) -> Vec<u8> {
     let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + 1);
@@ -2328,6 +2394,83 @@ fn build_emote_state_update_body(
     body.extend_from_slice(&1u32.to_le_bytes());
     body.push(0);
     body.extend_from_slice(&block);
+    Ok(body)
+}
+
+async fn handle_cast_spell(
+    stream: &mut TcpStream,
+    body: &[u8],
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let packet = CastSpellPacket::read(body)?;
+    let Some(character) = &session.active_character else {
+        warn!(
+            spell_id = packet.spell_id,
+            "Ignoring spell cast before character login"
+        );
+        return Ok(());
+    };
+
+    if packet.spell_id != WARRIOR_HEROIC_STRIKE_RANK_1 {
+        warn!(
+            spell_id = packet.spell_id,
+            "Ignoring unsupported spell cast in starter spell fixture slice"
+        );
+        return Ok(());
+    }
+
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let targets = normalize_fixture_spell_targets(packet.targets);
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_ok_body(packet.spell_id),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_GO,
+        &build_spell_go_body(caster, packet.spell_id, &targets)?,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTargets {
+    targets.target_mask =
+        (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
+    targets.unit_target = Some(targets.unit_target.unwrap_or_else(rust_combat_dummy_guid));
+    targets
+}
+
+fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(5);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.push(0);
+    body
+}
+
+fn build_spell_go_body(
+    caster: ObjectGuid,
+    spell_id: u32,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(40);
+    PackedGuid::write(&mut body, caster)?;
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&CAST_FLAG_SPELL_GO.to_le_bytes());
+
+    if let Some(target) = targets.unit_target {
+        body.push(1);
+        body.extend_from_slice(&target.raw().to_le_bytes());
+    } else {
+        body.push(0);
+    }
+    body.push(0); // miss count
+    targets.write(&mut body)?;
     Ok(body)
 }
 
@@ -3085,6 +3228,24 @@ fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
     Ok(value)
 }
 
+fn read_u16(body: &[u8], cursor: &mut usize) -> anyhow::Result<u16> {
+    ensure_available(body, *cursor + 2)?;
+    let value = u16::from_le_bytes(body[*cursor..*cursor + 2].try_into()?);
+    *cursor += 2;
+    Ok(value)
+}
+
+fn read_packed_guid(body: &[u8], cursor: &mut usize) -> anyhow::Result<ObjectGuid> {
+    ensure_available(body, *cursor + 1)?;
+    let mask = body[*cursor];
+    let packed_len = 1 + mask.count_ones() as usize;
+    ensure_available(body, *cursor + packed_len)?;
+    let mut reader = Cursor::new(&body[*cursor..*cursor + packed_len]);
+    let guid = PackedGuid::read(&mut reader)?;
+    *cursor += packed_len;
+    Ok(guid)
+}
+
 fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
     let end = body[*cursor..]
         .iter()
@@ -3160,6 +3321,8 @@ fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_JOIN_CHANNEL => "CMSG_JOIN_CHANNEL",
         CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
+        CMSG_CANCEL_CAST => "CMSG_CANCEL_CAST",
+        CMSG_CANCEL_AUTO_REPEAT_SPELL => "CMSG_CANCEL_AUTO_REPEAT_SPELL",
         CMSG_SET_SELECTION => "CMSG_SET_SELECTION",
         CMSG_ZONEUPDATE => "CMSG_ZONEUPDATE",
         CMSG_SET_ACTIVE_MOVER => "CMSG_SET_ACTIVE_MOVER",
@@ -4585,6 +4748,67 @@ mod tests {
                 target_guid: 99
             }
         );
+    }
+
+    #[test]
+    fn parses_cast_spell_packet_with_unit_target() {
+        let target = rust_combat_dummy_guid();
+        let mut body = Vec::new();
+        body.extend_from_slice(&WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
+        body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+        PackedGuid::write(&mut body, target).unwrap();
+
+        let cast = CastSpellPacket::read(&body).unwrap();
+
+        assert_eq!(cast.spell_id, WARRIOR_HEROIC_STRIKE_RANK_1);
+        assert_eq!(cast.targets.target_mask, SPELL_CAST_TARGET_UNIT);
+        assert_eq!(cast.targets.unit_target, Some(target));
+    }
+
+    #[test]
+    fn starter_spell_packets_match_cmangos_success_shapes() {
+        let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let target = rust_combat_dummy_guid();
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(target),
+        };
+
+        let result = build_cast_result_ok_body(WARRIOR_HEROIC_STRIKE_RANK_1);
+        assert_eq!(&result[0..4], &WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
+        assert_eq!(result[4], 0);
+
+        let go = build_spell_go_body(caster, WARRIOR_HEROIC_STRIKE_RANK_1, &targets).unwrap();
+        let mut cursor = 0;
+        cursor += PackedGuid::packed_size(caster) * 2;
+        assert_eq!(
+            read_u32(&go, &mut cursor).unwrap(),
+            WARRIOR_HEROIC_STRIKE_RANK_1
+        );
+        assert_eq!(
+            u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+            CAST_FLAG_SPELL_GO
+        );
+        cursor += 2;
+        assert_eq!(go[cursor], 1);
+        cursor += 1;
+        assert_eq!(
+            u64::from_le_bytes(go[cursor..cursor + 8].try_into().unwrap()),
+            target.raw()
+        );
+        cursor += 8;
+        assert_eq!(go[cursor], 0);
+        cursor += 1;
+        assert_eq!(
+            u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+            SPELL_CAST_TARGET_UNIT
+        );
+        cursor += 2;
+        assert_eq!(
+            read_packed_guid(&go, &mut cursor).unwrap(),
+            rust_combat_dummy_guid()
+        );
+        assert_eq!(cursor, go.len());
     }
 
     #[test]

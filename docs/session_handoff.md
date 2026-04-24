@@ -16,10 +16,9 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: `0abb208ad Advance checkpoint 1 world interactions`
+- Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: currently has uncommitted Checkpoint 1 empty corpse-loot fixture
-  changes in `crates/wow-network/src/world/mod.rs` and this handoff update.
+- Worktree: clean after the starter-spell fixture commit.
 
 ## Current Goal
 
@@ -36,8 +35,8 @@ Current Checkpoint 1 focus:
   ports.
 - Keep `test-rust.cmd` and `test-world-flow.cmd` green after each Rust world
   packet slice.
-- Real-client smoke any new interaction: gossip, combat, corpse loot, then
-  proceed toward spell, inventory, and fuller loot v1.
+- Real-client smoke any new interaction: gossip, combat, corpse loot, starter
+  spell, then proceed toward inventory and fuller loot v1.
 
 ## What Changed Recently
 
@@ -47,11 +46,15 @@ Current Checkpoint 1 focus:
   emote chat, slash text emotes, and common emote animations for solo smoke.
 - Added basic melee fixture combat: attack start/stop, attacker-state updates,
   dummy health updates, and a 2-second server-side auto-swing tick.
-- Latest uncommitted slice: when the combat dummy reaches 0 health, Rust now
-  marks it lootable with `UNIT_DYNAMIC_FLAGS`, answers `CMSG_LOOT` with an
-  empty CMaNGOS-shaped `SMSG_LOOT_RESPONSE`, handles `CMSG_LOOT_MONEY` as an
-  empty-money clear, and handles `CMSG_LOOT_RELEASE` with
-  `SMSG_LOOT_RELEASE_RESPONSE` plus a fixture reset to full health.
+- Committed empty corpse-loot fixture slice: when the combat dummy reaches 0
+  health, Rust marks it lootable, answers `CMSG_LOOT` with an empty
+  CMaNGOS-shaped `SMSG_LOOT_RESPONSE`, handles empty money clear, and resets on
+  `CMSG_LOOT_RELEASE`.
+- Latest uncommitted slice: Rust now parses `CMSG_CAST_SPELL` plus basic
+  `SpellCastTargets`, handles Human Warrior `Heroic Strike` rank 1
+  (`spellId = 78`) as a starter-spell fixture, and sends CMaNGOS-shaped
+  `SMSG_CAST_RESULT` success plus `SMSG_SPELL_GO`. Full spell mechanics are
+  intentionally deferred to GitHub #13.
 
 ## Tests Last Run
 
@@ -59,14 +62,14 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat_dummy -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network spell -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 ```
 
 Notes:
 
-- First `test-rust.cmd` rerun failed at the final authserver build because
+- First `test-rust.cmd` rerun for the spell slice failed at the final authserver build because
   Windows had `target\debug\authserver.exe` locked. Stopped local
   `authserver`/`worldserver` processes and reran successfully.
 - First `test-world-flow.cmd` failed because Docker access was denied in the
@@ -97,11 +100,17 @@ Last reported manual smoke:
   timing/parity under GitHub #12.
 - Empty corpse-loot fixture smoke passed: after killing the dummy, the client
   handled the loot interaction without disconnect or visible regression.
+- Starter spell fixture smoke was connection-safe but not behavior-proven:
+  trying Human Warrior Heroic Strike on `Rust Combat Dummy` reported a
+  client-side "melee weapon not equipped" error. Logged as GitHub #14 and
+  treat as inventory/equipment recognition work before retrying spell smoke.
 
 Next manual smoke should verify:
 
-- After the next interaction slice, rerun the first-minute loop from login
-  through movement, NPC gossip, combat, corpse loot, and logout/relog.
+- After the equipment/inventory recognition slice, retry Human Warrior Heroic
+  Strike on `Rust Combat Dummy`.
+- Rerun the first-minute loop from login through movement, NPC gossip, combat,
+  corpse loot, starter spell, and logout/relog.
 
 ## Non-blocking Backlog
 
@@ -112,10 +121,15 @@ GitHub issues are the source of truth:
 - #5 `[Rust Rewrite][P4][DB] Split character lifecycle module and add transactions`
 - #11 `[Rust Rewrite][P2][NPC] Checkpoint fixture NPC is hardcoded instead of DB-backed`
 - #12 `[Rust Rewrite][P2][Combat] Fixture combat lacks AI timers, death, XP, and loot parity`
+- #13 `[Rust Rewrite][P2][Spells] Starter spell cast path lacks real spell mechanics`
+- #14 `[Rust Rewrite][P2][Equipment] Starter character cannot cast Heroic Strike: melee weapon not equipped`
 
-No new non-blocking issue was created for the empty corpse-loot fixture slice;
-full DB-backed loot, item/money persistence, death/respawn, XP, and combat
-timing remain covered by #12.
+Full DB-backed loot, item/money persistence, death/respawn, XP, and combat
+timing remain covered by #12. Full spellbook validation, Heroic Strike
+next-swing behavior, rage/cooldown/aura/effect execution, and DBC/DB-backed
+spell mechanics are covered by #13.
+Starter equipped-weapon recognition for client-side Heroic Strike validation is
+covered by #14.
 
 ## Known Blockers And Gaps
 
@@ -124,15 +138,23 @@ timing remain covered by #12.
   behavior.
 - Empty corpse loot is packet-shape-only; no loot table, item, money, XP,
   corpse decay, or DB persistence yet.
+- Starter spell cast v1 is packet-shape-only for Heroic Strike rank 1; it does
+  not yet execute real spell effects or consume power.
+- Real-client Heroic Strike currently reports no melee weapon equipped, likely
+  from equipment/inventory/update-field parity rather than the spell packet
+  handler.
 - Broader world gameplay remains skeletal: movement persistence works, but
   validation, visibility, spells, inventory actions, loot, vendors/trainers,
   quests, and multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-1. Commit the current Checkpoint 1 corpse-loot fixture slice.
-2. Continue with a narrow starter-spell cast v1 or inventory item query/move v1
-   slice, using CMaNGOS packet references before adding behavior.
+1. Commit or keep the connection-safe starter-spell packet fixture depending on
+   whether the next agent wants it as scaffolding before #14.
+2. Continue with inventory/equipment recognition v1 for starter main-hand
+   weapon visibility/usability, then retry Heroic Strike.
+3. Continue with inventory item query/move v1 or fuller loot money/item v1,
+   using CMaNGOS packet references before adding behavior.
 
 ## Key Files
 
@@ -150,3 +172,7 @@ timing remain covered by #12.
   - `src/game/Server/Opcodes.h`
   - `src/game/Entities/UpdateFields.h`
   - `src/game/Entities/Object.cpp`
+  - `src/game/Spells/SpellHandler.cpp`
+  - `src/game/Spells/Spell.cpp`
+  - `src/game/Spells/Spell.h`
+  - `src/game/Spells/SpellTargetDefines.h`

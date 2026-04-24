@@ -247,6 +247,38 @@ When delegating to a fast model, give it a narrow file set, the exact reference
 paths, and the expected output format. Treat the result as a draft patch or
 research note, not as accepted truth.
 
+### Fast-Model Task Template
+
+Use this compact prompt when handing a bounded fill-in task to Codex 5.3 Spark
+or another fast model:
+
+```md
+Task: <one narrow vertical-slice helper task>
+GitHub issue: <exact issue URL/number, only if already labeled fast-model-safe>
+
+Scope:
+- Files you may read/edit: <exact paths>
+- Reference paths supplied by the main agent: <exact C++/SQL/DBC/docs paths>
+- Allowed output: <tests | mechanical constants | fixture rows | doc draft | narrow patch>
+
+Forbidden:
+- Do not decide protocol behavior, CMaNGOS parity, architecture, security,
+  SRP/session logic, packet crypto, DB delete semantics, movement validation,
+  broad refactors, or gameplay parity conclusions.
+- Do not expand scope beyond the listed files.
+- Do not select unlabeled GitHub work; only pull issues explicitly marked
+  fast-model-safe and keep the issue scope as the task boundary.
+
+Expected result:
+- Changed files:
+- Tests run:
+- Notes for main-agent review:
+```
+
+The main agent remains responsible for reading the authoritative C++/SQL/DBC
+references, deciding P0/P1 fixes, reviewing any fast-model output, and running
+the required Rust, Docker-backed, packet, or real-client tests.
+
 ## Current Next Task
 
 Begin **Checkpoint 1: First Playable World**. First run a real-client smoke

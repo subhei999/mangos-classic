@@ -5,11 +5,12 @@ Update this file before ending any substantial Rust migration session.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: `9c5fa0a7d Add TCP auth flow compatibility harness`
+- Latest commit: `8a3bbf416`
 - Uncommitted session changes: expanded auth-flow negative coverage, schema
   compatibility fixes, real 1.12.1 client smoke-test support, worldserver
-  skeleton, DB-backed character enum support, and the first enter-world
-  skeleton.
+  skeleton, DB-backed character enum support, the first enter-world skeleton,
+  in-memory movement/logout handling, DB-backed position persistence, and the
+  first DB-backed character creation slice plus post-login probe cleanup.
 - Remote: `origin/codex/rust-auth-foundation`
 
 ## Current Goal
@@ -79,6 +80,23 @@ hardening.
 - Proved the Enter World Skeleton milestone with a real WoW 1.12.1 client:
   `RUSTAUTH` can select `Rustone`, leave loading screen, enter the world, and
   walk around. Logs show movement opcodes arriving after self spawn.
+- Added world-session state for the active character, CMaNGOS-shaped movement
+  packet decoding, in-memory position/flag/time updates for observed movement
+  opcodes, and minimal logout request/cancel handling back to character select.
+- Added DB persistence for the active character position on logout/disconnect.
+  Manual real-client testing proved `Rustone` logs back in at the position
+  where he logged out.
+- Added a minimal `CMSG_CHAR_CREATE` happy path and common failure result
+  handling. The worldserver now parses the 1.12.1 create packet, normalizes and
+  validates names/race/class/gender, rejects duplicate names and realm limits,
+  inserts a CMaNGOS-schema `characters` row plus `character_homebind`, updates
+  `realmd.realmcharacters`, and returns `SMSG_CHAR_CREATE`.
+- Added low-risk cleanup for common post-login probes: `CMSG_NAME_QUERY` now
+  returns `SMSG_NAME_QUERY_RESPONSE`, `CMSG_QUERY_TIME` returns server time,
+  `CMSG_REQUEST_ACCOUNT_DATA` returns an empty account-data response,
+  `CMSG_GMTICKET_GETTICKET` returns no-ticket status, account-data updates are
+  explicitly ignored, and known bootstrap chatter is logged as expected instead
+  of unhandled warnings.
 
 ## Tests Last Run
 
@@ -86,6 +104,11 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+```
+
+Previously passing locally:
+
+```powershell
 .\scripts\test-rust-db.cmd
 .\scripts\test-auth-flow.cmd
 ```
@@ -150,6 +173,36 @@ MSG_MOVE_SET_FACING, MSG_MOVE_HEARTBEAT, MSG_MOVE_JUMP, and CMSG_PING.
 Observed in client: Rustone logged into the world and could walk around.
 ```
 
+Movement/logout persistence manual client test passed:
+
+```text
+Rustone moved away from the seed spawn, logged out instantly to character
+select, then entered world again at the logged-out position. World log shows
+movement updates, SMSG_LOGOUT_RESPONSE/SMSG_LOGOUT_COMPLETE flow, and
+"Persisted character position" for guid=1.
+```
+
+Character creation manual client test passed:
+
+```text
+WoW 1.12.1 client created a new Human Warrior named Rusttwo.
+World log shows CMSG_CHAR_CREATE bytes=17, Created character guid=2 name=Rusttwo
+race=1 class=1 count=2, followed by CMSG_CHAR_ENUM count=2. Rusttwo appeared
+on the character list, entered the world, moved, logged out, and persisted
+position like Rustone.
+```
+
+Post-login probe cleanup:
+
+```text
+Unit-tested after implementation. Not yet rerun through the real client after
+the cleanup patch, but the previous real-client logs identified the covered
+opcodes: CMSG_NAME_QUERY, CMSG_ZONEUPDATE, CMSG_UPDATE_ACCOUNT_DATA,
+CMSG_GMTICKET_GETTICKET, CMSG_QUERY_TIME, CMSG_SET_ACTIVE_MOVER,
+CMSG_REQUEST_RAID_INFO, CMSG_BATTLEFIELD_STATUS, tutorial flags, and related
+startup chatter.
+```
+
 Note: the app shell did not have Cargo on PATH, so the workspace test was run
 with Cargo from `%USERPROFILE%\.cargo\bin`. The project scripts pass after
 prepending that directory to PATH.
@@ -181,14 +234,19 @@ docker compose -f docker-compose.local.yml down
 
 Harden the in-world skeleton:
 
-- Decode and acknowledge/log movement packets as movement instead of generic
-  unhandled warnings. Current observed opcodes include `0x00B5`,
-  `0x00B7`, `0x00B8`, `0x00B9`, `0x00BA`, `0x00BB`, `0x00BD`,
-  `0x00BE`, `0x00C9`, `0x00DA`, and `0x00EE`.
-- Persist/update the in-memory character position from movement packets.
-- Add minimal handlers for logout/exit-to-character-screen paths.
-- After movement/logging is calmer, implement `CMSG_CHAR_CREATE` or start
-  DB-backed character creation.
+Next recommended milestone: CMaNGOS starter-default parity for newly created
+characters.
+
+- Re-run `.\scripts\run-client-stack-18085.cmd` and one quick real-client login
+  to confirm the post-login probe cleanup quiets expected warnings.
+- Add `CMSG_CHAR_CREATE` negative/manual coverage for duplicate names, invalid
+  names, invalid race/class combos, and character-count limit responses.
+- Fill out CMaNGOS `Player::Create` parity: default spells, action buttons,
+  starter items/equipment, skills, health/power/stat initialization, cinematic
+  flags, and race/class create info from world data instead of hardcoded Rust
+  fallback data.
+- Keep the client-proven vertical path intact: create character -> enum refresh
+  -> enter world -> move -> logout -> persisted relog position.
 
 Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
 `realmd` run for extra confidence.
@@ -223,8 +281,16 @@ Optional auth follow-up: compare captured packet bytes against a live CMaNGOS
   `5875`, through the Rust authserver on `127.0.0.1:13724`.
 - Packet behavior is checked against C++ source-derived shapes, but not yet
   against a live CMaNGOS `realmd` capture.
-- Enter-world is intentionally skeletal. The client can move, but movement
-  packets are currently only logged as unhandled and no position is persisted.
+- Enter-world is intentionally skeletal. Movement packets update in-memory
+  session state and logout/disconnect persists position to the database, but
+  broader world state, validation, and delayed logout semantics are not yet
+  implemented.
+- Character creation is a minimal Rust vertical slice: it is client-proven for
+  a Human Warrior and schema-compatible enough for current enum/login, but it
+  does not yet populate the full CMaNGOS starter inventory, spells, skills,
+  action bars, stats, or DBC-backed appearance validation.
+- Post-login probe cleanup is unit-tested, but should still get one quick
+  real-client smoke pass at the start of the next session.
 - The minimal self-spawn `SMSG_UPDATE_OBJECT` is enough for the real client to
   enter world, but it is not a complete CMaNGOS player object update yet.
 - Port `8085` is blocked on this Windows machine with socket error `10013`.

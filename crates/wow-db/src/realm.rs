@@ -84,6 +84,26 @@ pub async fn update_realm_population(
     Ok(())
 }
 
+pub async fn set_realm_character_count(
+    pool: &MySqlPool,
+    account_id: u32,
+    realm_id: u32,
+    num_chars: u8,
+) -> DbResult<()> {
+    sqlx::query(
+        "INSERT INTO realmcharacters (realmid, acctid, numchars) \
+         VALUES (?, ?, ?) \
+         ON DUPLICATE KEY UPDATE numchars = VALUES(numchars)",
+    )
+    .bind(realm_id)
+    .bind(account_id)
+    .bind(num_chars)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

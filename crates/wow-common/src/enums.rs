@@ -43,7 +43,10 @@ impl TryFrom<u8> for Race {
 impl Race {
     /// Returns `true` if this race belongs to the Alliance faction.
     pub fn is_alliance(self) -> bool {
-        matches!(self, Self::Human | Self::Dwarf | Self::NightElf | Self::Gnome)
+        matches!(
+            self,
+            Self::Human | Self::Dwarf | Self::NightElf | Self::Gnome
+        )
     }
 
     /// Returns `true` if this race belongs to the Horde faction.

@@ -6,5 +6,5 @@
 #[path = "auth/mod.rs"]
 pub mod auth;
 
-pub use auth::AuthServer;
 pub use auth::session::AuthSession;
+pub use auth::AuthServer;

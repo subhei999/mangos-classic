@@ -47,9 +47,7 @@ fn config_path_from_args() -> anyhow::Result<String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" | "-c" => {
-                config_path = args
-                    .next()
-                    .context("--config requires a path argument")?;
+                config_path = args.next().context("--config requires a path argument")?;
             }
             "--help" | "-h" => {
                 println!("Usage: authserver [--config <path>]");
@@ -74,8 +72,7 @@ async fn main() -> anyhow::Result<()> {
     // --- Tracing ----------------------------------------------------------
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -84,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Configuration ----------------------------------------------------
     info!("Loading configuration from {}", config_path);
-    let config = AuthServerConfig::load(&config_path)
-        .context("Failed to load auth server configuration")?;
+    let config =
+        AuthServerConfig::load(&config_path).context("Failed to load auth server configuration")?;
 
     info!(
         bind = %format!("{}:{}", config.bind_address, config.bind_port),
@@ -102,10 +99,9 @@ async fn main() -> anyhow::Result<()> {
     info!("Database connection established.");
 
     // --- Server -----------------------------------------------------------
-    let bind_addr: std::net::SocketAddr =
-        format!("{}:{}", config.bind_address, config.bind_port)
-            .parse()
-            .context("Invalid bind address")?;
+    let bind_addr: std::net::SocketAddr = format!("{}:{}", config.bind_address, config.bind_port)
+        .parse()
+        .context("Invalid bind address")?;
 
     let server = AuthServer::new(bind_addr, pool);
 

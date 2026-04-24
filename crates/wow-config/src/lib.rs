@@ -134,11 +134,12 @@ impl AuthServerConfig {
     /// Load configuration from a TOML file at `path`, with environment
     /// variable overrides using the `AUTH_` prefix (double-underscore maps to
     /// nested keys, e.g. `AUTH_DATABASE__HOST`).
-    pub fn load(path: &str) -> Result<Self, figment::Error> {
+    pub fn load(path: &str) -> Result<Self, Box<figment::Error>> {
         Figment::new()
             .merge(Toml::file(path))
             .merge(Env::prefixed("AUTH_").split("__"))
             .extract()
+            .map_err(Box::new)
     }
 }
 
@@ -146,11 +147,12 @@ impl WorldServerConfig {
     /// Load configuration from a TOML file at `path`, with environment
     /// variable overrides using the `WORLD_` prefix (double-underscore maps
     /// to nested keys, e.g. `WORLD_WORLD_DATABASE__HOST`).
-    pub fn load(path: &str) -> Result<Self, figment::Error> {
+    pub fn load(path: &str) -> Result<Self, Box<figment::Error>> {
         Figment::new()
             .merge(Toml::file(path))
             .merge(Env::prefixed("WORLD_").split("__"))
             .extract()
+            .map_err(Box::new)
     }
 }
 

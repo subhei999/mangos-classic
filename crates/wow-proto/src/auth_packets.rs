@@ -109,8 +109,8 @@ impl LogonChallengeRequest {
         }
         let mut name_bytes = vec![0u8; name_len];
         buf.copy_to_slice(&mut name_bytes);
-        let account_name =
-            String::from_utf8(name_bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let account_name = String::from_utf8(name_bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         Ok(Self {
             cmd,

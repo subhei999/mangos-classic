@@ -1,0 +1,18 @@
+services:
+  realmd:
+    image: mariadb:11
+    container_name: cmangos-rust-realmd
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: realmd
+      MARIADB_USER: mangos
+      MARIADB_PASSWORD: mangos
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./sql/base/realmd.sql:/docker-entrypoint-initdb.d/01-realmd.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

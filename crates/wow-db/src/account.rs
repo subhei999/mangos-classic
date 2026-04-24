@@ -13,16 +13,14 @@ use crate::pool::{DbError, DbResult};
 pub struct Account {
     pub id: u32,
     pub username: String,
-    pub sha_pass_hash: String,
     pub gmlevel: u8,
     pub sessionkey: String,
     pub v: String,
     pub s: String,
     pub email: String,
-    pub last_ip: String,
     pub locked: u8,
     pub expansion: u8,
-    pub locale: u8,
+    pub locale: String,
     pub os: String,
 }
 
@@ -30,10 +28,11 @@ pub struct Account {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AccountBanned {
     pub id: u32,
-    pub bandate: i64,
-    pub unbandate: i64,
-    pub bannedby: String,
-    pub banreason: String,
+    pub account_id: u32,
+    pub banned_at: i64,
+    pub expires_at: i64,
+    pub banned_by: String,
+    pub reason: String,
     pub active: u8,
 }
 
@@ -41,10 +40,10 @@ pub struct AccountBanned {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct IpBanned {
     pub ip: String,
-    pub bandate: i64,
-    pub unbandate: i64,
-    pub bannedby: String,
-    pub banreason: String,
+    pub banned_at: i64,
+    pub expires_at: i64,
+    pub banned_by: String,
+    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +62,8 @@ pub async fn get_account_by_username(
 ) -> Result<Option<Account>, DbError> {
     let username = normalize_username(username);
     let account = sqlx::query_as::<_, Account>(
-        "SELECT id, username, sha_pass_hash, gmlevel, sessionkey, v, s, \
-                email, last_ip, locked, expansion, locale, os \
+        "SELECT id, username, gmlevel, sessionkey, v, s, \
+                email, locked, expansion, locale, os \
          FROM account WHERE username = ?",
     )
     .bind(&username)
@@ -72,16 +71,6 @@ pub async fn get_account_by_username(
     .await?;
 
     Ok(account)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_username_trims_and_uppercases() {
-        assert_eq!(normalize_username("  testUser  "), "TESTUSER");
-    }
 }
 
 /// Persist the SRP session key and verifier/salt for an account after a
@@ -111,9 +100,9 @@ pub async fn get_account_banned(
     account_id: u32,
 ) -> Result<Option<AccountBanned>, DbError> {
     let row = sqlx::query_as::<_, AccountBanned>(
-        "SELECT id, bandate, unbandate, bannedby, banreason, active \
+        "SELECT id, account_id, banned_at, expires_at, banned_by, reason, active \
          FROM account_banned \
-         WHERE id = ? AND active = 1 AND (unbandate > UNIX_TIMESTAMP() OR unbandate = bandate) \
+         WHERE account_id = ? AND active = 1 AND (expires_at > UNIX_TIMESTAMP() OR expires_at = banned_at) \
          LIMIT 1",
     )
     .bind(account_id)
@@ -124,14 +113,11 @@ pub async fn get_account_banned(
 }
 
 /// Check whether an IP address is currently banned.
-pub async fn get_ip_banned(
-    pool: &MySqlPool,
-    ip: &str,
-) -> Result<Option<IpBanned>, DbError> {
+pub async fn get_ip_banned(pool: &MySqlPool, ip: &str) -> Result<Option<IpBanned>, DbError> {
     let row = sqlx::query_as::<_, IpBanned>(
-        "SELECT ip, bandate, unbandate, bannedby, banreason \
+        "SELECT ip, banned_at, expires_at, banned_by, reason \
          FROM ip_banned \
-         WHERE ip = ? AND (unbandate > UNIX_TIMESTAMP() OR unbandate = bandate) \
+         WHERE ip = ? AND (expires_at > UNIX_TIMESTAMP() OR expires_at = banned_at) \
          LIMIT 1",
     )
     .bind(ip)
@@ -139,4 +125,14 @@ pub async fn get_ip_banned(
     .await?;
 
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_username_trims_and_uppercases() {
+        assert_eq!(normalize_username("  testUser  "), "TESTUSER");
+    }
 }

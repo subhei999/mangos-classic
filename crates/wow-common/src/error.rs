@@ -5,10 +5,7 @@ use thiserror::Error;
 pub enum CommonError {
     /// An invalid numeric value was provided for an enum conversion.
     #[error("invalid {enum_name} value: {value}")]
-    InvalidEnumValue {
-        enum_name: &'static str,
-        value: u64,
-    },
+    InvalidEnumValue { enum_name: &'static str, value: u64 },
 
     /// A GUID could not be parsed or is malformed.
     #[error("invalid GUID: {0}")]

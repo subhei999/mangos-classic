@@ -45,11 +45,7 @@ pub struct DatabasePools {
 impl DatabasePools {
     /// Connect to all three databases. Each URL should be a valid MySQL
     /// connection string, e.g. `mysql://user:pass@host/dbname`.
-    pub async fn new(
-        realmd_url: &str,
-        characters_url: &str,
-        world_url: &str,
-    ) -> DbResult<Self> {
+    pub async fn new(realmd_url: &str, characters_url: &str, world_url: &str) -> DbResult<Self> {
         Self::with_max_connections(realmd_url, characters_url, world_url, 10).await
     }
 

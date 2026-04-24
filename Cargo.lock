@@ -439,12 +439,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glam"
-version = "0.29.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2016,20 +2010,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "worldserver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wow-config",
- "wow-db",
- "wow-network",
- "wow-world",
-]
-
-[[package]]
 name = "wow-common"
 version = "0.1.0"
 dependencies = [
@@ -2085,7 +2065,6 @@ dependencies = [
  "wow-crypto",
  "wow-db",
  "wow-proto",
- "wow-world",
 ]
 
 [[package]]
@@ -2097,32 +2076,6 @@ dependencies = [
  "flate2",
  "thiserror",
  "wow-common",
-]
-
-[[package]]
-name = "wow-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "tokio",
- "wow-common",
- "wow-db",
-]
-
-[[package]]
-name = "wow-world"
-version = "0.1.0"
-dependencies = [
- "byteorder",
- "glam",
- "rand",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "wow-common",
- "wow-db",
- "wow-proto",
 ]
 
 [[package]]

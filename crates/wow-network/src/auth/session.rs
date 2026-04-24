@@ -119,8 +119,7 @@ impl AuthSession {
         debug!("Auth challenge for account: {}", username);
 
         // Look up the account.
-        let account =
-            wow_db::account::get_account_by_username(&self.db_pool, &username).await?;
+        let account = wow_db::account::get_account_by_username(&self.db_pool, &username).await?;
         let account = match account {
             Some(a) => a,
             None => {
@@ -130,9 +129,7 @@ impl AuthSession {
         };
 
         // Check bans.
-        if let Some(_ban) =
-            wow_db::account::get_account_banned(&self.db_pool, account.id).await?
-        {
+        if let Some(_ban) = wow_db::account::get_account_banned(&self.db_pool, account.id).await? {
             warn!("Banned account tried to log in: {}", username);
             return Ok(build_challenge_error(0x03)); // WOW_FAIL_BANNED
         }
@@ -282,8 +279,7 @@ impl AuthSession {
 
         let realms = wow_db::realm::get_realm_list(&self.db_pool).await?;
         let account_id = self.account_id.unwrap();
-        let char_counts =
-            wow_db::realm::get_realm_characters(&self.db_pool, account_id).await?;
+        let char_counts = wow_db::realm::get_realm_characters(&self.db_pool, account_id).await?;
 
         // Build the realm-list body so we can compute its size.
         let mut body = Vec::with_capacity(256);

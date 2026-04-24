@@ -1,0 +1,11 @@
+# Local Docker-backed authserver configuration for development smoke tests.
+
+bind_address = "127.0.0.1"
+bind_port = 13724
+
+[database]
+host = "127.0.0.1"
+port = 3307
+user = "mangos"
+password = "mangos"
+database = "realmd"

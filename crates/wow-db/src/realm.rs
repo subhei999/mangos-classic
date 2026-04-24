@@ -52,16 +52,6 @@ pub async fn get_realm_list(pool: &MySqlPool) -> Result<Vec<RealmEntry>, DbError
     Ok(rows)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn realm_address_includes_port() {
-        assert_eq!(realm_address("127.0.0.1", 8085), "127.0.0.1:8085");
-    }
-}
-
 /// Return the number of characters each realm has for a given account.
 ///
 /// The result is a list of `(realm_id, num_chars)` tuples.
@@ -92,4 +82,14 @@ pub async fn update_realm_population(
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realm_address_includes_port() {
+        assert_eq!(realm_address("127.0.0.1", 8085), "127.0.0.1:8085");
+    }
 }

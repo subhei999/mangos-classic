@@ -34,8 +34,9 @@ that cannot be run. Each milestone must leave the repo in a testable state.
     server startup.
 - `bins/worldserver`
   - Runnable Rust worldserver skeleton.
-  - Current focus is accepting the real client's world TCP connection and
-    bootstrapping auth, character enum, character login, and minimal self-spawn.
+  - Current focus is accepting the real client's world TCP connection,
+    bootstrapping auth, character enum, character create/login, minimal
+    self-spawn, movement position persistence, and post-login probe cleanup.
 - `crates/wow-config`
   - TOML and environment configuration.
   - `AUTH_` environment variables override authserver TOML.
@@ -48,7 +49,8 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - `crates/wow-db`
   - Database models and queries against existing CMaNGOS schemas.
   - Current focus is `realmd`: accounts, bans, realms, character counts, plus
-    enough `characters` schema access for character select.
+    enough `characters` schema access for character select, creation, login,
+    and logout position persistence.
 - `crates/wow-network`
   - Async TCP servers and per-connection session state machines.
   - Current focus is auth handshake, realm-list flow, and early world session
@@ -99,13 +101,39 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 5. Enter-world vertical slice
    - Load player, map, position, and minimum update packets.
    - Client can enter a static world state.
-   - Current status: real client can select seeded `Rustone`, leave loading
-     screen, enter the world, and walk around. The server sends an early login
-     packet burst plus a minimal self-spawn `SMSG_UPDATE_OBJECT`.
-6. Gameplay slices
+   - Current status: real client can select seeded `Rustone` or a newly created
+     character, leave loading screen, enter the world, walk around, logout, and
+     relog at the persisted position. The server sends an early login packet
+     burst plus a minimal self-spawn `SMSG_UPDATE_OBJECT`.
+6. Character creation vertical slice
+   - Handle `CMSG_CHAR_CREATE` from the real client.
+   - Insert CMaNGOS-schema `characters` and `character_homebind` rows.
+   - Update `realmd.realmcharacters`.
+   - Current status: manually proven with a real 1.12.1 client creating a
+     Human Warrior named `Rusttwo`; the character appeared in enum, entered the
+     world, moved, logged out, and persisted position. This is still a minimal
+     vertical slice, not full `Player::Create` parity.
+7. CMaNGOS starter-default parity
+   - Populate newly created characters with C++-matching starter spells,
+     skills, action buttons, starter items/equipment, health/power/stat
+     defaults, cinematic flags, and race/class create info from source data
+     instead of hardcoded Rust fallback values.
+   - Add negative/manual coverage for duplicate names, invalid names, invalid
+     race/class combos, and character-count limits.
+8. World bootstrap packet parity
+   - Expand the current minimal post-login responses toward CMaNGOS behavior.
+   - Keep `CMSG_NAME_QUERY`, account-data, tutorial state, channels,
+     zone-update, raid/battleground probes, mail timing, and initial faction
+     behavior quiet, tested, and source-derived.
+9. Character lifecycle coverage
+   - Add `CMSG_CHAR_DELETE`, stronger character-screen negative cases,
+     rename/delete cleanup semantics, and a scripted world/character harness so
+     character-screen behavior is not only manually tested through the WoW
+     client.
+10. Gameplay slices
    - Movement, chat, inventory, combat, spells, NPCs, loot, groups, guilds.
    - Each slice gets packet tests and DB fixture coverage.
-7. Slamrock/Hardcore fork behavior
+11. Slamrock/Hardcore fork behavior
    - Port fork-specific mechanics after baseline classic behavior has coverage.
 
 ## Testing Contract
@@ -177,10 +205,15 @@ New AI agents should start by reading, in order:
   local DB fixtures, including common negative/failure cases.
 - CMaNGOS schema variants may differ across forks; keep DB queries close to
   `sql/base/realmd.sql` unless a migration is explicitly added.
-- Character enum packet shape is source-derived and unit-tested, but DB-backed
-  character select and enter-world have now been manually proven with the real
-  client.
-- Movement is not yet decoded into session state or persisted; observed
-  movement packets are logged but not handled.
+- Character enum packet shape is source-derived and unit-tested; DB-backed
+  character select, creation, enter-world, logout, and position persistence
+  have now been manually proven with the real client.
+- Movement is decoded into in-memory session state and persisted on
+  logout/disconnect, but it is not yet validated, broadcast, or backed by full
+  map/physics/anticheat behavior.
+- Character creation is schema-compatible enough for the current enum/login
+  path, but not yet full CMaNGOS `Player::Create` parity. Starter spells,
+  skills, items/equipment, action bars, stats, DBC-backed appearance
+  validation, and source-data-driven create info remain open.
 - Future worldserver work will need a strict packet compatibility harness before
   gameplay code grows.

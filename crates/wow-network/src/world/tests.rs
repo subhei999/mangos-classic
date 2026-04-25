@@ -245,7 +245,10 @@ fn rust_guide_create_block_has_gossip_unit_fields() {
     assert_eq!(values[2], Some(TYPEMASK_OBJECT_UNIT));
     assert_eq!(values[3], Some(RUST_GUIDE_ENTRY));
     assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(RUST_GUIDE_DISPLAY_ID));
-    assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
+    assert_eq!(
+        values[UNIT_NPC_FLAGS],
+        Some(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_VENDOR)
+    );
 }
 
 #[test]
@@ -380,7 +383,7 @@ fn player_rage_update_sets_warrior_power_field() {
 
 #[test]
 fn combat_dummy_loot_packets_match_empty_corpse_shape() {
-    let loot = build_combat_dummy_loot_response_body();
+    let loot = build_combat_dummy_loot_response_body(&WorldSessionState::default());
     assert_eq!(&loot[0..8], &rust_combat_dummy_guid().raw().to_le_bytes());
     assert_eq!(loot[8], CLIENT_LOOT_CORPSE);
     assert_eq!(&loot[9..13], &0u32.to_le_bytes());
@@ -392,6 +395,60 @@ fn combat_dummy_loot_packets_match_empty_corpse_shape() {
         &rust_combat_dummy_guid().raw().to_le_bytes()
     );
     assert_eq!(release[8], 1);
+}
+
+#[test]
+fn combat_dummy_loot_packets_include_fixture_money_and_item() {
+    let session = WorldSessionState {
+        combat_dummy_loot_money_available: true,
+        combat_dummy_loot_item_available: true,
+        ..WorldSessionState::default()
+    };
+    let loot = build_combat_dummy_loot_response_body(&session);
+    assert_eq!(&loot[0..8], &rust_combat_dummy_guid().raw().to_le_bytes());
+    assert_eq!(loot[8], CLIENT_LOOT_CORPSE);
+    assert_eq!(&loot[9..13], &RUST_COMBAT_DUMMY_LOOT_MONEY.to_le_bytes());
+    assert_eq!(loot[13], 1);
+    assert_eq!(loot[14], 0);
+    assert_eq!(&loot[15..19], &RUST_COMBAT_DUMMY_LOOT_ITEM.to_le_bytes());
+    assert_eq!(
+        &loot[19..23],
+        &RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT.to_le_bytes()
+    );
+    assert_eq!(
+        &loot[23..27],
+        &RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes()
+    );
+    assert_eq!(loot[35], LOOT_SLOT_NORMAL);
+}
+
+#[test]
+fn rust_guide_vendor_inventory_lists_bag_and_stack_item() {
+    let body = build_rust_guide_vendor_inventory();
+    assert_eq!(&body[0..8], &rust_guide_guid().raw().to_le_bytes());
+    assert_eq!(body[8], 2);
+    assert_eq!(&body[9..13], &1u32.to_le_bytes());
+    assert_eq!(&body[13..17], &RUST_VENDOR_BAG_ITEM.to_le_bytes());
+    assert_eq!(&body[17..21], &RUST_VENDOR_BAG_DISPLAY.to_le_bytes());
+    assert_eq!(&body[37..41], &2u32.to_le_bytes());
+    assert_eq!(&body[41..45], &RUST_COMBAT_DUMMY_LOOT_ITEM.to_le_bytes());
+    assert_eq!(
+        &body[45..49],
+        &RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes()
+    );
+}
+
+#[test]
+fn parses_rust_guide_buy_item_packet() {
+    let mut body = Vec::new();
+    body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+    body.extend_from_slice(&RUST_VENDOR_BAG_ITEM.to_le_bytes());
+    body.push(1);
+    body.push(1);
+    let buy = BuyItemRequest::read(&body).unwrap();
+    assert_eq!(buy.vendor_guid, rust_guide_guid());
+    assert_eq!(buy.item, RUST_VENDOR_BAG_ITEM);
+    assert_eq!(buy.count, 1);
 }
 
 #[test]

@@ -1201,6 +1201,65 @@ pub async fn split_character_inventory_item(
     }))
 }
 
+pub async fn add_character_inventory_item(
+    pool: &MySqlPool,
+    guid: u32,
+    bag: u32,
+    slot: u8,
+    item_template: u32,
+    count: u32,
+    durability: u32,
+) -> Result<CharacterInventoryItem, DbError> {
+    let item_guid = next_item_guid(pool).await?;
+    sqlx::query(
+        "INSERT INTO item_instance \
+         (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+          charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+         VALUES (?, ?, ?, 0, 0, ?, 0, '0 0 0 0 0 ', 0, \
+                 '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0, ?, 0)",
+    )
+    .bind(item_guid)
+    .bind(guid)
+    .bind(item_template)
+    .bind(count)
+    .bind(durability)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(guid)
+    .bind(bag)
+    .bind(slot)
+    .bind(item_guid)
+    .bind(item_template)
+    .execute(pool)
+    .await?;
+
+    Ok(CharacterInventoryItem {
+        bag,
+        slot,
+        item: item_guid,
+        item_template,
+        count,
+        durability,
+    })
+}
+
+pub async fn add_character_money(pool: &MySqlPool, guid: u32, amount: u32) -> Result<u32, DbError> {
+    sqlx::query("UPDATE characters SET money = money + ? WHERE guid = ?")
+        .bind(amount)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    let money = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(pool)
+        .await?;
+    Ok(money)
+}
+
 pub async fn refresh_character_equipment_cache(pool: &MySqlPool, guid: u32) -> Result<(), DbError> {
     let equipment_rows: Vec<(u8, u32)> = sqlx::query_as(
         "SELECT slot, item_template FROM character_inventory \

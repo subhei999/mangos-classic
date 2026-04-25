@@ -286,12 +286,24 @@ Detailed path:
      backpack slot 27 into bag 19:3, moving it within bag 19, and merging it
      into an existing bag stack. Full client-visible container slot update
      fidelity remains tracked separately from the DB slice.
+   - Current status: supported split, bag move, and stack-merge responses now
+     send more complete `SMSG_UPDATE_OBJECT` blocks for client visuals. Rust
+     distinguishes item versus container create blocks, writes container slot
+     counts, updates player inventory fields, updates container slot fields,
+     and sends contained-guid updates when items move into or out of equipped
+     bags. Real-client smoke still needs to prove closure for all split and
+     bag-container visual cases.
 9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.
    - Implement enough `CMSG_CREATURE_QUERY`, `CMSG_GAMEOBJECT_QUERY`,
      gossip hello, vendor list, and trainer list for a real client to open
      simple interactions.
+   - Current status: the hardcoded `Rust Guide` fixture supports gossip and a
+     small vendor list. It answers `CMSG_LIST_INVENTORY` and sells source-backed
+     items `2102` and `117`, inserts purchases into the first empty backpack
+     slot, and sends buy plus inventory update packets. This is intentionally a
+     fixture path, not DB-backed `npc_vendor` parity.
 10. Combat and spell v1
    - Implement target selection, auto-attack start/stop, swing timing basics,
      health updates, death/respawn basics, and one or two starter instant spell
@@ -301,6 +313,13 @@ Detailed path:
 11. Loot v1
     - Support opening loot, taking money/items, updating inventory, and
       persisting creature loot state enough for a single-player demo.
+    - Current status: the fixture combat dummy exposes money and Tough Jerky
+      `117` x2 after death. Rust handles `CMSG_LOOT_MONEY` by persisting
+      character coinage and sending money update packets, and handles
+      `CMSG_AUTOSTORE_LOOT_ITEM` by inserting the item into the first empty
+      backpack slot and sending loot/inventory updates. This is fixture-only;
+      loot tables, corpse persistence, XP, respawn, and group loot remain future
+      slices.
 12. First Playable demo pass
     - Run the real client through the full loop on a fresh account/character.
     - Run `test-rust.cmd`, `test-auth-flow.cmd`,

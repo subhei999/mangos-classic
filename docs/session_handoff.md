@@ -16,9 +16,10 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: see `git log -1 --oneline`
+- Latest commit: this commit, `Add fixture loot and vendor item flow` (use
+  `git log -1 --oneline` for the exact hash)
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the Inventory v1 bag move/merge extension.
+- Worktree: expected clean after the fixture loot/vendor inventory slice.
 
 ## Current Goal
 
@@ -27,67 +28,37 @@ Checkpoint 1: **First Playable World**.
 The Rust auth/world stack can authenticate a real WoW 1.12.1 client, show
 character select, create/select/delete characters, enter a minimal world, move,
 logout/relog, persist position, seed starter state, open a fixture NPC gossip
-dialogue, and fight a fixture combat dummy.
+dialogue, fight a fixture combat dummy, move/equip/destroy/split/merge basic
+inventory items, and exercise fixture loot/vendor item flows in the packet DB
+harness.
 
-Current Checkpoint 1 focus:
-
-- Continue first-minute gameplay slices without widening into full subsystem
-  ports.
-- Keep `test-rust.cmd` and `test-world-flow.cmd` green after each Rust world
-  packet slice.
-- Real-client smoke any new interaction: gossip, combat, corpse loot, starter
-  spell, then proceed toward inventory and fuller loot v1.
+Important scope rule:
+We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
+Do not chase unrelated horizontal parity issues. For any non-blocking bug,
+mismatch, missing subsystem, or cleanup gap you discover, create a GitHub issue
+using the repo's bug triage policy, then continue the requested task.
 
 ## What Changed Recently
 
-- Added a visible friendly `Rust Guide` fixture and hostile `Rust Combat Dummy`
-  fixture to the initial world update.
-- Added creature query, NPC text query, gossip hello/select, basic say/yell/
-  emote chat, slash text emotes, and common emote animations for solo smoke.
-- Added basic melee fixture combat: attack start/stop, attacker-state updates,
-  dummy health updates, and a 2-second server-side auto-swing tick.
-- Committed empty corpse-loot fixture slice: when the combat dummy reaches 0
-  health, Rust marks it lootable, answers `CMSG_LOOT` with an empty
-  CMaNGOS-shaped `SMSG_LOOT_RESPONSE`, handles empty money clear, and resets on
-  `CMSG_LOOT_RELEASE`.
-- Committed starter-spell/equipment fixture slice: the self-spawn
-  `SMSG_UPDATE_OBJECT` now creates equipped bag-0 item objects, Rust grants 15
-  stored rage on each fixture dummy auto-swing, Heroic Strike consumes rage in
-  the fixture cast path, and Rust applies a small visible fixture damage update
-  to the dummy. Real-client smoke confirmed Heroic Strike now casts and
-  subtracts rage; full next-swing spell mechanics are intentionally deferred to
-  GitHub #13.
-- Completed the planned no-behavior cleanup gate before real item movement:
-  split oversized `crates/wow-network/src/world/mod.rs` into focused included
-  files for bootstrap, interactions, wire helpers, and tests. The split is
-  deliberately include-based to preserve the existing module/visibility shape
-  while making future slices cheaper to read and review.
-- Added the first Inventory v1 move slice: Rust now handles `CMSG_SWAP_INV_ITEM`
-  and bag-0 `CMSG_SWAP_ITEM` for backpack item slots only, persists the slot
-  swap in `character_inventory`, refreshes the session inventory, and sends a
-  player `SMSG_UPDATE_OBJECT` values update for the changed backpack fields.
-  The Docker-backed world-flow harness proves moving hearthstone `6948` from
-  slot 24 to 26 and back persists in the DB.
-- Extended Inventory v1 to basic equip/unequip moves between bag-0 equipment
-  slots and backpack slots. Rust now validates a small starter-item equipment
-  slot map from `item_template.InventoryType`, persists the move, refreshes
-  `equipmentCache`, and sends changed inventory plus visible-equipment fields.
-  The world-flow harness proves unequipping shirt `38` from slot 3 to backpack
-  slot 26 and equipping it back persists in both `character_inventory` and
-  `characters.equipmentCache`.
-- Added Inventory v1 destroy/split guardrails for present bag-0 and equipped
-  items, plus basic bag-contained item positions. Rust now validates
-  `ITEM_FLAG_NO_USER_DESTROY`, supports partial stack destroy by updating
-  `item_instance.count`, supports splitting part of a stack into an empty
-  supported storage position with `CMSG_SPLIT_ITEM`, and allows destroying
-  items stored inside equipped bag slots 19-22. The world-flow harness proves
-  partial hearthstone destroy, split into bag slot 19:1, bag-contained destroys,
-  no-destroy rejection for equipped shirt `38`, and full equipped destroy still
-  clears both DB state and `equipmentCache`.
-- Extended Inventory v1 generic `CMSG_SWAP_ITEM` handling to backpack/equipped
-  bag storage positions. Rust now persists backpack-to-bag moves, bag-internal
-  moves, and simple same-template stack merges using source-backed Tough Jerky
-  `117` in the Docker world-flow fixture.
+- Split `crates/wow-network/src/world/mod.rs` into focused include files for
+  bootstrap, interactions, wire helpers, and tests so Checkpoint 1 slices are
+  cheaper to read and review.
+- Added Inventory v1 support for backpack moves, equip/unequip, destroy,
+  partial destroy, split, equipped-bag storage positions, bag-internal moves,
+  and simple same-template stack merges, with DB persistence and packet-harness
+  coverage.
+- Improved inventory update packet fidelity for bag containers: create/update
+  blocks now distinguish item versus container objects, include container slot
+  counts where needed, update player inventory slots, update container slot
+  fields, and send item contained-guid changes for supported moves/splits.
+- Added a fixture combat-dummy loot loop: killing the dummy exposes money and
+  Tough Jerky `117` x2, `CMSG_LOOT_MONEY` persists coinage, and
+  `CMSG_AUTOSTORE_LOOT_ITEM` stores the item in the backpack and sends update
+  packets.
+- Extended the `Rust Guide` fixture to also be a vendor. It lists and sells a
+  source-backed 6-slot container item `2102` plus Tough Jerky `117`, inserts
+  purchases into the first empty backpack slot, refreshes inventory, and is
+  covered by `world-flow-test`.
 
 ## Tests Last Run
 
@@ -95,24 +66,26 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat_dummy_loot -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network inventory -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network vendor -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network parses_rust_guide_buy_item_packet -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo check -p world-flow-test
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
+git diff --check
 ```
+
+`test-rust.cmd` passed with 73 `wow-network` tests. `test-world-flow.cmd`
+passed with auth session, create/delete cases, loaded/guild leader rejection,
+backpack moves, equip/unequip, Rust Guide vendor buys, bag-contained moves,
+stack merge, destroy guardrails, partial destroy, split, bag-contained destroy,
+cleanup checks, COD mail return, and enum/count refresh.
 
 Notes:
 
-- One broad-script rerun during the Inventory v1 slice hit the local
-  `target\debug\authserver.exe` lock. Stopped local `authserver`/`worldserver`
-  processes and reran `test-rust.cmd` cleanly.
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
-- `test-world-flow.cmd` result: auth session, create/delete happy path,
-  negative create/delete cases, loaded/guild leader rejection, backpack item
-  move persistence, equip/unequip persistence, bag-contained moves, stack
-  merge, destroy guardrails, partial destroy, split, bag-contained destroy
-  persistence, guild/group/social/pet/mail/auction cleanup, COD mail return,
-  enum/count refresh.
+- `git diff --check` only reported normal LF-to-CRLF working-copy warnings.
 
 ## Local Environment Notes
 
@@ -129,27 +102,23 @@ Notes:
 Last reported manual smoke:
 
 - `Rust Combat Dummy` is visible and targetable.
-- First right-click attack works.
-- Continued attacks repeat without untargeting/retargeting.
-- No disconnect or weird popup reported.
-- Swing cadence feels faster than intended; tracked as non-blocking combat
-  timing/parity under GitHub #12.
-- Empty corpse-loot fixture smoke passed: after killing the dummy, the client
-  handled the loot interaction without disconnect or visible regression.
-- Starter spell fixture smoke now proves starter weapon recognition moved past
-  GitHub #14: after equipped item create blocks, Human Warrior Heroic Strike on
-  `Rust Combat Dummy` reports "not enough rage" instead of "melee weapon not
-  equipped".
-- Rust now grants fixture rage after dummy auto-swings. Real-client smoke
-  confirmed Heroic Strike now casts and subtracts rage. A small fixture damage
-  update was added afterward; user reported Heroic Strike lands but still looks
-  like white damage, which is expected for the temporary fixture path. Full
-  Heroic Strike parity remains covered by GitHub #13.
+- First right-click attack and continued attacks work without retargeting.
+- Empty corpse-loot fixture smoke passed before item/money loot was added.
+- Heroic Strike now reaches the Rust cast path, consumes fixture rage, and
+  applies fixture damage; full next-swing spell parity remains GitHub #13.
+- Inventory smoke confirmed backpack movement, equip persistence, and basic
+  destroy behavior; stack splitting had no good manual fixture before this
+  vendor/loot slice.
 
 Next manual smoke should verify:
 
-- Rerun the first-minute loop from login through movement, NPC gossip, combat,
-  corpse loot, starter spell, and logout/relog.
+- Launch `scripts/run-client-stack-18085.cmd`.
+- Login, create/select a character, enter world, move, and confirm logout/relog.
+- Open `Rust Guide` vendor, buy the container item `2102` and Tough Jerky `117`.
+- Equip the bought container if the client accepts it, move jerky into and
+  within the bag, split/merge stacks, destroy a backpack item, and relog.
+- Kill `Rust Combat Dummy`, loot money and jerky, and confirm no disconnects or
+  stale loot-window behavior.
 
 ## Non-blocking Backlog
 
@@ -167,53 +136,30 @@ GitHub issues are the source of truth:
 - #17 `[Rust Rewrite][P2][NPC] Hearthstone replacement from innkeepers is not implemented`
 - #18 `[Rust Rewrite][P2][Inventory] Bag-container moves lack full container slot update fidelity`
 
-Full DB-backed loot, item/money persistence, death/respawn, XP, and combat
-timing remain covered by #12. Full spellbook validation, Heroic Strike
-next-swing behavior, rage/cooldown/aura/effect execution, and DBC/DB-backed
-spell mechanics are covered by #13.
-Starter equipped-weapon recognition for client-side Heroic Strike validation is
-covered by #14.
-Custom starter item templates missing from the Docker world fixture are covered
-by #15; the current inventory move harness uses source-backed hearthstone
-`6948`.
-Full client-visible destination item/container updates after `CMSG_SPLIT_ITEM`
-are covered by #16; the current slice proves DB persistence and source stack
-count updates.
-Hearthstone is destroyable in source data and later innkeeper replacement is
-covered by #17. Full client-visible container slot updates for generic bag moves
-and stack merges are covered by #18; the current slice proves DB persistence.
+The current slice improves #16 and #18 but does not close them until real-client
+smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
+remain under #11. Full combat, XP, death, respawn, and DB-backed loot remain
+under #12.
 
 ## Known Blockers And Gaps
 
-- The fixture NPC and combat dummy remain hardcoded pending #11.
-- Combat remains deterministic fixture logic, not full CMaNGOS melee/death/AI
-  behavior.
-- Empty corpse loot is packet-shape-only; no loot table, item, money, XP,
-  corpse decay, or DB persistence yet.
-- Starter spell cast v1 is packet-shape/resource-only for Heroic Strike rank 1;
-  it reaches the Rust cast handler, consumes fixture rage, and applies a small
-  immediate fixture damage update. It is not true CMaNGOS next-swing spell
-  behavior yet.
-- Inventory v1 currently supports present bag-0 backpack moves, a small
-  starter-item equip/unequip path for equipment slots 3, 6, 7, 15, and 16,
-  full/partial destroy for present bag-0 backpack/equipment items, no-user-
-  destroy rejection, simple split into an empty supported slot, and destroying
-  items stored inside equipped bag slots 19-22. It also supports DB-backed
-  backpack-to-bag moves, bag-internal moves, and simple same-template stack
-  merges. Full client-visible container/split update fidelity, durability
-  changes, broader equipment rules, and full item-template/class/race
-  validation remain future slices.
-- Broader world gameplay remains skeletal: movement persistence works, but
-  validation, visibility, fuller spells, loot, vendors/trainers, quests, and
-  multi-client behavior remain future Checkpoint 1+ slices.
+- The fixture NPC, vendor, and combat dummy remain hardcoded pending #11.
+- Loot v1 is fixture-only: no loot tables, corpse state persistence, XP,
+  respawn, group loot, or DB-backed creature loot yet.
+- Vendor v1 is fixture-only on `Rust Guide`, not `npc_vendor` DB-backed.
+- Bought container item `2102` is source-backed and has 6 container slots, but
+  it is an ammo pouch template; real-client smoke must prove whether it accepts
+  the item movement we need for manual bag testing.
+- Inventory v1 still lacks full durability changes, complete equipment rules,
+  broader item-template/class/race validation, and real-client closure of all
+  split/container visual update cases.
 
 ## Next Recommended Task
 
-Continue Inventory v1 packet fidelity for bag containers: build proper
-container-aware item create/update blocks for split destinations, bag-contained
-moves, and stack merges using CMaNGOS `ItemHandler.cpp`, `Player.cpp`, and
-`UpdateFields.h` as the reference. Then real-client smoke bag visuals plus
-logout/relog persistence.
+Run the real-client smoke for the new Rust Guide vendor plus combat-dummy
+item/money loot. If the client-visible inventory updates are good, continue
+Checkpoint 1 with a small DB-backed vendor/loot data slice or close out the
+remaining Inventory v1 visual gaps found by smoke.
 
 ## Key Files
 
@@ -229,16 +175,3 @@ logout/relog persistence.
 - `scripts/test-rust.cmd`
 - `scripts/test-world-flow.cmd`
 - `scripts/run-client-stack-18085.cmd`
-- C++ references:
-  - `src/game/Loot/LootHandler.cpp`
-  - `src/game/Loot/LootMgr.cpp`
-  - `src/game/Loot/LootMgr.h`
-  - `src/game/Server/Opcodes.h`
-  - `src/game/Entities/UpdateFields.h`
-  - `src/game/Entities/ItemHandler.cpp`
-  - `src/game/Entities/Player.cpp`
-  - `src/game/Entities/Object.cpp`
-  - `src/game/Spells/SpellHandler.cpp`
-  - `src/game/Spells/Spell.cpp`
-  - `src/game/Spells/Spell.h`
-  - `src/game/Spells/SpellTargetDefines.h`

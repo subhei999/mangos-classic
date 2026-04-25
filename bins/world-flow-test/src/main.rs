@@ -40,6 +40,8 @@ const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SPLIT_ITEM: u32 = 0x010E;
 const CMSG_DESTROYITEM: u32 = 0x0111;
+const CMSG_LIST_INVENTORY: u32 = 0x019E;
+const CMSG_BUY_ITEM: u32 = 0x01A2;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
@@ -47,6 +49,8 @@ const SMSG_CHAR_DELETE: u32 = 0x003C;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_INVENTORY_CHANGE_FAILURE: u32 = 0x0112;
+const SMSG_LIST_INVENTORY: u32 = 0x019F;
+const SMSG_BUY_ITEM: u32 = 0x01A4;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
@@ -61,6 +65,10 @@ const CHAR_NAME_INVALID_CHARACTER: u8 = 0x46;
 const AT_LOGIN_FIRST: u32 = 0x20;
 const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
 const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
+const RUST_GUIDE_ENTRY: u32 = 900_001;
+const RUST_GUIDE_COUNTER: u32 = 1;
+const RUST_VENDOR_BAG_ITEM: u32 = 2102;
+const RUST_VENDOR_STACK_ITEM: u32 = 117;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -191,6 +199,11 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.swap_inventory_slots(26, 3)?;
     assert_inventory_slot(&character_pool, created.guid, 38, 3).await?;
     assert_equipment_cache_slot(&character_pool, created.guid, 3, 38).await?;
+    loaded_world.list_rust_guide_inventory()?;
+    loaded_world.buy_rust_guide_item(RUST_VENDOR_BAG_ITEM, 1)?;
+    assert_inventory_item_present(&character_pool, created.guid, RUST_VENDOR_BAG_ITEM).await?;
+    loaded_world.buy_rust_guide_item(RUST_VENDOR_STACK_ITEM, 2)?;
+    assert_inventory_item_present(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
     loaded_world.swap_item(255, 27, 19, 3)?;
     assert_inventory_count_at(&character_pool, created.guid, 19, 3, 3).await?;
     assert_inventory_position_empty(&character_pool, created.guid, 0, 27).await?;
@@ -307,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -606,6 +619,26 @@ async fn assert_inventory_item_absent(
     ensure!(
         inventory_count == 0 && instance_count == 0,
         "item {item_template} for character {guid} remained after destroy: inventory={inventory_count}, instances={instance_count}"
+    );
+    Ok(())
+}
+
+async fn assert_inventory_item_present(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+) -> anyhow::Result<()> {
+    let inventory_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM character_inventory \
+         WHERE guid = ? AND item_template = ?",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_one(character_pool)
+    .await?;
+    ensure!(
+        inventory_count > 0,
+        "item {item_template} for character {guid} was not present"
     );
     Ok(())
 }
@@ -1341,6 +1374,50 @@ impl WorldClient {
         Ok(())
     }
 
+    fn list_rust_guide_inventory(&mut self) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LIST_INVENTORY,
+            &rust_guide_guid().raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LIST_INVENTORY,
+            "expected SMSG_LIST_INVENTORY, got 0x{opcode:04X}"
+        );
+        ensure!(
+            body.get(8) == Some(&2),
+            "vendor inventory body was malformed"
+        );
+        Ok(())
+    }
+
+    fn buy_rust_guide_item(&mut self, item: u32, count: u8) -> anyhow::Result<()> {
+        let mut body = Vec::with_capacity(14);
+        body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+        body.extend_from_slice(&item.to_le_bytes());
+        body.push(count);
+        body.push(1);
+        write_client_packet(
+            &mut self.stream,
+            CMSG_BUY_ITEM,
+            &body,
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_BUY_ITEM,
+            "expected SMSG_BUY_ITEM after vendor buy, got 0x{opcode:04X}"
+        );
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after vendor buy, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
     fn destroy_backpack_item(&mut self, slot: u8) -> anyhow::Result<()> {
         self.destroy_bag0_item(slot)
     }
@@ -1481,6 +1558,10 @@ impl WorldClient {
 
 fn human_warrior_attributes() -> [u8; 9] {
     [1, 1, 0, 0, 0, 0, 0, 0, 0]
+}
+
+fn rust_guide_guid() -> ObjectGuid {
+    ObjectGuid::new(HighGuid::Unit, RUST_GUIDE_ENTRY, RUST_GUIDE_COUNTER)
 }
 
 #[derive(Debug)]

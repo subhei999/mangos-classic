@@ -67,6 +67,7 @@ const CMSG_TUTORIAL_RESET: u32 = 0x0100;
 const CMSG_TEXT_EMOTE: u32 = 0x0104;
 const SMSG_EMOTE: u16 = 0x0103;
 const SMSG_TEXT_EMOTE: u16 = 0x0105;
+const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
 const CMSG_AUTOEQUIP_ITEM: u32 = 0x010A;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
@@ -92,6 +93,8 @@ const CMSG_LOOT_MONEY: u32 = 0x015E;
 const CMSG_LOOT_RELEASE: u32 = 0x015F;
 const SMSG_LOOT_RESPONSE: u16 = 0x0160;
 const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x0161;
+const SMSG_LOOT_REMOVED: u16 = 0x0162;
+const SMSG_LOOT_MONEY_NOTIFY: u16 = 0x0163;
 const SMSG_LOOT_CLEAR_MONEY: u16 = 0x0165;
 const CMSG_GOSSIP_HELLO: u32 = 0x017B;
 const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
@@ -99,6 +102,10 @@ const SMSG_GOSSIP_MESSAGE: u16 = 0x017D;
 const SMSG_GOSSIP_COMPLETE: u16 = 0x017E;
 const CMSG_NPC_TEXT_QUERY: u32 = 0x017F;
 const SMSG_NPC_TEXT_UPDATE: u16 = 0x0180;
+const CMSG_LIST_INVENTORY: u32 = 0x019E;
+const SMSG_LIST_INVENTORY: u16 = 0x019F;
+const CMSG_BUY_ITEM: u32 = 0x01A2;
+const SMSG_BUY_ITEM: u16 = 0x01A4;
 const CMSG_QUERY_TIME: u32 = 0x01CE;
 const SMSG_QUERY_TIME_RESPONSE: u16 = 0x01CF;
 const CMSG_ZONEUPDATE: u32 = 0x01F4;
@@ -174,9 +181,11 @@ const ACCOUNT_DATA_TYPES: usize = 8;
 const MD5_DIGEST_LEN: usize = 16;
 const MAX_ACTION_BUTTONS: usize = 120;
 const TYPEID_ITEM: u8 = 1;
+const TYPEID_CONTAINER: u8 = 2;
 const TYPEID_UNIT: u8 = 3;
 const TYPEID_PLAYER: u8 = 4;
 const TYPEMASK_OBJECT_ITEM: u32 = 0x0003;
+const TYPEMASK_OBJECT_CONTAINER: u32 = 0x0007;
 const TYPEMASK_OBJECT_UNIT: u32 = 0x0009;
 const TYPEMASK_OBJECT_UNIT_PLAYER: u32 = 0x0019;
 const UPDATE_TYPE_VALUES: u8 = 0;
@@ -187,6 +196,9 @@ const UPDATEFLAG_ALL: u8 = 0x10;
 const UPDATEFLAG_LIVING: u8 = 0x20;
 const UPDATEFLAG_HAS_POSITION: u8 = 0x40;
 const ITEM_END_FIELDS: usize = 0x30;
+const CONTAINER_FIELD_NUM_SLOTS: usize = ITEM_END_FIELDS;
+const CONTAINER_FIELD_SLOT_1: usize = ITEM_END_FIELDS + 0x02;
+const CONTAINER_END_FIELDS: usize = ITEM_END_FIELDS + 0x4A;
 const PLAYER_END_FIELDS: usize = 0x502;
 const MOVEFLAG_JUMPING: u32 = 0x0000_2000;
 const MOVEFLAG_SWIMMING: u32 = 0x0020_0000;
@@ -268,6 +280,7 @@ const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
 const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
 const EQUIP_ERR_COULDNT_SPLIT_ITEMS: u8 = 27;
 const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
+const UNIT_NPC_FLAG_VENDOR: u32 = 0x0000_0004;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
 const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
 const VICTIMSTATE_NORMAL: u32 = 1;
@@ -293,6 +306,13 @@ const HEROIC_STRIKE_RAGE_COST: u32 = 150;
 const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
 const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
 const CLIENT_LOOT_CORPSE: u8 = 1;
+const LOOT_SLOT_NORMAL: u8 = 0;
+const RUST_COMBAT_DUMMY_LOOT_ITEM: u32 = 117;
+const RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT: u32 = 2;
+const RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY: u32 = 2473;
+const RUST_COMBAT_DUMMY_LOOT_MONEY: u32 = 7;
+const RUST_VENDOR_BAG_ITEM: u32 = 2102;
+const RUST_VENDOR_BAG_DISPLAY: u32 = 1816;
 const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 const SPELL_CAST_TARGET_UNIT_ENEMY: u16 = 0x0080;
 const CAST_FLAG_SPELL_GO: u16 = 0x0100;
@@ -590,6 +610,19 @@ async fn handle_client(
                     CMSG_NPC_TEXT_QUERY => {
                         handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
                     }
+                    CMSG_LIST_INVENTORY => {
+                        handle_list_inventory(&mut stream, &body, &mut header_crypto).await?;
+                    }
+                    CMSG_BUY_ITEM => {
+                        handle_buy_item(
+                            &mut stream,
+                            &character_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     CMSG_ATTACKSWING => {
                         handle_attack_swing(&mut stream, &body, &mut session, &mut header_crypto)
                             .await?;
@@ -600,8 +633,24 @@ async fn handle_client(
                     CMSG_LOOT => {
                         handle_loot(&mut stream, &body, &mut session, &mut header_crypto).await?;
                     }
+                    CMSG_AUTOSTORE_LOOT_ITEM => {
+                        handle_autostore_loot_item(
+                            &mut stream,
+                            &character_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     CMSG_LOOT_MONEY => {
-                        handle_loot_money(&mut stream, &mut session, &mut header_crypto).await?;
+                        handle_loot_money(
+                            &mut stream,
+                            &character_db_pool,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_LOOT_RELEASE => {
                         handle_loot_release(&mut stream, &body, &mut session, &mut header_crypto)
@@ -677,6 +726,8 @@ struct WorldSessionState {
     active_combat_target: Option<ObjectGuid>,
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
+    combat_dummy_loot_money_available: bool,
+    combat_dummy_loot_item_available: bool,
     player_rage: u32,
     inventory: Vec<CharacterInventoryItem>,
 }
@@ -1028,6 +1079,8 @@ async fn handle_player_login(
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     session.combat_dummy_lootable = false;
     session.combat_dummy_looting = false;
+    session.combat_dummy_loot_money_available = false;
+    session.combat_dummy_loot_item_available = false;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;

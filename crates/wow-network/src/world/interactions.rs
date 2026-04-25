@@ -341,6 +341,8 @@ async fn handle_cast_spell(
         if session.combat_dummy_health == 0 {
             session.combat_dummy_lootable = true;
             session.combat_dummy_looting = false;
+            session.combat_dummy_loot_money_available = true;
+            session.combat_dummy_loot_item_available = true;
             session.active_combat_target = None;
         }
         send_packet(
@@ -600,9 +602,9 @@ async fn handle_inventory_swap(
         .await?;
     match moved {
         wow_db::InventoryMoveResult::Swapped => {
-            let changed_slots = bag0_changed_slots(&move_request);
-            let body =
-                build_inventory_slots_update_body(character_guid, &session.inventory, &changed_slots)?;
+            let blocks =
+                build_inventory_move_update_blocks(character_guid, &session.inventory, &move_request)?;
+            let body = build_update_object_body(&blocks);
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
         }
         wow_db::InventoryMoveResult::Merged {
@@ -611,14 +613,22 @@ async fn handle_inventory_swap(
             destination_item,
             destination_count,
         } => {
-            let body = if let Some(source_count) = source_count {
-                build_item_stack_counts_update_body(&[
-                    (source_item, source_count),
-                    (destination_item, destination_count),
-                ])?
+            let mut blocks = Vec::new();
+            if let Some(source_count) = source_count {
+                blocks.push(build_item_stack_count_update_block(source_item, source_count)?);
             } else {
-                build_item_stack_count_update_body(destination_item, destination_count)?
-            };
+                blocks.extend(build_inventory_position_update_blocks(
+                    character_guid,
+                    &session.inventory,
+                    move_request.src_bag,
+                    move_request.src_slot,
+                )?);
+            }
+            blocks.push(build_item_stack_count_update_block(
+                destination_item,
+                destination_count,
+            )?);
+            let body = build_update_object_body(&blocks);
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
         }
     }
@@ -782,7 +792,27 @@ async fn handle_split_item(
 
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
         .await?;
-    let body = build_item_stack_count_update_body(split.source_item, split.source_count)?;
+    let mut blocks = vec![build_item_stack_count_update_block(
+        split.source_item,
+        split.source_count,
+    )?];
+    if let Some(new_item) = session.inventory.iter().find(|item| item.item == split.new_item) {
+        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
+        blocks.push(build_item_create_update_block(
+            owner_guid,
+            contained_guid,
+            new_item,
+            None,
+        )?);
+        blocks.extend(build_inventory_position_update_blocks(
+            character_guid,
+            &session.inventory,
+            new_item.bag as u8,
+            new_item.slot,
+        )?);
+    }
+    let body = build_update_object_body(&blocks);
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
@@ -916,6 +946,26 @@ impl SplitItemRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuyItemRequest {
+    vendor_guid: ObjectGuid,
+    item: u32,
+    count: u8,
+}
+
+impl BuyItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 14 {
+            anyhow::bail!("CMSG_BUY_ITEM payload too short: {} bytes", body.len());
+        }
+        Ok(Self {
+            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
+            item: u32::from_le_bytes(body[8..12].try_into()?),
+            count: body[12],
+        })
+    }
+}
+
 fn normalize_client_bag(bag: u8) -> u8 {
     if bag == CLIENT_INVENTORY_SLOT_BAG_0 {
         INVENTORY_SLOT_BAG_0
@@ -952,6 +1002,149 @@ fn bag0_changed_slots(request: &InventoryMoveRequest) -> Vec<u8> {
         slots.push(request.dst_slot);
     }
     slots
+}
+
+fn build_inventory_move_update_blocks(
+    character_guid: u32,
+    inventory: &[CharacterInventoryItem],
+    request: &InventoryMoveRequest,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut blocks = Vec::new();
+    let bag0_slots = bag0_changed_slots(request);
+    if !bag0_slots.is_empty() {
+        blocks.push(build_inventory_slots_update_block(
+            character_guid,
+            inventory,
+            &bag0_slots,
+        )?);
+    }
+    blocks.extend(build_container_position_update_blocks(
+        character_guid,
+        inventory,
+        request.src_bag,
+        request.src_slot,
+    )?);
+    if request.dst_bag != request.src_bag || request.dst_slot != request.src_slot {
+        blocks.extend(build_container_position_update_blocks(
+            character_guid,
+            inventory,
+            request.dst_bag,
+            request.dst_slot,
+        )?);
+    }
+
+    Ok(blocks)
+}
+
+fn build_inventory_position_update_blocks(
+    character_guid: u32,
+    inventory: &[CharacterInventoryItem],
+    bag: u8,
+    slot: u8,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return Ok(vec![build_inventory_slots_update_block(
+            character_guid,
+            inventory,
+            &[slot],
+        )?]);
+    }
+    build_container_position_update_blocks(character_guid, inventory, bag, slot)
+}
+
+fn build_container_position_update_blocks(
+    character_guid: u32,
+    inventory: &[CharacterInventoryItem],
+    bag: u8,
+    slot: u8,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    if !is_bag_slot(bag) {
+        return Ok(Vec::new());
+    }
+    let mut blocks = Vec::new();
+    if let Some(block) = build_container_slot_update_block(inventory, bag, slot)? {
+        blocks.push(block);
+    }
+    if let Some(item) = inventory
+        .iter()
+        .find(|item| item.bag == bag as u32 && item.slot == slot)
+    {
+        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        blocks.push(build_item_contained_update_block(owner_guid, inventory, item)?);
+    }
+    Ok(blocks)
+}
+
+fn first_empty_backpack_slot(inventory: &[CharacterInventoryItem]) -> Option<u8> {
+    (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).find(|slot| {
+        inventory
+            .iter()
+            .all(|item| item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != *slot)
+    })
+}
+
+fn build_rust_guide_vendor_inventory() -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + 1 + 2 * 28);
+    body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+    body.push(2);
+    write_vendor_item(
+        &mut body,
+        1,
+        RUST_VENDOR_BAG_ITEM,
+        RUST_VENDOR_BAG_DISPLAY,
+        0,
+        0,
+        1,
+    );
+    write_vendor_item(
+        &mut body,
+        2,
+        RUST_COMBAT_DUMMY_LOOT_ITEM,
+        RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY,
+        0,
+        0,
+        1,
+    );
+    body
+}
+
+fn write_vendor_item(
+    body: &mut Vec<u8>,
+    slot: u32,
+    item: u32,
+    display: u32,
+    price: u32,
+    durability: u32,
+    buy_count: u32,
+) {
+    body.extend_from_slice(&slot.to_le_bytes());
+    body.extend_from_slice(&item.to_le_bytes());
+    body.extend_from_slice(&display.to_le_bytes());
+    body.extend_from_slice(&u32::MAX.to_le_bytes());
+    body.extend_from_slice(&price.to_le_bytes());
+    body.extend_from_slice(&durability.to_le_bytes());
+    body.extend_from_slice(&buy_count.to_le_bytes());
+}
+
+fn build_buy_item_body(vendor_slot: u32, count: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(20);
+    body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+    body.extend_from_slice(&vendor_slot.to_le_bytes());
+    body.extend_from_slice(&u32::MAX.to_le_bytes());
+    body.extend_from_slice(&(count as u32).to_le_bytes());
+    body
+}
+
+fn is_rust_guide_vendor_item(item: u32) -> bool {
+    matches!(item, RUST_VENDOR_BAG_ITEM | RUST_COMBAT_DUMMY_LOOT_ITEM)
+}
+
+fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
+    match item {
+        RUST_VENDOR_BAG_ITEM => Some(1),
+        RUST_COMBAT_DUMMY_LOOT_ITEM => Some(2),
+        _ => None,
+    }
 }
 
 fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
@@ -1142,6 +1335,95 @@ async fn handle_npc_text_query(
     send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
 }
 
+async fn handle_list_inventory(
+    stream: &mut TcpStream,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let guid = read_packet_guid(body, "CMSG_LIST_INVENTORY")?;
+    if guid != rust_guide_guid() {
+        warn!(
+            guid = format_args!("0x{:016X}", guid.raw()),
+            "Ignoring vendor inventory request for unknown creature"
+        );
+        return Ok(());
+    }
+    let response = build_rust_guide_vendor_inventory();
+    send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await
+}
+
+async fn handle_buy_item(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring vendor buy before character login");
+        return Ok(());
+    };
+    let buy = BuyItemRequest::read(body)?;
+    if buy.vendor_guid != rust_guide_guid() || !is_rust_guide_vendor_item(buy.item) {
+        warn!(
+            item = buy.item,
+            vendor = format_args!("0x{:016X}", buy.vendor_guid.raw()),
+            "Ignoring unsupported vendor buy request"
+        );
+        return Ok(());
+    }
+    let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let count = buy.count.max(1);
+    wow_db::add_character_inventory_item(
+        character_db_pool,
+        character.guid,
+        INVENTORY_SLOT_BAG_0 as u32,
+        dst_slot,
+        buy.item,
+        count as u32,
+        0,
+    )
+    .await?;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+    let Some(new_item) = session
+        .inventory
+        .iter()
+        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == dst_slot)
+    else {
+        return Ok(());
+    };
+
+    send_packet(
+        stream,
+        SMSG_BUY_ITEM,
+        &build_buy_item_body(rust_guide_vendor_slot(buy.item).unwrap_or(1), count),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let container_slots = if new_item.item_template == RUST_VENDOR_BAG_ITEM {
+        Some(6)
+    } else {
+        None
+    };
+    let create_block =
+        build_item_create_update_block(owner_guid, owner_guid, new_item, container_slots)?;
+    let slot_block = build_inventory_slots_update_block(character.guid, &session.inventory, &[dst_slot])?;
+    let body = build_update_object_body(&[create_block, slot_block]);
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
 async fn handle_attack_swing(
     stream: &mut TcpStream,
     body: &[u8],
@@ -1232,6 +1514,8 @@ async fn send_combat_dummy_swing(
     if session.combat_dummy_health == 0 {
         session.combat_dummy_lootable = true;
         session.combat_dummy_looting = false;
+        session.combat_dummy_loot_money_available = true;
+        session.combat_dummy_loot_item_available = true;
         send_packet(
             stream,
             SMSG_ATTACKSTOP,
@@ -1291,21 +1575,113 @@ async fn handle_loot(
     }
 
     session.combat_dummy_looting = true;
-    let response = build_combat_dummy_loot_response_body();
+    let response = build_combat_dummy_loot_response_body(session);
     send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
+}
+
+async fn handle_autostore_loot_item(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring loot item request before character login");
+        return Ok(());
+    };
+    if body.is_empty() {
+        anyhow::bail!("CMSG_AUTOSTORE_LOOT_ITEM payload too short: {} bytes", body.len());
+    }
+    let loot_slot = body[0];
+    if !session.combat_dummy_looting || loot_slot != 0 || !session.combat_dummy_loot_item_available {
+        warn!(
+            loot_slot,
+            "Ignoring loot item request without available combat dummy loot"
+        );
+        return Ok(());
+    }
+
+    let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    wow_db::add_character_inventory_item(
+        character_db_pool,
+        character.guid,
+        INVENTORY_SLOT_BAG_0 as u32,
+        dst_slot,
+        RUST_COMBAT_DUMMY_LOOT_ITEM,
+        RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
+        0,
+    )
+    .await?;
+    session.combat_dummy_loot_item_available = false;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+    let Some(new_item) = session.inventory.iter().find(|item| {
+        item.bag == INVENTORY_SLOT_BAG_0 as u32
+            && item.slot == dst_slot
+            && item.item_template == RUST_COMBAT_DUMMY_LOOT_ITEM
+    }) else {
+        return Ok(());
+    };
+
+    send_packet(stream, SMSG_LOOT_REMOVED, &[loot_slot], Some(&mut *header_crypto)).await?;
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let create_block = build_item_create_update_block(owner_guid, owner_guid, new_item, None)?;
+    let slot_block = build_inventory_slots_update_block(character.guid, &session.inventory, &[dst_slot])?;
+    let body = build_update_object_body(&[create_block, slot_block]);
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
 async fn handle_loot_money(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring loot money request before character login");
+        return Ok(());
+    };
     if !session.combat_dummy_looting {
         warn!("Ignoring loot money request without an open combat dummy loot window");
         return Ok(());
     }
+    if !session.combat_dummy_loot_money_available {
+        return Ok(());
+    }
 
-    send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(header_crypto)).await
+    let money = wow_db::add_character_money(
+        character_db_pool,
+        character.guid,
+        RUST_COMBAT_DUMMY_LOOT_MONEY,
+    )
+    .await?;
+    session.combat_dummy_loot_money_available = false;
+    send_packet(
+        stream,
+        SMSG_LOOT_MONEY_NOTIFY,
+        &RUST_COMBAT_DUMMY_LOOT_MONEY.to_le_bytes(),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(&mut *header_crypto)).await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_money_update_body(character.guid, money)?,
+        Some(header_crypto),
+    )
+    .await
 }
 
 async fn handle_loot_release(
@@ -1325,6 +1701,8 @@ async fn handle_loot_release(
 
     session.combat_dummy_looting = false;
     session.combat_dummy_lootable = false;
+    session.combat_dummy_loot_money_available = false;
+    session.combat_dummy_loot_item_available = false;
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     send_packet(
         stream,
@@ -1361,12 +1739,29 @@ fn build_attack_stop_body(
     Ok(body)
 }
 
-fn build_combat_dummy_loot_response_body() -> Vec<u8> {
-    let mut body = Vec::with_capacity(14);
+fn build_combat_dummy_loot_response_body(session: &WorldSessionState) -> Vec<u8> {
+    let item_count = u8::from(session.combat_dummy_loot_item_available);
+    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
     body.extend_from_slice(&rust_combat_dummy_guid().raw().to_le_bytes());
     body.push(CLIENT_LOOT_CORPSE);
-    body.extend_from_slice(&0u32.to_le_bytes()); // gold
-    body.push(0); // item count
+    body.extend_from_slice(
+        &(if session.combat_dummy_loot_money_available {
+            RUST_COMBAT_DUMMY_LOOT_MONEY
+        } else {
+            0
+        })
+        .to_le_bytes(),
+    );
+    body.push(item_count);
+    if session.combat_dummy_loot_item_available {
+        body.push(0); // loot slot
+        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM.to_le_bytes());
+        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT.to_le_bytes());
+        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // random suffix factor
+        body.extend_from_slice(&0u32.to_le_bytes()); // random property id
+        body.push(LOOT_SLOT_NORMAL);
+    }
     body
 }
 

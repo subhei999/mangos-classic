@@ -109,6 +109,9 @@ Last reported manual smoke:
 - Inventory smoke confirmed backpack movement, equip persistence, and basic
   destroy behavior; stack splitting had no good manual fixture before this
   vendor/loot slice.
+- Fixture loot/vendor smoke is good overall. Minor issue found: looted Tough
+  Jerky creates a separate stack instead of merging into an existing stack, but
+  manual stacking works afterward; tracked as GitHub #19.
 
 Next manual smoke should verify:
 
@@ -135,11 +138,12 @@ GitHub issues are the source of truth:
 - #16 `[Rust Rewrite][P2][Inventory] Split item updates lack full client-visible destination create fidelity`
 - #17 `[Rust Rewrite][P2][NPC] Hearthstone replacement from innkeepers is not implemented`
 - #18 `[Rust Rewrite][P2][Inventory] Bag-container moves lack full container slot update fidelity`
+- #19 `[Rust Rewrite][P2][Loot] Autostore loot does not merge into existing item stacks`
 
 The current slice improves #16 and #18 but does not close them until real-client
 smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
 remain under #11. Full combat, XP, death, respawn, and DB-backed loot remain
-under #12.
+under #12. Loot autostore stack merging remains under #19.
 
 ## Known Blockers And Gaps
 
@@ -153,6 +157,8 @@ under #12.
 - Inventory v1 still lacks full durability changes, complete equipment rules,
   broader item-template/class/race validation, and real-client closure of all
   split/container visual update cases.
+- Loot autostore does not merge into existing compatible stacks before choosing
+  an empty slot; manual stacking works and the issue is tracked as #19.
 
 ## Next Recommended Task
 

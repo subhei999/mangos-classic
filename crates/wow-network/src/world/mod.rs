@@ -722,6 +722,7 @@ async fn handle_client(
                         handle_autostore_loot_item(
                             &mut stream,
                             &character_db_pool,
+                            &world_db_pool,
                             &body,
                             &mut session,
                             &mut header_crypto,

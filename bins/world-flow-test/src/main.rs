@@ -46,6 +46,10 @@ const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
 const CMSG_LIST_INVENTORY: u32 = 0x019E;
 const CMSG_SELL_ITEM: u32 = 0x01A0;
 const CMSG_BUY_ITEM: u32 = 0x01A2;
+const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
+const CMSG_ATTACKSWING: u32 = 0x0141;
+const CMSG_LOOT: u32 = 0x015D;
+const CMSG_LOOT_RELEASE: u32 = 0x015F;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
@@ -59,6 +63,12 @@ const SMSG_NPC_TEXT_UPDATE: u32 = 0x0180;
 const SMSG_LIST_INVENTORY: u32 = 0x019F;
 const SMSG_BUY_ITEM: u32 = 0x01A4;
 const SMSG_BUY_FAILED: u32 = 0x01A5;
+const SMSG_ATTACKSTART: u32 = 0x0143;
+const SMSG_ATTACKSTOP: u32 = 0x0144;
+const SMSG_ATTACKERSTATEUPDATE: u32 = 0x014A;
+const SMSG_LOOT_RESPONSE: u32 = 0x0160;
+const SMSG_LOOT_RELEASE_RESPONSE: u32 = 0x0161;
+const SMSG_LOOT_REMOVED: u32 = 0x0162;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
@@ -80,6 +90,10 @@ const RUST_VENDOR_STACK_ITEM: u32 = 117;
 const DB_CREATURE_FIXTURE_GUID: u32 = 96_001;
 const DB_CREATURE_FIXTURE_ENTRY: u32 = 1;
 const DB_CREATURE_FIXTURE_NAME: &str = "Waypoint (Only GM can see it)";
+const EMPTY_DB_VENDOR_FIXTURE_GUID: u32 = 96_002;
+const EMPTY_DB_VENDOR_FIXTURE_ENTRY: u32 = 900_011;
+const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
+const RUST_COMBAT_DUMMY_COUNTER: u32 = 2;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -204,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.query_db_creature_template()?;
     loaded_world.open_db_vendor_gossip_inventory()?;
     loaded_world.list_db_vendor_inventory()?;
+    loaded_world.list_empty_db_vendor_inventory()?;
     let (db_vendor_price, db_vendor_sell_price, db_vendor_buy_count) =
         item_prices_and_buy_count(&world_pool, RUST_VENDOR_STACK_ITEM).await?;
     let db_vendor_stack_count_before =
@@ -278,6 +293,41 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.swap_item(19, 4, 19, 2)?;
     assert_inventory_count_at(&character_pool, created.guid, 19, 2, 7).await?;
     assert_inventory_position_empty(&character_pool, created.guid, 19, 4).await?;
+    let loot_stack_rows_before =
+        inventory_item_row_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
+    loaded_world.kill_combat_dummy_with_autoattacks()?;
+    loaded_world.open_combat_dummy_loot()?;
+    loaded_world.autostore_combat_dummy_loot_item()?;
+    assert_inventory_count_at(&character_pool, created.guid, 0, 26, 3).await?;
+    assert_inventory_item_row_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        loot_stack_rows_before,
+    )
+    .await?;
+    loaded_world.release_combat_dummy_loot()?;
+    for item_guid in
+        inventory_item_guids_for_template(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM)
+            .await?
+    {
+        loaded_world.sell_item(item_guid, 0)?;
+    }
+    assert_inventory_item_row_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM, 0)
+        .await?;
+    let full_stack_rows_before =
+        inventory_item_row_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
+    loaded_world.kill_combat_dummy_with_autoattacks()?;
+    loaded_world.open_combat_dummy_loot()?;
+    loaded_world.autostore_combat_dummy_loot_item()?;
+    assert_inventory_item_row_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        full_stack_rows_before + 1,
+    )
+    .await?;
+    loaded_world.release_combat_dummy_loot()?;
     loaded_world.destroy_item(255, 24, 1, SMSG_UPDATE_OBJECT)?;
     assert_inventory_count_at(&character_pool, created.guid, 0, 24, 2).await?;
     loaded_world.split_item(255, 24, 19, 1, 1)?;
@@ -385,7 +435,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB vendor BuyPrice charge, sellback, and insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -555,12 +605,24 @@ async fn seed_db_creature_fixture(
         .bind(RUST_VENDOR_BAG_ITEM)
         .execute(world_pool)
         .await?;
+    sqlx::query("DELETE FROM npc_vendor WHERE entry = ?")
+        .bind(EMPTY_DB_VENDOR_FIXTURE_ENTRY)
+        .execute(world_pool)
+        .await?;
     sqlx::query(
         "INSERT INTO npc_vendor (entry, item, maxcount, incrtime, slot, condition_id) \
          VALUES (?, ?, 0, 0, 1, 0)",
     )
     .bind(DB_CREATURE_FIXTURE_ENTRY)
     .bind(RUST_VENDOR_STACK_ITEM)
+    .execute(world_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO npc_vendor (entry, item, maxcount, incrtime, slot, condition_id) \
+         VALUES (?, ?, 0, 0, 2, 0)",
+    )
+    .bind(DB_CREATURE_FIXTURE_ENTRY)
+    .bind(RUST_VENDOR_BAG_ITEM)
     .execute(world_pool)
     .await?;
     sqlx::query(
@@ -817,6 +879,26 @@ async fn inventory_item_guid_with_count(
         format!("item {item_template} with count {count} was missing for character {guid}")
     })?;
     Ok(ObjectGuid::new(HighGuid::Item, 0, item_guid))
+}
+
+async fn inventory_item_guids_for_template(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+) -> anyhow::Result<Vec<ObjectGuid>> {
+    let item_guids: Vec<u32> = sqlx::query_scalar(
+        "SELECT item FROM character_inventory \
+         WHERE guid = ? AND item_template = ? \
+         ORDER BY bag, slot",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_all(character_pool)
+    .await?;
+    Ok(item_guids
+        .into_iter()
+        .map(|item_guid| ObjectGuid::new(HighGuid::Item, 0, item_guid))
+        .collect())
 }
 
 async fn item_prices_and_buy_count(
@@ -1695,10 +1777,50 @@ impl WorldClient {
             item == RUST_VENDOR_STACK_ITEM,
             "DB vendor item was {item}, expected {RUST_VENDOR_STACK_ITEM}"
         );
+        ensure!(
+            item != RUST_VENDOR_BAG_ITEM,
+            "DB vendor exposed filtered container item {RUST_VENDOR_BAG_ITEM}"
+        );
         let available = u32::from_le_bytes(body[21..25].try_into()?);
         ensure!(
             available == u32::MAX,
             "DB vendor unlimited count marker was {available}"
+        );
+        Ok(())
+    }
+
+    fn list_empty_db_vendor_inventory(&mut self) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(
+            HighGuid::Unit,
+            EMPTY_DB_VENDOR_FIXTURE_ENTRY,
+            EMPTY_DB_VENDOR_FIXTURE_GUID,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LIST_INVENTORY,
+            &guid.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LIST_INVENTORY,
+            "expected empty DB SMSG_LIST_INVENTORY, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 10)?;
+        ensure!(
+            body.len() == 10,
+            "empty DB vendor body length was {}, expected 10",
+            body.len()
+        );
+        ensure!(
+            &body[0..8] == guid.raw().to_le_bytes().as_slice(),
+            "empty DB vendor guid mismatch"
+        );
+        ensure!(body[8] == 0, "empty DB vendor item count was {}", body[8]);
+        ensure!(
+            body[9] == 0,
+            "empty DB vendor no-inventory marker was {}",
+            body[9]
         );
         Ok(())
     }
@@ -1763,6 +1885,10 @@ impl WorldClient {
         ensure!(
             item == RUST_VENDOR_STACK_ITEM,
             "DB vendor item was {item}, expected {RUST_VENDOR_STACK_ITEM}"
+        );
+        ensure!(
+            item != RUST_VENDOR_BAG_ITEM,
+            "DB vendor gossip list exposed filtered container item {RUST_VENDOR_BAG_ITEM}"
         );
         let available = u32::from_le_bytes(body[21..25].try_into()?);
         ensure!(
@@ -1933,8 +2059,8 @@ impl WorldClient {
         )?;
         let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         ensure!(
-            opcode == SMSG_UPDATE_OBJECT,
-            "expected SMSG_UPDATE_OBJECT after vendor sell item/count update, got 0x{opcode:04X}"
+            opcode == SMSG_UPDATE_OBJECT || opcode == SMSG_DESTROY_OBJECT,
+            "expected item/count update after vendor sell, got 0x{opcode:04X}"
         );
         let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         ensure!(
@@ -2020,6 +2146,114 @@ impl WorldClient {
         Ok(())
     }
 
+    fn kill_combat_dummy_with_autoattacks(&mut self) -> anyhow::Result<()> {
+        let target = rust_combat_dummy_guid();
+        for swing_index in 0..3 {
+            write_client_packet(
+                &mut self.stream,
+                CMSG_ATTACKSWING,
+                &target.raw().to_le_bytes(),
+                Some(&mut self.crypto),
+            )?;
+            for expected in [
+                SMSG_ATTACKSTART,
+                SMSG_ATTACKERSTATEUPDATE,
+                SMSG_UPDATE_OBJECT,
+                SMSG_UPDATE_OBJECT,
+            ] {
+                let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+                ensure!(
+                    opcode == expected,
+                    "expected 0x{expected:04X} during combat dummy swing, got 0x{opcode:04X}"
+                );
+            }
+            if swing_index == 2 {
+                for expected in [SMSG_ATTACKSTOP, SMSG_UPDATE_OBJECT] {
+                    let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+                    ensure!(
+                        opcode == expected,
+                        "expected 0x{expected:04X} after combat dummy death, got 0x{opcode:04X}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn open_combat_dummy_loot(&mut self) -> anyhow::Result<()> {
+        let target = rust_combat_dummy_guid();
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LOOT,
+            &target.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LOOT_RESPONSE,
+            "expected SMSG_LOOT_RESPONSE, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 14)?;
+        ensure!(
+            &body[0..8] == target.raw().to_le_bytes().as_slice(),
+            "loot response target guid mismatch"
+        );
+        ensure!(
+            body[13] == 1,
+            "combat dummy loot item count was {}",
+            body[13]
+        );
+        Ok(())
+    }
+
+    fn autostore_combat_dummy_loot_item(&mut self) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_AUTOSTORE_LOOT_ITEM,
+            &[0],
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LOOT_REMOVED,
+            "expected SMSG_LOOT_REMOVED, got 0x{opcode:04X}"
+        );
+        ensure!(body == [0], "loot removed body was {body:02X?}");
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after autostore loot, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
+    fn release_combat_dummy_loot(&mut self) -> anyhow::Result<()> {
+        let target = rust_combat_dummy_guid();
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LOOT_RELEASE,
+            &target.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LOOT_RELEASE_RESPONSE,
+            "expected SMSG_LOOT_RELEASE_RESPONSE, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 9)?;
+        ensure!(
+            &body[0..8] == target.raw().to_le_bytes().as_slice(),
+            "loot release target guid mismatch"
+        );
+        ensure!(body[8] == 1, "loot release success byte was {}", body[8]);
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after loot release, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
     fn logout(&mut self) -> anyhow::Result<()> {
         write_client_packet(
             &mut self.stream,
@@ -2088,6 +2322,14 @@ fn human_warrior_attributes() -> [u8; 9] {
 
 fn rust_guide_guid() -> ObjectGuid {
     ObjectGuid::new(HighGuid::Unit, RUST_GUIDE_ENTRY, RUST_GUIDE_COUNTER)
+}
+
+fn rust_combat_dummy_guid() -> ObjectGuid {
+    ObjectGuid::new(
+        HighGuid::Unit,
+        RUST_COMBAT_DUMMY_ENTRY,
+        RUST_COMBAT_DUMMY_COUNTER,
+    )
 }
 
 #[derive(Debug)]

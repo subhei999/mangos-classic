@@ -86,10 +86,13 @@ using the repo's bug triage policy, then continue the requested task.
   `Rust DB Guide` (`creature` / `creature_template` `900010`) near `Rustone`
   with gossip/vendor NPC flags and Tough Jerky `117` plus Small Brown Pouch
   `2102` vendor rows.
-- Overnight issues #23-#25 closed: handoff current-state wording was refreshed,
-  and `world-flow-test` now proves DB vendor `BuyPrice` charging,
-  insufficient-money no-grant behavior, and DB vendor sellback money,
-  stack-decrement, and full-removal behavior.
+- Overnight issues #23-#28 closed: handoff current-state wording was refreshed;
+  `world-flow-test` now proves DB vendor `BuyPrice` charging,
+  insufficient-money no-grant behavior, DB vendor sellback money,
+  stack-decrement/full-removal behavior, empty DB vendor no-inventory marker,
+  DB container-item filtering for `2102`, and combat-dummy loot autostore
+  merging into existing compatible Tough Jerky stacks before empty-slot
+  fallback.
 
 ## Tests Last Run
 
@@ -112,11 +115,11 @@ with auth session, create/delete cases, DB creature query/gossip/vendor list,
 DB vendor insufficient-money guard, inventory/vendor buy/sell/loot flows,
 cleanup checks, COD mail return, and enum/count refresh.
 Latest overnight reruns:
-`test-world-flow.cmd` passed with DB vendor BuyPrice charge, sellback, and
-insufficient-money guard coverage. `test-rust.cmd` passed with 79
-`wow-network` tests. `git diff --check` passed with only the known LF-to-CRLF
-working-copy warnings. `cargo fmt` passed with the existing
-`could not canonicalize path C:\Users\subhe` warning.
+`test-world-flow.cmd` passed with DB vendor BuyPrice charge, sellback,
+empty-vendor, container-filter, and loot-autostore stack-merge coverage.
+`test-rust.cmd` passed with 79 `wow-network` tests. `git diff --check` passed
+with only the known LF-to-CRLF working-copy warnings. `cargo fmt` passed with
+the existing `could not canonicalize path C:\Users\subhe` warning.
 
 Notes:
 
@@ -189,7 +192,7 @@ area exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-For unattended overnight work, continue Checkpoint 1 at GitHub issue #26 and
+For unattended overnight work, continue Checkpoint 1 at GitHub issue #29 and
 proceed through the remaining numbered issues in order. Do not require
 real-client visual testing overnight; leave the
 `scripts/run-client-stack-18085.cmd` smoke pass for morning. Start with the

@@ -1992,6 +1992,7 @@ async fn handle_loot(
 async fn handle_autostore_loot_item(
     stream: &mut TcpStream,
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -2012,6 +2013,68 @@ async fn handle_autostore_loot_item(
         return Ok(());
     }
 
+    let max_stack = wow_db::get_item_template_query(world_db_pool, RUST_COMBAT_DUMMY_LOOT_ITEM)
+        .await?
+        .map(|template| template.stackable.max(1))
+        .unwrap_or(1);
+    let mut remaining_count = RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT;
+    let mut update_blocks = Vec::new();
+
+    if max_stack > 1 {
+        if let Some(existing_stack) = session
+            .inventory
+            .iter()
+            .filter(|item| {
+                item.item_template == RUST_COMBAT_DUMMY_LOOT_ITEM
+                    && item.count < max_stack
+                    && remaining_count <= max_stack - item.count
+                    && u8::try_from(item.bag)
+                        .ok()
+                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
+            })
+            .min_by_key(|item| {
+                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                    0
+                } else {
+                    1
+                };
+                (bag_order, item.bag, item.slot)
+            })
+            .cloned()
+        {
+            let merged_count = existing_stack.count + remaining_count;
+            if wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                character.guid,
+                existing_stack.item,
+                merged_count,
+            )
+            .await?
+            {
+                remaining_count = 0;
+                update_blocks.push(build_item_stack_count_update_block(
+                    existing_stack.item,
+                    merged_count,
+                )?);
+            }
+        }
+    }
+
+    if remaining_count == 0 {
+        session.combat_dummy_loot_item_available = false;
+        session.inventory =
+            wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+        send_packet(
+            stream,
+            SMSG_LOOT_REMOVED,
+            &[loot_slot],
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let body = build_update_object_body(&update_blocks);
+        return send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await;
+    }
+
     let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
         send_inventory_change_failure(
             stream,
@@ -2030,7 +2093,7 @@ async fn handle_autostore_loot_item(
         INVENTORY_SLOT_BAG_0 as u32,
         dst_slot,
         RUST_COMBAT_DUMMY_LOOT_ITEM,
-        RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
+        remaining_count,
         0,
     )
     .await?;
@@ -2048,7 +2111,9 @@ async fn handle_autostore_loot_item(
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let create_block = build_item_create_update_block(owner_guid, owner_guid, new_item, None)?;
     let slot_block = build_inventory_slots_update_block(character.guid, &session.inventory, &[dst_slot])?;
-    let body = build_update_object_body(&[create_block, slot_block]);
+    update_blocks.push(create_block);
+    update_blocks.push(slot_block);
+    let body = build_update_object_body(&update_blocks);
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 

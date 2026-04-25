@@ -1273,6 +1273,22 @@ pub async fn add_character_inventory_item(
     })
 }
 
+pub async fn update_character_inventory_item_count(
+    pool: &MySqlPool,
+    owner_guid: u32,
+    item_guid: u32,
+    count: u32,
+) -> Result<bool, DbError> {
+    let result =
+        sqlx::query("UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?")
+            .bind(count)
+            .bind(item_guid)
+            .bind(owner_guid)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn add_character_money(pool: &MySqlPool, guid: u32, amount: u32) -> Result<u32, DbError> {
     sqlx::query("UPDATE characters SET money = money + ? WHERE guid = ?")
         .bind(amount)

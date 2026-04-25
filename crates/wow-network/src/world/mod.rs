@@ -359,6 +359,7 @@ const CREATURE_SPAWN_RADIUS_YARDS: f32 = 220.0;
 const CREATURE_SPAWN_LIMIT: u32 = 128;
 const HEROIC_STRIKE_RAGE_COST: u32 = 150;
 const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
+const PLAYER_SURVIVOR_HEALTH_FLOOR: u32 = 1;
 const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
 const RAPTOR_STRIKE_MANA_COST: u32 = 15;
 const RAPTOR_STRIKE_FIXTURE_DAMAGE: u32 = 12;
@@ -825,6 +826,7 @@ struct WorldSessionState {
     combat_dummy_loot_money_available: bool,
     combat_dummy_loot_item_available: bool,
     db_creatures: HashMap<u64, DbCreatureRuntime>,
+    player_health: u32,
     player_rage: u32,
     player_mana: u32,
     active_spells: HashSet<u32>,
@@ -1211,6 +1213,7 @@ async fn handle_player_login(
         .map(DbCreatureRuntime::new)
         .map(|creature| (creature.guid().raw(), creature))
         .collect();
+    session.player_health = character.health;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
     session.inventory =
@@ -1224,6 +1227,9 @@ async fn handle_player_login(
     .await?;
     if session.player_mana == 0 {
         session.player_mana = world_stats.max_mana();
+    }
+    if session.player_health == 0 {
+        session.player_health = world_stats.max_health().max(1);
     }
     let spells = wow_db::get_character_spells(deps.character_db_pool, character.guid).await?;
     session.active_spells = spells

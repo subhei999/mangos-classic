@@ -2119,6 +2119,26 @@ async fn send_db_creature_swing(
     )
     .await?;
 
+    if !is_dead {
+        let retaliation_damage = retaliation_damage_for_db_creature(session, target);
+        if retaliation_damage > 0 {
+            send_packet(
+                stream,
+                SMSG_ATTACKERSTATEUPDATE,
+                &build_attacker_state_update_body(target, attacker, retaliation_damage)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_health_update_body(attacker, session.player_health)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+
     if is_dead {
         send_packet(
             stream,
@@ -2869,6 +2889,34 @@ fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Resul
     Ok(body)
 }
 
+fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health.max(PLAYER_SURVIVOR_HEALTH_FLOOR))?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn retaliation_damage_for_db_creature(session: &mut WorldSessionState, target: ObjectGuid) -> u32 {
+    let Some(creature) = session.db_creatures.get(&target.raw()) else {
+        return 0;
+    };
+    let retaliation_damage = creature.hit_damage().max(1);
+    session.player_health = if session.player_health <= retaliation_damage {
+        PLAYER_SURVIVOR_HEALTH_FLOOR
+    } else {
+        session.player_health - retaliation_damage
+    };
+    retaliation_damage
+}
+
 fn read_packet_guid(body: &[u8], packet_name: &str) -> anyhow::Result<ObjectGuid> {
     if body.len() < 8 {
         anyhow::bail!("{packet_name} payload must include an 8-byte GUID");
@@ -3025,4 +3073,3 @@ fn item_query_subclass(template: &wow_db::ItemTemplateQuery) -> u32 {
         template.subclass
     }
 }
-

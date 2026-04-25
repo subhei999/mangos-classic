@@ -37,6 +37,7 @@ const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
+const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SPLIT_ITEM: u32 = 0x010E;
 const CMSG_DESTROYITEM: u32 = 0x0111;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
@@ -190,6 +191,15 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.swap_inventory_slots(26, 3)?;
     assert_inventory_slot(&character_pool, created.guid, 38, 3).await?;
     assert_equipment_cache_slot(&character_pool, created.guid, 3, 38).await?;
+    loaded_world.swap_item(255, 27, 19, 3)?;
+    assert_inventory_count_at(&character_pool, created.guid, 19, 3, 3).await?;
+    assert_inventory_position_empty(&character_pool, created.guid, 0, 27).await?;
+    loaded_world.swap_item(19, 3, 19, 4)?;
+    assert_inventory_count_at(&character_pool, created.guid, 19, 4, 3).await?;
+    assert_inventory_position_empty(&character_pool, created.guid, 19, 3).await?;
+    loaded_world.swap_item(19, 4, 19, 2)?;
+    assert_inventory_count_at(&character_pool, created.guid, 19, 2, 7).await?;
+    assert_inventory_position_empty(&character_pool, created.guid, 19, 4).await?;
     loaded_world.destroy_item(255, 24, 1, SMSG_UPDATE_OBJECT)?;
     assert_inventory_count_at(&character_pool, created.guid, 0, 24, 2).await?;
     loaded_world.split_item(255, 24, 19, 1, 1)?;
@@ -297,7 +307,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -421,6 +431,8 @@ async fn seed_inventory_edge_fixture(character_pool: &MySqlPool, guid: u32) -> a
     for (item_guid, bag, slot, item_template, count) in [
         (base_guid, 0u32, 19u8, 4496u32, 1u32),
         (base_guid + 1, 19u32, 0u8, 6948u32, 1u32),
+        (base_guid + 2, 0u32, 27u8, 117u32, 3u32),
+        (base_guid + 3, 19u32, 2u8, 117u32, 4u32),
     ] {
         sqlx::query(
             "INSERT INTO item_instance \
@@ -1304,6 +1316,27 @@ impl WorldClient {
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after inventory move, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
+    fn swap_item(
+        &mut self,
+        src_bag: u8,
+        src_slot: u8,
+        dst_bag: u8,
+        dst_slot: u8,
+    ) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_SWAP_ITEM,
+            &[dst_bag, dst_slot, src_bag, src_slot],
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after item swap, got 0x{opcode:04X}"
         );
         Ok(())
     }

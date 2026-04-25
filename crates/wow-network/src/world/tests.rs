@@ -883,7 +883,7 @@ fn parses_backpack_inventory_move_packets() {
             dst_slot: 24,
         }
     );
-    assert!(swap_inv.is_supported_bag0_move());
+    assert!(swap_inv.is_supported_inventory_move());
 
     let swap_item = InventoryMoveRequest::read(
         CMSG_SWAP_ITEM,
@@ -904,7 +904,7 @@ fn parses_backpack_inventory_move_packets() {
             dst_slot: 25,
         }
     );
-    assert!(swap_item.is_supported_bag0_move());
+    assert!(swap_item.is_supported_inventory_move());
 }
 
 #[test]
@@ -919,9 +919,38 @@ fn parses_equipment_inventory_move_packets() {
             dst_slot: 26,
         }
     );
-    assert!(unequip.is_supported_bag0_move());
+    assert!(unequip.is_supported_inventory_move());
     assert!(item_fits_equipment_slot(4, 3));
     assert!(!item_fits_equipment_slot(4, 15));
+}
+
+#[test]
+fn parses_bag_container_inventory_move_packets() {
+    let into_bag =
+        InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[19, 0, CLIENT_INVENTORY_SLOT_BAG_0, 24])
+            .unwrap();
+    assert_eq!(
+        into_bag,
+        InventoryMoveRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: 24,
+            dst_bag: 19,
+            dst_slot: 0,
+        }
+    );
+    assert!(into_bag.is_supported_inventory_move());
+
+    let within_bag = InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[19, 1, 19, 0]).unwrap();
+    assert_eq!(
+        within_bag,
+        InventoryMoveRequest {
+            src_bag: 19,
+            src_slot: 0,
+            dst_bag: 19,
+            dst_slot: 1,
+        }
+    );
+    assert!(within_bag.is_supported_inventory_move());
 }
 
 #[test]

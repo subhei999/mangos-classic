@@ -275,10 +275,17 @@ Detailed path:
      updates, and refreshes equipment cache when an equipped item is destroyed.
      `test-world-flow.cmd` proves partial hearthstone destroy, split into bag
      slot 19:1, bag-contained destroys, no-destroy rejection for equipped shirt
-     `38`, and full equipped destroy. Generic bag-container moves, stack
-     merging, full new-item create/update fidelity for real-client split
-     visuals, durability, and full class/race/equipment validation remain
-     future Inventory v1 slices.
+     `38`, and full equipped destroy. Full new-item create/update fidelity for
+     real-client split visuals, durability, and full class/race/equipment
+     validation remain future Inventory v1 slices.
+   - Current status: generic bag-container movement and simple stack merge are
+     implemented for supported storage positions via `CMSG_SWAP_ITEM`. Rust
+     persists backpack-to-equipped-bag moves, bag-internal moves, and
+     same-template stack merges in `character_inventory` / `item_instance`.
+     `test-world-flow.cmd` proves moving source-backed Tough Jerky `117` from
+     backpack slot 27 into bag 19:3, moving it within bag 19, and merging it
+     into an existing bag stack. Full client-visible container slot update
+     fidelity remains tracked separately from the DB slice.
 9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.

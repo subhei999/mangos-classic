@@ -844,6 +844,22 @@ fn build_inventory_slots_update_body(
 }
 
 fn build_item_stack_count_update_body(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
+    build_item_stack_counts_update_body(&[(item_guid, count)])
+}
+
+fn build_item_stack_counts_update_body(items: &[(u32, u32)]) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    body.push(0);
+
+    for (item_guid, count) in items {
+        body.extend_from_slice(&build_item_stack_count_update_block(*item_guid, *count)?);
+    }
+
+    Ok(body)
+}
+
+fn build_item_stack_count_update_block(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
     let item_guid = ObjectGuid::new(HighGuid::Item, 0, item_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -853,11 +869,7 @@ fn build_item_stack_count_update_body(item_guid: u32, count: u32) -> anyhow::Res
     set_update_value(&mut values, 0x00E, count)?;
     write_update_values(&mut block, &values)?;
 
-    let mut body = Vec::with_capacity(5 + block.len());
-    body.extend_from_slice(&1u32.to_le_bytes());
-    body.push(0);
-    body.extend_from_slice(&block);
-    Ok(body)
+    Ok(block)
 }
 
 fn build_destroy_object_body(item_guid: u32) -> Vec<u8> {

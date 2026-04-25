@@ -474,35 +474,42 @@ async fn handle_inventory_swap(
         return Ok(());
     };
 
-    if !move_request.is_supported_bag0_move() {
+    if !move_request.is_supported_inventory_move() {
         info!(
             opcode = inventory_opcode_name(opcode),
             src_bag = move_request.src_bag,
             src_slot = move_request.src_slot,
             dst_bag = move_request.dst_bag,
             dst_slot = move_request.dst_slot,
-            "Ignoring unsupported inventory move outside bag-0 equipment/backpack slots"
+            "Ignoring unsupported inventory move outside bag-0 or equipped bag storage"
         );
         return Ok(());
     }
 
-    if move_request.src_slot == move_request.dst_slot {
+    if move_request.src_bag == move_request.dst_bag && move_request.src_slot == move_request.dst_slot {
         return Ok(());
     }
 
-    if move_request.dst_slot < EQUIPMENT_SLOT_END {
-        let Some(src_item) = session.inventory.iter().find(|item| {
-            item.bag == move_request.src_bag as u32 && item.slot == move_request.src_slot
-        }) else {
-            warn!(
-                opcode = inventory_opcode_name(opcode),
-                guid = character_guid,
-                src_slot = move_request.src_slot,
-                dst_slot = move_request.dst_slot,
-                "Rejected inventory move without source item"
-            );
-            return Ok(());
-        };
+    let Some(src_item) = session
+        .inventory
+        .iter()
+        .find(|item| item.bag == move_request.src_bag as u32 && item.slot == move_request.src_slot)
+    else {
+        warn!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            src_bag = move_request.src_bag,
+            src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
+            dst_slot = move_request.dst_slot,
+            "Rejected inventory move without source item"
+        );
+        return Ok(());
+    };
+
+    if move_request.dst_bag == INVENTORY_SLOT_BAG_0
+        && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot))
+    {
         let Some(template) =
             wow_db::get_item_template_query(world_db_pool, src_item.item_template).await?
         else {
@@ -514,44 +521,107 @@ async fn handle_inventory_swap(
             );
             return Ok(());
         };
-        if !item_fits_equipment_slot(template.inventory_type, move_request.dst_slot) {
+        let fits_destination = if move_request.dst_slot < EQUIPMENT_SLOT_END {
+            item_fits_equipment_slot(template.inventory_type, move_request.dst_slot)
+        } else {
+            template.container_slots > 0
+        };
+        if !fits_destination {
             info!(
                 opcode = inventory_opcode_name(opcode),
                 guid = character_guid,
                 item_template = src_item.item_template,
                 inventory_type = template.inventory_type,
                 dst_slot = move_request.dst_slot,
-                "Rejected equip move for incompatible slot"
+                "Rejected inventory move for incompatible equipment/bag slot"
             );
             return Ok(());
         }
     }
 
-    let moved = wow_db::swap_character_inventory_slots(
+    if move_request.src_bag == INVENTORY_SLOT_BAG_0
+        && is_bag_slot(move_request.src_slot)
+        && !is_bag_slot(move_request.dst_slot)
+        && session
+            .inventory
+            .iter()
+            .any(|item| item.bag == move_request.src_slot as u32)
+    {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            src_slot = move_request.src_slot,
+            "Rejected moving non-empty equipped bag into non-bag storage"
+        );
+        return Ok(());
+    }
+
+    let dst_item = session
+        .inventory
+        .iter()
+        .find(|item| item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot);
+    let max_stack = if let Some(dst_item) = dst_item.filter(|item| {
+        item.item_template == src_item.item_template && item.item != src_item.item
+    }) {
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, dst_item.item_template).await?
+        else {
+            return Ok(());
+        };
+        Some(template.stackable)
+    } else {
+        None
+    };
+
+    let moved = wow_db::swap_character_inventory_slots_with_stack(
         character_db_pool,
         character_guid,
         move_request.src_bag as u32,
         move_request.src_slot,
         move_request.dst_bag as u32,
         move_request.dst_slot,
+        max_stack,
     )
     .await?;
-    if !moved {
+    let Some(moved) = moved else {
         warn!(
             opcode = inventory_opcode_name(opcode),
             guid = character_guid,
+            src_bag = move_request.src_bag,
             src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
             dst_slot = move_request.dst_slot,
             "Rejected inventory move without source item"
         );
         return Ok(());
-    }
+    };
 
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
         .await?;
-    let changed_slots = [move_request.src_slot, move_request.dst_slot];
-    let body = build_inventory_slots_update_body(character_guid, &session.inventory, &changed_slots)?;
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+    match moved {
+        wow_db::InventoryMoveResult::Swapped => {
+            let changed_slots = bag0_changed_slots(&move_request);
+            let body =
+                build_inventory_slots_update_body(character_guid, &session.inventory, &changed_slots)?;
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+        }
+        wow_db::InventoryMoveResult::Merged {
+            source_item,
+            source_count,
+            destination_item,
+            destination_count,
+        } => {
+            let body = if let Some(source_count) = source_count {
+                build_item_stack_counts_update_body(&[
+                    (source_item, source_count),
+                    (destination_item, destination_count),
+                ])?
+            } else {
+                build_item_stack_count_update_body(destination_item, destination_count)?
+            };
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+        }
+    }
 }
 
 async fn handle_destroy_item(
@@ -786,11 +856,9 @@ impl InventoryMoveRequest {
         }))
     }
 
-    fn is_supported_bag0_move(&self) -> bool {
-        self.src_bag == INVENTORY_SLOT_BAG_0
-            && self.dst_bag == INVENTORY_SLOT_BAG_0
-            && is_equipment_or_backpack_slot(self.src_slot)
-            && is_equipment_or_backpack_slot(self.dst_slot)
+    fn is_supported_inventory_move(&self) -> bool {
+        is_supported_move_position(self.src_bag, self.src_slot)
+            && is_supported_move_position(self.dst_bag, self.dst_slot)
     }
 }
 
@@ -864,13 +932,26 @@ fn is_bag_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).contains(&slot)
 }
 
-fn is_equipment_or_backpack_slot(slot: u8) -> bool {
-    slot < EQUIPMENT_SLOT_END || is_backpack_item_slot(slot)
-}
-
 fn is_supported_storage_position(bag: u8, slot: u8) -> bool {
     (bag == INVENTORY_SLOT_BAG_0 && slot < INVENTORY_SLOT_ITEM_END)
         || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
+}
+
+fn is_supported_move_position(bag: u8, slot: u8) -> bool {
+    (bag == INVENTORY_SLOT_BAG_0
+        && (slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot)))
+        || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
+}
+
+fn bag0_changed_slots(request: &InventoryMoveRequest) -> Vec<u8> {
+    let mut slots = Vec::with_capacity(2);
+    if request.src_bag == INVENTORY_SLOT_BAG_0 {
+        slots.push(request.src_slot);
+    }
+    if request.dst_bag == INVENTORY_SLOT_BAG_0 && request.dst_slot != request.src_slot {
+        slots.push(request.dst_slot);
+    }
+    slots
 }
 
 fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {

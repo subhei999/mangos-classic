@@ -140,6 +140,17 @@ pub enum InventoryDestroyResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryMoveResult {
+    Swapped,
+    Merged {
+        source_item: u32,
+        source_count: Option<u32>,
+        destination_item: u32,
+        destination_count: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventorySplitResult {
     pub source_item: u32,
     pub source_count: u32,
@@ -927,32 +938,97 @@ pub async fn swap_character_inventory_slots(
     src_slot: u8,
     dst_bag: u32,
     dst_slot: u8,
-) -> Result<bool, DbError> {
-    let src_item: Option<u32> = sqlx::query_scalar(
-        "SELECT item FROM character_inventory \
-         WHERE guid = ? AND bag = ? AND slot = ?",
+) -> Result<Option<InventoryMoveResult>, DbError> {
+    swap_character_inventory_slots_with_stack(
+        pool, guid, src_bag, src_slot, dst_bag, dst_slot, None,
+    )
+    .await
+}
+
+pub async fn swap_character_inventory_slots_with_stack(
+    pool: &MySqlPool,
+    guid: u32,
+    src_bag: u32,
+    src_slot: u8,
+    dst_bag: u32,
+    dst_slot: u8,
+    max_stack: Option<u32>,
+) -> Result<Option<InventoryMoveResult>, DbError> {
+    let src_item: Option<(u32, u32, u32)> = sqlx::query_as(
+        "SELECT ci.item, ci.item_template, ii.count FROM character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         WHERE ci.guid = ? AND ci.bag = ? AND ci.slot = ? AND ii.owner_guid = ?",
     )
     .bind(guid)
     .bind(src_bag)
     .bind(src_slot)
+    .bind(guid)
     .fetch_optional(pool)
     .await?;
 
-    let Some(src_item) = src_item else {
-        return Ok(false);
+    let Some((src_item, src_template, src_count)) = src_item else {
+        return Ok(None);
     };
 
-    let dst_item: Option<u32> = sqlx::query_scalar(
-        "SELECT item FROM character_inventory \
-         WHERE guid = ? AND bag = ? AND slot = ?",
+    let dst_item: Option<(u32, u32, u32)> = sqlx::query_as(
+        "SELECT ci.item, ci.item_template, ii.count FROM character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         WHERE ci.guid = ? AND ci.bag = ? AND ci.slot = ? AND ii.owner_guid = ?",
     )
     .bind(guid)
     .bind(dst_bag)
     .bind(dst_slot)
+    .bind(guid)
     .fetch_optional(pool)
     .await?;
 
-    if let Some(dst_item) = dst_item {
+    if let Some((dst_item, dst_template, dst_count)) = dst_item {
+        if src_template == dst_template {
+            if let Some(max_stack) = max_stack.filter(|max_stack| *max_stack > 1) {
+                if dst_count < max_stack {
+                    let move_count = src_count.min(max_stack - dst_count);
+                    let new_dst_count = dst_count + move_count;
+                    let new_src_count = src_count - move_count;
+                    sqlx::query(
+                        "UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?",
+                    )
+                    .bind(new_dst_count)
+                    .bind(dst_item)
+                    .bind(guid)
+                    .execute(pool)
+                    .await?;
+                    let source_count = if new_src_count == 0 {
+                        sqlx::query("DELETE FROM character_inventory WHERE item = ? AND guid = ?")
+                            .bind(src_item)
+                            .bind(guid)
+                            .execute(pool)
+                            .await?;
+                        sqlx::query("DELETE FROM item_instance WHERE guid = ? AND owner_guid = ?")
+                            .bind(src_item)
+                            .bind(guid)
+                            .execute(pool)
+                            .await?;
+                        None
+                    } else {
+                        sqlx::query(
+                            "UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?",
+                        )
+                        .bind(new_src_count)
+                        .bind(src_item)
+                        .bind(guid)
+                        .execute(pool)
+                        .await?;
+                        Some(new_src_count)
+                    };
+                    return Ok(Some(InventoryMoveResult::Merged {
+                        source_item: src_item,
+                        source_count,
+                        destination_item: dst_item,
+                        destination_count: new_dst_count,
+                    }));
+                }
+            }
+        }
         sqlx::query("UPDATE character_inventory SET bag = ?, slot = ? WHERE guid = ? AND item = ?")
             .bind(src_bag)
             .bind(src_slot)
@@ -972,7 +1048,7 @@ pub async fn swap_character_inventory_slots(
 
     refresh_character_equipment_cache(pool, guid).await?;
 
-    Ok(true)
+    Ok(Some(InventoryMoveResult::Swapped))
 }
 
 pub async fn destroy_character_inventory_item(

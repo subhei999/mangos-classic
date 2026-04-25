@@ -18,7 +18,7 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the Inventory v1 stack/bag destroy extension.
+- Worktree: expected clean after the Inventory v1 bag move/merge extension.
 
 ## Current Goal
 
@@ -84,6 +84,10 @@ Current Checkpoint 1 focus:
   partial hearthstone destroy, split into bag slot 19:1, bag-contained destroys,
   no-destroy rejection for equipped shirt `38`, and full equipped destroy still
   clears both DB state and `equipmentCache`.
+- Extended Inventory v1 generic `CMSG_SWAP_ITEM` handling to backpack/equipped
+  bag storage positions. Rust now persists backpack-to-bag moves, bag-internal
+  moves, and simple same-template stack merges using source-backed Tough Jerky
+  `117` in the Docker world-flow fixture.
 
 ## Tests Last Run
 
@@ -105,9 +109,10 @@ Notes:
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
 - `test-world-flow.cmd` result: auth session, create/delete happy path,
   negative create/delete cases, loaded/guild leader rejection, backpack item
-  move persistence, equip/unequip persistence, destroy guardrails, partial
-  destroy, split, bag-contained destroy persistence, guild/group/social/pet/
-  mail/auction cleanup, COD mail return, enum/count refresh.
+  move persistence, equip/unequip persistence, bag-contained moves, stack
+  merge, destroy guardrails, partial destroy, split, bag-contained destroy
+  persistence, guild/group/social/pet/mail/auction cleanup, COD mail return,
+  enum/count refresh.
 
 ## Local Environment Notes
 
@@ -159,6 +164,8 @@ GitHub issues are the source of truth:
 - #14 `[Rust Rewrite][P2][Equipment] Starter character cannot cast Heroic Strike: melee weapon not equipped`
 - #15 `[Rust Rewrite][P2][Inventory] Custom starter item templates are absent from Docker world fixture`
 - #16 `[Rust Rewrite][P2][Inventory] Split item updates lack full client-visible destination create fidelity`
+- #17 `[Rust Rewrite][P2][NPC] Hearthstone replacement from innkeepers is not implemented`
+- #18 `[Rust Rewrite][P2][Inventory] Bag-container moves lack full container slot update fidelity`
 
 Full DB-backed loot, item/money persistence, death/respawn, XP, and combat
 timing remain covered by #12. Full spellbook validation, Heroic Strike
@@ -172,6 +179,9 @@ by #15; the current inventory move harness uses source-backed hearthstone
 Full client-visible destination item/container updates after `CMSG_SPLIT_ITEM`
 are covered by #16; the current slice proves DB persistence and source stack
 count updates.
+Hearthstone is destroyable in source data and later innkeeper replacement is
+covered by #17. Full client-visible container slot updates for generic bag moves
+and stack merges are covered by #18; the current slice proves DB persistence.
 
 ## Known Blockers And Gaps
 
@@ -188,21 +198,22 @@ count updates.
   starter-item equip/unequip path for equipment slots 3, 6, 7, 15, and 16,
   full/partial destroy for present bag-0 backpack/equipment items, no-user-
   destroy rejection, simple split into an empty supported slot, and destroying
-  items stored inside equipped bag slots 19-22. Generic bag-container moves,
-  stack merging, full new-item create/update fidelity for real-client split
-  visuals, durability changes, broader equipment rules, and full item-template/
-  class/race validation remain future slices.
+  items stored inside equipped bag slots 19-22. It also supports DB-backed
+  backpack-to-bag moves, bag-internal moves, and simple same-template stack
+  merges. Full client-visible container/split update fidelity, durability
+  changes, broader equipment rules, and full item-template/class/race
+  validation remain future slices.
 - Broader world gameplay remains skeletal: movement persistence works, but
   validation, visibility, fuller spells, loot, vendors/trainers, quests, and
   multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-Real-client smoke the stack/bag destroy extension: partial destroy a stack,
-split it into a bag slot, destroy bag-contained items, and verify logout/relog
-state. Then continue Inventory v1 with generic bag-container moves and stack
-merge behavior using CMaNGOS `ItemHandler.cpp` and `Player.cpp` as the
-reference.
+Continue Inventory v1 packet fidelity for bag containers: build proper
+container-aware item create/update blocks for split destinations, bag-contained
+moves, and stack merges using CMaNGOS `ItemHandler.cpp`, `Player.cpp`, and
+`UpdateFields.h` as the reference. Then real-client smoke bag visuals plus
+logout/relog persistence.
 
 ## Key Files
 

@@ -18,10 +18,11 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest committed base before this slice: `fe3a51cb8 Cover starter spell and item audits`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: contains uncommitted #34-#38 guardrail edits in
-  `crates/wow-network/src/world/tests.rs`,
-  `crates/wow-network/src/world/interactions.rs`, and
-  `bins/world-flow-test/src/main.rs`.
+- Worktree at handoff: contains uncommitted Checkpoint 1 grading/guardrail
+  edits plus the candidate #13 Raptor Strike slice in
+  `crates/wow-network/src/world/{mod.rs,bootstrap.rs,interactions.rs,tests.rs}`,
+  `crates/wow-db/src/character.rs`, `docs/rust_migration_plan.md`,
+  `docs/session_handoff.md`, and `scripts/run-client-stack-18085.ps1`.
 
 ## Current Goal
 
@@ -40,8 +41,49 @@ Do not chase unrelated horizontal parity issues. For any non-blocking bug,
 mismatch, missing subsystem, or cleanup gap you discover, create a GitHub issue
 using the repo's bug triage policy, then continue the requested task.
 
+Checkpoint 1 now has a durable definition of done in
+`docs/rust_migration_plan.md`: close it only after the required automated gate
+passes and the real-client grading table has no unresolved `FAIL` rows. Future
+"what is left" answers should grade against that table instead of inventing a
+new open-ended checklist.
+
+Current Checkpoint 1 grade: `PARTIAL`, roughly 65-70% complete. The checkpoint
+is no longer blocked by the previous `Combat/spell` FAIL: active Night Elf
+Hunter starter spell `2973` now works in the real client through the Rust
+fixture path. The checkpoint still needs the remaining explicit grading gaps
+closed or deferred before it is closeable.
+
 ## What Changed Recently
 
+- Added a Checkpoint 1 definition of done and real-client grading pass to
+  `docs/rust_migration_plan.md`, including required automated scripts, pass /
+  partial / fail / deferred semantics, and closure rules for logged follow-up
+  issues.
+- Real-client grading found a character-list blocker caused by accumulated
+  local `RUSTAUTH` smoke characters. `scripts/run-client-stack-18085.ps1` now
+  resets the local grading account's character rows and common per-character
+  state before seeding `Rustone`, so future manual passes start from one clean
+  seeded character.
+- Real-client grading found Night Elf female Hunter starter boots rendering as
+  pants because archived missing item `129` was translated to pants item `147`.
+  Rust now translates item `129` to source-backed `Trapper's Boots` `6127`,
+  and `wow-db` tests assert Dwarf/Night Elf Hunter boot slots use `6127`.
+- Real-client grading found the `Combat/spell` gate is still failing: Night
+  Elf Hunter starter spell `2973` was active in `character_spell`, but Rust
+  logged `Ignoring unsupported spell cast in starter spell fixture slice`. #13
+  was updated with this evidence and should drive the next narrow spell/combat
+  slice.
+- Real-client grading found `/hello` has audio/text feedback but no physical
+  wave animation. Logged as #43 P3 emote visual parity; do not block the
+  current spell/combat slice on it.
+- Candidate #13 fix added: Rust now loads active character spells into the
+  world session on login, validates fixture spell casts against that active
+  set, supports Hunter Raptor Strike rank 1 (`2973`) alongside Warrior Heroic
+  Strike rank 1 (`78`), sends `SMSG_CAST_RESULT` / `SMSG_SPELL_GO`, applies
+  fixture dummy damage, and updates mana (`UNIT_FIELD_POWER1`) or rage
+  (`UNIT_FIELD_POWER2`) as appropriate.
+- Real-client retest confirmed Raptor Strike works in the WoW 1.12.1 client.
+  The old ignored-spell blocker for `2973` is cleared for Checkpoint 1.
 - Inventory v1 supports backpack moves, equip/unequip, destroy, partial
   destroy, split, equipped-bag storage positions, bag-internal moves, and simple
   same-template stack merges, with DB persistence and packet-harness coverage.
@@ -149,6 +191,10 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network s
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network stack_merge_update -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network unknown_db_creature -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network invalid_db_vendor_gossip -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-db starter_item_template_refs_replace_archived_custom_ids -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network raptor_strike -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network player_mana_update -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 git diff --check
@@ -156,11 +202,39 @@ git diff --check
 
 Focused #34 split packet test passed. Focused #35 equipped-bag packet tests
 passed. Focused #36 stack-merge, #37 unknown creature query, and #38 invalid
-DB gossip tests passed. `test-rust.cmd` passed with 87 `wow-network` tests and
-10 `wow-db` tests. Elevated `test-world-flow.cmd` passed with the DB gossip
-invalid-option guard. `git diff --check` passed with only the known LF-to-CRLF
-working-copy warning. `cargo fmt` passed with the existing `could not
-canonicalize path C:\Users\subhe` warning.
+DB gossip tests passed. Focused `wow-db` archived starter replacement test
+passed after the `129` -> `6127` boots fix. `test-rust.cmd` passed with 87
+`wow-network` tests and 10 `wow-db` tests after stopping the manual auth/world
+processes that were locking `authserver.exe`. Elevated `test-world-flow.cmd`
+passed after the starter boots fix. `git diff --check` passed with only the
+known LF-to-CRLF working-copy warning. `cargo fmt` passed with the existing
+`could not canonicalize path C:\Users\subhe` warning.
+
+Latest local verification after the Raptor Strike candidate fix:
+
+- `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`
+  warning.
+- `cargo test -p wow-network raptor_strike -- --nocapture` passed.
+- `cargo test -p wow-network player_mana_update -- --nocapture` passed.
+- `cargo test -p wow-network -- --nocapture` passed with 91 tests.
+- First `test-rust.cmd` rerun hit the known local stale-process lock on
+  `target\debug\authserver.exe`; stopping local `authserver.exe` /
+  `worldserver.exe` fixed it, and the second `test-rust.cmd` passed.
+- Default `test-world-flow.cmd` lacked Docker access; elevated
+  `test-world-flow.cmd` passed.
+- `git diff --check` passed with only normal LF-to-CRLF working-copy warnings.
+
+Checkpoint 1 closure gate, 2026-04-25:
+
+- `.\scripts\test-rust.cmd` passed with 91 `wow-network` tests and 10
+  `wow-db` tests.
+- Default `.\scripts\test-auth-flow.cmd` lacked Docker access; elevated retry
+  initially found stale local `authserver.exe` / `worldserver.exe` processes on
+  the test ports. After stopping those, elevated `test-auth-flow.cmd` passed.
+- Default `.\scripts\test-character-lifecycle.cmd` lacked Docker access;
+  elevated `test-character-lifecycle.cmd` passed.
+- Default `.\scripts\test-world-flow.cmd` lacked Docker access; elevated
+  `test-world-flow.cmd` passed.
 
 Notes:
 
@@ -183,10 +257,36 @@ Last reported manual smoke: user confirmed the real-client world, combat dummy,
 fixture loot/vendor, inventory, starter Skills UI, character pane, and map
 gates are good enough to continue Checkpoint 1.
 
+Current grading pass, 2026-04-25:
+
+| Gate | Grade | Evidence / next action |
+| --- | --- | --- |
+| Auth and realm list | PASS | Real client logged in with `RUSTAUTH` and reached the Rust realm. |
+| Character screen | PASS | First pass failed because stale local smoke characters made Rust send `SMSG_CHAR_ENUM count=11`; fixed by resetting the grading fixture, then retest looked good. |
+| Character create/select/delete | PASS | User confirmed the remaining row looks good. |
+| Enter world and relog | PASS | User confirmed the remaining row looks good. |
+| Race/gender display ids | PASS | Night Elf female Hunter rendered correctly after starter boots fix. |
+| Starter state | PARTIAL | Boots bug fixed by mapping archived item `129` to `6127`; Raptor Strike works, but broad starter spell coverage remains future parity outside the current gate. |
+| Startup packet quietness | PARTIAL | No fatal loop reported; needs final log review after the spell/combat slice. |
+| Movement | PASS | Logs show walk/turn/jump/fall/land/heartbeat packets parsed without disconnect. |
+| Chat/emote | PARTIAL | `/hello` audio/text works, but no physical wave animation; #43 tracks non-blocking visual parity. |
+| NPC visibility/query | PASS | User confirmed NPC interaction with Rust Guide and Rust DB Guide is good. |
+| Gossip/vendor/trainer | DEFERRED for trainer | Rust Guide and Rust DB Guide interactions are good; trainer is deferred to #39 because meaningful trainer testing needs leveling/trainer-learning context. |
+| Inventory and equipment | PASS | User confirmed the remaining row looks good. |
+| Combat/spell | PASS | Real-client retest confirmed active Hunter spell `2973` / Raptor Strike works on the Rust stack. |
+| Loot | PASS | User confirmed the remaining row looks good. |
+| Death/respawn | DEFERRED | Player-character death/respawn is deferred to #44; NPC death/loot is covered by the combat dummy fixture. |
+| Final fresh-character demo | PASS | User said OK after Raptor Strike and remaining-row review; trainer and player death/respawn are explicitly deferred to #39/#44. |
+
 Next manual smoke should verify:
 
 - Launch `scripts/run-client-stack-18085.cmd`.
 - Login, create/select a character, enter world, move, and confirm logout/relog.
+- Recreate a Night Elf female Hunter and confirm the boots slot renders
+  Trapper's Boots instead of pants.
+- Run the required automated gate for Checkpoint 1 closure and record final
+  results: `test-rust.cmd`, `test-auth-flow.cmd`,
+  `test-character-lifecycle.cmd`, and `test-world-flow.cmd`.
 - Open the character pane and Skills UI; confirm armor/damage/block/crit/dodge
   and starter skills look sane and there is no disconnect.
 
@@ -218,6 +318,10 @@ exploration discovery/persistence remains under #22.
 
 ## Known Blockers And Gaps
 
+- Previous Checkpoint 1 blocker cleared: Raptor Strike (`2973`) now works in
+  the real client. Trainer is deferred to #39. Player death/respawn is deferred
+  to #44. No grading-table row remains ungraded; Checkpoint 1 closure now needs
+  the required automated gate rerun and final bookkeeping.
 - Fixture NPC gossip/combat/loot remain hardcoded or fixture-only pending #11
   and #12; DB-backed creature spawns/query and vendor lists exist, but DB-backed
   gossip, trainers, loot tables, XP, respawn, and full vendor rules do not yet.
@@ -235,13 +339,11 @@ exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-For unattended overnight work, continue after #38 in numeric issue order. #31,
-#32, and #33 are closed; #34-#36 have packet-shape coverage but still want
-real-client visual smoke before closing #16/#18. Do not require real-client
-visual testing overnight; leave the `scripts/run-client-stack-18085.cmd` smoke
-pass for morning. Start with the smallest issue slice available, run focused
-packet/DB tests first, and use `test-rust.cmd` / `test-world-flow.cmd` when
-practical for Rust world-flow changes.
+Continue Checkpoint 1 closure from the grading table, not broad feature work.
+Checkpoint 1 is ready for commit/PR packaging from the grading-table and
+automated-gate perspective. Next, review the uncommitted diff, decide whether
+to split commits, then publish the closure slice with trainer deferred to #39
+and player death/respawn deferred to #44.
 
 ## Key Files
 

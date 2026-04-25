@@ -4,6 +4,7 @@ struct EnterWorldBootstrap<'a> {
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
     world_stats: &'a PlayerWorldStats,
+    spells: &'a [CharacterSpell],
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
 }
@@ -23,9 +24,7 @@ async fn send_enter_world_bootstrap(
         header_crypto.as_deref_mut(),
     )
     .await?;
-    let spells =
-        wow_db::get_character_spells(bootstrap.character_db_pool, bootstrap.character.guid).await?;
-    send_initial_spells(stream, &spells, header_crypto.as_deref_mut()).await?;
+    send_initial_spells(stream, bootstrap.spells, header_crypto.as_deref_mut()).await?;
     let actions =
         wow_db::get_character_actions(bootstrap.character_db_pool, bootstrap.character.guid)
             .await?;

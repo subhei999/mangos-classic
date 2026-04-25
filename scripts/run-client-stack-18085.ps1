@@ -90,6 +90,36 @@ $sql = "UPDATE realmlist SET address='127.0.0.1', port=$WorldPort WHERE id=1;"
 Invoke-Checked docker @("exec", "cmangos-rust-realmd", "mariadb", "-umangos", "-pmangos", "realmd", "-e", $sql)
 
 $seedCharacterSql = @"
+DROP TEMPORARY TABLE IF EXISTS rust_client_account_chars;
+CREATE TEMPORARY TABLE rust_client_account_chars
+    SELECT guid
+    FROM characters.characters
+    WHERE account = (SELECT id FROM realmd.account WHERE username = 'RUSTAUTH');
+
+DELETE FROM characters.character_account_data WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_action WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_aura WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_battleground_data WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_gifts WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_homebind WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_honor_cp WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_instance WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_inventory WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_pet WHERE owner IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_queststatus WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_queststatus_weekly WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_reputation WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_skills WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_social WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_spell WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_spell_cooldown WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_stats WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.character_tutorial WHERE account = (SELECT id FROM realmd.account WHERE username = 'RUSTAUTH');
+DELETE FROM characters.mail_items WHERE receiver IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.mail WHERE receiver IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.item_instance WHERE owner_guid IN (SELECT guid FROM rust_client_account_chars);
+DELETE FROM characters.characters WHERE guid IN (SELECT guid FROM rust_client_account_chars);
+
 INSERT INTO characters.characters
     (guid, account, name, race, class, gender, level, zone, map, position_x, position_y, position_z, playerBytes, playerBytes2, equipmentCache)
 SELECT 1, id, 'Rustone', 1, 1, 0, 1, 12, 0, -8949.95, -132.493, 83.5312, 0, 0, ''
@@ -100,8 +130,10 @@ ON DUPLICATE KEY UPDATE account = VALUES(account), name = VALUES(name);
 INSERT INTO realmd.realmcharacters (realmid, acctid, numchars)
 SELECT 1, id, 1 FROM realmd.account WHERE username = 'RUSTAUTH'
 ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
+
+DROP TEMPORARY TABLE rust_client_account_chars;
 "@
-Invoke-MariaDb "" $seedCharacterSql
+Invoke-MariaDb "characters" $seedCharacterSql
 
 $seedCreatureSql = @"
 DROP TEMPORARY TABLE IF EXISTS rust_client_creature_template;

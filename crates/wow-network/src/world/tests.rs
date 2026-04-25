@@ -636,6 +636,38 @@ fn heroic_strike_fixture_damage_marks_attacker_state_spell_id() {
 }
 
 #[test]
+fn raptor_strike_fixture_damage_marks_attacker_state_spell_id() {
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let victim = rust_combat_dummy_guid();
+    let state = build_attacker_state_update_body_with_spell_id(
+        attacker,
+        victim,
+        RAPTOR_STRIKE_FIXTURE_DAMAGE,
+        HUNTER_RAPTOR_STRIKE_RANK_1,
+    )
+    .unwrap();
+    let mut cursor = 0;
+    assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
+    cursor += PackedGuid::packed_size(attacker) + PackedGuid::packed_size(victim);
+    assert_eq!(
+        read_u32(&state, &mut cursor).unwrap(),
+        RAPTOR_STRIKE_FIXTURE_DAMAGE
+    );
+    cursor += 1; // damage school count
+    cursor += 4; // normal school
+    cursor += 4; // float damage
+    cursor += 4; // integer damage
+    cursor += 4; // absorb
+    cursor += 4; // resist
+    cursor += 4; // victim state
+    cursor += 4; // unknown
+    assert_eq!(
+        read_u32(&state, &mut cursor).unwrap(),
+        HUNTER_RAPTOR_STRIKE_RANK_1
+    );
+}
+
+#[test]
 fn combat_dummy_state_update_sets_health_and_dynamic_flags() {
     let body = build_combat_dummy_state_update_body(20, UNIT_DYNFLAG_LOOTABLE).unwrap();
     let packed_guid_mask = body[6];
@@ -661,6 +693,20 @@ fn player_rage_update_sets_warrior_power_field() {
     assert_eq!(body[4], 0);
     assert_eq!(body[5], UPDATE_TYPE_VALUES);
     assert_eq!(values[UNIT_FIELD_POWER2], Some(HEROIC_STRIKE_RAGE_COST));
+}
+
+#[test]
+fn player_mana_update_sets_mana_power_field() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_mana_update_body(player, 42).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+    assert_eq!(body[5], UPDATE_TYPE_VALUES);
+    assert_eq!(values[UNIT_FIELD_POWER1], Some(42));
 }
 
 #[test]
@@ -808,6 +854,29 @@ fn combat_session_tracks_active_dummy_target_and_loot_state() {
     assert!(!session.combat_dummy_lootable);
     assert!(!session.combat_dummy_looting);
     assert_eq!(session.player_rage, 0);
+}
+
+#[test]
+fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
+    assert_eq!(
+        supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1),
+        Some(SupportedStarterSpell {
+            damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            power: StarterSpellPower::Rage {
+                cost: HEROIC_STRIKE_RAGE_COST
+            },
+        })
+    );
+    assert_eq!(
+        supported_starter_spell(HUNTER_RAPTOR_STRIKE_RANK_1),
+        Some(SupportedStarterSpell {
+            damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
+            power: StarterSpellPower::Mana {
+                cost: RAPTOR_STRIKE_MANA_COST
+            },
+        })
+    );
+    assert_eq!(supported_starter_spell(1), None);
 }
 
 #[test]
@@ -2237,6 +2306,46 @@ fn starter_spell_packets_match_cmangos_success_shapes() {
         rust_combat_dummy_guid()
     );
     assert_eq!(cursor, go.len());
+}
+
+#[test]
+fn raptor_strike_starter_spell_packets_match_success_shapes() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let target = rust_combat_dummy_guid();
+    let targets = normalize_fixture_spell_targets(SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+        unit_target: Some(target),
+    });
+
+    let result = build_cast_result_ok_body(HUNTER_RAPTOR_STRIKE_RANK_1);
+    assert_eq!(&result[0..4], &HUNTER_RAPTOR_STRIKE_RANK_1.to_le_bytes());
+    assert_eq!(result[4], 0);
+
+    let go = build_spell_go_body(caster, HUNTER_RAPTOR_STRIKE_RANK_1, &targets).unwrap();
+    let mut cursor = 0;
+    cursor += PackedGuid::packed_size(caster) * 2;
+    assert_eq!(
+        read_u32(&go, &mut cursor).unwrap(),
+        HUNTER_RAPTOR_STRIKE_RANK_1
+    );
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_GO
+    );
+    cursor += 2;
+    assert_eq!(go[cursor], 1);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(go[cursor..cursor + 8].try_into().unwrap()),
+        target.raw()
+    );
+    cursor += 8;
+    assert_eq!(go[cursor], 0);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_UNIT
+    );
 }
 
 #[test]

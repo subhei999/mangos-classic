@@ -1909,7 +1909,7 @@ const fn item(item_id: u32, slot: u8, amount: u32) -> StarterItem {
 
 const fn source_backed_starter_item_id(item_id: u32) -> u32 {
     match item_id {
-        129 => 147,     // Rugged Trapper's Pants is present in the base fixture.
+        129 => 6127,    // Trapper's Boots is present in the base fixture.
         65020 => 117,   // Tough Jerky
         65021 => 159,   // Refreshing Spring Water
         65022 => 117,   // Tough Jerky
@@ -2429,6 +2429,14 @@ mod tests {
         assert!(!refs
             .iter()
             .any(|item| matches!(item.item_id, 129 | 65020..=65027)));
+        assert!(refs.iter().any(|item| item.race == 4
+            && item.class == 3
+            && item.slot == 7
+            && item.item_id == 6127));
+        assert!(refs.iter().any(|item| item.race == 3
+            && item.class == 3
+            && item.slot == 7
+            && item.item_id == 6127));
         assert!(refs.iter().any(|item| item.item_id == 117));
         assert!(refs.iter().any(|item| item.item_id == 159));
         assert!(refs.iter().any(|item| item.item_id == 2947));

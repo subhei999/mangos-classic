@@ -158,6 +158,7 @@ const EMOTE_STATE_DANCE: u32 = 10;
 const EMOTE_STATE_SLEEP: u32 = 12;
 const EMOTE_ONESHOT_POINT: u32 = 25;
 const WARRIOR_HEROIC_STRIKE_RANK_1: u32 = 78;
+const HUNTER_RAPTOR_STRIKE_RANK_1: u32 = 2973;
 const CHAR_CREATE_SUCCESS: u8 = 0x2E;
 const CHAR_CREATE_FAILED: u8 = 0x30;
 const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
@@ -359,6 +360,8 @@ const CREATURE_SPAWN_LIMIT: u32 = 32;
 const HEROIC_STRIKE_RAGE_COST: u32 = 150;
 const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
 const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
+const RAPTOR_STRIKE_MANA_COST: u32 = 15;
+const RAPTOR_STRIKE_FIXTURE_DAMAGE: u32 = 12;
 const CLIENT_LOOT_CORPSE: u8 = 1;
 const LOOT_SLOT_NORMAL: u8 = 0;
 const RUST_COMBAT_DUMMY_LOOT_ITEM: u32 = 117;
@@ -815,6 +818,8 @@ struct WorldSessionState {
     combat_dummy_loot_money_available: bool,
     combat_dummy_loot_item_available: bool,
     player_rage: u32,
+    player_mana: u32,
+    active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
 }
 
@@ -1168,6 +1173,7 @@ async fn handle_player_login(
     session.combat_dummy_loot_money_available = false;
     session.combat_dummy_loot_item_available = false;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
+    session.player_mana = character.power1;
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     let world_stats = wow_db::get_player_world_stats(
@@ -1177,6 +1183,15 @@ async fn handle_player_login(
         character.level,
     )
     .await?;
+    if session.player_mana == 0 {
+        session.player_mana = world_stats.max_mana();
+    }
+    let spells = wow_db::get_character_spells(deps.character_db_pool, character.guid).await?;
+    session.active_spells = spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+        .map(|spell| spell.spell)
+        .collect();
     let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
     let cinematic_sequence = if character.cinematic == 0 {
         cinematic_sequence_for_race(character.race)
@@ -1207,6 +1222,7 @@ async fn handle_player_login(
             character,
             inventory: &session.inventory,
             world_stats: &world_stats,
+            spells: &spells,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
         },
@@ -1268,6 +1284,7 @@ async fn unregister_active_character(
     if let Some(character) = session.active_character.take() {
         online_characters.lock().await.remove(&character.guid);
     }
+    session.active_spells.clear();
 }
 
 async fn persist_active_character_position(

@@ -203,6 +203,86 @@ Success looks like:
   basic chat, basic inventory, basic NPC interaction, basic combat/spell, and
   basic loot.
 
+Definition of done:
+
+Checkpoint 1 is complete only when the final real-client grade is `PASS`, all
+required automated scripts pass, and every remaining nearby gap is either fixed
+or explicitly logged as P2/P3/P4 follow-up outside Checkpoint 1. Do not close
+Checkpoint 1 from implementation status alone.
+
+Required automated gate:
+
+- `scripts/test-rust.cmd`
+- `scripts/test-auth-flow.cmd`
+- `scripts/test-character-lifecycle.cmd`
+- `scripts/test-world-flow.cmd`
+- Any newer Checkpoint 1 packet/DB harness added before the final pass.
+
+Real-client grading pass:
+
+Run `scripts/run-client-stack-18085.cmd` against a clean local DB fixture and a
+WoW 1.12.1 build 5875 client. Record the result in `docs/session_handoff.md`
+using `PASS`, `PARTIAL`, `FAIL`, or `DEFERRED` for each row. `PASS` means the
+behavior was observed in the real client without disconnects, crashes, protocol
+desync, or obviously corrupt DB state. `PARTIAL` means the main flow works but
+has a visible limitation that must be linked to a GitHub issue before closure.
+`DEFERRED` is allowed only when the behavior is intentionally moved to
+Checkpoint 2+ and logged.
+
+| Gate | Grade | Required observation |
+| --- | --- | --- |
+| Auth and realm list | PASS required | Login with `RUSTAUTH` / `RUSTPASS`, reach realm list, select the Rust realm. |
+| Character screen | PASS required | Enum seeded and newly created characters; duplicate/invalid create failures do not break the screen. |
+| Character create/select/delete | PASS required | Create a fresh character, enter world, logout to character select, delete a different non-loaded character, and see counts refresh. |
+| Enter world and relog | PASS required | Fresh character leaves loading screen, appears in-world, moves, logs out, relogs, and keeps position/basic state. |
+| Race/gender display ids | PASS required | At least Human male/female and one non-human male/female render with correct in-world body display ids. |
+| Starter state | PASS required | Spellbook, action bar, skills UI, equipment visuals, backpack items, health, power, stats, money, bind point, tutorial/cinematic behavior, and faction basics are sane for the demo characters. |
+| Startup packet quietness | PASS required | Server logs show no repeated unknown/missing startup opcode loop that affects the demo flow; any harmless probes are logged as follow-up issues. |
+| Movement | PASS required | Walk, run, turn, jump/fall if observed, logout/disconnect persistence, and relog position work without disconnect. |
+| Chat | PASS required | At least local say/yell or equivalent solo-visible chat path works and rejected forms fail cleanly. |
+| NPC visibility/query | PASS required | A simple creature appears, can be selected/queried, and unknown creature queries fail with the expected marker. |
+| Gossip/vendor/trainer | PASS or logged DEFERRED | Basic gossip and vendor open in the real client; trainer must either open with a minimal sane response or be explicitly deferred to Checkpoint 2 with an issue. |
+| Inventory and equipment | PASS required | Move, equip/unequip, destroy, split, stack merge, and equipped-bag movement render correctly enough in the real client and persist after relog. |
+| Combat/spell | PASS required | Select a simple creature, start/stop attack, cast one starter spell, see health/resource updates, and avoid combat packet desync. |
+| Loot | PASS required | Loot money and one item, see inventory/money update, relog, and keep DB state. |
+| Death/respawn | PASS or logged DEFERRED | Either prove simple death/respawn in the real client or explicitly move it to Checkpoint 2 with an issue. |
+| Final fresh-character demo | PASS required | One fresh character completes auth, create, enter world, starter inspection, movement, chat, NPC interaction, vendor/trainer gate, combat/spell, loot, inventory action, logout, and relog in one uninterrupted session. |
+
+Closure rule:
+
+- No `FAIL` rows may remain.
+- No `PARTIAL` row may remain without a linked GitHub issue and an explicit
+  reason it does not block Checkpoint 1.
+- Required `PASS` rows cannot be downgraded to `DEFERRED`.
+- The final handoff must include the real-client grading table, automated test
+  commands and results, P0/P1 fixes made during the final pass, and P2/P3/P4
+  issues logged or updated.
+
+Current grading snapshot, 2026-04-25:
+
+Overall grade: `PARTIAL`, roughly 65-70% through Checkpoint 1. The checkpoint
+is not closeable yet, but the previous `Combat/spell` blocker is cleared by a
+real-client Raptor Strike retest.
+
+- `PASS`: auth/realm list, character screen after fixture reset, Night Elf
+  female Hunter race/gender display after the starter boots fix, and
+  walk/turn/jump/fall/land movement without disconnect.
+- `PARTIAL`: starter state, because equipment visuals now look sane and Raptor
+  Strike works, but broad starter spell coverage remains future parity;
+  chat/emote, because `/hello` has audio/text feedback but no physical wave
+  animation.
+- `PASS`: combat/spell. The real client previously tried active Night Elf
+  Hunter starter spell `2973`, and Rust logged `Ignoring unsupported spell cast
+  in starter spell fixture slice`; after the #13 fixture fix, the user
+  confirmed Raptor Strike works in the real client.
+- `DEFERRED`: trainer behavior is deferred to #39 because meaningful trainer
+  verification needs leveling/trainer-learning context. Player death/respawn is
+  deferred to #44 because it needs ghost/corpse/graveyard/resurrection behavior
+  beyond the first playable world loop.
+
+Plan impact: no grading-table row remains ungraded. Next closure work should
+rerun the required automated gate and update the final Checkpoint 1 handoff.
+
 Detailed path:
 
 1. Real-client smoke gate
@@ -339,12 +419,14 @@ Detailed path:
       loot tables, corpse persistence, XP, respawn, and group loot remain future
       slices.
 12. First Playable demo pass
-    - Run the real client through the full loop on a fresh account/character.
+    - Run the real-client grading pass above through the full loop on a fresh
+      account/character and record the table in `docs/session_handoff.md`.
     - Run `test-rust.cmd`, `test-auth-flow.cmd`,
       `test-character-lifecycle.cmd`, `test-world-flow.cmd`, and any new
       Checkpoint 1 harnesses.
-    - Update `docs/session_handoff.md` with exactly what was demonstrated and
-      what remains outside Checkpoint 1.
+    - Update `docs/session_handoff.md` with exactly what was demonstrated, the
+      final grades, and the GitHub issue numbers for anything intentionally
+      left outside Checkpoint 1.
 
 ### Checkpoint 2: Starter Zone Playability
 

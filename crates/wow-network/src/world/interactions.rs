@@ -305,17 +305,32 @@ async fn handle_cast_spell(
     };
     let character_guid = character.guid;
 
-    if packet.spell_id != WARRIOR_HEROIC_STRIKE_RANK_1 {
+    let Some(starter_spell) = supported_starter_spell(packet.spell_id) else {
         warn!(
             spell_id = packet.spell_id,
             "Ignoring unsupported spell cast in starter spell fixture slice"
+        );
+        return Ok(());
+    };
+    if !session.active_spells.contains(&packet.spell_id) {
+        warn!(
+            spell_id = packet.spell_id,
+            character_guid,
+            "Ignoring starter spell cast for spell not active on character"
         );
         return Ok(());
     }
 
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let targets = normalize_fixture_spell_targets(packet.targets);
-    session.player_rage = session.player_rage.saturating_sub(HEROIC_STRIKE_RAGE_COST);
+    match starter_spell.power {
+        StarterSpellPower::Rage { cost } => {
+            session.player_rage = session.player_rage.saturating_sub(cost);
+        }
+        StarterSpellPower::Mana { cost } => {
+            session.player_mana = session.player_mana.saturating_sub(cost);
+        }
+    }
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -334,9 +349,7 @@ async fn handle_cast_spell(
         && !session.combat_dummy_lootable
         && session.combat_dummy_health > 0
     {
-        let damage = session
-            .combat_dummy_health
-            .min(HEROIC_STRIKE_FIXTURE_DAMAGE);
+        let damage = session.combat_dummy_health.min(starter_spell.damage);
         session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
         if session.combat_dummy_health == 0 {
             session.combat_dummy_lootable = true;
@@ -372,13 +385,11 @@ async fn handle_cast_spell(
         )
         .await?;
     }
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_rage_update_body(caster, session.player_rage)?,
-        Some(header_crypto),
-    )
-    .await
+    let power_update = match starter_spell.power {
+        StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
+        StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
+    };
+    send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
 }
 
 fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTargets {
@@ -386,6 +397,36 @@ fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTa
         (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
     targets.unit_target = Some(targets.unit_target.unwrap_or_else(rust_combat_dummy_guid));
     targets
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SupportedStarterSpell {
+    damage: u32,
+    power: StarterSpellPower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StarterSpellPower {
+    Rage { cost: u32 },
+    Mana { cost: u32 },
+}
+
+fn supported_starter_spell(spell_id: u32) -> Option<SupportedStarterSpell> {
+    match spell_id {
+        WARRIOR_HEROIC_STRIKE_RANK_1 => Some(SupportedStarterSpell {
+            damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            power: StarterSpellPower::Rage {
+                cost: HEROIC_STRIKE_RAGE_COST,
+            },
+        }),
+        HUNTER_RAPTOR_STRIKE_RANK_1 => Some(SupportedStarterSpell {
+            damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
+            power: StarterSpellPower::Mana {
+                cost: RAPTOR_STRIKE_MANA_COST,
+            },
+        }),
+        _ => None,
+    }
 }
 
 fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
@@ -2324,6 +2365,21 @@ fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Resul
     PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, UNIT_FIELD_POWER2, rage.min(POWER_RAGE_DEFAULT))?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_POWER1, mana)?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());

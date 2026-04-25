@@ -2,7 +2,7 @@ use anyhow::{ensure, Context};
 use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
@@ -271,6 +271,7 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
     loaded_world.query_db_creature_template()?;
+    loaded_world.reject_invalid_db_vendor_gossip_option()?;
     loaded_world.open_db_vendor_gossip_inventory()?;
     loaded_world.list_db_vendor_inventory()?;
     loaded_world.list_empty_db_vendor_inventory()?;
@@ -499,7 +500,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, starter item template audit, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, Heroic Strike known-spell/main-hand/target guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, starter item template audit, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB gossip invalid-option guard, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, Heroic Strike known-spell/main-hand/target guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -2116,6 +2117,61 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
         self.expect_db_vendor_inventory_response(guid)
+    }
+
+    fn reject_invalid_db_vendor_gossip_option(&mut self) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &guid.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_NPC_TEXT_UPDATE,
+            "expected SMSG_NPC_TEXT_UPDATE after DB gossip hello, got 0x{opcode:04X}"
+        );
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_GOSSIP_MESSAGE,
+            "expected SMSG_GOSSIP_MESSAGE after DB gossip hello, got 0x{opcode:04X}"
+        );
+
+        let mut select = Vec::with_capacity(12);
+        select.extend_from_slice(&guid.raw().to_le_bytes());
+        select.extend_from_slice(&1u32.to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_SELECT_OPTION,
+            &select,
+            Some(&mut self.crypto),
+        )?;
+
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(250)))?;
+        let read_result = read_server_packet(&mut self.stream, Some(&mut self.crypto));
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        match read_result {
+            Ok((opcode, _)) => anyhow::bail!(
+                "invalid DB gossip option unexpectedly produced packet 0x{opcode:04X}"
+            ),
+            Err(error) => {
+                if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                    ensure!(
+                        matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+                        "invalid DB gossip option failed with unexpected IO error: {io_error}"
+                    );
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     fn expect_db_vendor_inventory_response(&mut self, guid: ObjectGuid) -> anyhow::Result<()> {

@@ -29,6 +29,57 @@ fn decode_update_values(body: &[u8]) -> Vec<Option<u32>> {
     values
 }
 
+fn update_values_encoded_len(body: &[u8]) -> usize {
+    let block_count = body[0] as usize;
+    let mask_start = 1;
+    let mask_len = block_count * 4;
+    let value_count = (0..block_count)
+        .map(|block| {
+            let mask_offset = mask_start + block * 4;
+            u32::from_le_bytes(
+                body[mask_offset..mask_offset + 4]
+                    .try_into()
+                    .expect("update mask block"),
+            )
+            .count_ones() as usize
+        })
+        .sum::<usize>();
+
+    mask_start + mask_len + value_count * 4
+}
+
+fn decode_values_update_block(block: &[u8], guid: ObjectGuid) -> (Vec<Option<u32>>, &[u8]) {
+    assert_eq!(block[0], UPDATE_TYPE_VALUES);
+    let values_start = 1 + PackedGuid::packed_size(guid);
+    let values_len = update_values_encoded_len(&block[values_start..]);
+    (
+        decode_update_values(&block[values_start..values_start + values_len]),
+        &block[values_start + values_len..],
+    )
+}
+
+fn decode_create_update_block(
+    block: &[u8],
+    guid: ObjectGuid,
+    type_id: u8,
+) -> (Vec<Option<u32>>, &[u8]) {
+    assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT);
+    let type_id_offset = 1 + PackedGuid::packed_size(guid);
+    assert_eq!(block[type_id_offset], type_id);
+    assert_eq!(block[type_id_offset + 1], UPDATEFLAG_ALL);
+    assert_eq!(
+        &block[type_id_offset + 2..type_id_offset + 6],
+        &1u32.to_le_bytes()
+    );
+
+    let values_start = type_id_offset + 6;
+    let values_len = update_values_encoded_len(&block[values_start..]);
+    (
+        decode_update_values(&block[values_start..values_start + values_len]),
+        &block[values_start + values_len..],
+    )
+}
+
 fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
     CharacterEnumEntry {
         guid: 7,
@@ -277,6 +328,21 @@ fn missing_creature_query_marks_entry_unknown() {
 }
 
 #[test]
+fn parses_unknown_db_creature_query_and_marks_entry_unknown() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 98_765, 43_210);
+    let mut query = Vec::new();
+    query.extend_from_slice(&98_765u32.to_le_bytes());
+    query.extend_from_slice(&guid.raw().to_le_bytes());
+
+    let parsed = CreatureQuery::read(&query).unwrap();
+    let response = build_creature_query_response(parsed.entry, None);
+
+    assert_eq!(parsed.entry, 98_765);
+    assert_eq!(parsed.guid, guid);
+    assert_eq!(response, (98_765u32 | 0x8000_0000).to_le_bytes());
+}
+
+#[test]
 fn db_creature_query_response_uses_world_template_fields() {
     let template = test_creature_template(42);
     let body = build_creature_query_response(42, Some(&template));
@@ -344,6 +410,29 @@ fn parses_gossip_select_option_packet() {
     let selection = GossipSelectOption::read(&body).unwrap();
     assert_eq!(selection.guid, guid);
     assert_eq!(selection.option, 1);
+}
+
+#[test]
+fn invalid_db_vendor_gossip_option_is_not_the_supported_browse_option() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let mut valid = Vec::new();
+    valid.extend_from_slice(&guid.raw().to_le_bytes());
+    valid.extend_from_slice(&0u32.to_le_bytes());
+    let valid_selection = GossipSelectOption::read(&valid).unwrap();
+
+    let mut invalid = Vec::new();
+    invalid.extend_from_slice(&guid.raw().to_le_bytes());
+    invalid.extend_from_slice(&1u32.to_le_bytes());
+    let invalid_selection = GossipSelectOption::read(&invalid).unwrap();
+
+    assert_eq!(valid_selection.guid, guid);
+    assert_eq!(valid_selection.option, 0);
+    assert_eq!(invalid_selection.guid, guid);
+    assert_eq!(invalid_selection.option, 1);
+    assert!(valid_selection.guid.is_creature());
+    assert!(invalid_selection.guid.is_creature());
+    assert!(valid_selection.is_supported_browse_option());
+    assert!(!invalid_selection.is_supported_browse_option());
 }
 
 #[test]
@@ -1487,6 +1576,303 @@ fn inventory_slot_update_body_updates_visible_equipment_slot() {
     assert_eq!(values[0x104 + 3 * 12], Some(38));
     assert_eq!(values[backpack_field], Some(0));
     assert_eq!(values[backpack_field + 1], Some(0));
+}
+
+#[test]
+fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let moved_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 19,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 19,
+            slot: 3,
+            item: 99,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: 2,
+            durability: 0,
+        },
+    ];
+    let request = InventoryMoveRequest {
+        src_bag: INVENTORY_SLOT_BAG_0,
+        src_slot: 27,
+        dst_bag: 19,
+        dst_slot: 3,
+    };
+
+    let body = build_update_object_body(
+        &build_inventory_move_update_blocks(character_guid, &inventory, &request).unwrap(),
+    );
+    assert_eq!(&body[0..4], &3u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let (player_values, rest) = decode_values_update_block(block, player_guid);
+    block = rest;
+    let source_field = inventory_slot_update_field(27).unwrap();
+    assert_eq!(player_values[source_field], Some(0));
+    assert_eq!(player_values[source_field + 1], Some(0));
+
+    let (container_values, rest) = decode_values_update_block(block, bag_guid);
+    block = rest;
+    let container_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
+    assert_eq!(
+        container_values[container_slot_field],
+        Some(moved_guid.raw() as u32)
+    );
+    assert_eq!(
+        container_values[container_slot_field + 1],
+        Some((moved_guid.raw() >> 32) as u32)
+    );
+
+    let (moved_values, rest) = decode_values_update_block(block, moved_guid);
+    assert!(rest.is_empty());
+    assert_eq!(moved_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(moved_values[0x009], Some((bag_guid.raw() >> 32) as u32));
+}
+
+#[test]
+fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let moved_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 19,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 27,
+            item: 99,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: 2,
+            durability: 0,
+        },
+    ];
+    let request = InventoryMoveRequest {
+        src_bag: 19,
+        src_slot: 3,
+        dst_bag: INVENTORY_SLOT_BAG_0,
+        dst_slot: 27,
+    };
+
+    let body = build_update_object_body(
+        &build_inventory_move_update_blocks(character_guid, &inventory, &request).unwrap(),
+    );
+    assert_eq!(&body[0..4], &2u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let (player_values, rest) = decode_values_update_block(block, player_guid);
+    block = rest;
+    let destination_field = inventory_slot_update_field(27).unwrap();
+    assert_eq!(
+        player_values[destination_field],
+        Some(moved_guid.raw() as u32)
+    );
+    assert_eq!(
+        player_values[destination_field + 1],
+        Some((moved_guid.raw() >> 32) as u32)
+    );
+
+    let (container_values, rest) = decode_values_update_block(block, bag_guid);
+    assert!(rest.is_empty());
+    let container_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
+    assert_eq!(container_values[container_slot_field], Some(0));
+    assert_eq!(container_values[container_slot_field + 1], Some(0));
+}
+
+#[test]
+fn backpack_stack_merge_update_clears_source_slot_and_updates_destination_count() {
+    let character_guid = 11;
+    let source_guid = ObjectGuid::new(HighGuid::Item, 0, 88);
+    let destination_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let inventory = [CharacterInventoryItem {
+        bag: 0,
+        slot: 26,
+        item: 99,
+        item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+        count: 7,
+        durability: 0,
+    }];
+    let mut blocks = build_inventory_position_update_blocks(
+        character_guid,
+        &inventory,
+        INVENTORY_SLOT_BAG_0,
+        27,
+    )
+    .unwrap();
+    blocks.push(build_item_stack_count_update_block(99, 7).unwrap());
+
+    let body = build_update_object_body(&blocks);
+    assert_eq!(&body[0..4], &2u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let (player_values, rest) = decode_values_update_block(block, player_guid);
+    block = rest;
+    let source_field = inventory_slot_update_field(27).unwrap();
+    assert_eq!(player_values[source_field], Some(0));
+    assert_eq!(player_values[source_field + 1], Some(0));
+
+    let (destination_values, rest) = decode_values_update_block(block, destination_guid);
+    assert!(rest.is_empty());
+    assert_eq!(destination_values[0x00E], Some(7));
+    assert_ne!(
+        player_values[source_field],
+        Some(source_guid.raw() as u32),
+        "source stack should not remain referenced after full merge"
+    );
+}
+
+#[test]
+fn equipped_bag_stack_merge_update_clears_container_slot_and_updates_destination_count() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let destination_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 19,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 19,
+            slot: 2,
+            item: 99,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: 7,
+            durability: 0,
+        },
+    ];
+    let mut blocks =
+        build_inventory_position_update_blocks(character_guid, &inventory, 19, 4).unwrap();
+    blocks.push(build_item_stack_count_update_block(99, 7).unwrap());
+
+    let body = build_update_object_body(&blocks);
+    assert_eq!(&body[0..4], &2u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let (container_values, rest) = decode_values_update_block(block, bag_guid);
+    block = rest;
+    let source_container_field = CONTAINER_FIELD_SLOT_1 + 4 * 2;
+    assert_eq!(container_values[source_container_field], Some(0));
+    assert_eq!(container_values[source_container_field + 1], Some(0));
+
+    let (destination_values, rest) = decode_values_update_block(block, destination_guid);
+    assert!(rest.is_empty());
+    assert_eq!(destination_values[0x00E], Some(7));
+}
+
+#[test]
+fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
+    let character_guid = 11;
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let source_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let destination_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 19,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 24,
+            item: 42,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: 4,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 19,
+            slot: 1,
+            item: 99,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: 2,
+            durability: 0,
+        },
+    ];
+    let destination = &inventory[2];
+    let mut blocks = vec![build_item_stack_count_update_block(42, 4).unwrap()];
+    blocks.push(build_item_create_update_block(owner_guid, bag_guid, destination, None).unwrap());
+    blocks
+        .extend(build_inventory_position_update_blocks(character_guid, &inventory, 19, 1).unwrap());
+
+    let body = build_update_object_body(&blocks);
+    assert_eq!(&body[0..4], &4u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let (source_values, rest) = decode_values_update_block(block, source_guid);
+    block = rest;
+    assert_eq!(source_values[0x00E], Some(4));
+
+    let (destination_values, rest) =
+        decode_create_update_block(block, destination_guid, TYPEID_ITEM);
+    block = rest;
+    assert_eq!(
+        destination_values[0x000],
+        Some(destination_guid.raw() as u32)
+    );
+    assert_eq!(
+        destination_values[0x001],
+        Some((destination_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(destination_values[0x002], Some(TYPEMASK_OBJECT_ITEM));
+    assert_eq!(destination_values[0x003], Some(RUST_COMBAT_DUMMY_LOOT_ITEM));
+    assert_eq!(destination_values[0x006], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        destination_values[0x007],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(destination_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(
+        destination_values[0x009],
+        Some((bag_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(destination_values[0x00E], Some(2));
+
+    let (container_values, rest) = decode_values_update_block(block, bag_guid);
+    block = rest;
+    let container_slot_field = CONTAINER_FIELD_SLOT_1 + 2;
+    assert_eq!(
+        container_values[container_slot_field],
+        Some(destination_guid.raw() as u32)
+    );
+    assert_eq!(
+        container_values[container_slot_field + 1],
+        Some((destination_guid.raw() >> 32) as u32)
+    );
+
+    let (contained_values, rest) = decode_values_update_block(block, destination_guid);
+    assert!(rest.is_empty());
+    assert_eq!(contained_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(contained_values[0x009], Some((bag_guid.raw() >> 32) as u32));
 }
 
 #[test]

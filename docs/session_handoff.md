@@ -18,7 +18,10 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest committed base before this slice: `fe3a51cb8 Cover starter spell and item audits`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: clean against `origin/codex/rust-auth-foundation`.
+- Worktree at handoff: contains uncommitted #34-#38 guardrail edits in
+  `crates/wow-network/src/world/tests.rs`,
+  `crates/wow-network/src/world/interactions.rs`, and
+  `bins/world-flow-test/src/main.rs`.
 
 ## Current Goal
 
@@ -115,6 +118,25 @@ using the repo's bug triage policy, then continue the requested task.
   and missing pants `129` use Rugged Trapper's Pants `147`. The starter item
   template audit is now quiet in `test-world-flow.cmd`, and #15 was closed as
   resolved by this slice.
+- Issue #34 packet coverage added: `wow-network` now decodes the split
+  `SMSG_UPDATE_OBJECT` response blocks and asserts the source stack count,
+  destination item create state, equipped-bag container slot GUID, and
+  destination contained GUID needed for immediate client rendering after
+  `CMSG_SPLIT_ITEM`.
+- Issue #35 packet coverage added: `wow-network` now asserts
+  `CMSG_SWAP_ITEM` equipped-bag moves update the source/destination player
+  inventory slot fields, the equipped bag's `CONTAINER_FIELD_SLOT_*` value,
+  and the moved item's contained GUID when moving into and out of an equipped
+  bag.
+- Issue #36 packet coverage added: `wow-network` now asserts full stack merges
+  clear the source backpack/player slot or equipped-bag container slot and
+  update the destination item stack count.
+- Issue #37 guardrail coverage added: `wow-network` now parses an unknown DB
+  creature query and asserts the unknown-entry response uses the high-bit
+  missing-template marker.
+- Issue #38 guardrail added: DB/Rust Guide gossip select now only accepts the
+  supported browse option `0`; invalid DB gossip option coverage was added to
+  `world-flow-test` and the packet/unit tests.
 
 ## Tests Last Run
 
@@ -122,31 +144,23 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network vendor_inventory -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network equipped_bag -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network split_into_equipped_bag_update_body_contains_renderable_destination_stack -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network stack_merge_update -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network unknown_db_creature -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network invalid_db_vendor_gossip -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 git diff --check
 ```
 
-`cargo test -p wow-network vendor -- --nocapture` passed 4 focused vendor/gossip
-packet-shape tests. `cargo test -p wow-network gossip -- --nocapture` passed 4
-focused gossip tests. `test-rust.cmd` passed with 79 `wow-network` tests. The first full rerun
-hit the usual final-build binary lock; stopping stale local `authserver.exe` /
-`worldserver.exe` processes and rerunning passed. `test-world-flow.cmd` passed
-with auth session, create/delete cases, DB creature query/gossip/vendor list,
-DB vendor insufficient-money guard, inventory/vendor buy/sell/loot flows,
-cleanup checks, COD mail return, and enum/count refresh.
-Latest overnight reruns:
-`test-world-flow.cmd` passed with DB vendor BuyPrice charge, sellback,
-empty-vendor, container-filter, and loot-autostore stack-merge coverage.
-Latest rerun also covered loot autostore no-space and starter main-hand
-guardrails. The latest reruns also covered Heroic Strike precondition/cast
-guardrails and the starter item template audit warning path. After #33,
-`test-world-flow.cmd` passed with no starter item template audit warning, and
-`test-rust.cmd` passed with 80 `wow-network` tests and 10 `wow-db` tests.
-`git diff --check` passed
-with only the known LF-to-CRLF working-copy warnings. `cargo fmt` passed with
-the existing `could not canonicalize path C:\Users\subhe` warning.
+Focused #34 split packet test passed. Focused #35 equipped-bag packet tests
+passed. Focused #36 stack-merge, #37 unknown creature query, and #38 invalid
+DB gossip tests passed. `test-rust.cmd` passed with 87 `wow-network` tests and
+10 `wow-db` tests. Elevated `test-world-flow.cmd` passed with the DB gossip
+invalid-option guard. `git diff --check` passed with only the known LF-to-CRLF
+working-copy warning. `cargo fmt` passed with the existing `could not
+canonicalize path C:\Users\subhe` warning.
 
 Notes:
 
@@ -194,12 +208,13 @@ GitHub issues are the source of truth:
   routing now has first packet/DB coverage, while real DB-backed gossip,
   trainer, combat, loot-table, and richer vendor validation remain future work.
 
-The current slice improves #16 and #18 but does not close them until real-client
-smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
-remain under #11. Full combat, XP, death, respawn, and DB-backed loot remain
-under #12. Loot autostore stack merging remains under #19. Exact combat stat
-formula parity beyond the first equipment-derived pass remains under #21. Full
-area exploration discovery/persistence remains under #22.
+#34-#36 add packet-shape evidence for #16/#18, but those remain open until
+real-client smoke proves split and container visuals are correct. #37/#38 add
+DB creature/gossip guardrails under #11. Fixture NPC/vendor gaps remain under
+#11. Full combat, XP, death, respawn, and DB-backed loot remain under #12. Loot
+autostore stack merging remains under #19. Exact combat stat formula parity
+beyond the first equipment-derived pass remains under #21. Full area
+exploration discovery/persistence remains under #22.
 
 ## Known Blockers And Gaps
 
@@ -220,12 +235,13 @@ area exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-For unattended overnight work, resume at GitHub issue #34 and proceed in
-numeric order. #31, #32, and #33 are closed. Do not require real-client visual testing overnight; leave the
-`scripts/run-client-stack-18085.cmd` smoke pass for morning. Start with the
-smallest issue slice available, run focused packet/DB tests first, and use
-`test-rust.cmd` / `test-world-flow.cmd` when practical for Rust world-flow
-changes.
+For unattended overnight work, continue after #38 in numeric issue order. #31,
+#32, and #33 are closed; #34-#36 have packet-shape coverage but still want
+real-client visual smoke before closing #16/#18. Do not require real-client
+visual testing overnight; leave the `scripts/run-client-stack-18085.cmd` smoke
+pass for morning. Start with the smallest issue slice available, run focused
+packet/DB tests first, and use `test-rust.cmd` / `test-world-flow.cmd` when
+practical for Rust world-flow changes.
 
 ## Key Files
 

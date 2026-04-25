@@ -1463,10 +1463,25 @@ async fn handle_gossip_select_option(
 ) -> anyhow::Result<()> {
     let selection = GossipSelectOption::read(body)?;
     if selection.guid == rust_guide_guid() {
-        return send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await;
+        if selection.is_supported_browse_option() {
+            return send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await;
+        }
+        warn!(
+            option = selection.option,
+            "Ignoring unsupported Rust Guide gossip option"
+        );
+        return Ok(());
     }
 
     if selection.guid.is_creature() {
+        if !selection.is_supported_browse_option() {
+            warn!(
+                guid = format_args!("0x{:016X}", selection.guid.raw()),
+                option = selection.option,
+                "Ignoring unsupported DB vendor gossip option"
+            );
+            return Ok(());
+        }
         let vendor_items = wow_db::get_vendor_items(world_db_pool, selection.guid.entry()).await?;
         if !vendor_items.is_empty() {
             let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
@@ -1501,6 +1516,10 @@ impl GossipSelectOption {
             guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
             option: u32::from_le_bytes(body[8..12].try_into()?),
         })
+    }
+
+    fn is_supported_browse_option(&self) -> bool {
+        self.option == 0
     }
 }
 

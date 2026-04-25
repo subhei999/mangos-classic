@@ -242,14 +242,12 @@ Detailed path:
      checks sufficient for solo local testing.
    - Add packet tests for accepted/rejected message shapes.
 7. World module cleanup gate
-   - After the Heroic Strike/equipment-recognition smoke is proven or clearly
-     handed back to #14, split the oversized `crates/wow-network/src/world/mod.rs`
-     before starting real item movement.
-   - Keep this as a mechanical, no-behavior-change cleanup: move existing code
-     into focused modules such as session/bootstrap, update objects, movement,
-     chat, NPC/gossip, combat/spells, loot, and inventory helpers.
-   - Do not combine this cleanup with new gameplay behavior. Run
-     `test-rust.cmd` and `test-world-flow.cmd` before and after the split.
+   - Completed as a mechanical, no-behavior-change split before real item
+     movement: `world/mod.rs` now includes focused `bootstrap.rs`,
+     `interactions.rs`, `wire.rs`, and `tests.rs` files.
+   - The split is include-based for now so visibility and behavior stay
+     unchanged while future Checkpoint 1 slices become easier to review.
+   - Verified with `test-rust.cmd` and `test-world-flow.cmd`.
 8. Inventory v1
    - Support item query responses, basic equip/unequip, bag/backpack moves,
      destroy item, stack counts, durability fields, and DB persistence.

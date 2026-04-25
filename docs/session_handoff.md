@@ -18,8 +18,7 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: uncommitted equipment-recognition plus fixture-rage update in
-  `crates/wow-network/src/world/mod.rs`.
+- Worktree: expected clean after the no-behavior world module split commit.
 
 ## Current Goal
 
@@ -51,14 +50,18 @@ Current Checkpoint 1 focus:
   health, Rust marks it lootable, answers `CMSG_LOOT` with an empty
   CMaNGOS-shaped `SMSG_LOOT_RESPONSE`, handles empty money clear, and resets on
   `CMSG_LOOT_RELEASE`.
-- Latest uncommitted slice: the self-spawn `SMSG_UPDATE_OBJECT` now creates
-  equipped bag-0 item objects, not only backpack item objects, so the client
-  receives an actual main-hand item object for starter weapon recognition.
-  Real-client smoke confirmed Heroic Strike now casts and subtracts rage after
-  one dummy auto-swing. Rust now grants 15 stored rage on each fixture dummy
-  auto-swing, consumes it after the Heroic Strike fixture cast response, and
-  applies a small visible fixture damage update to the dummy. Full next-swing
-  spell mechanics are intentionally deferred to GitHub #13.
+- Committed starter-spell/equipment fixture slice: the self-spawn
+  `SMSG_UPDATE_OBJECT` now creates equipped bag-0 item objects, Rust grants 15
+  stored rage on each fixture dummy auto-swing, Heroic Strike consumes rage in
+  the fixture cast path, and Rust applies a small visible fixture damage update
+  to the dummy. Real-client smoke confirmed Heroic Strike now casts and
+  subtracts rage; full next-swing spell mechanics are intentionally deferred to
+  GitHub #13.
+- Completed the planned no-behavior cleanup gate before real item movement:
+  split oversized `crates/wow-network/src/world/mod.rs` into focused included
+  files for bootstrap, interactions, wire helpers, and tests. The split is
+  deliberately include-based to preserve the existing module/visibility shape
+  while making future slices cheaper to read and review.
 
 ## Tests Last Run
 
@@ -68,7 +71,6 @@ Passing locally:
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network builds_create_blocks_for_equipped_and_backpack_items -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network inventory -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network rage -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network heroic -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network spell -- --nocapture
@@ -78,7 +80,7 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.c
 
 Notes:
 
-- First parallel broad-script rerun for the rage slice hit the local
+- First broad-script rerun after the module split hit the local
   `target\debug\authserver.exe` lock. Stopped local `authserver`/`worldserver`
   processes and reran `test-rust.cmd`, then `test-world-flow.cmd`, sequentially.
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
@@ -114,8 +116,9 @@ Last reported manual smoke:
   equipped".
 - Rust now grants fixture rage after dummy auto-swings. Real-client smoke
   confirmed Heroic Strike now casts and subtracts rage. A small fixture damage
-  update was added afterward and still needs real-client smoke confirmation;
-  full Heroic Strike parity remains covered by GitHub #13.
+  update was added afterward; user reported Heroic Strike lands but still looks
+  like white damage, which is expected for the temporary fixture path. Full
+  Heroic Strike parity remains covered by GitHub #13.
 
 Next manual smoke should verify:
 
@@ -158,18 +161,18 @@ covered by #14.
 
 ## Next Recommended Task
 
-1. Real-client smoke Heroic Strike once more to confirm the new fixture damage
-   update visibly changes `Rust Combat Dummy` health, then commit the
-   starter-spell/equipment/rage/damage fixture slice.
-2. Before real item movement grows, do the planned no-behavior-change split of
-   the oversized `crates/wow-network/src/world/mod.rs` into focused world
-   modules, with `test-rust.cmd` and `test-world-flow.cmd` green before/after.
-3. Continue with inventory item query/move v1 or fuller loot money/item v1,
-   using CMaNGOS packet references before adding behavior.
+Continue with inventory item query/move v1 or fuller loot money/item v1, using
+CMaNGOS packet references before adding behavior. Item movement is still not
+implemented; the module split only prepared the codebase so that slice is less
+painful to work in.
 
 ## Key Files
 
 - `crates/wow-network/src/world/mod.rs`
+- `crates/wow-network/src/world/bootstrap.rs`
+- `crates/wow-network/src/world/interactions.rs`
+- `crates/wow-network/src/world/wire.rs`
+- `crates/wow-network/src/world/tests.rs`
 - `bins/world-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
 - `docs/rust_auth_foundation.md`

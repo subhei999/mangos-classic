@@ -241,27 +241,36 @@ Detailed path:
    - Implement say/yell/whisper/system-message basics with language/faction
      checks sufficient for solo local testing.
    - Add packet tests for accepted/rejected message shapes.
-7. Inventory v1
+7. World module cleanup gate
+   - After the Heroic Strike/equipment-recognition smoke is proven or clearly
+     handed back to #14, split the oversized `crates/wow-network/src/world/mod.rs`
+     before starting real item movement.
+   - Keep this as a mechanical, no-behavior-change cleanup: move existing code
+     into focused modules such as session/bootstrap, update objects, movement,
+     chat, NPC/gossip, combat/spells, loot, and inventory helpers.
+   - Do not combine this cleanup with new gameplay behavior. Run
+     `test-rust.cmd` and `test-world-flow.cmd` before and after the split.
+8. Inventory v1
    - Support item query responses, basic equip/unequip, bag/backpack moves,
      destroy item, stack counts, durability fields, and DB persistence.
    - Keep item operations conservative and schema-compatible with
      `characters.item_instance` / `character_inventory`.
-8. NPC interaction v1
+9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.
    - Implement enough `CMSG_CREATURE_QUERY`, `CMSG_GAMEOBJECT_QUERY`,
      gossip hello, vendor list, and trainer list for a real client to open
      simple interactions.
-9. Combat and spell v1
+10. Combat and spell v1
    - Implement target selection, auto-attack start/stop, swing timing basics,
      health updates, death/respawn basics, and one or two starter instant spell
      casts.
    - Keep combat deterministic in harness tests before adding broader spell
      mechanics.
-10. Loot v1
+11. Loot v1
     - Support opening loot, taking money/items, updating inventory, and
       persisting creature loot state enough for a single-player demo.
-11. First Playable demo pass
+12. First Playable demo pass
     - Run the real client through the full loop on a fresh account/character.
     - Run `test-rust.cmd`, `test-auth-flow.cmd`,
       `test-character-lifecycle.cmd`, `test-world-flow.cmd`, and any new

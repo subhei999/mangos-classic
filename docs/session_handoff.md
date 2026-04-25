@@ -18,7 +18,8 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: clean after the starter-spell fixture commit.
+- Worktree: uncommitted equipment-recognition plus fixture-rage update in
+  `crates/wow-network/src/world/mod.rs`.
 
 ## Current Goal
 
@@ -50,11 +51,14 @@ Current Checkpoint 1 focus:
   health, Rust marks it lootable, answers `CMSG_LOOT` with an empty
   CMaNGOS-shaped `SMSG_LOOT_RESPONSE`, handles empty money clear, and resets on
   `CMSG_LOOT_RELEASE`.
-- Latest uncommitted slice: Rust now parses `CMSG_CAST_SPELL` plus basic
-  `SpellCastTargets`, handles Human Warrior `Heroic Strike` rank 1
-  (`spellId = 78`) as a starter-spell fixture, and sends CMaNGOS-shaped
-  `SMSG_CAST_RESULT` success plus `SMSG_SPELL_GO`. Full spell mechanics are
-  intentionally deferred to GitHub #13.
+- Latest uncommitted slice: the self-spawn `SMSG_UPDATE_OBJECT` now creates
+  equipped bag-0 item objects, not only backpack item objects, so the client
+  receives an actual main-hand item object for starter weapon recognition.
+  Real-client smoke confirmed Heroic Strike now casts and subtracts rage after
+  one dummy auto-swing. Rust now grants 15 stored rage on each fixture dummy
+  auto-swing, consumes it after the Heroic Strike fixture cast response, and
+  applies a small visible fixture damage update to the dummy. Full next-swing
+  spell mechanics are intentionally deferred to GitHub #13.
 
 ## Tests Last Run
 
@@ -62,6 +66,11 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network builds_create_blocks_for_equipped_and_backpack_items -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network inventory -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network rage -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network heroic -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network spell -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
@@ -69,11 +78,10 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.c
 
 Notes:
 
-- First `test-rust.cmd` rerun for the spell slice failed at the final authserver build because
-  Windows had `target\debug\authserver.exe` locked. Stopped local
-  `authserver`/`worldserver` processes and reran successfully.
-- First `test-world-flow.cmd` failed because Docker access was denied in the
-  default shell. Reran with elevated Docker access and it passed.
+- First parallel broad-script rerun for the rage slice hit the local
+  `target\debug\authserver.exe` lock. Stopped local `authserver`/`worldserver`
+  processes and reran `test-rust.cmd`, then `test-world-flow.cmd`, sequentially.
+- Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
 - `test-world-flow.cmd` result: auth session, create/delete happy path,
   negative create/delete cases, loaded/guild leader rejection, guild/group/
   social/pet/mail/auction cleanup, COD mail return, enum/count refresh.
@@ -100,15 +108,17 @@ Last reported manual smoke:
   timing/parity under GitHub #12.
 - Empty corpse-loot fixture smoke passed: after killing the dummy, the client
   handled the loot interaction without disconnect or visible regression.
-- Starter spell fixture smoke was connection-safe but not behavior-proven:
-  trying Human Warrior Heroic Strike on `Rust Combat Dummy` reported a
-  client-side "melee weapon not equipped" error. Logged as GitHub #14 and
-  treat as inventory/equipment recognition work before retrying spell smoke.
+- Starter spell fixture smoke now proves starter weapon recognition moved past
+  GitHub #14: after equipped item create blocks, Human Warrior Heroic Strike on
+  `Rust Combat Dummy` reports "not enough rage" instead of "melee weapon not
+  equipped".
+- Rust now grants fixture rage after dummy auto-swings. Real-client smoke
+  confirmed Heroic Strike now casts and subtracts rage. A small fixture damage
+  update was added afterward and still needs real-client smoke confirmation;
+  full Heroic Strike parity remains covered by GitHub #13.
 
 Next manual smoke should verify:
 
-- After the equipment/inventory recognition slice, retry Human Warrior Heroic
-  Strike on `Rust Combat Dummy`.
 - Rerun the first-minute loop from login through movement, NPC gossip, combat,
   corpse loot, starter spell, and logout/relog.
 
@@ -138,21 +148,22 @@ covered by #14.
   behavior.
 - Empty corpse loot is packet-shape-only; no loot table, item, money, XP,
   corpse decay, or DB persistence yet.
-- Starter spell cast v1 is packet-shape-only for Heroic Strike rank 1; it does
-  not yet execute real spell effects or consume power.
-- Real-client Heroic Strike currently reports no melee weapon equipped, likely
-  from equipment/inventory/update-field parity rather than the spell packet
-  handler.
+- Starter spell cast v1 is packet-shape/resource-only for Heroic Strike rank 1;
+  it reaches the Rust cast handler, consumes fixture rage, and applies a small
+  immediate fixture damage update. It is not true CMaNGOS next-swing spell
+  behavior yet.
 - Broader world gameplay remains skeletal: movement persistence works, but
   validation, visibility, spells, inventory actions, loot, vendors/trainers,
   quests, and multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-1. Commit or keep the connection-safe starter-spell packet fixture depending on
-   whether the next agent wants it as scaffolding before #14.
-2. Continue with inventory/equipment recognition v1 for starter main-hand
-   weapon visibility/usability, then retry Heroic Strike.
+1. Real-client smoke Heroic Strike once more to confirm the new fixture damage
+   update visibly changes `Rust Combat Dummy` health, then commit the
+   starter-spell/equipment/rage/damage fixture slice.
+2. Before real item movement grows, do the planned no-behavior-change split of
+   the oversized `crates/wow-network/src/world/mod.rs` into focused world
+   modules, with `test-rust.cmd` and `test-world-flow.cmd` green before/after.
 3. Continue with inventory item query/move v1 or fuller loot money/item v1,
    using CMaNGOS packet references before adding behavior.
 

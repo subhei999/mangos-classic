@@ -275,6 +275,9 @@ const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
 const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
 const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
 const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
+const HEROIC_STRIKE_RAGE_COST: u32 = 150;
+const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
+const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
 const CLIENT_LOOT_CORPSE: u8 = 1;
 const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 const SPELL_CAST_TARGET_UNIT_ENEMY: u16 = 0x0080;
@@ -522,7 +525,8 @@ async fn handle_client(
                         handle_text_emote(&mut stream, &body, &session, &mut header_crypto).await?;
                     }
                     CMSG_CAST_SPELL => {
-                        handle_cast_spell(&mut stream, &body, &session, &mut header_crypto).await?;
+                        handle_cast_spell(&mut stream, &body, &mut session, &mut header_crypto)
+                            .await?;
                     }
                     CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
                         info!(
@@ -626,6 +630,7 @@ struct WorldSessionState {
     active_combat_target: Option<ObjectGuid>,
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
+    player_rage: u32,
 }
 
 #[derive(Debug)]
@@ -975,6 +980,7 @@ async fn handle_player_login(
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     session.combat_dummy_lootable = false;
     session.combat_dummy_looting = false;
+    session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     let inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     let world_stats = wow_db::get_player_world_stats(
@@ -1517,7 +1523,7 @@ fn build_self_spawn_update_body(
 
     let npc_block = build_rust_guide_create_block(character)?;
     let combat_dummy_block = build_rust_combat_dummy_create_block(character)?;
-    let item_blocks = build_backpack_item_create_blocks(character, inventory)?;
+    let item_blocks = build_inventory_item_create_blocks(character, inventory)?;
     let block_count = 3 + item_blocks.len() as u32;
     let mut body = Vec::with_capacity(5 + block.len());
     body.extend_from_slice(&block_count.to_le_bytes());
@@ -1970,7 +1976,7 @@ fn inventory_slot_update_field(slot: u8) -> Option<usize> {
     }
 }
 
-fn build_backpack_item_create_blocks(
+fn build_inventory_item_create_blocks(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -1982,7 +1988,7 @@ fn build_backpack_item_create_blocks(
             continue;
         }
 
-        if !(INVENTORY_SLOT_ITEM_START..=INVENTORY_SLOT_ITEM_END).contains(&item.slot) {
+        if item.slot >= INVENTORY_SLOT_ITEM_END {
             continue;
         }
 
@@ -2400,7 +2406,7 @@ fn build_emote_state_update_body(
 async fn handle_cast_spell(
     stream: &mut TcpStream,
     body: &[u8],
-    session: &WorldSessionState,
+    session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let packet = CastSpellPacket::read(body)?;
@@ -2411,6 +2417,7 @@ async fn handle_cast_spell(
         );
         return Ok(());
     };
+    let character_guid = character.guid;
 
     if packet.spell_id != WARRIOR_HEROIC_STRIKE_RANK_1 {
         warn!(
@@ -2420,8 +2427,9 @@ async fn handle_cast_spell(
         return Ok(());
     }
 
-    let caster = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let targets = normalize_fixture_spell_targets(packet.targets);
+    session.player_rage = session.player_rage.saturating_sub(HEROIC_STRIKE_RAGE_COST);
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -2433,6 +2441,53 @@ async fn handle_cast_spell(
         stream,
         SMSG_SPELL_GO,
         &build_spell_go_body(caster, packet.spell_id, &targets)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    if targets.unit_target == Some(rust_combat_dummy_guid())
+        && !session.combat_dummy_lootable
+        && session.combat_dummy_health > 0
+    {
+        let damage = session
+            .combat_dummy_health
+            .min(HEROIC_STRIKE_FIXTURE_DAMAGE);
+        session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
+        if session.combat_dummy_health == 0 {
+            session.combat_dummy_lootable = true;
+            session.combat_dummy_looting = false;
+            session.active_combat_target = None;
+        }
+        send_packet(
+            stream,
+            SMSG_ATTACKERSTATEUPDATE,
+            &build_attacker_state_update_body_with_spell_id(
+                caster,
+                rust_combat_dummy_guid(),
+                damage,
+                packet.spell_id,
+            )?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_combat_dummy_state_update_body(
+                session.combat_dummy_health,
+                if session.combat_dummy_health == 0 {
+                    UNIT_DYNFLAG_LOOTABLE
+                } else {
+                    0
+                },
+            )?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_rage_update_body(caster, session.player_rage)?,
         Some(header_crypto),
     )
     .await
@@ -2700,6 +2755,8 @@ async fn send_combat_dummy_swing(
         .combat_dummy_health
         .min(RUST_COMBAT_DUMMY_HIT_DAMAGE);
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
+    session.player_rage =
+        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
 
     send_packet(
         stream,
@@ -2712,6 +2769,13 @@ async fn send_combat_dummy_swing(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_combat_dummy_state_update_body(session.combat_dummy_health, 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_rage_update_body(attacker, session.player_rage)?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -2869,6 +2933,15 @@ fn build_attacker_state_update_body(
     victim: ObjectGuid,
     damage: u32,
 ) -> anyhow::Result<Vec<u8>> {
+    build_attacker_state_update_body_with_spell_id(attacker, victim, damage, 0)
+}
+
+fn build_attacker_state_update_body_with_spell_id(
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    damage: u32,
+    spell_id: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(42);
     body.extend_from_slice(&HITINFO_NORMALSWING2.to_le_bytes());
     PackedGuid::write(&mut body, attacker)?;
@@ -2882,7 +2955,7 @@ fn build_attacker_state_update_body(
     body.extend_from_slice(&0i32.to_le_bytes()); // resist
     body.extend_from_slice(&VICTIMSTATE_NORMAL.to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes()); // unknown
-    body.extend_from_slice(&0u32.to_le_bytes()); // spell id
+    body.extend_from_slice(&spell_id.to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes()); // blocked
     Ok(body)
 }
@@ -2898,6 +2971,21 @@ fn build_combat_dummy_state_update_body(
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_POWER2, rage.min(POWER_RAGE_DEFAULT))?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());
@@ -3943,6 +4031,38 @@ mod tests {
     }
 
     #[test]
+    fn heroic_strike_fixture_damage_marks_attacker_state_spell_id() {
+        let attacker = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let victim = rust_combat_dummy_guid();
+        let state = build_attacker_state_update_body_with_spell_id(
+            attacker,
+            victim,
+            HEROIC_STRIKE_FIXTURE_DAMAGE,
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+        )
+        .unwrap();
+        let mut cursor = 0;
+        assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
+        cursor += PackedGuid::packed_size(attacker) + PackedGuid::packed_size(victim);
+        assert_eq!(
+            read_u32(&state, &mut cursor).unwrap(),
+            HEROIC_STRIKE_FIXTURE_DAMAGE
+        );
+        cursor += 1; // damage school count
+        cursor += 4; // normal school
+        cursor += 4; // float damage
+        cursor += 4; // integer damage
+        cursor += 4; // absorb
+        cursor += 4; // resist
+        cursor += 4; // victim state
+        cursor += 4; // unknown
+        assert_eq!(
+            read_u32(&state, &mut cursor).unwrap(),
+            WARRIOR_HEROIC_STRIKE_RANK_1
+        );
+    }
+
+    #[test]
     fn combat_dummy_state_update_sets_health_and_dynamic_flags() {
         let body = build_combat_dummy_state_update_body(20, UNIT_DYNFLAG_LOOTABLE).unwrap();
         let packed_guid_mask = body[6];
@@ -3954,6 +4074,20 @@ mod tests {
         assert_eq!(body[5], UPDATE_TYPE_VALUES);
         assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
         assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
+    }
+
+    #[test]
+    fn player_rage_update_sets_warrior_power_field() {
+        let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let body = build_player_rage_update_body(player, HEROIC_STRIKE_RAGE_COST).unwrap();
+        let packed_guid_mask = body[6];
+        let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+        let values = decode_update_values(&body[values_start..]);
+
+        assert_eq!(&body[0..4], &1u32.to_le_bytes());
+        assert_eq!(body[4], 0);
+        assert_eq!(body[5], UPDATE_TYPE_VALUES);
+        assert_eq!(values[UNIT_FIELD_POWER2], Some(HEROIC_STRIKE_RAGE_COST));
     }
 
     #[test]
@@ -3982,16 +4116,20 @@ mod tests {
         session.active_combat_target = Some(rust_combat_dummy_guid());
         session.combat_dummy_lootable = true;
         session.combat_dummy_looting = true;
+        session.player_rage = HEROIC_STRIKE_RAGE_COST;
         assert_eq!(session.active_combat_target, Some(rust_combat_dummy_guid()));
         assert!(session.combat_dummy_lootable);
         assert!(session.combat_dummy_looting);
+        assert_eq!(session.player_rage, HEROIC_STRIKE_RAGE_COST);
 
         session.active_combat_target = None;
         session.combat_dummy_lootable = false;
         session.combat_dummy_looting = false;
+        session.player_rage = 0;
         assert_eq!(session.active_combat_target, None);
         assert!(!session.combat_dummy_lootable);
         assert!(!session.combat_dummy_looting);
+        assert_eq!(session.player_rage, 0);
     }
 
     #[test]
@@ -4455,7 +4593,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_create_blocks_for_backpack_items_only() {
+    fn builds_create_blocks_for_equipped_and_backpack_items() {
         let character = CharacterEnumEntry {
             guid: 11,
             name: "Tester".to_string(),
@@ -4507,12 +4645,15 @@ mod tests {
             },
         ];
 
-        let blocks = build_backpack_item_create_blocks(&character, &items).unwrap();
+        let blocks = build_inventory_item_create_blocks(&character, &items).unwrap();
 
-        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0][0], UPDATE_TYPE_CREATE_OBJECT);
         assert_eq!(blocks[0][4], TYPEID_ITEM);
         assert_eq!(blocks[0][5], UPDATEFLAG_ALL);
+        assert_eq!(blocks[1][0], UPDATE_TYPE_CREATE_OBJECT);
+        assert_eq!(blocks[1][4], TYPEID_ITEM);
+        assert_eq!(blocks[1][5], UPDATEFLAG_ALL);
     }
 
     #[test]

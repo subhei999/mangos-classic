@@ -1,6 +1,8 @@
 param(
     [int]$WorldPort = 18085,
-    [int]$AuthPort = 13724
+    [int]$AuthPort = 13724,
+    [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
+    [switch]$ResetWorldDatabase
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +35,53 @@ function Invoke-MariaDb {
     Invoke-Checked docker $arguments
 }
 
+function Import-MariaDbSqlFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Database,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+
+    $resolved = Resolve-Path $Path
+    Write-Host "Importing $Description from $resolved"
+    $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $processInfo.FileName = "docker"
+    $processInfo.Arguments = "exec -i cmangos-rust-realmd mariadb -uroot -proot $Database"
+    $processInfo.RedirectStandardInput = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $processInfo.UseShellExecute = $false
+
+    $process = [System.Diagnostics.Process]::Start($processInfo)
+    $input = [System.IO.File]::OpenRead($resolved)
+    $sqlStream = $input
+    if ($resolved.Path.EndsWith(".gz", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $sqlStream = [System.IO.Compression.GZipStream]::new($input, [System.IO.Compression.CompressionMode]::Decompress)
+    }
+
+    try {
+        $sqlStream.CopyTo($process.StandardInput.BaseStream)
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            if ($stdout) { Write-Host $stdout }
+            if ($stderr) { Write-Host $stderr }
+            throw "failed to import $Description from $resolved"
+        }
+    }
+    finally {
+        $sqlStream.Dispose()
+        if (-not [object]::ReferenceEquals($sqlStream, $input)) {
+            $input.Dispose()
+        }
+    }
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
@@ -60,6 +109,10 @@ Invoke-MariaDb "" "CREATE DATABASE IF NOT EXISTS mangos DEFAULT CHARACTER SET ut
 Invoke-MariaDb "" "GRANT ALL PRIVILEGES ON characters.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
 Invoke-MariaDb "" "GRANT ALL PRIVILEGES ON mangos.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
 
+if ($ResetWorldDatabase) {
+    Invoke-MariaDb "" "DROP DATABASE IF EXISTS mangos; CREATE DATABASE mangos DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci; GRANT ALL PRIVILEGES ON mangos.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
+}
+
 $characterTableCount = docker exec cmangos-rust-realmd mariadb -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='characters' AND table_name='characters';"
 if ($LASTEXITCODE -ne 0) {
     throw "failed to check characters schema"
@@ -67,10 +120,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if (($characterTableCount | Select-Object -First 1).Trim() -eq "0") {
     $charactersSql = Join-Path $repoRoot "sql\base\characters.sql"
-    & cmd.exe /c "docker exec -i cmangos-rust-realmd mariadb -uroot -proot characters < `"$charactersSql`""
-    if ($LASTEXITCODE -ne 0) {
-        throw "failed to import sql/base/characters.sql"
-    }
+    Import-MariaDbSqlFile "characters" $charactersSql "sql/base/characters.sql"
 }
 
 $worldTableCount = docker exec cmangos-rust-realmd mariadb -uroot -proot -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mangos' AND table_name='playercreateinfo';"
@@ -80,10 +130,11 @@ if ($LASTEXITCODE -ne 0) {
 
 if (($worldTableCount | Select-Object -First 1).Trim() -eq "0") {
     $mangosSql = Join-Path $repoRoot "sql\base\mangos.sql"
-    & cmd.exe /c "docker exec -i cmangos-rust-realmd mariadb -uroot -proot mangos < `"$mangosSql`""
-    if ($LASTEXITCODE -ne 0) {
-        throw "failed to import sql/base/mangos.sql"
-    }
+    Import-MariaDbSqlFile "mangos" $mangosSql "sql/base/mangos.sql"
+}
+
+if ($WorldSqlPath) {
+    Import-MariaDbSqlFile "mangos" $WorldSqlPath "full CMaNGOS world SQL"
 }
 
 $sql = "UPDATE realmlist SET address='127.0.0.1', port=$WorldPort WHERE id=1;"

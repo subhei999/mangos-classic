@@ -16,24 +16,21 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `fe3a51cb8 Cover starter spell and item audits`
+- Latest committed base before this slice: `d98f5aa14 Close Checkpoint 1 playable world`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: contains uncommitted Checkpoint 1 grading/guardrail
-  edits plus the candidate #13 Raptor Strike slice in
-  `crates/wow-network/src/world/{mod.rs,bootstrap.rs,interactions.rs,tests.rs}`,
-  `crates/wow-db/src/character.rs`, `docs/rust_migration_plan.md`,
-  `docs/session_handoff.md`, and `scripts/run-client-stack-18085.ps1`.
+- Worktree at handoff: contains Checkpoint 2 starter-zone fixture-lock work:
+  new `bins/starter-zone-flow-test`, new
+  `scripts/test-starter-zone-flow.cmd` / `.ps1`, workspace lockfile/member
+  updates, and doc updates.
 
 ## Current Goal
 
-Checkpoint 1: **First Playable World**.
+Checkpoint 2: **Starter Zone Playability**.
 
-The Rust auth/world stack can authenticate a real WoW 1.12.1 client, manage
-characters, enter a minimal world, move/logout/relog, seed starter state, render
-DB-backed creature spawns, query creature templates, open fixture NPC
-gossip/vendor flows, list a DB-backed vendor inventory, fight a fixture combat
-dummy, and exercise basic inventory and loot/vendor item flows in the packet DB
-harness.
+Checkpoint 1 is closed. The next milestone is to make one starter zone playable
+as a coherent early-game experience instead of a handpicked interaction demo.
+Use Northshire Valley with a fresh Human Warrior as the Checkpoint 2 golden
+path unless the user explicitly changes the target.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -41,20 +38,66 @@ Do not chase unrelated horizontal parity issues. For any non-blocking bug,
 mismatch, missing subsystem, or cleanup gap you discover, create a GitHub issue
 using the repo's bug triage policy, then continue the requested task.
 
-Checkpoint 1 now has a durable definition of done in
-`docs/rust_migration_plan.md`: close it only after the required automated gate
-passes and the real-client grading table has no unresolved `FAIL` rows. Future
-"what is left" answers should grade against that table instead of inventing a
-new open-ended checklist.
-
-Current Checkpoint 1 grade: `PARTIAL`, roughly 65-70% complete. The checkpoint
-is no longer blocked by the previous `Combat/spell` FAIL: active Night Elf
-Hunter starter spell `2973` now works in the real client through the Rust
-fixture path. The checkpoint still needs the remaining explicit grading gaps
-closed or deferred before it is closeable.
+Checkpoint 2 now has a durable plan and definition of done in
+`docs/rust_migration_plan.md`. The core closure gate is a real-client
+Northshire grading pass plus a new planned `scripts/test-starter-zone-flow.cmd`
+automated harness covering DB-backed zone spawns, creature combat, loot tables,
+quests, XP/level-up, trainers, death/respawn, and relog persistence.
 
 ## What Changed Recently
 
+- Cemented the Checkpoint 2 plan in `docs/rust_migration_plan.md`: Northshire
+  Valley / Human Warrior golden path, detailed slice order, required automated
+  gate, real-client grading table, and definition of done.
+- Added the first Checkpoint 2 starter-zone fixture-lock harness:
+  `bins/starter-zone-flow-test` plus `scripts/test-starter-zone-flow.cmd`.
+  The harness seeds a narrow Rust Northshire fixture range (`910xxx`) into
+  CMaNGOS-shaped world tables and proves a clean Human Warrior starts in
+  Northshire with DB-backed creature/template joins, quest giver/completer
+  rows, vendor/trainer rows, loot rows with valid item templates, a gameobject,
+  a graveyard link, and `realmcharacters` count.
+- Extended `test-starter-zone-flow.cmd` into a Rust auth/world packet smoke:
+  it starts authserver/worldserver, authenticates the `STARTZONE` account,
+  enters the clean Human Warrior, and asserts the login `SMSG_UPDATE_OBJECT`
+  includes all five seeded Northshire DB creature GUIDs. This proves the
+  Northshire fixture is worldserver-visible, not just present in SQL.
+- Added the first DB-backed Northshire hostile lifecycle slice. The Rust world
+  session now tracks nearby DB creature runtime state, supports attacking a DB
+  Young Wolf, transitions it from alive to damaged/dead lootable corpse, opens
+  DB-backed corpse loot from `creature_loot_template` plus template gold,
+  autostores the loot item, clears money/item loot state, and respawns it alive
+  on loot release for the single-player harness.
+- Added the first full-world-DB bridge for Checkpoint 2. CMaNGOS loads creature
+  templates, creature spawn metadata, all creature rows, gameobjects, and then
+  persistent respawn state into global ObjectMgr/map state at startup; map/grid
+  visibility decides what the player sees. The Rust scripts now keep the tiny
+  repo schema as the default but accept `-WorldSqlPath <dump.sql>` or
+  `$env:CMANGOS_WORLD_SQL`, plus `-ResetWorldDatabase`, so the same Rust stack
+  can import a full CMaNGOS world dump and then assert only the nearby
+  Northshire slice.
+- Added repeatable real ClassicDB import support with
+  `scripts/import-classic-db-world.cmd`. The script expects
+  `target/classic-db` cloned from `https://github.com/cmangos/classic-db`,
+  imports `Full_DB/ClassicDB_1_12_1_z2815.sql.gz`, replays ClassicDB content
+  and instance updates, then applies the remaining local CMaNGOS core world
+  schema updates. The local Docker `mangos` DB was rebuilt this way and now has
+  real Northshire creature entries/spawns.
+- `starter-zone-flow-test` now detects real ClassicDB Northshire content first:
+  real entries `197` Marshal McBride, `823` Deputy Willem, `951` Brother
+  Paxton, `299` Young Wolf, and `6` Kobold Vermin. When present, it skips
+  synthetic `910xxx` seeding, asserts the real nearby/visible creature rows,
+  real quest relation rows, real Young Wolf loot-template rows, logs into the
+  Rust worldserver, verifies the real spawn GUIDs are in `SMSG_UPDATE_OBJECT`,
+  and proves a real Young Wolf can enter damaged runtime state. The synthetic
+  fallback still covers the full dead corpse -> lootable/looted -> respawn
+  lifecycle until real combat damage/kill pacing is widened.
+- Raised the worldserver DB creature spawn cap from 32 to 64. With real
+  ClassicDB Northshire, Brother Paxton was the 33rd nearest spawn because
+  ambient rabbits/guards/peasants fill the area; the lower cap prevented the
+  real-start-zone proof from seeing all required golden-path NPCs.
+- Relaxed the starter-zone packet harness maximum server packet size because
+  the real Northshire `SMSG_UPDATE_OBJECT` burst is about 22 KB, larger than
+  the earlier tiny-fixture guard.
 - Added a Checkpoint 1 definition of done and real-client grading pass to
   `docs/rust_migration_plan.md`, including required automated scripts, pass /
   partial / fail / deferred semantics, and closure rules for logged follow-up
@@ -185,6 +228,55 @@ closed or deferred before it is closeable.
 Passing locally:
 
 ```powershell
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd # baseline before Checkpoint 2 harness
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo build -p starter-zone-flow-test
+.\scripts\test-starter-zone-flow.cmd # default attempt failed due Docker access
+.\scripts\test-starter-zone-flow.cmd # elevated Docker access passed
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
+git diff --check
+```
+
+Latest Checkpoint 2 fixture-lock verification:
+
+- Baseline `test-rust.cmd` passed before Rust changes.
+- `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`
+  warning.
+- `cargo build -p starter-zone-flow-test` passed.
+- Default `test-starter-zone-flow.cmd` failed because Docker config/pipe access
+  was denied; elevated retry passed and printed
+  `starter-zone fixture lock passed for account STARTZONE, character Startzone`.
+- Final `test-rust.cmd` passed with the new workspace member included.
+- `git diff --check` passed with only normal LF-to-CRLF working-copy warnings.
+- After the packet-visibility extension, elevated `test-starter-zone-flow.cmd`
+  passed again with authserver/worldserver running.
+- Final `test-rust.cmd` passed again after the packet-visibility extension.
+- After the DB creature lifecycle slice, default `test-starter-zone-flow.cmd`
+  again failed on Docker config/pipe access; elevated retry first exposed a
+  MariaDB/SQLx count decode mismatch in the new loot query, which was fixed by
+  casting the computed loot counts to unsigned. Elevated retry then passed,
+  including Young Wolf kill, DB corpse loot, item autostore, money loot, loot
+  release, and respawn. `test-rust.cmd` passed after a clippy helper-shape fix.
+  Default `test-world-flow.cmd` failed on Docker access; elevated
+  `test-world-flow.cmd` passed as a regression check.
+- The local Docker `mangos` DB currently has only 7 creature templates and 7
+  creature spawns from the tiny fixture/base import; there are no real
+  Northshire rows for Young Wolf, Kobold Vermin, Marshal McBride, Deputy
+  Willem, or Brother Paxton until a full CMaNGOS world dump is imported.
+- PowerShell parser validation passed for `scripts/test-starter-zone-flow.ps1`
+  and `scripts/run-client-stack-18085.ps1` after adding the full-world-DB import
+  parameters.
+- `scripts/import-classic-db-world.cmd` passed end to end against Docker
+  MariaDB after cloning `cmangos/classic-db` into `target/classic-db`.
+- Elevated `scripts/test-starter-zone-flow.cmd` passed against the rebuilt real
+  ClassicDB world DB and printed
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character Startzone`.
+- `scripts/test-rust.cmd` passed after the real-DB harness changes and the
+  spawn-cap increase.
+
+Previous Checkpoint 1 closure and focused checks:
+
+```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network equipped_bag -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network split_into_equipped_bag_update_body_contains_renderable_destination_stack -- --nocapture
@@ -248,6 +340,16 @@ Notes:
 - MariaDB test container: `cmangos-rust-realmd` on local port `3307`.
 - Manual client stack uses auth `127.0.0.1:13724` and world
   `127.0.0.1:18085` because the normal world port is blocked locally.
+- To test against a full CMaNGOS content DB instead of the tiny repo base,
+  provide a world dump with either
+  `.\scripts\test-starter-zone-flow.cmd -ResetWorldDatabase -WorldSqlPath C:\path\to\world.sql`
+  or set `$env:CMANGOS_WORLD_SQL` before launching
+  `scripts/run-client-stack-18085.cmd`.
+- Preferred real-content rebuild path:
+  `git clone --depth 1 https://github.com/cmangos/classic-db.git target\classic-db`
+  if it is not already present, then run
+  `.\scripts\import-classic-db-world.cmd`, then
+  `.\scripts\test-starter-zone-flow.cmd`.
 - If builds fail removing `authserver.exe` or `worldserver.exe`, stop stale
   local Rust server processes and rerun.
 
@@ -318,10 +420,19 @@ exploration discovery/persistence remains under #22.
 
 ## Known Blockers And Gaps
 
-- Previous Checkpoint 1 blocker cleared: Raptor Strike (`2973`) now works in
-  the real client. Trainer is deferred to #39. Player death/respawn is deferred
-  to #44. No grading-table row remains ungraded; Checkpoint 1 closure now needs
-  the required automated gate rerun and final bookkeeping.
+- Checkpoint 2 now has a DB fixture/harness boundary, packet proof that seeded
+  Northshire creatures are worldserver-visible on Human Warrior login, and one
+  DB-backed hostile creature lifecycle/combat path for Young Wolf. The next
+  blocker is turning this into real starter-zone gameplay: creature retaliation
+  / threat basics or quest kill-credit/loot progression, depending on the next
+  selected vertical slice.
+- The repo does not include the full CMaNGOS world content dump. The local
+  repeatable path uses `target/classic-db`, which is ignored build/cache space,
+  as the external content source.
+- Trainer behavior was deferred from Checkpoint 1 to #39 and should be handled
+  as part of Checkpoint 2 trainer v1 after XP/level requirements are available.
+- Player death/respawn was deferred from Checkpoint 1 to #44 and should be
+  handled as part of Checkpoint 2 death/corpse/graveyard/respawn.
 - Fixture NPC gossip/combat/loot remain hardcoded or fixture-only pending #11
   and #12; DB-backed creature spawns/query and vendor lists exist, but DB-backed
   gossip, trainers, loot tables, XP, respawn, and full vendor rules do not yet.
@@ -339,11 +450,15 @@ exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-Continue Checkpoint 1 closure from the grading table, not broad feature work.
-Checkpoint 1 is ready for commit/PR packaging from the grading-table and
-automated-gate perspective. Next, review the uncommitted diff, decide whether
-to split commits, then publish the closure slice with trainer deferred to #39
-and player death/respawn deferred to #44.
+Continue Checkpoint 2 with the next Northshire gameplay vertical slice:
+
+- Keep Northshire Valley / Human Warrior as the golden path.
+- Reuse `bins/starter-zone-flow-test` instead of expanding `world-flow-test`.
+- Recommended next slice: DB-backed quest kill credit/progress for Kobold Camp
+  Cleanup or creature retaliation/threat basics for the same Young Wolf path.
+- Keep spell support narrow to Human Warrior melee/Heroic Strike.
+- Do not add XP/level-up, trainer learning, or player death unless a P0/P1
+  blocker requires it; log broader parity gaps as GitHub issues.
 
 ## Key Files
 
@@ -355,8 +470,10 @@ and player death/respawn deferred to #44.
 - `crates/wow-db/src/character.rs`
 - `crates/wow-db/src/world_data.rs`
 - `bins/world-flow-test/src/main.rs`
+- `bins/starter-zone-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
 - `docs/rust_auth_foundation.md`
 - `scripts/test-rust.cmd`
 - `scripts/test-world-flow.cmd`
+- `scripts/test-starter-zone-flow.cmd`
 - `scripts/run-client-stack-18085.cmd`

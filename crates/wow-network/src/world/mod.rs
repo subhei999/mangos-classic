@@ -1,6 +1,6 @@
 use sha1::{Digest, Sha1};
 use sqlx::mysql::MySqlPool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,8 +15,8 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterReputation, CharacterSkill, CharacterSpell, CreatureSpawnQuery,
-    CreatureTemplateQuery, ItemTemplateQuery, NewCharacter, PlayerWorldStats,
+    CharacterNameQuery, CharacterReputation, CharacterSkill, CharacterSpell, CreatureLootQuery,
+    CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter, PlayerWorldStats,
 };
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
@@ -355,8 +355,8 @@ const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
 const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
 const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
 const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
-const CREATURE_SPAWN_RADIUS_YARDS: f32 = 120.0;
-const CREATURE_SPAWN_LIMIT: u32 = 32;
+const CREATURE_SPAWN_RADIUS_YARDS: f32 = 220.0;
+const CREATURE_SPAWN_LIMIT: u32 = 128;
 const HEROIC_STRIKE_RAGE_COST: u32 = 150;
 const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
 const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
@@ -719,7 +719,14 @@ async fn handle_client(
                         handle_attack_stop(&mut stream, &mut session, &mut header_crypto).await?;
                     }
                     CMSG_LOOT => {
-                        handle_loot(&mut stream, &body, &mut session, &mut header_crypto).await?;
+                        handle_loot(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_AUTOSTORE_LOOT_ITEM => {
                         handle_autostore_loot_item(
@@ -817,10 +824,28 @@ struct WorldSessionState {
     combat_dummy_looting: bool,
     combat_dummy_loot_money_available: bool,
     combat_dummy_loot_item_available: bool,
+    db_creatures: HashMap<u64, DbCreatureRuntime>,
     player_rage: u32,
     player_mana: u32,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
+}
+
+#[derive(Debug, Clone)]
+struct DbCreatureRuntime {
+    spawn: CreatureSpawnQuery,
+    health: u32,
+    lootable: bool,
+    looting: bool,
+    loot_money_available: bool,
+    loot_item: Option<DbCreatureLootRuntime>,
+}
+
+#[derive(Debug, Clone)]
+struct DbCreatureLootRuntime {
+    item: u32,
+    count: u32,
+    display_id: u32,
 }
 
 #[derive(Debug)]
@@ -1172,6 +1197,20 @@ async fn handle_player_login(
     session.combat_dummy_looting = false;
     session.combat_dummy_loot_money_available = false;
     session.combat_dummy_loot_item_available = false;
+    let nearby_creatures = wow_db::get_nearby_creature_spawns(
+        deps.world_db_pool,
+        character.map,
+        character.position_x,
+        character.position_y,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        CREATURE_SPAWN_LIMIT,
+    )
+    .await?;
+    session.db_creatures = nearby_creatures
+        .into_iter()
+        .map(DbCreatureRuntime::new)
+        .map(|creature| (creature.guid().raw(), creature))
+        .collect();
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
     session.inventory =

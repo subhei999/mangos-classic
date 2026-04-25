@@ -433,6 +433,15 @@ Detailed path:
 Goal: one starter zone can be played as a coherent early-game experience rather
 than a handpicked interaction demo.
 
+Recommended target:
+
+- Use Northshire Valley with a Human Warrior as the golden path. The current
+  Rust starter coverage is strongest for Human Warrior, and Northshire gives a
+  compact set of early quests, wolves, kobolds, vendors, trainers, loot,
+  graveyard behavior, and level-up expectations.
+- Keep other races/classes out of the closure gate until the golden path is
+  stable. Add small matrix coverage only after the Northshire flow is proven.
+
 Success looks like:
 
 - A chosen starter zone has creature spawns, gameobjects, vendors, trainers,
@@ -443,6 +452,150 @@ Success looks like:
   learning persist correctly.
 - The implementation uses CMaNGOS DB/script data where possible, with explicit
   fixture shortcuts documented.
+
+Detailed path:
+
+1. Starter-zone fixture lock
+   - Seed/import only the CMaNGOS DB rows needed for the Northshire slice:
+     creatures, gameobjects, quest givers, vendors, trainers, graveyard,
+     loot templates, and quest templates.
+   - Add `scripts/test-starter-zone-flow.cmd` and a focused Rust harness
+     instead of growing `world-flow-test` into a full gameplay suite.
+   - Prove the harness can create a clean Human Warrior, enter Northshire, and
+     observe the expected DB rows without requiring the real client.
+   - Current status: first harness skeleton is implemented in
+     `bins/starter-zone-flow-test`. It seeds a narrow Rust Northshire fixture
+     range (`910xxx`) into CMaNGOS-shaped world tables, creates a clean Human
+     Warrior through `wow_db::create_character`, and proves the Northshire
+     spawn boundary, DB creature/template joins, quest giver/completer rows,
+     vendor/trainer rows, loot rows with valid source-backed item templates,
+     gameobject rows, graveyard link, and `realmcharacters` count. This is a
+     fixture lock only; DB-backed combat, quest packets/state, trainer
+     learning, XP, death, and real-client grading remain later Checkpoint 2
+     slices.
+2. Creature visibility and lifecycle
+   - Load nearby DB creatures by map/position/range for the starter zone.
+   - Track alive, corpse, looted, and respawn states in a way that survives the
+     single-player demo flow.
+   - Keep creatures mostly static for this checkpoint unless movement becomes
+     necessary for combat or client stability.
+   - Current status: DB-backed Northshire fixture creatures are proven visible
+     through the Rust auth/world packet path. `test-starter-zone-flow.cmd` now
+     starts authserver/worldserver, authenticates the `STARTZONE` account,
+     enters the clean Human Warrior, asserts the five seeded Northshire DB
+     creature GUIDs are present in `SMSG_UPDATE_OBJECT`, and drives the DB
+     Young Wolf through alive -> damaged/dead lootable corpse -> looted ->
+     respawned-alive runtime state.
+3. Combat v2
+   - Move from fixture dummy combat to DB-backed creature combat.
+   - Implement target selection, auto-attack start/stop, swing timing basics,
+     player and creature health updates, creature death, and conservative
+     evade/leash behavior.
+   - Keep spell support narrow at first: Human Warrior melee and Heroic Strike
+     are enough for the golden path.
+   - Current status: one DB-backed Northshire hostile can be attacked through
+     `CMSG_ATTACKSWING`; Rust sends attack start, attacker-state damage,
+     creature health/dynamic-flag updates, rage updates, and attack stop on
+     death. This is single-player/static-spawn combat only; creature retaliation,
+     aggro, leash/evade, XP, and quest kill credit remain future slices.
+4. Loot tables v1
+   - Use `creature_loot_template` plus `item_template` data for DB-backed
+     creature loot.
+   - Support money, normal item drops, quest item drops, full-inventory
+     failure, and corpse loot state.
+   - Persist money/inventory updates and verify them after relog.
+   - Current status: Rust can read one normal item from
+     `creature_loot_template` joined to `item_template`, expose
+     `MinLootGold`/`MaxLootGold` as corpse money, autostore the item through
+     existing inventory insertion/stacking behavior, clear looted money/item
+     state, and immediately respawn the single DB creature on loot release for
+     the harness. Broader drop chances/groups, quest drops, no-space DB loot
+     rollback, and relog durability remain future loot-table work.
+5. Quest system v1
+   - Implement quest status query, accept, progress update, complete, reward
+     grant, and quest-log persistence.
+   - Start with two or three Northshire quests covering at least one kill-count
+     quest and one item/progress quest. Add talk-to or delivery only after the
+     first two quest shapes are proven.
+   - Use CMaNGOS quest relation/template data where possible and document any
+     fixture shortcut.
+6. XP and level-up v1
+   - Award creature XP and quest XP.
+   - Implement level-up packet/update fields, health/power/stat refresh, and
+     persisted level/XP state.
+   - Prove levels 1-2, or 1-3 if the selected quest set reaches it naturally.
+7. Trainer v1
+   - Open a real trainer list from DB/source-derived trainer data.
+   - Show available and unavailable spells sanely enough for the starter path.
+   - Learn one valid ability/spell, charge money if applicable, and persist the
+     learned spell in `character_spell`.
+8. Death, corpse, graveyard, and respawn
+   - Implement player death from creature combat, release spirit, ghost/corpse
+     basics, nearest graveyard selection, and resurrection.
+   - Defer long-tail durability, resurrection sickness, and map-collision
+     nuance unless the real client flow requires them.
+9. Gameobject v1
+   - Add DB-backed gameobject spawn/query and interaction if the selected
+     Northshire quest set requires it.
+   - If no selected quest requires gameobjects, explicitly defer richer
+     gameobject behavior to Checkpoint 3 with a GitHub issue.
+10. Real-client demo pass
+    - Run the full Northshire flow with a WoW 1.12.1 build 5875 client.
+    - Fix P0/P1 blockers only. Log P2/P3/P4 parity gaps as GitHub issues per
+      the repo triage policy.
+
+Required automated gate:
+
+- `scripts/test-rust.cmd`
+- `scripts/test-auth-flow.cmd`
+- `scripts/test-character-lifecycle.cmd`
+- `scripts/test-world-flow.cmd`
+- `scripts/test-starter-zone-flow.cmd`
+
+`test-starter-zone-flow.cmd` should prove, without the real client:
+
+- clean Human Warrior creation and Northshire entry;
+- DB-backed starter-zone creature/NPC/gameobject availability;
+- creature query and visibility packet shape;
+- DB creature combat kill;
+- DB loot-table money/item/quest-drop handling;
+- quest accept/progress/complete persistence;
+- XP and level-up persistence;
+- trainer list and spell learning persistence;
+- death/release/respawn state transitions;
+- logout/relog durability for position, inventory, money, level, XP, spells,
+  quest state, and completed quest rewards.
+
+Real-client grading pass:
+
+Run `scripts/run-client-stack-18085.cmd` against a clean local DB fixture and a
+WoW 1.12.1 build 5875 client. Record the result in `docs/session_handoff.md`
+using `PASS`, `PARTIAL`, `FAIL`, or `DEFERRED` for each row.
+
+| Gate | Grade | Required observation |
+| --- | --- | --- |
+| Northshire spawn set | PASS required | Human Warrior enters Northshire and sees DB-backed starter NPCs, creatures, vendors, trainers, and any selected quest objects. |
+| Creature lifecycle | PASS required | DB creatures can be selected, queried, killed, looted, despawned/corpse-tracked, and respawned without corrupting session state. |
+| Combat v2 | PASS required | Player and DB creature exchange melee attacks, Heroic Strike or equivalent starter action works, health/resource updates render, and combat ends cleanly. |
+| Loot tables | PASS required | DB-backed money, normal item, and quest item loot can be taken, fail safely with no space, and persist after relog. |
+| Quest accept/progress/complete | PASS required | At least one kill-count quest and one item/progress quest can be accepted, progressed, completed, rewarded, and persisted. |
+| XP and level-up | PASS required | Creature or quest XP updates render, at least one level-up occurs, and level/XP/stat state persists after relog. |
+| Trainer learning | PASS required | Trainer window opens, one valid ability/spell can be learned when requirements are met, money/spell state updates, and learned state persists. |
+| Vendor loop | PASS required | Starter-zone DB vendor buy/sell works with money and inventory persistence. |
+| Death and respawn | PASS required | Player can die to a starter-zone creature, release, resurrect at corpse or graveyard, and continue playing. |
+| Gameobject interaction | PASS or logged DEFERRED | Required quest gameobjects work, or richer gameobject behavior is explicitly deferred with a GitHub issue if not used by the selected quest set. |
+| Logout/relog durability | PASS required | Position, inventory, money, level, XP, spells, quest state, completed rewards, creature state expectations, and death/respawn state remain sane after relog. |
+| Final fresh-character zone demo | PASS required | One fresh Human Warrior completes auth, create/select, Northshire entry, quests, combat, loot, XP/level-up, trainer, vendor, death/respawn, logout, and relog in one coherent session. |
+
+Definition of done:
+
+- No `FAIL` rows may remain in the Checkpoint 2 real-client grading table.
+- No `PARTIAL` or `DEFERRED` row may remain without a linked GitHub issue and a
+  clear reason it does not block Checkpoint 2.
+- All required automated gate scripts pass.
+- The final handoff records the real-client grading table, exact tests run,
+  P0/P1 bugs fixed immediately, P2/P3/P4 issues logged or updated, and any
+  intentionally unfixed discoveries.
 
 ### Checkpoint 3: Core Solo Leveling Loop
 

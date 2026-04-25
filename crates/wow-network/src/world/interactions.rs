@@ -384,6 +384,33 @@ async fn handle_cast_spell(
             Some(&mut *header_crypto),
         )
         .await?;
+    } else if let Some(target) = targets.unit_target {
+        if let Some(damage) = apply_db_creature_damage(session, target, starter_spell.damage) {
+            let (health, dynamic_flags) = session
+                .db_creatures
+                .get(&target.raw())
+                .map(|creature| (creature.health, creature.dynamic_flags()))
+                .expect("creature damage target checked above");
+            send_packet(
+                stream,
+                SMSG_ATTACKERSTATEUPDATE,
+                &build_attacker_state_update_body_with_spell_id(
+                    caster,
+                    target,
+                    damage,
+                    packet.spell_id,
+                )?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
     }
     let power_update = match starter_spell.power {
         StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
@@ -1696,7 +1723,7 @@ async fn handle_buy_item(
         Some(&mut *header_crypto),
     )
     .await?;
-    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let container_slots = if vendor_item.container_slots > 0 {
         Some(vendor_item.container_slots)
     } else {
@@ -1906,15 +1933,33 @@ async fn handle_attack_swing(
         return Ok(());
     };
 
-    if target != rust_combat_dummy_guid() {
+    if target == rust_combat_dummy_guid() {
+        if session.combat_dummy_lootable || session.combat_dummy_health == 0 {
+            warn!("Ignoring attack swing against dead combat dummy");
+            return Ok(());
+        }
+
+        session.active_combat_target = Some(target);
+        let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+        send_packet(
+            stream,
+            SMSG_ATTACKSTART,
+            &build_attack_start_body(attacker, target),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        return send_combat_dummy_swing(stream, session, header_crypto).await;
+    }
+
+    if !session
+        .db_creatures
+        .get(&target.raw())
+        .is_some_and(DbCreatureRuntime::is_alive)
+    {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
             "Ignoring attack swing against unknown target"
         );
-        return Ok(());
-    }
-    if session.combat_dummy_lootable || session.combat_dummy_health == 0 {
-        warn!("Ignoring attack swing against dead combat dummy");
         return Ok(());
     }
 
@@ -1927,7 +1972,82 @@ async fn handle_attack_swing(
         Some(&mut *header_crypto),
     )
     .await?;
-    send_combat_dummy_swing(stream, session, header_crypto).await
+    send_db_creature_swing(stream, session, header_crypto, target).await
+}
+
+impl DbCreatureRuntime {
+    fn new(spawn: CreatureSpawnQuery) -> Self {
+        let health = creature_health(&spawn.template);
+        Self {
+            spawn,
+            health,
+            lootable: false,
+            looting: false,
+            loot_money_available: false,
+            loot_item: None,
+        }
+    }
+
+    fn guid(&self) -> ObjectGuid {
+        creature_spawn_guid(&self.spawn)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.health > 0 && !self.lootable
+    }
+
+    fn max_health(&self) -> u32 {
+        creature_health(&self.spawn.template)
+    }
+
+    fn hit_damage(&self) -> u32 {
+        self.spawn.template.max_melee_dmg.ceil().max(1.0) as u32
+    }
+
+    fn loot_money(&self) -> u32 {
+        self.spawn
+            .template
+            .max_loot_gold
+            .max(self.spawn.template.min_loot_gold)
+    }
+
+    fn dynamic_flags(&self) -> u32 {
+        if self.lootable {
+            UNIT_DYNFLAG_LOOTABLE
+        } else {
+            self.spawn.template.dynamic_flags
+        }
+    }
+
+    fn respawn(&mut self) {
+        self.health = self.max_health();
+        self.lootable = false;
+        self.looting = false;
+        self.loot_money_available = false;
+        self.loot_item = None;
+    }
+}
+
+fn apply_db_creature_damage(
+    session: &mut WorldSessionState,
+    target: ObjectGuid,
+    requested_damage: u32,
+) -> Option<u32> {
+    let creature = session.db_creatures.get_mut(&target.raw())?;
+    if !creature.is_alive() {
+        return None;
+    }
+
+    let damage = creature.health.min(requested_damage.max(1));
+    creature.health = creature.health.saturating_sub(damage);
+    if creature.health == 0 {
+        creature.lootable = true;
+        creature.looting = false;
+        creature.loot_money_available = creature.loot_money() > 0;
+        creature.loot_item = None;
+        session.active_combat_target = None;
+    }
+    Some(damage)
 }
 
 async fn handle_combat_tick(
@@ -1935,10 +2055,81 @@ async fn handle_combat_tick(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.active_combat_target != Some(rust_combat_dummy_guid()) {
+    let Some(target) = session.active_combat_target else {
         return Ok(());
+    };
+    if target == rust_combat_dummy_guid() {
+        return send_combat_dummy_swing(stream, session, header_crypto).await;
     }
-    send_combat_dummy_swing(stream, session, header_crypto).await
+    send_db_creature_swing(stream, session, header_crypto, target).await
+}
+
+async fn send_db_creature_swing(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    target: ObjectGuid,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let requested_damage = session
+        .db_creatures
+        .get(&target.raw())
+        .map(DbCreatureRuntime::hit_damage)
+        .unwrap_or(1);
+    let Some(damage) = apply_db_creature_damage(session, target, requested_damage) else {
+        session.active_combat_target = None;
+        return Ok(());
+    };
+    session.player_rage =
+        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    let (health, dynamic_flags, is_dead) = session
+        .db_creatures
+        .get(&target.raw())
+        .map(|creature| {
+            (
+                creature.health,
+                creature.dynamic_flags(),
+                creature.health == 0,
+            )
+        })
+        .expect("DB creature existed before damage");
+
+    send_packet(
+        stream,
+        SMSG_ATTACKERSTATEUPDATE,
+        &build_attacker_state_update_body(attacker, target, damage)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_rage_update_body(attacker, session.player_rage)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    if is_dead {
+        send_packet(
+            stream,
+            SMSG_ATTACKSTOP,
+            &build_attack_stop_body(attacker, target, true)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn send_combat_dummy_swing(
@@ -2014,12 +2205,13 @@ async fn handle_attack_stop(
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    session.active_combat_target = None;
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let victim = session.active_combat_target.unwrap_or_else(rust_combat_dummy_guid);
+    session.active_combat_target = None;
     send_packet(
         stream,
         SMSG_ATTACKSTOP,
-        &build_attack_stop_body(attacker, rust_combat_dummy_guid(), false)?,
+        &build_attack_stop_body(attacker, victim, false)?,
         Some(header_crypto),
     )
     .await
@@ -2027,25 +2219,52 @@ async fn handle_attack_stop(
 
 async fn handle_loot(
     stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let target = read_packet_guid(body, "CMSG_LOOT")?;
-    if target != rust_combat_dummy_guid() {
+    if target == rust_combat_dummy_guid() {
+        if !session.combat_dummy_lootable {
+            warn!("Ignoring loot request for combat dummy before it is lootable");
+            return Ok(());
+        }
+
+        session.combat_dummy_looting = true;
+        let response = build_combat_dummy_loot_response_body(session);
+        return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
+    }
+
+    let Some(creature) = session.db_creatures.get(&target.raw()) else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
             "Ignoring loot request for unknown target"
         );
         return Ok(());
-    }
-    if !session.combat_dummy_lootable {
-        warn!("Ignoring loot request for combat dummy before it is lootable");
+    };
+    if !creature.lootable {
+        warn!("Ignoring loot request for DB creature before it is lootable");
         return Ok(());
     }
-
-    session.combat_dummy_looting = true;
-    let response = build_combat_dummy_loot_response_body(session);
+    let needs_loot_item = creature.loot_item.is_none();
+    let entry = creature.spawn.entry;
+    if needs_loot_item {
+        let loot_item = wow_db::get_creature_loot_items(world_db_pool, entry)
+            .await?
+            .into_iter()
+            .next()
+            .map(DbCreatureLootRuntime::from);
+        if let Some(creature) = session.db_creatures.get_mut(&target.raw()) {
+            creature.loot_item = loot_item;
+        }
+    }
+    let creature = session
+        .db_creatures
+        .get_mut(&target.raw())
+        .expect("DB creature existed before loot query");
+    creature.looting = true;
+    let response = build_db_creature_loot_response_body(target, creature);
     send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
 }
 
@@ -2061,10 +2280,41 @@ async fn handle_autostore_loot_item(
         warn!("Ignoring loot item request before character login");
         return Ok(());
     };
+    let character_guid = character.guid;
     if body.is_empty() {
         anyhow::bail!("CMSG_AUTOSTORE_LOOT_ITEM payload too short: {} bytes", body.len());
     }
     let loot_slot = body[0];
+    let db_loot = session
+        .db_creatures
+        .iter()
+        .find_map(|(guid, creature)| {
+            creature
+                .looting
+                .then(|| creature.loot_item.as_ref().map(|loot| (*guid, loot.clone())))
+                .flatten()
+        });
+    if let Some((creature_guid, loot)) = db_loot {
+        if loot_slot != 0 {
+            warn!(loot_slot, "Ignoring unsupported DB creature loot slot");
+            return Ok(());
+        }
+        return autostore_loot_item(
+            LootAutostoreContext {
+                stream,
+                character_db_pool,
+                world_db_pool,
+                session,
+                header_crypto,
+                character_guid,
+            },
+            creature_guid,
+            loot,
+            loot_slot,
+        )
+        .await;
+    }
+
     if !session.combat_dummy_looting || loot_slot != 0 || !session.combat_dummy_loot_item_available {
         warn!(
             loot_slot,
@@ -2105,7 +2355,7 @@ async fn handle_autostore_loot_item(
             let merged_count = existing_stack.count + remaining_count;
             if wow_db::update_character_inventory_item_count(
                 character_db_pool,
-                character.guid,
+                character_guid,
                 existing_stack.item,
                 merged_count,
             )
@@ -2123,7 +2373,7 @@ async fn handle_autostore_loot_item(
     if remaining_count == 0 {
         session.combat_dummy_loot_item_available = false;
         session.inventory =
-            wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
         send_packet(
             stream,
             SMSG_LOOT_REMOVED,
@@ -2149,7 +2399,7 @@ async fn handle_autostore_loot_item(
 
     wow_db::add_character_inventory_item(
         character_db_pool,
-        character.guid,
+        character_guid,
         INVENTORY_SLOT_BAG_0 as u32,
         dst_slot,
         RUST_COMBAT_DUMMY_LOOT_ITEM,
@@ -2158,7 +2408,7 @@ async fn handle_autostore_loot_item(
     )
     .await?;
     session.combat_dummy_loot_item_available = false;
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let Some(new_item) = session.inventory.iter().find(|item| {
         item.bag == INVENTORY_SLOT_BAG_0 as u32
             && item.slot == dst_slot
@@ -2170,7 +2420,7 @@ async fn handle_autostore_loot_item(
     send_packet(stream, SMSG_LOOT_REMOVED, &[loot_slot], Some(&mut *header_crypto)).await?;
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let create_block = build_item_create_update_block(owner_guid, owner_guid, new_item, None)?;
-    let slot_block = build_inventory_slots_update_block(character.guid, &session.inventory, &[dst_slot])?;
+    let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[dst_slot])?;
     update_blocks.push(create_block);
     update_blocks.push(slot_block);
     let body = build_update_object_body(&update_blocks);
@@ -2187,6 +2437,35 @@ async fn handle_loot_money(
         warn!("Ignoring loot money request before character login");
         return Ok(());
     };
+    if let Some((creature_guid, money)) = session
+        .db_creatures
+        .iter()
+        .find(|(_, creature)| creature.looting && creature.loot_money_available)
+        .map(|(guid, creature)| (*guid, creature.loot_money()))
+    {
+        let gained_money = money;
+        let money =
+            wow_db::add_character_money(character_db_pool, character.guid, gained_money).await?;
+        if let Some(creature) = session.db_creatures.get_mut(&creature_guid) {
+            creature.loot_money_available = false;
+        }
+        send_packet(
+            stream,
+            SMSG_LOOT_MONEY_NOTIFY,
+            &gained_money.to_le_bytes(),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(&mut *header_crypto)).await?;
+        return send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_money_update_body(character.guid, money)?,
+            Some(header_crypto),
+        )
+        .await;
+    }
+
     if !session.combat_dummy_looting {
         warn!("Ignoring loot money request without an open combat dummy loot window");
         return Ok(());
@@ -2226,19 +2505,36 @@ async fn handle_loot_release(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let target = read_packet_guid(body, "CMSG_LOOT_RELEASE")?;
-    if target != rust_combat_dummy_guid() {
+    if target == rust_combat_dummy_guid() {
+        session.combat_dummy_looting = false;
+        session.combat_dummy_lootable = false;
+        session.combat_dummy_loot_money_available = false;
+        session.combat_dummy_loot_item_available = false;
+        session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
+        send_packet(
+            stream,
+            SMSG_LOOT_RELEASE_RESPONSE,
+            &build_loot_release_response_body(target, true),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        return send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_combat_dummy_state_update_body(RUST_COMBAT_DUMMY_HEALTH, 0)?,
+            Some(header_crypto),
+        )
+        .await;
+    }
+
+    let Some(creature) = session.db_creatures.get_mut(&target.raw()) else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
             "Ignoring loot release for unknown target"
         );
         return Ok(());
-    }
-
-    session.combat_dummy_looting = false;
-    session.combat_dummy_lootable = false;
-    session.combat_dummy_loot_money_available = false;
-    session.combat_dummy_loot_item_available = false;
-    session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
+    };
+    creature.respawn();
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,
@@ -2249,7 +2545,7 @@ async fn handle_loot_release(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_combat_dummy_state_update_body(RUST_COMBAT_DUMMY_HEALTH, 0)?,
+        &build_db_creature_state_update_body(target, creature.health, 0)?,
         Some(header_crypto),
     )
     .await
@@ -2295,6 +2591,174 @@ fn build_combat_dummy_loot_response_body(session: &WorldSessionState) -> Vec<u8>
         body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes());
         body.extend_from_slice(&0u32.to_le_bytes()); // random suffix factor
         body.extend_from_slice(&0u32.to_le_bytes()); // random property id
+        body.push(LOOT_SLOT_NORMAL);
+    }
+    body
+}
+
+impl From<CreatureLootQuery> for DbCreatureLootRuntime {
+    fn from(loot: CreatureLootQuery) -> Self {
+        Self {
+            item: loot.item,
+            count: loot.max_count.max(loot.min_count).max(1),
+            display_id: loot.display_id,
+        }
+    }
+}
+
+struct LootAutostoreContext<'a> {
+    stream: &'a mut TcpStream,
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    session: &'a mut WorldSessionState,
+    header_crypto: &'a mut HeaderCrypto,
+    character_guid: u32,
+}
+
+async fn autostore_loot_item(
+    context: LootAutostoreContext<'_>,
+    creature_guid: u64,
+    loot: DbCreatureLootRuntime,
+    loot_slot: u8,
+) -> anyhow::Result<()> {
+    let LootAutostoreContext {
+        stream,
+        character_db_pool,
+        world_db_pool,
+        session,
+        header_crypto,
+        character_guid,
+    } = context;
+    let max_stack = wow_db::get_item_template_query(world_db_pool, loot.item)
+        .await?
+        .map(|template| template.stackable.max(1))
+        .unwrap_or(1);
+    let mut remaining_count = loot.count;
+    let mut update_blocks = Vec::new();
+
+    if max_stack > 1 {
+        if let Some(existing_stack) = session
+            .inventory
+            .iter()
+            .filter(|item| {
+                item.item_template == loot.item
+                    && item.count < max_stack
+                    && remaining_count <= max_stack - item.count
+                    && u8::try_from(item.bag)
+                        .ok()
+                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
+            })
+            .min_by_key(|item| {
+                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                    0
+                } else {
+                    1
+                };
+                (bag_order, item.bag, item.slot)
+            })
+            .cloned()
+        {
+            let merged_count = existing_stack.count + remaining_count;
+            if wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                character_guid,
+                existing_stack.item,
+                merged_count,
+            )
+            .await?
+            {
+                remaining_count = 0;
+                update_blocks.push(build_item_stack_count_update_block(
+                    existing_stack.item,
+                    merged_count,
+                )?);
+            }
+        }
+    }
+
+    if remaining_count > 0 {
+        let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
+            send_inventory_change_failure(
+                stream,
+                EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+                None,
+                None,
+                header_crypto,
+            )
+            .await?;
+            return Ok(());
+        };
+
+        wow_db::add_character_inventory_item(
+            character_db_pool,
+            character_guid,
+            INVENTORY_SLOT_BAG_0 as u32,
+            dst_slot,
+            loot.item,
+            remaining_count,
+            0,
+        )
+        .await?;
+        session.inventory =
+            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+        if let Some(new_item) = session.inventory.iter().find(|item| {
+            item.bag == INVENTORY_SLOT_BAG_0 as u32
+                && item.slot == dst_slot
+                && item.item_template == loot.item
+        }) {
+            let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+            update_blocks.push(build_item_create_update_block(
+                owner_guid, owner_guid, new_item, None,
+            )?);
+            update_blocks.push(build_inventory_slots_update_block(
+                character_guid,
+                &session.inventory,
+                &[dst_slot],
+            )?);
+        }
+    } else {
+        session.inventory =
+            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    }
+
+    if let Some(creature) = session.db_creatures.get_mut(&creature_guid) {
+        creature.loot_item = None;
+    }
+    send_packet(
+        stream,
+        SMSG_LOOT_REMOVED,
+        &[loot_slot],
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let body = build_update_object_body(&update_blocks);
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
+fn build_db_creature_loot_response_body(
+    target: ObjectGuid,
+    creature: &DbCreatureRuntime,
+) -> Vec<u8> {
+    let item_count = u8::from(creature.loot_item.is_some());
+    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.push(CLIENT_LOOT_CORPSE);
+    body.extend_from_slice(
+        &(if creature.loot_money_available {
+            creature.loot_money()
+        } else {
+            0
+        })
+        .to_le_bytes(),
+    );
+    body.push(item_count);
+    if let Some(loot) = &creature.loot_item {
+        body.push(0);
+        body.extend_from_slice(&loot.item.to_le_bytes());
+        body.extend_from_slice(&loot.count.to_le_bytes());
+        body.extend_from_slice(&loot.display_id.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
         body.push(LOOT_SLOT_NORMAL);
     }
     body
@@ -2372,6 +2836,22 @@ fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Resul
     body.push(0);
     body.extend_from_slice(&block);
     Ok(body)
+}
+
+fn build_db_creature_state_update_body(
+    guid: ObjectGuid,
+    health: u32,
+    dynamic_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
 }
 
 fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Result<Vec<u8>> {

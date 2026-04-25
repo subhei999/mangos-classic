@@ -27,6 +27,8 @@ pub struct CreatureTemplateQuery {
     pub max_level_health: u32,
     pub min_melee_dmg: f32,
     pub max_melee_dmg: f32,
+    pub min_loot_gold: u32,
+    pub max_loot_gold: u32,
     pub melee_base_attack_time: u32,
     pub ranged_base_attack_time: u32,
     pub pet_spell_data_id: u32,
@@ -57,6 +59,14 @@ pub struct VendorItemQuery {
     pub container_slots: u32,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CreatureLootQuery {
+    pub item: u32,
+    pub min_count: u32,
+    pub max_count: u32,
+    pub display_id: u32,
+}
+
 pub async fn get_creature_template_query(
     pool: &MySqlPool,
     entry: u32,
@@ -71,6 +81,7 @@ pub async fn get_creature_template_query(
                 UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, Rank AS rank, \
                 MinLevelHealth AS min_level_health, MaxLevelHealth AS max_level_health, \
                 MinMeleeDmg AS min_melee_dmg, MaxMeleeDmg AS max_melee_dmg, \
+                MinLootGold AS min_loot_gold, MaxLootGold AS max_loot_gold, \
                 MeleeBaseAttackTime AS melee_base_attack_time, \
                 RangedBaseAttackTime AS ranged_base_attack_time, \
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian \
@@ -82,6 +93,32 @@ pub async fn get_creature_template_query(
     .await?;
 
     Ok(row)
+}
+
+pub async fn get_creature_loot_items(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureLootRow>(
+        "SELECT creature_loot_template.item, \
+                CAST(GREATEST(creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
+                CAST(GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
+                item_template.displayid AS display_id \
+         FROM creature_loot_template \
+         JOIN item_template ON creature_loot_template.item = item_template.entry \
+         WHERE creature_loot_template.entry = ? \
+           AND creature_loot_template.condition_id = 0 \
+           AND creature_loot_template.ChanceOrQuestChance > 0 \
+           AND creature_loot_template.groupid = 0 \
+           AND creature_loot_template.mincountOrRef > 0 \
+         ORDER BY creature_loot_template.item \
+         LIMIT 1",
+    )
+    .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
 }
 
 pub async fn get_vendor_items(
@@ -143,6 +180,8 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.MaxLevelHealth AS template_max_level_health, \
                 creature_template.MinMeleeDmg AS template_min_melee_dmg, \
                 creature_template.MaxMeleeDmg AS template_max_melee_dmg, \
+                creature_template.MinLootGold AS template_min_loot_gold, \
+                creature_template.MaxLootGold AS template_max_loot_gold, \
                 creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
@@ -183,6 +222,25 @@ struct VendorItemRow {
     max_durability: u16,
     buy_count: u8,
     container_slots: u8,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CreatureLootRow {
+    item: u32,
+    min_count: u32,
+    max_count: u32,
+    display_id: u32,
+}
+
+impl CreatureLootRow {
+    fn into_query(self) -> CreatureLootQuery {
+        CreatureLootQuery {
+            item: self.item,
+            min_count: self.min_count,
+            max_count: self.max_count,
+            display_id: self.display_id,
+        }
+    }
 }
 
 impl VendorItemRow {
@@ -230,6 +288,8 @@ struct CreatureSpawnRow {
     template_max_level_health: u32,
     template_min_melee_dmg: f32,
     template_max_melee_dmg: f32,
+    template_min_loot_gold: u32,
+    template_max_loot_gold: u32,
     template_melee_base_attack_time: u32,
     template_ranged_base_attack_time: u32,
     template_pet_spell_data_id: u32,
@@ -268,6 +328,8 @@ impl CreatureSpawnRow {
                 max_level_health: self.template_max_level_health,
                 min_melee_dmg: self.template_min_melee_dmg,
                 max_melee_dmg: self.template_max_melee_dmg,
+                min_loot_gold: self.template_min_loot_gold,
+                max_loot_gold: self.template_max_loot_gold,
                 melee_base_attack_time: self.template_melee_base_attack_time,
                 ranged_base_attack_time: self.template_ranged_base_attack_time,
                 pet_spell_data_id: self.template_pet_spell_data_id,

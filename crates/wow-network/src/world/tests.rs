@@ -212,6 +212,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         max_level_health: 120,
         min_melee_dmg: 3.0,
         max_melee_dmg: 5.0,
+        min_loot_gold: 2,
+        max_loot_gold: 4,
         melee_base_attack_time: 1800,
         ranged_base_attack_time: 2200,
         pet_spell_data_id: 0,

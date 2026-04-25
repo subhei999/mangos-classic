@@ -931,14 +931,17 @@ fn parses_backpack_inventory_destroy_packets() {
             count: 0,
         }
     );
-    assert!(destroy.is_full_backpack_destroy());
+    assert!(destroy.is_full_bag0_destroy());
 
     let partial_stack =
         DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 1, 0, 0, 0]).unwrap();
-    assert!(!partial_stack.is_full_backpack_destroy());
+    assert!(!partial_stack.is_full_bag0_destroy());
 
     let equipped = DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 3, 0, 0, 0, 0]).unwrap();
-    assert!(!equipped.is_full_backpack_destroy());
+    assert!(equipped.is_full_bag0_destroy());
+
+    let unsupported_bag = DestroyItemRequest::read(&[1, 24, 0, 0, 0, 0]).unwrap();
+    assert!(!unsupported_bag.is_full_bag0_destroy());
 }
 
 #[test]

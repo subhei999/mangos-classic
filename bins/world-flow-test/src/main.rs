@@ -186,6 +186,9 @@ async fn main() -> anyhow::Result<()> {
     assert_equipment_cache_slot(&character_pool, created.guid, 3, 38).await?;
     loaded_world.destroy_backpack_item(24)?;
     assert_inventory_item_absent(&character_pool, created.guid, 6948).await?;
+    loaded_world.destroy_bag0_item(3)?;
+    assert_inventory_item_absent(&character_pool, created.guid, 38).await?;
+    assert_equipment_cache_slot(&character_pool, created.guid, 3, 0).await?;
     let mut delete_world = WorldClient::connect(&session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
@@ -275,7 +278,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, backpack/equipped destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -1166,6 +1169,10 @@ impl WorldClient {
     }
 
     fn destroy_backpack_item(&mut self, slot: u8) -> anyhow::Result<()> {
+        self.destroy_bag0_item(slot)
+    }
+
+    fn destroy_bag0_item(&mut self, slot: u8) -> anyhow::Result<()> {
         write_client_packet(
             &mut self.stream,
             CMSG_DESTROYITEM,

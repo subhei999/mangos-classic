@@ -568,12 +568,12 @@ async fn handle_destroy_item(
     let character_guid = character.guid;
     let request = DestroyItemRequest::read(body)?;
 
-    if !request.is_full_backpack_destroy() {
+    if !request.is_full_bag0_destroy() {
         info!(
             bag = request.bag,
             slot = request.slot,
             count = request.count,
-            "Ignoring unsupported item destroy outside full bag-0 backpack items"
+            "Ignoring unsupported item destroy outside full bag-0 equipment/backpack items"
         );
         return Ok(());
     }
@@ -712,8 +712,10 @@ impl DestroyItemRequest {
         })
     }
 
-    fn is_full_backpack_destroy(&self) -> bool {
-        self.bag == INVENTORY_SLOT_BAG_0 && self.count == 0 && is_backpack_item_slot(self.slot)
+    fn is_full_bag0_destroy(&self) -> bool {
+        self.bag == INVENTORY_SLOT_BAG_0
+            && self.count == 0
+            && is_equipment_or_backpack_slot(self.slot)
     }
 }
 

@@ -801,6 +801,38 @@ fn set_inventory_slot_update_values(
     Ok(())
 }
 
+fn build_inventory_slots_update_body(
+    character_guid: u32,
+    inventory: &[CharacterInventoryItem],
+    slots: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    for slot in slots {
+        let Some(field) = inventory_slot_update_field(*slot) else {
+            continue;
+        };
+        let item_guid = inventory
+            .iter()
+            .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == *slot)
+            .map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item).raw())
+            .unwrap_or(0);
+        set_update_value(&mut values, field, item_guid as u32)?;
+        set_update_value(&mut values, field + 1, (item_guid >> 32) as u32)?;
+    }
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
 fn inventory_slot_update_field(slot: u8) -> Option<usize> {
     match slot {
         0..EQUIPMENT_SLOT_END => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),

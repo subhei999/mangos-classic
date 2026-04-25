@@ -18,7 +18,7 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the no-behavior world module split commit.
+- Worktree: expected clean after the Inventory v1 backpack move commit.
 
 ## Current Goal
 
@@ -62,6 +62,12 @@ Current Checkpoint 1 focus:
   files for bootstrap, interactions, wire helpers, and tests. The split is
   deliberately include-based to preserve the existing module/visibility shape
   while making future slices cheaper to read and review.
+- Added the first Inventory v1 move slice: Rust now handles `CMSG_SWAP_INV_ITEM`
+  and bag-0 `CMSG_SWAP_ITEM` for backpack item slots only, persists the slot
+  swap in `character_inventory`, refreshes the session inventory, and sends a
+  player `SMSG_UPDATE_OBJECT` values update for the changed backpack fields.
+  The Docker-backed world-flow harness proves moving hearthstone `6948` from
+  slot 24 to 26 and back persists in the DB.
 
 ## Tests Last Run
 
@@ -69,24 +75,22 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network builds_create_blocks_for_equipped_and_backpack_items -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network inventory -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network heroic -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network spell -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo check -p world-flow-test
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 ```
 
 Notes:
 
-- First broad-script rerun after the module split hit the local
+- One broad-script rerun during the Inventory v1 slice hit the local
   `target\debug\authserver.exe` lock. Stopped local `authserver`/`worldserver`
-  processes and reran `test-rust.cmd`, then `test-world-flow.cmd`, sequentially.
+  processes and reran `test-rust.cmd` cleanly.
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
 - `test-world-flow.cmd` result: auth session, create/delete happy path,
-  negative create/delete cases, loaded/guild leader rejection, guild/group/
-  social/pet/mail/auction cleanup, COD mail return, enum/count refresh.
+  negative create/delete cases, loaded/guild leader rejection, backpack item
+  move persistence, guild/group/social/pet/mail/auction cleanup, COD mail
+  return, enum/count refresh.
 
 ## Local Environment Notes
 
@@ -136,6 +140,7 @@ GitHub issues are the source of truth:
 - #12 `[Rust Rewrite][P2][Combat] Fixture combat lacks AI timers, death, XP, and loot parity`
 - #13 `[Rust Rewrite][P2][Spells] Starter spell cast path lacks real spell mechanics`
 - #14 `[Rust Rewrite][P2][Equipment] Starter character cannot cast Heroic Strike: melee weapon not equipped`
+- #15 `[Rust Rewrite][P2][Inventory] Custom starter item templates are absent from Docker world fixture`
 
 Full DB-backed loot, item/money persistence, death/respawn, XP, and combat
 timing remain covered by #12. Full spellbook validation, Heroic Strike
@@ -143,6 +148,9 @@ next-swing behavior, rage/cooldown/aura/effect execution, and DBC/DB-backed
 spell mechanics are covered by #13.
 Starter equipped-weapon recognition for client-side Heroic Strike validation is
 covered by #14.
+Custom starter item templates missing from the Docker world fixture are covered
+by #15; the current inventory move harness uses source-backed hearthstone
+`6948`.
 
 ## Known Blockers And Gaps
 
@@ -155,16 +163,20 @@ covered by #14.
   it reaches the Rust cast handler, consumes fixture rage, and applies a small
   immediate fixture damage update. It is not true CMaNGOS next-swing spell
   behavior yet.
+- Inventory v1 currently supports only backpack slot moves for present bag-0
+  items. Equip/unequip, bag containers, destroy, split/stacking, durability
+  changes, and server-side item-template validation remain future slices.
 - Broader world gameplay remains skeletal: movement persistence works, but
-  validation, visibility, spells, inventory actions, loot, vendors/trainers,
-  quests, and multi-client behavior remain future Checkpoint 1+ slices.
+  validation, visibility, fuller spells, loot, vendors/trainers, quests, and
+  multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-Continue with inventory item query/move v1 or fuller loot money/item v1, using
-CMaNGOS packet references before adding behavior. Item movement is still not
-implemented; the module split only prepared the codebase so that slice is less
-painful to work in.
+Real-client smoke the backpack move slice: drag hearthstone or another present
+starter backpack item to a different backpack slot, logout/relog, and verify it
+stays moved. Then continue Inventory v1 with equip/unequip validation or item
+destroy/split/stack behavior using CMaNGOS `ItemHandler.cpp`/`Player.cpp` as the
+reference.
 
 ## Key Files
 
@@ -173,6 +185,7 @@ painful to work in.
 - `crates/wow-network/src/world/interactions.rs`
 - `crates/wow-network/src/world/wire.rs`
 - `crates/wow-network/src/world/tests.rs`
+- `crates/wow-db/src/character.rs`
 - `bins/world-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
 - `docs/rust_auth_foundation.md`
@@ -185,6 +198,8 @@ painful to work in.
   - `src/game/Loot/LootMgr.h`
   - `src/game/Server/Opcodes.h`
   - `src/game/Entities/UpdateFields.h`
+  - `src/game/Entities/ItemHandler.cpp`
+  - `src/game/Entities/Player.cpp`
   - `src/game/Entities/Object.cpp`
   - `src/game/Spells/SpellHandler.cpp`
   - `src/game/Spells/Spell.cpp`

@@ -67,6 +67,8 @@ const CMSG_TUTORIAL_RESET: u32 = 0x0100;
 const CMSG_TEXT_EMOTE: u32 = 0x0104;
 const SMSG_EMOTE: u16 = 0x0103;
 const SMSG_TEXT_EMOTE: u16 = 0x0105;
+const CMSG_SWAP_ITEM: u32 = 0x010C;
+const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
 const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
@@ -251,6 +253,7 @@ const PLAYER_FIELD_MOD_DAMAGE_DONE_PCT: usize = 0x4BF;
 const PLAYER_FIELD_BYTES: usize = 0x4C6;
 const PLAYER_FIELD_WATCHED_FACTION_INDEX: usize = 0x4ED;
 const INVENTORY_SLOT_BAG_0: u8 = 0;
+const CLIENT_INVENTORY_SLOT_BAG_0: u8 = 255;
 const INVENTORY_SLOT_ITEM_START: u8 = 23;
 const INVENTORY_SLOT_ITEM_END: u8 = 39;
 const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
@@ -528,6 +531,17 @@ async fn handle_client(
                         handle_cast_spell(&mut stream, &body, &mut session, &mut header_crypto)
                             .await?;
                     }
+                    CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
+                        handle_inventory_swap(
+                            &mut stream,
+                            &character_db_pool,
+                            opcode,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
                         info!(
                             opcode = expected_noop_opcode_name(opcode),
@@ -631,6 +645,7 @@ struct WorldSessionState {
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
     player_rage: u32,
+    inventory: Vec<CharacterInventoryItem>,
 }
 
 #[derive(Debug)]
@@ -981,7 +996,7 @@ async fn handle_player_login(
     session.combat_dummy_lootable = false;
     session.combat_dummy_looting = false;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
-    let inventory =
+    session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     let world_stats = wow_db::get_player_world_stats(
         deps.world_db_pool,
@@ -1017,7 +1032,7 @@ async fn handle_player_login(
         EnterWorldBootstrap {
             character_db_pool: deps.character_db_pool,
             character,
-            inventory: &inventory,
+            inventory: &session.inventory,
             world_stats: &world_stats,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,

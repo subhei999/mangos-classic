@@ -445,6 +445,132 @@ async fn handle_item_query_single(
     .await
 }
 
+async fn handle_inventory_swap(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    opcode: u32,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!(
+            opcode = inventory_opcode_name(opcode),
+            "Ignoring inventory move before character login"
+        );
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let move_request = InventoryMoveRequest::read(opcode, body)?;
+
+    if !move_request.is_backpack_item_move() {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            src_bag = move_request.src_bag,
+            src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
+            dst_slot = move_request.dst_slot,
+            "Ignoring unsupported inventory move outside backpack item slots"
+        );
+        return Ok(());
+    }
+
+    if move_request.src_slot == move_request.dst_slot {
+        return Ok(());
+    }
+
+    let moved = wow_db::swap_character_inventory_slots(
+        character_db_pool,
+        character_guid,
+        move_request.src_bag as u32,
+        move_request.src_slot,
+        move_request.dst_bag as u32,
+        move_request.dst_slot,
+    )
+    .await?;
+    if !moved {
+        warn!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            src_slot = move_request.src_slot,
+            dst_slot = move_request.dst_slot,
+            "Rejected inventory move without source item"
+        );
+        return Ok(());
+    }
+
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+        .await?;
+    let changed_slots = [move_request.src_slot, move_request.dst_slot];
+    let body = build_inventory_slots_update_body(character_guid, &session.inventory, &changed_slots)?;
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InventoryMoveRequest {
+    src_bag: u8,
+    src_slot: u8,
+    dst_bag: u8,
+    dst_slot: u8,
+}
+
+impl InventoryMoveRequest {
+    fn read(opcode: u32, body: &[u8]) -> anyhow::Result<Self> {
+        match opcode {
+            CMSG_SWAP_INV_ITEM => {
+                if body.len() < 2 {
+                    anyhow::bail!("CMSG_SWAP_INV_ITEM payload too short: {} bytes", body.len());
+                }
+                Ok(Self {
+                    src_bag: INVENTORY_SLOT_BAG_0,
+                    src_slot: body[0],
+                    dst_bag: INVENTORY_SLOT_BAG_0,
+                    dst_slot: body[1],
+                })
+            }
+            CMSG_SWAP_ITEM => {
+                if body.len() < 4 {
+                    anyhow::bail!("CMSG_SWAP_ITEM payload too short: {} bytes", body.len());
+                }
+                Ok(Self {
+                    dst_bag: normalize_client_bag(body[0]),
+                    dst_slot: body[1],
+                    src_bag: normalize_client_bag(body[2]),
+                    src_slot: body[3],
+                })
+            }
+            _ => anyhow::bail!("unsupported inventory opcode 0x{opcode:04X}"),
+        }
+    }
+
+    fn is_backpack_item_move(&self) -> bool {
+        self.src_bag == INVENTORY_SLOT_BAG_0
+            && self.dst_bag == INVENTORY_SLOT_BAG_0
+            && is_backpack_item_slot(self.src_slot)
+            && is_backpack_item_slot(self.dst_slot)
+    }
+}
+
+fn normalize_client_bag(bag: u8) -> u8 {
+    if bag == CLIENT_INVENTORY_SLOT_BAG_0 {
+        INVENTORY_SLOT_BAG_0
+    } else {
+        bag
+    }
+}
+
+fn is_backpack_item_slot(slot: u8) -> bool {
+    (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&slot)
+}
+
+fn inventory_opcode_name(opcode: u32) -> &'static str {
+    match opcode {
+        CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
+        CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
+        _ => "UNKNOWN_INVENTORY_OPCODE",
+    }
+}
+
 async fn handle_creature_query(
     stream: &mut TcpStream,
     body: &[u8],

@@ -36,10 +36,12 @@ const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
+const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_CHAR_DELETE: u32 = 0x003C;
+const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
@@ -171,6 +173,10 @@ async fn main() -> anyhow::Result<()> {
     let mut loaded_world = WorldClient::connect(&session_key)?;
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
+    loaded_world.swap_backpack_slots(24, 26)?;
+    assert_inventory_slot(&character_pool, created.guid, 6948, 26).await?;
+    loaded_world.swap_backpack_slots(26, 24)?;
+    assert_inventory_slot(&character_pool, created.guid, 6948, 24).await?;
     let mut delete_world = WorldClient::connect(&session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
@@ -260,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -361,6 +367,28 @@ async fn assert_first_login_state_seen(
     ensure!(
         character.at_login & AT_LOGIN_FIRST == 0,
         "first-login AT_LOGIN_FIRST flag remained set"
+    );
+    Ok(())
+}
+
+async fn assert_inventory_slot(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+    expected_slot: u8,
+) -> anyhow::Result<()> {
+    let actual: Option<u8> = sqlx::query_scalar(
+        "SELECT slot FROM character_inventory \
+         WHERE guid = ? AND item_template = ? AND bag = 0",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_optional(character_pool)
+    .await?;
+    ensure!(
+        actual == Some(expected_slot),
+        "item {item_template} for character {guid} was in slot {:?}, expected {expected_slot}",
+        actual
     );
     Ok(())
 }
@@ -1057,6 +1085,21 @@ impl WorldClient {
         for _ in 0..11 {
             let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         }
+        Ok(())
+    }
+
+    fn swap_backpack_slots(&mut self, src_slot: u8, dst_slot: u8) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_SWAP_INV_ITEM,
+            &[src_slot, dst_slot],
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after inventory move, got 0x{opcode:04X}"
+        );
         Ok(())
     }
 

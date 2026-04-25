@@ -868,6 +868,71 @@ fn writes_inventory_item_guid_update_values() {
 }
 
 #[test]
+fn parses_backpack_inventory_move_packets() {
+    let swap_inv = InventoryMoveRequest::read(CMSG_SWAP_INV_ITEM, &[23, 24]).unwrap();
+    assert_eq!(
+        swap_inv,
+        InventoryMoveRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: 23,
+            dst_bag: INVENTORY_SLOT_BAG_0,
+            dst_slot: 24,
+        }
+    );
+    assert!(swap_inv.is_backpack_item_move());
+
+    let swap_item = InventoryMoveRequest::read(
+        CMSG_SWAP_ITEM,
+        &[
+            CLIENT_INVENTORY_SLOT_BAG_0,
+            25,
+            CLIENT_INVENTORY_SLOT_BAG_0,
+            23,
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        swap_item,
+        InventoryMoveRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: 23,
+            dst_bag: INVENTORY_SLOT_BAG_0,
+            dst_slot: 25,
+        }
+    );
+    assert!(swap_item.is_backpack_item_move());
+}
+
+#[test]
+fn inventory_slot_update_body_clears_source_and_sets_destination() {
+    let item = CharacterInventoryItem {
+        bag: 0,
+        slot: 24,
+        item: 42,
+        item_template: 6948,
+        count: 1,
+        durability: 0,
+    };
+
+    let body = build_inventory_slots_update_body(11, &[item], &[23, 24]).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+    let source_field = inventory_slot_update_field(23).unwrap();
+    let destination_field = inventory_slot_update_field(24).unwrap();
+    let guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+
+    assert_eq!(body[5], UPDATE_TYPE_VALUES);
+    assert_eq!(values[source_field], Some(0));
+    assert_eq!(values[source_field + 1], Some(0));
+    assert_eq!(values[destination_field], Some(guid.raw() as u32));
+    assert_eq!(
+        values[destination_field + 1],
+        Some((guid.raw() >> 32) as u32)
+    );
+}
+
+#[test]
 fn builds_create_blocks_for_equipped_and_backpack_items() {
     let character = CharacterEnumEntry {
         guid: 11,

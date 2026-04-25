@@ -907,6 +907,59 @@ pub async fn get_character_inventory_items(
     Ok(rows)
 }
 
+pub async fn swap_character_inventory_slots(
+    pool: &MySqlPool,
+    guid: u32,
+    src_bag: u32,
+    src_slot: u8,
+    dst_bag: u32,
+    dst_slot: u8,
+) -> Result<bool, DbError> {
+    let src_item: Option<u32> = sqlx::query_scalar(
+        "SELECT item FROM character_inventory \
+         WHERE guid = ? AND bag = ? AND slot = ?",
+    )
+    .bind(guid)
+    .bind(src_bag)
+    .bind(src_slot)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(src_item) = src_item else {
+        return Ok(false);
+    };
+
+    let dst_item: Option<u32> = sqlx::query_scalar(
+        "SELECT item FROM character_inventory \
+         WHERE guid = ? AND bag = ? AND slot = ?",
+    )
+    .bind(guid)
+    .bind(dst_bag)
+    .bind(dst_slot)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(dst_item) = dst_item {
+        sqlx::query("UPDATE character_inventory SET bag = ?, slot = ? WHERE guid = ? AND item = ?")
+            .bind(src_bag)
+            .bind(src_slot)
+            .bind(guid)
+            .bind(dst_item)
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query("UPDATE character_inventory SET bag = ?, slot = ? WHERE guid = ? AND item = ?")
+        .bind(dst_bag)
+        .bind(dst_slot)
+        .bind(guid)
+        .bind(src_item)
+        .execute(pool)
+        .await?;
+
+    Ok(true)
+}
+
 pub async fn character_has_unread_mail(pool: &MySqlPool, guid: u32) -> Result<bool, DbError> {
     let unread: Option<u8> = sqlx::query_scalar(
         "SELECT 1 FROM mail \

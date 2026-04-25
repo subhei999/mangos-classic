@@ -57,10 +57,127 @@ fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
         equipment_cache: None,
+    }
+}
+
+fn test_skill(skill: u16, value: u16, max: u16) -> CharacterSkill {
+    CharacterSkill { skill, value, max }
+}
+
+fn test_item_template(
+    entry: u32,
+    class: u32,
+    inventory_type: u32,
+    dmg_min1: f32,
+    dmg_max1: f32,
+    armor: u32,
+) -> ItemTemplateQuery {
+    ItemTemplateQuery {
+        entry,
+        class,
+        subclass: 0,
+        name: format!("Item {entry}"),
+        displayid: 0,
+        quality: 0,
+        flags: 0,
+        buy_price: 0,
+        sell_price: 0,
+        inventory_type,
+        allowable_class: -1,
+        allowable_race: -1,
+        item_level: 1,
+        required_level: 0,
+        required_skill: 0,
+        required_skill_rank: 0,
+        required_spell: 0,
+        required_honor_rank: 0,
+        required_city_rank: 0,
+        required_reputation_faction: 0,
+        required_reputation_rank: 0,
+        max_count: 0,
+        stackable: 1,
+        container_slots: 0,
+        dmg_min1,
+        dmg_max1,
+        dmg_type1: 0,
+        armor,
+        holy_res: 0,
+        fire_res: 0,
+        nature_res: 0,
+        frost_res: 0,
+        shadow_res: 0,
+        arcane_res: 0,
+        delay: 2000,
+        ammo_type: 0,
+        ranged_mod_range: 0.0,
+        bonding: 0,
+        description: String::new(),
+        page_text: 0,
+        language_id: 0,
+        page_material: 0,
+        start_quest: 0,
+        lock_id: 0,
+        material: 0,
+        sheath: 0,
+        random_property: 0,
+        block: 0,
+        itemset: 0,
+        max_durability: 0,
+        area: 0,
+        map: 0,
+        bag_family: 0,
+    }
+}
+
+fn equipped_template(slot: u8, template: ItemTemplateQuery) -> EquippedItemTemplate {
+    EquippedItemTemplate { slot, template }
+}
+
+fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
+    CreatureTemplateQuery {
+        entry,
+        name: format!("Creature {entry}"),
+        subname: Some("DB Spawn".to_string()),
+        min_level: 4,
+        max_level: 6,
+        display_id1: 123,
+        display_id2: 0,
+        display_id3: 0,
+        display_id4: 0,
+        faction: 35,
+        scale: 1.0,
+        family: 0,
+        creature_type: 7,
+        npc_flags: UNIT_NPC_FLAG_GOSSIP,
+        unit_flags: 0x20,
+        dynamic_flags: 0,
+        rank: 1,
+        min_level_health: 80,
+        max_level_health: 120,
+        min_melee_dmg: 3.0,
+        max_melee_dmg: 5.0,
+        melee_base_attack_time: 1800,
+        ranged_base_attack_time: 2200,
+        pet_spell_data_id: 0,
+        civilian: 0,
+    }
+}
+
+fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
+    CreatureSpawnQuery {
+        guid: 44,
+        entry,
+        map: 0,
+        position_x: -8950.0,
+        position_y: -130.0,
+        position_z: 83.5,
+        orientation: 1.25,
+        template: test_creature_template(entry),
     }
 }
 
@@ -128,7 +245,7 @@ fn name_query_response_matches_cmangos_shape() {
 
 #[test]
 fn creature_query_response_matches_cmangos_shape() {
-    let body = build_creature_query_response(RUST_GUIDE_ENTRY);
+    let body = build_creature_query_response(RUST_GUIDE_ENTRY, None);
     let mut cursor = 0;
 
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), RUST_GUIDE_ENTRY);
@@ -154,9 +271,28 @@ fn creature_query_response_matches_cmangos_shape() {
 #[test]
 fn missing_creature_query_marks_entry_unknown() {
     assert_eq!(
-        build_creature_query_response(1234),
+        build_creature_query_response(1234, None),
         (1234u32 | 0x8000_0000).to_le_bytes()
     );
+}
+
+#[test]
+fn db_creature_query_response_uses_world_template_fields() {
+    let template = test_creature_template(42);
+    let body = build_creature_query_response(42, Some(&template));
+    let mut cursor = 0;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 42);
+    assert_eq!(read_c_string(&body, &mut cursor).unwrap(), "Creature 42");
+    cursor += 3;
+    assert_eq!(read_c_string(&body, &mut cursor).unwrap(), "DB Spawn");
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 7);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 123);
 }
 
 #[test]
@@ -281,6 +417,34 @@ fn rust_combat_dummy_create_block_has_hostile_unit_fields() {
         values[UNIT_FIELD_FACTIONTEMPLATE],
         Some(RUST_COMBAT_DUMMY_FACTION_TEMPLATE)
     );
+}
+
+#[test]
+fn db_creature_create_block_uses_spawn_and_template_fields() {
+    let creature = test_creature_spawn(42);
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+    let guid = creature_spawn_guid(&creature);
+
+    assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+    assert_eq!(
+        block[update_flags_offset],
+        UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION
+    );
+    assert_eq!(values[0], Some(guid.raw() as u32));
+    assert_eq!(values[1], Some((guid.raw() >> 32) as u32));
+    assert_eq!(values[2], Some(TYPEMASK_OBJECT_UNIT));
+    assert_eq!(values[3], Some(42));
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(120));
+    assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(120));
+    assert_eq!(values[UNIT_FIELD_LEVEL], Some(4));
+    assert_eq!(values[UNIT_FIELD_FACTIONTEMPLATE], Some(35));
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(0x20));
+    assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(123));
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
 }
 
 #[test]
@@ -532,6 +696,7 @@ fn serializes_character_enum_entry() {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
@@ -585,6 +750,7 @@ fn login_verify_world_packet_shape() {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
@@ -681,6 +847,7 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
@@ -693,7 +860,8 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
 #[test]
 fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let character = test_character(1, 1);
+    let mut character = test_character(1, 1);
+    character.explored_zones = Some("1 0 4 4294967295".to_string());
 
     let mut body = Vec::new();
     let world_stats = PlayerWorldStats {
@@ -703,8 +871,37 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
         next_level_xp: 400,
     };
 
-    write_minimal_player_update_values(&mut body, guid, &character, &[], &world_stats).unwrap();
+    let skills = vec![
+        test_skill(95, 1, 5),     // Defense
+        test_skill(98, 300, 300), // Common
+        test_skill(162, 1, 5),    // Unarmed
+    ];
+    let equipped = vec![
+        equipped_template(
+            EQUIPMENT_SLOT_MAINHAND,
+            test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0),
+        ),
+        equipped_template(
+            EQUIPMENT_SLOT_OFFHAND,
+            test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 11),
+        ),
+    ];
+
+    write_minimal_player_update_values(
+        &mut body,
+        guid,
+        &character,
+        &[],
+        &world_stats,
+        &skills,
+        &equipped,
+    )
+    .unwrap();
     let values = decode_update_values(&body);
+    let expected_melee_ap =
+        class_melee_attack_power(character.class, character.level as u32, 23, 20);
+    let expected_ranged_ap = class_ranged_attack_power(character.class, character.level as u32, 20);
+    let expected_main_bonus = expected_melee_ap as f32 / 14.0 * 2.0;
 
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(60));
     assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(60));
@@ -718,14 +915,73 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
     assert_eq!(values[UNIT_FIELD_STAT0 + 2], Some(22));
     assert_eq!(values[UNIT_FIELD_BASE_HEALTH], Some(20));
     assert_eq!(values[UNIT_FIELD_BASE_MANA], Some(0));
+    assert_eq!(values[UNIT_FIELD_RESISTANCES], Some(51));
+    assert_eq!(values[UNIT_FIELD_RESISTANCES + 1], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURASTATE], Some(0));
+    assert_eq!(values[UNIT_FIELD_MOUNTDISPLAYID], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_MINDAMAGE],
+        Some((2.0f32 + expected_main_bonus).to_bits())
+    );
+    assert_eq!(
+        values[UNIT_FIELD_MAXDAMAGE],
+        Some((4.0f32 + expected_main_bonus).to_bits())
+    );
+    assert_eq!(values[UNIT_FIELD_MINOFFHANDDAMAGE], Some(0.0f32.to_bits()));
+    assert_eq!(values[UNIT_FIELD_MAXOFFHANDDAMAGE], Some(0.0f32.to_bits()));
+    assert_eq!(values[UNIT_FIELD_ATTACK_POWER], Some(expected_melee_ap));
+    assert_eq!(
+        values[UNIT_FIELD_RANGED_ATTACK_POWER],
+        Some(expected_ranged_ap)
+    );
+    assert_eq!(values[UNIT_FIELD_ATTACK_POWER_MODS], Some(0));
+    assert_eq!(values[UNIT_FIELD_RANGED_ATTACK_POWER_MODS], Some(0));
+    assert_eq!(values[UNIT_FIELD_MINRANGEDDAMAGE], Some(0.0f32.to_bits()));
+    assert_eq!(values[UNIT_FIELD_MAXRANGEDDAMAGE], Some(0.0f32.to_bits()));
+    assert_eq!(values[UNIT_FIELD_POWER_COST_MODIFIER], Some(0));
     assert_eq!(values[PLAYER_NEXT_LEVEL_XP], Some(400));
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1], Some(make_pair32(95, 0)));
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 1], Some(make_pair32(1, 5)));
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 2], Some(0));
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 3], Some(make_pair32(98, 0)));
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1 + 4],
+        Some(make_pair32(300, 300))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 6], Some(make_pair32(162, 0)));
+    assert_eq!(values[PLAYER_CHARACTER_POINTS1], Some(0));
+    assert_eq!(values[PLAYER_CHARACTER_POINTS2], Some(2));
+    assert_eq!(values[PLAYER_BLOCK_PERCENTAGE], Some(5.0f32.to_bits()));
+    assert_eq!(
+        values[PLAYER_DODGE_PERCENTAGE],
+        Some(dodge_percent(character.class, character.level, 20).to_bits())
+    );
+    assert_eq!(values[PLAYER_PARRY_PERCENTAGE], Some(0.0f32.to_bits()));
+    assert_eq!(
+        values[PLAYER_CRIT_PERCENTAGE],
+        Some(melee_crit_percent(character.class, character.level, 20).to_bits())
+    );
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1], Some(1));
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1 + 1], Some(0));
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1 + 2], Some(4));
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1 + 3], Some(u32::MAX));
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1 + 63], Some(0));
     assert_eq!(values[UNIT_FIELD_BYTES_2], Some(unit_bytes_2()));
     assert_eq!(values[PLAYER_FIELD_COINAGE], Some(12345));
+    assert_eq!(values[PLAYER_FIELD_POSSTAT0], Some(0.0f32.to_bits()));
+    assert_eq!(values[PLAYER_FIELD_NEGSTAT0], Some(0.0f32.to_bits()));
+    assert_eq!(
+        values[PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE],
+        Some(0.0f32.to_bits())
+    );
     assert_eq!(values[PLAYER_FIELD_WATCHED_FACTION_INDEX], Some(u32::MAX));
     assert_eq!(
         values[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT],
         Some(1.0f32.to_bits())
     );
+    assert_eq!(values[PLAYER_AMMO_ID], Some(0));
+    assert_eq!(values[PLAYER_SELF_RES_SPELL], Some(0));
+    assert_eq!(values[PLAYER_FIELD_BYTES2], Some(0));
 }
 
 #[test]
@@ -739,8 +995,16 @@ fn class_power_defaults_match_cmangos_create_powers() {
         stats: [15, 23, 19, 26, 22],
         next_level_xp: 400,
     };
-    write_minimal_player_update_values(&mut body, guid, &test_character(7, 8), &[], &mage_stats)
-        .unwrap();
+    write_minimal_player_update_values(
+        &mut body,
+        guid,
+        &test_character(7, 8),
+        &[],
+        &mage_stats,
+        &[],
+        &[],
+    )
+    .unwrap();
     let values = decode_update_values(&body);
     assert_eq!(values[UNIT_FIELD_POWER1], Some(210));
     assert_eq!(values[UNIT_FIELD_MAXPOWER1], Some(210));
@@ -754,8 +1018,16 @@ fn class_power_defaults_match_cmangos_create_powers() {
         stats: [21, 23, 21, 20, 20],
         next_level_xp: 400,
     };
-    write_minimal_player_update_values(&mut body, guid, &test_character(1, 4), &[], &rogue_stats)
-        .unwrap();
+    write_minimal_player_update_values(
+        &mut body,
+        guid,
+        &test_character(1, 4),
+        &[],
+        &rogue_stats,
+        &[],
+        &[],
+    )
+    .unwrap();
     let values = decode_update_values(&body);
     assert_eq!(values[UNIT_FIELD_POWER4], Some(POWER_ENERGY_DEFAULT));
     assert_eq!(values[UNIT_FIELD_MAXPOWER4], Some(POWER_ENERGY_DEFAULT));
@@ -1140,6 +1412,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
@@ -1222,6 +1495,7 @@ fn maps_classic_race_gender_display_ids() {
         power4: 0,
         power5: 0,
         watched_faction: u32::MAX,
+        explored_zones: None,
         pet_entry: None,
         pet_modelid: None,
         pet_level: None,
@@ -1273,6 +1547,8 @@ fn maps_classic_race_gender_display_ids() {
                     stats: [23, 20, 22, 20, 21],
                     next_level_xp: 400,
                 },
+                &[],
+                &[],
             )
             .unwrap();
 

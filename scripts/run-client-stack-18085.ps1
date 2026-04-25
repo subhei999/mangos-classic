@@ -103,6 +103,47 @@ ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
 "@
 Invoke-MariaDb "" $seedCharacterSql
 
+$seedCreatureSql = @"
+DROP TEMPORARY TABLE IF EXISTS rust_client_creature_template;
+CREATE TEMPORARY TABLE rust_client_creature_template LIKE mangos.creature_template;
+INSERT INTO rust_client_creature_template
+SELECT * FROM mangos.creature_template WHERE Entry = 1 LIMIT 1;
+UPDATE rust_client_creature_template
+SET Entry = 900010,
+    Name = 'Rust DB Guide',
+    SubName = 'DB Spawn',
+    MinLevel = 1,
+    MaxLevel = 1,
+    DisplayId1 = 49,
+    DisplayId2 = 0,
+    DisplayId3 = 0,
+    DisplayId4 = 0,
+    Faction = 35,
+    Scale = 1,
+    NpcFlags = 1,
+    UnitFlags = 0,
+    DynamicFlags = 0,
+    MinLevelHealth = 42,
+    MaxLevelHealth = 42,
+    MinMeleeDmg = 1,
+    MaxMeleeDmg = 2,
+    MeleeBaseAttackTime = 2000,
+    RangedBaseAttackTime = 2000;
+DELETE FROM mangos.creature WHERE guid = 900010;
+DELETE FROM mangos.creature_template WHERE Entry = 900010;
+INSERT INTO mangos.creature_template SELECT * FROM rust_client_creature_template;
+INSERT INTO mangos.creature
+    (guid, id, map, spawnMask, position_x, position_y, position_z, orientation,
+     spawntimesecsmin, spawntimesecsmax, spawndist, MovementType)
+SELECT 900010, 900010, map, 1, position_x + 6, position_y - 2, position_z, orientation,
+       120, 120, 0, 0
+FROM characters.characters
+WHERE name = 'Rustone'
+LIMIT 1;
+DROP TEMPORARY TABLE rust_client_creature_template;
+"@
+Invoke-MariaDb "mangos" $seedCreatureSql
+
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 Invoke-Checked cargo @("build", "-p", "authserver")
 Invoke-Checked cargo @("build", "-p", "worldserver")

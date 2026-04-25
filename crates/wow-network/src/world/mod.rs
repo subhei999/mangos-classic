@@ -15,7 +15,8 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterReputation, CharacterSpell, NewCharacter, PlayerWorldStats,
+    CharacterNameQuery, CharacterReputation, CharacterSkill, CharacterSpell, CreatureSpawnQuery,
+    CreatureTemplateQuery, ItemTemplateQuery, NewCharacter, PlayerWorldStats,
 };
 
 const CMSG_CHAR_CREATE: u32 = 0x0036;
@@ -208,6 +209,9 @@ const REALM_ID: u32 = 1;
 const MAX_CHARACTERS_PER_REALM: u8 = 10;
 const FORM_BATTLESTANCE: u8 = 0x11;
 const EQUIPMENT_SLOT_END: u8 = 19;
+const EQUIPMENT_SLOT_MAINHAND: u8 = 15;
+const EQUIPMENT_SLOT_OFFHAND: u8 = 16;
+const EQUIPMENT_SLOT_RANGED: u8 = 17;
 const INVENTORY_SLOT_BAG_START: u8 = 19;
 const INVENTORY_SLOT_BAG_END: u8 = 23;
 const POWER_MANA: u8 = 0;
@@ -217,6 +221,12 @@ const POWER_ENERGY: u8 = 3;
 const POWER_HAPPINESS: u8 = 4;
 const POWER_RAGE_DEFAULT: u32 = 1000;
 const POWER_ENERGY_DEFAULT: u32 = 100;
+const BASE_ATTACK_TIME_MS: u32 = 2000;
+const MAX_SPELL_SCHOOL: usize = 7;
+const MAX_STATS: usize = 5;
+const ITEM_CLASS_WEAPON: u32 = 2;
+const ITEM_CLASS_ARMOR: u32 = 4;
+const INVTYPE_SHIELD: u32 = 14;
 const REPUTATION_LIST_SLOTS: usize = 64;
 const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
 const UNIT_FIELD_HEALTH: usize = 0x016;
@@ -235,27 +245,37 @@ const UNIT_FIELD_LEVEL: usize = 0x022;
 const UNIT_FIELD_FACTIONTEMPLATE: usize = 0x023;
 const UNIT_FIELD_BYTES_0: usize = 0x024;
 const UNIT_FIELD_FLAGS: usize = 0x02E;
+const UNIT_FIELD_AURASTATE: usize = 0x07D;
 const UNIT_FIELD_BASEATTACKTIME: usize = 0x07E;
 const UNIT_FIELD_RANGEDATTACKTIME: usize = 0x080;
 const UNIT_FIELD_BOUNDINGRADIUS: usize = 0x081;
 const UNIT_FIELD_COMBATREACH: usize = 0x082;
 const UNIT_FIELD_DISPLAYID: usize = 0x083;
 const UNIT_FIELD_NATIVEDISPLAYID: usize = 0x084;
+const UNIT_FIELD_MOUNTDISPLAYID: usize = 0x085;
 const UNIT_FIELD_MINDAMAGE: usize = 0x086;
 const UNIT_FIELD_MAXDAMAGE: usize = 0x087;
+const UNIT_FIELD_MINOFFHANDDAMAGE: usize = 0x088;
+const UNIT_FIELD_MAXOFFHANDDAMAGE: usize = 0x089;
 const UNIT_FIELD_BYTES_1: usize = 0x08A;
 const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
 const UNIT_MOD_CAST_SPEED: usize = 0x091;
 const UNIT_NPC_FLAGS: usize = 0x093;
 const UNIT_NPC_EMOTESTATE: usize = 0x094;
 const UNIT_FIELD_STAT0: usize = 0x096;
+const UNIT_FIELD_RESISTANCES: usize = 0x09B;
 const UNIT_FIELD_BASE_MANA: usize = 0x0A2;
 const UNIT_FIELD_BASE_HEALTH: usize = 0x0A3;
 const UNIT_FIELD_BYTES_2: usize = 0x0A4;
 const UNIT_FIELD_ATTACK_POWER: usize = 0x0A5;
+const UNIT_FIELD_ATTACK_POWER_MODS: usize = 0x0A6;
 const UNIT_FIELD_ATTACK_POWER_MULTIPLIER: usize = 0x0A7;
 const UNIT_FIELD_RANGED_ATTACK_POWER: usize = 0x0A8;
+const UNIT_FIELD_RANGED_ATTACK_POWER_MODS: usize = 0x0A9;
 const UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER: usize = 0x0AA;
+const UNIT_FIELD_MINRANGEDDAMAGE: usize = 0x0AB;
+const UNIT_FIELD_MAXRANGEDDAMAGE: usize = 0x0AC;
+const UNIT_FIELD_POWER_COST_MODIFIER: usize = 0x0AD;
 const UNIT_FIELD_POWER_COST_MULTIPLIER: usize = 0x0B4;
 const PLAYER_FLAGS_FIELD: usize = 0x0BE;
 const PLAYER_BYTES: usize = 0x0C1;
@@ -265,11 +285,33 @@ const PLAYER_FIELD_INV_SLOT_HEAD: usize = 0x1E6;
 const PLAYER_FIELD_PACK_SLOT_1: usize = 0x214;
 const PLAYER_XP: usize = 0x2CC;
 const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
+const PLAYER_SKILL_INFO_1_1: usize = 0x2CE;
+const PLAYER_MAX_SKILLS: usize = 128;
+const PLAYER_CHARACTER_POINTS1: usize = 0x44E;
+const PLAYER_CHARACTER_POINTS2: usize = 0x44F;
+const PLAYER_TRACK_CREATURES: usize = 0x450;
+const PLAYER_TRACK_RESOURCES: usize = 0x451;
+const PLAYER_BLOCK_PERCENTAGE: usize = 0x452;
+const PLAYER_DODGE_PERCENTAGE: usize = 0x453;
+const PLAYER_PARRY_PERCENTAGE: usize = 0x454;
+const PLAYER_CRIT_PERCENTAGE: usize = 0x455;
+const PLAYER_RANGED_CRIT_PERCENTAGE: usize = 0x456;
+const PLAYER_EXPLORED_ZONES_1: usize = 0x457;
+const PLAYER_EXPLORED_ZONES_SIZE: usize = 64;
+const PLAYER_REST_STATE_EXPERIENCE: usize = 0x497;
 const PLAYER_FIELD_COINAGE: usize = 0x498;
+const PLAYER_FIELD_POSSTAT0: usize = 0x499;
+const PLAYER_FIELD_NEGSTAT0: usize = 0x49E;
+const PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE: usize = 0x4A3;
+const PLAYER_FIELD_RESISTANCEBUFFMODSNEGATIVE: usize = 0x4AA;
 const PLAYER_FIELD_MOD_DAMAGE_DONE_POS: usize = 0x4B1;
 const PLAYER_FIELD_MOD_DAMAGE_DONE_NEG: usize = 0x4B8;
 const PLAYER_FIELD_MOD_DAMAGE_DONE_PCT: usize = 0x4BF;
 const PLAYER_FIELD_BYTES: usize = 0x4C6;
+const PLAYER_AMMO_ID: usize = 0x4C7;
+const PLAYER_SELF_RES_SPELL: usize = 0x4C8;
+const PLAYER_FIELD_PVP_MEDALS: usize = 0x4C9;
+const PLAYER_FIELD_BYTES2: usize = 0x4EC;
 const PLAYER_FIELD_WATCHED_FACTION_INDEX: usize = 0x4ED;
 const INVENTORY_SLOT_BAG_0: u8 = 0;
 const CLIENT_INVENTORY_SLOT_BAG_0: u8 = 255;
@@ -302,6 +344,8 @@ const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
 const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
 const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
 const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
+const CREATURE_SPAWN_RADIUS_YARDS: f32 = 120.0;
+const CREATURE_SPAWN_LIMIT: u32 = 32;
 const HEROIC_STRIKE_RAGE_COST: u32 = 150;
 const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
 const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
@@ -531,7 +575,13 @@ async fn handle_client(
                         .await?;
                     }
                     CMSG_CREATURE_QUERY => {
-                        handle_creature_query(&mut stream, &body, &mut header_crypto).await?;
+                        handle_creature_query(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_MESSAGECHAT => {
                         handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
@@ -1117,6 +1167,7 @@ async fn handle_player_login(
         stream,
         EnterWorldBootstrap {
             character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
             character,
             inventory: &session.inventory,
             world_stats: &world_stats,

@@ -37,6 +37,8 @@ pub struct CharacterEnumEntry {
     pub power5: u32,
     #[sqlx(rename = "watchedFaction")]
     pub watched_faction: u32,
+    #[sqlx(rename = "exploredZones")]
+    pub explored_zones: Option<String>,
     pub pet_entry: Option<u32>,
     pub pet_modelid: Option<u32>,
     pub pet_level: Option<u32>,
@@ -183,6 +185,9 @@ pub struct ItemTemplateQuery {
     pub max_count: u32,
     pub stackable: u32,
     pub container_slots: u32,
+    pub dmg_min1: f32,
+    pub dmg_max1: f32,
+    pub dmg_type1: u32,
     pub armor: u32,
     pub holy_res: u32,
     pub fire_res: u32,
@@ -219,6 +224,13 @@ pub struct PlayerWorldStats {
     pub next_level_xp: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRow, Serialize, Deserialize)]
+pub struct CharacterSkill {
+    pub skill: u16,
+    pub value: u16,
+    pub max: u16,
+}
+
 impl PlayerWorldStats {
     pub fn max_health(self) -> u32 {
         self.base_health + health_bonus_from_stamina(self.stats[2])
@@ -247,7 +259,7 @@ pub async fn get_character_enum_entries(
                 characters.money, characters.cinematic, \
                 characters.health, characters.power1, characters.power2, \
                 characters.power3, characters.power4, characters.power5, \
-                characters.watchedFaction, \
+                characters.watchedFaction, characters.exploredZones, \
                 character_pet.entry AS pet_entry, character_pet.modelid AS pet_modelid, \
                 character_pet.level AS pet_level, characters.equipmentCache \
          FROM characters \
@@ -900,6 +912,20 @@ pub async fn get_character_actions(
     Ok(rows)
 }
 
+pub async fn get_character_skills(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterSkill>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterSkill>(
+        "SELECT skill, value, max FROM character_skills WHERE guid = ? ORDER BY skill",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 pub async fn get_character_reputations(
     pool: &MySqlPool,
     guid: u32,
@@ -1305,8 +1331,9 @@ pub async fn get_item_template_query(
          InventoryType, AllowableClass, AllowableRace, ItemLevel, RequiredLevel, RequiredSkill, \
          RequiredSkillRank, requiredspell, requiredhonorrank, RequiredCityRank, \
          RequiredReputationFaction, RequiredReputationRank, maxcount, stackable, ContainerSlots, \
-         armor, holy_res, fire_res, nature_res, frost_res, shadow_res, arcane_res, delay, \
-         ammo_type, RangedModRange, bonding, description, PageText, LanguageID, PageMaterial, \
+         dmg_min1, dmg_max1, dmg_type1, armor, holy_res, fire_res, nature_res, frost_res, \
+         shadow_res, arcane_res, delay, ammo_type, RangedModRange, bonding, description, \
+         PageText, LanguageID, PageMaterial, \
          startquest, lockid, Material, sheath, RandomProperty, block, itemset, MaxDurability, \
          area, Map, BagFamily FROM item_template WHERE entry = ?",
     )
@@ -1342,6 +1369,9 @@ pub async fn get_item_template_query(
         max_count: row.try_get::<u16, _>("maxcount")? as u32,
         stackable: row.try_get::<u16, _>("stackable")? as u32,
         container_slots: row.try_get::<u8, _>("ContainerSlots")? as u32,
+        dmg_min1: row.try_get("dmg_min1")?,
+        dmg_max1: row.try_get("dmg_max1")?,
+        dmg_type1: row.try_get::<u8, _>("dmg_type1")? as u32,
         armor: row.try_get::<u16, _>("armor")? as u32,
         holy_res: row.try_get::<u8, _>("holy_res")? as u32,
         fire_res: row.try_get::<u8, _>("fire_res")? as u32,

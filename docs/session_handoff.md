@@ -16,21 +16,20 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest commit: this commit, `Add fixture loot and vendor item flow` (use
-  `git log -1 --oneline` for the exact hash)
+- Latest committed base before this slice: `9ea21fba7 Document loot smoke stack issue`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the fixture loot/vendor inventory slice.
+- Worktree at handoff: Checkpoint 1 player update parity plus DB creature
+  spawn/query v1 changes are ready to commit/push.
 
 ## Current Goal
 
 Checkpoint 1: **First Playable World**.
 
-The Rust auth/world stack can authenticate a real WoW 1.12.1 client, show
-character select, create/select/delete characters, enter a minimal world, move,
-logout/relog, persist position, seed starter state, open a fixture NPC gossip
-dialogue, fight a fixture combat dummy, move/equip/destroy/split/merge basic
-inventory items, and exercise fixture loot/vendor item flows in the packet DB
-harness.
+The Rust auth/world stack can authenticate a real WoW 1.12.1 client, manage
+characters, enter a minimal world, move/logout/relog, seed starter state, render
+DB-backed creature spawns, query creature templates, open fixture NPC
+gossip/vendor flows, fight a fixture combat dummy, and exercise basic inventory
+and loot/vendor item flows in the packet DB harness.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -40,25 +39,34 @@ using the repo's bug triage policy, then continue the requested task.
 
 ## What Changed Recently
 
-- Split `crates/wow-network/src/world/mod.rs` into focused include files for
-  bootstrap, interactions, wire helpers, and tests so Checkpoint 1 slices are
-  cheaper to read and review.
-- Added Inventory v1 support for backpack moves, equip/unequip, destroy,
-  partial destroy, split, equipped-bag storage positions, bag-internal moves,
-  and simple same-template stack merges, with DB persistence and packet-harness
-  coverage.
-- Improved inventory update packet fidelity for bag containers: create/update
-  blocks now distinguish item versus container objects, include container slot
-  counts where needed, update player inventory slots, update container slot
-  fields, and send item contained-guid changes for supported moves/splits.
-- Added a fixture combat-dummy loot loop: killing the dummy exposes money and
-  Tough Jerky `117` x2, `CMSG_LOOT_MONEY` persists coinage, and
-  `CMSG_AUTOSTORE_LOOT_ITEM` stores the item in the backpack and sends update
-  packets.
-- Extended the `Rust Guide` fixture to also be a vendor. It lists and sells a
-  source-backed 6-slot container item `2102` plus Tough Jerky `117`, inserts
-  purchases into the first empty backpack slot, refreshes inventory, and is
-  covered by `world-flow-test`.
+- Inventory v1 supports backpack moves, equip/unequip, destroy, partial
+  destroy, split, equipped-bag storage positions, bag-internal moves, and simple
+  same-template stack merges, with DB persistence and packet-harness coverage.
+- Fixture combat-dummy loot and `Rust Guide` vendor loops cover money, Tough
+  Jerky `117`, and container item `2102` in `world-flow-test`.
+- Started player `SMSG_UPDATE_OBJECT` parity by adding source-derived CMaNGOS
+  default fields to the self-spawn create block: aura state, mount display,
+  offhand/ranged damage placeholders, attack-power mods, power-cost modifiers,
+  armor/resistances, secondary combat percentages, stat/resistance buff mods,
+  profession points, rest XP, ammo/self-res/PvP placeholders, and
+  `PLAYER_FIELD_BYTES2`.
+- Added DB-backed starter skill serialization to the player self-spawn update:
+  Rust now loads `character_skills` on enter-world and writes
+  `PLAYER_SKILL_INFO_1_1` triplets with skill id, value/max, and zero bonus
+  fields using the CMaNGOS packed two-`u16` layout.
+- Added first-pass equipment-derived combat stats to the player self-spawn
+  update: Rust now fills armor/resistances, base class attack power, weapon
+  damage, shield block, and agility-derived dodge/crit fields instead of broad
+  zero placeholders.
+- Added DB-backed explored-zone serialization to the player self-spawn update:
+  Rust now reads `characters.exploredZones` and writes all 64
+  `PLAYER_EXPLORED_ZONES_*` fields into the update block.
+- Added DB-backed creature spawn/query v1: Rust loads nearby `creature` rows
+  joined to `creature_template`, appends unit create blocks during enter-world,
+  and answers `CMSG_CREATURE_QUERY` from `creature_template` before falling
+  back to the Rust Guide / combat dummy fixtures.
+- `scripts/run-client-stack-18085.ps1` now seeds local DB-spawn visual fixture
+  `Rust DB Guide` (`creature` / `creature_template` `900010`) near `Rustone`.
 
 ## Tests Last Run
 
@@ -66,21 +74,19 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network combat_dummy_loot -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network inventory -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network vendor -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network parses_rust_guide_buy_item_packet -- --nocapture
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo check -p world-flow-test
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network self_spawn_update_includes_cmangos_player_vitals_and_defaults -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 git diff --check
 ```
 
-`test-rust.cmd` passed with 73 `wow-network` tests. `test-world-flow.cmd`
-passed with auth session, create/delete cases, loaded/guild leader rejection,
-backpack moves, equip/unequip, Rust Guide vendor buys, bag-contained moves,
-stack merge, destroy guardrails, partial destroy, split, bag-contained destroy,
-cleanup checks, COD mail return, and enum/count refresh.
+`test-rust.cmd` passed with 73 `wow-network` tests. The first rerun hit the
+usual final-build binary lock; stopping stale local `authserver.exe` /
+`worldserver.exe` processes and rerunning passed. After DB creature v1,
+`test-rust.cmd` passed with 75 `wow-network` tests. `test-world-flow.cmd`
+passed with auth session, create/delete cases, DB creature query,
+inventory/vendor/loot flows, cleanup checks, COD mail return, and enum/count
+refresh.
 
 Notes:
 
@@ -99,79 +105,67 @@ Notes:
 
 ## Real-Client Smoke Notes
 
-Last reported manual smoke:
-
-- `Rust Combat Dummy` is visible and targetable.
-- First right-click attack and continued attacks work without retargeting.
-- Empty corpse-loot fixture smoke passed before item/money loot was added.
-- Heroic Strike now reaches the Rust cast path, consumes fixture rage, and
-  applies fixture damage; full next-swing spell parity remains GitHub #13.
-- Inventory smoke confirmed backpack movement, equip persistence, and basic
-  destroy behavior; stack splitting had no good manual fixture before this
-  vendor/loot slice.
-- Fixture loot/vendor smoke is good overall. Minor issue found: looted Tough
-  Jerky creates a separate stack instead of merging into an existing stack, but
-  manual stacking works afterward; tracked as GitHub #19.
+Last reported manual smoke: user confirmed the real-client world, combat dummy,
+fixture loot/vendor, inventory, starter Skills UI, character pane, and map
+gates are good enough to continue Checkpoint 1.
 
 Next manual smoke should verify:
 
 - Launch `scripts/run-client-stack-18085.cmd`.
 - Login, create/select a character, enter world, move, and confirm logout/relog.
-- Open `Rust Guide` vendor, buy the container item `2102` and Tough Jerky `117`.
-- Equip the bought container if the client accepts it, move jerky into and
-  within the bag, split/merge stacks, destroy a backpack item, and relog.
-- Kill `Rust Combat Dummy`, loot money and jerky, and confirm no disconnects or
-  stale loot-window behavior.
+- Open the character pane and Skills UI; confirm armor/damage/block/crit/dodge
+  and starter skills look sane and there is no disconnect.
 
 ## Non-blocking Backlog
 
 GitHub issues are the source of truth:
 
-- #3 `[Rust Rewrite][P3][Reputation] Initial reputation packet uses zeroed DBC state placeholder`
-- #4 `[Rust Rewrite][P3][WorldBootstrap] First-login cinematic playback is not source-derived`
-- #5 `[Rust Rewrite][P4][DB] Split character lifecycle module and add transactions`
-- #11 `[Rust Rewrite][P2][NPC] Checkpoint fixture NPC is hardcoded instead of DB-backed`
-- #12 `[Rust Rewrite][P2][Combat] Fixture combat lacks AI timers, death, XP, and loot parity`
-- #13 `[Rust Rewrite][P2][Spells] Starter spell cast path lacks real spell mechanics`
-- #14 `[Rust Rewrite][P2][Equipment] Starter character cannot cast Heroic Strike: melee weapon not equipped`
-- #15 `[Rust Rewrite][P2][Inventory] Custom starter item templates are absent from Docker world fixture`
-- #16 `[Rust Rewrite][P2][Inventory] Split item updates lack full client-visible destination create fidelity`
-- #17 `[Rust Rewrite][P2][NPC] Hearthstone replacement from innkeepers is not implemented`
-- #18 `[Rust Rewrite][P2][Inventory] Bag-container moves lack full container slot update fidelity`
-- #19 `[Rust Rewrite][P2][Loot] Autostore loot does not merge into existing item stacks`
+- #3 reputation DBC placeholder; #4 first-login cinematic; #5 character
+  lifecycle transactions/refactor.
+- #11 fixture NPC/vendor hardcoding; #12 fixture combat/loot/XP/death gaps;
+  #13 starter spell mechanics; #14 starter weapon equipment gap.
+- #15 custom starter item templates; #16 split update visual fidelity;
+  #17 hearthstone replacement; #18 bag-container update fidelity;
+  #19 loot autostore stack merging.
+- #20 skill tier-step placeholder; #21 first-pass combat stat formulas.
+- #22 explored-zone fields are serialized from DB but not yet discovered from
+  map area flags or persisted on movement.
+- #11 was updated with the DB creature spawn/query v1 evidence; real DB-backed
+  gossip/vendor/trainer/combat routing remains future work.
 
 The current slice improves #16 and #18 but does not close them until real-client
 smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
 remain under #11. Full combat, XP, death, respawn, and DB-backed loot remain
-under #12. Loot autostore stack merging remains under #19.
+under #12. Loot autostore stack merging remains under #19. Exact combat stat
+formula parity beyond the first equipment-derived pass remains under #21. Full
+area exploration discovery/persistence remains under #22.
 
 ## Known Blockers And Gaps
 
-- The fixture NPC, vendor, and combat dummy remain hardcoded pending #11.
-- Loot v1 is fixture-only: no loot tables, corpse state persistence, XP,
-  respawn, group loot, or DB-backed creature loot yet.
-- Vendor v1 is fixture-only on `Rust Guide`, not `npc_vendor` DB-backed.
-- Bought container item `2102` is source-backed and has 6 container slots, but
-  it is an ammo pouch template; real-client smoke must prove whether it accepts
-  the item movement we need for manual bag testing.
+- Fixture NPC/vendor/combat/loot remain hardcoded or fixture-only pending #11
+  and #12; no DB-backed creature spawns, loot tables, XP, or respawn yet.
 - Inventory v1 still lacks full durability changes, complete equipment rules,
-  broader item-template/class/race validation, and real-client closure of all
-  split/container visual update cases.
+  broader item-template/class/race validation, and final split/container visual
+  parity closure.
 - Loot autostore does not merge into existing compatible stacks before choosing
   an empty slot; manual stacking works and the issue is tracked as #19.
+- Player self-spawn update now has more CMaNGOS default fields and first-pass
+  equipment-derived combat stats, but full item stat bonuses, aura modifiers,
+  ammo DPS, skill/defense adjustments, durability checks, exact DBC-derived
+  skill tier steps, map area exploration discovery, and real aura state are
+  still future parity work.
 
 ## Next Recommended Task
 
-Run the real-client smoke for the new Rust Guide vendor plus combat-dummy
-item/money loot. If the client-visible inventory updates are good, continue
-Checkpoint 1 with a small DB-backed vendor/loot data slice or close out the
-remaining Inventory v1 visual gaps found by smoke.
+Run a quick real-client enter-world smoke and confirm `Rust DB Guide` appears
+near `Rustone` while Rust Guide and combat dummy fixture interactions still
+work. Then continue Checkpoint 1 with DB-backed NPC interaction routing,
+starting with gossip or vendor data.
 
 ## Key Files
 
 - `crates/wow-network/src/world/mod.rs`
 - `crates/wow-network/src/world/bootstrap.rs`
-- `crates/wow-network/src/world/interactions.rs`
 - `crates/wow-network/src/world/wire.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `crates/wow-db/src/character.rs`

@@ -1,5 +1,6 @@
 struct EnterWorldBootstrap<'a> {
     character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
     world_stats: &'a PlayerWorldStats,
@@ -33,6 +34,19 @@ async fn send_enter_world_bootstrap(
         wow_db::get_character_reputations(bootstrap.character_db_pool, bootstrap.character.guid)
             .await?;
     send_initial_reputations(stream, &reputations, header_crypto.as_deref_mut()).await?;
+    let skills =
+        wow_db::get_character_skills(bootstrap.character_db_pool, bootstrap.character.guid).await?;
+    let equipped_templates =
+        load_equipped_item_templates(bootstrap.world_db_pool, bootstrap.inventory).await?;
+    let nearby_creatures = wow_db::get_nearby_creature_spawns(
+        bootstrap.world_db_pool,
+        bootstrap.character.map,
+        bootstrap.character.position_x,
+        bootstrap.character.position_y,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        CREATURE_SPAWN_LIMIT,
+    )
+    .await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
@@ -40,9 +54,14 @@ async fn send_enter_world_bootstrap(
     }
     send_self_spawn_update(
         stream,
-        bootstrap.character,
-        bootstrap.inventory,
-        bootstrap.world_stats,
+        SelfSpawnUpdate {
+            character: bootstrap.character,
+            inventory: bootstrap.inventory,
+            world_stats: bootstrap.world_stats,
+            skills: &skills,
+            equipped_templates: &equipped_templates,
+            nearby_creatures: &nearby_creatures,
+        },
         header_crypto,
     )
     .await?;
@@ -312,25 +331,63 @@ async fn send_init_world_states(
 
 async fn send_self_spawn_update(
     stream: &mut TcpStream,
-    character: &CharacterEnumEntry,
-    inventory: &[CharacterInventoryItem],
-    world_stats: &PlayerWorldStats,
+    update: SelfSpawnUpdate<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_self_spawn_update_body(character, inventory, world_stats)?;
+    let body = build_self_spawn_update_body(
+        update.character,
+        update.inventory,
+        update.world_stats,
+        update.skills,
+        update.equipped_templates,
+        update.nearby_creatures,
+    )?;
     info!(
-        guid = character.guid,
-        name = %character.name,
+        guid = update.character.guid,
+        name = %update.character.name,
         bytes = body.len(),
         "Sending minimal self spawn update"
     );
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, header_crypto).await
 }
 
+struct SelfSpawnUpdate<'a> {
+    character: &'a CharacterEnumEntry,
+    inventory: &'a [CharacterInventoryItem],
+    world_stats: &'a PlayerWorldStats,
+    skills: &'a [CharacterSkill],
+    equipped_templates: &'a [EquippedItemTemplate],
+    nearby_creatures: &'a [CreatureSpawnQuery],
+}
+
+async fn load_equipped_item_templates(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Vec<EquippedItemTemplate>> {
+    let mut templates = Vec::new();
+    for item in inventory {
+        if item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot >= EQUIPMENT_SLOT_END {
+            continue;
+        }
+        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        else {
+            continue;
+        };
+        templates.push(EquippedItemTemplate {
+            slot: item.slot,
+            template,
+        });
+    }
+    Ok(templates)
+}
+
 fn build_self_spawn_update_body(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
+    skills: &[CharacterSkill],
+    equipped_templates: &[EquippedItemTemplate],
+    nearby_creatures: &[CreatureSpawnQuery],
 ) -> anyhow::Result<Vec<u8>> {
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
@@ -354,18 +411,30 @@ fn build_self_spawn_update_body(
     block.extend_from_slice(&std::f32::consts::PI.to_le_bytes()); // turn rate
     block.extend_from_slice(&1u32.to_le_bytes()); // UPDATEFLAG_ALL payload
 
-    write_minimal_player_update_values(&mut block, guid, character, inventory, world_stats)?;
+    write_minimal_player_update_values(
+        &mut block,
+        guid,
+        character,
+        inventory,
+        world_stats,
+        skills,
+        equipped_templates,
+    )?;
 
     let npc_block = build_rust_guide_create_block(character)?;
     let combat_dummy_block = build_rust_combat_dummy_create_block(character)?;
+    let creature_blocks = build_db_creature_create_blocks(nearby_creatures)?;
     let item_blocks = build_inventory_item_create_blocks(character, inventory)?;
-    let block_count = 3 + item_blocks.len() as u32;
+    let block_count = 3 + creature_blocks.len() as u32 + item_blocks.len() as u32;
     let mut body = Vec::with_capacity(5 + block.len());
     body.extend_from_slice(&block_count.to_le_bytes());
     body.push(0); // has transport
     body.extend_from_slice(&block);
     body.extend_from_slice(&npc_block);
     body.extend_from_slice(&combat_dummy_block);
+    for creature_block in creature_blocks {
+        body.extend_from_slice(&creature_block);
+    }
     for item_block in item_blocks {
         body.extend_from_slice(&item_block);
     }
@@ -523,12 +592,121 @@ fn rust_combat_dummy_guid() -> ObjectGuid {
     )
 }
 
+fn build_db_creature_create_blocks(
+    creatures: &[CreatureSpawnQuery],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    creatures
+        .iter()
+        .map(build_db_creature_create_block)
+        .collect()
+}
+
+fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Result<Vec<u8>> {
+    let guid = creature_spawn_guid(creature);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
+    PackedGuid::write(&mut block, guid)?;
+    block.push(TYPEID_UNIT);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&creature.position_x.to_le_bytes());
+    block.extend_from_slice(&creature.position_y.to_le_bytes());
+    block.extend_from_slice(&creature.position_z.to_le_bytes());
+    block.extend_from_slice(&creature.orientation.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&7.0f32.to_le_bytes());
+    block.extend_from_slice(&4.5f32.to_le_bytes());
+    block.extend_from_slice(&4.722222f32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&std::f32::consts::PI.to_le_bytes());
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    write_db_creature_update_values(&mut block, guid, creature)?;
+    Ok(block)
+}
+
+fn write_db_creature_update_values(
+    body: &mut Vec<u8>,
+    guid: ObjectGuid,
+    creature: &CreatureSpawnQuery,
+) -> anyhow::Result<()> {
+    let template = &creature.template;
+    let health = creature_health(template);
+    let display_id = creature_display_id(template);
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, 0x000, guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT)?;
+    set_update_value(&mut values, 0x003, creature.entry)?;
+    set_update_value(&mut values, 0x004, template.scale.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, health)?;
+    set_update_value(&mut values, UNIT_FIELD_LEVEL, template.min_level as u32)?;
+    set_update_value(&mut values, UNIT_FIELD_FACTIONTEMPLATE, template.faction)?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_0, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, template.unit_flags)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASEATTACKTIME,
+        template.melee_base_attack_time.max(1),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASEATTACKTIME + 1,
+        template.melee_base_attack_time.max(1),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGEDATTACKTIME,
+        template.ranged_base_attack_time.max(1),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_DISPLAYID, display_id)?;
+    set_update_value(&mut values, UNIT_FIELD_NATIVEDISPLAYID, display_id)?;
+    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, template.min_melee_dmg.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, template.max_melee_dmg.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, template.dynamic_flags)?;
+    set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_NPC_FLAGS, template.npc_flags)?;
+    write_update_values(body, &values)
+}
+
+fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
+    ObjectGuid::new(HighGuid::Unit, creature.entry, creature.guid)
+}
+
+fn creature_health(template: &CreatureTemplateQuery) -> u32 {
+    template
+        .max_level_health
+        .max(template.min_level_health)
+        .max(1)
+}
+
+fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
+    [
+        template.display_id1,
+        template.display_id2,
+        template.display_id3,
+        template.display_id4,
+    ]
+    .into_iter()
+    .find(|display_id| *display_id != 0)
+    .unwrap_or(0)
+}
+
 fn write_minimal_player_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
+    skills: &[CharacterSkill],
+    equipped_templates: &[EquippedItemTemplate],
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
@@ -544,9 +722,22 @@ fn write_minimal_player_update_values(
     )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_0, unit_bytes_0(character))?;
     set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
-    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, 2000)?;
-    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, 2000)?;
-    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, 2000)?;
+    let combat_stats = player_combat_stats(character, world_stats, equipped_templates);
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASEATTACKTIME,
+        combat_stats.main_attack_time_ms,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASEATTACKTIME + 1,
+        combat_stats.off_attack_time_ms,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGEDATTACKTIME,
+        combat_stats.ranged_attack_time_ms,
+    )?;
     set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
     set_update_value(
@@ -559,25 +750,68 @@ fn write_minimal_player_update_values(
         UNIT_FIELD_NATIVEDISPLAYID,
         display_id_for_character(character),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, 0.0f32.to_bits())?;
-    set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, 0.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_MOUNTDISPLAYID, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MINDAMAGE,
+        combat_stats.main_min_damage.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MAXDAMAGE,
+        combat_stats.main_max_damage.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MINOFFHANDDAMAGE,
+        combat_stats.off_min_damage.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MAXOFFHANDDAMAGE,
+        combat_stats.off_max_damage.to_bits(),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, unit_bytes_1(character))?;
+    set_update_value(&mut values, UNIT_FIELD_AURASTATE, 0)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_player_stat_update_values(&mut values, world_stats)?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, unit_bytes_2())?;
-    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, 0)?;
+    set_player_resistance_update_values(&mut values, &combat_stats)?;
+    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, combat_stats.melee_attack_power)?;
+    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER_MODS, 0)?;
     set_update_value(
         &mut values,
         UNIT_FIELD_ATTACK_POWER_MULTIPLIER,
         0.0f32.to_bits(),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_RANGED_ATTACK_POWER, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGED_ATTACK_POWER,
+        combat_stats.ranged_attack_power,
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_RANGED_ATTACK_POWER_MODS, 0)?;
     set_update_value(
         &mut values,
         UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER,
         0.0f32.to_bits(),
     )?;
-    for index in UNIT_FIELD_POWER_COST_MULTIPLIER..UNIT_FIELD_POWER_COST_MULTIPLIER + 7 {
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MINRANGEDDAMAGE,
+        combat_stats.ranged_min_damage.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MAXRANGEDDAMAGE,
+        combat_stats.ranged_max_damage.to_bits(),
+    )?;
+    for index in UNIT_FIELD_POWER_COST_MODIFIER..UNIT_FIELD_POWER_COST_MODIFIER + MAX_SPELL_SCHOOL
+    {
+        set_update_value(&mut values, index, 0)?;
+    }
+    for index in UNIT_FIELD_POWER_COST_MULTIPLIER
+        ..UNIT_FIELD_POWER_COST_MULTIPLIER + MAX_SPELL_SCHOOL
+    {
         set_update_value(&mut values, index, 0.0f32.to_bits())?;
     }
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, character.player_flags)?;
@@ -588,9 +822,17 @@ fn write_minimal_player_update_values(
     set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, PLAYER_XP, 0)?;
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
+    set_player_skill_update_values(&mut values, skills)?;
+    set_player_secondary_stat_update_values(&mut values, &combat_stats)?;
+    set_player_explored_zone_update_values(&mut values, character)?;
     set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
+    set_player_stat_mod_update_values(&mut values)?;
     set_player_damage_mod_update_values(&mut values)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
+    set_update_value(&mut values, PLAYER_AMMO_ID, 0)?;
+    set_update_value(&mut values, PLAYER_SELF_RES_SPELL, 0)?;
+    set_update_value(&mut values, PLAYER_FIELD_PVP_MEDALS, 0)?;
+    set_update_value(&mut values, PLAYER_FIELD_BYTES2, 0)?;
     set_update_value(
         &mut values,
         PLAYER_FIELD_WATCHED_FACTION_INDEX,
@@ -676,18 +918,325 @@ fn set_player_stat_update_values(
     Ok(())
 }
 
+fn set_player_skill_update_values(
+    values: &mut [Option<u32>],
+    skills: &[CharacterSkill],
+) -> anyhow::Result<()> {
+    for (slot, skill) in skills.iter().take(PLAYER_MAX_SKILLS).enumerate() {
+        let field = PLAYER_SKILL_INFO_1_1 + slot * 3;
+        set_update_value(values, field, make_pair32(skill.skill, 0))?;
+        set_update_value(values, field + 1, make_pair32(skill.value, skill.max))?;
+        set_update_value(values, field + 2, 0)?;
+    }
+
+    Ok(())
+}
+
+fn set_player_resistance_update_values(
+    values: &mut [Option<u32>],
+    combat_stats: &PlayerCombatStats,
+) -> anyhow::Result<()> {
+    for (offset, resistance) in combat_stats.resistances.iter().enumerate() {
+        set_update_value(values, UNIT_FIELD_RESISTANCES + offset, *resistance)?;
+    }
+
+    Ok(())
+}
+
+fn set_player_secondary_stat_update_values(
+    values: &mut [Option<u32>],
+    combat_stats: &PlayerCombatStats,
+) -> anyhow::Result<()> {
+    set_update_value(values, PLAYER_CHARACTER_POINTS1, 0)?;
+    set_update_value(values, PLAYER_CHARACTER_POINTS2, 2)?;
+    set_update_value(values, PLAYER_TRACK_CREATURES, 0)?;
+    set_update_value(values, PLAYER_TRACK_RESOURCES, 0)?;
+    set_update_value(
+        values,
+        PLAYER_BLOCK_PERCENTAGE,
+        combat_stats.block_percent.to_bits(),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_DODGE_PERCENTAGE,
+        combat_stats.dodge_percent.to_bits(),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_PARRY_PERCENTAGE,
+        combat_stats.parry_percent.to_bits(),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_CRIT_PERCENTAGE,
+        combat_stats.crit_percent.to_bits(),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_RANGED_CRIT_PERCENTAGE,
+        combat_stats.ranged_crit_percent.to_bits(),
+    )?;
+    set_update_value(values, PLAYER_REST_STATE_EXPERIENCE, 0)?;
+
+    Ok(())
+}
+
+fn set_player_explored_zone_update_values(
+    values: &mut [Option<u32>],
+    character: &CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    let explored_zones = parse_explored_zones(character.explored_zones.as_deref());
+    for (offset, explored_zone) in explored_zones.iter().enumerate() {
+        set_update_value(values, PLAYER_EXPLORED_ZONES_1 + offset, *explored_zone)?;
+    }
+
+    Ok(())
+}
+
+fn parse_explored_zones(explored_zones: Option<&str>) -> [u32; PLAYER_EXPLORED_ZONES_SIZE] {
+    let mut fields = [0u32; PLAYER_EXPLORED_ZONES_SIZE];
+    let Some(explored_zones) = explored_zones else {
+        return fields;
+    };
+
+    for (index, value) in explored_zones
+        .split_whitespace()
+        .take(PLAYER_EXPLORED_ZONES_SIZE)
+        .enumerate()
+    {
+        if let Ok(value) = value.parse::<u32>() {
+            fields[index] = value;
+        }
+    }
+
+    fields
+}
+
+fn set_player_stat_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Result<()> {
+    for offset in 0..MAX_STATS {
+        set_update_value(values, PLAYER_FIELD_POSSTAT0 + offset, 0.0f32.to_bits())?;
+        set_update_value(values, PLAYER_FIELD_NEGSTAT0 + offset, 0.0f32.to_bits())?;
+    }
+    for offset in 0..MAX_SPELL_SCHOOL {
+        set_update_value(
+            values,
+            PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE + offset,
+            0.0f32.to_bits(),
+        )?;
+        set_update_value(
+            values,
+            PLAYER_FIELD_RESISTANCEBUFFMODSNEGATIVE + offset,
+            0.0f32.to_bits(),
+        )?;
+    }
+
+    Ok(())
+}
+
 fn set_player_damage_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Result<()> {
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_POS..PLAYER_FIELD_MOD_DAMAGE_DONE_POS + 7 {
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_POS..PLAYER_FIELD_MOD_DAMAGE_DONE_POS + MAX_SPELL_SCHOOL
+    {
         set_update_value(values, index, 0)?;
     }
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_NEG..PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + 7 {
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_NEG..PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + MAX_SPELL_SCHOOL
+    {
         set_update_value(values, index, 0)?;
     }
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_PCT..PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + 7 {
+    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_PCT..PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + MAX_SPELL_SCHOOL
+    {
         set_update_value(values, index, 1.0f32.to_bits())?;
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct EquippedItemTemplate {
+    slot: u8,
+    template: ItemTemplateQuery,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlayerCombatStats {
+    resistances: [u32; MAX_SPELL_SCHOOL],
+    main_attack_time_ms: u32,
+    off_attack_time_ms: u32,
+    ranged_attack_time_ms: u32,
+    melee_attack_power: u32,
+    ranged_attack_power: u32,
+    main_min_damage: f32,
+    main_max_damage: f32,
+    off_min_damage: f32,
+    off_max_damage: f32,
+    ranged_min_damage: f32,
+    ranged_max_damage: f32,
+    block_percent: f32,
+    dodge_percent: f32,
+    parry_percent: f32,
+    crit_percent: f32,
+    ranged_crit_percent: f32,
+}
+
+fn player_combat_stats(
+    character: &CharacterEnumEntry,
+    world_stats: &PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+) -> PlayerCombatStats {
+    let strength = world_stats.stats[0];
+    let agility = world_stats.stats[1];
+    let level = character.level as u32;
+    let melee_attack_power = class_melee_attack_power(character.class, level, strength, agility);
+    let ranged_attack_power = class_ranged_attack_power(character.class, level, agility);
+
+    let main_weapon = equipped_weapon_template(equipped_templates, EQUIPMENT_SLOT_MAINHAND);
+    let off_weapon = equipped_weapon_template(equipped_templates, EQUIPMENT_SLOT_OFFHAND);
+    let ranged_weapon = equipped_weapon_template(equipped_templates, EQUIPMENT_SLOT_RANGED);
+    let main_attack_time_ms = main_weapon
+        .map(|template| template.delay.max(1))
+        .unwrap_or(BASE_ATTACK_TIME_MS);
+    let off_attack_time_ms = off_weapon
+        .map(|template| template.delay.max(1))
+        .unwrap_or(BASE_ATTACK_TIME_MS);
+    let ranged_attack_time_ms = ranged_weapon
+        .map(|template| template.delay.max(1))
+        .unwrap_or(BASE_ATTACK_TIME_MS);
+
+    let (main_min_damage, main_max_damage) =
+        weapon_damage_with_attack_power(main_weapon, melee_attack_power, main_attack_time_ms);
+    let (off_min_damage, off_max_damage) =
+        weapon_damage_with_attack_power(off_weapon, melee_attack_power, off_attack_time_ms);
+    let (ranged_min_damage, ranged_max_damage) =
+        weapon_damage_with_attack_power(ranged_weapon, ranged_attack_power, ranged_attack_time_ms);
+
+    PlayerCombatStats {
+        resistances: equipment_resistances(world_stats, equipped_templates),
+        main_attack_time_ms,
+        off_attack_time_ms,
+        ranged_attack_time_ms,
+        melee_attack_power,
+        ranged_attack_power,
+        main_min_damage,
+        main_max_damage,
+        off_min_damage,
+        off_max_damage,
+        ranged_min_damage,
+        ranged_max_damage,
+        block_percent: if has_equipped_shield(equipped_templates) {
+            5.0
+        } else {
+            0.0
+        },
+        dodge_percent: dodge_percent(character.class, character.level, agility),
+        parry_percent: 0.0,
+        crit_percent: melee_crit_percent(character.class, character.level, agility),
+        ranged_crit_percent: melee_crit_percent(character.class, character.level, agility),
+    }
+}
+
+fn class_melee_attack_power(class: u8, level: u32, strength: u32, agility: u32) -> u32 {
+    let value = match class {
+        1 | 2 => level as i32 * 3 + strength as i32 * 2 - 20,
+        3 | 4 => level as i32 * 2 + strength as i32 + agility as i32 - 20,
+        7 | 11 => level as i32 * 3 + strength as i32 * 2 - 20,
+        8 | 5 | 9 => strength as i32 - 10,
+        _ => 0,
+    };
+    value.max(0) as u32
+}
+
+fn class_ranged_attack_power(class: u8, level: u32, agility: u32) -> u32 {
+    let value = match class {
+        3 => level as i32 * 2 + agility as i32 * 2 - 10,
+        1 | 4 => level as i32 + agility as i32 - 10,
+        11 => agility as i32 - 10,
+        _ => agility as i32 - 10,
+    };
+    value.max(0) as u32
+}
+
+fn equipped_weapon_template(
+    equipped_templates: &[EquippedItemTemplate],
+    slot: u8,
+) -> Option<&ItemTemplateQuery> {
+    equipped_templates
+        .iter()
+        .find(|item| item.slot == slot && item.template.class == ITEM_CLASS_WEAPON)
+        .map(|item| &item.template)
+}
+
+fn weapon_damage_with_attack_power(
+    weapon: Option<&ItemTemplateQuery>,
+    attack_power: u32,
+    attack_time_ms: u32,
+) -> (f32, f32) {
+    let Some(weapon) = weapon else {
+        return (0.0, 0.0);
+    };
+    let ap_damage = attack_power as f32 / 14.0 * attack_time_ms as f32 / 1000.0;
+    (weapon.dmg_min1 + ap_damage, weapon.dmg_max1 + ap_damage)
+}
+
+fn equipment_resistances(
+    world_stats: &PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+) -> [u32; MAX_SPELL_SCHOOL] {
+    let mut resistances = [0u32; MAX_SPELL_SCHOOL];
+    resistances[0] = world_stats.stats[1] * 2;
+
+    for equipped in equipped_templates {
+        resistances[0] += equipped.template.armor;
+        resistances[1] += equipped.template.holy_res;
+        resistances[2] += equipped.template.fire_res;
+        resistances[3] += equipped.template.nature_res;
+        resistances[4] += equipped.template.frost_res;
+        resistances[5] += equipped.template.shadow_res;
+        resistances[6] += equipped.template.arcane_res;
+    }
+
+    resistances
+}
+
+fn has_equipped_shield(equipped_templates: &[EquippedItemTemplate]) -> bool {
+    equipped_templates.iter().any(|equipped| {
+        equipped.slot == EQUIPMENT_SLOT_OFFHAND
+            && equipped.template.class == ITEM_CLASS_ARMOR
+            && equipped.template.inventory_type == INVTYPE_SHIELD
+    })
+}
+
+fn melee_crit_percent(class: u8, level: u8, agility: u32) -> f32 {
+    agility as f32 / agility_rating_for_class(class, level, false).unwrap_or(f32::INFINITY)
+}
+
+fn dodge_percent(class: u8, level: u8, agility: u32) -> f32 {
+    let base = match class {
+        2 => 0.75,
+        3 => 0.64,
+        5 => 3.0,
+        7 => 1.75,
+        8 => 3.25,
+        9 => 2.0,
+        11 => 0.75,
+        _ => 0.0,
+    };
+    base + agility as f32 / agility_rating_for_class(class, level, true).unwrap_or(f32::INFINITY)
+}
+
+fn agility_rating_for_class(class: u8, level: u8, dodge: bool) -> Option<f32> {
+    let (level_one, level_sixty) = match (class, dodge) {
+        (2 | 7 | 11, _) => (4.6, 20.0),
+        (8, _) => (12.9, 20.0),
+        (4, false) => (2.2, 29.0),
+        (4, true) => (1.1, 14.5),
+        (3, false) => (3.5, 53.0),
+        (3, true) => (1.8, 26.5),
+        (5, _) => (11.0, 20.0),
+        (9, _) => (8.4, 20.0),
+        (1, _) => (3.9, 20.0),
+        _ => return None,
+    };
+    let level = level as f32;
+    Some(level_one * (60.0 - level) / 59.0 + level_sixty * (level - 1.0) / 59.0)
 }
 
 fn write_update_values(body: &mut Vec<u8>, values: &[Option<u32>]) -> anyhow::Result<()> {
@@ -717,6 +1266,10 @@ fn set_update_value(values: &mut [Option<u32>], index: usize, value: u32) -> any
     }
     values[index] = Some(value);
     Ok(())
+}
+
+fn make_pair32(low: u16, high: u16) -> u32 {
+    low as u32 | ((high as u32) << 16)
 }
 
 fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {

@@ -35,6 +35,7 @@ const CMSG_CHAR_CREATE: u32 = 0x0036;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
+const CMSG_CREATURE_QUERY: u32 = 0x0060;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
@@ -46,6 +47,7 @@ const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_CHAR_DELETE: u32 = 0x003C;
+const SMSG_CREATURE_QUERY_RESPONSE: u32 = 0x0061;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_INVENTORY_CHANGE_FAILURE: u32 = 0x0112;
@@ -69,6 +71,9 @@ const RUST_GUIDE_ENTRY: u32 = 900_001;
 const RUST_GUIDE_COUNTER: u32 = 1;
 const RUST_VENDOR_BAG_ITEM: u32 = 2102;
 const RUST_VENDOR_STACK_ITEM: u32 = 117;
+const DB_CREATURE_FIXTURE_GUID: u32 = 96_001;
+const DB_CREATURE_FIXTURE_ENTRY: u32 = 1;
+const DB_CREATURE_FIXTURE_NAME: &str = "Waypoint (Only GM can see it)";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -149,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         "packet-created character did not receive starter inventory"
     );
     seed_inventory_edge_fixture(&character_pool, created.guid).await?;
+    seed_db_creature_fixture(&world_pool, &created_db).await?;
 
     world.expect_create_result(
         CHARACTER_NAME,
@@ -189,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let mut loaded_world = WorldClient::connect(&session_key)?;
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
+    loaded_world.query_db_creature_template()?;
     loaded_world.swap_inventory_slots(24, 26)?;
     assert_inventory_slot(&character_pool, created.guid, 6948, 26).await?;
     loaded_world.swap_inventory_slots(26, 24)?;
@@ -320,7 +327,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -473,6 +480,32 @@ async fn seed_inventory_edge_fixture(character_pool: &MySqlPool, guid: u32) -> a
         .await?;
     }
 
+    Ok(())
+}
+
+async fn seed_db_creature_fixture(
+    world_pool: &MySqlPool,
+    character: &wow_db::CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM creature WHERE guid = ?")
+        .bind(DB_CREATURE_FIXTURE_GUID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO creature \
+         (guid, id, map, spawnMask, position_x, position_y, position_z, orientation, \
+          spawntimesecsmin, spawntimesecsmax, spawndist, MovementType) \
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, 120, 120, 0, 0)",
+    )
+    .bind(DB_CREATURE_FIXTURE_GUID)
+    .bind(DB_CREATURE_FIXTURE_ENTRY)
+    .bind(character.map)
+    .bind(character.position_x + 6.0)
+    .bind(character.position_y + 1.0)
+    .bind(character.position_z)
+    .bind(character.orientation)
+    .execute(world_pool)
+    .await?;
     Ok(())
 }
 
@@ -1393,6 +1426,42 @@ impl WorldClient {
         Ok(())
     }
 
+    fn query_db_creature_template(&mut self) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        let mut body = Vec::with_capacity(12);
+        body.extend_from_slice(&DB_CREATURE_FIXTURE_ENTRY.to_le_bytes());
+        body.extend_from_slice(&guid.raw().to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_CREATURE_QUERY,
+            &body,
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_CREATURE_QUERY_RESPONSE,
+            "expected SMSG_CREATURE_QUERY_RESPONSE, got 0x{opcode:04X}"
+        );
+        let mut cursor = 0;
+        ensure_available(&body, 4)?;
+        let entry = u32::from_le_bytes(body[0..4].try_into()?);
+        cursor += 4;
+        let name = read_c_string(&body, &mut cursor)?;
+        ensure!(
+            entry == DB_CREATURE_FIXTURE_ENTRY,
+            "creature query response entry was {entry}, expected {DB_CREATURE_FIXTURE_ENTRY}"
+        );
+        ensure!(
+            name == DB_CREATURE_FIXTURE_NAME,
+            "creature query response name was {name:?}, expected {DB_CREATURE_FIXTURE_NAME:?}"
+        );
+        Ok(())
+    }
+
     fn buy_rust_guide_item(&mut self, item: u32, count: u8) -> anyhow::Result<()> {
         let mut body = Vec::with_capacity(14);
         body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
@@ -1739,6 +1808,17 @@ fn ensure_available(body: &[u8], end: usize) -> anyhow::Result<()> {
         body.len()
     );
     Ok(())
+}
+
+fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
+    let end = body[*cursor..]
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or_else(|| anyhow::anyhow!("string is not NUL-terminated"))?
+        + *cursor;
+    let value = String::from_utf8(body[*cursor..end].to_vec())?;
+    *cursor = end + 1;
+    Ok(value)
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {

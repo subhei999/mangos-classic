@@ -350,10 +350,18 @@ async fn main() -> anyhow::Result<()> {
     assert_inventory_position_empty(&character_pool, created.guid, 19, 4).await?;
     let loot_stack_rows_before =
         inventory_item_row_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
+    let loot_stack_count_before =
+        inventory_item_total_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
     loaded_world.kill_combat_dummy_with_autoattacks()?;
     loaded_world.open_combat_dummy_loot()?;
     loaded_world.autostore_combat_dummy_loot_item()?;
-    assert_inventory_count_at(&character_pool, created.guid, 0, 26, 3).await?;
+    assert_inventory_item_total_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        loot_stack_count_before + 2,
+    )
+    .await?;
     assert_inventory_item_row_count(
         &character_pool,
         created.guid,
@@ -749,6 +757,16 @@ async fn seed_inventory_edge_fixture(character_pool: &MySqlPool, guid: u32) -> a
 }
 
 async fn seed_full_backpack_fixture(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
+    sqlx::query(
+        "DELETE ci, ii FROM character_inventory ci \
+         JOIN item_instance ii ON ii.guid = ci.item \
+         WHERE ci.guid = ? AND ii.itemEntry = ?",
+    )
+    .bind(guid)
+    .bind(RUST_VENDOR_STACK_ITEM)
+    .execute(character_pool)
+    .await?;
+
     let occupied_slots: Vec<u8> = sqlx::query_scalar(
         "SELECT slot FROM character_inventory WHERE guid = ? AND bag = 0 AND slot BETWEEN 23 AND 38",
     )
@@ -1053,6 +1071,37 @@ async fn assert_inventory_item_row_count(
     ensure!(
         inventory_count == expected_count,
         "item {item_template} row count for character {guid} was {inventory_count}, expected {expected_count}"
+    );
+    Ok(())
+}
+
+async fn inventory_item_total_count(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+) -> anyhow::Result<u32> {
+    let total: u64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(SUM(ii.count), 0) AS UNSIGNED) FROM character_inventory ci \
+         JOIN item_instance ii ON ii.guid = ci.item \
+         WHERE ci.guid = ? AND ci.item_template = ?",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_one(character_pool)
+    .await?;
+    Ok(total as u32)
+}
+
+async fn assert_inventory_item_total_count(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+    expected_count: u32,
+) -> anyhow::Result<()> {
+    let total_count = inventory_item_total_count(character_pool, guid, item_template).await?;
+    ensure!(
+        total_count == expected_count,
+        "item {item_template} total count for character {guid} was {total_count}, expected {expected_count}"
     );
     Ok(())
 }

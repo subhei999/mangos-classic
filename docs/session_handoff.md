@@ -16,7 +16,7 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `eca1f8909 Add loot and main hand guardrails`
+- Latest committed base before this slice: `fe3a51cb8 Cover starter spell and item audits`
 - Remote: `origin/codex/rust-auth-foundation`
 - Worktree at handoff: clean against `origin/codex/rust-auth-foundation`.
 
@@ -107,6 +107,14 @@ using the repo's bug triage policy, then continue the requested task.
   item `129` for Dwarf/Night Elf hunter pants. This remains the #15 P2 data
   fixture gap, #15 was updated with the audit evidence, and the warning does
   not block current world-flow tests.
+- Issue #33 closed: Rust starter item seeding now translates the
+  archived missing starter IDs to source-backed templates present in
+  `sql/base/mangos.sql`: food IDs `65020/65022/65025/65026/65027` use Tough
+  Jerky `117`, water `65021` uses Refreshing Spring Water `159`, thrown IDs
+  `65023/65024` use Small Throwing Knife `2947` / Crude Throwing Axe `25861`,
+  and missing pants `129` use Rugged Trapper's Pants `147`. The starter item
+  template audit is now quiet in `test-world-flow.cmd`, and #15 was closed as
+  resolved by this slice.
 
 ## Tests Last Run
 
@@ -133,8 +141,10 @@ Latest overnight reruns:
 empty-vendor, container-filter, and loot-autostore stack-merge coverage.
 Latest rerun also covered loot autostore no-space and starter main-hand
 guardrails. The latest reruns also covered Heroic Strike precondition/cast
-guardrails and the starter item template audit warning path. `test-rust.cmd`
-passed with 80 `wow-network` tests and 9 `wow-db` tests. `git diff --check` passed
+guardrails and the starter item template audit warning path. After #33,
+`test-world-flow.cmd` passed with no starter item template audit warning, and
+`test-rust.cmd` passed with 80 `wow-network` tests and 10 `wow-db` tests.
+`git diff --check` passed
 with only the known LF-to-CRLF working-copy warnings. `cargo fmt` passed with
 the existing `could not canonicalize path C:\Users\subhe` warning.
 
@@ -174,7 +184,7 @@ GitHub issues are the source of truth:
   lifecycle transactions/refactor.
 - #11 fixture NPC/vendor hardcoding; #12 fixture combat/loot/XP/death gaps;
   #13 starter spell mechanics; #14 starter weapon equipment gap.
-- #15 custom starter item templates; #16 split update visual fidelity;
+- #16 split update visual fidelity;
   #17 hearthstone replacement; #18 bag-container update fidelity;
   #19 loot autostore stack merging.
 - #20 skill tier-step placeholder; #21 first-pass combat stat formulas.
@@ -183,8 +193,6 @@ GitHub issues are the source of truth:
 - #11 was updated with the DB creature spawn/query v1 evidence; DB vendor-list
   routing now has first packet/DB coverage, while real DB-backed gossip,
   trainer, combat, loot-table, and richer vendor validation remain future work.
-- #15 still tracks missing custom starter item templates and now includes the
-  #32 audit evidence.
 
 The current slice improves #16 and #18 but does not close them until real-client
 smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
@@ -201,11 +209,9 @@ area exploration discovery/persistence remains under #22.
 - Inventory v1 still lacks full durability changes, complete equipment rules,
   broader item-template/class/race validation, and final split/container visual
   parity closure.
-- Docker `mangos.item_template` is missing 75 starter item refs from the Rust
-  archived starter item arrays. The new audit reports this as a warning rather
-  than failing world-flow so unrelated Checkpoint 1 slices can continue; fix
-  under #15 by adding intentional fixture templates or replacing the Rust refs
-  with source-backed item templates.
+- Full starter item parity still needs a source-data pass beyond the
+  source-backed replacements used for #33, but the Docker fixture no longer has
+  missing starter item template refs and the audit is quiet.
 - Player self-spawn update now has more CMaNGOS default fields and first-pass
   equipment-derived combat stats, but full item stat bonuses, aura modifiers,
   ammo DPS, skill/defense adjustments, durability checks, exact DBC-derived
@@ -214,9 +220,8 @@ area exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-For unattended overnight work, resume at GitHub issue #33 and proceed in
-numeric order. #31 and #32 are closed; #15 remains open for the starter item
-template data-fixture gap. Do not require real-client visual testing overnight; leave the
+For unattended overnight work, resume at GitHub issue #34 and proceed in
+numeric order. #31, #32, and #33 are closed. Do not require real-client visual testing overnight; leave the
 `scripts/run-client-stack-18085.cmd` smoke pass for morning. Start with the
 smallest issue slice available, run focused packet/DB tests first, and use
 `test-rust.cmd` / `test-world-flow.cmd` when practical for Rust world-flow

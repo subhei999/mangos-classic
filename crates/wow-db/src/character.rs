@@ -1745,7 +1745,8 @@ async fn seed_character_starter_items(
 
     let mut equipment_cache = [0u32; ENUM_EQUIPMENT_CACHE_SLOTS];
     for starter_item in items {
-        let Some(template) = get_item_template(world_pool, starter_item.item_id).await? else {
+        let item_id = source_backed_starter_item_id(starter_item.item_id);
+        let Some(template) = get_item_template(world_pool, item_id).await? else {
             continue;
         };
 
@@ -1872,7 +1873,7 @@ pub fn starter_item_template_refs() -> Vec<StarterItemTemplateRef> {
             refs.extend(items.iter().map(move |item| StarterItemTemplateRef {
                 race,
                 class,
-                item_id: item.item_id,
+                item_id: source_backed_starter_item_id(item.item_id),
                 slot: item.slot,
                 amount: item.amount,
             }));
@@ -1903,6 +1904,21 @@ const fn item(item_id: u32, slot: u8, amount: u32) -> StarterItem {
         item_id,
         slot,
         amount,
+    }
+}
+
+const fn source_backed_starter_item_id(item_id: u32) -> u32 {
+    match item_id {
+        129 => 147,     // Rugged Trapper's Pants is present in the base fixture.
+        65020 => 117,   // Tough Jerky
+        65021 => 159,   // Refreshing Spring Water
+        65022 => 117,   // Tough Jerky
+        65023 => 2947,  // Small Throwing Knife
+        65024 => 25861, // Crude Throwing Axe
+        65025 => 117,   // Tough Jerky
+        65026 => 117,   // Tough Jerky
+        65027 => 117,   // Tough Jerky
+        _ => item_id,
     }
 }
 
@@ -2405,6 +2421,18 @@ mod tests {
             .iter()
             .any(|item| item.race == 8 && item.class == 8 && item.item_id == 6948));
         assert!(refs.iter().all(|item| item.amount > 0));
+    }
+
+    #[test]
+    fn starter_item_template_refs_replace_archived_custom_ids() {
+        let refs = starter_item_template_refs();
+        assert!(!refs
+            .iter()
+            .any(|item| matches!(item.item_id, 129 | 65020..=65027)));
+        assert!(refs.iter().any(|item| item.item_id == 117));
+        assert!(refs.iter().any(|item| item.item_id == 159));
+        assert!(refs.iter().any(|item| item.item_id == 2947));
+        assert!(refs.iter().any(|item| item.item_id == 25861));
     }
 
     #[test]

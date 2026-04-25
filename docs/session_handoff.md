@@ -18,7 +18,7 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the Inventory v1 equipped destroy extension.
+- Worktree: expected clean after the Inventory v1 stack/bag destroy extension.
 
 ## Current Goal
 
@@ -75,13 +75,15 @@ Current Checkpoint 1 focus:
   The world-flow harness proves unequipping shirt `38` from slot 3 to backpack
   slot 26 and equipping it back persists in both `character_inventory` and
   `characters.equipmentCache`.
-- Added Inventory v1 full-item destroy for present bag-0 backpack/equipment
-  items via `CMSG_DESTROYITEM`. Rust accepts the client's backpack bag id,
-  rejects partial stack/container destroys for now, deletes the
-  `character_inventory` row and owned `item_instance` row, refreshes session
-  inventory, and sends a slot-clear `SMSG_UPDATE_OBJECT`. The world-flow
-  harness proves destroying hearthstone `6948` and equipped shirt `38` removes
-  both DB rows and clears `equipmentCache` for the equipped slot.
+- Added Inventory v1 destroy/split guardrails for present bag-0 and equipped
+  items, plus basic bag-contained item positions. Rust now validates
+  `ITEM_FLAG_NO_USER_DESTROY`, supports partial stack destroy by updating
+  `item_instance.count`, supports splitting part of a stack into an empty
+  supported storage position with `CMSG_SPLIT_ITEM`, and allows destroying
+  items stored inside equipped bag slots 19-22. The world-flow harness proves
+  partial hearthstone destroy, split into bag slot 19:1, bag-contained destroys,
+  no-destroy rejection for equipped shirt `38`, and full equipped destroy still
+  clears both DB state and `equipmentCache`.
 
 ## Tests Last Run
 
@@ -103,9 +105,9 @@ Notes:
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
 - `test-world-flow.cmd` result: auth session, create/delete happy path,
   negative create/delete cases, loaded/guild leader rejection, backpack item
-  move persistence, equip/unequip persistence, backpack/equipped destroy
-  persistence, guild/group/social/pet/mail/auction cleanup, COD mail return,
-  enum/count refresh.
+  move persistence, equip/unequip persistence, destroy guardrails, partial
+  destroy, split, bag-contained destroy persistence, guild/group/social/pet/
+  mail/auction cleanup, COD mail return, enum/count refresh.
 
 ## Local Environment Notes
 
@@ -156,6 +158,7 @@ GitHub issues are the source of truth:
 - #13 `[Rust Rewrite][P2][Spells] Starter spell cast path lacks real spell mechanics`
 - #14 `[Rust Rewrite][P2][Equipment] Starter character cannot cast Heroic Strike: melee weapon not equipped`
 - #15 `[Rust Rewrite][P2][Inventory] Custom starter item templates are absent from Docker world fixture`
+- #16 `[Rust Rewrite][P2][Inventory] Split item updates lack full client-visible destination create fidelity`
 
 Full DB-backed loot, item/money persistence, death/respawn, XP, and combat
 timing remain covered by #12. Full spellbook validation, Heroic Strike
@@ -166,6 +169,9 @@ covered by #14.
 Custom starter item templates missing from the Docker world fixture are covered
 by #15; the current inventory move harness uses source-backed hearthstone
 `6948`.
+Full client-visible destination item/container updates after `CMSG_SPLIT_ITEM`
+are covered by #16; the current slice proves DB persistence and source stack
+count updates.
 
 ## Known Blockers And Gaps
 
@@ -179,20 +185,24 @@ by #15; the current inventory move harness uses source-backed hearthstone
   immediate fixture damage update. It is not true CMaNGOS next-swing spell
   behavior yet.
 - Inventory v1 currently supports present bag-0 backpack moves, a small
-  starter-item equip/unequip path for equipment slots 3, 6, 7, 15, and 16, and
-  full-item destroy for present bag-0 backpack/equipment items. Bag containers,
-  split/stacking, no-destroy flags, durability changes, broader equipment
-  rules, and full item-template/class/race validation remain future slices.
+  starter-item equip/unequip path for equipment slots 3, 6, 7, 15, and 16,
+  full/partial destroy for present bag-0 backpack/equipment items, no-user-
+  destroy rejection, simple split into an empty supported slot, and destroying
+  items stored inside equipped bag slots 19-22. Generic bag-container moves,
+  stack merging, full new-item create/update fidelity for real-client split
+  visuals, durability changes, broader equipment rules, and full item-template/
+  class/race validation remain future slices.
 - Broader world gameplay remains skeletal: movement persistence works, but
   validation, visibility, fuller spells, loot, vendors/trainers, quests, and
   multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-Real-client smoke the equipped destroy extension: destroy a visible equipped
-starter item, logout/relog, and verify the equipment slot stays empty. Then
-continue Inventory v1 with partial stack split/stack behavior or no-destroy flag
-validation using CMaNGOS `ItemHandler.cpp` and `Player.cpp` as the reference.
+Real-client smoke the stack/bag destroy extension: partial destroy a stack,
+split it into a bag slot, destroy bag-contained items, and verify logout/relog
+state. Then continue Inventory v1 with generic bag-container moves and stack
+merge behavior using CMaNGOS `ItemHandler.cpp` and `Player.cpp` as the
+reference.
 
 ## Key Files
 

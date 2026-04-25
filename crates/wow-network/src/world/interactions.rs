@@ -557,6 +557,7 @@ async fn handle_inventory_swap(
 async fn handle_destroy_item(
     stream: &mut TcpStream,
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -568,21 +569,21 @@ async fn handle_destroy_item(
     let character_guid = character.guid;
     let request = DestroyItemRequest::read(body)?;
 
-    if !request.is_full_bag0_destroy() {
+    if !request.is_supported_destroy() {
         info!(
             bag = request.bag,
             slot = request.slot,
             count = request.count,
-            "Ignoring unsupported item destroy outside full bag-0 equipment/backpack items"
+            "Ignoring unsupported item destroy outside bag-0 or equipped bag storage"
         );
         return Ok(());
     }
 
-    if !session
+    let Some(source_item) = session
         .inventory
         .iter()
-        .any(|item| item.bag == request.bag as u32 && item.slot == request.slot)
-    {
+        .find(|item| item.bag == request.bag as u32 && item.slot == request.slot)
+    else {
         warn!(
             guid = character_guid,
             bag = request.bag,
@@ -590,16 +591,42 @@ async fn handle_destroy_item(
             "Rejected item destroy without source item"
         );
         return Ok(());
+    };
+
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    else {
+        warn!(
+            guid = character_guid,
+            item_template = source_item.item_template,
+            "Rejected item destroy for missing item template"
+        );
+        return Ok(());
+    };
+    if template.flags & ITEM_FLAG_NO_USER_DESTROY != 0 {
+        info!(
+            guid = character_guid,
+            item_template = source_item.item_template,
+            "Rejected no-user-destroy item destroy"
+        );
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_CANT_DROP_SOULBOUND,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
     }
 
-    let destroyed = wow_db::destroy_character_inventory_item(
+    let destroyed = wow_db::destroy_character_inventory_item_count(
         character_db_pool,
         character_guid,
         request.bag as u32,
         request.slot,
+        request.count as u32,
     )
     .await?;
-    if destroyed.is_none() {
+    let Some(destroyed) = destroyed else {
         warn!(
             guid = character_guid,
             bag = request.bag,
@@ -607,11 +634,85 @@ async fn handle_destroy_item(
             "Rejected item destroy without DB source item"
         );
         return Ok(());
-    }
+    };
 
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
         .await?;
-    let body = build_inventory_slots_update_body(character_guid, &session.inventory, &[request.slot])?;
+    match destroyed {
+        wow_db::InventoryDestroyResult::CountChanged { item, count } => {
+            let body = build_item_stack_count_update_body(item, count)?;
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+        }
+        wow_db::InventoryDestroyResult::Removed { item } => {
+            if request.bag == INVENTORY_SLOT_BAG_0 {
+                let body =
+                    build_inventory_slots_update_body(character_guid, &session.inventory, &[request.slot])?;
+                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+            } else {
+                let body = build_destroy_object_body(item);
+                send_packet(stream, SMSG_DESTROY_OBJECT, &body, Some(header_crypto)).await
+            }
+        }
+    }
+}
+
+async fn handle_split_item(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring item split before character login");
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let request = SplitItemRequest::read(body)?;
+    if !request.is_supported_split() || request.src_bag == request.dst_bag && request.src_slot == request.dst_slot {
+        info!(
+            src_bag = request.src_bag,
+            src_slot = request.src_slot,
+            dst_bag = request.dst_bag,
+            dst_slot = request.dst_slot,
+            count = request.count,
+            "Ignoring unsupported item split outside bag-0 or equipped bag storage"
+        );
+        return Ok(());
+    }
+
+    let split = wow_db::split_character_inventory_item(
+        character_db_pool,
+        character_guid,
+        request.src_bag as u32,
+        request.src_slot,
+        request.dst_bag as u32,
+        request.dst_slot,
+        request.count as u32,
+    )
+    .await?;
+    let Some(split) = split else {
+        warn!(
+            guid = character_guid,
+            src_bag = request.src_bag,
+            src_slot = request.src_slot,
+            dst_bag = request.dst_bag,
+            dst_slot = request.dst_slot,
+            "Rejected item split"
+        );
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    };
+
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+        .await?;
+    let body = build_item_stack_count_update_body(split.source_item, split.source_count)?;
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
@@ -712,10 +813,38 @@ impl DestroyItemRequest {
         })
     }
 
-    fn is_full_bag0_destroy(&self) -> bool {
-        self.bag == INVENTORY_SLOT_BAG_0
-            && self.count == 0
-            && is_equipment_or_backpack_slot(self.slot)
+    fn is_supported_destroy(&self) -> bool {
+        is_supported_storage_position(self.bag, self.slot)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SplitItemRequest {
+    src_bag: u8,
+    src_slot: u8,
+    dst_bag: u8,
+    dst_slot: u8,
+    count: u8,
+}
+
+impl SplitItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 5 {
+            anyhow::bail!("CMSG_SPLIT_ITEM payload too short: {} bytes", body.len());
+        }
+        Ok(Self {
+            src_bag: normalize_client_bag(body[0]),
+            src_slot: body[1],
+            dst_bag: normalize_client_bag(body[2]),
+            dst_slot: body[3],
+            count: body[4],
+        })
+    }
+
+    fn is_supported_split(&self) -> bool {
+        self.count != 0
+            && is_supported_storage_position(self.src_bag, self.src_slot)
+            && is_supported_storage_position(self.dst_bag, self.dst_slot)
     }
 }
 
@@ -731,8 +860,17 @@ fn is_backpack_item_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&slot)
 }
 
+fn is_bag_slot(slot: u8) -> bool {
+    (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).contains(&slot)
+}
+
 fn is_equipment_or_backpack_slot(slot: u8) -> bool {
     slot < EQUIPMENT_SLOT_END || is_backpack_item_slot(slot)
+}
+
+fn is_supported_storage_position(bag: u8, slot: u8) -> bool {
+    (bag == INVENTORY_SLOT_BAG_0 && slot < INVENTORY_SLOT_ITEM_END)
+        || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
 }
 
 fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
@@ -762,9 +900,31 @@ fn inventory_opcode_name(opcode: u32) -> &'static str {
         CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
         CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
         CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
+        CMSG_SPLIT_ITEM => "CMSG_SPLIT_ITEM",
         CMSG_DESTROYITEM => "CMSG_DESTROYITEM",
         _ => "UNKNOWN_INVENTORY_OPCODE",
     }
+}
+
+async fn send_inventory_change_failure(
+    stream: &mut TcpStream,
+    result: u8,
+    item: Option<ObjectGuid>,
+    item2: Option<ObjectGuid>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let mut body = Vec::with_capacity(18);
+    body.push(result);
+    body.extend_from_slice(&item.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
+    body.extend_from_slice(&item2.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
+    body.push(0);
+    send_packet(
+        stream,
+        SMSG_INVENTORY_CHANGE_FAILURE,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 async fn handle_creature_query(

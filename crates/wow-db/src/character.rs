@@ -133,6 +133,19 @@ pub struct CharacterInventoryItem {
     pub durability: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryDestroyResult {
+    Removed { item: u32 },
+    CountChanged { item: u32, count: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventorySplitResult {
+    pub source_item: u32,
+    pub source_count: u32,
+    pub new_item: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemTemplateQuery {
     pub entry: u32,
@@ -967,32 +980,52 @@ pub async fn destroy_character_inventory_item(
     guid: u32,
     bag: u32,
     slot: u8,
-) -> Result<Option<u32>, DbError> {
-    let item: Option<u32> = sqlx::query_scalar(
-        "SELECT item FROM character_inventory \
-         WHERE guid = ? AND bag = ? AND slot = ?",
+) -> Result<Option<InventoryDestroyResult>, DbError> {
+    destroy_character_inventory_item_count(pool, guid, bag, slot, 0).await
+}
+
+pub async fn destroy_character_inventory_item_count(
+    pool: &MySqlPool,
+    guid: u32,
+    bag: u32,
+    slot: u8,
+    count: u32,
+) -> Result<Option<InventoryDestroyResult>, DbError> {
+    let row: Option<(u32, u32)> = sqlx::query_as(
+        "SELECT ci.item, ii.count FROM character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         WHERE ci.guid = ? AND ci.bag = ? AND ci.slot = ? AND ii.owner_guid = ?",
     )
     .bind(guid)
     .bind(bag)
     .bind(slot)
+    .bind(guid)
     .fetch_optional(pool)
     .await?;
 
-    let Some(item) = item else {
+    let Some((item, current_count)) = row else {
         return Ok(None);
     };
 
-    sqlx::query(
-        "DELETE FROM character_inventory \
-         WHERE guid = ? AND bag = ? AND slot = ? AND item = ?",
-    )
-    .bind(guid)
-    .bind(bag)
-    .bind(slot)
-    .bind(item)
-    .execute(pool)
-    .await?;
+    if count != 0 && count < current_count {
+        let new_count = current_count - count;
+        sqlx::query("UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?")
+            .bind(new_count)
+            .bind(item)
+            .bind(guid)
+            .execute(pool)
+            .await?;
+        return Ok(Some(InventoryDestroyResult::CountChanged {
+            item,
+            count: new_count,
+        }));
+    }
 
+    sqlx::query("DELETE FROM character_inventory WHERE item = ? AND guid = ?")
+        .bind(item)
+        .bind(guid)
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM item_instance WHERE guid = ? AND owner_guid = ?")
         .bind(item)
         .bind(guid)
@@ -1003,7 +1036,93 @@ pub async fn destroy_character_inventory_item(
         refresh_character_equipment_cache(pool, guid).await?;
     }
 
-    Ok(Some(item))
+    Ok(Some(InventoryDestroyResult::Removed { item }))
+}
+
+pub async fn split_character_inventory_item(
+    pool: &MySqlPool,
+    guid: u32,
+    src_bag: u32,
+    src_slot: u8,
+    dst_bag: u32,
+    dst_slot: u8,
+    count: u32,
+) -> Result<Option<InventorySplitResult>, DbError> {
+    if count == 0 {
+        return Ok(None);
+    }
+
+    let source: Option<(u32, u32)> = sqlx::query_as(
+        "SELECT ci.item, ii.count FROM character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         WHERE ci.guid = ? AND ci.bag = ? AND ci.slot = ? AND ii.owner_guid = ?",
+    )
+    .bind(guid)
+    .bind(src_bag)
+    .bind(src_slot)
+    .bind(guid)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_item, source_count)) = source else {
+        return Ok(None);
+    };
+    if count >= source_count {
+        return Ok(None);
+    }
+
+    let destination_item: Option<u32> = sqlx::query_scalar(
+        "SELECT item FROM character_inventory \
+         WHERE guid = ? AND bag = ? AND slot = ?",
+    )
+    .bind(guid)
+    .bind(dst_bag)
+    .bind(dst_slot)
+    .fetch_optional(pool)
+    .await?;
+    if destination_item.is_some() {
+        return Ok(None);
+    }
+
+    let new_item = next_item_guid(pool).await?;
+    let new_source_count = source_count - count;
+    sqlx::query("UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?")
+        .bind(new_source_count)
+        .bind(source_item)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO item_instance \
+         (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+          charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+         SELECT ?, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, ?, duration, \
+                charges, flags, enchantments, randomPropertyId, durability, itemTextId \
+         FROM item_instance WHERE guid = ? AND owner_guid = ?",
+    )
+    .bind(new_item)
+    .bind(count)
+    .bind(source_item)
+    .bind(guid)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
+         SELECT ?, ?, ?, ?, item_template FROM character_inventory WHERE item = ? AND guid = ?",
+    )
+    .bind(guid)
+    .bind(dst_bag)
+    .bind(dst_slot)
+    .bind(new_item)
+    .bind(source_item)
+    .bind(guid)
+    .execute(pool)
+    .await?;
+
+    Ok(Some(InventorySplitResult {
+        source_item,
+        source_count: new_source_count,
+        new_item,
+    }))
 }
 
 pub async fn refresh_character_equipment_cache(pool: &MySqlPool, guid: u32) -> Result<(), DbError> {

@@ -70,8 +70,11 @@ const SMSG_TEXT_EMOTE: u16 = 0x0105;
 const CMSG_AUTOEQUIP_ITEM: u32 = 0x010A;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
+const CMSG_SPLIT_ITEM: u32 = 0x010E;
 const CMSG_DESTROYITEM: u32 = 0x0111;
+const SMSG_INVENTORY_CHANGE_FAILURE: u16 = 0x0112;
 const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
+const SMSG_DESTROY_OBJECT: u16 = 0x00AA;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
 const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
 const CMSG_CAST_SPELL: u32 = 0x012E;
@@ -193,6 +196,8 @@ const REALM_ID: u32 = 1;
 const MAX_CHARACTERS_PER_REALM: u8 = 10;
 const FORM_BATTLESTANCE: u8 = 0x11;
 const EQUIPMENT_SLOT_END: u8 = 19;
+const INVENTORY_SLOT_BAG_START: u8 = 19;
+const INVENTORY_SLOT_BAG_END: u8 = 23;
 const POWER_MANA: u8 = 0;
 const POWER_RAGE: u8 = 1;
 const POWER_FOCUS: u8 = 2;
@@ -258,6 +263,10 @@ const INVENTORY_SLOT_BAG_0: u8 = 0;
 const CLIENT_INVENTORY_SLOT_BAG_0: u8 = 255;
 const INVENTORY_SLOT_ITEM_START: u8 = 23;
 const INVENTORY_SLOT_ITEM_END: u8 = 39;
+const MAX_BAG_SIZE: u8 = 36;
+const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
+const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
+const EQUIP_ERR_COULDNT_SPLIT_ITEMS: u8 = 27;
 const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
 const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
@@ -547,6 +556,17 @@ async fn handle_client(
                     }
                     CMSG_DESTROYITEM => {
                         handle_destroy_item(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_SPLIT_ITEM => {
+                        handle_split_item(
                             &mut stream,
                             &character_db_pool,
                             &body,

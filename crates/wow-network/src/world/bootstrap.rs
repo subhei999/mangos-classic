@@ -843,10 +843,34 @@ fn build_inventory_slots_update_body(
     Ok(body)
 }
 
+fn build_item_stack_count_update_body(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, item_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, item_guid)?;
+
+    let mut values = vec![None; ITEM_END_FIELDS];
+    set_update_value(&mut values, 0x00E, count)?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn build_destroy_object_body(item_guid: u32) -> Vec<u8> {
+    ObjectGuid::new(HighGuid::Item, 0, item_guid)
+        .raw()
+        .to_le_bytes()
+        .to_vec()
+}
+
 fn inventory_slot_update_field(slot: u8) -> Option<usize> {
     match slot {
-        0..EQUIPMENT_SLOT_END => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),
-        INVENTORY_SLOT_ITEM_START..=INVENTORY_SLOT_ITEM_END => {
+        0..INVENTORY_SLOT_ITEM_START => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),
+        INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END => {
             Some(PLAYER_FIELD_PACK_SLOT_1 + (slot - INVENTORY_SLOT_ITEM_START) as usize * 2)
         }
         _ => None,

@@ -825,7 +825,11 @@ fn maps_inventory_slots_to_player_update_guid_fields() {
         inventory_slot_update_field(23),
         Some(PLAYER_FIELD_PACK_SLOT_1)
     );
-    assert_eq!(inventory_slot_update_field(40), None);
+    assert_eq!(
+        inventory_slot_update_field(19),
+        Some(PLAYER_FIELD_INV_SLOT_HEAD + 38)
+    );
+    assert_eq!(inventory_slot_update_field(39), None);
 }
 
 #[test]
@@ -931,17 +935,39 @@ fn parses_backpack_inventory_destroy_packets() {
             count: 0,
         }
     );
-    assert!(destroy.is_full_bag0_destroy());
+    assert!(destroy.is_supported_destroy());
 
     let partial_stack =
         DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 1, 0, 0, 0]).unwrap();
-    assert!(!partial_stack.is_full_bag0_destroy());
+    assert!(partial_stack.is_supported_destroy());
 
     let equipped = DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 3, 0, 0, 0, 0]).unwrap();
-    assert!(equipped.is_full_bag0_destroy());
+    assert!(equipped.is_supported_destroy());
 
     let unsupported_bag = DestroyItemRequest::read(&[1, 24, 0, 0, 0, 0]).unwrap();
-    assert!(!unsupported_bag.is_full_bag0_destroy());
+    assert!(!unsupported_bag.is_supported_destroy());
+
+    let bag_slot = DestroyItemRequest::read(&[19, 0, 0, 0, 0, 0]).unwrap();
+    assert!(bag_slot.is_supported_destroy());
+}
+
+#[test]
+fn parses_inventory_split_packets() {
+    let split = SplitItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 19, 0, 2]).unwrap();
+    assert_eq!(
+        split,
+        SplitItemRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: 24,
+            dst_bag: 19,
+            dst_slot: 0,
+            count: 2,
+        }
+    );
+    assert!(split.is_supported_split());
+
+    let zero_count = SplitItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 19, 0, 0]).unwrap();
+    assert!(!zero_count.is_supported_split());
 }
 
 #[test]

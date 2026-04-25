@@ -265,15 +265,20 @@ Detailed path:
      changed inventory plus visible-equipment fields. `test-world-flow.cmd`
      proves moving shirt `38` from slot 3 to backpack slot 26 and back persists
      in both inventory and equipment cache.
-   - Current status: full-item destroy is implemented for present bag-0
-     backpack/equipment items via `CMSG_DESTROYITEM`. Rust deletes the
-     inventory row and owned item instance row, refreshes session inventory,
-     sends a slot clear update, and refreshes equipment cache when an equipped
-     item is destroyed. `test-world-flow.cmd` proves destroying hearthstone
-     `6948` and equipped shirt `38` removes DB rows and clears the equipped
-     cache slot. Bag containers, partial stack split/stacking, no-destroy flags,
-     durability, and full class/race/equipment validation remain future
-     Inventory v1 slices.
+   - Current status: destroy/split guardrails are implemented for present
+     bag-0 backpack/equipment items and basic bag-contained positions via
+     `CMSG_DESTROYITEM` and `CMSG_SPLIT_ITEM`. Rust validates
+     `ITEM_FLAG_NO_USER_DESTROY`, supports partial stack destroy by updating
+     `item_instance.count`, supports splitting part of a stack into an empty
+     supported storage position, destroys items stored inside equipped bag
+     slots 19-22, refreshes session inventory, sends stack-count or slot-clear
+     updates, and refreshes equipment cache when an equipped item is destroyed.
+     `test-world-flow.cmd` proves partial hearthstone destroy, split into bag
+     slot 19:1, bag-contained destroys, no-destroy rejection for equipped shirt
+     `38`, and full equipped destroy. Generic bag-container moves, stack
+     merging, full new-item create/update fidelity for real-client split
+     visuals, durability, and full class/race/equipment validation remain
+     future Inventory v1 slices.
 9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.

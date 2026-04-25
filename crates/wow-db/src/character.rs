@@ -136,6 +136,15 @@ pub struct CharacterInventoryItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StarterItemTemplateRef {
+    pub race: u8,
+    pub class: u8,
+    pub item_id: u32,
+    pub slot: u8,
+    pub amount: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryDestroyResult {
     Removed { item: u32 },
     CountChanged { item: u32, count: u32 },
@@ -1853,6 +1862,25 @@ fn starter_outfit_items(race: u8, class: u8) -> Option<&'static [StarterItem]> {
     }
 }
 
+pub fn starter_item_template_refs() -> Vec<StarterItemTemplateRef> {
+    let mut refs = Vec::new();
+    for race in 1..=8 {
+        for class in [1, 2, 3, 4, 5, 7, 8, 9, 11] {
+            let Some(items) = starter_outfit_items(race, class) else {
+                continue;
+            };
+            refs.extend(items.iter().map(move |item| StarterItemTemplateRef {
+                race,
+                class,
+                item_id: item.item_id,
+                slot: item.slot,
+                amount: item.amount,
+            }));
+        }
+    }
+    refs
+}
+
 fn format_equipment_cache(equipment: &[u32; ENUM_EQUIPMENT_CACHE_SLOTS]) -> String {
     let mut cache = String::new();
     for item_id in equipment {
@@ -2364,6 +2392,19 @@ mod tests {
                 .any(|item| item.item_id == *item_id && item.slot == *slot));
             assert!(!items.is_empty());
         }
+    }
+
+    #[test]
+    fn starter_item_template_refs_include_context_for_all_seeded_items() {
+        let refs = starter_item_template_refs();
+        assert!(refs.iter().any(|item| item.race == 1
+            && item.class == 1
+            && item.item_id == 25
+            && item.slot == 15));
+        assert!(refs
+            .iter()
+            .any(|item| item.race == 8 && item.class == 8 && item.item_id == 6948));
+        assert!(refs.iter().all(|item| item.amount > 0));
     }
 
     #[test]

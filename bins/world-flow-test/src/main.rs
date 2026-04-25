@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
-use wow_common::guid::{HighGuid, ObjectGuid};
+use wow_common::guid::{HighGuid, ObjectGuid, PackedGuid};
 use wow_crypto::HeaderCrypto;
 use wow_proto::{
     AuthCommand, LogonChallengeRequest, LogonChallengeResponse, LogonProofRequest,
@@ -41,6 +41,7 @@ const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SPLIT_ITEM: u32 = 0x010E;
 const CMSG_DESTROYITEM: u32 = 0x0111;
+const CMSG_CAST_SPELL: u32 = 0x012E;
 const CMSG_GOSSIP_HELLO: u32 = 0x017B;
 const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
 const CMSG_LIST_INVENTORY: u32 = 0x019E;
@@ -58,6 +59,8 @@ const SMSG_CREATURE_QUERY_RESPONSE: u32 = 0x0061;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_INVENTORY_CHANGE_FAILURE: u32 = 0x0112;
+const SMSG_CAST_RESULT: u32 = 0x0130;
+const SMSG_SPELL_GO: u32 = 0x0132;
 const SMSG_GOSSIP_MESSAGE: u32 = 0x017D;
 const SMSG_NPC_TEXT_UPDATE: u32 = 0x0180;
 const SMSG_LIST_INVENTORY: u32 = 0x019F;
@@ -88,6 +91,8 @@ const RUST_GUIDE_ENTRY: u32 = 900_001;
 const RUST_GUIDE_COUNTER: u32 = 1;
 const RUST_VENDOR_BAG_ITEM: u32 = 2102;
 const RUST_VENDOR_STACK_ITEM: u32 = 117;
+const WARRIOR_HEROIC_STRIKE_RANK_1: u32 = 78;
+const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 const DB_CREATURE_FIXTURE_GUID: u32 = 96_001;
 const DB_CREATURE_FIXTURE_ENTRY: u32 = 1;
 const DB_CREATURE_FIXTURE_NAME: &str = "Waypoint (Only GM can see it)";
@@ -101,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
     let login_pool = connect(LOGIN_DATABASE_URL).await?;
     let character_pool = connect(CHARACTER_DATABASE_URL).await?;
     let world_pool = connect(WORLD_DATABASE_URL).await?;
+    audit_starter_item_templates_exist(&world_pool).await?;
 
     let account_id = seed_account(&login_pool, USERNAME, PASSWORD).await?;
     let other_account_id = seed_account(&login_pool, OTHER_USERNAME, PASSWORD).await?;
@@ -175,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
         "packet-created character did not receive starter inventory"
     );
     assert_starter_main_hand_state(&character_pool, &world_pool, created.guid).await?;
+    assert_heroic_strike_known(&character_pool, created.guid).await?;
     seed_inventory_edge_fixture(&character_pool, created.guid).await?;
     seed_db_creature_fixture(&world_pool, &created_db).await?;
 
@@ -376,6 +383,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     loaded_world.release_combat_dummy_loot()?;
+    loaded_world.cast_heroic_strike_at_combat_dummy()?;
     loaded_world.destroy_item(255, 24, 1, SMSG_UPDATE_OBJECT)?;
     assert_inventory_count_at(&character_pool, created.guid, 0, 24, 2).await?;
     loaded_world.split_item(255, 24, 19, 1, 1)?;
@@ -483,7 +491,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, starter item template audit, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, Heroic Strike known-spell/main-hand/target guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -588,6 +596,32 @@ async fn assert_first_login_state_seen(
     Ok(())
 }
 
+async fn audit_starter_item_templates_exist(world_pool: &MySqlPool) -> anyhow::Result<()> {
+    let mut missing = Vec::new();
+    for item_ref in wow_db::starter_item_template_refs() {
+        let exists: Option<u32> =
+            sqlx::query_scalar("SELECT entry FROM item_template WHERE entry = ?")
+                .bind(item_ref.item_id)
+                .fetch_optional(world_pool)
+                .await?;
+        if exists.is_none() {
+            missing.push(format!(
+                "race={} class={} slot={} item={} amount={}",
+                item_ref.race, item_ref.class, item_ref.slot, item_ref.item_id, item_ref.amount
+            ));
+        }
+    }
+
+    if !missing.is_empty() {
+        eprintln!(
+            "starter item template audit warning: {} refs missing from world fixture:\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
+    }
+    Ok(())
+}
+
 async fn assert_starter_main_hand_state(
     character_pool: &MySqlPool,
     world_pool: &MySqlPool,
@@ -639,6 +673,26 @@ async fn assert_starter_main_hand_state(
     ensure!(
         allowable_race == -1 || (allowable_race & (1 << 0)) != 0,
         "starter main-hand item 25 does not allow humans: AllowableRace={allowable_race}"
+    );
+    Ok(())
+}
+
+async fn assert_heroic_strike_known(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
+    let row: Option<(u32, u8, u8)> = sqlx::query_as(
+        "SELECT spell, active, disabled FROM character_spell WHERE guid = ? AND spell = ?",
+    )
+    .bind(guid)
+    .bind(WARRIOR_HEROIC_STRIKE_RANK_1)
+    .fetch_optional(character_pool)
+    .await?;
+    let Some((spell, active, disabled)) = row else {
+        anyhow::bail!(
+            "fresh Human Warrior missing Heroic Strike rank 1 spell {WARRIOR_HEROIC_STRIKE_RANK_1}"
+        );
+    };
+    ensure!(
+        spell == WARRIOR_HEROIC_STRIKE_RANK_1 && active == 1 && disabled == 0,
+        "Heroic Strike starter spell row was spell={spell} active={active} disabled={disabled}"
     );
     Ok(())
 }
@@ -2418,6 +2472,47 @@ impl WorldClient {
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after loot release, got 0x{opcode:04X}"
         );
+        Ok(())
+    }
+
+    fn cast_heroic_strike_at_combat_dummy(&mut self) -> anyhow::Result<()> {
+        let target = rust_combat_dummy_guid();
+        let mut body = Vec::new();
+        body.extend_from_slice(&WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
+        body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+        PackedGuid::write(&mut body, target)?;
+        write_client_packet(
+            &mut self.stream,
+            CMSG_CAST_SPELL,
+            &body,
+            Some(&mut self.crypto),
+        )?;
+
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_CAST_RESULT,
+            "expected SMSG_CAST_RESULT for Heroic Strike, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 5)?;
+        ensure!(
+            &body[0..4] == WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes().as_slice(),
+            "Heroic Strike cast result returned spell bytes {:02X?}",
+            &body[0..4]
+        );
+        ensure!(body[4] == 0, "Heroic Strike cast result was {}", body[4]);
+
+        for expected in [
+            SMSG_SPELL_GO,
+            SMSG_ATTACKERSTATEUPDATE,
+            SMSG_UPDATE_OBJECT,
+            SMSG_UPDATE_OBJECT,
+        ] {
+            let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            ensure!(
+                opcode == expected,
+                "expected 0x{expected:04X} during Heroic Strike fixture cast, got 0x{opcode:04X}"
+            );
+        }
         Ok(())
     }
 

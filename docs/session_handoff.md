@@ -16,7 +16,7 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `17c6f0dfb Add DB-backed vendor interactions`
+- Latest committed base before this slice: `eca1f8909 Add loot and main hand guardrails`
 - Remote: `origin/codex/rust-auth-foundation`
 - Worktree at handoff: clean against `origin/codex/rust-auth-foundation`.
 
@@ -95,6 +95,18 @@ using the repo's bug triage policy, then continue the requested task.
   fallback. It also proves loot autostore no-space failure leaves DB state
   unchanged and that fresh Human Warriors have a valid item `25` main-hand DB
   row, equipment cache entry, and player update-field coverage.
+- Issue #31 closed: `world-flow-test` now proves a fresh Human Warrior knows
+  Heroic Strike rank 1 (`spell=78`), has a valid starter main-hand weapon
+  precondition, and can send a fixture `CMSG_CAST_SPELL` with a combat-dummy
+  unit target through `SMSG_CAST_RESULT`, `SMSG_SPELL_GO`, attacker-state,
+  dummy, and rage update packets without adding full spell mechanics.
+- Issue #32 closed: `wow_db::starter_item_template_refs()` exposes starter
+  item refs with race/class/slot/amount context, and `world-flow-test` audits
+  those refs against Docker `mangos.item_template`. The audit warns that 75
+  refs are absent, mostly archived custom starter IDs `65020`-`65027`, plus
+  item `129` for Dwarf/Night Elf hunter pants. This remains the #15 P2 data
+  fixture gap, #15 was updated with the audit evidence, and the warning does
+  not block current world-flow tests.
 
 ## Tests Last Run
 
@@ -120,7 +132,9 @@ Latest overnight reruns:
 `test-world-flow.cmd` passed with DB vendor BuyPrice charge, sellback,
 empty-vendor, container-filter, and loot-autostore stack-merge coverage.
 Latest rerun also covered loot autostore no-space and starter main-hand
-guardrails. `test-rust.cmd` passed with 80 `wow-network` tests. `git diff --check` passed
+guardrails. The latest reruns also covered Heroic Strike precondition/cast
+guardrails and the starter item template audit warning path. `test-rust.cmd`
+passed with 80 `wow-network` tests and 9 `wow-db` tests. `git diff --check` passed
 with only the known LF-to-CRLF working-copy warnings. `cargo fmt` passed with
 the existing `could not canonicalize path C:\Users\subhe` warning.
 
@@ -169,6 +183,8 @@ GitHub issues are the source of truth:
 - #11 was updated with the DB creature spawn/query v1 evidence; DB vendor-list
   routing now has first packet/DB coverage, while real DB-backed gossip,
   trainer, combat, loot-table, and richer vendor validation remain future work.
+- #15 still tracks missing custom starter item templates and now includes the
+  #32 audit evidence.
 
 The current slice improves #16 and #18 but does not close them until real-client
 smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
@@ -185,8 +201,11 @@ area exploration discovery/persistence remains under #22.
 - Inventory v1 still lacks full durability changes, complete equipment rules,
   broader item-template/class/race validation, and final split/container visual
   parity closure.
-- Loot autostore does not merge into existing compatible stacks before choosing
-  an empty slot; manual stacking works and the issue is tracked as #19.
+- Docker `mangos.item_template` is missing 75 starter item refs from the Rust
+  archived starter item arrays. The new audit reports this as a warning rather
+  than failing world-flow so unrelated Checkpoint 1 slices can continue; fix
+  under #15 by adding intentional fixture templates or replacing the Rust refs
+  with source-backed item templates.
 - Player self-spawn update now has more CMaNGOS default fields and first-pass
   equipment-derived combat stats, but full item stat bonuses, aura modifiers,
   ammo DPS, skill/defense adjustments, durability checks, exact DBC-derived
@@ -195,9 +214,9 @@ area exploration discovery/persistence remains under #22.
 
 ## Next Recommended Task
 
-For unattended overnight work, continue Checkpoint 1 at GitHub issue #31 and
-proceed through the remaining numbered issues in order. Do not require
-real-client visual testing overnight; leave the
+For unattended overnight work, resume at GitHub issue #33 and proceed in
+numeric order. #31 and #32 are closed; #15 remains open for the starter item
+template data-fixture gap. Do not require real-client visual testing overnight; leave the
 `scripts/run-client-stack-18085.cmd` smoke pass for morning. Start with the
 smallest issue slice available, run focused packet/DB tests first, and use
 `test-rust.cmd` / `test-world-flow.cmd` when practical for Rust world-flow

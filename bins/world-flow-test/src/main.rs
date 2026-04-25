@@ -204,7 +204,51 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.query_db_creature_template()?;
     loaded_world.open_db_vendor_gossip_inventory()?;
     loaded_world.list_db_vendor_inventory()?;
+    let (db_vendor_price, db_vendor_sell_price, db_vendor_buy_count) =
+        item_prices_and_buy_count(&world_pool, RUST_VENDOR_STACK_ITEM).await?;
+    let db_vendor_stack_count_before =
+        inventory_item_row_count(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
     loaded_world.buy_db_vendor_item_expect_insufficient_money(RUST_VENDOR_STACK_ITEM, 1)?;
+    assert_inventory_item_row_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        db_vendor_stack_count_before,
+    )
+    .await?;
+    set_character_money(&character_pool, created.guid, db_vendor_price).await?;
+    loaded_world.buy_db_vendor_item(RUST_VENDOR_STACK_ITEM, 1)?;
+    assert_character_money_eq(&character_pool, created.guid, 0).await?;
+    assert_inventory_item_row_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        db_vendor_stack_count_before + 1,
+    )
+    .await?;
+    let db_bought_stack_guid = inventory_item_guid_with_count(
+        &character_pool,
+        created.guid,
+        RUST_VENDOR_STACK_ITEM,
+        db_vendor_buy_count,
+    )
+    .await?;
+    loaded_world.sell_db_vendor_item(db_bought_stack_guid, 1)?;
+    assert_character_money_eq(&character_pool, created.guid, db_vendor_sell_price).await?;
+    assert_inventory_item_instance_count(
+        &character_pool,
+        db_bought_stack_guid,
+        db_vendor_buy_count - 1,
+    )
+    .await?;
+    loaded_world.sell_db_vendor_item(db_bought_stack_guid, 0)?;
+    assert_character_money_eq(
+        &character_pool,
+        created.guid,
+        db_vendor_sell_price.saturating_mul(db_vendor_buy_count),
+    )
+    .await?;
+    assert_inventory_guid_absent(&character_pool, db_bought_stack_guid).await?;
     loaded_world.swap_inventory_slots(24, 26)?;
     assert_inventory_slot(&character_pool, created.guid, 6948, 26).await?;
     loaded_world.swap_inventory_slots(26, 24)?;
@@ -341,7 +385,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB vendor insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB vendor BuyPrice charge, sellback, and insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -717,6 +761,142 @@ async fn assert_inventory_item_present(
     ensure!(
         inventory_count > 0,
         "item {item_template} for character {guid} was not present"
+    );
+    Ok(())
+}
+
+async fn inventory_item_row_count(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+) -> anyhow::Result<i64> {
+    let inventory_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM character_inventory \
+         WHERE guid = ? AND item_template = ?",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_one(character_pool)
+    .await?;
+    Ok(inventory_count)
+}
+
+async fn assert_inventory_item_row_count(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+    expected_count: i64,
+) -> anyhow::Result<()> {
+    let inventory_count = inventory_item_row_count(character_pool, guid, item_template).await?;
+    ensure!(
+        inventory_count == expected_count,
+        "item {item_template} row count for character {guid} was {inventory_count}, expected {expected_count}"
+    );
+    Ok(())
+}
+
+async fn inventory_item_guid_with_count(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+    count: u32,
+) -> anyhow::Result<ObjectGuid> {
+    let item_guid: u32 = sqlx::query_scalar(
+        "SELECT ci.item FROM character_inventory ci \
+         JOIN item_instance ii ON ii.guid = ci.item \
+         WHERE ci.guid = ? AND ci.item_template = ? AND ii.count = ? \
+         ORDER BY ci.bag, ci.slot \
+         LIMIT 1",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .bind(count)
+    .fetch_one(character_pool)
+    .await
+    .with_context(|| {
+        format!("item {item_template} with count {count} was missing for character {guid}")
+    })?;
+    Ok(ObjectGuid::new(HighGuid::Item, 0, item_guid))
+}
+
+async fn item_prices_and_buy_count(
+    world_pool: &MySqlPool,
+    item_template: u32,
+) -> anyhow::Result<(u32, u32, u32)> {
+    let (buy_price, sell_price, buy_count): (u32, u32, u32) =
+        sqlx::query_as("SELECT BuyPrice, SellPrice, BuyCount FROM item_template WHERE entry = ?")
+            .bind(item_template)
+            .fetch_one(world_pool)
+            .await?;
+    ensure!(buy_price > 0, "item {item_template} has zero BuyPrice");
+    ensure!(sell_price > 0, "item {item_template} has zero SellPrice");
+    Ok((buy_price, sell_price, buy_count.max(1)))
+}
+
+async fn set_character_money(
+    character_pool: &MySqlPool,
+    guid: u32,
+    money: u32,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE characters SET money = ? WHERE guid = ?")
+        .bind(money)
+        .bind(guid)
+        .execute(character_pool)
+        .await?;
+    Ok(())
+}
+
+async fn assert_character_money_eq(
+    character_pool: &MySqlPool,
+    guid: u32,
+    expected_money: u32,
+) -> anyhow::Result<()> {
+    let money: u32 = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(character_pool)
+        .await?;
+    ensure!(
+        money == expected_money,
+        "character money was {money}, expected {expected_money}"
+    );
+    Ok(())
+}
+
+async fn assert_inventory_item_instance_count(
+    character_pool: &MySqlPool,
+    item_guid: ObjectGuid,
+    expected_count: u32,
+) -> anyhow::Result<()> {
+    let count: u32 = sqlx::query_scalar("SELECT count FROM item_instance WHERE guid = ?")
+        .bind(item_guid.counter())
+        .fetch_one(character_pool)
+        .await?;
+    ensure!(
+        count == expected_count,
+        "item instance {} count was {count}, expected {expected_count}",
+        item_guid.counter()
+    );
+    Ok(())
+}
+
+async fn assert_inventory_guid_absent(
+    character_pool: &MySqlPool,
+    item_guid: ObjectGuid,
+) -> anyhow::Result<()> {
+    let inventory_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM character_inventory WHERE item = ?")
+            .bind(item_guid.counter())
+            .fetch_one(character_pool)
+            .await?;
+    let instance_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM item_instance WHERE guid = ?")
+            .bind(item_guid.counter())
+            .fetch_one(character_pool)
+            .await?;
+    ensure!(
+        inventory_count == 0 && instance_count == 0,
+        "sold item {} remained after full sell: inventory={inventory_count}, instances={instance_count}",
+        item_guid.counter()
     );
     Ok(())
 }
@@ -1658,6 +1838,19 @@ impl WorldClient {
         item: u32,
         count: u8,
     ) -> anyhow::Result<()> {
+        self.buy_db_vendor_item_with_result(item, count, false)
+    }
+
+    fn buy_db_vendor_item(&mut self, item: u32, count: u8) -> anyhow::Result<()> {
+        self.buy_db_vendor_item_with_result(item, count, true)
+    }
+
+    fn buy_db_vendor_item_with_result(
+        &mut self,
+        item: u32,
+        count: u8,
+        expect_success: bool,
+    ) -> anyhow::Result<()> {
         let vendor_guid = ObjectGuid::new(
             HighGuid::Unit,
             DB_CREATURE_FIXTURE_ENTRY,
@@ -1675,6 +1868,23 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
         let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        if expect_success {
+            ensure!(
+                opcode == SMSG_BUY_ITEM,
+                "expected SMSG_BUY_ITEM after affordable DB vendor buy, got 0x{opcode:04X}"
+            );
+            let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            ensure!(
+                opcode == SMSG_UPDATE_OBJECT,
+                "expected SMSG_UPDATE_OBJECT after affordable DB vendor buy item update, got 0x{opcode:04X}"
+            );
+            let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            ensure!(
+                opcode == SMSG_UPDATE_OBJECT,
+                "expected SMSG_UPDATE_OBJECT after affordable DB vendor buy money update, got 0x{opcode:04X}"
+            );
+            return Ok(());
+        }
         ensure!(
             opcode == SMSG_BUY_FAILED,
             "expected SMSG_BUY_FAILED after unaffordable DB vendor buy, got 0x{opcode:04X}"
@@ -1693,8 +1903,26 @@ impl WorldClient {
     }
 
     fn sell_item(&mut self, item_guid: ObjectGuid, count: u8) -> anyhow::Result<()> {
+        self.sell_item_to_vendor(rust_guide_guid(), item_guid, count)
+    }
+
+    fn sell_db_vendor_item(&mut self, item_guid: ObjectGuid, count: u8) -> anyhow::Result<()> {
+        let vendor_guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        self.sell_item_to_vendor(vendor_guid, item_guid, count)
+    }
+
+    fn sell_item_to_vendor(
+        &mut self,
+        vendor_guid: ObjectGuid,
+        item_guid: ObjectGuid,
+        count: u8,
+    ) -> anyhow::Result<()> {
         let mut body = Vec::with_capacity(17);
-        body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+        body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
         body.extend_from_slice(&item_guid.raw().to_le_bytes());
         body.push(count);
         write_client_packet(

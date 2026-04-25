@@ -966,6 +966,26 @@ impl BuyItemRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SellItemRequest {
+    vendor_guid: ObjectGuid,
+    item_guid: ObjectGuid,
+    count: u8,
+}
+
+impl SellItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 17 {
+            anyhow::bail!("CMSG_SELL_ITEM payload too short: {} bytes", body.len());
+        }
+        Ok(Self {
+            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
+            item_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[8..16].try_into()?)),
+            count: body[16],
+        })
+    }
+}
+
 fn normalize_client_bag(bag: u8) -> u8 {
     if bag == CLIENT_INVENTORY_SLOT_BAG_0 {
         INVENTORY_SLOT_BAG_0
@@ -1084,59 +1104,113 @@ fn first_empty_backpack_slot(inventory: &[CharacterInventoryItem]) -> Option<u8>
 }
 
 fn build_rust_guide_vendor_inventory() -> Vec<u8> {
-    let mut body = Vec::with_capacity(8 + 1 + 2 * 28);
-    body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
-    body.push(2);
-    write_vendor_item(
-        &mut body,
-        1,
-        RUST_VENDOR_BAG_ITEM,
-        RUST_VENDOR_BAG_DISPLAY,
-        0,
-        0,
-        1,
-    );
-    write_vendor_item(
-        &mut body,
-        2,
-        RUST_COMBAT_DUMMY_LOOT_ITEM,
-        RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY,
-        0,
-        0,
-        1,
-    );
-    body
+    build_vendor_inventory_body(
+        rust_guide_guid(),
+        &[
+            VendorListItem {
+                item: RUST_VENDOR_BAG_ITEM,
+                display: RUST_VENDOR_BAG_DISPLAY,
+                max_count: 0,
+                price: 0,
+                durability: 0,
+                buy_count: 1,
+            },
+            VendorListItem {
+                item: RUST_COMBAT_DUMMY_LOOT_ITEM,
+                display: RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY,
+                max_count: 0,
+                price: 0,
+                durability: 0,
+                buy_count: 1,
+            },
+        ],
+    )
 }
 
-fn write_vendor_item(
-    body: &mut Vec<u8>,
-    slot: u32,
+#[derive(Debug, Clone, Copy)]
+struct VendorListItem {
     item: u32,
     display: u32,
+    max_count: u32,
     price: u32,
     durability: u32,
     buy_count: u32,
-) {
-    body.extend_from_slice(&slot.to_le_bytes());
-    body.extend_from_slice(&item.to_le_bytes());
-    body.extend_from_slice(&display.to_le_bytes());
-    body.extend_from_slice(&u32::MAX.to_le_bytes());
-    body.extend_from_slice(&price.to_le_bytes());
-    body.extend_from_slice(&durability.to_le_bytes());
-    body.extend_from_slice(&buy_count.to_le_bytes());
 }
 
-fn build_buy_item_body(vendor_slot: u32, count: u8) -> Vec<u8> {
+impl From<&wow_db::VendorItemQuery> for VendorListItem {
+    fn from(item: &wow_db::VendorItemQuery) -> Self {
+        Self {
+            item: item.item,
+            display: item.display_id,
+            max_count: item.max_count,
+            price: item.buy_price,
+            durability: item.max_durability,
+            buy_count: item.buy_count,
+        }
+    }
+}
+
+fn build_vendor_inventory_body(vendor_guid: ObjectGuid, items: &[VendorListItem]) -> Vec<u8> {
+    if items.is_empty() {
+        let mut body = Vec::with_capacity(10);
+        body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+        body.push(0);
+        body.push(0);
+        return body;
+    }
+
+    let mut body = Vec::with_capacity(8 + 1 + items.len().min(128) * 28);
+    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+    body.push(items.len().min(128) as u8);
+    for (index, item) in items.iter().take(128).enumerate() {
+        let available_count = if item.max_count == 0 {
+            u32::MAX
+        } else {
+            item.max_count
+        };
+        write_vendor_item(
+            &mut body,
+            (index + 1) as u32,
+            available_count,
+            *item,
+        );
+    }
+    body
+}
+
+fn write_vendor_item(body: &mut Vec<u8>, slot: u32, available_count: u32, item: VendorListItem) {
+    body.extend_from_slice(&slot.to_le_bytes());
+    body.extend_from_slice(&item.item.to_le_bytes());
+    body.extend_from_slice(&item.display.to_le_bytes());
+    body.extend_from_slice(&available_count.to_le_bytes());
+    body.extend_from_slice(&item.price.to_le_bytes());
+    body.extend_from_slice(&item.durability.to_le_bytes());
+    body.extend_from_slice(&item.buy_count.to_le_bytes());
+}
+
+fn build_buy_item_body(vendor_guid: ObjectGuid, vendor_slot: u32, count: u8) -> Vec<u8> {
     let mut body = Vec::with_capacity(20);
-    body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
     body.extend_from_slice(&vendor_slot.to_le_bytes());
     body.extend_from_slice(&u32::MAX.to_le_bytes());
     body.extend_from_slice(&(count as u32).to_le_bytes());
     body
 }
 
-fn is_rust_guide_vendor_item(item: u32) -> bool {
-    matches!(item, RUST_VENDOR_BAG_ITEM | RUST_COMBAT_DUMMY_LOOT_ITEM)
+fn build_buy_failed_body(vendor_guid: ObjectGuid, item: u32, result: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(13);
+    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+    body.extend_from_slice(&item.to_le_bytes());
+    body.push(result);
+    body
+}
+
+fn build_sell_item_error_body(vendor_guid: ObjectGuid, item_guid: ObjectGuid, result: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(17);
+    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+    body.extend_from_slice(&item_guid.raw().to_le_bytes());
+    body.push(result);
+    body
 }
 
 fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
@@ -1330,35 +1404,104 @@ fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
 
 async fn handle_gossip_hello(
     stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let guid = read_packet_guid(body, "CMSG_GOSSIP_HELLO")?;
-    if guid != rust_guide_guid() {
-        warn!(
-            guid = format_args!("0x{:016X}", guid.raw()),
-            "Ignoring gossip hello for unknown creature"
+    if guid == rust_guide_guid() {
+        let text_update =
+            build_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID, RUST_GUIDE_GOSSIP_TEXT);
+        send_packet(
+            stream,
+            SMSG_NPC_TEXT_UPDATE,
+            &text_update,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let response = build_gossip_message(
+            guid,
+            RUST_GUIDE_GOSSIP_TEXT_ID,
+            &[(0, RUST_GUIDE_GOSSIP_OPTION)],
         );
-        return Ok(());
+        return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
     }
 
-    let text_update = build_rust_guide_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID);
-    send_packet(
-        stream,
-        SMSG_NPC_TEXT_UPDATE,
-        &text_update,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    let response = build_rust_guide_gossip_message();
-    send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await
+    if guid.is_creature() {
+        let vendor_items = wow_db::get_vendor_items(world_db_pool, guid.entry()).await?;
+        if !vendor_items.is_empty() {
+            let text_update =
+                build_npc_text_update(DB_VENDOR_GOSSIP_TEXT_ID, DB_VENDOR_GOSSIP_TEXT);
+            send_packet(
+                stream,
+                SMSG_NPC_TEXT_UPDATE,
+                &text_update,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            let response = build_gossip_message(
+                guid,
+                DB_VENDOR_GOSSIP_TEXT_ID,
+                &[(0, DB_VENDOR_GOSSIP_OPTION)],
+            );
+            return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
+        }
+    }
+
+    warn!(
+        guid = format_args!("0x{:016X}", guid.raw()),
+        "Ignoring gossip hello for unknown creature"
+    );
+    Ok(())
 }
 
 async fn handle_gossip_select_option(
     stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
+    body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await
+    let selection = GossipSelectOption::read(body)?;
+    if selection.guid == rust_guide_guid() {
+        return send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await;
+    }
+
+    if selection.guid.is_creature() {
+        let vendor_items = wow_db::get_vendor_items(world_db_pool, selection.guid.entry()).await?;
+        if !vendor_items.is_empty() {
+            let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
+            let response = build_vendor_inventory_body(selection.guid, &list_items);
+            return send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await;
+        }
+    }
+
+    warn!(
+        guid = format_args!("0x{:016X}", selection.guid.raw()),
+        option = selection.option,
+        "Ignoring gossip select for unknown creature"
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GossipSelectOption {
+    guid: ObjectGuid,
+    option: u32,
+}
+
+impl GossipSelectOption {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 12 {
+            anyhow::bail!(
+                "CMSG_GOSSIP_SELECT_OPTION payload too short: {} bytes",
+                body.len()
+            );
+        }
+        Ok(Self {
+            guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
+            option: u32::from_le_bytes(body[8..12].try_into()?),
+        })
+    }
 }
 
 async fn handle_npc_text_query(
@@ -1375,30 +1518,48 @@ async fn handle_npc_text_query(
         guid = format_args!("0x{:016X}", guid.raw()),
         "Answering NPC text query"
     );
-    let response = build_rust_guide_npc_text_update(text_id);
+    let text = if text_id == DB_VENDOR_GOSSIP_TEXT_ID {
+        DB_VENDOR_GOSSIP_TEXT
+    } else {
+        RUST_GUIDE_GOSSIP_TEXT
+    };
+    let response = build_npc_text_update(text_id, text);
     send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
 }
 
 async fn handle_list_inventory(
     stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let guid = read_packet_guid(body, "CMSG_LIST_INVENTORY")?;
-    if guid != rust_guide_guid() {
+    let response = if guid == rust_guide_guid() {
+        build_rust_guide_vendor_inventory()
+    } else if guid.is_creature() {
+        let vendor_items = wow_db::get_vendor_items(world_db_pool, guid.entry()).await?;
+        let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
+        info!(
+            entry = guid.entry(),
+            guid = format_args!("0x{:016X}", guid.raw()),
+            count = list_items.len(),
+            "Answering DB-backed vendor inventory request"
+        );
+        build_vendor_inventory_body(guid, &list_items)
+    } else {
         warn!(
             guid = format_args!("0x{:016X}", guid.raw()),
             "Ignoring vendor inventory request for unknown creature"
         );
         return Ok(());
-    }
-    let response = build_rust_guide_vendor_inventory();
+    };
     send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await
 }
 
 async fn handle_buy_item(
     stream: &mut TcpStream,
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -1407,15 +1568,17 @@ async fn handle_buy_item(
         warn!("Ignoring vendor buy before character login");
         return Ok(());
     };
+    let character_guid = character.guid;
     let buy = BuyItemRequest::read(body)?;
-    if buy.vendor_guid != rust_guide_guid() || !is_rust_guide_vendor_item(buy.item) {
+    let vendor_item = vendor_buy_item(world_db_pool, buy).await?;
+    let Some(vendor_item) = vendor_item else {
         warn!(
             item = buy.item,
             vendor = format_args!("0x{:016X}", buy.vendor_guid.raw()),
             "Ignoring unsupported vendor buy request"
         );
         return Ok(());
-    }
+    };
     let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
         send_inventory_change_failure(
             stream,
@@ -1429,17 +1592,35 @@ async fn handle_buy_item(
     };
 
     let count = buy.count.max(1);
+    let total_count = vendor_item.buy_count.max(1).saturating_mul(count as u32);
+    let price = vendor_item.price.saturating_mul(count as u32);
+    let money = if price == 0 {
+        None
+    } else {
+        match wow_db::spend_character_money(character_db_pool, character_guid, price).await? {
+            Some(money) => Some(money),
+            None => {
+                return send_packet(
+                    stream,
+                    SMSG_BUY_FAILED,
+                    &build_buy_failed_body(buy.vendor_guid, buy.item, BUY_ERR_NOT_ENOUGHT_MONEY),
+                    Some(header_crypto),
+                )
+                .await;
+            }
+        }
+    };
     wow_db::add_character_inventory_item(
         character_db_pool,
-        character.guid,
+        character_guid,
         INVENTORY_SLOT_BAG_0 as u32,
         dst_slot,
         buy.item,
-        count as u32,
+        total_count,
         0,
     )
     .await?;
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character.guid).await?;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let Some(new_item) = session
         .inventory
         .iter()
@@ -1451,21 +1632,206 @@ async fn handle_buy_item(
     send_packet(
         stream,
         SMSG_BUY_ITEM,
-        &build_buy_item_body(rust_guide_vendor_slot(buy.item).unwrap_or(1), count),
+        &build_buy_item_body(buy.vendor_guid, vendor_item.slot, count),
         Some(&mut *header_crypto),
     )
     .await?;
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let container_slots = if new_item.item_template == RUST_VENDOR_BAG_ITEM {
-        Some(6)
+    let container_slots = if vendor_item.container_slots > 0 {
+        Some(vendor_item.container_slots)
     } else {
         None
     };
     let create_block =
         build_item_create_update_block(owner_guid, owner_guid, new_item, container_slots)?;
-    let slot_block = build_inventory_slots_update_block(character.guid, &session.inventory, &[dst_slot])?;
+    let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[dst_slot])?;
     let body = build_update_object_body(&[create_block, slot_block]);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+    if let Some(money) = money {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_money_update_body(character_guid, money)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VendorBuyItem {
+    slot: u32,
+    container_slots: u32,
+    buy_count: u32,
+    price: u32,
+}
+
+async fn vendor_buy_item(
+    world_db_pool: &MySqlPool,
+    buy: BuyItemRequest,
+) -> anyhow::Result<Option<VendorBuyItem>> {
+    if buy.vendor_guid == rust_guide_guid() {
+        return Ok(rust_guide_vendor_slot(buy.item).map(|slot| VendorBuyItem {
+            slot,
+            container_slots: if buy.item == RUST_VENDOR_BAG_ITEM { 6 } else { 0 },
+            buy_count: 1,
+            price: 0,
+        }));
+    }
+
+    if !buy.vendor_guid.is_creature() {
+        return Ok(None);
+    }
+
+    let vendor_items = wow_db::get_vendor_items(world_db_pool, buy.vendor_guid.entry()).await?;
+    Ok(vendor_items
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.item == buy.item)
+        .map(|(index, item)| VendorBuyItem {
+            slot: (index + 1) as u32,
+            container_slots: item.container_slots,
+            buy_count: item.buy_count,
+            price: item.buy_price,
+        }))
+}
+
+async fn handle_sell_item(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring vendor sell before character login");
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let request = SellItemRequest::read(body)?;
+    let vendor_valid = if request.vendor_guid == rust_guide_guid() {
+        true
+    } else if request.vendor_guid.is_creature() {
+        !wow_db::get_vendor_items(world_db_pool, request.vendor_guid.entry())
+            .await?
+            .is_empty()
+    } else {
+        false
+    };
+    if !vendor_valid {
+        return send_packet(
+            stream,
+            SMSG_SELL_ITEM,
+            &build_sell_item_error_body(
+                request.vendor_guid,
+                request.item_guid,
+                SELL_ERR_CANT_FIND_VENDOR,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    }
+
+    let Some(source_item) = session
+        .inventory
+        .iter()
+        .find(|item| item.item == request.item_guid.counter())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    else {
+        return send_packet(
+            stream,
+            SMSG_SELL_ITEM,
+            &build_sell_item_error_body(
+                request.vendor_guid,
+                request.item_guid,
+                SELL_ERR_CANT_SELL_ITEM,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    };
+    let count = if request.count == 0 {
+        source_item.count
+    } else {
+        request.count as u32
+    };
+    if count == 0
+        || count > source_item.count
+        || template.sell_price == 0
+        || (template.container_slots > 0
+            && session
+                .inventory
+                .iter()
+                .any(|item| item.bag == source_item.slot as u32))
+    {
+        return send_packet(
+            stream,
+            SMSG_SELL_ITEM,
+            &build_sell_item_error_body(
+                request.vendor_guid,
+                request.item_guid,
+                SELL_ERR_CANT_SELL_ITEM,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    }
+
+    let sold = wow_db::destroy_character_inventory_item_count(
+        character_db_pool,
+        character_guid,
+        source_item.bag,
+        source_item.slot,
+        count,
+    )
+    .await?;
+    let Some(sold) = sold else {
+        return Ok(());
+    };
+    let money = wow_db::add_character_money(
+        character_db_pool,
+        character_guid,
+        template.sell_price.saturating_mul(count),
+    )
+    .await?;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+
+    match sold {
+        wow_db::InventoryDestroyResult::CountChanged { item, count } => {
+            let body = build_item_stack_count_update_body(item, count)?;
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+        }
+        wow_db::InventoryDestroyResult::Removed { item } => {
+            let body = if source_item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                build_inventory_slots_update_body(
+                    character_guid,
+                    &session.inventory,
+                    &[source_item.slot],
+                )?
+            } else {
+                build_destroy_object_body(item)
+            };
+            let opcode = if source_item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                SMSG_UPDATE_OBJECT
+            } else {
+                SMSG_DESTROY_OBJECT
+            };
+            send_packet(stream, opcode, &body, Some(&mut *header_crypto)).await?;
+        }
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_money_update_body(character_guid, money)?,
+        Some(header_crypto),
+    )
+    .await
 }
 
 async fn handle_attack_swing(
@@ -1892,30 +2258,42 @@ fn read_packet_guid(body: &[u8], packet_name: &str) -> anyhow::Result<ObjectGuid
     )))
 }
 
+#[cfg(test)]
 fn build_rust_guide_gossip_message() -> Vec<u8> {
-    let guid = rust_guide_guid();
-    let mut body = Vec::with_capacity(32 + RUST_GUIDE_GOSSIP_OPTION.len());
+    build_gossip_message(
+        rust_guide_guid(),
+        RUST_GUIDE_GOSSIP_TEXT_ID,
+        &[(0, RUST_GUIDE_GOSSIP_OPTION)],
+    )
+}
+
+#[cfg(test)]
+fn build_rust_guide_npc_text_update(text_id: u32) -> Vec<u8> {
+    build_npc_text_update(text_id, RUST_GUIDE_GOSSIP_TEXT)
+}
+
+fn build_gossip_message(guid: ObjectGuid, text_id: u32, options: &[(u32, &str)]) -> Vec<u8> {
+    let option_text_len: usize = options.iter().map(|(_, text)| text.len() + 1).sum();
+    let mut body = Vec::with_capacity(16 + options.len() * 6 + option_text_len);
     body.extend_from_slice(&guid.raw().to_le_bytes());
-    body.extend_from_slice(&RUST_GUIDE_GOSSIP_TEXT_ID.to_le_bytes());
-    body.extend_from_slice(&1u32.to_le_bytes()); // gossip option count
-    body.extend_from_slice(&0u32.to_le_bytes()); // option index
-    body.push(0); // icon
-    body.push(0); // coded
-    write_c_string(&mut body, RUST_GUIDE_GOSSIP_OPTION);
+    body.extend_from_slice(&text_id.to_le_bytes());
+    body.extend_from_slice(&(options.len() as u32).to_le_bytes());
+    for (option_index, option_text) in options {
+        body.extend_from_slice(&option_index.to_le_bytes());
+        body.push(0); // icon
+        body.push(0); // coded
+        write_c_string(&mut body, option_text);
+    }
     body.extend_from_slice(&0u32.to_le_bytes()); // quest option count
     body
 }
 
-fn build_rust_guide_npc_text_update(text_id: u32) -> Vec<u8> {
+fn build_npc_text_update(text_id: u32, primary_text: &str) -> Vec<u8> {
     let mut body = Vec::with_capacity(220);
     body.extend_from_slice(&text_id.to_le_bytes());
     for index in 0..8 {
         body.extend_from_slice(&(if index == 0 { 1.0f32 } else { 0.0f32 }).to_le_bytes());
-        let text = if index == 0 {
-            RUST_GUIDE_GOSSIP_TEXT
-        } else {
-            ""
-        };
+        let text = if index == 0 { primary_text } else { "" };
         write_c_string(&mut body, text);
         write_c_string(&mut body, text);
         body.extend_from_slice(&0u32.to_le_bytes()); // language

@@ -41,7 +41,10 @@ const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SPLIT_ITEM: u32 = 0x010E;
 const CMSG_DESTROYITEM: u32 = 0x0111;
+const CMSG_GOSSIP_HELLO: u32 = 0x017B;
+const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
 const CMSG_LIST_INVENTORY: u32 = 0x019E;
+const CMSG_SELL_ITEM: u32 = 0x01A0;
 const CMSG_BUY_ITEM: u32 = 0x01A2;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
@@ -51,8 +54,11 @@ const SMSG_CREATURE_QUERY_RESPONSE: u32 = 0x0061;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_INVENTORY_CHANGE_FAILURE: u32 = 0x0112;
+const SMSG_GOSSIP_MESSAGE: u32 = 0x017D;
+const SMSG_NPC_TEXT_UPDATE: u32 = 0x0180;
 const SMSG_LIST_INVENTORY: u32 = 0x019F;
 const SMSG_BUY_ITEM: u32 = 0x01A4;
+const SMSG_BUY_FAILED: u32 = 0x01A5;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
@@ -196,6 +202,9 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
     loaded_world.query_db_creature_template()?;
+    loaded_world.open_db_vendor_gossip_inventory()?;
+    loaded_world.list_db_vendor_inventory()?;
+    loaded_world.buy_db_vendor_item_expect_insufficient_money(RUST_VENDOR_STACK_ITEM, 1)?;
     loaded_world.swap_inventory_slots(24, 26)?;
     assert_inventory_slot(&character_pool, created.guid, 6948, 26).await?;
     loaded_world.swap_inventory_slots(26, 24)?;
@@ -209,6 +218,11 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.list_rust_guide_inventory()?;
     loaded_world.buy_rust_guide_item(RUST_VENDOR_BAG_ITEM, 1)?;
     assert_inventory_item_present(&character_pool, created.guid, RUST_VENDOR_BAG_ITEM).await?;
+    loaded_world.buy_rust_guide_item(RUST_VENDOR_STACK_ITEM, 2)?;
+    assert_inventory_item_present(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
+    let bought_stack_guid = inventory_item_guid_at(&character_pool, created.guid, 0, 26).await?;
+    loaded_world.sell_item(bought_stack_guid, 1)?;
+    assert_character_money_at_least(&character_pool, created.guid, 1).await?;
     loaded_world.buy_rust_guide_item(RUST_VENDOR_STACK_ITEM, 2)?;
     assert_inventory_item_present(&character_pool, created.guid, RUST_VENDOR_STACK_ITEM).await?;
     loaded_world.swap_item(255, 27, 19, 3)?;
@@ -327,7 +341,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB vendor insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -491,6 +505,20 @@ async fn seed_db_creature_fixture(
         .bind(DB_CREATURE_FIXTURE_GUID)
         .execute(world_pool)
         .await?;
+    sqlx::query("DELETE FROM npc_vendor WHERE entry = ? AND item IN (?, ?)")
+        .bind(DB_CREATURE_FIXTURE_ENTRY)
+        .bind(RUST_VENDOR_STACK_ITEM)
+        .bind(RUST_VENDOR_BAG_ITEM)
+        .execute(world_pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO npc_vendor (entry, item, maxcount, incrtime, slot, condition_id) \
+         VALUES (?, ?, 0, 0, 1, 0)",
+    )
+    .bind(DB_CREATURE_FIXTURE_ENTRY)
+    .bind(RUST_VENDOR_STACK_ITEM)
+    .execute(world_pool)
+    .await?;
     sqlx::query(
         "INSERT INTO creature \
          (guid, id, map, spawnMask, position_x, position_y, position_z, orientation, \
@@ -580,6 +608,23 @@ async fn assert_inventory_count_at(
         actual
     );
     Ok(())
+}
+
+async fn inventory_item_guid_at(
+    character_pool: &MySqlPool,
+    guid: u32,
+    bag: u32,
+    slot: u8,
+) -> anyhow::Result<ObjectGuid> {
+    let item_guid: u32 = sqlx::query_scalar(
+        "SELECT item FROM character_inventory WHERE guid = ? AND bag = ? AND slot = ?",
+    )
+    .bind(guid)
+    .bind(bag)
+    .bind(slot)
+    .fetch_one(character_pool)
+    .await?;
+    Ok(ObjectGuid::new(HighGuid::Item, 0, item_guid))
 }
 
 async fn assert_inventory_position_empty(
@@ -672,6 +717,22 @@ async fn assert_inventory_item_present(
     ensure!(
         inventory_count > 0,
         "item {item_template} for character {guid} was not present"
+    );
+    Ok(())
+}
+
+async fn assert_character_money_at_least(
+    character_pool: &MySqlPool,
+    guid: u32,
+    minimum_money: u32,
+) -> anyhow::Result<()> {
+    let money: u32 = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(character_pool)
+        .await?;
+    ensure!(
+        money >= minimum_money,
+        "character money was {money}, expected at least {minimum_money}"
     );
     Ok(())
 }
@@ -1426,6 +1487,111 @@ impl WorldClient {
         Ok(())
     }
 
+    fn list_db_vendor_inventory(&mut self) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LIST_INVENTORY,
+            &guid.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LIST_INVENTORY,
+            "expected DB SMSG_LIST_INVENTORY, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 37)?;
+        ensure!(
+            &body[0..8] == guid.raw().to_le_bytes().as_slice(),
+            "DB vendor guid mismatch"
+        );
+        ensure!(body[8] == 1, "DB vendor item count was {}", body[8]);
+        let item = u32::from_le_bytes(body[13..17].try_into()?);
+        ensure!(
+            item == RUST_VENDOR_STACK_ITEM,
+            "DB vendor item was {item}, expected {RUST_VENDOR_STACK_ITEM}"
+        );
+        let available = u32::from_le_bytes(body[21..25].try_into()?);
+        ensure!(
+            available == u32::MAX,
+            "DB vendor unlimited count marker was {available}"
+        );
+        Ok(())
+    }
+
+    fn open_db_vendor_gossip_inventory(&mut self) -> anyhow::Result<()> {
+        let guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &guid.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_NPC_TEXT_UPDATE,
+            "expected SMSG_NPC_TEXT_UPDATE after DB gossip hello, got 0x{opcode:04X}"
+        );
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_GOSSIP_MESSAGE,
+            "expected SMSG_GOSSIP_MESSAGE after DB gossip hello, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 17)?;
+        ensure!(
+            &body[0..8] == guid.raw().to_le_bytes().as_slice(),
+            "DB gossip guid mismatch"
+        );
+        ensure!(
+            u32::from_le_bytes(body[12..16].try_into()?) == 1,
+            "DB gossip option count was not one"
+        );
+
+        let mut select = Vec::with_capacity(12);
+        select.extend_from_slice(&guid.raw().to_le_bytes());
+        select.extend_from_slice(&0u32.to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_SELECT_OPTION,
+            &select,
+            Some(&mut self.crypto),
+        )?;
+        self.expect_db_vendor_inventory_response(guid)
+    }
+
+    fn expect_db_vendor_inventory_response(&mut self, guid: ObjectGuid) -> anyhow::Result<()> {
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_LIST_INVENTORY,
+            "expected DB SMSG_LIST_INVENTORY, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 37)?;
+        ensure!(
+            &body[0..8] == guid.raw().to_le_bytes().as_slice(),
+            "DB vendor guid mismatch"
+        );
+        ensure!(body[8] == 1, "DB vendor item count was {}", body[8]);
+        let item = u32::from_le_bytes(body[13..17].try_into()?);
+        ensure!(
+            item == RUST_VENDOR_STACK_ITEM,
+            "DB vendor item was {item}, expected {RUST_VENDOR_STACK_ITEM}"
+        );
+        let available = u32::from_le_bytes(body[21..25].try_into()?);
+        ensure!(
+            available == u32::MAX,
+            "DB vendor unlimited count marker was {available}"
+        );
+        Ok(())
+    }
+
     fn query_db_creature_template(&mut self) -> anyhow::Result<()> {
         let guid = ObjectGuid::new(
             HighGuid::Unit,
@@ -1483,6 +1649,69 @@ impl WorldClient {
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after vendor buy, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
+    fn buy_db_vendor_item_expect_insufficient_money(
+        &mut self,
+        item: u32,
+        count: u8,
+    ) -> anyhow::Result<()> {
+        let vendor_guid = ObjectGuid::new(
+            HighGuid::Unit,
+            DB_CREATURE_FIXTURE_ENTRY,
+            DB_CREATURE_FIXTURE_GUID,
+        );
+        let mut body = Vec::with_capacity(14);
+        body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+        body.extend_from_slice(&item.to_le_bytes());
+        body.push(count);
+        body.push(1);
+        write_client_packet(
+            &mut self.stream,
+            CMSG_BUY_ITEM,
+            &body,
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_BUY_FAILED,
+            "expected SMSG_BUY_FAILED after unaffordable DB vendor buy, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 13)?;
+        ensure!(
+            &body[0..8] == vendor_guid.raw().to_le_bytes().as_slice(),
+            "buy failure vendor guid mismatch"
+        );
+        ensure!(
+            u32::from_le_bytes(body[8..12].try_into()?) == item,
+            "buy failure item mismatch"
+        );
+        ensure!(body[12] == 2, "buy failure code was {}", body[12]);
+        Ok(())
+    }
+
+    fn sell_item(&mut self, item_guid: ObjectGuid, count: u8) -> anyhow::Result<()> {
+        let mut body = Vec::with_capacity(17);
+        body.extend_from_slice(&rust_guide_guid().raw().to_le_bytes());
+        body.extend_from_slice(&item_guid.raw().to_le_bytes());
+        body.push(count);
+        write_client_packet(
+            &mut self.stream,
+            CMSG_SELL_ITEM,
+            &body,
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after vendor sell item/count update, got 0x{opcode:04X}"
+        );
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after vendor sell money update, got 0x{opcode:04X}"
         );
         Ok(())
     }

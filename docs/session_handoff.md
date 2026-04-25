@@ -18,8 +18,8 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest committed base before this slice: `9ea21fba7 Document loot smoke stack issue`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: Checkpoint 1 player update parity plus DB creature
-  spawn/query v1 changes are ready to commit/push.
+- Worktree at handoff: Checkpoint 1 DB-backed vendor-list v1 changes are
+  ready to commit/push.
 
 ## Current Goal
 
@@ -28,8 +28,9 @@ Checkpoint 1: **First Playable World**.
 The Rust auth/world stack can authenticate a real WoW 1.12.1 client, manage
 characters, enter a minimal world, move/logout/relog, seed starter state, render
 DB-backed creature spawns, query creature templates, open fixture NPC
-gossip/vendor flows, fight a fixture combat dummy, and exercise basic inventory
-and loot/vendor item flows in the packet DB harness.
+gossip/vendor flows, list a DB-backed vendor inventory, fight a fixture combat
+dummy, and exercise basic inventory and loot/vendor item flows in the packet DB
+harness.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -65,8 +66,27 @@ using the repo's bug triage policy, then continue the requested task.
   joined to `creature_template`, appends unit create blocks during enter-world,
   and answers `CMSG_CREATURE_QUERY` from `creature_template` before falling
   back to the Rust Guide / combat dummy fixtures.
-- `scripts/run-client-stack-18085.ps1` now seeds local DB-spawn visual fixture
-  `Rust DB Guide` (`creature` / `creature_template` `900010`) near `Rustone`.
+- Added DB-backed vendor-list v1: Rust reads `npc_vendor` rows joined to
+  `item_template`, serializes CMaNGOS-shaped `SMSG_LIST_INVENTORY`, returns the
+  vanilla no-inventory marker for empty DB vendors, and accepts supported DB
+  vendor buys through the existing conservative item insertion path.
+- Fixed the real-client `Rust DB Guide` interaction path: DB creature
+  `CMSG_GOSSIP_HELLO` now returns a small vendor gossip menu when `npc_vendor`
+  rows exist, and `CMSG_GOSSIP_SELECT_OPTION` opens the DB-backed vendor list.
+  The DB gossip option id is zero-based to match the one-option client menu and
+  avoid a WoW 5875 client crash on selection.
+- Vendor money/sell v1 now charges `BuyPrice`, returns `SMSG_BUY_FAILED` when
+  the player cannot afford a DB vendor item, updates `PLAYER_FIELD_COINAGE`
+  after paid buys, and handles conservative sellback of owned sellable items by
+  reducing/removing the stack and adding `SellPrice * count`.
+- DB-backed vendor lists intentionally filter out container items for now after
+  a WoW 5875 client crash was observed when shift-right-click buying the DB
+  guide's Small Brown Pouch. Keep container purchases on the Rust Guide fixture
+  path until DB container create/update fidelity is proven by real-client smoke.
+- `scripts/run-client-stack-18085.ps1` now seeds local DB-spawn fixture
+  `Rust DB Guide` (`creature` / `creature_template` `900010`) near `Rustone`
+  with gossip/vendor NPC flags and Tough Jerky `117` plus Small Brown Pouch
+  `2102` vendor rows.
 
 ## Tests Last Run
 
@@ -74,19 +94,20 @@ Passing locally:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo fmt
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network self_spawn_update_includes_cmangos_player_vitals_and_defaults -- --nocapture
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo test -p wow-network vendor_inventory -- --nocapture
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-rust.cmd
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; .\scripts\test-world-flow.cmd
 git diff --check
 ```
 
-`test-rust.cmd` passed with 73 `wow-network` tests. The first rerun hit the
-usual final-build binary lock; stopping stale local `authserver.exe` /
-`worldserver.exe` processes and rerunning passed. After DB creature v1,
-`test-rust.cmd` passed with 75 `wow-network` tests. `test-world-flow.cmd`
-passed with auth session, create/delete cases, DB creature query,
-inventory/vendor/loot flows, cleanup checks, COD mail return, and enum/count
-refresh.
+`cargo test -p wow-network vendor -- --nocapture` passed 4 focused vendor/gossip
+packet-shape tests. `cargo test -p wow-network gossip -- --nocapture` passed 4
+focused gossip tests. `test-rust.cmd` passed with 79 `wow-network` tests. The first full rerun
+hit the usual final-build binary lock; stopping stale local `authserver.exe` /
+`worldserver.exe` processes and rerunning passed. `test-world-flow.cmd` passed
+with auth session, create/delete cases, DB creature query/gossip/vendor list,
+DB vendor insufficient-money guard, inventory/vendor buy/sell/loot flows,
+cleanup checks, COD mail return, and enum/count refresh.
 
 Notes:
 
@@ -130,8 +151,9 @@ GitHub issues are the source of truth:
 - #20 skill tier-step placeholder; #21 first-pass combat stat formulas.
 - #22 explored-zone fields are serialized from DB but not yet discovered from
   map area flags or persisted on movement.
-- #11 was updated with the DB creature spawn/query v1 evidence; real DB-backed
-  gossip/vendor/trainer/combat routing remains future work.
+- #11 was updated with the DB creature spawn/query v1 evidence; DB vendor-list
+  routing now has first packet/DB coverage, while real DB-backed gossip,
+  trainer, combat, loot-table, and richer vendor validation remain future work.
 
 The current slice improves #16 and #18 but does not close them until real-client
 smoke proves split and container visuals are correct. Fixture NPC/vendor gaps
@@ -142,8 +164,9 @@ area exploration discovery/persistence remains under #22.
 
 ## Known Blockers And Gaps
 
-- Fixture NPC/vendor/combat/loot remain hardcoded or fixture-only pending #11
-  and #12; no DB-backed creature spawns, loot tables, XP, or respawn yet.
+- Fixture NPC gossip/combat/loot remain hardcoded or fixture-only pending #11
+  and #12; DB-backed creature spawns/query and vendor lists exist, but DB-backed
+  gossip, trainers, loot tables, XP, respawn, and full vendor rules do not yet.
 - Inventory v1 still lacks full durability changes, complete equipment rules,
   broader item-template/class/race validation, and final split/container visual
   parity closure.
@@ -158,17 +181,23 @@ area exploration discovery/persistence remains under #22.
 ## Next Recommended Task
 
 Run a quick real-client enter-world smoke and confirm `Rust DB Guide` appears
-near `Rustone` while Rust Guide and combat dummy fixture interactions still
-work. Then continue Checkpoint 1 with DB-backed NPC interaction routing,
-starting with gossip or vendor data.
+near `Rustone`, right-click shows the `Browse goods.` gossip option, selecting
+it opens the vendor list with Tough Jerky, unaffordable buys fail instead of
+granting free goods, selling ordinary items pays copper, and that Rust Guide
+plus combat dummy fixture interactions still work. Then
+continue Checkpoint 1 with DB-backed NPC interaction routing, likely richer
+vendor validation/buyback, DB container-buy fidelity, or trainer-list data in
+`world-flow-test`.
 
 ## Key Files
 
 - `crates/wow-network/src/world/mod.rs`
 - `crates/wow-network/src/world/bootstrap.rs`
+- `crates/wow-network/src/world/interactions.rs`
 - `crates/wow-network/src/world/wire.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `crates/wow-db/src/character.rs`
+- `crates/wow-db/src/world_data.rs`
 - `bins/world-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
 - `docs/rust_auth_foundation.md`

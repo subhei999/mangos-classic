@@ -45,6 +45,18 @@ pub struct CreatureSpawnQuery {
     pub template: CreatureTemplateQuery,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct VendorItemQuery {
+    pub item: u32,
+    pub max_count: u32,
+    pub slot: u8,
+    pub display_id: u32,
+    pub buy_price: u32,
+    pub max_durability: u32,
+    pub buy_count: u32,
+    pub container_slots: u32,
+}
+
 pub async fn get_creature_template_query(
     pool: &MySqlPool,
     entry: u32,
@@ -70,6 +82,32 @@ pub async fn get_creature_template_query(
     .await?;
 
     Ok(row)
+}
+
+pub async fn get_vendor_items(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Vec<VendorItemQuery>, DbError> {
+    let rows = sqlx::query_as::<_, VendorItemRow>(
+        "SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.slot, \
+                item_template.displayid AS display_id, item_template.BuyPrice AS buy_price, \
+                item_template.MaxDurability AS max_durability, \
+                item_template.BuyCount AS buy_count, \
+                item_template.ContainerSlots AS container_slots \
+         FROM npc_vendor \
+         JOIN item_template ON npc_vendor.item = item_template.entry \
+         WHERE npc_vendor.entry = ? \
+           AND npc_vendor.condition_id = 0 \
+           AND item_template.ContainerSlots = 0 \
+         ORDER BY CASE WHEN npc_vendor.slot = 0 THEN 255 ELSE npc_vendor.slot END, \
+                  npc_vendor.item \
+         LIMIT 128",
+    )
+    .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(VendorItemRow::into_query).collect())
 }
 
 pub async fn get_nearby_creature_spawns(
@@ -133,6 +171,33 @@ pub async fn get_nearby_creature_spawns(
     .await?;
 
     Ok(rows.into_iter().map(CreatureSpawnRow::into_query).collect())
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct VendorItemRow {
+    item: u32,
+    max_count: u8,
+    slot: u8,
+    display_id: u32,
+    buy_price: u32,
+    max_durability: u16,
+    buy_count: u8,
+    container_slots: u8,
+}
+
+impl VendorItemRow {
+    fn into_query(self) -> VendorItemQuery {
+        VendorItemQuery {
+            item: self.item,
+            max_count: self.max_count as u32,
+            slot: self.slot,
+            display_id: self.display_id,
+            buy_price: self.buy_price,
+            max_durability: self.max_durability as u32,
+            buy_count: self.buy_count as u32,
+            container_slots: self.container_slots as u32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]

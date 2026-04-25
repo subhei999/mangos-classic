@@ -105,8 +105,11 @@ const CMSG_NPC_TEXT_QUERY: u32 = 0x017F;
 const SMSG_NPC_TEXT_UPDATE: u16 = 0x0180;
 const CMSG_LIST_INVENTORY: u32 = 0x019E;
 const SMSG_LIST_INVENTORY: u16 = 0x019F;
+const CMSG_SELL_ITEM: u32 = 0x01A0;
+const SMSG_SELL_ITEM: u16 = 0x01A1;
 const CMSG_BUY_ITEM: u32 = 0x01A2;
 const SMSG_BUY_ITEM: u16 = 0x01A4;
+const SMSG_BUY_FAILED: u16 = 0x01A5;
 const CMSG_QUERY_TIME: u32 = 0x01CE;
 const SMSG_QUERY_TIME_RESPONSE: u16 = 0x01CF;
 const CMSG_ZONEUPDATE: u32 = 0x01F4;
@@ -321,6 +324,9 @@ const MAX_BAG_SIZE: u8 = 36;
 const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
 const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
 const EQUIP_ERR_COULDNT_SPLIT_ITEMS: u8 = 27;
+const BUY_ERR_NOT_ENOUGHT_MONEY: u8 = 2;
+const SELL_ERR_CANT_SELL_ITEM: u8 = 2;
+const SELL_ERR_CANT_FIND_VENDOR: u8 = 3;
 const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
 const UNIT_NPC_FLAG_VENDOR: u32 = 0x0000_0004;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
@@ -335,6 +341,10 @@ const RUST_GUIDE_FACTION_TEMPLATE: u32 = 35;
 const RUST_GUIDE_GOSSIP_TEXT_ID: u32 = 900_001;
 const RUST_GUIDE_GOSSIP_OPTION: &str = "Keep going.";
 const RUST_GUIDE_GOSSIP_TEXT: &str = "The Rust world stack is answering NPC gossip now.";
+const DB_VENDOR_GOSSIP_TEXT_ID: u32 = 900_010;
+const DB_VENDOR_GOSSIP_OPTION: &str = "Browse goods.";
+const DB_VENDOR_GOSSIP_TEXT: &str =
+    "The Rust world stack is answering DB-backed vendor gossip now.";
 const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
 const RUST_COMBAT_DUMMY_COUNTER: u32 = 2;
 const RUST_COMBAT_DUMMY_NAME: &str = "Rust Combat Dummy";
@@ -652,21 +662,46 @@ async fn handle_client(
                         );
                     }
                     CMSG_GOSSIP_HELLO => {
-                        handle_gossip_hello(&mut stream, &body, &mut header_crypto).await?;
+                        handle_gossip_hello(&mut stream, &world_db_pool, &body, &mut header_crypto)
+                            .await?;
                     }
                     CMSG_GOSSIP_SELECT_OPTION => {
-                        handle_gossip_select_option(&mut stream, &mut header_crypto).await?;
+                        handle_gossip_select_option(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_NPC_TEXT_QUERY => {
                         handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
                     }
                     CMSG_LIST_INVENTORY => {
-                        handle_list_inventory(&mut stream, &body, &mut header_crypto).await?;
+                        handle_list_inventory(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_SELL_ITEM => {
+                        handle_sell_item(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_BUY_ITEM => {
                         handle_buy_item(
                             &mut stream,
                             &character_db_pool,
+                            &world_db_pool,
                             &body,
                             &mut session,
                             &mut header_crypto,

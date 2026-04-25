@@ -318,6 +318,35 @@ fn rust_guide_gossip_message_has_empty_menu_shape() {
 }
 
 #[test]
+fn db_vendor_gossip_message_points_at_db_creature() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let body = build_gossip_message(
+        guid,
+        DB_VENDOR_GOSSIP_TEXT_ID,
+        &[(0, DB_VENDOR_GOSSIP_OPTION)],
+    );
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &DB_VENDOR_GOSSIP_TEXT_ID.to_le_bytes());
+    assert_eq!(&body[12..16], &1u32.to_le_bytes());
+    assert_eq!(&body[16..20], &0u32.to_le_bytes());
+    assert_eq!(body[20], 0);
+    assert_eq!(body[21], 0);
+    assert_eq!(&body[22..36], b"Browse goods.\0");
+    assert_eq!(&body[36..40], &0u32.to_le_bytes());
+}
+
+#[test]
+fn parses_gossip_select_option_packet() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let mut body = Vec::new();
+    body.extend_from_slice(&guid.raw().to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    let selection = GossipSelectOption::read(&body).unwrap();
+    assert_eq!(selection.guid, guid);
+    assert_eq!(selection.option, 1);
+}
+
+#[test]
 fn rust_guide_npc_text_update_matches_cmangos_eight_option_shape() {
     let body = build_rust_guide_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID);
     let mut cursor = 0;
@@ -600,6 +629,57 @@ fn rust_guide_vendor_inventory_lists_bag_and_stack_item() {
         &body[45..49],
         &RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes()
     );
+}
+
+#[test]
+fn db_vendor_inventory_uses_cmangos_list_shape() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let db_items = [
+        wow_db::VendorItemQuery {
+            item: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            max_count: 0,
+            slot: 7,
+            display_id: RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY,
+            buy_price: 3,
+            max_durability: 0,
+            buy_count: 2,
+            container_slots: 0,
+        },
+        wow_db::VendorItemQuery {
+            item: RUST_VENDOR_BAG_ITEM,
+            max_count: 5,
+            slot: 9,
+            display_id: RUST_VENDOR_BAG_DISPLAY,
+            buy_price: 10,
+            max_durability: 20,
+            buy_count: 1,
+            container_slots: 6,
+        },
+    ];
+    let items: Vec<VendorListItem> = db_items.iter().map(Into::into).collect();
+    let body = build_vendor_inventory_body(guid, &items);
+
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(body[8], 2);
+    assert_eq!(&body[9..13], &1u32.to_le_bytes());
+    assert_eq!(&body[13..17], &RUST_COMBAT_DUMMY_LOOT_ITEM.to_le_bytes());
+    assert_eq!(&body[21..25], &u32::MAX.to_le_bytes());
+    assert_eq!(&body[25..29], &3u32.to_le_bytes());
+    assert_eq!(&body[33..37], &2u32.to_le_bytes());
+    assert_eq!(&body[37..41], &2u32.to_le_bytes());
+    assert_eq!(&body[41..45], &RUST_VENDOR_BAG_ITEM.to_le_bytes());
+    assert_eq!(&body[49..53], &5u32.to_le_bytes());
+    assert_eq!(&body[53..57], &10u32.to_le_bytes());
+    assert_eq!(&body[57..61], &20u32.to_le_bytes());
+}
+
+#[test]
+fn empty_vendor_inventory_marks_no_inventory() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let body = build_vendor_inventory_body(guid, &[]);
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(body[8], 0);
+    assert_eq!(body[9], 0);
 }
 
 #[test]

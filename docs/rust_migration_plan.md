@@ -304,6 +304,24 @@ Detailed path:
      items `2102` and `117`, inserts purchases into the first empty backpack
      slot, and sends buy plus inventory update packets. This is intentionally a
      fixture path, not DB-backed `npc_vendor` parity.
+   - Current status: DB-backed vendor-list v1 is implemented for DB creature
+     GUIDs. Rust reads `npc_vendor` joined to `item_template`, serializes
+     CMaNGOS-shaped `SMSG_LIST_INVENTORY` rows, sends the vanilla no-inventory
+     marker for empty vendors, and the packet DB harness proves a seeded DB
+     creature can answer a vendor-list request. DB creatures with vendor rows
+     now also answer `CMSG_GOSSIP_HELLO` with a simple vendor gossip option, and
+     `CMSG_GOSSIP_SELECT_OPTION` opens the DB-backed vendor list. The one-option
+     DB vendor gossip menu uses zero-based option id `0` to match the vanilla
+     client menu. Trainer lists, full vendor validation, and buyback remain
+     future slices.
+   - Current status: vendor money/sell v1 charges DB vendor `BuyPrice`, returns
+     `SMSG_BUY_FAILED` when the player lacks money, updates player coinage
+     after paid buys, and supports conservative selling of owned sellable items
+     for `SellPrice * count`.
+   - Current status: DB-backed vendor lists filter out container items until the
+     DB container purchase update shape is proven; a real WoW 5875 client crash
+     was observed when shift-right-click buying the DB guide's Small Brown
+     Pouch. Container purchase coverage remains on the Rust Guide fixture path.
 10. Combat and spell v1
    - Implement target selection, auto-attack start/stop, swing timing basics,
      health updates, death/respawn basics, and one or two starter instant spell

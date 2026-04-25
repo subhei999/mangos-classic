@@ -120,7 +120,7 @@ SET Entry = 900010,
     DisplayId4 = 0,
     Faction = 35,
     Scale = 1,
-    NpcFlags = 1,
+    NpcFlags = 5,
     UnitFlags = 0,
     DynamicFlags = 0,
     MinLevelHealth = 42,
@@ -131,7 +131,10 @@ SET Entry = 900010,
     RangedBaseAttackTime = 2000;
 DELETE FROM mangos.creature WHERE guid = 900010;
 DELETE FROM mangos.creature_template WHERE Entry = 900010;
+DELETE FROM mangos.npc_vendor WHERE entry = 900010 AND item IN (117, 2102);
 INSERT INTO mangos.creature_template SELECT * FROM rust_client_creature_template;
+INSERT INTO mangos.npc_vendor (entry, item, maxcount, incrtime, slot, condition_id)
+VALUES (900010, 117, 0, 0, 1, 0);
 INSERT INTO mangos.creature
     (guid, id, map, spawnMask, position_x, position_y, position_z, orientation,
      spawntimesecsmin, spawntimesecsmax, spawndist, MovementType)

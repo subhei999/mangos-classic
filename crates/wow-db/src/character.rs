@@ -1286,6 +1286,28 @@ pub async fn add_character_money(pool: &MySqlPool, guid: u32, amount: u32) -> Re
     Ok(money)
 }
 
+pub async fn spend_character_money(
+    pool: &MySqlPool,
+    guid: u32,
+    amount: u32,
+) -> Result<Option<u32>, DbError> {
+    let result =
+        sqlx::query("UPDATE characters SET money = money - ? WHERE guid = ? AND money >= ?")
+            .bind(amount)
+            .bind(guid)
+            .bind(amount)
+            .execute(pool)
+            .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let money = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(pool)
+        .await?;
+    Ok(Some(money))
+}
+
 pub async fn refresh_character_equipment_cache(pool: &MySqlPool, guid: u32) -> Result<(), DbError> {
     let equipment_rows: Vec<(u8, u32)> = sqlx::query_as(
         "SELECT slot, item_template FROM character_inventory \

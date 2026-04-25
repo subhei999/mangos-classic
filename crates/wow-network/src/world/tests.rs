@@ -1281,6 +1281,32 @@ fn writes_inventory_item_guid_update_values() {
 }
 
 #[test]
+fn main_hand_inventory_and_visible_update_values_are_written() {
+    let mut character = test_character(1, 1);
+    character.equipment_cache =
+        Some("0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 25 0".to_string());
+    let item = CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 42,
+        item_template: 25,
+        count: 1,
+        durability: 10,
+    };
+    let mut values = vec![None; PLAYER_END_FIELDS];
+
+    set_visible_item_update_values(&mut values, &character, std::slice::from_ref(&item)).unwrap();
+    set_inventory_slot_update_values(&mut values, &[item]).unwrap();
+
+    let guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let inventory_field = PLAYER_FIELD_INV_SLOT_HEAD + EQUIPMENT_SLOT_MAINHAND as usize * 2;
+    let visible_field = 0x104 + EQUIPMENT_SLOT_MAINHAND as usize * 12;
+    assert_eq!(values[inventory_field], Some(guid.raw() as u32));
+    assert_eq!(values[inventory_field + 1], Some((guid.raw() >> 32) as u32));
+    assert_eq!(values[visible_field], Some(25));
+}
+
+#[test]
 fn parses_backpack_inventory_move_packets() {
     let swap_inv = InventoryMoveRequest::read(CMSG_SWAP_INV_ITEM, &[23, 24]).unwrap();
     assert_eq!(

@@ -83,6 +83,7 @@ const CHAR_NAME_INVALID_CHARACTER: u8 = 0x46;
 const AT_LOGIN_FIRST: u32 = 0x20;
 const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
 const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
+const EQUIP_ERR_COULDNT_SPLIT_ITEMS: u8 = 27;
 const RUST_GUIDE_ENTRY: u32 = 900_001;
 const RUST_GUIDE_COUNTER: u32 = 1;
 const RUST_VENDOR_BAG_ITEM: u32 = 2102;
@@ -173,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
             .any(|item| item.item_template == 6948),
         "packet-created character did not receive starter inventory"
     );
+    assert_starter_main_hand_state(&character_pool, &world_pool, created.guid).await?;
     seed_inventory_edge_fixture(&character_pool, created.guid).await?;
     seed_db_creature_fixture(&world_pool, &created_db).await?;
 
@@ -210,6 +212,52 @@ async fn main() -> anyhow::Result<()> {
             .any(|character| character.guid == other_character.guid),
         "other account character was deleted by packet delete"
     );
+    assert_count_row(&login_pool, account_id, 1).await?;
+
+    let no_space_character = wow_db::create_character(
+        &character_pool,
+        &world_pool,
+        wow_db::NewCharacter {
+            account_id,
+            name: "Lootfull".to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await?;
+    seed_full_backpack_fixture(&character_pool, no_space_character.guid).await?;
+    let no_space_stack_rows_before = inventory_item_row_count(
+        &character_pool,
+        no_space_character.guid,
+        RUST_VENDOR_STACK_ITEM,
+    )
+    .await?;
+    let mut no_space_world = WorldClient::connect(&session_key)?;
+    no_space_world.login_character(no_space_character.guid)?;
+    no_space_world.kill_combat_dummy_with_autoattacks()?;
+    no_space_world.open_combat_dummy_loot()?;
+    no_space_world.autostore_combat_dummy_loot_item_expect_no_space()?;
+    assert_inventory_item_row_count(
+        &character_pool,
+        no_space_character.guid,
+        RUST_VENDOR_STACK_ITEM,
+        no_space_stack_rows_before,
+    )
+    .await?;
+    no_space_world.release_combat_dummy_loot()?;
+    drop(no_space_world);
+    ensure!(
+        wow_db::delete_character(&character_pool, account_id, no_space_character.guid).await?,
+        "failed to delete temporary no-space loot character"
+    );
+    wow_db::refresh_realm_character_count(&login_pool, &character_pool, account_id, REALM_ID)
+        .await?;
     assert_count_row(&login_pool, account_id, 1).await?;
 
     let mut loaded_world = WorldClient::connect(&session_key)?;
@@ -435,7 +483,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -540,6 +588,61 @@ async fn assert_first_login_state_seen(
     Ok(())
 }
 
+async fn assert_starter_main_hand_state(
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    guid: u32,
+) -> anyhow::Result<()> {
+    let Some((item_guid, item_template, item_entry, count)): Option<(u32, u32, u32, u32)> =
+        sqlx::query_as(
+            "SELECT ci.item, ci.item_template, ii.itemEntry, ii.count \
+             FROM character_inventory ci \
+             JOIN item_instance ii ON ii.guid = ci.item \
+             WHERE ci.guid = ? AND ci.bag = 0 AND ci.slot = 15",
+        )
+        .bind(guid)
+        .fetch_optional(character_pool)
+        .await?
+    else {
+        anyhow::bail!("fresh Human Warrior missing main-hand inventory row");
+    };
+    ensure!(
+        item_template == 25 && item_entry == 25 && count == 1,
+        "main-hand row was item={item_guid} template={item_template} entry={item_entry} count={count}, expected item 25 x1"
+    );
+    assert_equipment_cache_slot(character_pool, guid, 15, 25).await?;
+
+    let (class, subclass, inventory_type, allowable_class, allowable_race): (
+        u32,
+        u32,
+        u32,
+        i32,
+        i32,
+    ) = sqlx::query_as(
+        "SELECT class, subclass, InventoryType, AllowableClass, AllowableRace \
+         FROM item_template WHERE entry = 25",
+    )
+    .fetch_one(world_pool)
+    .await?;
+    ensure!(
+        class == 2 && matches!(inventory_type, 13 | 17 | 21),
+        "starter main-hand item 25 class/inventory type was class={class} inventory_type={inventory_type}, expected weapon/main-hand-compatible inventory type"
+    );
+    ensure!(
+        subclass > 0,
+        "starter main-hand item 25 had invalid weapon subclass 0"
+    );
+    ensure!(
+        allowable_class == -1 || (allowable_class & (1 << 0)) != 0,
+        "starter main-hand item 25 does not allow warriors: AllowableClass={allowable_class}"
+    );
+    ensure!(
+        allowable_race == -1 || (allowable_race & (1 << 0)) != 0,
+        "starter main-hand item 25 does not allow humans: AllowableRace={allowable_race}"
+    );
+    Ok(())
+}
+
 async fn seed_inventory_edge_fixture(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE item_instance ii \
@@ -586,6 +689,49 @@ async fn seed_inventory_edge_fixture(character_pool: &MySqlPool, guid: u32) -> a
         .bind(item_template)
         .execute(character_pool)
         .await?;
+    }
+
+    Ok(())
+}
+
+async fn seed_full_backpack_fixture(character_pool: &MySqlPool, guid: u32) -> anyhow::Result<()> {
+    let occupied_slots: Vec<u8> = sqlx::query_scalar(
+        "SELECT slot FROM character_inventory WHERE guid = ? AND bag = 0 AND slot BETWEEN 23 AND 38",
+    )
+    .bind(guid)
+    .fetch_all(character_pool)
+    .await?;
+    let mut next_item_guid: u32 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(guid), 0) + 1 AS UNSIGNED) FROM item_instance",
+    )
+    .fetch_one(character_pool)
+    .await?;
+
+    for slot in 23u8..=38u8 {
+        if occupied_slots.contains(&slot) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO item_instance \
+             (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
+              charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
+             VALUES (?, ?, 6948, 0, 0, 1, 0, '0 0 0 0 0 ', 0, \
+                     '0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0, 0, 0)",
+        )
+        .bind(next_item_guid)
+        .bind(guid)
+        .execute(character_pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
+             VALUES (?, 0, ?, ?, 6948)",
+        )
+        .bind(guid)
+        .bind(slot)
+        .bind(next_item_guid)
+        .execute(character_pool)
+        .await?;
+        next_item_guid += 1;
     }
 
     Ok(())
@@ -2223,6 +2369,27 @@ impl WorldClient {
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after autostore loot, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
+    fn autostore_combat_dummy_loot_item_expect_no_space(&mut self) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_AUTOSTORE_LOOT_ITEM,
+            &[0],
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_INVENTORY_CHANGE_FAILURE,
+            "expected SMSG_INVENTORY_CHANGE_FAILURE for no-space autostore, got 0x{opcode:04X}"
+        );
+        ensure_available(&body, 18)?;
+        ensure!(
+            body[0] == EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            "no-space autostore failure code was {}, expected {EQUIP_ERR_COULDNT_SPLIT_ITEMS}",
+            body[0]
         );
         Ok(())
     }

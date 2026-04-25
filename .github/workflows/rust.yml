@@ -14,8 +14,14 @@ permissions:
 
 jobs:
   test:
-    name: Rust checks
-    runs-on: ubuntu-22.04
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - windows-2022
 
     steps:
       - name: Checkout
@@ -29,14 +35,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --check
+      - name: Rust checks (Linux/macOS shell)
+        if: runner.os != 'Windows'
+        run: ./scripts/test-rust.sh
 
-      - name: Lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Build authserver
-        run: cargo build -p authserver
+      - name: Rust checks (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-rust.ps1

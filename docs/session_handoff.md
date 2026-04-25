@@ -46,6 +46,7 @@ quests, XP/level-up, trainers, death/respawn, and relog persistence.
 
 ## What Changed Recently
 
+- Added cross-platform Rust test entrypoint `scripts/test-rust.sh` and updated the Rust GitHub workflow to run Rust checks on both Ubuntu and Windows, so remote Linux/macOS environments can run the same baseline script without `.cmd` wrappers.
 - Added first Checkpoint 2 creature-retaliation guardrail for DB creatures: when a living DB target is attacked in the world tick loop, Rust now emits a creature->player `SMSG_ATTACKERSTATEUPDATE`, updates `UNIT_FIELD_HEALTH` for the player via `SMSG_UPDATE_OBJECT`, and keeps the player above a 1-HP survivor floor so death/respawn remains deferred to the dedicated Checkpoint 2 death slice (#44).
 - Added focused `wow-network` unit coverage for the new player-health update packet body and DB-creature retaliation health-floor behavior.
 - Cemented the Checkpoint 2 plan in `docs/rust_migration_plan.md`: Northshire
@@ -242,10 +243,6 @@ git diff --check
 Latest Checkpoint 2 fixture-lock verification:
 
 - `cargo fmt` passed.
-- `cargo test -p wow-network -- --nocapture` could not run in this container because crates.io index download failed with repeated `CONNECT tunnel failed, response 403` while resolving dependencies (`anyhow`).
-- `cargo build -p starter-zone-flow-test` failed for the same crates.io connectivity reason.
-- `./scripts/test-rust.cmd` is Windows `.cmd` and is not executable in this Linux container (`Permission denied`).
-
 - Baseline `test-rust.cmd` passed before Rust changes.
 - `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`
   warning.

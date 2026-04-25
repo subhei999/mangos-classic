@@ -42,7 +42,8 @@ and SRP verifier/salt columns to already exist.
 Once Rust is installed, run:
 
 ```powershell
-.\scripts\test-rust.cmd
+./scripts/test-rust.sh  # Linux/macOS
+.\scripts\test-rust.cmd # Windows
 ```
 
 The included unit tests cover auth packet round trips, SRP challenge creation,

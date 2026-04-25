@@ -19,7 +19,7 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - C++ tree: untouched and still the canonical behavior reference
 - Rust status: authserver foundation exists and builds locally; worldserver
   skeleton can carry a real 1.12.1 client into a minimal in-world state
-- Local unit/lint/build entrypoint: `scripts/test-rust.cmd`
+- Local unit/lint/build entrypoint: `scripts/test-rust.cmd` (Windows) or `scripts/test-rust.sh` (Linux/macOS)
 - Local MariaDB smoke entrypoint: `scripts/test-rust-db.cmd`
 - Local auth flow entrypoint: `scripts/test-auth-flow.cmd`
 - Local character lifecycle DB smoke entrypoint:
@@ -674,7 +674,8 @@ Success looks like:
 Run before committing Rust work:
 
 ```powershell
-.\scripts\test-rust.cmd
+./scripts/test-rust.sh  # Linux/macOS
+.\scripts\test-rust.cmd # Windows
 ```
 
 Run when DB/authserver behavior changes:

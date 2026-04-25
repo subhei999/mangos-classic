@@ -879,7 +879,7 @@ fn parses_backpack_inventory_move_packets() {
             dst_slot: 24,
         }
     );
-    assert!(swap_inv.is_backpack_item_move());
+    assert!(swap_inv.is_supported_bag0_move());
 
     let swap_item = InventoryMoveRequest::read(
         CMSG_SWAP_ITEM,
@@ -900,7 +900,24 @@ fn parses_backpack_inventory_move_packets() {
             dst_slot: 25,
         }
     );
-    assert!(swap_item.is_backpack_item_move());
+    assert!(swap_item.is_supported_bag0_move());
+}
+
+#[test]
+fn parses_equipment_inventory_move_packets() {
+    let unequip = InventoryMoveRequest::read(CMSG_SWAP_INV_ITEM, &[3, 26]).unwrap();
+    assert_eq!(
+        unequip,
+        InventoryMoveRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: 3,
+            dst_bag: INVENTORY_SLOT_BAG_0,
+            dst_slot: 26,
+        }
+    );
+    assert!(unequip.is_supported_bag0_move());
+    assert!(item_fits_equipment_slot(4, 3));
+    assert!(!item_fits_equipment_slot(4, 15));
 }
 
 #[test]
@@ -930,6 +947,32 @@ fn inventory_slot_update_body_clears_source_and_sets_destination() {
         values[destination_field + 1],
         Some((guid.raw() >> 32) as u32)
     );
+}
+
+#[test]
+fn inventory_slot_update_body_updates_visible_equipment_slot() {
+    let item = CharacterInventoryItem {
+        bag: 0,
+        slot: 3,
+        item: 42,
+        item_template: 38,
+        count: 1,
+        durability: 0,
+    };
+
+    let body = build_inventory_slots_update_body(11, &[item], &[3, 26]).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+    let equipment_field = inventory_slot_update_field(3).unwrap();
+    let backpack_field = inventory_slot_update_field(26).unwrap();
+    let guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+
+    assert_eq!(values[equipment_field], Some(guid.raw() as u32));
+    assert_eq!(values[equipment_field + 1], Some((guid.raw() >> 32) as u32));
+    assert_eq!(values[0x104 + 3 * 12], Some(38));
+    assert_eq!(values[backpack_field], Some(0));
+    assert_eq!(values[backpack_field + 1], Some(0));
 }
 
 #[test]

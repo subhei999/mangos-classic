@@ -258,9 +258,15 @@ Detailed path:
      Rust persists slot swaps in `character_inventory`, refreshes session
      inventory, and sends changed player inventory-slot fields in
      `SMSG_UPDATE_OBJECT`. `test-world-flow.cmd` proves moving hearthstone
-     `6948` from slot 24 to 26 and back persists in the DB. Equip/unequip,
-     bag containers, destroy, split/stacking, and full item-template validation
-     remain future Inventory v1 slices.
+     `6948` from slot 24 to 26 and back persists in the DB.
+   - Current status: basic equip/unequip is implemented for starter equipment
+     slots 3, 6, 7, 15, and 16 using `item_template.InventoryType` validation.
+     Rust persists the move, refreshes `characters.equipmentCache`, and sends
+     changed inventory plus visible-equipment fields. `test-world-flow.cmd`
+     proves moving shirt `38` from slot 3 to backpack slot 26 and back persists
+     in both inventory and equipment cache. Bag containers, destroy,
+     split/stacking, durability, and full class/race/equipment validation remain
+     future Inventory v1 slices.
 9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.

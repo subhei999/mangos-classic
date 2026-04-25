@@ -816,13 +816,23 @@ fn build_inventory_slots_update_body(
         let Some(field) = inventory_slot_update_field(*slot) else {
             continue;
         };
-        let item_guid = inventory
+        let item = inventory
             .iter()
-            .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == *slot)
+            .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == *slot);
+        let item_guid = item
             .map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item).raw())
             .unwrap_or(0);
         set_update_value(&mut values, field, item_guid as u32)?;
         set_update_value(&mut values, field + 1, (item_guid >> 32) as u32)?;
+
+        if *slot < EQUIPMENT_SLOT_END {
+            let visible_base = 0x104 + *slot as usize * 12;
+            set_update_value(
+                &mut values,
+                visible_base,
+                item.map(|item| item.item_template).unwrap_or(0),
+            )?;
+        }
     }
     write_update_values(&mut block, &values)?;
 

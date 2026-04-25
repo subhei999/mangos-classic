@@ -448,6 +448,7 @@ async fn handle_item_query_single(
 async fn handle_inventory_swap(
     stream: &mut TcpStream,
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     opcode: u32,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -461,22 +462,69 @@ async fn handle_inventory_swap(
         return Ok(());
     };
     let character_guid = character.guid;
-    let move_request = InventoryMoveRequest::read(opcode, body)?;
+    let Some(move_request) = (if opcode == CMSG_AUTOEQUIP_ITEM {
+        InventoryMoveRequest::read_auto_equip(body, world_db_pool, session).await?
+    } else {
+        Some(InventoryMoveRequest::read(opcode, body)?)
+    }) else {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            "Ignoring unsupported inventory auto-equip source"
+        );
+        return Ok(());
+    };
 
-    if !move_request.is_backpack_item_move() {
+    if !move_request.is_supported_bag0_move() {
         info!(
             opcode = inventory_opcode_name(opcode),
             src_bag = move_request.src_bag,
             src_slot = move_request.src_slot,
             dst_bag = move_request.dst_bag,
             dst_slot = move_request.dst_slot,
-            "Ignoring unsupported inventory move outside backpack item slots"
+            "Ignoring unsupported inventory move outside bag-0 equipment/backpack slots"
         );
         return Ok(());
     }
 
     if move_request.src_slot == move_request.dst_slot {
         return Ok(());
+    }
+
+    if move_request.dst_slot < EQUIPMENT_SLOT_END {
+        let Some(src_item) = session.inventory.iter().find(|item| {
+            item.bag == move_request.src_bag as u32 && item.slot == move_request.src_slot
+        }) else {
+            warn!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                src_slot = move_request.src_slot,
+                dst_slot = move_request.dst_slot,
+                "Rejected inventory move without source item"
+            );
+            return Ok(());
+        };
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, src_item.item_template).await?
+        else {
+            warn!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                item_template = src_item.item_template,
+                "Rejected equip move for missing item template"
+            );
+            return Ok(());
+        };
+        if !item_fits_equipment_slot(template.inventory_type, move_request.dst_slot) {
+            info!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                item_template = src_item.item_template,
+                inventory_type = template.inventory_type,
+                dst_slot = move_request.dst_slot,
+                "Rejected equip move for incompatible slot"
+            );
+            return Ok(());
+        }
     }
 
     let moved = wow_db::swap_character_inventory_slots(
@@ -543,11 +591,44 @@ impl InventoryMoveRequest {
         }
     }
 
-    fn is_backpack_item_move(&self) -> bool {
+    async fn read_auto_equip(
+        body: &[u8],
+        world_db_pool: &MySqlPool,
+        session: &WorldSessionState,
+    ) -> anyhow::Result<Option<Self>> {
+        if body.len() < 2 {
+            anyhow::bail!("CMSG_AUTOEQUIP_ITEM payload too short: {} bytes", body.len());
+        }
+        let src_bag = normalize_client_bag(body[0]);
+        let src_slot = body[1];
+        let Some(src_item) = session
+            .inventory
+            .iter()
+            .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+        else {
+            return Ok(None);
+        };
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, src_item.item_template).await?
+        else {
+            return Ok(None);
+        };
+        let Some(dst_slot) = preferred_equipment_slot(template.inventory_type) else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            src_bag,
+            src_slot,
+            dst_bag: INVENTORY_SLOT_BAG_0,
+            dst_slot,
+        }))
+    }
+
+    fn is_supported_bag0_move(&self) -> bool {
         self.src_bag == INVENTORY_SLOT_BAG_0
             && self.dst_bag == INVENTORY_SLOT_BAG_0
-            && is_backpack_item_slot(self.src_slot)
-            && is_backpack_item_slot(self.dst_slot)
+            && is_equipment_or_backpack_slot(self.src_slot)
+            && is_equipment_or_backpack_slot(self.dst_slot)
     }
 }
 
@@ -563,8 +644,35 @@ fn is_backpack_item_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&slot)
 }
 
+fn is_equipment_or_backpack_slot(slot: u8) -> bool {
+    slot < EQUIPMENT_SLOT_END || is_backpack_item_slot(slot)
+}
+
+fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
+    match inventory_type {
+        4 => Some(3),   // INVTYPE_BODY
+        7 => Some(6),   // INVTYPE_LEGS
+        8 => Some(7),   // INVTYPE_FEET
+        13 | 17 | 21 => Some(15), // one-hand/two-hand/main-hand weapon
+        14 => Some(16), // shield
+        _ => None,
+    }
+}
+
+fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
+    match slot {
+        3 => inventory_type == 4,
+        6 => inventory_type == 7,
+        7 => inventory_type == 8,
+        15 => matches!(inventory_type, 13 | 17 | 21),
+        16 => inventory_type == 14,
+        _ => false,
+    }
+}
+
 fn inventory_opcode_name(opcode: u32) -> &'static str {
     match opcode {
+        CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
         CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
         CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
         _ => "UNKNOWN_INVENTORY_OPCODE",

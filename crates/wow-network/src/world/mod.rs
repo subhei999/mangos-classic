@@ -67,6 +67,7 @@ const CMSG_TUTORIAL_RESET: u32 = 0x0100;
 const CMSG_TEXT_EMOTE: u32 = 0x0104;
 const SMSG_EMOTE: u16 = 0x0103;
 const SMSG_TEXT_EMOTE: u16 = 0x0105;
+const CMSG_AUTOEQUIP_ITEM: u32 = 0x010A;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
@@ -531,10 +532,11 @@ async fn handle_client(
                         handle_cast_spell(&mut stream, &body, &mut session, &mut header_crypto)
                             .await?;
                     }
-                    CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
+                    CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
                         handle_inventory_swap(
                             &mut stream,
                             &character_db_pool,
+                            &world_db_pool,
                             opcode,
                             &body,
                             &mut session,

@@ -173,10 +173,16 @@ async fn main() -> anyhow::Result<()> {
     let mut loaded_world = WorldClient::connect(&session_key)?;
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
-    loaded_world.swap_backpack_slots(24, 26)?;
+    loaded_world.swap_inventory_slots(24, 26)?;
     assert_inventory_slot(&character_pool, created.guid, 6948, 26).await?;
-    loaded_world.swap_backpack_slots(26, 24)?;
+    loaded_world.swap_inventory_slots(26, 24)?;
     assert_inventory_slot(&character_pool, created.guid, 6948, 24).await?;
+    loaded_world.swap_inventory_slots(3, 26)?;
+    assert_inventory_slot(&character_pool, created.guid, 38, 26).await?;
+    assert_equipment_cache_slot(&character_pool, created.guid, 3, 0).await?;
+    loaded_world.swap_inventory_slots(26, 3)?;
+    assert_inventory_slot(&character_pool, created.guid, 38, 3).await?;
+    assert_equipment_cache_slot(&character_pool, created.guid, 3, 38).await?;
     let mut delete_world = WorldClient::connect(&session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
@@ -266,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -389,6 +395,31 @@ async fn assert_inventory_slot(
         actual == Some(expected_slot),
         "item {item_template} for character {guid} was in slot {:?}, expected {expected_slot}",
         actual
+    );
+    Ok(())
+}
+
+async fn assert_equipment_cache_slot(
+    character_pool: &MySqlPool,
+    guid: u32,
+    slot: usize,
+    expected_item: u32,
+) -> anyhow::Result<()> {
+    let cache: String = sqlx::query_scalar("SELECT equipmentCache FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(character_pool)
+        .await?;
+    let values: Vec<u32> = cache
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect();
+    let actual = values
+        .get(slot * 2)
+        .copied()
+        .context("equipment cache slot was missing")?;
+    ensure!(
+        actual == expected_item,
+        "equipmentCache slot {slot} for character {guid} was {actual}, expected {expected_item}"
     );
     Ok(())
 }
@@ -1088,7 +1119,7 @@ impl WorldClient {
         Ok(())
     }
 
-    fn swap_backpack_slots(&mut self, src_slot: u8, dst_slot: u8) -> anyhow::Result<()> {
+    fn swap_inventory_slots(&mut self, src_slot: u8, dst_slot: u8) -> anyhow::Result<()> {
         write_client_packet(
             &mut self.stream,
             CMSG_SWAP_INV_ITEM,

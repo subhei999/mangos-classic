@@ -957,7 +957,33 @@ pub async fn swap_character_inventory_slots(
         .execute(pool)
         .await?;
 
+    refresh_character_equipment_cache(pool, guid).await?;
+
     Ok(true)
+}
+
+pub async fn refresh_character_equipment_cache(pool: &MySqlPool, guid: u32) -> Result<(), DbError> {
+    let equipment_rows: Vec<(u8, u32)> = sqlx::query_as(
+        "SELECT slot, item_template FROM character_inventory \
+         WHERE guid = ? AND bag = 0 AND slot < ?",
+    )
+    .bind(guid)
+    .bind(ENUM_EQUIPMENT_CACHE_SLOTS as u8)
+    .fetch_all(pool)
+    .await?;
+
+    let mut equipment = [0u32; ENUM_EQUIPMENT_CACHE_SLOTS];
+    for (slot, item_template) in equipment_rows {
+        equipment[slot as usize] = item_template;
+    }
+
+    sqlx::query("UPDATE characters SET equipmentCache = ? WHERE guid = ?")
+        .bind(format_equipment_cache(&equipment))
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }
 
 pub async fn character_has_unread_mail(pool: &MySqlPool, guid: u32) -> Result<bool, DbError> {

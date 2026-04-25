@@ -18,7 +18,7 @@ belongs in `docs/rust_auth_foundation.md`.
 - Branch: `codex/rust-auth-foundation`
 - Latest commit: see `git log -1 --oneline`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree: expected clean after the Inventory v1 backpack move commit.
+- Worktree: expected clean after the Inventory v1 equip/unequip move commit.
 
 ## Current Goal
 
@@ -68,6 +68,13 @@ Current Checkpoint 1 focus:
   player `SMSG_UPDATE_OBJECT` values update for the changed backpack fields.
   The Docker-backed world-flow harness proves moving hearthstone `6948` from
   slot 24 to 26 and back persists in the DB.
+- Extended Inventory v1 to basic equip/unequip moves between bag-0 equipment
+  slots and backpack slots. Rust now validates a small starter-item equipment
+  slot map from `item_template.InventoryType`, persists the move, refreshes
+  `equipmentCache`, and sends changed inventory plus visible-equipment fields.
+  The world-flow harness proves unequipping shirt `38` from slot 3 to backpack
+  slot 26 and equipping it back persists in both `character_inventory` and
+  `characters.equipmentCache`.
 
 ## Tests Last Run
 
@@ -89,8 +96,8 @@ Notes:
 - Docker-backed `test-world-flow.cmd` requires elevated Docker access locally.
 - `test-world-flow.cmd` result: auth session, create/delete happy path,
   negative create/delete cases, loaded/guild leader rejection, backpack item
-  move persistence, guild/group/social/pet/mail/auction cleanup, COD mail
-  return, enum/count refresh.
+  move persistence, equip/unequip persistence, guild/group/social/pet/mail/
+  auction cleanup, COD mail return, enum/count refresh.
 
 ## Local Environment Notes
 
@@ -163,20 +170,22 @@ by #15; the current inventory move harness uses source-backed hearthstone
   it reaches the Rust cast handler, consumes fixture rage, and applies a small
   immediate fixture damage update. It is not true CMaNGOS next-swing spell
   behavior yet.
-- Inventory v1 currently supports only backpack slot moves for present bag-0
-  items. Equip/unequip, bag containers, destroy, split/stacking, durability
-  changes, and server-side item-template validation remain future slices.
+- Inventory v1 currently supports present bag-0 backpack moves and a small
+  starter-item equip/unequip path for equipment slots 3, 6, 7, 15, and 16.
+  Bag containers, destroy, split/stacking, durability changes, broader
+  equipment rules, and full item-template/class/race validation remain future
+  slices.
 - Broader world gameplay remains skeletal: movement persistence works, but
   validation, visibility, fuller spells, loot, vendors/trainers, quests, and
   multi-client behavior remain future Checkpoint 1+ slices.
 
 ## Next Recommended Task
 
-Real-client smoke the backpack move slice: drag hearthstone or another present
-starter backpack item to a different backpack slot, logout/relog, and verify it
-stays moved. Then continue Inventory v1 with equip/unequip validation or item
-destroy/split/stack behavior using CMaNGOS `ItemHandler.cpp`/`Player.cpp` as the
-reference.
+Real-client smoke the equip/unequip slice: move a visible starter equipped item
+such as shirt/pants/boots/shield/weapon to the backpack and back, logout/relog,
+and verify equipment visuals plus bag slots persist. Then continue Inventory v1
+with item destroy or split/stack behavior using CMaNGOS `ItemHandler.cpp` and
+`Player.cpp` as the reference.
 
 ## Key Files
 

@@ -554,6 +554,67 @@ async fn handle_inventory_swap(
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
+async fn handle_destroy_item(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring item destroy before character login");
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let request = DestroyItemRequest::read(body)?;
+
+    if !request.is_full_backpack_destroy() {
+        info!(
+            bag = request.bag,
+            slot = request.slot,
+            count = request.count,
+            "Ignoring unsupported item destroy outside full bag-0 backpack items"
+        );
+        return Ok(());
+    }
+
+    if !session
+        .inventory
+        .iter()
+        .any(|item| item.bag == request.bag as u32 && item.slot == request.slot)
+    {
+        warn!(
+            guid = character_guid,
+            bag = request.bag,
+            slot = request.slot,
+            "Rejected item destroy without source item"
+        );
+        return Ok(());
+    }
+
+    let destroyed = wow_db::destroy_character_inventory_item(
+        character_db_pool,
+        character_guid,
+        request.bag as u32,
+        request.slot,
+    )
+    .await?;
+    if destroyed.is_none() {
+        warn!(
+            guid = character_guid,
+            bag = request.bag,
+            slot = request.slot,
+            "Rejected item destroy without DB source item"
+        );
+        return Ok(());
+    }
+
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+        .await?;
+    let body = build_inventory_slots_update_body(character_guid, &session.inventory, &[request.slot])?;
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InventoryMoveRequest {
     src_bag: u8,
@@ -632,6 +693,30 @@ impl InventoryMoveRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DestroyItemRequest {
+    bag: u8,
+    slot: u8,
+    count: u8,
+}
+
+impl DestroyItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 6 {
+            anyhow::bail!("CMSG_DESTROYITEM payload too short: {} bytes", body.len());
+        }
+        Ok(Self {
+            bag: normalize_client_bag(body[0]),
+            slot: body[1],
+            count: body[2],
+        })
+    }
+
+    fn is_full_backpack_destroy(&self) -> bool {
+        self.bag == INVENTORY_SLOT_BAG_0 && self.count == 0 && is_backpack_item_slot(self.slot)
+    }
+}
+
 fn normalize_client_bag(bag: u8) -> u8 {
     if bag == CLIENT_INVENTORY_SLOT_BAG_0 {
         INVENTORY_SLOT_BAG_0
@@ -675,6 +760,7 @@ fn inventory_opcode_name(opcode: u32) -> &'static str {
         CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
         CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
         CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
+        CMSG_DESTROYITEM => "CMSG_DESTROYITEM",
         _ => "UNKNOWN_INVENTORY_OPCODE",
     }
 }

@@ -264,9 +264,14 @@ Detailed path:
      Rust persists the move, refreshes `characters.equipmentCache`, and sends
      changed inventory plus visible-equipment fields. `test-world-flow.cmd`
      proves moving shirt `38` from slot 3 to backpack slot 26 and back persists
-     in both inventory and equipment cache. Bag containers, destroy,
-     split/stacking, durability, and full class/race/equipment validation remain
-     future Inventory v1 slices.
+     in both inventory and equipment cache.
+   - Current status: full-item destroy is implemented for present bag-0
+     backpack items via `CMSG_DESTROYITEM`. Rust deletes the inventory row and
+     owned item instance row, refreshes session inventory, and sends a slot
+     clear update. `test-world-flow.cmd` proves destroying hearthstone `6948`
+     removes both DB rows. Bag containers, equipped-item destroy, partial stack
+     split/stacking, no-destroy flags, durability, and full
+     class/race/equipment validation remain future Inventory v1 slices.
 9. NPC interaction v1
    - Spawn/query a tiny fixture set of creatures/gameobjects from the world DB
      or a controlled test fixture.

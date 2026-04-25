@@ -37,6 +37,7 @@ const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
+const CMSG_DESTROYITEM: u32 = 0x0111;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
@@ -183,6 +184,8 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.swap_inventory_slots(26, 3)?;
     assert_inventory_slot(&character_pool, created.guid, 38, 3).await?;
     assert_equipment_cache_slot(&character_pool, created.guid, 3, 38).await?;
+    loaded_world.destroy_backpack_item(24)?;
+    assert_inventory_item_absent(&character_pool, created.guid, 6948).await?;
     let mut delete_world = WorldClient::connect(&session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
@@ -272,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, backpack item move persistence, equip/unequip persistence, destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -420,6 +423,34 @@ async fn assert_equipment_cache_slot(
     ensure!(
         actual == expected_item,
         "equipmentCache slot {slot} for character {guid} was {actual}, expected {expected_item}"
+    );
+    Ok(())
+}
+
+async fn assert_inventory_item_absent(
+    character_pool: &MySqlPool,
+    guid: u32,
+    item_template: u32,
+) -> anyhow::Result<()> {
+    let inventory_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM character_inventory \
+         WHERE guid = ? AND item_template = ?",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_one(character_pool)
+    .await?;
+    let instance_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM item_instance \
+         WHERE owner_guid = ? AND itemEntry = ?",
+    )
+    .bind(guid)
+    .bind(item_template)
+    .fetch_one(character_pool)
+    .await?;
+    ensure!(
+        inventory_count == 0 && instance_count == 0,
+        "item {item_template} for character {guid} remained after destroy: inventory={inventory_count}, instances={instance_count}"
     );
     Ok(())
 }
@@ -1130,6 +1161,21 @@ impl WorldClient {
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after inventory move, got 0x{opcode:04X}"
+        );
+        Ok(())
+    }
+
+    fn destroy_backpack_item(&mut self, slot: u8) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_DESTROYITEM,
+            &[255, slot, 0, 0, 0, 0],
+            Some(&mut self.crypto),
+        )?;
+        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        ensure!(
+            opcode == SMSG_UPDATE_OBJECT,
+            "expected SMSG_UPDATE_OBJECT after item destroy, got 0x{opcode:04X}"
         );
         Ok(())
     }

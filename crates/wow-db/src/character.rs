@@ -962,6 +962,50 @@ pub async fn swap_character_inventory_slots(
     Ok(true)
 }
 
+pub async fn destroy_character_inventory_item(
+    pool: &MySqlPool,
+    guid: u32,
+    bag: u32,
+    slot: u8,
+) -> Result<Option<u32>, DbError> {
+    let item: Option<u32> = sqlx::query_scalar(
+        "SELECT item FROM character_inventory \
+         WHERE guid = ? AND bag = ? AND slot = ?",
+    )
+    .bind(guid)
+    .bind(bag)
+    .bind(slot)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(item) = item else {
+        return Ok(None);
+    };
+
+    sqlx::query(
+        "DELETE FROM character_inventory \
+         WHERE guid = ? AND bag = ? AND slot = ? AND item = ?",
+    )
+    .bind(guid)
+    .bind(bag)
+    .bind(slot)
+    .bind(item)
+    .execute(pool)
+    .await?;
+
+    sqlx::query("DELETE FROM item_instance WHERE guid = ? AND owner_guid = ?")
+        .bind(item)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    if bag == 0 && slot < ENUM_EQUIPMENT_CACHE_SLOTS as u8 {
+        refresh_character_equipment_cache(pool, guid).await?;
+    }
+
+    Ok(Some(item))
+}
+
 pub async fn refresh_character_equipment_cache(pool: &MySqlPool, guid: u32) -> Result<(), DbError> {
     let equipment_rows: Vec<(u8, u32)> = sqlx::query_as(
         "SELECT slot, item_template FROM character_inventory \

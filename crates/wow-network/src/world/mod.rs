@@ -70,6 +70,7 @@ const SMSG_TEXT_EMOTE: u16 = 0x0105;
 const CMSG_AUTOEQUIP_ITEM: u32 = 0x010A;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
+const CMSG_DESTROYITEM: u32 = 0x0111;
 const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
 const CMSG_CANCEL_TRADE: u32 = 0x011C;
 const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
@@ -538,6 +539,16 @@ async fn handle_client(
                             &character_db_pool,
                             &world_db_pool,
                             opcode,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_DESTROYITEM => {
+                        handle_destroy_item(
+                            &mut stream,
+                            &character_db_pool,
                             &body,
                             &mut session,
                             &mut header_crypto,

@@ -921,6 +921,27 @@ fn parses_equipment_inventory_move_packets() {
 }
 
 #[test]
+fn parses_backpack_inventory_destroy_packets() {
+    let destroy = DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 0, 0, 0, 0]).unwrap();
+    assert_eq!(
+        destroy,
+        DestroyItemRequest {
+            bag: INVENTORY_SLOT_BAG_0,
+            slot: 24,
+            count: 0,
+        }
+    );
+    assert!(destroy.is_full_backpack_destroy());
+
+    let partial_stack =
+        DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 1, 0, 0, 0]).unwrap();
+    assert!(!partial_stack.is_full_backpack_destroy());
+
+    let equipped = DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 3, 0, 0, 0, 0]).unwrap();
+    assert!(!equipped.is_full_backpack_destroy());
+}
+
+#[test]
 fn inventory_slot_update_body_clears_source_and_sets_destination() {
     let item = CharacterInventoryItem {
         bag: 0,

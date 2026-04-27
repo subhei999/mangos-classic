@@ -575,6 +575,29 @@ fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::R
     Ok(body)
 }
 
+fn build_monster_move_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    destination: WorldPosition,
+    spline_id: u32,
+    duration_ms: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(48);
+    PackedGuid::write(&mut body, guid)?;
+    body.extend_from_slice(&start.x.to_le_bytes());
+    body.extend_from_slice(&start.y.to_le_bytes());
+    body.extend_from_slice(&start.z.to_le_bytes());
+    body.extend_from_slice(&spline_id.to_le_bytes());
+    body.push(MONSTER_MOVE_TYPE_NORMAL);
+    body.extend_from_slice(&MONSTER_MOVE_SPLINE_FLAG_RUNMODE.to_le_bytes());
+    body.extend_from_slice(&duration_ms.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.extend_from_slice(&destination.x.to_le_bytes());
+    body.extend_from_slice(&destination.y.to_le_bytes());
+    body.extend_from_slice(&destination.z.to_le_bytes());
+    Ok(body)
+}
+
 fn build_log_xp_gain_body(source: Option<ObjectGuid>, given_xp: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(21);
     body.extend_from_slice(&source.map_or(0, |guid| guid.raw()).to_le_bytes());

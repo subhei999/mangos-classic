@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
@@ -141,10 +141,11 @@ async fn handle_client(
     let mut header_crypto = HeaderCrypto::new(&session_key);
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
     let mut session = WorldSessionState::default();
+    let mut next_world_tick_at = Instant::now() + Duration::from_millis(WORLD_TICK_MILLIS);
 
     loop {
         match timeout(
-            Duration::from_millis(RUST_COMBAT_SWING_MILLIS),
+            world_tick_timeout_duration(next_world_tick_at, Instant::now()),
             read_client_packet(&mut stream, Some(&mut header_crypto)),
         )
         .await
@@ -535,7 +536,15 @@ async fn handle_client(
                         info!("Received client-side player logout notification");
                     }
                     _ if is_movement_opcode(opcode) => {
-                        handle_movement(opcode, &body, &mut session)?;
+                        handle_movement(
+                            &mut stream,
+                            &world_db_pool,
+                            opcode,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     _ if is_expected_noop_opcode(opcode) => {
                         info!(
@@ -550,6 +559,17 @@ async fn handle_client(
                             "Unhandled authenticated world opcode"
                         );
                     }
+                }
+                if Instant::now() >= next_world_tick_at {
+                    handle_combat_tick(
+                        &mut stream,
+                        &character_db_pool,
+                        &world_db_pool,
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
+                    advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
                 }
             }
             Ok(Err(e)) => {
@@ -567,8 +587,20 @@ async fn handle_client(
                     &mut header_crypto,
                 )
                 .await?;
+                advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
             }
         }
+    }
+}
+
+fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Duration {
+    next_world_tick_at.saturating_duration_since(now)
+}
+
+fn advance_world_tick_deadline(next_world_tick_at: &mut Instant, now: Instant) {
+    let tick = Duration::from_millis(WORLD_TICK_MILLIS);
+    while *next_world_tick_at <= now {
+        *next_world_tick_at += tick;
     }
 }
 
@@ -929,6 +961,13 @@ async fn handle_player_login(
         .map(DbCreatureRuntime::new)
         .map(|creature| (creature.guid().raw(), creature))
         .collect();
+    session.last_creature_visibility_position = Some(WorldPosition::new(
+        character.map,
+        character.position_x,
+        character.position_y,
+        character.position_z,
+        character.orientation,
+    ));
     session.player_health = character.health;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
@@ -1101,10 +1140,13 @@ async fn handle_logout_cancel(
     send_packet(stream, SMSG_LOGOUT_CANCEL_ACK, &[], Some(header_crypto)).await
 }
 
-fn handle_movement(
+async fn handle_movement(
+    stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
     opcode: u32,
     body: &[u8],
     session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
     if let Some(character) = &mut session.active_character {
@@ -1127,6 +1169,8 @@ fn handle_movement(
             o = movement.position.orientation,
             "Updated in-memory character movement"
         );
+        stream_newly_visible_db_creatures(stream, world_db_pool, session, header_crypto).await?;
+        try_start_db_creature_aggro(stream, session, header_crypto).await?;
     } else {
         warn!(
             opcode = movement_opcode_name(opcode),
@@ -1134,6 +1178,154 @@ fn handle_movement(
         );
     }
     Ok(())
+}
+
+async fn stream_newly_visible_db_creatures(
+    stream: &mut TcpStream,
+    world_db_pool: &MySqlPool,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    if !should_rescan_db_creature_visibility(session, character.position) {
+        return Ok(());
+    }
+    let guid = character.guid;
+    let name = character.name.clone();
+    let position = character.position;
+    session.last_creature_visibility_position = Some(position);
+
+    let nearby_creatures = wow_db::get_nearby_creature_spawns(
+        world_db_pool,
+        position.map_id,
+        position.x,
+        position.y,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        CREATURE_SPAWN_LIMIT,
+    )
+    .await?;
+    let visibility_updates = stage_db_creature_visibility_updates(session, nearby_creatures)?;
+    if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        guid,
+        name = %name,
+        create_packets = visibility_updates.create_bodies.len(),
+        destroy_count = visibility_updates.destroy_guids.len(),
+        create_bytes = visibility_updates.create_bodies.iter().map(Vec::len).sum::<usize>(),
+        "Updating DB creature visibility after movement"
+    );
+    for destroy_guid in visibility_updates.destroy_guids {
+        let body = build_destroy_guid_body(destroy_guid);
+        send_packet(
+            stream,
+            SMSG_DESTROY_OBJECT,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    for body in visibility_updates.create_bodies {
+        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+    }
+    Ok(())
+}
+
+fn should_rescan_db_creature_visibility(
+    session: &WorldSessionState,
+    position: WorldPosition,
+) -> bool {
+    let Some(previous) = session.last_creature_visibility_position else {
+        return true;
+    };
+    if previous.map_id != position.map_id {
+        return true;
+    }
+    let dx = previous.x - position.x;
+    let dy = previous.y - position.y;
+    dx * dx + dy * dy
+        >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
+}
+
+#[derive(Debug, Default)]
+struct DbCreatureVisibilityUpdates {
+    create_bodies: Vec<Vec<u8>>,
+    destroy_guids: Vec<ObjectGuid>,
+}
+
+fn stage_db_creature_visibility_updates(
+    session: &mut WorldSessionState,
+    nearby_creatures: Vec<CreatureSpawnQuery>,
+) -> anyhow::Result<DbCreatureVisibilityUpdates> {
+    let nearby_guids = nearby_creatures
+        .iter()
+        .map(|spawn| creature_spawn_guid(spawn).raw())
+        .collect::<HashSet<_>>();
+    let mut retained_combat_guids = HashSet::new();
+    if let Some(target) = session.active_combat_target {
+        if session.db_creatures.contains_key(&target.raw()) {
+            retained_combat_guids.insert(target.raw());
+        }
+    }
+    if let Some(combat) = session.active_creature_combat {
+        if session.db_creatures.contains_key(&combat.attacker.raw()) {
+            retained_combat_guids.insert(combat.attacker.raw());
+        }
+    }
+    let destroy_guids = session
+        .db_creatures
+        .keys()
+        .copied()
+        .filter(|guid| !nearby_guids.contains(guid) && !retained_combat_guids.contains(guid))
+        .collect::<Vec<_>>();
+    for guid in &destroy_guids {
+        session.db_creatures.remove(guid);
+    }
+    if session
+        .active_combat_target
+        .is_some_and(|target| destroy_guids.contains(&target.raw()))
+    {
+        session.active_combat_target = None;
+        session.active_combat_next_swing_at = None;
+    }
+    if session
+        .active_creature_combat
+        .as_ref()
+        .is_some_and(|combat| destroy_guids.contains(&combat.attacker.raw()))
+    {
+        session.active_creature_combat = None;
+    }
+
+    let mut new_creatures = Vec::new();
+    for spawn in nearby_creatures {
+        let runtime = DbCreatureRuntime::new(spawn);
+        let guid = runtime.guid().raw();
+        if session.db_creatures.contains_key(&guid) {
+            continue;
+        }
+        new_creatures.push(runtime.spawn.clone());
+        session.db_creatures.insert(guid, runtime);
+    }
+
+    let blocks = build_db_creature_create_blocks(&new_creatures)?;
+    Ok(DbCreatureVisibilityUpdates {
+        create_bodies: blocks
+            .chunks(CREATURE_UPDATE_CHUNK_SIZE)
+            .map(build_update_object_body)
+            .collect(),
+        destroy_guids: destroy_guids
+            .into_iter()
+            .map(ObjectGuid::from_raw)
+            .collect(),
+    })
+}
+
+fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {
+    guid.raw().to_le_bytes().to_vec()
 }
 
 include!("bootstrap.rs");

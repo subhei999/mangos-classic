@@ -11,6 +11,8 @@ struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
     combat_dummy_health: u32,
     active_combat_target: Option<ObjectGuid>,
+    active_combat_next_swing_at: Option<Instant>,
+    active_creature_combat: Option<CreatureCombatState>,
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
     combat_dummy_loot_money_available: bool,
@@ -22,11 +24,40 @@ struct WorldSessionState {
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    last_creature_visibility_position: Option<WorldPosition>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CreatureCombatState {
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    next_swing_at: Instant,
+}
+
+#[derive(Debug, Clone, Default)]
+enum CreatureMotionState {
+    #[default]
+    Idle,
+    Chase(CreatureChaseMotion),
+}
+
+#[derive(Debug, Clone)]
+struct CreatureChaseMotion {
+    target: ObjectGuid,
+    start: WorldPosition,
+    destination: WorldPosition,
+    started_at: Instant,
+    duration: Duration,
+    recheck_at: Instant,
 }
 
 #[derive(Debug, Clone)]
 struct DbCreatureRuntime {
     spawn: CreatureSpawnQuery,
+    home_position: WorldPosition,
+    current_position: WorldPosition,
+    motion: CreatureMotionState,
+    next_spline_id: u32,
     health: u32,
     lootable: bool,
     looting: bool,

@@ -138,6 +138,8 @@ async fn handle_cast_spell(
                     header_crypto,
                 )
                 .await?;
+            } else {
+                begin_db_creature_combat(session, target, Instant::now());
             }
         }
     }

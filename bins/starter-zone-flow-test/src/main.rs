@@ -2,6 +2,7 @@ use anyhow::{ensure, Context};
 use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
+use std::collections::HashSet;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -40,7 +41,7 @@ const REAL_BROTHER_PAXTON_ENTRY: u32 = 951;
 const REAL_LLANE_BESHERE_ENTRY: u32 = 911;
 const REAL_YOUNG_WOLF_ENTRY: u32 = 299;
 const REAL_KOBOLD_VERMIN_ENTRY: u32 = 6;
-const REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS: f32 = 220.0;
+const REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS: f32 = 100.0;
 const REAL_NORTHSHIRE_VISIBLE_LIMIT: u32 = 128;
 const FIXTURE_PREFIX: u32 = 910_000;
 const MARSHAL_MCBRIDE_ENTRY: u32 = FIXTURE_PREFIX + 1;
@@ -71,8 +72,10 @@ const CMSG_LOOT_MONEY: u32 = 0x015E;
 const CMSG_LOOT_RELEASE: u32 = 0x015F;
 const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
+const CMSG_MOVE_HEARTBEAT: u32 = 0x00EE;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
+const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_QUESTGIVER_STATUS: u32 = 0x0183;
 const SMSG_QUESTGIVER_QUEST_LIST: u32 = 0x0185;
 const SMSG_QUESTGIVER_QUEST_DETAILS: u32 = 0x0188;
@@ -83,6 +86,8 @@ const SMSG_QUESTUPDATE_ADD_KILL: u32 = 0x0199;
 const SMSG_TRAINER_LIST: u32 = 0x01B1;
 const SMSG_TRAINER_BUY_SUCCEEDED: u32 = 0x01B3;
 const SMSG_LEARNED_SPELL: u32 = 0x012B;
+const SMSG_MONSTER_MOVE: u32 = 0x00DD;
+const SMSG_ATTACKSTART: u32 = 0x0143;
 const SMSG_ATTACKERSTATEUPDATE: u32 = 0x014A;
 const SMSG_LOOT_RESPONSE: u32 = 0x0160;
 const SMSG_LOOT_RELEASE_RESPONSE: u32 = 0x0161;
@@ -124,7 +129,10 @@ struct StarterZoneContent {
     quest_giver: ExpectedCreature,
     trainer: ExpectedCreature,
     trainer_spell: u32,
+    streaming_creature: ExpectedCreature,
+    streaming_position: WorldPosition,
     kobold: ExpectedCreature,
+    kobold_position: WorldPosition,
     kobold_required_count: u32,
     wolf: ExpectedCreature,
     wolf_health: u32,
@@ -186,6 +194,10 @@ async fn main() -> anyhow::Result<()> {
     );
     world.login_character_expect_northshire_creatures(created.guid, &starter_zone)?;
     world.kill_loot_and_respawn_young_wolf(&starter_zone)?;
+    world.move_to_expect_streamed_creature(&starter_zone)?;
+    world.move_to_expect_destroyed_creature(&starter_zone)?;
+    world.move_to_expect_streamed_creature(&starter_zone)?;
+    world.move_near_kobold_expect_aggro(&starter_zone)?;
     world.complete_kobold_camp_cleanup(&starter_zone)?;
     world.learn_warrior_trainer_spell(&starter_zone)?;
     assert_kobold_camp_cleanup_persisted(&character_pool, created.guid, starter_zone.kobold_quest)
@@ -280,7 +292,7 @@ async fn load_real_northshire_content(
         EASTERN_KINGDOMS_MAP,
         HUMAN_START_X,
         HUMAN_START_Y,
-        220.0,
+        REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS * 3.0,
         128,
     )
     .await?;
@@ -291,6 +303,15 @@ async fn load_real_northshire_content(
         HUMAN_START_Y,
         REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS,
         REAL_NORTHSHIRE_VISIBLE_LIMIT,
+    )
+    .await?;
+    let wider_northshire = wow_db::get_nearby_creature_spawns(
+        world_pool,
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X,
+        HUMAN_START_Y,
+        REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS * 3.0,
+        REAL_NORTHSHIRE_VISIBLE_LIMIT * 4,
     )
     .await?;
 
@@ -315,7 +336,6 @@ async fn load_real_northshire_content(
         REAL_BROTHER_PAXTON_ENTRY,
         REAL_LLANE_BESHERE_ENTRY,
         REAL_YOUNG_WOLF_ENTRY,
-        REAL_KOBOLD_VERMIN_ENTRY,
     ];
     ensure!(
         required_visible
@@ -323,15 +343,20 @@ async fn load_real_northshire_content(
             .all(|entry| visible.iter().any(|spawn| spawn.entry == *entry)),
         "real ClassicDB Northshire core NPC/wolf rows exist, but not all are visible within the current worldserver spawn radius"
     );
+    let visible_guids = visible
+        .iter()
+        .map(|spawn| spawn.guid)
+        .collect::<HashSet<_>>();
+    let streaming_spawn = wider_northshire
+        .iter()
+        .find(|spawn| spawn.entry == REAL_KOBOLD_VERMIN_ENTRY && !visible_guids.contains(&spawn.guid))
+        .context("real ClassicDB Kobold Vermin was not outside the login visibility radius for movement streaming proof")?;
 
     let wolf_spawn = visible
         .iter()
         .find(|spawn| spawn.entry == REAL_YOUNG_WOLF_ENTRY)
         .context("real ClassicDB Young Wolf was not visible near the Human Warrior start")?;
-    let kobold_spawn = visible
-        .iter()
-        .find(|spawn| spawn.entry == REAL_KOBOLD_VERMIN_ENTRY)
-        .context("real ClassicDB Kobold Vermin was not visible near the Human Warrior start")?;
+    let kobold_spawn = streaming_spawn;
     let quest_giver_spawn = visible
         .iter()
         .find(|spawn| spawn.entry == REAL_MARSHAL_MCBRIDE_ENTRY)
@@ -374,10 +399,28 @@ async fn load_real_northshire_content(
             counter: trainer_spawn.guid,
         },
         trainer_spell: WARRIOR_BATTLE_SHOUT_TRAINER_CAST,
+        streaming_creature: ExpectedCreature {
+            entry: streaming_spawn.entry,
+            counter: streaming_spawn.guid,
+        },
+        streaming_position: WorldPosition::new(
+            streaming_spawn.map,
+            (HUMAN_START_X + streaming_spawn.position_x) / 2.0,
+            (HUMAN_START_Y + streaming_spawn.position_y) / 2.0,
+            streaming_spawn.position_z,
+            streaming_spawn.orientation,
+        ),
         kobold: ExpectedCreature {
             entry: kobold_spawn.entry,
             counter: kobold_spawn.guid,
         },
+        kobold_position: WorldPosition::new(
+            kobold_spawn.map,
+            kobold_spawn.position_x,
+            kobold_spawn.position_y,
+            kobold_spawn.position_z,
+            kobold_spawn.orientation,
+        ),
         kobold_required_count,
         wolf: ExpectedCreature {
             entry: wolf_spawn.entry,
@@ -422,10 +465,6 @@ async fn load_fixture_northshire_content(
                 entry: YOUNG_WOLF_ENTRY,
                 counter: FIXTURE_PREFIX + 4,
             },
-            ExpectedCreature {
-                entry: KOBOLD_VERMIN_ENTRY,
-                counter: FIXTURE_PREFIX + 5,
-            },
         ],
         kobold_quest: KOBOLD_CAMP_CLEANUP_QUEST,
         quest_giver: ExpectedCreature {
@@ -437,10 +476,16 @@ async fn load_fixture_northshire_content(
             counter: FIXTURE_PREFIX + 6,
         },
         trainer_spell: WARRIOR_BATTLE_SHOUT_TRAINER_CAST,
+        streaming_creature: ExpectedCreature {
+            entry: KOBOLD_VERMIN_ENTRY,
+            counter: FIXTURE_PREFIX + 5,
+        },
+        streaming_position: WorldPosition::new(EASTERN_KINGDOMS_MAP, -8855.0, -126.0, 81.9, 3.4),
         kobold: ExpectedCreature {
             entry: KOBOLD_VERMIN_ENTRY,
             counter: FIXTURE_PREFIX + 5,
         },
+        kobold_position: WorldPosition::new(EASTERN_KINGDOMS_MAP, -8760.0, -121.0, 81.9, 3.4),
         kobold_required_count: 5,
         wolf: ExpectedCreature {
             entry: YOUNG_WOLF_ENTRY,
@@ -612,7 +657,7 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
         (
             FIXTURE_PREFIX + 5,
             KOBOLD_VERMIN_ENTRY,
-            -8897.0,
+            -8760.0,
             -121.0,
             81.9,
             3.4,
@@ -967,8 +1012,17 @@ async fn assert_starter_zone_creatures_available(
         );
     }
     if content.source == StarterZoneSource::Fixture {
+        let streamed_spawns = wow_db::get_nearby_creature_spawns(
+            world_pool,
+            content.streaming_position.map_id,
+            content.streaming_position.x,
+            content.streaming_position.y,
+            REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS,
+            REAL_NORTHSHIRE_VISIBLE_LIMIT,
+        )
+        .await?;
         ensure!(
-            spawns
+            streamed_spawns
                 .iter()
                 .any(|spawn| spawn.entry == KOBOLD_VERMIN_ENTRY && spawn.template.min_level == 2),
             "Kobold fixture did not carry joined creature_template data"
@@ -1329,7 +1383,7 @@ impl WorldClient {
 
         let mut update_bodies = Vec::new();
         let expected_update_packets = if content.source == StarterZoneSource::RealClassicDb {
-            5
+            3
         } else {
             2
         };
@@ -1360,6 +1414,140 @@ impl WorldClient {
             );
         }
         Ok(())
+    }
+
+    fn move_to_expect_streamed_creature(
+        &mut self,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<()> {
+        let streamed = ObjectGuid::new(
+            HighGuid::Unit,
+            content.streaming_creature.entry,
+            content.streaming_creature.counter,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(content.streaming_position),
+            Some(&mut self.crypto),
+        )?;
+
+        let streamed_guid = streamed.raw().to_le_bytes();
+        for _ in 0..80 {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_UPDATE_OBJECT
+                && body
+                    .windows(streamed_guid.len())
+                    .any(|window| window == streamed_guid)
+            {
+                self.drain_immediate_packets()?;
+                return Ok(());
+            }
+        }
+        anyhow::bail!(
+            "movement to x={} y={} did not stream creature entry={} counter={}",
+            content.streaming_position.x,
+            content.streaming_position.y,
+            content.streaming_creature.entry,
+            content.streaming_creature.counter
+        )
+    }
+
+    fn move_to_expect_destroyed_creature(
+        &mut self,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<()> {
+        let streamed = ObjectGuid::new(
+            HighGuid::Unit,
+            content.streaming_creature.entry,
+            content.streaming_creature.counter,
+        );
+        let start_position = WorldPosition::new(
+            EASTERN_KINGDOMS_MAP,
+            HUMAN_START_X,
+            HUMAN_START_Y,
+            83.5,
+            0.0,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(start_position),
+            Some(&mut self.crypto),
+        )?;
+
+        for _ in 0..80 {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_DESTROY_OBJECT && body == streamed.raw().to_le_bytes() {
+                self.drain_immediate_packets()?;
+                return Ok(());
+            }
+        }
+        anyhow::bail!(
+            "movement back to start did not destroy streamed creature entry={} counter={}",
+            content.streaming_creature.entry,
+            content.streaming_creature.counter
+        )
+    }
+
+    fn move_near_kobold_expect_aggro(
+        &mut self,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<()> {
+        let kobold = ObjectGuid::new(HighGuid::Unit, content.kobold.entry, content.kobold.counter);
+        let player = ObjectGuid::new(HighGuid::Player, 0, self.character_guid);
+        let aggro_position = WorldPosition::new(
+            content.kobold_position.map_id,
+            content.kobold_position.x + 4.0,
+            content.kobold_position.y,
+            content.kobold_position.z,
+            content.kobold_position.orientation,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(aggro_position),
+            Some(&mut self.crypto),
+        )?;
+
+        let mut saw_attack_start = false;
+        let mut saw_chase_move = false;
+        let mut saw_creature_damage = false;
+        let mut saw_player_health_update = false;
+        for _ in 0..128 {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_ATTACKSTART {
+                ensure!(body.len() == 16, "kobold aggro start packet had wrong size");
+                saw_attack_start |= u64::from_le_bytes(body[0..8].try_into()?) == kobold.raw()
+                    && u64::from_le_bytes(body[8..16].try_into()?) == player.raw();
+            }
+            if opcode == SMSG_MONSTER_MOVE && monster_move_matches(&body, kobold)? {
+                saw_chase_move = true;
+            }
+            if opcode == SMSG_ATTACKERSTATEUPDATE
+                && attacker_state_update_matches(&body, kobold, player)?
+            {
+                saw_creature_damage = true;
+            }
+            if opcode == SMSG_UPDATE_OBJECT
+                && matches!(update_packet_has_values(&body, player, &[]), Ok(true))
+            {
+                saw_player_health_update = true;
+            }
+            if saw_attack_start && saw_chase_move && saw_creature_damage && saw_player_health_update
+            {
+                self.drain_immediate_packets()?;
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!(
+            "Kobold Vermin did not aggro, chase, and damage the player from aggro range: attack_start={} chase_move={} damage={} health_update={}",
+            saw_attack_start,
+            saw_chase_move,
+            saw_creature_damage,
+            saw_player_health_update
+        )
     }
 
     fn kill_loot_and_respawn_young_wolf(
@@ -1784,6 +1972,14 @@ impl WorldClient {
         }
         anyhow::bail!("did not receive expected opcode 0x{expected_opcode:04X}");
     }
+
+    fn drain_immediate_packets(&mut self) -> anyhow::Result<()> {
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(25)))?;
+        while try_read_server_packet(&mut self.stream, &mut self.crypto)?.is_some() {}
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        Ok(())
+    }
 }
 
 fn assert_wolf_loot_response(
@@ -1820,6 +2016,18 @@ fn questgiver_request_body(giver: ObjectGuid, quest: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(12);
     body.extend_from_slice(&giver.raw().to_le_bytes());
     body.extend_from_slice(&quest.to_le_bytes());
+    body
+}
+
+fn movement_body(position: WorldPosition) -> Vec<u8> {
+    let mut body = Vec::with_capacity(28);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&1_000u32.to_le_bytes());
+    body.extend_from_slice(&position.x.to_le_bytes());
+    body.extend_from_slice(&position.y.to_le_bytes());
+    body.extend_from_slice(&position.z.to_le_bytes());
+    body.extend_from_slice(&position.orientation.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
     body
 }
 
@@ -1893,6 +2101,29 @@ fn assert_quest_kill_update(
         "quest kill update used wrong killed guid"
     );
     Ok(())
+}
+
+fn attacker_state_update_matches(
+    body: &[u8],
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+) -> anyhow::Result<bool> {
+    ensure_available(body, 4)?;
+    let mut cursor = 4;
+    let parsed_attacker = read_packed_update_guid(body, &mut cursor)?;
+    let parsed_victim = read_packed_update_guid(body, &mut cursor)?;
+    Ok(parsed_attacker == attacker.raw() && parsed_victim == victim.raw())
+}
+
+fn monster_move_matches(body: &[u8], mover: ObjectGuid) -> anyhow::Result<bool> {
+    let mut cursor = 0;
+    let parsed_mover = read_packed_update_guid(body, &mut cursor)?;
+    ensure_available(body, cursor + 12 + 4 + 1 + 4 + 4 + 4 + 12)?;
+    let move_type = body[cursor + 12 + 4];
+    let point_count_offset = cursor + 12 + 4 + 1 + 4 + 4;
+    let point_count =
+        u32::from_le_bytes(body[point_count_offset..point_count_offset + 4].try_into()?);
+    Ok(parsed_mover == mover.raw() && move_type == 0 && point_count >= 1)
 }
 
 fn observe_xp_progression_packet(

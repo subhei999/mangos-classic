@@ -746,10 +746,14 @@ implementation logs instead of appending indefinitely.
 New AI agents should start by reading, in order:
 
 1. `docs/session_handoff.md`
-2. `docs/rust_migration_plan.md`
-3. `docs/rust_auth_foundation.md`
-4. `git status --short --branch`
-5. the C++ reference files for the active milestone
+2. `docs/playable_gate_board.md`
+3. `docs/rust_migration_plan.md`
+4. `docs/rust_auth_foundation.md`
+5. `git status --short --branch`
+6. the C++ reference files for the active milestone
+
+If a task does not advance the highest-priority red/yellow playable gate in
+`docs/playable_gate_board.md`, do not start it unless the user explicitly asks.
 
 ## Open Technical Risks
 

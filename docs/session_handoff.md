@@ -1,8 +1,9 @@
 # Session Handoff
 
 This file is the current operating brief for the next Rust migration session.
-Durable roadmap belongs in `docs/rust_migration_plan.md`; auth-specific setup
-belongs in `docs/rust_auth_foundation.md`.
+Durable roadmap belongs in `docs/rust_migration_plan.md`; the playable gate
+dashboard belongs in `docs/playable_gate_board.md`; auth-specific setup belongs
+in `docs/rust_auth_foundation.md`.
 
 ## Handoff Rules
 
@@ -16,10 +17,10 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `820c138d8`
+- Latest committed base before this slice: `7311b1986`
 - Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: contains Quest System v1 changes in Rust world/network,
-  DB helpers, `starter-zone-flow-test`, and this handoff update.
+- Worktree at handoff: contains the current G3/G8 playable-gate stack in Rust
+  world/network, `starter-zone-flow-test`, and this handoff update.
 
 ## Current Goal
 
@@ -32,6 +33,14 @@ progress, complete the quest, turn it in to Marshal McBride, grant reward money
 and quest XP, level up, open the Warrior trainer Llane Beshere, learn one
 available spell, charge money, and persist character progression, quest state,
 money, and `character_spell`.
+
+Use `docs/playable_gate_board.md` as the executive dashboard before selecting
+work. G3 Movement Visibility Streaming has been user-verified in the real
+client and is now a regression gate. Current active priority is G8 Combat
+Agency, then G9 World Creature Fidelity, then G10 NPC Interaction Fidelity,
+then G11 Persistence + Relog Sanity, then G5 Combat and Loot real-behavior
+fidelity, then G6 Level + Trainer issue #49 polish, then G7 Death + Respawn,
+then G12 Multi-client Sanity.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -141,13 +150,143 @@ using the repo's bug triage policy, then continue the requested task.
   `character_spell`, then sends buy success for the original trainer-row spell,
   `SMSG_LEARNED_SPELL` for immediate spellbook feedback, refreshed initial
   spells, and money update.
+- Added `docs/playable_gate_board.md` as the current Northshire Human Warrior
+  playable milestone dashboard, updated `AGENTS.md` startup order to require it,
+  and aligned `docs/rust_migration_plan.md` agent startup guidance with the new
+  playable-gate rule.
+- Updated the playable gate board from real-client/user-known status: G1 and
+  G2 are green, G3 only has login-radius creature loading rather than movement
+  streaming, G4 looks good, G5 is basic but instant-respawn/non-CMaNGOS-like,
+  G6 works with #49 polish remaining, and G7 has no progress.
+- Split new gates for creature work: G8 Combat Agency tracks whether mobs can
+  aggro, chase or enter range, swing, damage, kill, or die; G9 World Creature
+  Fidelity tracks DB spawn/template/loot, persistent world-object behavior,
+  CMaNGOS-like respawn, and patrol/movement.
+- Added MMO-slice guardrail gates: G10 NPC Interaction Fidelity for quest,
+  vendor, trainer, gossip, flags, cursor/status, menu text, and failure
+  behavior; G11 Persistence + Relog Sanity for state restoration after each
+  major Northshire action; and G12 Multi-client Sanity so the world cannot pass
+  as a single-player packet demo.
 - Extended `starter-zone-flow-test` to request Llane Beshere's trainer list,
   buy `6674`, verify the live learned-spell packet names `6673`, and verify
   `6673` persisted active/enabled.
+- Implemented G3 Movement Visibility Streaming v1. Movement packets now trigger
+  a throttled DB creature visibility rescan, stage only newly visible creature
+  GUIDs in the session, and send chunked `SMSG_UPDATE_OBJECT` create packets
+  using the same DB creature create block shape as login bootstrap.
+- Added the matching G3 out-of-range cleanup. Movement visibility now compares
+  the current DB creature set against the newly visible query, removes creatures
+  that left the 100-yard bubble, clears that target if it was the active combat
+  target, and sends `SMSG_DESTROY_OBJECT` for each removed creature.
+- Tightened the G3 visibility radius from the previous oversized 220-yard
+  login bubble to CMaNGOS' normal continent visibility distance of 100 yards
+  (`src/game/Entities/ObjectDefines.h`), making real-client pop-in/streaming
+  visible during the Northshire walking smoke.
+- Extended `starter-zone-flow-test` with a movement heartbeat step that proves a
+  creature outside the login visibility set streams after movement against
+  RealClassicDb, then drains immediate streaming chunks before continuing the
+  existing wolf, quest, XP, and trainer proof.
+- Implemented G8 Combat Agency v1. Hostile DB creatures now use a
+  CMaNGOS-derived level-delta aggro radius, engage from movement/idle ticks,
+  send creature-origin `SMSG_ATTACKSTART`, keep independent creature-attacker
+  state separate from the player's active swing target, and deal melee damage
+  to the player before the player attacks. This is still stationary starter
+  agency, not pathfinding/chase/leash/death.
+- Extended `starter-zone-flow-test` to stream a RealClassicDb Kobold Vermin,
+  move into melee range, and require kobold-origin attack start,
+  attacker-state damage, and player health update before the existing
+  kill/loot/quest/XP/trainer proof continues.
+- Added a G8 aggro guardrail after real-client smoke showed a friendly guard
+  could enter the early aggro path. Until Rust has CMaNGOS faction-template
+  reactions, auto-aggro is restricted to known hostile starter entries:
+  ClassicDB Kobold Vermin (`6`), Defias Thug (`38`), and the matching
+  starter-zone fixture kobold entry. Real-client observation confirmed Young
+  Wolf (`299`) is neutral, so wolves are attackable but do not auto-aggro.
+- Logged the broader faction-reaction parity gap as GitHub #50 and added the
+  missing combat-state/AI observation to existing combat issue #12.
+- User confirmed G3 real-client movement visibility streaming is good. Updated
+  the playable gate board to mark G3 Green and make G8 the active top
+  priority.
+- Expanded G8 requirements in `docs/playable_gate_board.md`: faction/reaction
+  aggro rules, aggro radius/leash/timings, threat/combat ownership, movement to
+  player, melee/ranged/spell range, facing/arc rules, line of sight/path
+  validity, swing timers/GCD, combat roll outcomes, and damage formulas.
+- Continued the G8 combat-overhaul foundation. Active DB creature combat now
+  uses `CreatureCombatState` with attacker GUID, player victim GUID, and
+  `next_swing_at` timing instead of a loose `active_creature_attacker` GUID.
+- Creature-origin melee damage is now gated by a narrow server-side melee reach
+  check before applying damage. The starter-zone aggro proof moves the player
+  inside that reach so the current stationary-combat slice remains honest until
+  chase/move-into-range is implemented.
+- Visibility cleanup now clears active creature combat state when a DB creature
+  leaves the 100-yard movement bubble.
+- Recommended next implementation ladder for G8:
+  1. faction reaction gate;
+  2. creature combat state and threat/victim ownership;
+  3. melee chase / move-into-range v1;
+  4. range and facing-gated swing timers;
+  5. leash, evade, and return home;
+  6. melee roll table;
+  7. damage formula v1;
+  8. spell, GCD, and queued melee integration.
+- Pivoted the next G8 chase work away from a synthetic straight-line
+  `SMSG_MONSTER_MOVE` shortcut after comparing the CMaNGOS reference paths:
+  `CreatureAI::AttackStart`, `Unit::Attack`, `UnitAI::HandleMovementOnAttackStart`,
+  `MotionMaster::MoveChase`, `ChaseMovementGenerator`, and
+  `Unit::UpdateMeleeAttackingState`. The fake chase packet/runtime-position
+  mutation was removed before it became foundation; the next movement slice
+  should introduce a CMaNGOS-shaped motion/chase/spline state instead.
+- Implemented the first CMaNGOS-shaped G8 chase foundation. DB creature runtime
+  now keeps home/current position separate from immutable spawn data, owns an
+  `Idle`/`Chase` motion state with target, start, destination, start time,
+  and duration, sends `SMSG_MONSTER_MOVE` from aggro `AttackStart`,
+  advances current position by elapsed time on combat ticks, and only allows
+  creature-origin melee damage after the timed chase reaches melee range.
+- Extended the starter-zone RealClassicDb harness so Kobold Vermin aggro is
+  proven from just outside melee range: the harness now requires kobold-origin
+  `SMSG_ATTACKSTART`, `SMSG_MONSTER_MOVE`, later creature damage, and a player
+  health update before continuing the existing kill/loot/quest/trainer proof.
+- Fixed the first chase real-client regression report. The world loop now runs
+  a 250ms tick like the CMaNGOS `ChaseMovementGenerator` recheck cadence, while
+  player auto-swings keep their own 2s `active_combat_next_swing_at` timer so
+  the faster world tick does not create machine-gun melee.
+- DB creature chase now rechecks the active player position every 250ms and
+  sends a fresh `SMSG_MONSTER_MOVE` when the destination moved far enough. This
+  keeps an aggroed mob following a moving player instead of committing forever
+  to the player's position at initial aggro.
+- Fixed the follow-up chase regression from real-client smoke. Movement
+  visibility cleanup no longer removes an active combat creature just because
+  its DB spawn point fell out of the normal nearby-spawn query while chasing,
+  so kiting out of the spawn radius does not delete the attacker and clear
+  combat. Chase re-pathing also now uses the CMaNGOS-style melee stop distance
+  as the destination-change threshold instead of refreshing splines for tiny
+  sub-yard target shifts.
+- Fixed the next chase stall report from real-client smoke. The world loop no
+  longer depends on socket-read timeouts alone to run combat/chase ticks; it
+  tracks the next world tick deadline and runs due ticks after packet handling
+  too, so continuous movement packets while kiting do not starve
+  `handle_combat_tick`.
+- Adjusted `starter-zone-flow-test` so G3 destroy cleanup is proven before
+  kobold aggro/combat, then the same kobold is streamed again for the G8 aggro
+  proof. This keeps the harness aligned with the new rule: non-combat
+  out-of-range creatures are destroyed, active combat creatures are retained.
 
 ## Tests Run
 
 - `git status --short --branch`
+- G8 guardrail follow-up: `cargo fmt` passed; it still prints the known
+  `could not canonicalize path C:\Users\subhe` warning.
+- G8 guardrail follow-up: `cargo test -p wow-network db_creature --lib` passed
+  with 12 tests, including the new non-starter hostile guard test.
+- G8 guardrail follow-up: `cargo check -p wow-network -p
+  starter-zone-flow-test` passed.
+- G8 guardrail follow-up: first `.\scripts\test-rust.cmd` run passed the Rust
+  unit/doc-test portions but failed rebuilding `authserver.exe` because local
+  `authserver`/`worldserver` processes held executable locks; after stopping
+  those processes, `.\scripts\test-rust.cmd` passed.
+- G8 guardrail follow-up: `.\scripts\test-starter-zone-flow.cmd` required
+  elevated Docker access and passed:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character Startzone`.
 - Baseline before changes: `.\scripts\test-rust.cmd` passed.
 - `cargo fmt` passed; it still prints the known
   `could not canonicalize path C:\Users\subhe` warning.
@@ -215,6 +354,32 @@ using the repo's bug triage policy, then continue the requested task.
   RealClassicDb content: `starter-zone RealClassicDb lock passed for account
   STARTZONE, character Startzone`.
 - Final `.\scripts\test-rust.cmd` passed again.
+- Baseline before G8 aggro/mob behavior: `.\scripts\test-rust.cmd` passed.
+- During G8: `cargo fmt` passed with the known `could not canonicalize path
+  C:\Users\subhe` warning; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; `cargo test -p wow-network db_creature --lib`
+  passed; `cargo test -p wow-network movement_visibility --lib` passed.
+- First elevated `.\scripts\test-starter-zone-flow.cmd` hit the known stale
+  `authserver.exe` / `worldserver.exe` file lock; after stopping those local
+  processes, the next run proved the new wolf aggro step but exposed that the
+  harness had moved away from the kobold streaming area before quest kills.
+  Reordering the harness to prove wolf aggro first, then movement-stream the
+  kobold, fixed the harness flow.
+- Elevated `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- Final `.\scripts\test-rust.cmd` passed again.
+- After lowering the visibility radius to 100 yards: elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb after
+  fixing the harness login packet-count and fixture availability assumptions;
+  final `.\scripts\test-rust.cmd` passed again.
+- After the real-client report that streamed creatures never disappeared:
+  `cargo test -p wow-network movement_visibility --lib` passed with new destroy
+  staging coverage; first elevated `.\scripts\test-starter-zone-flow.cmd`
+  rerun hit the known stale `authserver.exe` file lock, then exposed a harness
+  midpoint issue after out-of-range cleanup; after adjusting the movement proof,
+  elevated `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb;
+  final `.\scripts\test-rust.cmd` passed again.
 - After the real-client trainer bug report, `cargo check -p wow-db -p
   wow-network -p starter-zone-flow-test` passed; `cargo test -p wow-network
   trainer --lib` passed; `cargo test -p wow-db -p wow-network --lib` passed;
@@ -225,6 +390,109 @@ using the repo's bug triage policy, then continue the requested task.
   `cargo test -p wow-network trainer --lib` passed; elevated
   `.\scripts\test-starter-zone-flow.cmd` passed with a live
   `SMSG_LEARNED_SPELL` assertion; final `.\scripts\test-rust.cmd` passed.
+- Docs-only playable gate board/protocol update: `git status --short --branch`
+  and docs diffs reviewed. Rust tests were not rerun because no Rust code or
+  harness behavior changed.
+- Baseline before G3 movement streaming: `.\scripts\test-rust.cmd` passed.
+- During G3: `cargo check -p wow-network` passed; `cargo check -p wow-network
+  -p starter-zone-flow-test` passed; `cargo test -p wow-network
+  movement_visibility --lib` passed.
+- First non-elevated `.\scripts\test-starter-zone-flow.cmd` failed because
+  Docker access was denied by the Windows sandbox. Elevated rerun exposed a
+  harness packet-drain blocker after movement streaming; after draining
+  immediate movement-stream packets, elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- Final `.\scripts\test-rust.cmd` passed again.
+- G8 combat-state follow-up: `cargo fmt` passed with the known
+  `could not canonicalize path C:\Users\subhe` warning.
+- G8 combat-state follow-up: `cargo test -p wow-network db_creature --lib`
+  passed with 15 targeted tests, including creature combat-state, melee reach,
+  and neutral Young Wolf no-aggro coverage.
+- G8 combat-state follow-up: `cargo check -p wow-network -p
+  starter-zone-flow-test` passed.
+- G8 combat-state follow-up: `.\scripts\test-rust.cmd` passed.
+- G8 combat-state follow-up: first non-elevated
+  `.\scripts\test-starter-zone-flow.cmd` failed because Docker access was
+  denied by the Windows sandbox; elevated rerun passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- G8 neutral-wolf correction: elevated `.\scripts\test-starter-zone-flow.cmd`
+  initially exposed a harness parser assumption while skipping movement-stream
+  create packets, then passed after tightening the packet wait:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- G8 Defias Thug correction: real-client observation showed Defias Thugs were
+  not aggroing. Local ClassicDB/ACID data identifies Defias Thug as entry `38`;
+  the temporary starter-hostile gate now includes entry `38` with targeted unit
+  coverage.
+- G8 retaliation cleanup: removed the old hardcoded immediate DB-creature
+  retaliation from the player swing path. Creature-origin damage now comes from
+  active creature combat ticks, which use attacker/victim state, creature base
+  attack timing, and the current melee reach gate.
+- G8 retaliation cleanup tests: `cargo fmt` passed; `cargo test -p wow-network
+  db_creature --lib` passed; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb; final
+  `.\scripts\test-rust.cmd` passed.
+- G8 attackback fix: after removing immediate retaliation, the combat tick
+  still returned early from the player auto-swing path when
+  `active_combat_target` was a DB creature, starving the creature's own
+  reach-gated attack tick. The DB creature player-swing tick now falls through
+  to `send_active_db_creature_attack(...)`, so mobs can hit back while the
+  player is auto-attacking.
+- G8 attackback tests: `cargo fmt` passed; `cargo test -p wow-network
+  db_creature --lib` passed; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; first elevated
+  `.\scripts\test-starter-zone-flow.cmd` rerun hit the known local
+  `authserver.exe` file lock, then passed after stopping stale server
+  processes; final `.\scripts\test-rust.cmd` passed.
+- G8 CMaNGOS-parity pivot: removed the synthetic straight-line chase shortcut
+  before landing it. `cargo fmt` passed with the known canonicalize warning;
+  `cargo test -p wow-network db_creature --lib` passed with 16 targeted tests;
+  `cargo check -p wow-network -p starter-zone-flow-test` passed;
+  `.\scripts\test-rust.cmd` first hit the known local `authserver.exe` file
+  lock during the final build step, then passed after stopping stale local
+  server/test processes; elevated `.\scripts\test-starter-zone-flow.cmd` passed
+  against RealClassicDb.
+- G8 chase foundation: `cargo fmt` passed with the known canonicalize warning;
+  `cargo test -p wow-network db_creature --lib` passed with 18 targeted tests,
+  including runtime-home/current-position separation and timed chase movement;
+  `cargo check -p wow-network -p starter-zone-flow-test` passed; elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb with a
+  kobold `SMSG_MONSTER_MOVE` assertion; final `.\scripts\test-rust.cmd` passed
+  with 114 `wow-network` tests.
+- G8 chase re-path follow-up: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature --lib` passed with 20
+  targeted tests, including no-repath-before-recheck and
+  repath-after-player-move coverage; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; first non-elevated
+  `.\scripts\test-starter-zone-flow.cmd` failed because Docker access was
+  denied, and the first elevated rerun hit the known local `authserver.exe`
+  file lock; after stopping stale local server/test processes, elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb; final
+  `.\scripts\test-rust.cmd` passed with 116 `wow-network` tests.
+- G8 chase visibility/jitter follow-up: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network db_creature --lib` passed
+  with 21 targeted tests; `cargo test -p wow-network movement_visibility --lib`
+  passed with 4 targeted tests, including active-combat retention while outside
+  the spawn visibility query; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; first elevated
+  `.\scripts\test-starter-zone-flow.cmd` hit the known local `authserver.exe`
+  file lock, then passed after stopping stale local server/test processes;
+  final `.\scripts\test-rust.cmd` passed with 118 `wow-network` tests.
+- G8 chase tick-starvation follow-up: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network world_tick --lib` passed
+  with 2 targeted tests; `cargo test -p wow-network db_creature --lib` passed
+  with 21 targeted tests; `cargo check -p wow-network -p
+  starter-zone-flow-test` passed; first elevated
+  `.\scripts\test-starter-zone-flow.cmd` hit the known local `authserver.exe`
+  file lock, then the rerun exposed a stale harness expectation that final
+  post-combat movement must destroy the kobold; after moving that destroy proof
+  before combat, elevated `.\scripts\test-starter-zone-flow.cmd` passed against
+  RealClassicDb; final `.\scripts\test-rust.cmd` passed with 120
+  `wow-network` tests.
 
 ## P0/P1 Fixes In This Slice
 
@@ -272,6 +540,38 @@ using the repo's bug triage policy, then continue the requested task.
   the client still only showed Battle Shout after relog because Rust skipped
   CMaNGOS' in-world `SMSG_LEARNED_SPELL` packet. Trainer buy now sends that
   packet immediately after buy success.
+- Fixed the G3 harness packet-drain blocker: movement streaming can legitimately
+  send extra creature create chunks, so the starter-zone harness now drains
+  immediate movement-stream packets before assertions that expect combat values
+  updates.
+- Fixed the G3 real-client visibility blocker where creatures streamed in but
+  never disappeared. Rust now destroys DB creature objects that leave the
+  movement visibility query.
+- Fixed a G8 parity blocker from real-client observation: Young Wolves are
+  neutral and must not auto-aggro. The temporary starter auto-aggro allowlist
+  now includes Kobold Vermin and Defias Thug, and the harness proves kobold
+  aggro after movement-streaming the kobold into visibility.
+- No new P0/P1 bugs were discovered during the G8 combat-state follow-up.
+- No new P0/P1 bugs were discovered during the G8 CMaNGOS-parity pivot; the
+  synthetic chase shortcut was removed before it became active behavior.
+- Fixed a G8 harness blocker in the chase proof: standing ten yards past the
+  selected kobold could let another nearby hostile win nearest-target aggro.
+  The proof now stands just outside melee range so the expected RealClassicDb
+  Kobold Vermin deterministically owns the aggro/chase/damage sequence.
+- Fixed the G8 chase blocker reported from real-client smoke: initial
+  `SMSG_MONSTER_MOVE` chased only the target's position at aggro time. The
+  active chase state now re-paths from the creature's current interpolated
+  position toward the player's current position on a 250ms recheck cadence.
+- Fixed the G8 combat-retention blocker reported from real-client smoke:
+  kiting outside the spawn-driven visibility query could remove the active
+  creature runtime and clear combat. Active combat creatures are now retained by
+  visibility cleanup even when their DB spawn point is no longer in the nearby
+  query.
+- Fixed the G8 chase tick-starvation blocker reported from real-client smoke:
+  continuous client movement packets could prevent the timeout-driven world
+  tick from firing, so chase updates appeared to stop after running for a while.
+  Combat/chase ticks now run whenever the world tick deadline is due, including
+  immediately after handling a packet.
 
 ## Non-blocking Backlog
 
@@ -306,6 +606,19 @@ and passive/aura effects from learned spells.
 - DB creature combat is still a starter-slice model. It is good enough to prove
   kill credit, loot release, and respawn in the harness, but not full CMaNGOS
   combat pacing or threat.
+- G8 aggro is harness-proven for hostile DB creatures. It still does not
+  implement real pathfinding/navmesh, LOS/path validity, leash/evade, social
+  aggro, faction DB relationship lookup beyond the narrow Northshire
+  hostile/friendly guardrails, player death, or final real-client proof.
+  Creature attacks now carry explicit attacker/victim/timer state, chase through
+  a timed runtime motion state with 250ms re-pathing and active-combat
+  visibility retention, and require melee reach; player attacks and starter
+  spell damage still use the older fixture-style range assumptions until the
+  range/facing slice is widened. User real-client smoke confirmed terrain
+  clipping/glitchy pathing remains; the evidence was appended to GitHub #12
+  with `gate:G8-combat-agency` / `cmangos-diff`.
+- G3 movement-triggered DB creature streaming is harness-proven and
+  user-verified in the real client; keep it as a regression gate.
 - The repo still relies on local `target/classic-db` / Docker content import for
   full ClassicDB Northshire data.
 
@@ -313,10 +626,22 @@ and passive/aura effects from learned spells.
 
 Continue Checkpoint 2 with the next narrow starter gameplay slice:
 
-- Player death/respawn (#44): starter death state, release spirit, graveyard
+- G8 Combat Agency: build on the chase re-path foundation with path
+  validity/LOS checks, then widen range/facing-gated player swings before
+  leash/evade.
+- G9 World Creature Fidelity: keep DB spawn/template/loot/respawn/patrol
+  fidelity separate from combat agency, so aggro progress does not have to wait
+  for full persistent creature behavior.
+- G10 NPC Interaction Fidelity: audit Northshire quest givers, vendors,
+  trainers, gossip NPCs, and non-interactive NPCs against CMaNGOS affordances.
+- G11 Persistence + Relog Sanity: add relog checkpoints after each major
+  Northshire action so state bugs cannot hide inside a single live session.
+- After G3, tighten G5 corpse/respawn behavior so kill, loot, release, and
+  respawn are closer to CMaNGOS instead of instant revive.
+- G7 Player death/respawn (#44): starter death state, release spirit, graveyard
   teleport, resurrection, and persistence.
-- Or deepen the just-landed trainer slice only if real-client smoke shows a
-  P0/P1 issue opening the trainer window or seeing the learned spell.
+- G12 Multi-client Sanity: add minimal two-session visibility, chat, and shared
+  creature-state proof before calling the slice MMO-shaped.
 
 Keep it Human Warrior / Northshire only unless the user explicitly chooses a
 broader slice.
@@ -340,6 +665,7 @@ broader slice.
 - `crates/wow-db/src/world_data.rs`
 - `bins/starter-zone-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
+- `docs/playable_gate_board.md`
 - `docs/rust_auth_foundation.md`
 - `docs/checkpoint2_codebase_audit.md`
 - `scripts/test-rust.cmd`

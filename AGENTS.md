@@ -9,8 +9,9 @@ protocol for Codex and other AI coding agents.
 Before planning or editing, read these files in order:
 
 1. `docs/session_handoff.md`
-2. `docs/rust_migration_plan.md`
-3. `docs/rust_auth_foundation.md`
+2. `docs/playable_gate_board.md`
+3. `docs/rust_migration_plan.md`
+4. `docs/rust_auth_foundation.md`
 
 Then run:
 
@@ -29,6 +30,14 @@ Performance reminder for every slice:
 - Do not guess or optimize speculatively during parity work. If uncertain,
   implement the CMaNGOS behavior first, then log the optimization as a future
   P4/performance follow-up with evidence and a suggested measurement.
+
+Playable gate rule:
+
+- If a task does not advance the highest-priority red/yellow playable gate in
+  `docs/playable_gate_board.md`, do not start it unless the user explicitly
+  asks.
+- When choosing work without explicit user direction, pick the highest-priority
+  red/yellow gate from `docs/playable_gate_board.md`.
 
 If the task involves Rust code, run the baseline test script before and after
 changes when practical:
@@ -183,6 +192,24 @@ Preferred repo labels for this project:
 - `tech-debt`
 - `real-client`
 - `cmangos-diff`
+- `gate:G1-login`
+- `gate:G2-visual-world`
+- `gate:G3-visibility-streaming`
+- `gate:G4-quest-loop`
+- `gate:G5-combat-loot`
+- `gate:G6-level-trainer`
+- `gate:G7-death-respawn`
+- `gate:G8-combat-agency`
+- `gate:G9-creature-fidelity`
+- `gate:G10-npc-interaction`
+- `gate:G11-relog-persistence`
+- `gate:G12-multiclient`
+- `real-client-required`
+- `harness-required`
+- `gate-blocker`
+
+Every issue that supports the current playable milestone should have the
+matching gate label from `docs/playable_gate_board.md`.
 
 Issue body template:
 
@@ -313,15 +340,17 @@ the required Rust, Docker-backed, packet, or real-client tests.
 
 ## Current Next Task
 
-Begin **Checkpoint 1: First Playable World**. First run a real-client smoke
-pass against the Rust auth/world stack, then continue world bootstrap and
-gameplay parity slices:
+Current playable-gate priority is defined in `docs/playable_gate_board.md`.
+Pick the highest-priority red/yellow gate and do not choose unrelated work.
 
-- Launch with `scripts/run-client-stack-18085.cmd`.
-- Verify WoW 1.12.1 can authenticate, create/select a character, enter world,
-  move, logout to character select, and delete a non-loaded character.
-- Verify non-human race/gender display ids in-world after the Rust display-id
-  mapping fix.
-- After that, start with player `SMSG_UPDATE_OBJECT` parity plus
-  starter/default leftovers, then proceed through the detailed Checkpoint 1
-  roadmap in `docs/rust_migration_plan.md`.
+Current priority order:
+
+1. G3 Movement Visibility Streaming
+2. G8 Combat Agency
+3. G9 World Creature Fidelity
+4. G10 NPC Interaction Fidelity
+5. G11 Persistence + Relog Sanity
+6. G5 Combat + Loot real-behavior fidelity
+7. G6 Level + Trainer issue #49 polish
+8. G7 Death + Respawn
+9. G12 Multi-client Sanity

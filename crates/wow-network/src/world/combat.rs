@@ -7,7 +7,8 @@ async fn handle_attack_swing(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let target = read_packet_guid(body, "CMSG_ATTACKSWING")?;
-    let Some(character) = &session.active_character else {
+    let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid)
+    else {
         warn!("Ignoring attack swing before character login");
         return Ok(());
     };
@@ -19,7 +20,9 @@ async fn handle_attack_swing(
         }
 
         session.active_combat_target = Some(target);
-        let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+        session.active_combat_next_swing_at =
+            Some(Instant::now() + Duration::from_millis(RUST_COMBAT_SWING_MILLIS));
+        let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         send_packet(
             stream,
             SMSG_ATTACKSTART,
@@ -43,7 +46,11 @@ async fn handle_attack_swing(
     }
 
     session.active_combat_target = Some(target);
-    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let now = Instant::now();
+    session.active_combat_next_swing_at =
+        Some(now + Duration::from_millis(RUST_COMBAT_SWING_MILLIS));
+    begin_db_creature_combat(session, target, now);
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_packet(
         stream,
         SMSG_ATTACKSTART,
@@ -65,8 +72,13 @@ async fn handle_attack_swing(
 impl DbCreatureRuntime {
     fn new(spawn: CreatureSpawnQuery) -> Self {
         let health = creature_health(&spawn.template);
+        let home_position = db_creature_spawn_position(&spawn);
         Self {
             spawn,
+            home_position,
+            current_position: home_position,
+            motion: CreatureMotionState::Idle,
+            next_spline_id: 0,
             health,
             lootable: false,
             looting: false,
@@ -91,6 +103,10 @@ impl DbCreatureRuntime {
         self.spawn.template.max_melee_dmg.ceil().max(1.0) as u32
     }
 
+    fn base_attack_duration(&self) -> Duration {
+        Duration::from_millis(self.spawn.template.melee_base_attack_time.max(1) as u64)
+    }
+
     fn loot_money(&self) -> u32 {
         self.spawn
             .template
@@ -112,7 +128,47 @@ impl DbCreatureRuntime {
         self.looting = false;
         self.loot_money_available = false;
         self.loot_item = None;
+        self.current_position = self.home_position;
+        self.motion = CreatureMotionState::Idle;
     }
+
+    fn can_aggro_player(&self, character: &ActiveCharacter) -> bool {
+        self.is_alive()
+            && self.spawn.map == character.position.map_id
+            && self.spawn.template.civilian == 0
+            && self.spawn.template.creature_type != CREATURE_TYPE_CRITTER
+            && self.spawn.template.npc_flags == 0
+            && is_starter_aggro_creature_entry(self.spawn.entry)
+    }
+
+    fn distance_to_player_squared(&self, character: &ActiveCharacter) -> Option<f32> {
+        (self.current_position.map_id == character.position.map_id).then(|| {
+            let dx = self.current_position.x - character.position.x;
+            let dy = self.current_position.y - character.position.y;
+            dx * dx + dy * dy
+        })
+    }
+}
+
+fn db_creature_spawn_position(spawn: &CreatureSpawnQuery) -> WorldPosition {
+    WorldPosition::new(
+        spawn.map,
+        spawn.position_x,
+        spawn.position_y,
+        spawn.position_z,
+        spawn.orientation,
+    )
+}
+
+const REAL_KOBOLD_VERMIN_ENTRY: u32 = 6;
+const REAL_DEFIAS_THUG_ENTRY: u32 = 38;
+const FIXTURE_KOBOLD_VERMIN_ENTRY: u32 = 910_005;
+
+fn is_starter_aggro_creature_entry(entry: u32) -> bool {
+    matches!(
+        entry,
+        REAL_KOBOLD_VERMIN_ENTRY | REAL_DEFIAS_THUG_ENTRY | FIXTURE_KOBOLD_VERMIN_ENTRY
+    )
 }
 
 fn apply_db_creature_damage(
@@ -133,6 +189,8 @@ fn apply_db_creature_damage(
         creature.loot_money_available = creature.loot_money() > 0;
         creature.loot_item = None;
         session.active_combat_target = None;
+        session.active_combat_next_swing_at = None;
+        clear_db_creature_combat_if_attacker(session, target);
     }
     Some(damage)
 }
@@ -144,21 +202,34 @@ async fn handle_combat_tick(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(target) = session.active_combat_target else {
-        return Ok(());
-    };
-    if target == rust_combat_dummy_guid() {
-        return send_combat_dummy_swing(stream, session, header_crypto).await;
+    let now = Instant::now();
+    if let Some(target) = session.active_combat_target {
+        if session
+            .active_combat_next_swing_at
+            .is_none_or(|next_swing_at| now >= next_swing_at)
+        {
+            session.active_combat_next_swing_at =
+                Some(now + Duration::from_millis(RUST_COMBAT_SWING_MILLIS));
+            if target == rust_combat_dummy_guid() {
+                send_combat_dummy_swing(stream, session, header_crypto).await?;
+            } else {
+                send_db_creature_swing(
+                    stream,
+                    character_db_pool,
+                    world_db_pool,
+                    session,
+                    header_crypto,
+                    target,
+                )
+                .await?;
+            }
+        }
     }
-    send_db_creature_swing(
-        stream,
-        character_db_pool,
-        world_db_pool,
-        session,
-        header_crypto,
-        target,
-    )
-    .await
+
+    if session.active_creature_combat.is_none() {
+        try_start_db_creature_aggro(stream, session, header_crypto).await?;
+    }
+    send_active_db_creature_attack(stream, session, header_crypto).await
 }
 
 async fn send_db_creature_swing(
@@ -180,6 +251,7 @@ async fn send_db_creature_swing(
         .unwrap_or(1);
     let Some(damage) = apply_db_creature_damage(session, target, requested_damage) else {
         session.active_combat_target = None;
+        session.active_combat_next_swing_at = None;
         return Ok(());
     };
     session.player_rage =
@@ -218,26 +290,6 @@ async fn send_db_creature_swing(
     )
     .await?;
 
-    if !is_dead {
-        let retaliation_damage = retaliation_damage_for_db_creature(session, target);
-        if retaliation_damage > 0 {
-            send_packet(
-                stream,
-                SMSG_ATTACKERSTATEUPDATE,
-                &build_attacker_state_update_body(target, attacker, retaliation_damage)?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            send_packet(
-                stream,
-                SMSG_UPDATE_OBJECT,
-                &build_player_health_update_body(attacker, session.player_health)?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-        }
-    }
-
     if is_dead {
         finalize_db_creature_death(
             stream,
@@ -271,6 +323,8 @@ async fn finalize_db_creature_death(
         }
     }
     session.active_combat_target = None;
+    session.active_combat_next_swing_at = None;
+    clear_db_creature_combat_if_attacker(session, killed);
     grant_db_creature_kill_credit(
         stream,
         character_db_pool,
@@ -603,9 +657,316 @@ async fn send_combat_dummy_swing(
         )
         .await?;
         session.active_combat_target = None;
+        session.active_combat_next_swing_at = None;
     }
 
     Ok(())
+}
+
+async fn try_start_db_creature_aggro(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let Some(attacker) = select_db_creature_aggro_target(session) else {
+        return Ok(());
+    };
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    begin_db_creature_combat(session, attacker, Instant::now());
+    send_packet(
+        stream,
+        SMSG_ATTACKSTART,
+        &build_attack_start_body(attacker, player),
+        Some(header_crypto),
+    )
+    .await?;
+    send_db_creature_chase_if_needed(stream, session, attacker, player, Instant::now(), header_crypto)
+        .await?;
+    Ok(())
+}
+
+async fn send_active_db_creature_attack(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let Some(combat) = session.active_creature_combat else {
+        return Ok(());
+    };
+    let attacker = combat.attacker;
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    if combat.victim != player {
+        session.active_creature_combat = None;
+        return Ok(());
+    }
+    if !session
+        .db_creatures
+        .get(&attacker.raw())
+        .is_some_and(DbCreatureRuntime::is_alive)
+    {
+        session.active_creature_combat = None;
+        return Ok(());
+    }
+    let now = Instant::now();
+    advance_db_creature_motion(session, attacker, now);
+    if !db_creature_can_reach_player(session, attacker) {
+        send_db_creature_chase_if_needed(stream, session, attacker, player, now, header_crypto)
+            .await?;
+        return Ok(());
+    }
+    if now < combat.next_swing_at {
+        return Ok(());
+    }
+
+    let next_swing_delay = session
+        .db_creatures
+        .get(&attacker.raw())
+        .map(DbCreatureRuntime::base_attack_duration)
+        .unwrap_or_else(|| Duration::from_millis(RUST_COMBAT_SWING_MILLIS));
+    let damage = retaliation_damage_for_db_creature(session, attacker);
+    if damage == 0 {
+        session.active_creature_combat = None;
+        return Ok(());
+    }
+    if let Some(combat) = &mut session.active_creature_combat {
+        combat.next_swing_at = now + next_swing_delay;
+    }
+    send_packet(
+        stream,
+        SMSG_ATTACKERSTATEUPDATE,
+        &build_attacker_state_update_body(attacker, player, damage)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_health_update_body(player, session.player_health)?,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn select_db_creature_aggro_target(session: &WorldSessionState) -> Option<ObjectGuid> {
+    let character = session.active_character.as_ref()?;
+    session
+        .db_creatures
+        .values()
+        .filter(|creature| creature.can_aggro_player(character))
+        .filter_map(|creature| {
+            let distance_sq = creature.distance_to_player_squared(character)?;
+            let attack_distance =
+                db_creature_attack_distance(character.level, creature.spawn.template.min_level);
+            (distance_sq <= attack_distance * attack_distance).then_some((distance_sq, creature.guid()))
+        })
+        .min_by(|(left_distance, left_guid), (right_distance, right_guid)| {
+            left_distance
+                .total_cmp(right_distance)
+                .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
+        })
+        .map(|(_, guid)| guid)
+}
+
+fn begin_db_creature_combat(session: &mut WorldSessionState, attacker: ObjectGuid, now: Instant) {
+    let Some(character) = &session.active_character else {
+        return;
+    };
+    session.active_creature_combat = Some(CreatureCombatState {
+        attacker,
+        victim: ObjectGuid::new(HighGuid::Player, 0, character.guid),
+        next_swing_at: now,
+    });
+}
+
+fn clear_db_creature_combat_if_attacker(session: &mut WorldSessionState, attacker: ObjectGuid) {
+    if session
+        .active_creature_combat
+        .as_ref()
+        .is_some_and(|combat| combat.attacker == attacker)
+    {
+        session.active_creature_combat = None;
+    }
+}
+
+fn db_creature_attack_distance(player_level: u8, creature_level: u8) -> f32 {
+    let mut level_diff = player_level as i32 - creature_level as i32;
+    if level_diff < -25 {
+        level_diff = -25;
+    }
+    (18.0 - level_diff as f32).max(5.0)
+}
+
+fn db_creature_can_reach_player(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
+    let Some(character) = &session.active_character else {
+        return false;
+    };
+    let Some(creature) = session.db_creatures.get(&attacker.raw()) else {
+        return false;
+    };
+    creature.distance_to_player_squared(character).is_some_and(|distance_sq| {
+        distance_sq < DB_CREATURE_MELEE_REACH_YARDS * DB_CREATURE_MELEE_REACH_YARDS
+    })
+}
+
+async fn send_db_creature_chase_if_needed(
+    stream: &mut TcpStream,
+    session: &mut WorldSessionState,
+    attacker: ObjectGuid,
+    player: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if db_creature_can_reach_player(session, attacker) {
+        return Ok(());
+    }
+    let Some((start, destination, spline_id, duration)) =
+        start_db_creature_chase_motion(session, attacker, player, now)
+    else {
+        return Ok(());
+    };
+    send_packet(
+        stream,
+        SMSG_MONSTER_MOVE,
+        &build_monster_move_body(
+            attacker,
+            start,
+            destination,
+            spline_id,
+            duration.as_millis().max(1) as u32,
+        )?,
+        Some(header_crypto),
+    )
+    .await
+}
+
+fn advance_db_creature_motion(
+    session: &mut WorldSessionState,
+    creature_guid: ObjectGuid,
+    now: Instant,
+) {
+    let Some(creature) = session.db_creatures.get_mut(&creature_guid.raw()) else {
+        return;
+    };
+    let CreatureMotionState::Chase(chase) = &creature.motion else {
+        return;
+    };
+    let elapsed = now.saturating_duration_since(chase.started_at);
+    if elapsed >= chase.duration {
+        creature.current_position = chase.destination;
+        creature.motion = CreatureMotionState::Idle;
+        return;
+    }
+
+    let duration_secs = chase.duration.as_secs_f32();
+    if duration_secs <= f32::EPSILON {
+        creature.current_position = chase.destination;
+        creature.motion = CreatureMotionState::Idle;
+        return;
+    }
+
+    let progress = (elapsed.as_secs_f32() / duration_secs).clamp(0.0, 1.0);
+    creature.current_position = interpolate_position(chase.start, chase.destination, progress);
+}
+
+fn start_db_creature_chase_motion(
+    session: &mut WorldSessionState,
+    creature_guid: ObjectGuid,
+    target: ObjectGuid,
+    now: Instant,
+) -> Option<(WorldPosition, WorldPosition, u32, Duration)> {
+    let target_position = session.active_character.as_ref()?.position;
+    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    let start = creature.current_position;
+    let destination = db_creature_chase_destination(start, target_position)?;
+    if let CreatureMotionState::Chase(chase) = &creature.motion {
+        if chase.target == target {
+            if now < chase.recheck_at {
+                return None;
+            }
+            let destination_delta = distance_2d(
+                chase.destination.x,
+                chase.destination.y,
+                destination.x,
+                destination.y,
+            );
+            if destination_delta <= DB_CREATURE_CHASE_REPATH_YARDS {
+                return None;
+            }
+        }
+    }
+    let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
+    if move_distance <= f32::EPSILON {
+        return None;
+    }
+    let duration = Duration::from_millis(
+        ((move_distance / DB_CREATURE_RUN_SPEED_YARDS_PER_SEC) * 1000.0)
+            .ceil()
+            .max(1.0) as u64,
+    );
+    let spline_id = creature.next_spline_id;
+    creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
+        target,
+        start,
+        destination,
+        started_at: now,
+        duration,
+        recheck_at: now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS),
+    });
+    Some((start, destination, spline_id, duration))
+}
+
+fn db_creature_chase_destination(
+    start: WorldPosition,
+    target_position: WorldPosition,
+) -> Option<WorldPosition> {
+    if start.map_id != target_position.map_id {
+        return None;
+    }
+    let dx = target_position.x - start.x;
+    let dy = target_position.y - start.y;
+    let distance = distance_2d(start.x, start.y, target_position.x, target_position.y);
+    let stop_distance =
+        DB_CREATURE_MELEE_REACH_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR;
+    if distance <= stop_distance {
+        return None;
+    }
+    let travel = distance - stop_distance;
+    let nx = dx / distance;
+    let ny = dy / distance;
+    Some(WorldPosition::new(
+        start.map_id,
+        start.x + nx * travel,
+        start.y + ny * travel,
+        start.z,
+        dy.atan2(dx),
+    ))
+}
+
+fn interpolate_position(
+    start: WorldPosition,
+    destination: WorldPosition,
+    progress: f32,
+) -> WorldPosition {
+    WorldPosition::new(
+        start.map_id,
+        start.x + (destination.x - start.x) * progress,
+        start.y + (destination.y - start.y) * progress,
+        start.z + (destination.z - start.z) * progress,
+        destination.orientation,
+    )
+}
+
+fn distance_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> f32 {
+    let dx = left_x - right_x;
+    let dy = left_y - right_y;
+    (dx * dx + dy * dy).sqrt()
 }
 
 async fn handle_attack_stop(
@@ -619,6 +980,7 @@ async fn handle_attack_stop(
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let victim = session.active_combat_target.unwrap_or_else(rust_combat_dummy_guid);
     session.active_combat_target = None;
+    session.active_combat_next_swing_at = None;
     send_packet(
         stream,
         SMSG_ATTACKSTOP,

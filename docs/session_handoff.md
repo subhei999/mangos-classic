@@ -248,9 +248,9 @@ Latest Checkpoint 2 fixture-lock verification:
 - `bash -n scripts/test-rust.sh` initially exposed a CRLF-sensitive syntax
   issue in the new shell entrypoint; the script was rewritten with LF endings
   and the syntax check now passes.
-- `test-starter-zone-flow.cmd` could not run because Docker Desktop's Linux
-  engine pipe was unavailable locally (`dockerDesktopLinuxEngine` not found),
-  even after elevated access.
+- Elevated `test-starter-zone-flow.cmd` passed after Docker Desktop's
+  `desktop-linux` context became available, printing
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character Startzone`.
 - `cargo fmt` passed.
 - Baseline `test-rust.cmd` passed before Rust changes.
 - `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`

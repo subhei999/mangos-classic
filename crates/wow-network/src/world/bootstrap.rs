@@ -333,7 +333,7 @@ async fn send_self_spawn_update(
     update: SelfSpawnUpdate<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_self_spawn_update_body(
+    let bodies = build_self_spawn_update_bodies(
         update.character,
         update.inventory,
         update.world_stats,
@@ -344,10 +344,22 @@ async fn send_self_spawn_update(
     info!(
         guid = update.character.guid,
         name = %update.character.name,
-        bytes = body.len(),
+        packets = bodies.len(),
+        bytes = bodies.iter().map(Vec::len).sum::<usize>(),
+        max_packet_bytes = bodies.iter().map(Vec::len).max().unwrap_or(0),
         "Sending minimal self spawn update"
     );
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, header_crypto).await
+    let mut header_crypto = header_crypto;
+    for body in bodies {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &body,
+            header_crypto.as_deref_mut(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 struct SelfSpawnUpdate<'a> {
@@ -380,14 +392,45 @@ async fn load_equipped_item_templates(
     Ok(templates)
 }
 
-fn build_self_spawn_update_body(
+fn build_self_spawn_update_bodies(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
     equipped_templates: &[EquippedItemTemplate],
     nearby_creatures: &[CreatureSpawnQuery],
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut blocks = build_self_spawn_update_blocks(
+        character,
+        inventory,
+        world_stats,
+        skills,
+        equipped_templates,
+        nearby_creatures,
+    )?;
+    let creature_start = 3;
+    let item_start = creature_start + nearby_creatures.len();
+    let item_blocks = blocks.split_off(item_start);
+    let creature_blocks = blocks.split_off(creature_start);
+
+    let mut first_blocks = blocks;
+    first_blocks.extend(item_blocks);
+    let mut bodies = Vec::with_capacity(1 + creature_blocks.len().div_ceil(CREATURE_UPDATE_CHUNK_SIZE));
+    bodies.push(build_update_object_body(&first_blocks));
+    for chunk in creature_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
+        bodies.push(build_update_object_body(chunk));
+    }
+    Ok(bodies)
+}
+
+fn build_self_spawn_update_blocks(
+    character: &CharacterEnumEntry,
+    inventory: &[CharacterInventoryItem],
+    world_stats: &PlayerWorldStats,
+    skills: &[CharacterSkill],
+    equipped_templates: &[EquippedItemTemplate],
+    nearby_creatures: &[CreatureSpawnQuery],
+) -> anyhow::Result<Vec<Vec<u8>>> {
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -424,20 +467,13 @@ fn build_self_spawn_update_body(
     let combat_dummy_block = build_rust_combat_dummy_create_block(character)?;
     let creature_blocks = build_db_creature_create_blocks(nearby_creatures)?;
     let item_blocks = build_inventory_item_create_blocks(character, inventory)?;
-    let block_count = 3 + creature_blocks.len() as u32 + item_blocks.len() as u32;
-    let mut body = Vec::with_capacity(5 + block.len());
-    body.extend_from_slice(&block_count.to_le_bytes());
-    body.push(0); // has transport
-    body.extend_from_slice(&block);
-    body.extend_from_slice(&npc_block);
-    body.extend_from_slice(&combat_dummy_block);
-    for creature_block in creature_blocks {
-        body.extend_from_slice(&creature_block);
-    }
-    for item_block in item_blocks {
-        body.extend_from_slice(&item_block);
-    }
-    Ok(body)
+    let mut blocks = Vec::with_capacity(3 + creature_blocks.len() + item_blocks.len());
+    blocks.push(block);
+    blocks.push(npc_block);
+    blocks.push(combat_dummy_block);
+    blocks.extend(creature_blocks);
+    blocks.extend(item_blocks);
+    Ok(blocks)
 }
 
 fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {

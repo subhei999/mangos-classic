@@ -1139,10 +1139,18 @@ impl WorldClient {
         )?;
 
         let mut update_bodies = Vec::new();
-        for _ in 0..11 {
+        let expected_update_packets = if content.source == StarterZoneSource::RealClassicDb {
+            5
+        } else {
+            2
+        };
+        for _ in 0..24 {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
             if opcode == SMSG_UPDATE_OBJECT {
                 update_bodies.push(body);
+                if update_bodies.len() >= expected_update_packets {
+                    break;
+                }
             }
         }
         ensure!(

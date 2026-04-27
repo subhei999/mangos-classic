@@ -49,6 +49,13 @@ quests, XP/level-up, trainers, death/respawn, and relog persistence.
 - Added cross-platform Rust test entrypoint `scripts/test-rust.sh` and updated the Rust GitHub workflow to run Rust checks on both Ubuntu and Windows, so remote Linux/macOS environments can run the same baseline script without `.cmd` wrappers.
 - Added first Checkpoint 2 creature-retaliation guardrail for DB creatures: when a living DB target is attacked in the world tick loop, Rust now emits a creature->player `SMSG_ATTACKERSTATEUPDATE`, updates `UNIT_FIELD_HEALTH` for the player via `SMSG_UPDATE_OBJECT`, and keeps the player above a 1-HP survivor floor so death/respawn remains deferred to the dedicated Checkpoint 2 death slice (#44).
 - Added focused `wow-network` unit coverage for the new player-health update packet body and DB-creature retaliation health-floor behavior.
+- Fixed a real-client new-character loading-screen blocker observed in
+  `world-client-18085.log`: auth and character create succeeded, but the client
+  stalled after Rust sent a single 44 KB `SMSG_UPDATE_OBJECT` login burst for
+  full ClassicDB Northshire density. Login bootstrap now sends the player /
+  fixture / inventory create blocks first and DB creature create blocks in
+  smaller follow-up `SMSG_UPDATE_OBJECT` chunks while keeping the 128-spawn
+  Northshire visibility cap.
 - Cemented the Checkpoint 2 plan in `docs/rust_migration_plan.md`: Northshire
   Valley / Human Warrior golden path, detailed slice order, required automated
   gate, real-client grading table, and definition of done.
@@ -251,6 +258,14 @@ Latest Checkpoint 2 fixture-lock verification:
 - Elevated `test-starter-zone-flow.cmd` passed after Docker Desktop's
   `desktop-linux` context became available, printing
   `starter-zone RealClassicDb lock passed for account STARTZONE, character Startzone`.
+- After the split login-update fix, elevated `test-starter-zone-flow.cmd`
+  passed again. A brief 64-spawn cap experiment reproduced the older small
+  packet behavior but failed the real ClassicDB harness by hiding a required
+  Kobold Vermin spawn, so the committed fix keeps 128 spawns and chunks the
+  packet output instead.
+- Final `test-rust.cmd` passed with 93 `wow-network` tests and 10 `wow-db`
+  tests; only the known `could not canonicalize path C:\Users\subhe` warning
+  appeared.
 - `cargo fmt` passed.
 - Baseline `test-rust.cmd` passed before Rust changes.
 - `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`

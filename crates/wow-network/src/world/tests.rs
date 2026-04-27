@@ -558,6 +558,7 @@ fn db_creature_create_block_uses_spawn_and_template_fields() {
     assert_eq!(values[1], Some((guid.raw() >> 32) as u32));
     assert_eq!(values[2], Some(TYPEMASK_OBJECT_UNIT));
     assert_eq!(values[3], Some(42));
+    assert_eq!(values[4], Some(1.0f32.to_bits()));
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(120));
     assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(120));
     assert_eq!(values[UNIT_FIELD_LEVEL], Some(4));
@@ -565,6 +566,29 @@ fn db_creature_create_block_uses_spawn_and_template_fields() {
     assert_eq!(values[UNIT_FIELD_FLAGS], Some(0x20));
     assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(123));
     assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
+}
+
+#[test]
+fn db_creature_create_block_defaults_zero_template_scale_to_one() {
+    let mut creature = test_creature_spawn(197);
+    creature.template.scale = 0.0;
+
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(values[4], Some(1.0f32.to_bits()));
+
+    creature.template.scale = 0.7;
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(values[4], Some(0.7f32.to_bits()));
 }
 
 #[test]

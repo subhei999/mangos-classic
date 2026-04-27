@@ -56,6 +56,12 @@ quests, XP/level-up, trainers, death/respawn, and relog persistence.
   fixture / inventory create blocks first and DB creature create blocks in
   smaller follow-up `SMSG_UPDATE_OBJECT` chunks while keeping the 128-spawn
   Northshire visibility cap.
+- Fixed a real-client Northshire spawn rendering blocker: ClassicDB stores
+  `creature_template.Scale = 0` for Marshal McBride, Deputy Willem, Brother
+  Paxton, and Kobold Vermin, while Young Wolf has a nonzero scale. Rust now
+  normalizes zero DB creature scale to `1.0` before writing
+  `OBJECT_FIELD_SCALE_X`, matching the CMaNGOS/default-scale expectation and
+  preventing those NPCs/creatures from rendering collapsed below terrain.
 - Cemented the Checkpoint 2 plan in `docs/rust_migration_plan.md`: Northshire
   Valley / Human Warrior golden path, detailed slice order, required automated
   gate, real-client grading table, and definition of done.
@@ -266,6 +272,10 @@ Latest Checkpoint 2 fixture-lock verification:
 - Final `test-rust.cmd` passed with 93 `wow-network` tests and 10 `wow-db`
   tests; only the known `could not canonicalize path C:\Users\subhe` warning
   appeared.
+- After the zero-scale creature rendering fix, focused
+  `cargo test -p wow-network db_creature_create_block -- --nocapture` passed,
+  elevated `test-starter-zone-flow.cmd` passed, and final `test-rust.cmd`
+  passed with 94 `wow-network` tests and 10 `wow-db` tests.
 - `cargo fmt` passed.
 - Baseline `test-rust.cmd` passed before Rust changes.
 - `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`

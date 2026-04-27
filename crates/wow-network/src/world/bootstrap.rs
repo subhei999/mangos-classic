@@ -676,7 +676,7 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT)?;
     set_update_value(&mut values, 0x003, creature.entry)?;
-    set_update_value(&mut values, 0x004, template.scale.to_bits())?;
+    set_update_value(&mut values, 0x004, creature_scale(template).to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, health)?;
     set_update_value(&mut values, UNIT_FIELD_LEVEL, template.min_level as u32)?;
@@ -732,6 +732,14 @@ fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
     .into_iter()
     .find(|display_id| *display_id != 0)
     .unwrap_or(0)
+}
+
+fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
+    if template.scale > 0.0 {
+        template.scale
+    } else {
+        1.0
+    }
 }
 
 fn write_minimal_player_update_values(

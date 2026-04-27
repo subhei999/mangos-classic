@@ -16,7 +16,7 @@ belongs in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `d98f5aa14 Close Checkpoint 1 playable world`
+- Latest committed base before this slice: `98efe4a04 Add Northshire starter zone DB slice`
 - Remote: `origin/codex/rust-auth-foundation`
 - Worktree at handoff: contains Checkpoint 2 starter-zone fixture-lock work:
   new `bins/starter-zone-flow-test`, new
@@ -46,6 +46,9 @@ quests, XP/level-up, trainers, death/respawn, and relog persistence.
 
 ## What Changed Recently
 
+- Added cross-platform Rust test entrypoint `scripts/test-rust.sh` and updated the Rust GitHub workflow to run Rust checks on both Ubuntu and Windows, so remote Linux/macOS environments can run the same baseline script without `.cmd` wrappers.
+- Added first Checkpoint 2 creature-retaliation guardrail for DB creatures: when a living DB target is attacked in the world tick loop, Rust now emits a creature->player `SMSG_ATTACKERSTATEUPDATE`, updates `UNIT_FIELD_HEALTH` for the player via `SMSG_UPDATE_OBJECT`, and keeps the player above a 1-HP survivor floor so death/respawn remains deferred to the dedicated Checkpoint 2 death slice (#44).
+- Added focused `wow-network` unit coverage for the new player-health update packet body and DB-creature retaliation health-floor behavior.
 - Cemented the Checkpoint 2 plan in `docs/rust_migration_plan.md`: Northshire
   Valley / Human Warrior golden path, detailed slice order, required automated
   gate, real-client grading table, and definition of done.
@@ -239,6 +242,16 @@ git diff --check
 
 Latest Checkpoint 2 fixture-lock verification:
 
+- `test-rust.cmd` passed on the current uncommitted slice with 93
+  `wow-network` tests and 10 `wow-db` tests; only the known
+  `could not canonicalize path C:\Users\subhe` warning appeared.
+- `bash -n scripts/test-rust.sh` initially exposed a CRLF-sensitive syntax
+  issue in the new shell entrypoint; the script was rewritten with LF endings
+  and the syntax check now passes.
+- `test-starter-zone-flow.cmd` could not run because Docker Desktop's Linux
+  engine pipe was unavailable locally (`dockerDesktopLinuxEngine` not found),
+  even after elevated access.
+- `cargo fmt` passed.
 - Baseline `test-rust.cmd` passed before Rust changes.
 - `cargo fmt` passed with the existing `could not canonicalize path C:\Users\subhe`
   warning.

@@ -712,6 +712,49 @@ fn player_mana_update_sets_mana_power_field() {
 }
 
 #[test]
+fn player_health_update_sets_health_field() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_health_update_body(player, 37).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+    assert_eq!(body[5], UPDATE_TYPE_VALUES);
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(37));
+}
+
+#[test]
+fn db_creature_retaliation_reduces_player_health_but_keeps_survivor_floor() {
+    let mut session = WorldSessionState {
+        player_health: 5,
+        ..WorldSessionState::default()
+    };
+    let creature = test_creature_spawn(299);
+    let target = creature_spawn_guid(&creature);
+    let expected_hit = DbCreatureRuntime::new(creature).hit_damage().max(1);
+    session.db_creatures.insert(
+        target.raw(),
+        DbCreatureRuntime::new(test_creature_spawn(299)),
+    );
+
+    let retaliation = retaliation_damage_for_db_creature(&mut session, target);
+    assert_eq!(retaliation, expected_hit);
+    assert_eq!(
+        session.player_health,
+        (5u32)
+            .saturating_sub(expected_hit)
+            .max(PLAYER_SURVIVOR_HEALTH_FLOOR)
+    );
+
+    session.player_health = 1;
+    let retaliation = retaliation_damage_for_db_creature(&mut session, target);
+    assert_eq!(retaliation, expected_hit);
+    assert_eq!(session.player_health, PLAYER_SURVIVOR_HEALTH_FLOOR);
+}
+
+#[test]
 fn combat_dummy_loot_packets_match_empty_corpse_shape() {
     let loot = build_combat_dummy_loot_response_body(&WorldSessionState::default());
     assert_eq!(&loot[0..8], &rust_combat_dummy_guid().raw().to_le_bytes());

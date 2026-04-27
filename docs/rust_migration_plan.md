@@ -19,7 +19,7 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 - C++ tree: untouched and still the canonical behavior reference
 - Rust status: authserver foundation exists and builds locally; worldserver
   skeleton can carry a real 1.12.1 client into a minimal in-world state
-- Local unit/lint/build entrypoint: `scripts/test-rust.cmd`
+- Local unit/lint/build entrypoint: `scripts/test-rust.cmd` (Windows) or `scripts/test-rust.sh` (Linux/macOS)
 - Local MariaDB smoke entrypoint: `scripts/test-rust-db.cmd`
 - Local auth flow entrypoint: `scripts/test-auth-flow.cmd`
 - Local character lifecycle DB smoke entrypoint:
@@ -258,11 +258,12 @@ Closure rule:
   commands and results, P0/P1 fixes made during the final pass, and P2/P3/P4
   issues logged or updated.
 
-Current grading snapshot, 2026-04-25:
+Final grading snapshot, 2026-04-25:
 
-Overall grade: `PARTIAL`, roughly 65-70% through Checkpoint 1. The checkpoint
-is not closeable yet, but the previous `Combat/spell` blocker is cleared by a
-real-client Raptor Strike retest.
+Overall grade: `PASS` for Checkpoint 1 closure. Trainer behavior and
+player-character death/respawn were explicitly deferred to Checkpoint 2+ with
+tracked follow-up issues, and the previous `Combat/spell` blocker was cleared
+by a real-client Raptor Strike retest.
 
 - `PASS`: auth/realm list, character screen after fixture reset, Night Elf
   female Hunter race/gender display after the starter boots fix, and
@@ -280,8 +281,8 @@ real-client Raptor Strike retest.
   deferred to #44 because it needs ghost/corpse/graveyard/resurrection behavior
   beyond the first playable world loop.
 
-Plan impact: no grading-table row remains ungraded. Next closure work should
-rerun the required automated gate and update the final Checkpoint 1 handoff.
+Plan impact: Checkpoint 1 is closed. Current implementation work should stay
+inside Checkpoint 2's Northshire / Human Warrior starter-zone vertical slice.
 
 Detailed path:
 
@@ -674,7 +675,8 @@ Success looks like:
 Run before committing Rust work:
 
 ```powershell
-.\scripts\test-rust.cmd
+./scripts/test-rust.sh  # Linux/macOS
+.\scripts\test-rust.cmd # Windows
 ```
 
 Run when DB/authserver behavior changes:

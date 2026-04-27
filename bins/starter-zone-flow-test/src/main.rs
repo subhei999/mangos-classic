@@ -2,7 +2,7 @@ use anyhow::{ensure, Context};
 use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 use wow_common::guid::{HighGuid, ObjectGuid};
@@ -37,6 +37,7 @@ const HUMAN_START_Y: f32 = -132.493;
 const REAL_MARSHAL_MCBRIDE_ENTRY: u32 = 197;
 const REAL_DEPUTY_WILLEM_ENTRY: u32 = 823;
 const REAL_BROTHER_PAXTON_ENTRY: u32 = 951;
+const REAL_LLANE_BESHERE_ENTRY: u32 = 911;
 const REAL_YOUNG_WOLF_ENTRY: u32 = 299;
 const REAL_KOBOLD_VERMIN_ENTRY: u32 = 6;
 const REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS: f32 = 220.0;
@@ -45,6 +46,7 @@ const FIXTURE_PREFIX: u32 = 910_000;
 const MARSHAL_MCBRIDE_ENTRY: u32 = FIXTURE_PREFIX + 1;
 const DEPUTY_WILLEM_ENTRY: u32 = FIXTURE_PREFIX + 2;
 const BROTHER_PAXTON_ENTRY: u32 = FIXTURE_PREFIX + 3;
+const LLANE_BESHERE_ENTRY: u32 = FIXTURE_PREFIX + 6;
 const YOUNG_WOLF_ENTRY: u32 = FIXTURE_PREFIX + 4;
 const KOBOLD_VERMIN_ENTRY: u32 = FIXTURE_PREFIX + 5;
 const YOUNG_WOLF_DISPLAY_ID: u32 = 372;
@@ -55,6 +57,14 @@ const KOBOLD_CAMP_CLEANUP_QUEST: u32 = FIXTURE_PREFIX + 202;
 const FIXTURE_GRAVEYARD_ID: u32 = FIXTURE_PREFIX + 301;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
+const CMSG_CAST_SPELL: u32 = 0x012E;
+const CMSG_GOSSIP_HELLO: u32 = 0x017B;
+const CMSG_QUESTGIVER_STATUS_QUERY: u32 = 0x0182;
+const CMSG_QUESTGIVER_QUERY_QUEST: u32 = 0x0186;
+const CMSG_QUESTGIVER_ACCEPT_QUEST: u32 = 0x0189;
+const CMSG_QUESTGIVER_CHOOSE_REWARD: u32 = 0x018E;
+const CMSG_TRAINER_LIST: u32 = 0x01B0;
+const CMSG_TRAINER_BUY_SPELL: u32 = 0x01B2;
 const CMSG_ATTACKSWING: u32 = 0x0141;
 const CMSG_LOOT: u32 = 0x015D;
 const CMSG_LOOT_MONEY: u32 = 0x015E;
@@ -63,15 +73,36 @@ const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
+const SMSG_QUESTGIVER_STATUS: u32 = 0x0183;
+const SMSG_QUESTGIVER_QUEST_LIST: u32 = 0x0185;
+const SMSG_QUESTGIVER_QUEST_DETAILS: u32 = 0x0188;
+const SMSG_QUESTGIVER_OFFER_REWARD: u32 = 0x018D;
+const SMSG_QUESTGIVER_QUEST_COMPLETE: u32 = 0x0191;
+const SMSG_QUESTUPDATE_COMPLETE: u32 = 0x0198;
+const SMSG_QUESTUPDATE_ADD_KILL: u32 = 0x0199;
+const SMSG_TRAINER_LIST: u32 = 0x01B1;
+const SMSG_TRAINER_BUY_SUCCEEDED: u32 = 0x01B3;
+const SMSG_LEARNED_SPELL: u32 = 0x012B;
 const SMSG_ATTACKERSTATEUPDATE: u32 = 0x014A;
 const SMSG_LOOT_RESPONSE: u32 = 0x0160;
 const SMSG_LOOT_RELEASE_RESPONSE: u32 = 0x0161;
+const SMSG_LOG_XPGAIN: u32 = 0x01D0;
+const SMSG_LEVELUP_INFO: u32 = 0x01D4;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
 const UNIT_FIELD_HEALTH: usize = 0x016;
+const UNIT_FIELD_LEVEL: usize = 0x022;
 const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
+const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
+const DIALOG_STATUS_AVAILABLE: u32 = 5;
+const DIALOG_STATUS_REWARD2: u32 = 7;
+const QUEST_STATUS_COMPLETE: u32 = 1;
+const HEROIC_STRIKE_RANK_1: u32 = 78;
+const WARRIOR_BATTLE_SHOUT_RANK_1: u32 = 6673;
+const WARRIOR_BATTLE_SHOUT_TRAINER_CAST: u32 = 6674;
+const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StarterZoneSource {
@@ -89,6 +120,12 @@ struct ExpectedCreature {
 struct StarterZoneContent {
     source: StarterZoneSource,
     visible_creatures: Vec<ExpectedCreature>,
+    kobold_quest: u32,
+    quest_giver: ExpectedCreature,
+    trainer: ExpectedCreature,
+    trainer_spell: u32,
+    kobold: ExpectedCreature,
+    kobold_required_count: u32,
     wolf: ExpectedCreature,
     wolf_health: u32,
     wolf_loot_money: u32,
@@ -149,6 +186,16 @@ async fn main() -> anyhow::Result<()> {
     );
     world.login_character_expect_northshire_creatures(created.guid, &starter_zone)?;
     world.kill_loot_and_respawn_young_wolf(&starter_zone)?;
+    world.complete_kobold_camp_cleanup(&starter_zone)?;
+    world.learn_warrior_trainer_spell(&starter_zone)?;
+    assert_kobold_camp_cleanup_persisted(&character_pool, created.guid, starter_zone.kobold_quest)
+        .await?;
+    assert_warrior_trainer_spell_persisted(
+        &character_pool,
+        created.guid,
+        WARRIOR_BATTLE_SHOUT_RANK_1,
+    )
+    .await?;
 
     println!(
         "starter-zone {:?} lock passed for account {USERNAME}, character {CHARACTER_NAME}",
@@ -251,6 +298,7 @@ async fn load_real_northshire_content(
         REAL_MARSHAL_MCBRIDE_ENTRY,
         REAL_DEPUTY_WILLEM_ENTRY,
         REAL_BROTHER_PAXTON_ENTRY,
+        REAL_LLANE_BESHERE_ENTRY,
         REAL_YOUNG_WOLF_ENTRY,
         REAL_KOBOLD_VERMIN_ENTRY,
     ];
@@ -265,6 +313,7 @@ async fn load_real_northshire_content(
         REAL_MARSHAL_MCBRIDE_ENTRY,
         REAL_DEPUTY_WILLEM_ENTRY,
         REAL_BROTHER_PAXTON_ENTRY,
+        REAL_LLANE_BESHERE_ENTRY,
         REAL_YOUNG_WOLF_ENTRY,
         REAL_KOBOLD_VERMIN_ENTRY,
     ];
@@ -279,6 +328,22 @@ async fn load_real_northshire_content(
         .iter()
         .find(|spawn| spawn.entry == REAL_YOUNG_WOLF_ENTRY)
         .context("real ClassicDB Young Wolf was not visible near the Human Warrior start")?;
+    let kobold_spawn = visible
+        .iter()
+        .find(|spawn| spawn.entry == REAL_KOBOLD_VERMIN_ENTRY)
+        .context("real ClassicDB Kobold Vermin was not visible near the Human Warrior start")?;
+    let quest_giver_spawn = visible
+        .iter()
+        .find(|spawn| spawn.entry == REAL_MARSHAL_MCBRIDE_ENTRY)
+        .context("real ClassicDB Marshal McBride was not visible near the Human Warrior start")?;
+    let trainer_spawn = visible
+        .iter()
+        .find(|spawn| spawn.entry == REAL_LLANE_BESHERE_ENTRY)
+        .context("real ClassicDB Llane Beshere was not visible near the Human Warrior start")?;
+    let kobold_required_count: u32 =
+        sqlx::query_scalar("SELECT ReqCreatureOrGOCount1 FROM quest_template WHERE entry = 7")
+            .fetch_one(world_pool)
+            .await?;
     let wolf_loot = wow_db::get_creature_loot_items(world_pool, REAL_YOUNG_WOLF_ENTRY)
         .await?
         .into_iter()
@@ -299,6 +364,21 @@ async fn load_real_northshire_content(
                 }
             })
             .collect(),
+        kobold_quest: 7,
+        quest_giver: ExpectedCreature {
+            entry: quest_giver_spawn.entry,
+            counter: quest_giver_spawn.guid,
+        },
+        trainer: ExpectedCreature {
+            entry: trainer_spawn.entry,
+            counter: trainer_spawn.guid,
+        },
+        trainer_spell: WARRIOR_BATTLE_SHOUT_TRAINER_CAST,
+        kobold: ExpectedCreature {
+            entry: kobold_spawn.entry,
+            counter: kobold_spawn.guid,
+        },
+        kobold_required_count,
         wolf: ExpectedCreature {
             entry: wolf_spawn.entry,
             counter: wolf_spawn.guid,
@@ -335,6 +415,10 @@ async fn load_fixture_northshire_content(
                 counter: FIXTURE_PREFIX + 3,
             },
             ExpectedCreature {
+                entry: LLANE_BESHERE_ENTRY,
+                counter: FIXTURE_PREFIX + 6,
+            },
+            ExpectedCreature {
                 entry: YOUNG_WOLF_ENTRY,
                 counter: FIXTURE_PREFIX + 4,
             },
@@ -343,6 +427,21 @@ async fn load_fixture_northshire_content(
                 counter: FIXTURE_PREFIX + 5,
             },
         ],
+        kobold_quest: KOBOLD_CAMP_CLEANUP_QUEST,
+        quest_giver: ExpectedCreature {
+            entry: MARSHAL_MCBRIDE_ENTRY,
+            counter: FIXTURE_PREFIX + 1,
+        },
+        trainer: ExpectedCreature {
+            entry: LLANE_BESHERE_ENTRY,
+            counter: FIXTURE_PREFIX + 6,
+        },
+        trainer_spell: WARRIOR_BATTLE_SHOUT_TRAINER_CAST,
+        kobold: ExpectedCreature {
+            entry: KOBOLD_VERMIN_ENTRY,
+            counter: FIXTURE_PREFIX + 5,
+        },
+        kobold_required_count: 5,
         wolf: ExpectedCreature {
             entry: YOUNG_WOLF_ENTRY,
             counter: FIXTURE_PREFIX + 4,
@@ -396,6 +495,25 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
         world_pool,
         BROTHER_PAXTON_ENTRY,
         "Rust Brother Paxton",
+        "Priest Fixture",
+        5,
+        53,
+        35,
+        7,
+        0x0000_0003,
+        40,
+        3.0,
+        5.0,
+        0,
+        0,
+        0,
+        0,
+    )
+    .await?;
+    seed_creature_template(
+        world_pool,
+        LLANE_BESHERE_ENTRY,
+        "Rust Llane Beshere",
         "Warrior Trainer Fixture",
         5,
         53,
@@ -405,7 +523,7 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
         40,
         3.0,
         5.0,
-        1,
+        0,
         1,
         0,
         0,
@@ -476,6 +594,14 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
             0.2,
         ),
         (
+            FIXTURE_PREFIX + 6,
+            LLANE_BESHERE_ENTRY,
+            -8920.0,
+            -205.0,
+            82.0,
+            0.2,
+        ),
+        (
             FIXTURE_PREFIX + 4,
             YOUNG_WOLF_ENTRY,
             -8908.0,
@@ -504,9 +630,10 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
     .await?;
     sqlx::query(
         "INSERT INTO npc_trainer (entry, spell, spellcost, reqskill, reqskillvalue, reqlevel, condition_id) \
-         VALUES (?, 772, 10, 0, 0, 4, 0)",
+         VALUES (?, ?, 10, 0, 0, 1, 0)",
     )
-    .bind(BROTHER_PAXTON_ENTRY)
+    .bind(LLANE_BESHERE_ENTRY)
+    .bind(WARRIOR_BATTLE_SHOUT_TRAINER_CAST)
     .execute(world_pool)
     .await?;
 
@@ -737,13 +864,13 @@ async fn seed_quest_template(
          (entry, Method, ZoneOrSort, MinLevel, QuestLevel, RequiredRaces, \
           Title, Details, Objectives, OfferRewardText, RequestItemsText, \
           ReqCreatureOrGOId1, ReqCreatureOrGOCount1, ReqItemId1, ReqItemCount1, \
-          RewOrReqMoney) \
+          RewMoneyMaxLevel, RewOrReqMoney) \
          VALUES (?, 2, ?, 1, 1, 1, ?, \
                  'Rust fixture quest detail for the Northshire starter-zone harness.', \
                  'Prove the Northshire quest data boundary exists.', \
                  'Good. Keep the fixture narrow until quest v1 lands.', \
                  'The Rust fixture is ready for the next quest slice.', \
-                 ?, ?, ?, ?, 25)",
+                 ?, ?, ?, ?, 210, 25)",
     )
     .bind(entry)
     .bind(NORTHSHIRE_ZONE as i16)
@@ -909,12 +1036,13 @@ async fn assert_starter_zone_interaction_rows(world_pool: &MySqlPool) -> anyhow:
         "Northshire DB vendor fixture did not expose source-backed Tough Jerky"
     );
     let trainer_spell: Option<u32> =
-        sqlx::query_scalar("SELECT spell FROM npc_trainer WHERE entry = ? AND spell = 772")
-            .bind(BROTHER_PAXTON_ENTRY)
+        sqlx::query_scalar("SELECT spell FROM npc_trainer WHERE entry = ? AND spell = ?")
+            .bind(LLANE_BESHERE_ENTRY)
+            .bind(WARRIOR_BATTLE_SHOUT_TRAINER_CAST)
             .fetch_optional(world_pool)
             .await?;
     ensure!(
-        trainer_spell == Some(772),
+        trainer_spell == Some(WARRIOR_BATTLE_SHOUT_TRAINER_CAST),
         "Northshire trainer fixture did not expose a warrior trainer spell row"
     );
     Ok(())
@@ -994,6 +1122,53 @@ async fn assert_starter_zone_gameobject_and_graveyard_rows(
     ensure!(
         graveyard_count == 1,
         "expected one Northshire/Elwynn Alliance graveyard link"
+    );
+    Ok(())
+}
+
+async fn assert_kobold_camp_cleanup_persisted(
+    character_pool: &MySqlPool,
+    character_guid: u32,
+    quest: u32,
+) -> anyhow::Result<()> {
+    let row: (u32, u8) = sqlx::query_as(
+        "SELECT status, rewarded FROM character_queststatus WHERE guid = ? AND quest = ?",
+    )
+    .bind(character_guid)
+    .bind(quest)
+    .fetch_one(character_pool)
+    .await?;
+    ensure!(
+        row.0 == QUEST_STATUS_COMPLETE && row.1 == 1,
+        "Kobold Camp Cleanup did not persist as rewarded complete"
+    );
+    let progression: (u8, u32) = sqlx::query_as("SELECT level, xp FROM characters WHERE guid = ?")
+        .bind(character_guid)
+        .fetch_one(character_pool)
+        .await?;
+    ensure!(
+        progression.0 >= 2 && progression.1 > 0,
+        "Kobold Camp Cleanup flow did not persist a level-up with in-level XP: level={} xp={}",
+        progression.0,
+        progression.1
+    );
+    Ok(())
+}
+
+async fn assert_warrior_trainer_spell_persisted(
+    character_pool: &MySqlPool,
+    character_guid: u32,
+    spell: u32,
+) -> anyhow::Result<()> {
+    let row: Option<(u8, u8)> =
+        sqlx::query_as("SELECT active, disabled FROM character_spell WHERE guid = ? AND spell = ?")
+            .bind(character_guid)
+            .bind(spell)
+            .fetch_optional(character_pool)
+            .await?;
+    ensure!(
+        row == Some((1, 0)),
+        "trainer spell {spell} was not persisted as active/enabled"
     );
     Ok(())
 }
@@ -1088,6 +1263,15 @@ fn send_proof(
 struct WorldClient {
     stream: TcpStream,
     crypto: HeaderCrypto,
+    character_guid: u32,
+}
+
+#[derive(Debug, Default)]
+struct XpProgressionEvidence {
+    saw_creature_xp_log: bool,
+    saw_quest_xp_log: bool,
+    saw_levelup: bool,
+    saw_progression_update: bool,
 }
 
 impl WorldClient {
@@ -1110,7 +1294,11 @@ impl WorldClient {
             body
         );
 
-        Ok(Self { stream, crypto })
+        Ok(Self {
+            stream,
+            crypto,
+            character_guid: 0,
+        })
     }
 
     fn char_enum(&mut self) -> anyhow::Result<Vec<EnumCharacter>> {
@@ -1130,6 +1318,7 @@ impl WorldClient {
         guid: u32,
         content: &StarterZoneContent,
     ) -> anyhow::Result<()> {
+        self.character_guid = guid;
         let guid = ObjectGuid::new(HighGuid::Player, 0, guid);
         write_client_packet(
             &mut self.stream,
@@ -1300,9 +1489,295 @@ impl WorldClient {
         Ok(())
     }
 
+    fn complete_kobold_camp_cleanup(&mut self, content: &StarterZoneContent) -> anyhow::Result<()> {
+        let giver = ObjectGuid::new(
+            HighGuid::Unit,
+            content.quest_giver.entry,
+            content.quest_giver.counter,
+        );
+        let kobold = ObjectGuid::new(HighGuid::Unit, content.kobold.entry, content.kobold.counter);
+        let player = ObjectGuid::new(HighGuid::Player, 0, self.character_guid);
+        let mut xp_evidence = XpProgressionEvidence::default();
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_STATUS_QUERY,
+            &giver.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let status = self.read_until(SMSG_QUESTGIVER_STATUS, 8)?;
+        assert_questgiver_status(&status, giver, DIALOG_STATUS_AVAILABLE)?;
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &giver.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let quest_list = self.read_until(SMSG_QUESTGIVER_QUEST_LIST, 8)?;
+        ensure!(
+            quest_list
+                .windows(4)
+                .any(|window| window == content.kobold_quest.to_le_bytes()),
+            "Kobold Camp Cleanup was missing from quest list"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_QUERY_QUEST,
+            &questgiver_request_body(giver, content.kobold_quest),
+            Some(&mut self.crypto),
+        )?;
+        let details = self.read_until(SMSG_QUESTGIVER_QUEST_DETAILS, 8)?;
+        ensure!(
+            details
+                .windows(4)
+                .any(|window| window == content.kobold_quest.to_le_bytes()),
+            "Kobold Camp Cleanup details did not reference the quest id"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_ACCEPT_QUEST,
+            &questgiver_request_body(giver, content.kobold_quest),
+            Some(&mut self.crypto),
+        )?;
+        let accept_update = self.read_until(SMSG_UPDATE_OBJECT, 8)?;
+        ensure!(
+            update_packet_has_values(&accept_update, ObjectGuid::new(HighGuid::Player, 0, 0), &[],)
+                .is_ok(),
+            "accepted quest update was not parseable"
+        );
+
+        for expected_count in 1..=content.kobold_required_count {
+            let mut saw_kill_credit = false;
+            let mut saw_complete = false;
+            for _ in 0..80 {
+                if expected_count == 1 {
+                    write_client_packet(
+                        &mut self.stream,
+                        CMSG_CAST_SPELL,
+                        &cast_spell_body(HEROIC_STRIKE_RANK_1, kobold)?,
+                        Some(&mut self.crypto),
+                    )?;
+                } else {
+                    write_client_packet(
+                        &mut self.stream,
+                        CMSG_ATTACKSWING,
+                        &kobold.raw().to_le_bytes(),
+                        Some(&mut self.crypto),
+                    )?;
+                }
+                self.stream
+                    .set_read_timeout(Some(Duration::from_millis(25)))?;
+                while let Some((opcode, body)) =
+                    try_read_server_packet(&mut self.stream, &mut self.crypto)?
+                {
+                    observe_xp_progression_packet(opcode, &body, player, &mut xp_evidence)?;
+                    if opcode == SMSG_QUESTUPDATE_ADD_KILL {
+                        assert_quest_kill_update(
+                            &body,
+                            content.kobold_quest,
+                            content.kobold.entry,
+                            expected_count,
+                            content.kobold_required_count,
+                            kobold,
+                        )?;
+                        saw_kill_credit = true;
+                    }
+                    if opcode == SMSG_QUESTUPDATE_COMPLETE {
+                        ensure!(
+                            u32::from_le_bytes(body[0..4].try_into()?) == content.kobold_quest,
+                            "quest complete packet used wrong quest id"
+                        );
+                        saw_complete = true;
+                    }
+                    let saw_expected_quest_packets = saw_kill_credit
+                        && (expected_count < content.kobold_required_count || saw_complete);
+                    if saw_expected_quest_packets && xp_evidence.saw_creature_xp_log {
+                        break;
+                    }
+                }
+                self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let saw_expected_quest_packets = saw_kill_credit
+                    && (expected_count < content.kobold_required_count || saw_complete);
+                if saw_expected_quest_packets && xp_evidence.saw_creature_xp_log {
+                    break;
+                }
+            }
+            ensure!(
+                saw_kill_credit,
+                "Kobold kill {expected_count} did not grant quest credit"
+            );
+            write_client_packet(
+                &mut self.stream,
+                CMSG_LOOT_RELEASE,
+                &kobold.raw().to_le_bytes(),
+                Some(&mut self.crypto),
+            )?;
+            let _ = self.read_until_observing_xp(
+                SMSG_LOOT_RELEASE_RESPONSE,
+                8,
+                player,
+                &mut xp_evidence,
+            )?;
+        }
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_STATUS_QUERY,
+            &giver.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let status =
+            self.read_until_observing_xp(SMSG_QUESTGIVER_STATUS, 8, player, &mut xp_evidence)?;
+        assert_questgiver_status(&status, giver, DIALOG_STATUS_REWARD2)?;
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &giver.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let offer = self.read_until_observing_xp(
+            SMSG_QUESTGIVER_OFFER_REWARD,
+            8,
+            player,
+            &mut xp_evidence,
+        )?;
+        ensure!(
+            offer
+                .windows(4)
+                .any(|window| window == content.kobold_quest.to_le_bytes()),
+            "Kobold Camp Cleanup offer reward did not reference the quest id"
+        );
+
+        let mut reward_body = questgiver_request_body(giver, content.kobold_quest);
+        reward_body.extend_from_slice(&0u32.to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_CHOOSE_REWARD,
+            &reward_body,
+            Some(&mut self.crypto),
+        )?;
+        let complete = self.read_until_observing_xp(
+            SMSG_QUESTGIVER_QUEST_COMPLETE,
+            8,
+            player,
+            &mut xp_evidence,
+        )?;
+        ensure!(
+            u32::from_le_bytes(complete[0..4].try_into()?) == content.kobold_quest,
+            "quest reward completion packet used wrong quest id"
+        );
+        let reward_xp = u32::from_le_bytes(complete[4..8].try_into()?);
+        ensure!(
+            reward_xp > 0,
+            "quest reward completion packet did not include XP"
+        );
+
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(250)))?;
+        for _ in 0..16 {
+            let Some((opcode, body)) = try_read_server_packet(&mut self.stream, &mut self.crypto)?
+            else {
+                break;
+            };
+            observe_xp_progression_packet(opcode, &body, player, &mut xp_evidence)?;
+            if xp_evidence.saw_creature_xp_log
+                && xp_evidence.saw_quest_xp_log
+                && xp_evidence.saw_levelup
+                && xp_evidence.saw_progression_update
+            {
+                break;
+            }
+        }
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        ensure!(
+            xp_evidence.saw_creature_xp_log,
+            "kobold kills did not send creature SMSG_LOG_XPGAIN"
+        );
+        ensure!(
+            xp_evidence.saw_quest_xp_log,
+            "quest reward did not send quest SMSG_LOG_XPGAIN"
+        );
+        ensure!(
+            xp_evidence.saw_levelup,
+            "Kobold Camp Cleanup flow did not send SMSG_LEVELUP_INFO"
+        );
+        ensure!(
+            xp_evidence.saw_progression_update,
+            "Kobold Camp Cleanup flow did not send level/next-XP player update"
+        );
+        Ok(())
+    }
+
+    fn learn_warrior_trainer_spell(&mut self, content: &StarterZoneContent) -> anyhow::Result<()> {
+        let trainer = ObjectGuid::new(
+            HighGuid::Unit,
+            content.trainer.entry,
+            content.trainer.counter,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_TRAINER_LIST,
+            &trainer.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let list = self.read_until(SMSG_TRAINER_LIST, 8)?;
+        assert_trainer_list_has_green_spell(&list, trainer, content.trainer_spell)?;
+
+        let mut buy = Vec::with_capacity(12);
+        buy.extend_from_slice(&trainer.raw().to_le_bytes());
+        buy.extend_from_slice(&content.trainer_spell.to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_TRAINER_BUY_SPELL,
+            &buy,
+            Some(&mut self.crypto),
+        )?;
+        let success = self.read_until(SMSG_TRAINER_BUY_SUCCEEDED, 8)?;
+        ensure!(
+            success.len() == 12,
+            "trainer buy success packet had wrong size"
+        );
+        ensure!(
+            u64::from_le_bytes(success[0..8].try_into()?) == trainer.raw(),
+            "trainer buy success packet used wrong trainer guid"
+        );
+        ensure!(
+            u32::from_le_bytes(success[8..12].try_into()?) == content.trainer_spell,
+            "trainer buy success packet used wrong spell"
+        );
+        let learned = self.read_until(SMSG_LEARNED_SPELL, 8)?;
+        ensure!(learned.len() == 4, "learned spell packet had wrong size");
+        ensure!(
+            u32::from_le_bytes(learned[0..4].try_into()?) == WARRIOR_BATTLE_SHOUT_RANK_1,
+            "learned spell packet used wrong spell"
+        );
+        Ok(())
+    }
+
     fn read_until(&mut self, expected_opcode: u32, max_packets: usize) -> anyhow::Result<Vec<u8>> {
         for _ in 0..max_packets {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == expected_opcode {
+                return Ok(body);
+            }
+        }
+        anyhow::bail!("did not receive expected opcode 0x{expected_opcode:04X}");
+    }
+
+    fn read_until_observing_xp(
+        &mut self,
+        expected_opcode: u32,
+        max_packets: usize,
+        player: ObjectGuid,
+        evidence: &mut XpProgressionEvidence,
+    ) -> anyhow::Result<Vec<u8>> {
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            observe_xp_progression_packet(opcode, &body, player, evidence)?;
             if opcode == expected_opcode {
                 return Ok(body);
             }
@@ -1338,6 +1813,162 @@ fn assert_wolf_loot_response(
         u32::from_le_bytes(body[19..23].try_into()?) == 1,
         "wolf loot item count was not one"
     );
+    Ok(())
+}
+
+fn questgiver_request_body(giver: ObjectGuid, quest: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&giver.raw().to_le_bytes());
+    body.extend_from_slice(&quest.to_le_bytes());
+    body
+}
+
+fn cast_spell_body(spell_id: u32, target: ObjectGuid) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(16);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    write_packed_guid(&mut body, target)?;
+    Ok(body)
+}
+
+fn write_packed_guid(body: &mut Vec<u8>, guid: ObjectGuid) -> anyhow::Result<()> {
+    let raw = guid.raw();
+    let mut mask = 0u8;
+    let mut bytes = Vec::new();
+    for index in 0..8 {
+        let byte = ((raw >> (index * 8)) & 0xFF) as u8;
+        if byte != 0 {
+            mask |= 1 << index;
+            bytes.push(byte);
+        }
+    }
+    body.push(mask);
+    body.extend_from_slice(&bytes);
+    Ok(())
+}
+
+fn assert_questgiver_status(body: &[u8], giver: ObjectGuid, expected: u32) -> anyhow::Result<()> {
+    ensure!(
+        body.len() == 12,
+        "questgiver status response had wrong size"
+    );
+    ensure!(
+        u64::from_le_bytes(body[0..8].try_into()?) == giver.raw(),
+        "questgiver status response used wrong guid"
+    );
+    ensure!(
+        u32::from_le_bytes(body[8..12].try_into()?) == expected,
+        "questgiver status response had wrong dialog status"
+    );
+    Ok(())
+}
+
+fn assert_quest_kill_update(
+    body: &[u8],
+    quest: u32,
+    entry: u32,
+    count: u32,
+    required_count: u32,
+    killed: ObjectGuid,
+) -> anyhow::Result<()> {
+    ensure!(body.len() == 24, "quest kill update had wrong size");
+    ensure!(
+        u32::from_le_bytes(body[0..4].try_into()?) == quest,
+        "quest kill update used wrong quest"
+    );
+    ensure!(
+        u32::from_le_bytes(body[4..8].try_into()?) == entry,
+        "quest kill update used wrong creature entry"
+    );
+    ensure!(
+        u32::from_le_bytes(body[8..12].try_into()?) == count,
+        "quest kill update used wrong current count"
+    );
+    ensure!(
+        u32::from_le_bytes(body[12..16].try_into()?) == required_count,
+        "quest kill update used wrong required count"
+    );
+    ensure!(
+        u64::from_le_bytes(body[16..24].try_into()?) == killed.raw(),
+        "quest kill update used wrong killed guid"
+    );
+    Ok(())
+}
+
+fn observe_xp_progression_packet(
+    opcode: u32,
+    body: &[u8],
+    player: ObjectGuid,
+    evidence: &mut XpProgressionEvidence,
+) -> anyhow::Result<()> {
+    match opcode {
+        SMSG_LOG_XPGAIN => {
+            ensure!(body.len() >= 13, "XP gain log was too short");
+            ensure!(
+                u32::from_le_bytes(body[8..12].try_into()?) > 0,
+                "XP gain log did not report positive XP"
+            );
+            let has_source_guid = u64::from_le_bytes(body[0..8].try_into()?) != 0;
+            if has_source_guid {
+                evidence.saw_creature_xp_log = true;
+            } else {
+                evidence.saw_quest_xp_log = true;
+            }
+        }
+        SMSG_LEVELUP_INFO => {
+            ensure!(body.len() == 48, "level-up info packet had wrong size");
+            ensure!(
+                u32::from_le_bytes(body[0..4].try_into()?) >= 2,
+                "level-up info did not report level 2+"
+            );
+            evidence.saw_levelup = true;
+        }
+        SMSG_UPDATE_OBJECT
+            if update_packet_has_values(
+                body,
+                player,
+                &[(UNIT_FIELD_LEVEL, 2), (PLAYER_NEXT_LEVEL_XP, 900)],
+            )? =>
+        {
+            evidence.saw_progression_update = true;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn assert_trainer_list_has_green_spell(
+    body: &[u8],
+    trainer: ObjectGuid,
+    expected_spell: u32,
+) -> anyhow::Result<()> {
+    ensure!(body.len() >= 16, "trainer list was too short");
+    ensure!(
+        u64::from_le_bytes(body[0..8].try_into()?) == trainer.raw(),
+        "trainer list used wrong trainer guid"
+    );
+    let count = u32::from_le_bytes(body[12..16].try_into()?) as usize;
+    let mut cursor = 16;
+    let mut found = false;
+    for _ in 0..count {
+        ensure_available(body, cursor + 38)?;
+        let spell = u32::from_le_bytes(body[cursor..cursor + 4].try_into()?);
+        let state = body[cursor + 4];
+        if spell == expected_spell {
+            ensure!(
+                state == 0,
+                "trainer spell {expected_spell} was not learnable"
+            );
+            found = true;
+        }
+        cursor += 38;
+    }
+    ensure_available(body, cursor + 1)?;
+    ensure!(
+        body[cursor..].contains(&0),
+        "trainer list greeting was not NUL-terminated"
+    );
+    ensure!(found, "trainer list did not contain spell {expected_spell}");
     Ok(())
 }
 
@@ -1556,6 +2187,25 @@ fn read_server_packet(
     let body_len = size - 2;
     let body = read_exact_vec(stream, body_len)?;
     Ok((opcode, body))
+}
+
+fn try_read_server_packet(
+    stream: &mut TcpStream,
+    crypto: &mut HeaderCrypto,
+) -> anyhow::Result<Option<(u32, Vec<u8>)>> {
+    match read_server_packet(stream, Some(crypto)) {
+        Ok(packet) => Ok(Some(packet)),
+        Err(error) => {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| matches!(io.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
+            {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 fn connect_blocking(addr: &str) -> anyhow::Result<TcpStream> {

@@ -5,6 +5,7 @@ struct EnterWorldBootstrap<'a> {
     inventory: &'a [CharacterInventoryItem],
     world_stats: &'a PlayerWorldStats,
     spells: &'a [CharacterSpell],
+    quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
 }
@@ -58,6 +59,7 @@ async fn send_enter_world_bootstrap(
             inventory: bootstrap.inventory,
             world_stats: bootstrap.world_stats,
             skills: &skills,
+            quest_statuses: bootstrap.quest_statuses,
             equipped_templates: &equipped_templates,
             nearby_creatures: &nearby_creatures,
         },
@@ -338,6 +340,7 @@ async fn send_self_spawn_update(
         update.inventory,
         update.world_stats,
         update.skills,
+        update.quest_statuses,
         update.equipped_templates,
         update.nearby_creatures,
     )?;
@@ -367,6 +370,7 @@ struct SelfSpawnUpdate<'a> {
     inventory: &'a [CharacterInventoryItem],
     world_stats: &'a PlayerWorldStats,
     skills: &'a [CharacterSkill],
+    quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &'a [EquippedItemTemplate],
     nearby_creatures: &'a [CreatureSpawnQuery],
 }
@@ -397,6 +401,7 @@ fn build_self_spawn_update_bodies(
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
     nearby_creatures: &[CreatureSpawnQuery],
 ) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -405,6 +410,7 @@ fn build_self_spawn_update_bodies(
         inventory,
         world_stats,
         skills,
+        quest_statuses,
         equipped_templates,
         nearby_creatures,
     )?;
@@ -428,6 +434,7 @@ fn build_self_spawn_update_blocks(
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
     nearby_creatures: &[CreatureSpawnQuery],
 ) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -460,6 +467,7 @@ fn build_self_spawn_update_blocks(
         inventory,
         world_stats,
         skills,
+        quest_statuses,
         equipped_templates,
     )?;
 
@@ -742,6 +750,7 @@ fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_minimal_player_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
@@ -749,6 +758,7 @@ fn write_minimal_player_update_values(
     inventory: &[CharacterInventoryItem],
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
@@ -863,8 +873,9 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values(&mut values, character, inventory)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
-    set_update_value(&mut values, PLAYER_XP, 0)?;
+    set_update_value(&mut values, PLAYER_XP, character.xp)?;
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
+    set_player_quest_log_update_values(&mut values, quest_statuses)?;
     set_player_skill_update_values(&mut values, skills)?;
     set_player_secondary_stat_update_values(&mut values, &combat_stats)?;
     set_player_explored_zone_update_values(&mut values, character)?;
@@ -884,6 +895,27 @@ fn write_minimal_player_update_values(
 
     write_update_values(body, &values)?;
 
+    Ok(())
+}
+
+fn set_player_quest_log_update_values(
+    values: &mut [Option<u32>],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> anyhow::Result<()> {
+    for (slot, status) in active_quest_statuses_sorted(quest_statuses)
+        .into_iter()
+        .take(MAX_QUEST_LOG_SIZE)
+        .enumerate()
+    {
+        let base = PLAYER_QUEST_LOG_1_1 + slot * MAX_QUEST_OFFSET;
+        set_update_value(values, base + QUEST_LOG_QUEST_ID_OFFSET, status.quest)?;
+        set_update_value(
+            values,
+            base + QUEST_LOG_COUNT_STATE_OFFSET,
+            quest_log_count_state(status),
+        )?;
+        set_update_value(values, base + QUEST_LOG_TIME_OFFSET, 0)?;
+    }
     Ok(())
 }
 

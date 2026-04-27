@@ -15,366 +15,13 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterReputation, CharacterSkill, CharacterSpell, CreatureLootQuery,
-    CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter, PlayerWorldStats,
+    CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterSkill, CharacterSpell,
+    CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter,
+    PlayerWorldStats, QuestTemplateQuery,
 };
 
-const CMSG_CHAR_CREATE: u32 = 0x0036;
-const CMSG_CHAR_ENUM: u32 = 0x0037;
-const CMSG_CHAR_DELETE: u32 = 0x0038;
-const CMSG_PLAYER_LOGIN: u32 = 0x003D;
-const SMSG_CHAR_CREATE: u16 = 0x003A;
-const SMSG_CHAR_DELETE: u16 = 0x003C;
-const CMSG_PLAYER_LOGOUT: u32 = 0x004A;
-const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
-const SMSG_LOGOUT_RESPONSE: u16 = 0x004C;
-const SMSG_LOGOUT_COMPLETE: u16 = 0x004D;
-const CMSG_LOGOUT_CANCEL: u32 = 0x004E;
-const SMSG_LOGOUT_CANCEL_ACK: u16 = 0x004F;
-const CMSG_NAME_QUERY: u32 = 0x0050;
-const SMSG_NAME_QUERY_RESPONSE: u16 = 0x0051;
-const CMSG_ITEM_QUERY_SINGLE: u32 = 0x0056;
-const SMSG_ITEM_QUERY_SINGLE_RESPONSE: u16 = 0x0058;
-const CMSG_CREATURE_QUERY: u32 = 0x0060;
-const SMSG_CREATURE_QUERY_RESPONSE: u16 = 0x0061;
-const CMSG_MESSAGECHAT: u32 = 0x0095;
-const SMSG_MESSAGECHAT: u16 = 0x0096;
-const CMSG_JOIN_CHANNEL: u32 = 0x0097;
-const MSG_MOVE_START_FORWARD: u32 = 0x00B5;
-const MSG_MOVE_START_BACKWARD: u32 = 0x00B6;
-const MSG_MOVE_STOP: u32 = 0x00B7;
-const MSG_MOVE_START_STRAFE_LEFT: u32 = 0x00B8;
-const MSG_MOVE_START_STRAFE_RIGHT: u32 = 0x00B9;
-const MSG_MOVE_STOP_STRAFE: u32 = 0x00BA;
-const MSG_MOVE_JUMP: u32 = 0x00BB;
-const MSG_MOVE_START_TURN_LEFT: u32 = 0x00BC;
-const MSG_MOVE_START_TURN_RIGHT: u32 = 0x00BD;
-const MSG_MOVE_STOP_TURN: u32 = 0x00BE;
-const MSG_MOVE_START_PITCH_UP: u32 = 0x00BF;
-const MSG_MOVE_START_PITCH_DOWN: u32 = 0x00C0;
-const MSG_MOVE_STOP_PITCH: u32 = 0x00C1;
-const MSG_MOVE_SET_RUN_MODE: u32 = 0x00C2;
-const MSG_MOVE_SET_WALK_MODE: u32 = 0x00C3;
-const MSG_MOVE_FALL_LAND: u32 = 0x00C9;
-const MSG_MOVE_START_SWIM: u32 = 0x00CA;
-const MSG_MOVE_STOP_SWIM: u32 = 0x00CB;
-const MSG_MOVE_SET_FACING: u32 = 0x00DA;
-const MSG_MOVE_SET_PITCH: u32 = 0x00DB;
-const MSG_MOVE_HEARTBEAT: u32 = 0x00EE;
-const CMSG_MOVE_FALL_RESET: u32 = 0x02CA;
-const CMSG_TUTORIAL_FLAG: u32 = 0x00FE;
-const CMSG_TUTORIAL_CLEAR: u32 = 0x00FF;
-const CMSG_TUTORIAL_RESET: u32 = 0x0100;
-const CMSG_TEXT_EMOTE: u32 = 0x0104;
-const SMSG_EMOTE: u16 = 0x0103;
-const SMSG_TEXT_EMOTE: u16 = 0x0105;
-const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
-const CMSG_AUTOEQUIP_ITEM: u32 = 0x010A;
-const CMSG_SWAP_ITEM: u32 = 0x010C;
-const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
-const CMSG_SPLIT_ITEM: u32 = 0x010E;
-const CMSG_DESTROYITEM: u32 = 0x0111;
-const SMSG_INVENTORY_CHANGE_FAILURE: u16 = 0x0112;
-const SMSG_TRIGGER_CINEMATIC: u16 = 0x00FA;
-const SMSG_DESTROY_OBJECT: u16 = 0x00AA;
-const CMSG_CANCEL_TRADE: u32 = 0x011C;
-const SMSG_INITIALIZE_FACTIONS: u16 = 0x0122;
-const CMSG_CAST_SPELL: u32 = 0x012E;
-const CMSG_CANCEL_CAST: u32 = 0x012F;
-const SMSG_CAST_RESULT: u16 = 0x0130;
-const SMSG_SPELL_GO: u16 = 0x0132;
-const CMSG_SET_SELECTION: u32 = 0x013D;
-const CMSG_ATTACKSWING: u32 = 0x0141;
-const CMSG_ATTACKSTOP: u32 = 0x0142;
-const SMSG_ATTACKSTART: u16 = 0x0143;
-const SMSG_ATTACKSTOP: u16 = 0x0144;
-const SMSG_ATTACKERSTATEUPDATE: u16 = 0x014A;
-const CMSG_LOOT: u32 = 0x015D;
-const CMSG_LOOT_MONEY: u32 = 0x015E;
-const CMSG_LOOT_RELEASE: u32 = 0x015F;
-const SMSG_LOOT_RESPONSE: u16 = 0x0160;
-const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x0161;
-const SMSG_LOOT_REMOVED: u16 = 0x0162;
-const SMSG_LOOT_MONEY_NOTIFY: u16 = 0x0163;
-const SMSG_LOOT_CLEAR_MONEY: u16 = 0x0165;
-const CMSG_GOSSIP_HELLO: u32 = 0x017B;
-const CMSG_GOSSIP_SELECT_OPTION: u32 = 0x017C;
-const SMSG_GOSSIP_MESSAGE: u16 = 0x017D;
-const SMSG_GOSSIP_COMPLETE: u16 = 0x017E;
-const CMSG_NPC_TEXT_QUERY: u32 = 0x017F;
-const SMSG_NPC_TEXT_UPDATE: u16 = 0x0180;
-const CMSG_LIST_INVENTORY: u32 = 0x019E;
-const SMSG_LIST_INVENTORY: u16 = 0x019F;
-const CMSG_SELL_ITEM: u32 = 0x01A0;
-const SMSG_SELL_ITEM: u16 = 0x01A1;
-const CMSG_BUY_ITEM: u32 = 0x01A2;
-const SMSG_BUY_ITEM: u16 = 0x01A4;
-const SMSG_BUY_FAILED: u16 = 0x01A5;
-const CMSG_QUERY_TIME: u32 = 0x01CE;
-const SMSG_QUERY_TIME_RESPONSE: u16 = 0x01CF;
-const CMSG_ZONEUPDATE: u32 = 0x01F4;
-const CMSG_REQUEST_ACCOUNT_DATA: u32 = 0x020A;
-const CMSG_UPDATE_ACCOUNT_DATA: u32 = 0x020B;
-const SMSG_UPDATE_ACCOUNT_DATA: u16 = 0x020C;
-const CMSG_GMTICKET_GETTICKET: u32 = 0x0211;
-const SMSG_GMTICKET_GETTICKET: u16 = 0x0212;
-const CMSG_SET_ACTIVE_MOVER: u32 = 0x026A;
-const CMSG_CANCEL_AUTO_REPEAT_SPELL: u32 = 0x026D;
-const MSG_QUERY_NEXT_MAIL_TIME: u32 = 0x0284;
-const CMSG_MEETINGSTONE_INFO: u32 = 0x0296;
-const CMSG_REQUEST_RAID_INFO: u32 = 0x02CD;
-const CMSG_MOVE_TIME_SKIPPED: u32 = 0x02CE;
-const CMSG_BATTLEFIELD_STATUS: u32 = 0x02D3;
-const SMSG_CHAR_ENUM: u16 = 0x003B;
-const SMSG_CHARACTER_LOGIN_FAILED: u16 = 0x0041;
-const SMSG_LOGIN_SETTIMESPEED: u16 = 0x0042;
-const SMSG_TUTORIAL_FLAGS: u16 = 0x00FD;
-const SMSG_UPDATE_OBJECT: u16 = 0x00A9;
-const SMSG_ACTION_BUTTONS: u16 = 0x0129;
-const SMSG_INITIAL_SPELLS: u16 = 0x012A;
-const SMSG_BINDPOINTUPDATE: u16 = 0x0155;
-const SMSG_ACCOUNT_DATA_TIMES: u16 = 0x0209;
-const SMSG_LOGIN_VERIFY_WORLD: u16 = 0x0236;
-const SMSG_INIT_WORLD_STATES: u16 = 0x02C2;
-const SMSG_AUTH_CHALLENGE: u16 = 0x01EC;
-const CMSG_AUTH_SESSION: u32 = 0x01ED;
-const SMSG_AUTH_RESPONSE: u16 = 0x01EE;
-const CMSG_PING: u32 = 0x01DC;
-const SMSG_PONG: u16 = 0x01DD;
-const AUTH_OK: u8 = 0x0C;
-const AUTH_FAILED: u8 = 0x0D;
-const AUTH_VERSION_MISMATCH: u8 = 0x14;
-const AUTH_UNKNOWN_ACCOUNT: u8 = 0x15;
-const CHAT_MSG_SAY: u32 = 0x00;
-const CHAT_MSG_YELL: u32 = 0x05;
-const CHAT_MSG_EMOTE: u32 = 0x08;
-const CHAT_TAG_NONE: u8 = 0;
-const TEXTEMOTE_DANCE: u32 = 34;
-const TEXTEMOTE_POINT: u32 = 72;
-const TEXTEMOTE_SLEEP: u32 = 87;
-const TEXTEMOTE_WAVE: u32 = 101;
-const EMOTE_ONESHOT_WAVE: u32 = 3;
-const EMOTE_STATE_DANCE: u32 = 10;
-const EMOTE_STATE_SLEEP: u32 = 12;
-const EMOTE_ONESHOT_POINT: u32 = 25;
-const WARRIOR_HEROIC_STRIKE_RANK_1: u32 = 78;
-const HUNTER_RAPTOR_STRIKE_RANK_1: u32 = 2973;
-const CHAR_CREATE_SUCCESS: u8 = 0x2E;
-const CHAR_CREATE_FAILED: u8 = 0x30;
-const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
-const CHAR_CREATE_SERVER_LIMIT: u8 = 0x34;
-const CHAR_DELETE_SUCCESS: u8 = 0x39;
-const CHAR_DELETE_FAILED: u8 = 0x3A;
-const CHAR_NAME_NO_NAME: u8 = 0x43;
-const CHAR_NAME_TOO_SHORT: u8 = 0x44;
-const CHAR_NAME_TOO_LONG: u8 = 0x45;
-const CHAR_NAME_INVALID_CHARACTER: u8 = 0x46;
-const CHAR_LOGIN_NO_CHARACTER: u8 = 0x05;
-
-const SERVER_SEED: u32 = 0xC0DEC0DE;
-const PLAYER_FLAGS_GHOST: u32 = 0x0000_0010;
-const PLAYER_FLAGS_HIDE_HELM: u32 = 0x0000_0400;
-const PLAYER_FLAGS_HIDE_CLOAK: u32 = 0x0000_0800;
-const CHARACTER_FLAG_HIDE_HELM: u32 = 0x0000_0400;
-const CHARACTER_FLAG_HIDE_CLOAK: u32 = 0x0000_0800;
-const CHARACTER_FLAG_GHOST: u32 = 0x0000_2000;
-const CHARACTER_FLAG_RENAME: u32 = 0x0000_4000;
-const AT_LOGIN_RENAME: u32 = 0x01;
-const AT_LOGIN_FIRST: u32 = 0x20;
-const ENUM_EQUIPMENT_SLOTS: usize = 20;
-const ACCOUNT_DATA_TYPES: usize = 8;
-const MD5_DIGEST_LEN: usize = 16;
-const MAX_ACTION_BUTTONS: usize = 120;
-const TYPEID_ITEM: u8 = 1;
-const TYPEID_CONTAINER: u8 = 2;
-const TYPEID_UNIT: u8 = 3;
-const TYPEID_PLAYER: u8 = 4;
-const TYPEMASK_OBJECT_ITEM: u32 = 0x0003;
-const TYPEMASK_OBJECT_CONTAINER: u32 = 0x0007;
-const TYPEMASK_OBJECT_UNIT: u32 = 0x0009;
-const TYPEMASK_OBJECT_UNIT_PLAYER: u32 = 0x0019;
-const UPDATE_TYPE_VALUES: u8 = 0;
-const UPDATE_TYPE_CREATE_OBJECT: u8 = 2;
-const UPDATE_TYPE_CREATE_OBJECT2: u8 = 3;
-const UPDATEFLAG_SELF: u8 = 0x01;
-const UPDATEFLAG_ALL: u8 = 0x10;
-const UPDATEFLAG_LIVING: u8 = 0x20;
-const UPDATEFLAG_HAS_POSITION: u8 = 0x40;
-const ITEM_END_FIELDS: usize = 0x30;
-const CONTAINER_FIELD_NUM_SLOTS: usize = ITEM_END_FIELDS;
-const CONTAINER_FIELD_SLOT_1: usize = ITEM_END_FIELDS + 0x02;
-const CONTAINER_END_FIELDS: usize = ITEM_END_FIELDS + 0x4A;
-const PLAYER_END_FIELDS: usize = 0x502;
-const MOVEFLAG_JUMPING: u32 = 0x0000_2000;
-const MOVEFLAG_SWIMMING: u32 = 0x0020_0000;
-const MOVEFLAG_ONTRANSPORT: u32 = 0x0200_0000;
-const MOVEFLAG_SPLINE_ELEVATION: u32 = 0x0400_0000;
-const REALM_ID: u32 = 1;
-const MAX_CHARACTERS_PER_REALM: u8 = 10;
-const FORM_BATTLESTANCE: u8 = 0x11;
-const EQUIPMENT_SLOT_END: u8 = 19;
-const EQUIPMENT_SLOT_MAINHAND: u8 = 15;
-const EQUIPMENT_SLOT_OFFHAND: u8 = 16;
-const EQUIPMENT_SLOT_RANGED: u8 = 17;
-const INVENTORY_SLOT_BAG_START: u8 = 19;
-const INVENTORY_SLOT_BAG_END: u8 = 23;
-const POWER_MANA: u8 = 0;
-const POWER_RAGE: u8 = 1;
-const POWER_FOCUS: u8 = 2;
-const POWER_ENERGY: u8 = 3;
-const POWER_HAPPINESS: u8 = 4;
-const POWER_RAGE_DEFAULT: u32 = 1000;
-const POWER_ENERGY_DEFAULT: u32 = 100;
-const BASE_ATTACK_TIME_MS: u32 = 2000;
-const MAX_SPELL_SCHOOL: usize = 7;
-const MAX_STATS: usize = 5;
-const ITEM_CLASS_WEAPON: u32 = 2;
-const ITEM_CLASS_ARMOR: u32 = 4;
-const INVTYPE_SHIELD: u32 = 14;
-const REPUTATION_LIST_SLOTS: usize = 64;
-const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
-const UNIT_FIELD_HEALTH: usize = 0x016;
-const UNIT_FIELD_POWER1: usize = 0x017;
-const UNIT_FIELD_POWER2: usize = 0x018;
-const UNIT_FIELD_POWER3: usize = 0x019;
-const UNIT_FIELD_POWER4: usize = 0x01A;
-const UNIT_FIELD_POWER5: usize = 0x01B;
-const UNIT_FIELD_MAXHEALTH: usize = 0x01C;
-const UNIT_FIELD_MAXPOWER1: usize = 0x01D;
-const UNIT_FIELD_MAXPOWER2: usize = 0x01E;
-const UNIT_FIELD_MAXPOWER3: usize = 0x01F;
-const UNIT_FIELD_MAXPOWER4: usize = 0x020;
-const UNIT_FIELD_MAXPOWER5: usize = 0x021;
-const UNIT_FIELD_LEVEL: usize = 0x022;
-const UNIT_FIELD_FACTIONTEMPLATE: usize = 0x023;
-const UNIT_FIELD_BYTES_0: usize = 0x024;
-const UNIT_FIELD_FLAGS: usize = 0x02E;
-const UNIT_FIELD_AURASTATE: usize = 0x07D;
-const UNIT_FIELD_BASEATTACKTIME: usize = 0x07E;
-const UNIT_FIELD_RANGEDATTACKTIME: usize = 0x080;
-const UNIT_FIELD_BOUNDINGRADIUS: usize = 0x081;
-const UNIT_FIELD_COMBATREACH: usize = 0x082;
-const UNIT_FIELD_DISPLAYID: usize = 0x083;
-const UNIT_FIELD_NATIVEDISPLAYID: usize = 0x084;
-const UNIT_FIELD_MOUNTDISPLAYID: usize = 0x085;
-const UNIT_FIELD_MINDAMAGE: usize = 0x086;
-const UNIT_FIELD_MAXDAMAGE: usize = 0x087;
-const UNIT_FIELD_MINOFFHANDDAMAGE: usize = 0x088;
-const UNIT_FIELD_MAXOFFHANDDAMAGE: usize = 0x089;
-const UNIT_FIELD_BYTES_1: usize = 0x08A;
-const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
-const UNIT_MOD_CAST_SPEED: usize = 0x091;
-const UNIT_NPC_FLAGS: usize = 0x093;
-const UNIT_NPC_EMOTESTATE: usize = 0x094;
-const UNIT_FIELD_STAT0: usize = 0x096;
-const UNIT_FIELD_RESISTANCES: usize = 0x09B;
-const UNIT_FIELD_BASE_MANA: usize = 0x0A2;
-const UNIT_FIELD_BASE_HEALTH: usize = 0x0A3;
-const UNIT_FIELD_BYTES_2: usize = 0x0A4;
-const UNIT_FIELD_ATTACK_POWER: usize = 0x0A5;
-const UNIT_FIELD_ATTACK_POWER_MODS: usize = 0x0A6;
-const UNIT_FIELD_ATTACK_POWER_MULTIPLIER: usize = 0x0A7;
-const UNIT_FIELD_RANGED_ATTACK_POWER: usize = 0x0A8;
-const UNIT_FIELD_RANGED_ATTACK_POWER_MODS: usize = 0x0A9;
-const UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER: usize = 0x0AA;
-const UNIT_FIELD_MINRANGEDDAMAGE: usize = 0x0AB;
-const UNIT_FIELD_MAXRANGEDDAMAGE: usize = 0x0AC;
-const UNIT_FIELD_POWER_COST_MODIFIER: usize = 0x0AD;
-const UNIT_FIELD_POWER_COST_MULTIPLIER: usize = 0x0B4;
-const PLAYER_FLAGS_FIELD: usize = 0x0BE;
-const PLAYER_BYTES: usize = 0x0C1;
-const PLAYER_BYTES_2: usize = 0x0C2;
-const PLAYER_BYTES_3: usize = 0x0C3;
-const PLAYER_FIELD_INV_SLOT_HEAD: usize = 0x1E6;
-const PLAYER_FIELD_PACK_SLOT_1: usize = 0x214;
-const PLAYER_XP: usize = 0x2CC;
-const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
-const PLAYER_SKILL_INFO_1_1: usize = 0x2CE;
-const PLAYER_MAX_SKILLS: usize = 128;
-const PLAYER_CHARACTER_POINTS1: usize = 0x44E;
-const PLAYER_CHARACTER_POINTS2: usize = 0x44F;
-const PLAYER_TRACK_CREATURES: usize = 0x450;
-const PLAYER_TRACK_RESOURCES: usize = 0x451;
-const PLAYER_BLOCK_PERCENTAGE: usize = 0x452;
-const PLAYER_DODGE_PERCENTAGE: usize = 0x453;
-const PLAYER_PARRY_PERCENTAGE: usize = 0x454;
-const PLAYER_CRIT_PERCENTAGE: usize = 0x455;
-const PLAYER_RANGED_CRIT_PERCENTAGE: usize = 0x456;
-const PLAYER_EXPLORED_ZONES_1: usize = 0x457;
-const PLAYER_EXPLORED_ZONES_SIZE: usize = 64;
-const PLAYER_REST_STATE_EXPERIENCE: usize = 0x497;
-const PLAYER_FIELD_COINAGE: usize = 0x498;
-const PLAYER_FIELD_POSSTAT0: usize = 0x499;
-const PLAYER_FIELD_NEGSTAT0: usize = 0x49E;
-const PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE: usize = 0x4A3;
-const PLAYER_FIELD_RESISTANCEBUFFMODSNEGATIVE: usize = 0x4AA;
-const PLAYER_FIELD_MOD_DAMAGE_DONE_POS: usize = 0x4B1;
-const PLAYER_FIELD_MOD_DAMAGE_DONE_NEG: usize = 0x4B8;
-const PLAYER_FIELD_MOD_DAMAGE_DONE_PCT: usize = 0x4BF;
-const PLAYER_FIELD_BYTES: usize = 0x4C6;
-const PLAYER_AMMO_ID: usize = 0x4C7;
-const PLAYER_SELF_RES_SPELL: usize = 0x4C8;
-const PLAYER_FIELD_PVP_MEDALS: usize = 0x4C9;
-const PLAYER_FIELD_BYTES2: usize = 0x4EC;
-const PLAYER_FIELD_WATCHED_FACTION_INDEX: usize = 0x4ED;
-const INVENTORY_SLOT_BAG_0: u8 = 0;
-const CLIENT_INVENTORY_SLOT_BAG_0: u8 = 255;
-const INVENTORY_SLOT_ITEM_START: u8 = 23;
-const INVENTORY_SLOT_ITEM_END: u8 = 39;
-const MAX_BAG_SIZE: u8 = 36;
-const ITEM_FLAG_NO_USER_DESTROY: u32 = 0x0000_0020;
-const EQUIP_ERR_CANT_DROP_SOULBOUND: u8 = 24;
-const EQUIP_ERR_COULDNT_SPLIT_ITEMS: u8 = 27;
-const BUY_ERR_NOT_ENOUGHT_MONEY: u8 = 2;
-const SELL_ERR_CANT_SELL_ITEM: u8 = 2;
-const SELL_ERR_CANT_FIND_VENDOR: u8 = 3;
-const UNIT_NPC_FLAG_GOSSIP: u32 = 0x0000_0001;
-const UNIT_NPC_FLAG_VENDOR: u32 = 0x0000_0004;
-const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
-const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
-const VICTIMSTATE_NORMAL: u32 = 1;
-const RUST_GUIDE_ENTRY: u32 = 900_001;
-const RUST_GUIDE_COUNTER: u32 = 1;
-const RUST_GUIDE_NAME: &str = "Rust Guide";
-const RUST_GUIDE_SUBNAME: &str = "Checkpoint 1";
-const RUST_GUIDE_DISPLAY_ID: u32 = 49;
-const RUST_GUIDE_FACTION_TEMPLATE: u32 = 35;
-const RUST_GUIDE_GOSSIP_TEXT_ID: u32 = 900_001;
-const RUST_GUIDE_GOSSIP_OPTION: &str = "Keep going.";
-const RUST_GUIDE_GOSSIP_TEXT: &str = "The Rust world stack is answering NPC gossip now.";
-const DB_VENDOR_GOSSIP_TEXT_ID: u32 = 900_010;
-const DB_VENDOR_GOSSIP_OPTION: &str = "Browse goods.";
-const DB_VENDOR_GOSSIP_TEXT: &str =
-    "The Rust world stack is answering DB-backed vendor gossip now.";
-const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
-const RUST_COMBAT_DUMMY_COUNTER: u32 = 2;
-const RUST_COMBAT_DUMMY_NAME: &str = "Rust Combat Dummy";
-const RUST_COMBAT_DUMMY_SUBNAME: &str = "Checkpoint 1";
-const RUST_COMBAT_DUMMY_DISPLAY_ID: u32 = 51;
-const RUST_COMBAT_DUMMY_FACTION_TEMPLATE: u32 = 14;
-const RUST_COMBAT_DUMMY_HEALTH: u32 = 30;
-const RUST_COMBAT_DUMMY_HIT_DAMAGE: u32 = 10;
-const RUST_COMBAT_SWING_MILLIS: u64 = 2_000;
-const CREATURE_SPAWN_RADIUS_YARDS: f32 = 220.0;
-const CREATURE_SPAWN_LIMIT: u32 = 128;
-const CREATURE_UPDATE_CHUNK_SIZE: usize = 32;
-const HEROIC_STRIKE_RAGE_COST: u32 = 150;
-const RUST_COMBAT_DUMMY_RAGE_GAIN: u32 = HEROIC_STRIKE_RAGE_COST;
-const PLAYER_SURVIVOR_HEALTH_FLOOR: u32 = 1;
-const HEROIC_STRIKE_FIXTURE_DAMAGE: u32 = 11;
-const RAPTOR_STRIKE_MANA_COST: u32 = 15;
-const RAPTOR_STRIKE_FIXTURE_DAMAGE: u32 = 12;
-const CLIENT_LOOT_CORPSE: u8 = 1;
-const LOOT_SLOT_NORMAL: u8 = 0;
-const RUST_COMBAT_DUMMY_LOOT_ITEM: u32 = 117;
-const RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT: u32 = 2;
-const RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY: u32 = 2473;
-const RUST_COMBAT_DUMMY_LOOT_MONEY: u32 = 7;
-const RUST_VENDOR_BAG_ITEM: u32 = 2102;
-const RUST_VENDOR_BAG_DISPLAY: u32 = 1816;
-const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
-const SPELL_CAST_TARGET_UNIT_ENEMY: u16 = 0x0080;
-const CAST_FLAG_SPELL_GO: u16 = 0x0100;
+include!("opcodes.rs");
+include!("session.rs");
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -382,14 +29,6 @@ pub struct WorldServer {
     character_db_pool: MySqlPool,
     world_db_pool: MySqlPool,
     runtime_state: WorldRuntimeState,
-}
-
-type OnlineCharacters = Arc<Mutex<HashSet<u32>>>;
-
-#[derive(Clone)]
-struct WorldRuntimeState {
-    online_characters: OnlineCharacters,
-    delete_options: CharacterDeleteOptions,
 }
 
 impl WorldServer {
@@ -598,6 +237,10 @@ async fn handle_client(
                         )
                         .await?;
                     }
+                    CMSG_QUEST_QUERY => {
+                        handle_quest_query(&mut stream, &world_db_pool, &body, &mut header_crypto)
+                            .await?;
+                    }
                     CMSG_MESSAGECHAT => {
                         handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
                             .await?;
@@ -624,8 +267,15 @@ async fn handle_client(
                         handle_text_emote(&mut stream, &body, &session, &mut header_crypto).await?;
                     }
                     CMSG_CAST_SPELL => {
-                        handle_cast_spell(&mut stream, &body, &mut session, &mut header_crypto)
-                            .await?;
+                        handle_cast_spell(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
                         handle_inventory_swap(
@@ -667,14 +317,83 @@ async fn handle_client(
                         );
                     }
                     CMSG_GOSSIP_HELLO => {
-                        handle_gossip_hello(&mut stream, &world_db_pool, &body, &mut header_crypto)
-                            .await?;
+                        handle_gossip_hello(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_GOSSIP_SELECT_OPTION => {
                         handle_gossip_select_option(
                             &mut stream,
+                            &character_db_pool,
                             &world_db_pool,
                             &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_STATUS_QUERY => {
+                        handle_questgiver_status_query(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_HELLO => {
+                        handle_questgiver_hello(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_QUERY_QUEST => {
+                        handle_questgiver_query_quest(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_ACCEPT_QUEST => {
+                        handle_questgiver_accept_quest(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_COMPLETE_QUEST | CMSG_QUESTGIVER_REQUEST_REWARD => {
+                        handle_questgiver_complete_quest(
+                            &mut stream,
+                            &world_db_pool,
+                            &body,
+                            &session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_QUESTGIVER_CHOOSE_REWARD => {
+                        handle_questgiver_choose_reward(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
                             &mut header_crypto,
                         )
                         .await?;
@@ -713,9 +432,38 @@ async fn handle_client(
                         )
                         .await?;
                     }
+                    CMSG_TRAINER_LIST => {
+                        handle_trainer_list(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
+                    CMSG_TRAINER_BUY_SPELL => {
+                        handle_trainer_buy_spell(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     CMSG_ATTACKSWING => {
-                        handle_attack_swing(&mut stream, &body, &mut session, &mut header_crypto)
-                            .await?;
+                        handle_attack_swing(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            &body,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
                     CMSG_ATTACKSTOP => {
                         handle_attack_stop(&mut stream, &mut session, &mut header_crypto).await?;
@@ -811,54 +559,17 @@ async fn handle_client(
                 return Ok(());
             }
             Err(_) => {
-                handle_combat_tick(&mut stream, &mut session, &mut header_crypto).await?;
+                handle_combat_tick(
+                    &mut stream,
+                    &character_db_pool,
+                    &world_db_pool,
+                    &mut session,
+                    &mut header_crypto,
+                )
+                .await?;
             }
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct WorldSessionState {
-    active_character: Option<ActiveCharacter>,
-    combat_dummy_health: u32,
-    active_combat_target: Option<ObjectGuid>,
-    combat_dummy_lootable: bool,
-    combat_dummy_looting: bool,
-    combat_dummy_loot_money_available: bool,
-    combat_dummy_loot_item_available: bool,
-    db_creatures: HashMap<u64, DbCreatureRuntime>,
-    player_health: u32,
-    player_rage: u32,
-    player_mana: u32,
-    active_spells: HashSet<u32>,
-    inventory: Vec<CharacterInventoryItem>,
-}
-
-#[derive(Debug, Clone)]
-struct DbCreatureRuntime {
-    spawn: CreatureSpawnQuery,
-    health: u32,
-    lootable: bool,
-    looting: bool,
-    loot_money_available: bool,
-    loot_item: Option<DbCreatureLootRuntime>,
-}
-
-#[derive(Debug, Clone)]
-struct DbCreatureLootRuntime {
-    item: u32,
-    count: u32,
-    display_id: u32,
-}
-
-#[derive(Debug)]
-struct ActiveCharacter {
-    guid: u32,
-    name: String,
-    position: WorldPosition,
-    movement_flags: u32,
-    client_time: u32,
-    fall_time: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1184,6 +895,10 @@ async fn handle_player_login(
     session.active_character = Some(ActiveCharacter {
         guid: character.guid,
         name: character.name.clone(),
+        race: character.race,
+        class: character.class,
+        level: character.level,
+        xp: character.xp,
         position: WorldPosition::new(
             character.map,
             character.position_x,
@@ -1219,6 +934,12 @@ async fn handle_player_login(
     session.player_mana = character.power1;
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
+    session.quest_statuses =
+        wow_db::get_character_quest_statuses(deps.character_db_pool, character.guid)
+            .await?
+            .into_iter()
+            .map(|status| (status.quest, status))
+            .collect();
     let world_stats = wow_db::get_player_world_stats(
         deps.world_db_pool,
         character.race,
@@ -1269,6 +990,7 @@ async fn handle_player_login(
             inventory: &session.inventory,
             world_stats: &world_stats,
             spells: &spells,
+            quest_statuses: &session.quest_statuses,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
         },

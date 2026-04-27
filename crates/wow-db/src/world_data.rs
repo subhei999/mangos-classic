@@ -31,8 +31,11 @@ pub struct CreatureTemplateQuery {
     pub max_loot_gold: u32,
     pub melee_base_attack_time: u32,
     pub ranged_base_attack_time: u32,
+    pub trainer_type: i8,
+    pub trainer_class: u8,
     pub pet_spell_data_id: u32,
     pub civilian: u8,
+    pub experience_multiplier: f32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -67,6 +70,76 @@ pub struct CreatureLootQuery {
     pub display_id: u32,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TrainerSpellQuery {
+    pub spell: u32,
+    pub learned_spell: u32,
+    pub spell_cost: u32,
+    pub req_skill: u32,
+    pub req_skill_value: u32,
+    pub req_level: u8,
+    pub req_ability1: Option<u32>,
+    pub req_ability2: Option<u32>,
+    pub req_ability3: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestTemplateQuery {
+    pub entry: u32,
+    pub method: u32,
+    pub zone_or_sort: i16,
+    pub quest_level: u32,
+    pub quest_type: u32,
+    pub rep_objective_faction: u32,
+    pub rep_objective_value: i32,
+    pub next_quest_in_chain: u32,
+    pub rew_or_req_money: i32,
+    pub rew_money_max_level: u32,
+    pub rew_spell: u32,
+    pub rew_spell_cast: u32,
+    pub src_item_id: u32,
+    pub quest_flags: u32,
+    pub title: String,
+    pub details: String,
+    pub objectives: String,
+    pub offer_reward_text: String,
+    pub request_items_text: String,
+    pub end_text: String,
+    pub req_creature_or_go_id: [i32; 4],
+    pub req_creature_or_go_count: [u32; 4],
+    pub req_item_id: [u32; 4],
+    pub req_item_count: [u32; 4],
+    pub rew_choice_item_id: [u32; 6],
+    pub rew_choice_item_count: [u32; 6],
+    pub rew_item_id: [u32; 4],
+    pub rew_item_count: [u32; 4],
+    pub point_map_id: u32,
+    pub point_x: f32,
+    pub point_y: f32,
+    pub point_opt: u32,
+    pub details_emote: [u32; 4],
+    pub details_emote_delay: [u32; 4],
+    pub complete_emote: u32,
+    pub complete_emote_delay: u32,
+    pub incomplete_emote: u32,
+    pub incomplete_emote_delay: u32,
+    pub offer_reward_emote: [u32; 4],
+    pub offer_reward_emote_delay: [u32; 4],
+    pub objective_text: [String; 4],
+}
+
+impl QuestTemplateQuery {
+    pub fn required_creature_index(&self, creature_entry: u32) -> Option<usize> {
+        self.req_creature_or_go_id
+            .iter()
+            .position(|entry| *entry > 0 && *entry as u32 == creature_entry)
+    }
+
+    pub fn required_creature_count(&self, index: usize) -> u32 {
+        self.req_creature_or_go_count[index]
+    }
+}
+
 pub async fn get_creature_template_query(
     pool: &MySqlPool,
     entry: u32,
@@ -84,7 +157,9 @@ pub async fn get_creature_template_query(
                 MinLootGold AS min_loot_gold, MaxLootGold AS max_loot_gold, \
                 MeleeBaseAttackTime AS melee_base_attack_time, \
                 RangedBaseAttackTime AS ranged_base_attack_time, \
-                PetSpellDataId AS pet_spell_data_id, Civilian AS civilian \
+                TrainerType AS trainer_type, TrainerClass AS trainer_class, \
+                PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
+                ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          WHERE Entry = ?",
     )
@@ -121,6 +196,129 @@ pub async fn get_creature_loot_items(
     Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
 }
 
+pub async fn get_quest_template_query(
+    pool: &MySqlPool,
+    quest: u32,
+) -> Result<Option<QuestTemplateQuery>, DbError> {
+    let row = sqlx::query_as::<_, QuestTemplateRow>(
+        "SELECT CAST(entry AS UNSIGNED) AS entry, CAST(Method AS UNSIGNED) AS method, \
+                ZoneOrSort AS zone_or_sort, \
+                CAST(QuestLevel AS UNSIGNED) AS quest_level, CAST(Type AS UNSIGNED) AS quest_type, \
+                CAST(RepObjectiveFaction AS UNSIGNED) AS rep_objective_faction, \
+                RepObjectiveValue AS rep_objective_value, \
+                CAST(NextQuestInChain AS UNSIGNED) AS next_quest_in_chain, \
+                RewOrReqMoney AS rew_or_req_money, RewMoneyMaxLevel AS rew_money_max_level, \
+                CAST(RewSpell AS UNSIGNED) AS rew_spell, CAST(RewSpellCast AS UNSIGNED) AS rew_spell_cast, \
+                CAST(SrcItemId AS UNSIGNED) AS src_item_id, CAST(QuestFlags AS UNSIGNED) AS quest_flags, \
+                COALESCE(Title, '') AS title, COALESCE(Details, '') AS details, \
+                COALESCE(Objectives, '') AS objectives, \
+                COALESCE(OfferRewardText, '') AS offer_reward_text, \
+                COALESCE(RequestItemsText, '') AS request_items_text, \
+                COALESCE(EndText, '') AS end_text, \
+                ReqCreatureOrGOId1 AS req_creature_or_go_id1, \
+                ReqCreatureOrGOId2 AS req_creature_or_go_id2, \
+                ReqCreatureOrGOId3 AS req_creature_or_go_id3, \
+                ReqCreatureOrGOId4 AS req_creature_or_go_id4, \
+                CAST(ReqCreatureOrGOCount1 AS UNSIGNED) AS req_creature_or_go_count1, \
+                CAST(ReqCreatureOrGOCount2 AS UNSIGNED) AS req_creature_or_go_count2, \
+                CAST(ReqCreatureOrGOCount3 AS UNSIGNED) AS req_creature_or_go_count3, \
+                CAST(ReqCreatureOrGOCount4 AS UNSIGNED) AS req_creature_or_go_count4, \
+                CAST(ReqItemId1 AS UNSIGNED) AS req_item_id1, CAST(ReqItemId2 AS UNSIGNED) AS req_item_id2, \
+                CAST(ReqItemId3 AS UNSIGNED) AS req_item_id3, CAST(ReqItemId4 AS UNSIGNED) AS req_item_id4, \
+                CAST(ReqItemCount1 AS UNSIGNED) AS req_item_count1, CAST(ReqItemCount2 AS UNSIGNED) AS req_item_count2, \
+                CAST(ReqItemCount3 AS UNSIGNED) AS req_item_count3, CAST(ReqItemCount4 AS UNSIGNED) AS req_item_count4, \
+                CAST(RewChoiceItemId1 AS UNSIGNED) AS rew_choice_item_id1, CAST(RewChoiceItemId2 AS UNSIGNED) AS rew_choice_item_id2, \
+                CAST(RewChoiceItemId3 AS UNSIGNED) AS rew_choice_item_id3, CAST(RewChoiceItemId4 AS UNSIGNED) AS rew_choice_item_id4, \
+                CAST(RewChoiceItemId5 AS UNSIGNED) AS rew_choice_item_id5, CAST(RewChoiceItemId6 AS UNSIGNED) AS rew_choice_item_id6, \
+                CAST(RewChoiceItemCount1 AS UNSIGNED) AS rew_choice_item_count1, CAST(RewChoiceItemCount2 AS UNSIGNED) AS rew_choice_item_count2, \
+                CAST(RewChoiceItemCount3 AS UNSIGNED) AS rew_choice_item_count3, CAST(RewChoiceItemCount4 AS UNSIGNED) AS rew_choice_item_count4, \
+                CAST(RewChoiceItemCount5 AS UNSIGNED) AS rew_choice_item_count5, CAST(RewChoiceItemCount6 AS UNSIGNED) AS rew_choice_item_count6, \
+                CAST(RewItemId1 AS UNSIGNED) AS rew_item_id1, CAST(RewItemId2 AS UNSIGNED) AS rew_item_id2, \
+                CAST(RewItemId3 AS UNSIGNED) AS rew_item_id3, CAST(RewItemId4 AS UNSIGNED) AS rew_item_id4, \
+                CAST(RewItemCount1 AS UNSIGNED) AS rew_item_count1, CAST(RewItemCount2 AS UNSIGNED) AS rew_item_count2, \
+                CAST(RewItemCount3 AS UNSIGNED) AS rew_item_count3, CAST(RewItemCount4 AS UNSIGNED) AS rew_item_count4, \
+                CAST(PointMapId AS UNSIGNED) AS point_map_id, PointX AS point_x, PointY AS point_y, \
+                CAST(PointOpt AS UNSIGNED) AS point_opt, CAST(DetailsEmote1 AS UNSIGNED) AS details_emote1, \
+                CAST(DetailsEmote2 AS UNSIGNED) AS details_emote2, CAST(DetailsEmote3 AS UNSIGNED) AS details_emote3, \
+                CAST(DetailsEmote4 AS UNSIGNED) AS details_emote4, CAST(DetailsEmoteDelay1 AS UNSIGNED) AS details_emote_delay1, \
+                CAST(DetailsEmoteDelay2 AS UNSIGNED) AS details_emote_delay2, CAST(DetailsEmoteDelay3 AS UNSIGNED) AS details_emote_delay3, \
+                CAST(DetailsEmoteDelay4 AS UNSIGNED) AS details_emote_delay4, CAST(CompleteEmote AS UNSIGNED) AS complete_emote, \
+                CAST(CompleteEmoteDelay AS UNSIGNED) AS complete_emote_delay, CAST(IncompleteEmote AS UNSIGNED) AS incomplete_emote, \
+                CAST(IncompleteEmoteDelay AS UNSIGNED) AS incomplete_emote_delay, CAST(OfferRewardEmote1 AS UNSIGNED) AS offer_reward_emote1, \
+                CAST(OfferRewardEmote2 AS UNSIGNED) AS offer_reward_emote2, CAST(OfferRewardEmote3 AS UNSIGNED) AS offer_reward_emote3, \
+                CAST(OfferRewardEmote4 AS UNSIGNED) AS offer_reward_emote4, CAST(OfferRewardEmoteDelay1 AS UNSIGNED) AS offer_reward_emote_delay1, \
+                CAST(OfferRewardEmoteDelay2 AS UNSIGNED) AS offer_reward_emote_delay2, CAST(OfferRewardEmoteDelay3 AS UNSIGNED) AS offer_reward_emote_delay3, \
+                CAST(OfferRewardEmoteDelay4 AS UNSIGNED) AS offer_reward_emote_delay4, \
+                COALESCE(ObjectiveText1, '') AS objective_text1, \
+                COALESCE(ObjectiveText2, '') AS objective_text2, \
+                COALESCE(ObjectiveText3, '') AS objective_text3, \
+                COALESCE(ObjectiveText4, '') AS objective_text4 \
+         FROM quest_template \
+         WHERE entry = ?",
+    )
+    .bind(quest)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(QuestTemplateRow::into_query))
+}
+
+pub async fn get_creature_start_quests(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let quest_ids: Vec<u32> =
+        sqlx::query_scalar("SELECT quest FROM creature_questrelation WHERE id = ? ORDER BY quest")
+            .bind(creature_entry)
+            .fetch_all(pool)
+            .await?;
+    let mut quests = Vec::new();
+    for quest in quest_ids {
+        if let Some(template) = get_quest_template_query(pool, quest).await? {
+            quests.push(template);
+        }
+    }
+    Ok(quests)
+}
+
+pub async fn creature_starts_quest(
+    pool: &MySqlPool,
+    creature_entry: u32,
+    quest: u32,
+) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM creature_questrelation WHERE id = ? AND quest = ?",
+    )
+    .bind(creature_entry)
+    .bind(quest)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn creature_completes_quest(
+    pool: &MySqlPool,
+    creature_entry: u32,
+    quest: u32,
+) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM creature_involvedrelation WHERE id = ? AND quest = ?",
+    )
+    .bind(creature_entry)
+    .bind(quest)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn get_item_display_id(pool: &MySqlPool, item: u32) -> Result<Option<u32>, DbError> {
+    sqlx::query_scalar("SELECT displayid FROM item_template WHERE entry = ?")
+        .bind(item)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_vendor_items(
     pool: &MySqlPool,
     creature_entry: u32,
@@ -145,6 +343,45 @@ pub async fn get_vendor_items(
     .await?;
 
     Ok(rows.into_iter().map(VendorItemRow::into_query).collect())
+}
+
+pub async fn get_trainer_spells(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Vec<TrainerSpellQuery>, DbError> {
+    let rows = sqlx::query_as::<_, TrainerSpellQuery>(
+        "SELECT npc_trainer.spell, \
+                CAST(COALESCE( \
+                    CASE \
+                        WHEN spell_template.Effect1 = 36 \
+                         AND spell_template.EffectTriggerSpell1 <> 0 \
+                         AND spell_template.EffectImplicitTargetA1 IN (0, 1) \
+                            THEN spell_template.EffectTriggerSpell1 \
+                        WHEN spell_template.Effect2 = 36 \
+                         AND spell_template.EffectTriggerSpell2 <> 0 \
+                         AND spell_template.EffectImplicitTargetA2 IN (0, 1) \
+                            THEN spell_template.EffectTriggerSpell2 \
+                        WHEN spell_template.Effect3 = 36 \
+                         AND spell_template.EffectTriggerSpell3 <> 0 \
+                         AND spell_template.EffectImplicitTargetA3 IN (0, 1) \
+                            THEN spell_template.EffectTriggerSpell3 \
+                        ELSE npc_trainer.spell \
+                    END, npc_trainer.spell) AS UNSIGNED) AS learned_spell, \
+                spellcost AS spell_cost, \
+                reqskill AS req_skill, reqskillvalue AS req_skill_value, \
+                reqlevel AS req_level, ReqAbility1 AS req_ability1, \
+                ReqAbility2 AS req_ability2, ReqAbility3 AS req_ability3 \
+         FROM npc_trainer \
+         LEFT JOIN spell_template ON spell_template.Id = npc_trainer.spell \
+         WHERE entry = ? AND condition_id = 0 \
+         ORDER BY reqlevel, spell \
+         LIMIT 128",
+    )
+    .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
 }
 
 pub async fn get_nearby_creature_spawns(
@@ -184,8 +421,11 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.MaxLootGold AS template_max_loot_gold, \
                 creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
+                creature_template.TrainerType AS template_trainer_type, \
+                creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
-                creature_template.Civilian AS template_civilian \
+                creature_template.Civilian AS template_civilian, \
+                creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
          WHERE creature.map = ? \
@@ -230,6 +470,211 @@ struct CreatureLootRow {
     min_count: u32,
     max_count: u32,
     display_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct QuestTemplateRow {
+    entry: u32,
+    method: u32,
+    zone_or_sort: i16,
+    quest_level: u32,
+    quest_type: u32,
+    rep_objective_faction: u32,
+    rep_objective_value: i32,
+    next_quest_in_chain: u32,
+    rew_or_req_money: i32,
+    rew_money_max_level: u32,
+    rew_spell: u32,
+    rew_spell_cast: u32,
+    src_item_id: u32,
+    quest_flags: u32,
+    title: String,
+    details: String,
+    objectives: String,
+    offer_reward_text: String,
+    request_items_text: String,
+    end_text: String,
+    req_creature_or_go_id1: i32,
+    req_creature_or_go_id2: i32,
+    req_creature_or_go_id3: i32,
+    req_creature_or_go_id4: i32,
+    req_creature_or_go_count1: u32,
+    req_creature_or_go_count2: u32,
+    req_creature_or_go_count3: u32,
+    req_creature_or_go_count4: u32,
+    req_item_id1: u32,
+    req_item_id2: u32,
+    req_item_id3: u32,
+    req_item_id4: u32,
+    req_item_count1: u32,
+    req_item_count2: u32,
+    req_item_count3: u32,
+    req_item_count4: u32,
+    rew_choice_item_id1: u32,
+    rew_choice_item_id2: u32,
+    rew_choice_item_id3: u32,
+    rew_choice_item_id4: u32,
+    rew_choice_item_id5: u32,
+    rew_choice_item_id6: u32,
+    rew_choice_item_count1: u32,
+    rew_choice_item_count2: u32,
+    rew_choice_item_count3: u32,
+    rew_choice_item_count4: u32,
+    rew_choice_item_count5: u32,
+    rew_choice_item_count6: u32,
+    rew_item_id1: u32,
+    rew_item_id2: u32,
+    rew_item_id3: u32,
+    rew_item_id4: u32,
+    rew_item_count1: u32,
+    rew_item_count2: u32,
+    rew_item_count3: u32,
+    rew_item_count4: u32,
+    point_map_id: u32,
+    point_x: f32,
+    point_y: f32,
+    point_opt: u32,
+    details_emote1: u32,
+    details_emote2: u32,
+    details_emote3: u32,
+    details_emote4: u32,
+    details_emote_delay1: u32,
+    details_emote_delay2: u32,
+    details_emote_delay3: u32,
+    details_emote_delay4: u32,
+    complete_emote: u32,
+    complete_emote_delay: u32,
+    incomplete_emote: u32,
+    incomplete_emote_delay: u32,
+    offer_reward_emote1: u32,
+    offer_reward_emote2: u32,
+    offer_reward_emote3: u32,
+    offer_reward_emote4: u32,
+    offer_reward_emote_delay1: u32,
+    offer_reward_emote_delay2: u32,
+    offer_reward_emote_delay3: u32,
+    offer_reward_emote_delay4: u32,
+    objective_text1: String,
+    objective_text2: String,
+    objective_text3: String,
+    objective_text4: String,
+}
+
+impl QuestTemplateRow {
+    fn into_query(self) -> QuestTemplateQuery {
+        QuestTemplateQuery {
+            entry: self.entry,
+            method: self.method,
+            zone_or_sort: self.zone_or_sort,
+            quest_level: self.quest_level,
+            quest_type: self.quest_type,
+            rep_objective_faction: self.rep_objective_faction,
+            rep_objective_value: self.rep_objective_value,
+            next_quest_in_chain: self.next_quest_in_chain,
+            rew_or_req_money: self.rew_or_req_money,
+            rew_money_max_level: self.rew_money_max_level,
+            rew_spell: self.rew_spell,
+            rew_spell_cast: self.rew_spell_cast,
+            src_item_id: self.src_item_id,
+            quest_flags: self.quest_flags,
+            title: self.title,
+            details: self.details,
+            objectives: self.objectives,
+            offer_reward_text: self.offer_reward_text,
+            request_items_text: self.request_items_text,
+            end_text: self.end_text,
+            req_creature_or_go_id: [
+                self.req_creature_or_go_id1,
+                self.req_creature_or_go_id2,
+                self.req_creature_or_go_id3,
+                self.req_creature_or_go_id4,
+            ],
+            req_creature_or_go_count: [
+                self.req_creature_or_go_count1,
+                self.req_creature_or_go_count2,
+                self.req_creature_or_go_count3,
+                self.req_creature_or_go_count4,
+            ],
+            req_item_id: [
+                self.req_item_id1,
+                self.req_item_id2,
+                self.req_item_id3,
+                self.req_item_id4,
+            ],
+            req_item_count: [
+                self.req_item_count1,
+                self.req_item_count2,
+                self.req_item_count3,
+                self.req_item_count4,
+            ],
+            rew_choice_item_id: [
+                self.rew_choice_item_id1,
+                self.rew_choice_item_id2,
+                self.rew_choice_item_id3,
+                self.rew_choice_item_id4,
+                self.rew_choice_item_id5,
+                self.rew_choice_item_id6,
+            ],
+            rew_choice_item_count: [
+                self.rew_choice_item_count1,
+                self.rew_choice_item_count2,
+                self.rew_choice_item_count3,
+                self.rew_choice_item_count4,
+                self.rew_choice_item_count5,
+                self.rew_choice_item_count6,
+            ],
+            rew_item_id: [
+                self.rew_item_id1,
+                self.rew_item_id2,
+                self.rew_item_id3,
+                self.rew_item_id4,
+            ],
+            rew_item_count: [
+                self.rew_item_count1,
+                self.rew_item_count2,
+                self.rew_item_count3,
+                self.rew_item_count4,
+            ],
+            point_map_id: self.point_map_id,
+            point_x: self.point_x,
+            point_y: self.point_y,
+            point_opt: self.point_opt,
+            details_emote: [
+                self.details_emote1,
+                self.details_emote2,
+                self.details_emote3,
+                self.details_emote4,
+            ],
+            details_emote_delay: [
+                self.details_emote_delay1,
+                self.details_emote_delay2,
+                self.details_emote_delay3,
+                self.details_emote_delay4,
+            ],
+            complete_emote: self.complete_emote,
+            complete_emote_delay: self.complete_emote_delay,
+            incomplete_emote: self.incomplete_emote,
+            incomplete_emote_delay: self.incomplete_emote_delay,
+            offer_reward_emote: [
+                self.offer_reward_emote1,
+                self.offer_reward_emote2,
+                self.offer_reward_emote3,
+                self.offer_reward_emote4,
+            ],
+            offer_reward_emote_delay: [
+                self.offer_reward_emote_delay1,
+                self.offer_reward_emote_delay2,
+                self.offer_reward_emote_delay3,
+                self.offer_reward_emote_delay4,
+            ],
+            objective_text: [
+                self.objective_text1,
+                self.objective_text2,
+                self.objective_text3,
+                self.objective_text4,
+            ],
+        }
+    }
 }
 
 impl CreatureLootRow {
@@ -292,8 +737,11 @@ struct CreatureSpawnRow {
     template_max_loot_gold: u32,
     template_melee_base_attack_time: u32,
     template_ranged_base_attack_time: u32,
+    template_trainer_type: i8,
+    template_trainer_class: u8,
     template_pet_spell_data_id: u32,
     template_civilian: u8,
+    template_experience_multiplier: f32,
 }
 
 impl CreatureSpawnRow {
@@ -332,8 +780,11 @@ impl CreatureSpawnRow {
                 max_loot_gold: self.template_max_loot_gold,
                 melee_base_attack_time: self.template_melee_base_attack_time,
                 ranged_base_attack_time: self.template_ranged_base_attack_time,
+                trainer_type: self.template_trainer_type,
+                trainer_class: self.template_trainer_class,
                 pet_spell_data_id: self.template_pet_spell_data_id,
                 civilian: self.template_civilian,
+                experience_multiplier: self.template_experience_multiplier,
             },
         }
     }

@@ -90,6 +90,7 @@ fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
         player_bytes: 0x0403_0201,
         player_bytes2: 5,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -216,8 +217,11 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         max_loot_gold: 4,
         melee_base_attack_time: 1800,
         ranged_base_attack_time: 2200,
+        trainer_type: 0,
+        trainer_class: 0,
         pet_spell_data_id: 0,
         civilian: 0,
+        experience_multiplier: 1.0,
     }
 }
 
@@ -750,6 +754,128 @@ fn player_health_update_sets_health_field() {
 }
 
 #[test]
+fn creature_xp_reward_matches_cmangos_base_gain_for_starter_levels() {
+    let mut wolf = test_creature_template(6);
+    wolf.min_level = 1;
+    wolf.rank = 0;
+    wolf.creature_type = 1;
+    wolf.experience_multiplier = 1.0;
+
+    assert_eq!(creature_xp_reward(1, &wolf), 50);
+
+    wolf.min_level = 2;
+    assert_eq!(creature_xp_reward(1, &wolf), 52);
+
+    wolf.experience_multiplier = 2.0;
+    assert_eq!(creature_xp_reward(1, &wolf), 105);
+
+    wolf.creature_type = CREATURE_TYPE_CRITTER;
+    assert_eq!(creature_xp_reward(1, &wolf), 0);
+}
+
+#[test]
+fn quest_xp_reward_uses_cmangos_rew_money_max_level_formula() {
+    let mut quest = QuestTemplateQuery {
+        entry: 7,
+        method: 2,
+        zone_or_sort: 12,
+        quest_level: 1,
+        quest_type: 0,
+        rep_objective_faction: 0,
+        rep_objective_value: 0,
+        next_quest_in_chain: 0,
+        rew_or_req_money: 0,
+        rew_money_max_level: 210,
+        rew_spell: 0,
+        rew_spell_cast: 0,
+        src_item_id: 0,
+        quest_flags: 0,
+        title: String::new(),
+        details: String::new(),
+        objectives: String::new(),
+        offer_reward_text: String::new(),
+        request_items_text: String::new(),
+        end_text: String::new(),
+        req_creature_or_go_id: [0; 4],
+        req_creature_or_go_count: [0; 4],
+        req_item_id: [0; 4],
+        req_item_count: [0; 4],
+        rew_choice_item_id: [0; 6],
+        rew_choice_item_count: [0; 6],
+        rew_item_id: [0; 4],
+        rew_item_count: [0; 4],
+        point_map_id: 0,
+        point_x: 0.0,
+        point_y: 0.0,
+        point_opt: 0,
+        details_emote: [0; 4],
+        details_emote_delay: [0; 4],
+        complete_emote: 0,
+        complete_emote_delay: 0,
+        incomplete_emote: 0,
+        incomplete_emote_delay: 0,
+        offer_reward_emote: [0; 4],
+        offer_reward_emote_delay: [0; 4],
+        objective_text: Default::default(),
+    };
+
+    assert_eq!(quest_xp_reward(1, &quest), 350);
+
+    quest.quest_level = 1;
+    assert_eq!(quest_xp_reward(10, &quest), 70);
+}
+
+#[test]
+fn xp_gain_packets_match_vanilla_shapes() {
+    let source = ObjectGuid::new(HighGuid::Unit, 6, 44);
+    let kill = build_log_xp_gain_body(Some(source), 52);
+    assert_eq!(&kill[0..8], &source.raw().to_le_bytes());
+    assert_eq!(&kill[8..12], &52u32.to_le_bytes());
+    assert_eq!(kill[12], 0);
+    assert_eq!(&kill[13..17], &52u32.to_le_bytes());
+    assert_eq!(&kill[17..21], &1.0f32.to_le_bytes());
+
+    let quest = build_log_xp_gain_body(None, 350);
+    assert_eq!(&quest[0..8], &0u64.to_le_bytes());
+    assert_eq!(&quest[8..12], &350u32.to_le_bytes());
+    assert_eq!(quest[12], 1);
+    assert_eq!(quest.len(), 13);
+}
+
+#[test]
+fn progression_update_sets_level_xp_vitals_and_stats() {
+    let stats = PlayerWorldStats {
+        base_health: 29,
+        base_mana: 0,
+        stats: [24, 21, 23, 20, 21],
+        next_level_xp: 900,
+    };
+    let body = build_player_progression_update_body(PlayerProgressionUpdate {
+        character_guid: 7,
+        level: 2,
+        xp: 2,
+        health: stats.max_health(),
+        power1: 0,
+        power2: POWER_RAGE_DEFAULT,
+        power3: 0,
+        power4: 0,
+        power5: 0,
+        world_stats: &stats,
+    })
+    .unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_LEVEL], Some(2));
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(stats.max_health()));
+    assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(stats.max_health()));
+    assert_eq!(values[UNIT_FIELD_STAT0], Some(24));
+    assert_eq!(values[PLAYER_XP], Some(2));
+    assert_eq!(values[PLAYER_NEXT_LEVEL_XP], Some(900));
+}
+
+#[test]
 fn db_creature_retaliation_reduces_player_health_but_keeps_survivor_floor() {
     let mut session = WorldSessionState {
         player_health: 5,
@@ -878,6 +1004,143 @@ fn db_vendor_inventory_uses_cmangos_list_shape() {
 }
 
 #[test]
+fn trainer_list_uses_cmangos_spell_row_shape() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 951, 44);
+    let spells = [
+        TrainerListSpell {
+            spell: 772,
+            learned_spell: 772,
+            state: TRAINER_SPELL_GREEN,
+            cost: 10,
+            req_level: 4,
+            req_skill: 0,
+            req_skill_value: 0,
+            req_ability: [78, 0, 0],
+        },
+        TrainerListSpell {
+            spell: 6546,
+            learned_spell: 6546,
+            state: TRAINER_SPELL_RED,
+            cost: 100,
+            req_level: 10,
+            req_skill: 0,
+            req_skill_value: 0,
+            req_ability: [772, 0, 0],
+        },
+    ];
+    let body = build_trainer_list_body(guid, 0, &spells, "Train well.");
+
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &0u32.to_le_bytes());
+    assert_eq!(&body[12..16], &2u32.to_le_bytes());
+    assert_eq!(&body[16..20], &772u32.to_le_bytes());
+    assert_eq!(body[20], TRAINER_SPELL_GREEN);
+    assert_eq!(&body[21..25], &10u32.to_le_bytes());
+    assert_eq!(body[33], 4);
+    assert_eq!(&body[34..38], &0u32.to_le_bytes());
+    assert_eq!(&body[38..42], &0u32.to_le_bytes());
+    assert_eq!(&body[42..46], &78u32.to_le_bytes());
+    let second = 16 + 38;
+    assert_eq!(&body[second..second + 4], &6546u32.to_le_bytes());
+    assert_eq!(body[second + 4], TRAINER_SPELL_RED);
+    assert_eq!(&body[body.len() - 12..], b"Train well.\0");
+}
+
+#[test]
+fn trainer_spell_state_marks_known_level_and_requirement_gates() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 4,
+        xp: 0,
+        position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let known = [wow_db::CharacterSpell {
+        spell: 78,
+        active: 1,
+        disabled: 0,
+    }];
+    let available = wow_db::TrainerSpellQuery {
+        spell: 772,
+        learned_spell: 772,
+        spell_cost: 10,
+        req_skill: 0,
+        req_skill_value: 0,
+        req_level: 4,
+        req_ability1: Some(78),
+        req_ability2: None,
+        req_ability3: None,
+    };
+    let too_high = wow_db::TrainerSpellQuery {
+        req_level: 5,
+        ..available.clone()
+    };
+    let known_spell = wow_db::TrainerSpellQuery {
+        spell: 78,
+        learned_spell: 78,
+        ..available.clone()
+    };
+    let known_trainer_cast = wow_db::TrainerSpellQuery {
+        spell: 6674,
+        learned_spell: 6673,
+        ..available.clone()
+    };
+
+    assert_eq!(
+        TrainerListSpell::from_query(&available, &character, &known).state,
+        TRAINER_SPELL_GREEN
+    );
+    assert_eq!(
+        TrainerListSpell::from_query(&too_high, &character, &known).state,
+        TRAINER_SPELL_RED
+    );
+    assert_eq!(
+        TrainerListSpell::from_query(&known_spell, &character, &known).state,
+        TRAINER_SPELL_GRAY
+    );
+    assert_eq!(
+        TrainerListSpell::from_query(
+            &known_trainer_cast,
+            &character,
+            &[wow_db::CharacterSpell {
+                spell: 6673,
+                active: 1,
+                disabled: 0,
+            }]
+        )
+        .state,
+        TRAINER_SPELL_GRAY
+    );
+}
+
+#[test]
+fn trainer_buy_packets_match_vanilla_shapes() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 951, 44);
+    let mut request = Vec::new();
+    request.extend_from_slice(&guid.raw().to_le_bytes());
+    request.extend_from_slice(&772u32.to_le_bytes());
+    let parsed = TrainerBuySpellRequest::read(&request).unwrap();
+    assert_eq!(parsed.trainer_guid, guid);
+    assert_eq!(parsed.spell, 772);
+
+    let success = build_trainer_buy_succeeded_body(guid, 772);
+    assert_eq!(success.len(), 12);
+    assert_eq!(&success[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&success[8..12], &772u32.to_le_bytes());
+    let failed = build_trainer_buy_failed_body(guid, 772, 2);
+    assert_eq!(failed.len(), 16);
+    assert_eq!(&failed[12..16], &2u32.to_le_bytes());
+    let learned = build_learned_spell_body(6673);
+    assert_eq!(learned.len(), 4);
+    assert_eq!(&learned, &6673u32.to_le_bytes());
+}
+
+#[test]
 fn empty_vendor_inventory_marks_no_inventory() {
     let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
     let body = build_vendor_inventory_body(guid, &[]);
@@ -985,6 +1248,7 @@ fn serializes_character_enum_entry() {
         player_bytes: 0x0403_0201,
         player_bytes2: 0x0000_0005,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -1039,6 +1303,7 @@ fn login_verify_world_packet_shape() {
         player_bytes: 0,
         player_bytes2: 0,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -1136,6 +1401,7 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
         player_bytes: 0,
         player_bytes2: 0,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -1201,6 +1467,7 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
         &[],
         &world_stats,
         &skills,
+        &std::collections::HashMap::new(),
         &equipped,
     )
     .unwrap();
@@ -1309,6 +1576,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &[],
         &mage_stats,
         &[],
+        &std::collections::HashMap::new(),
         &[],
     )
     .unwrap();
@@ -1332,6 +1600,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &[],
         &rogue_stats,
         &[],
+        &std::collections::HashMap::new(),
         &[],
     )
     .unwrap();
@@ -2024,6 +2293,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         player_bytes: 0,
         player_bytes2: 0,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -2107,6 +2377,7 @@ fn maps_classic_race_gender_display_ids() {
         player_bytes: 0,
         player_bytes2: 0,
         level: 1,
+        xp: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -2178,6 +2449,7 @@ fn maps_classic_race_gender_display_ids() {
                     next_level_xp: 400,
                 },
                 &[],
+                &std::collections::HashMap::new(),
                 &[],
             )
             .unwrap();
@@ -2280,6 +2552,10 @@ fn message_chat_body_matches_cmangos_say_shape() {
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
         position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
         movement_flags: 0,
         client_time: 0,
@@ -2422,6 +2698,10 @@ fn text_emote_body_matches_cmangos_empty_target_shape() {
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
         position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
         movement_flags: 0,
         client_time: 0,
@@ -2462,6 +2742,10 @@ fn emote_animation_body_matches_cmangos_command_shape() {
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
         position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
         movement_flags: 0,
         client_time: 0,
@@ -2479,6 +2763,10 @@ fn emote_state_update_sets_unit_emote_state() {
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
         position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
         movement_flags: 0,
         client_time: 0,

@@ -1,0 +1,324 @@
+pub async fn update_character_position(
+    pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+    position: WorldPosition,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE characters \
+         SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ? \
+         WHERE guid = ? AND account = ?",
+    )
+    .bind(position.map_id)
+    .bind(position.x)
+    .bind(position.y)
+    .bind(position.z)
+    .bind(position.orientation)
+    .bind(guid)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn mark_character_first_login_seen(
+    pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE characters SET cinematic = 1, at_login = at_login & ? \
+         WHERE guid = ? AND account = ?",
+    )
+    .bind(u32::MAX ^ AT_LOGIN_FIRST)
+    .bind(guid)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn get_tutorial_flags(pool: &MySqlPool, account_id: u32) -> Result<[u32; 8], DbError> {
+    let Some(row) = sqlx::query(
+        "SELECT tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7 \
+         FROM character_tutorial WHERE account = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok([0; 8]);
+    };
+
+    Ok([
+        row.try_get("tut0")?,
+        row.try_get("tut1")?,
+        row.try_get("tut2")?,
+        row.try_get("tut3")?,
+        row.try_get("tut4")?,
+        row.try_get("tut5")?,
+        row.try_get("tut6")?,
+        row.try_get("tut7")?,
+    ])
+}
+
+pub async fn save_tutorial_flags(
+    pool: &MySqlPool,
+    account_id: u32,
+    tutorials: [u32; 8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO character_tutorial \
+         (account, tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE \
+         tut0 = VALUES(tut0), tut1 = VALUES(tut1), tut2 = VALUES(tut2), \
+         tut3 = VALUES(tut3), tut4 = VALUES(tut4), tut5 = VALUES(tut5), \
+         tut6 = VALUES(tut6), tut7 = VALUES(tut7)",
+    )
+    .bind(account_id)
+    .bind(tutorials[0])
+    .bind(tutorials[1])
+    .bind(tutorials[2])
+    .bind(tutorials[3])
+    .bind(tutorials[4])
+    .bind(tutorials[5])
+    .bind(tutorials[6])
+    .bind(tutorials[7])
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_character_spells(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterSpell>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterSpell>(
+        "SELECT spell, active, disabled FROM character_spell WHERE guid = ? ORDER BY spell",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn learn_character_spell(
+    pool: &MySqlPool,
+    guid: u32,
+    spell: u32,
+    cost: u32,
+) -> Result<Option<u32>, DbError> {
+    let mut tx = pool.begin().await?;
+    let known: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM character_spell WHERE guid = ? AND spell = ?")
+            .bind(guid)
+            .bind(spell)
+            .fetch_one(&mut *tx)
+            .await?;
+    if known > 0 {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let current_money: u32 = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(&mut *tx)
+        .await?;
+    if current_money < cost {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let new_money = current_money - cost;
+    if cost > 0 {
+        sqlx::query("UPDATE characters SET money = ? WHERE guid = ?")
+            .bind(new_money)
+            .bind(guid)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO character_spell (guid, spell, active, disabled) VALUES (?, ?, 1, 0)",
+    )
+    .bind(guid)
+    .bind(spell)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Some(new_money))
+}
+
+pub async fn get_character_actions(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterAction>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterAction>(
+        "SELECT button, action, type FROM character_action WHERE guid = ? ORDER BY button",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_skills(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterSkill>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterSkill>(
+        "SELECT skill, value, max FROM character_skills WHERE guid = ? ORDER BY skill",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_quest_statuses(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterQuestStatus>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterQuestStatus>(
+        "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
+         FROM character_queststatus \
+         WHERE guid = ? \
+         ORDER BY quest",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_quest_status(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+) -> Result<Option<CharacterQuestStatus>, DbError> {
+    let row = sqlx::query_as::<_, CharacterQuestStatus>(
+        "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
+         FROM character_queststatus \
+         WHERE guid = ? AND quest = ?",
+    )
+    .bind(guid)
+    .bind(quest)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+pub async fn accept_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+) -> Result<CharacterQuestStatus, DbError> {
+    sqlx::query(
+        "INSERT IGNORE INTO character_queststatus \
+         (guid, quest, status, rewarded, explored, timer, mobcount1, mobcount2, mobcount3, mobcount4, \
+          itemcount1, itemcount2, itemcount3, itemcount4) \
+         VALUES (?, ?, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+    )
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?;
+
+    Ok(get_character_quest_status(pool, guid, quest)
+        .await?
+        .expect("accepted quest row must exist"))
+}
+
+pub async fn update_character_quest_mob_count(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+    objective_index: usize,
+    count: u32,
+    complete: bool,
+) -> Result<CharacterQuestStatus, DbError> {
+    let status = if complete { 1 } else { 3 };
+    let column = match objective_index {
+        0 => "mobcount1",
+        1 => "mobcount2",
+        2 => "mobcount3",
+        3 => "mobcount4",
+        _ => "mobcount1",
+    };
+    sqlx::query(&format!(
+        "UPDATE character_queststatus SET {column} = ?, status = ? \
+         WHERE guid = ? AND quest = ? AND rewarded = 0"
+    ))
+    .bind(count)
+    .bind(status)
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?;
+
+    Ok(get_character_quest_status(pool, guid, quest)
+        .await?
+        .expect("updated quest row must exist"))
+}
+
+pub async fn reward_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+    money: u32,
+) -> Result<Option<u32>, DbError> {
+    let mut tx = pool.begin().await?;
+    let changed = sqlx::query(
+        "UPDATE character_queststatus \
+         SET status = 1, rewarded = 1 \
+         WHERE guid = ? AND quest = ? AND status = 1 AND rewarded = 0",
+    )
+    .bind(guid)
+    .bind(quest)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    if changed == 0 {
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let current_money: u32 = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(&mut *tx)
+        .await?;
+    let new_money = current_money.saturating_add(money);
+    sqlx::query("UPDATE characters SET money = ? WHERE guid = ?")
+        .bind(new_money)
+        .bind(guid)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Some(new_money))
+}
+
+pub async fn get_character_reputations(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterReputation>, DbError> {
+    let rows = sqlx::query_as::<_, CharacterReputation>(
+        "SELECT faction, standing, flags FROM character_reputation WHERE guid = ? ORDER BY faction",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+

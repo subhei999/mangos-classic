@@ -18,6 +18,18 @@ Then run:
 git status --short --branch
 ```
 
+Performance reminder for every slice:
+
+- While reading CMaNGOS parity paths, keep an audit eye out for large,
+  behavior-preserving performance opportunities that would matter with
+  thousands of bots or players online.
+- Compare the algorithm, data ownership, query pattern, scheduling model, and
+  cache behavior CMaNGOS uses against what Rust can do safely and measurably
+  better.
+- Do not guess or optimize speculatively during parity work. If uncertain,
+  implement the CMaNGOS behavior first, then log the optimization as a future
+  P4/performance follow-up with evidence and a suggested measurement.
+
 If the task involves Rust code, run the baseline test script before and after
 changes when practical:
 

@@ -2,7 +2,8 @@ param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
     [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
-    [switch]$ResetWorldDatabase
+    [switch]$ResetWorldDatabase,
+    [switch]$ResetCharacters
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,7 +141,9 @@ if ($WorldSqlPath) {
 $sql = "UPDATE realmlist SET address='127.0.0.1', port=$WorldPort WHERE id=1;"
 Invoke-Checked docker @("exec", "cmangos-rust-realmd", "mariadb", "-umangos", "-pmangos", "realmd", "-e", $sql)
 
-$seedCharacterSql = @"
+if ($ResetCharacters) {
+    Write-Host "Resetting RUSTAUTH characters and recreating Rustone."
+    $seedCharacterSql = @"
 DROP TEMPORARY TABLE IF EXISTS rust_client_account_chars;
 CREATE TEMPORARY TABLE rust_client_account_chars
     SELECT guid
@@ -173,18 +176,49 @@ DELETE FROM characters.characters WHERE guid IN (SELECT guid FROM rust_client_ac
 
 INSERT INTO characters.characters
     (guid, account, name, race, class, gender, level, zone, map, position_x, position_y, position_z, playerBytes, playerBytes2, equipmentCache)
-SELECT 1, id, 'Rustone', 1, 1, 0, 1, 12, 0, -8949.95, -132.493, 83.5312, 0, 0, ''
-FROM realmd.account
-WHERE username = 'RUSTAUTH'
-ON DUPLICATE KEY UPDATE account = VALUES(account), name = VALUES(name);
-
-INSERT INTO realmd.realmcharacters (realmid, acctid, numchars)
-SELECT 1, id, 1 FROM realmd.account WHERE username = 'RUSTAUTH'
-ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
+SELECT
+    CASE WHEN MAX(CASE WHEN c.guid = 1 THEN 1 ELSE 0 END) = 0 THEN 1 ELSE COALESCE(MAX(c.guid), 0) + 1 END,
+    a.id, 'Rustone', 1, 1, 0, 1, 12, 0, -8949.95, -132.493, 83.5312, 0, 0, ''
+FROM realmd.account a
+LEFT JOIN characters.characters c ON TRUE
+WHERE a.username = 'RUSTAUTH'
+GROUP BY a.id;
 
 DROP TEMPORARY TABLE rust_client_account_chars;
 "@
-Invoke-MariaDb "characters" $seedCharacterSql
+    Invoke-MariaDb "characters" $seedCharacterSql
+}
+else {
+    Write-Host "Preserving RUSTAUTH characters; seeding Rustone only if the account is empty."
+    $seedCharacterSql = @"
+INSERT INTO characters.characters
+    (guid, account, name, race, class, gender, level, zone, map, position_x, position_y, position_z, playerBytes, playerBytes2, equipmentCache)
+SELECT
+    CASE WHEN MAX(CASE WHEN c.guid = 1 THEN 1 ELSE 0 END) = 0 THEN 1 ELSE COALESCE(MAX(c.guid), 0) + 1 END,
+    a.id, 'Rustone', 1, 1, 0, 1, 12, 0, -8949.95, -132.493, 83.5312, 0, 0, ''
+FROM realmd.account a
+LEFT JOIN characters.characters c ON TRUE
+WHERE a.username = 'RUSTAUTH'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM characters.characters account_characters
+      WHERE account_characters.account = a.id
+  )
+GROUP BY a.id;
+"@
+    Invoke-MariaDb "characters" $seedCharacterSql
+}
+
+$realmCharacterCountSql = @"
+INSERT INTO realmd.realmcharacters (realmid, acctid, numchars)
+SELECT 1, a.id, COUNT(c.guid)
+FROM realmd.account a
+LEFT JOIN characters.characters c ON c.account = a.id
+WHERE a.username = 'RUSTAUTH'
+GROUP BY a.id
+ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
+"@
+Invoke-MariaDb "characters" $realmCharacterCountSql
 
 $seedCreatureSql = @"
 DROP TEMPORARY TABLE IF EXISTS rust_client_creature_template;
@@ -223,8 +257,9 @@ INSERT INTO mangos.creature
      spawntimesecsmin, spawntimesecsmax, spawndist, MovementType)
 SELECT 900010, 900010, map, 1, position_x + 6, position_y - 2, position_z, orientation,
        120, 120, 0, 0
-FROM characters.characters
-WHERE name = 'Rustone'
+FROM characters.characters c
+WHERE c.account = (SELECT id FROM realmd.account WHERE username = 'RUSTAUTH')
+ORDER BY CASE WHEN c.name = 'Rustone' THEN 0 ELSE 1 END, c.guid
 LIMIT 1;
 DROP TEMPORARY TABLE rust_client_creature_template;
 "@

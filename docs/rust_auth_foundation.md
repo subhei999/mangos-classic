@@ -98,11 +98,13 @@ For the current combined auth/world manual smoke path, run:
 .\scripts\run-client-stack-18085.cmd
 ```
 
-This creates/imports the local `characters` schema when needed, seeds the
-`RUSTAUTH` account with one visible test character named `Rustone`, updates the
-local Docker `realmlist` row to `127.0.0.1:18085`, starts the authserver on
-`127.0.0.1:13724`, and starts the worldserver skeleton on
-`127.0.0.1:18085`. Keep the client `realmlist.wtf` pointed at:
+This creates/imports the local `characters` schema when needed, preserves
+existing `RUSTAUTH` characters, seeds one visible test character named
+`Rustone` only when the account is empty, updates the local Docker `realmlist`
+row to `127.0.0.1:18085`, starts the authserver on `127.0.0.1:13724`, and
+starts the worldserver skeleton on `127.0.0.1:18085`. Pass
+`-ResetCharacters` only when you intentionally want to wipe `RUSTAUTH`
+characters and recreate `Rustone`. Keep the client `realmlist.wtf` pointed at:
 
 ```text
 set realmlist 127.0.0.1:13724

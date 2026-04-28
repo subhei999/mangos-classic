@@ -522,6 +522,7 @@ async fn handle_combat_tick(
     stream: &mut TcpStream,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    account_id: u32,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -529,6 +530,9 @@ async fn handle_combat_tick(
     advance_db_creature_lifecycle(stream, character_db_pool, session, now, header_crypto).await?;
     advance_db_creature_return_home_motions(session, now);
     advance_db_creature_idle_motions(stream, session, now, header_crypto).await?;
+    if session.player_death_state != PlayerDeathState::Alive {
+        return Ok(());
+    }
     if let Some(target) = session.active_combat_target {
         if session
             .active_combat_next_swing_at
@@ -553,7 +557,8 @@ async fn handle_combat_tick(
     }
 
     try_start_db_creature_aggro(stream, session, header_crypto).await?;
-    send_active_db_creature_attack(stream, session, header_crypto).await
+    send_active_db_creature_attack(stream, character_db_pool, account_id, session, header_crypto)
+        .await
 }
 
 async fn advance_db_creature_lifecycle(
@@ -1255,6 +1260,8 @@ async fn send_db_creature_combat_start(
 
 async fn send_active_db_creature_attack(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    account_id: u32,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1268,14 +1275,24 @@ async fn send_active_db_creature_attack(
         .copied()
         .collect::<Vec<_>>();
     for combat in active_combats {
-        send_single_active_db_creature_attack(stream, session, header_crypto, combat, player)
-            .await?;
+        send_single_active_db_creature_attack(
+            stream,
+            character_db_pool,
+            account_id,
+            session,
+            header_crypto,
+            combat,
+            player,
+        )
+        .await?;
     }
     Ok(())
 }
 
 async fn send_single_active_db_creature_attack(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    account_id: u32,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
     combat: CreatureCombatState,
@@ -1340,9 +1357,21 @@ async fn send_single_active_db_creature_attack(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_player_health_update_body(player, session.player_health)?,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
     )
-    .await
+    .await?;
+    if session.player_health == 0 {
+        kill_player_from_creature(
+            stream,
+            character_db_pool,
+            account_id,
+            session,
+            player,
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn defer_ready_db_creature_swing_retry(
@@ -1365,6 +1394,9 @@ fn select_db_creature_aggro_target(session: &WorldSessionState) -> Option<Object
 }
 
 fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGuid> {
+    if session.player_death_state != PlayerDeathState::Alive {
+        return Vec::new();
+    }
     let Some(character) = session.active_character.as_ref() else {
         return Vec::new();
     };
@@ -1408,6 +1440,9 @@ fn select_db_creature_assist_targets(
     session: &mut WorldSessionState,
     caller_guid: ObjectGuid,
 ) -> Vec<ObjectGuid> {
+    if session.player_death_state != PlayerDeathState::Alive {
+        return Vec::new();
+    }
     let Some(character) = session.active_character.as_ref() else {
         return Vec::new();
     };
@@ -1459,6 +1494,9 @@ fn begin_db_creature_combat(
     attacker: ObjectGuid,
     now: Instant,
 ) -> bool {
+    if session.player_death_state != PlayerDeathState::Alive {
+        return false;
+    }
     let Some(character) = &session.active_character else {
         return false;
     };

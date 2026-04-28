@@ -1,8 +1,10 @@
 type OnlineCharacters = Arc<Mutex<HashSet<u32>>>;
+type PlayerCorpses = Arc<Mutex<HashMap<u32, PlayerCorpseRuntime>>>;
 
 #[derive(Clone)]
 struct WorldRuntimeState {
     online_characters: OnlineCharacters,
+    player_corpses: PlayerCorpses,
     delete_options: CharacterDeleteOptions,
     world_data_files: Arc<WorldDataFiles>,
 }
@@ -15,6 +17,11 @@ struct WorldSessionState {
     active_combat_next_swing_at: Option<Instant>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     player_in_combat: bool,
+    player_death_state: PlayerDeathState,
+    player_corpse: Option<PlayerCorpseRuntime>,
+    visible_player_corpses: HashMap<u64, PlayerCorpseRuntime>,
+    player_visual: Option<PlayerVisualState>,
+    player_flags: u32,
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
     combat_dummy_loot_money_available: bool,
@@ -27,6 +34,7 @@ struct WorldSessionState {
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     last_creature_visibility_position: Option<WorldPosition>,
+    last_player_corpse_visibility_position: Option<WorldPosition>,
     db_creature_navigation: DbCreatureNavigationGuardrail,
 }
 
@@ -233,6 +241,14 @@ enum DbCreatureLifeState {
     Dead,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PlayerDeathState {
+    #[default]
+    Alive,
+    Corpse,
+    Ghost,
+}
+
 #[derive(Debug, Clone)]
 struct DbCreatureLootRuntime {
     item: u32,
@@ -252,5 +268,30 @@ struct ActiveCharacter {
     movement_flags: u32,
     client_time: u32,
     fall_time: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlayerCorpseRuntime {
+    guid: ObjectGuid,
+    owner: ObjectGuid,
+    position: WorldPosition,
+    corpse_type: u8,
+    race: u8,
+    class: u8,
+    gender: u8,
+    player_bytes: u32,
+    player_bytes2: u32,
+    equipment_cache: Option<String>,
+    guildid: Option<u32>,
+    player_flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlayerVisualState {
+    gender: u8,
+    player_bytes: u32,
+    player_bytes2: u32,
+    equipment_cache: Option<String>,
+    guildid: Option<u32>,
 }
 

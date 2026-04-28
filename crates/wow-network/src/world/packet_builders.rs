@@ -596,13 +596,94 @@ fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::R
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_update_value(&mut values, UNIT_FIELD_HEALTH, health.max(PLAYER_SURVIVOR_HEALTH_FLOOR))?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());
     body.extend_from_slice(&1u32.to_le_bytes());
     body.push(0);
     body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn build_player_death_update_body(
+    player: ObjectGuid,
+    health: u32,
+    player_flags: u32,
+    field_bytes: u32,
+    unit_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+    set_update_value(&mut values, PLAYER_FLAGS_FIELD, player_flags)?;
+    set_update_value(&mut values, PLAYER_FIELD_BYTES, field_bytes)?;
+    set_player_ghost_aura_update_values(
+        &mut values,
+        player_flags & PLAYER_FLAGS_GHOST != 0,
+        1,
+    )?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+fn set_player_ghost_aura_update_values(
+    values: &mut [Option<u32>],
+    ghost: bool,
+    level: u8,
+) -> anyhow::Result<()> {
+    set_update_value(
+        values,
+        UNIT_FIELD_AURA,
+        if ghost { GHOST_SPELL_ID } else { 0 },
+    )?;
+    set_update_value(
+        values,
+        UNIT_FIELD_AURAFLAGS,
+        if ghost { GHOST_AURA_FLAGS } else { 0 },
+    )?;
+    set_update_value(
+        values,
+        UNIT_FIELD_AURALEVELS,
+        if ghost { level.max(1) as u32 } else { 0 },
+    )?;
+    set_update_value(values, UNIT_FIELD_AURAAPPLICATIONS, 0)
+}
+
+fn build_corpse_reclaim_delay_body(delay_millis: u32) -> Vec<u8> {
+    delay_millis.to_le_bytes().to_vec()
+}
+
+fn build_corpse_query_body(corpse_position: Option<WorldPosition>) -> Vec<u8> {
+    let Some(corpse_position) = corpse_position else {
+        return vec![0];
+    };
+    let mut body = Vec::with_capacity(21);
+    body.push(1);
+    body.extend_from_slice(&(corpse_position.map_id as i32).to_le_bytes());
+    body.extend_from_slice(&corpse_position.x.to_le_bytes());
+    body.extend_from_slice(&corpse_position.y.to_le_bytes());
+    body.extend_from_slice(&corpse_position.z.to_le_bytes());
+    body.extend_from_slice(&corpse_position.map_id.to_le_bytes());
+    body
+}
+
+fn build_near_teleport_ack_body(character: &ActiveCharacter, counter: u32) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(41);
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    PackedGuid::write(&mut body, player)?;
+    body.extend_from_slice(&counter.to_le_bytes());
+    write_movement_info(
+        &mut body,
+        character.movement_flags,
+        character.client_time,
+        character.position,
+        character.fall_time,
+    );
     Ok(body)
 }
 
@@ -816,11 +897,7 @@ fn retaliation_damage_for_db_creature(session: &mut WorldSessionState, target: O
         return 0;
     };
     let retaliation_damage = creature.hit_damage().max(1);
-    session.player_health = if session.player_health <= retaliation_damage {
-        PLAYER_SURVIVOR_HEALTH_FLOOR
-    } else {
-        session.player_health - retaliation_damage
-    };
+    session.player_health = session.player_health.saturating_sub(retaliation_damage);
     retaliation_damage
 }
 

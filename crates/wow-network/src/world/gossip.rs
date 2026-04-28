@@ -1,3 +1,11 @@
+#[derive(Clone, Copy)]
+struct GossipSelectDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    player_corpses: &'a PlayerCorpses,
+    account_id: u32,
+}
+
 async fn handle_gossip_hello(
     stream: &mut TcpStream,
     world_db_pool: &MySqlPool,
@@ -25,6 +33,29 @@ async fn handle_gossip_hello(
     }
 
     if guid.is_creature() {
+        if session.player_death_state == PlayerDeathState::Ghost
+            && session
+                .db_creatures
+                .get(&guid.raw())
+                .is_some_and(is_spirit_healer_creature)
+        {
+            let text_update =
+                build_npc_text_update(SPIRIT_HEALER_GOSSIP_TEXT_ID, SPIRIT_HEALER_GOSSIP_TEXT);
+            send_packet(
+                stream,
+                SMSG_NPC_TEXT_UPDATE,
+                &text_update,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            let response = build_gossip_message(
+                guid,
+                SPIRIT_HEALER_GOSSIP_TEXT_ID,
+                &[(0, SPIRIT_HEALER_GOSSIP_OPTION)],
+            );
+            return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
+        }
+
         if let Some(quest) = questgiver_completed_turnin_quest(world_db_pool, guid, session).await? {
             let response = build_quest_offer_reward_body(guid, &quest);
             return send_packet(
@@ -96,8 +127,7 @@ async fn handle_gossip_hello(
 
 async fn handle_gossip_select_option(
     stream: &mut TcpStream,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: GossipSelectDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -123,7 +153,36 @@ async fn handle_gossip_select_option(
             );
             return Ok(());
         }
-        let vendor_items = wow_db::get_vendor_items(world_db_pool, selection.guid.entry()).await?;
+        if session.player_death_state == PlayerDeathState::Ghost
+            && session
+                .db_creatures
+                .get(&selection.guid.raw())
+                .is_some_and(is_spirit_healer_creature)
+        {
+            send_packet(
+                stream,
+                SMSG_GOSSIP_COMPLETE,
+                &[],
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            return handle_spirit_healer_activate(
+                stream,
+                PlayerDeathDeps {
+                    character_db_pool: deps.character_db_pool,
+                    world_db_pool: deps.world_db_pool,
+                    player_corpses: deps.player_corpses,
+                    account_id: deps.account_id,
+                },
+                body,
+                session,
+                header_crypto,
+            )
+            .await;
+        }
+
+        let vendor_items =
+            wow_db::get_vendor_items(deps.world_db_pool, selection.guid.entry()).await?;
         if !vendor_items.is_empty() {
             let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
             let response = build_vendor_inventory_body(selection.guid, &list_items);
@@ -131,12 +190,12 @@ async fn handle_gossip_select_option(
         }
 
         let trainer_spells =
-            wow_db::get_trainer_spells(world_db_pool, selection.guid.entry()).await?;
+            wow_db::get_trainer_spells(deps.world_db_pool, selection.guid.entry()).await?;
         if !trainer_spells.is_empty() {
             return send_trainer_list(
                 stream,
-                character_db_pool,
-                world_db_pool,
+                deps.character_db_pool,
+                deps.world_db_pool,
                 selection.guid,
                 session,
                 header_crypto,

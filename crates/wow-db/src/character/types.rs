@@ -258,6 +258,42 @@ pub struct CharacterQuestStatus {
     pub mobcount4: u32,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct PlayerCorpseQuery {
+    pub guid: u32,
+    pub player: u32,
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub orientation: f32,
+    pub map: u32,
+    pub time: u64,
+    pub corpse_type: u8,
+    pub instance: u32,
+    pub race: u8,
+    pub class: u8,
+    pub gender: u8,
+    #[sqlx(rename = "playerBytes")]
+    pub player_bytes: u32,
+    #[sqlx(rename = "playerBytes2")]
+    pub player_bytes2: u32,
+    #[sqlx(rename = "equipmentCache")]
+    pub equipment_cache: Option<String>,
+    pub guildid: Option<u32>,
+    #[sqlx(rename = "playerFlags")]
+    pub player_flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewPlayerCorpse {
+    pub guid: u32,
+    pub player: u32,
+    pub position: WorldPosition,
+    pub time: u64,
+    pub corpse_type: u8,
+    pub instance: u32,
+}
+
 impl PlayerWorldStats {
     pub fn max_health(self) -> u32 {
         self.base_health + health_bonus_from_stamina(self.stats[2])

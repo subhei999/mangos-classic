@@ -36,11 +36,13 @@ money, and `character_spell`.
 
 Use `docs/playable_gate_board.md` as the executive dashboard before selecting
 work. G3 Movement Visibility Streaming has been user-verified in the real
-client and is now a regression gate. Current active priority is G7 Player
-Death + Respawn, then G8 Combat Agency, then G9 World Creature Fidelity, then
-G10 NPC Interaction Fidelity, then G11 Persistence + Relog Sanity, then G5
-Combat and Loot real-behavior fidelity, then G6 Level + Trainer issue #49
-polish, then G8/G9 Pathing + Movement Fidelity, then G12 Multi-client Sanity.
+client and is now a regression gate. G7 Player Death + Respawn is now
+core-flow harness-proven and user-smoked in the real client. Current active
+priority is G8 Combat Agency, then G9 World Creature Fidelity, then G10 NPC
+Interaction Fidelity, then G11 Persistence + Relog Sanity, then G5 Combat and
+Loot real-behavior fidelity, then G6 Level + Trainer issue #49 polish, then G7
+death/respawn polish, then G8/G9 Pathing + Movement Fidelity, then G12
+Multi-client Sanity.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -874,6 +876,68 @@ using the repo's bug triage policy, then continue the requested task.
   `cargo test -p wow-network movement_visibility --lib` passed with 7 targeted
   tests; `cargo check -p wow-network -p worldserver` passed. The local client
   stack was restarted on `127.0.0.1:18085` for real-client verification.
+- Started G7 Player Death + Respawn v1 from the CMaNGOS references:
+  `Unit::DealDamage`, `Player::KillPlayer`, `BuildPlayerRepop`,
+  `RepopAtGraveyard`, `HandleRepopRequestOpcode`, and
+  `HandleReclaimCorpseOpcode`.
+- Lethal DB-creature melee can now reduce player health to zero, mark an
+  in-session corpse state, clear combat, publish a player update with health
+  `0` plus the CMaNGOS release-timer byte, and persist the current health/flags
+  state to `characters`.
+- Added `CMSG_REPOP_REQUEST` handling. Releasing spirit sets
+  `PLAYER_FLAGS_GHOST`, sets health to `1`, clears combat state, looks up the
+  nearest DB-backed Alliance graveyard from `game_graveyard_zone` /
+  `world_safe_locs`, falls back to a much closer spirit healer when local
+  ClassicDB graveyard links point far away from the corpse, sends a same-map
+  teleport movement packet, sends `SMSG_CORPSE_RECLAIM_DELAY`, force-rescans
+  nearby DB creature visibility, and persists ghost position/flags.
+- Added `CMSG_RECLAIM_CORPSE` handling for the first corpse-reclaim path. A
+  ghost near the stored corpse position resurrects at 50% max health, clears
+  the ghost flag, teleports/places back at the corpse position, and persists
+  the alive state. `CMSG_RECLAIM_CORPSE` now ignores the client-sent corpse
+  GUID value like CMaNGOS instead of incorrectly requiring it to equal the
+  player GUID.
+- Added the real-client recovery follow-up for G7 after the user reported
+  permanent ghost state: `MSG_CORPSE_QUERY` now points ghosts back to the stored
+  corpse position, `CMSG_SPIRIT_HEALER_ACTIVATE` resurrects ghosts at a nearby
+  loaded spirit healer, and the shared resurrection path clears ghost flags,
+  restores 50% health, and persists the alive state.
+- Added CMaNGOS-shaped player corpse world objects for G7. Releasing spirit now
+  creates a `TYPEID_CORPSE` / `HighGuid::Corpse` object, saves the resurrectable
+  corpse to `characters.corpse`, fills owner, position, display, equipment,
+  bytes, guild, and flags from the character/session visual state, streams
+  nearby player corpses on login and movement, answers corpse query/reclaim from
+  that persistent corpse row, and deletes the row when resurrection succeeds.
+  The shared runtime corpse map also carries post-resurrection `CORPSE_BONES`
+  objects so bones can remain visible to nearby sessions during the same world
+  lifetime without incorrectly making bones permanent DB state.
+- Added `wow_db::get_closest_graveyard` and
+  `wow_db::get_closest_spirit_healer` and
+  `wow_db::update_character_death_state` helpers, player corpse DB helpers, plus
+  packet tests for lethal creature damage, death/update fields, corpse query
+  body shape, spirit healer detection, player corpse create blocks, bones flag
+  updates, and same-map teleport shape.
+- Fixed a starter-zone harness expectation found by the Docker-backed run: in
+  RealClassicDb mode the wolf smoke only damages a Young Wolf, so the
+  `creature_respawn` assertion now expects the ten killed Kobold Vermin rows
+  instead of incorrectly requiring an un-killed wolf respawn row.
+- G7 tests in this slice: `cargo fmt` passed with the known canonicalize
+  warning; `cargo check -p wow-db -p wow-network -p worldserver -p
+  starter-zone-flow-test` passed; `cargo test -p wow-network --lib` passed with
+  163 tests after the corpse/bones follow-up; `.\scripts\test-rust.cmd` passed;
+  elevated `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb
+  after fixing the corpse visual query's guild join.
+- Added the G7 death flow to `starter-zone-flow-test`. The harness now seeds a
+  private hostile death-proof creature, lets creature-origin aggro damage kill
+  the Human Warrior, releases spirit, verifies the ghost update, persisted
+  corpse object, reclaim delay, release teleport, corpse-query arrow data,
+  corpse reclaim, bones conversion, final teleport, corpse row deletion,
+  restored health, cleared ghost flags, and persisted corpse-position
+  resurrection.
+- Final G7 flow tests: `cargo fmt` passed with the known canonicalize warning;
+  `cargo check -p starter-zone-flow-test` passed; elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb; final
+  `.\scripts\test-rust.cmd` passed with 163 `wow-network` tests.
 
 ## P0/P1 Fixes In This Slice
 
@@ -1023,6 +1087,44 @@ using the repo's bug triage policy, then continue the requested task.
   DB creature deaths now persist future respawn time in `creature_respawn`, and
   login/movement visibility suppresses creatures with future persisted respawn
   rows instead of recreating them alive.
+- Fixed a P1 G7/golden-path harness mismatch discovered during the
+  Docker-backed starter-zone run: RealClassicDb mode does not kill the initial
+  Young Wolf smoke target, so the persisted creature-respawn assertion now
+  counts the ten actually killed Kobold Vermin rows and leaves the wolf out of
+  the expected-death set.
+- Fixed the P1 G7 real-client recovery blocker reported after the first death
+  slice: release could leave the player as a ghost at an unhelpful graveyard
+  with no visible healer, no corpse arrow response, and no successful reclaim.
+  Rust now prefers a nearby spirit healer over a far linked graveyard when the
+  local graveyard links are incomplete, streams graveyard creatures after
+  release, answers `MSG_CORPSE_QUERY`, ignores the corpse GUID mismatch on
+  reclaim like CMaNGOS, and handles spirit healer activation.
+- Fixed the immediate follow-up P1 disconnect/lockout on release: local
+  ClassicDB `world_safe_locs` and spirit-healer coordinates are decoded with
+  explicit numeric casts, avoiding the MySQL DECIMAL-to-`f32` decode error in
+  `CMSG_REPOP_REQUEST`. World sessions now also persist best-effort state and
+  unregister the active character on handler errors, so a disconnect does not
+  leave the character stuck as "already loaded" until a server restart.
+- Fixed the next P1 ghost-state gaps from real-client smoke: release now sends
+  the CMaNGOS ghost spell `8326` in the visible aura update fields and login
+  bootstrap preserves that aura while `PLAYER_FLAGS_GHOST` is set; resurrect
+  updates clear those aura fields. DB creature aggro, assistance, and combat
+  start now refuse non-alive players, so ghosts should not pull mobs. Spirit
+  healer create blocks force `UNIT_NPC_FLAG_SPIRITHEALER`, and spirit healer
+  `CMSG_GOSSIP_HELLO` / gossip option selection now route to the shared 50%
+  health resurrection path.
+- Fixed the P1 corpse visual query bug caught by the Docker-backed
+  starter-zone harness: the new corpse loader initially selected
+  `characters.guildid`, which does not exist in the local character schema.
+  Corpse visual loading now left-joins `guild_member.guildid` like the rest of
+  the character visual path, and the RealClassicDb starter-zone proof passes.
+- Fixed a P1 G7 harness cleanup/flow blocker while adding death to the golden
+  path: stale `creature_respawn` rows could suppress the private death-proof
+  creature from runtime visibility, and the first harness shape let the player
+  kill that creature instead of proving creature-origin lethal damage. The
+  harness now explicitly clears the death fixture respawn row, places the
+  fixture in a deterministic visibility area, gives it enough health to survive
+  incidental combat, and waits for hostile creature aggro to kill the player.
 
 ## Non-blocking Backlog
 
@@ -1038,7 +1140,8 @@ GitHub #12 for future G8 cadence/AI-notify parity work. The missing
 tracked as GitHub #51. The first waypoint loader's per-creature DB fallback
 queries are tracked as P4 performance debt in GitHub #52.
 
-Known open directions still include player death/respawn (#44), broader
+Known open directions still include final player death/respawn proof and polish
+(#44), broader
 DB-backed gossip/trainer/vendor parity, exact combat/stat formulas, map
 exploration discovery/persistence, broader quest types beyond a single
 kill-count objective, and XP/trainer follow-ups outside the starter solo path
@@ -1070,7 +1173,7 @@ and passive/aura effects from learned spells.
   return-home, and random movement paths. It still does not implement vmap LOS,
   full CMaNGOS `PathFinder` smooth-path flags, full
   DBC-backed faction-template loading beyond the narrow Northshire
-  hostile/friendly bridge, player death, or final real-client proof.
+  hostile/friendly bridge, or final G8 real-client proof.
   Creature attacks now carry explicit attacker/victim/timer state, chase through
   a timed runtime motion state with 250ms re-pathing and active-combat
   visibility retention, and require melee reach; player DB-creature swings and
@@ -1083,6 +1186,11 @@ and passive/aura effects from learned spells.
   GitHub #12 with `gate:G8-combat-agency` / `cmangos-diff`.
 - G3 movement-triggered DB creature streaming is harness-proven and
   user-verified in the real client; keep it as a regression gate.
+- G7 corpse/bones objects and the core die/release/reclaim path are
+  unit/harness-proven, and user real-client smoke confirmed the flow works.
+  Durability loss, resurrection sickness, corpse/bones expiry timers,
+  relog-dead/relog-ghost edge checks, and cross-worldserver persistence are
+  still future parity.
 - The repo still relies on local `target/classic-db` / Docker content import for
   full ClassicDB Northshire data.
 
@@ -1090,10 +1198,9 @@ and passive/aura effects from learned spells.
 
 Continue Checkpoint 2 with the next narrow starter gameplay slice:
 
-- G7 Player death/respawn (#44): starter death state, release spirit, graveyard
-  teleport, resurrection, and persistence. Creature corpse/respawn timing and
-  visibility are now in place, so this is the next major missing
-  death/respawn feature.
+- G8 Combat Agency: resume the next highest playable gate. Good next slices are
+  melee roll table, damage formula parity, or continued real-client tuning of
+  Detour-backed chase/home feel if that still looks rough in smoke testing.
 - G8/G9 Creature Pathing + Movement Fidelity: chase stop-distance/re-path now
   uses the CMaNGOS combined melee reach shape, Rust detects mmap tile
   availability from `C:/World of Warcraft Classic`, chase/home/random movement
@@ -1124,6 +1231,7 @@ broader slice.
 - `crates/wow-network/src/world/bootstrap.rs`
 - `crates/wow-network/src/world/interactions.rs`
 - `crates/wow-network/src/world/combat.rs`
+- `crates/wow-network/src/world/death.rs`
 - `crates/wow-network/build.rs`
 - `crates/wow-network/native/mmap_path.cpp`
 - `crates/wow-network/src/world/quests.rs`

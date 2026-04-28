@@ -107,6 +107,131 @@ pub async fn get_character_spells(
     Ok(rows)
 }
 
+pub async fn update_character_death_state(
+    pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+    position: WorldPosition,
+    health: u32,
+    player_flags: u32,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE characters \
+         SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ?, \
+             health = ?, playerFlags = ? \
+         WHERE guid = ? AND account = ?",
+    )
+    .bind(position.map_id)
+    .bind(position.x)
+    .bind(position.y)
+    .bind(position.z)
+    .bind(position.orientation)
+    .bind(health)
+    .bind(player_flags)
+    .bind(guid)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn save_player_corpse(
+    pool: &MySqlPool,
+    corpse: &NewPlayerCorpse,
+) -> Result<(), DbError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM corpse WHERE player = ? AND corpse_type <> 0")
+        .bind(corpse.player)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO corpse \
+         (guid, player, position_x, position_y, position_z, orientation, map, time, corpse_type, instance) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(corpse.guid)
+    .bind(corpse.player)
+    .bind(corpse.position.x)
+    .bind(corpse.position.y)
+    .bind(corpse.position.z)
+    .bind(corpse.position.orientation)
+    .bind(corpse.position.map_id)
+    .bind(corpse.time)
+    .bind(corpse.corpse_type)
+    .bind(corpse.instance)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+pub async fn delete_player_corpse(pool: &MySqlPool, player: u32) -> Result<u64, DbError> {
+    let result = sqlx::query("DELETE FROM corpse WHERE player = ? AND corpse_type <> 0")
+        .bind(player)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn get_player_corpse(
+    pool: &MySqlPool,
+    player: u32,
+) -> Result<Option<PlayerCorpseQuery>, DbError> {
+    let row = sqlx::query_as::<_, PlayerCorpseQuery>(
+        "SELECT corpse.guid, corpse.player, corpse.position_x, corpse.position_y, corpse.position_z, \
+                corpse.orientation, corpse.map, corpse.time, corpse.corpse_type, corpse.instance, \
+                characters.race, characters.class, characters.gender, characters.playerBytes, \
+                characters.playerBytes2, characters.equipmentCache, guild_member.guildid, characters.playerFlags \
+         FROM corpse \
+         INNER JOIN characters ON characters.guid = corpse.player \
+         LEFT JOIN guild_member ON characters.guid = guild_member.guid \
+         WHERE corpse.player = ? AND corpse.corpse_type <> 0 \
+         LIMIT 1",
+    )
+    .bind(player)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+pub async fn get_nearby_player_corpses(
+    pool: &MySqlPool,
+    map: u32,
+    x: f32,
+    y: f32,
+    radius: f32,
+    limit: u32,
+) -> Result<Vec<PlayerCorpseQuery>, DbError> {
+    let rows = sqlx::query_as::<_, PlayerCorpseQuery>(
+        "SELECT corpse.guid, corpse.player, corpse.position_x, corpse.position_y, corpse.position_z, \
+                corpse.orientation, corpse.map, corpse.time, corpse.corpse_type, corpse.instance, \
+                characters.race, characters.class, characters.gender, characters.playerBytes, \
+                characters.playerBytes2, characters.equipmentCache, guild_member.guildid, characters.playerFlags \
+         FROM corpse \
+         INNER JOIN characters ON characters.guid = corpse.player \
+         LEFT JOIN guild_member ON characters.guid = guild_member.guid \
+         WHERE corpse.map = ? AND corpse.corpse_type <> 0 \
+           AND POW(corpse.position_x - ?, 2) + POW(corpse.position_y - ?, 2) <= POW(?, 2) \
+         ORDER BY POW(corpse.position_x - ?, 2) + POW(corpse.position_y - ?, 2) \
+         LIMIT ?",
+    )
+    .bind(map)
+    .bind(x)
+    .bind(y)
+    .bind(radius)
+    .bind(x)
+    .bind(y)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 pub async fn learn_character_spell(
     pool: &MySqlPool,
     guid: u32,

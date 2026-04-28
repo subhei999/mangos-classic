@@ -7,5 +7,6 @@ include!("quests.rs");
 include!("vendors.rs");
 include!("trainers.rs");
 include!("combat.rs");
+include!("death.rs");
 include!("loot.rs");
 include!("packet_builders.rs");

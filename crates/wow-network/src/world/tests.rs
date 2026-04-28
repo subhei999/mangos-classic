@@ -1320,7 +1320,7 @@ fn progression_update_sets_level_xp_vitals_and_stats() {
 }
 
 #[test]
-fn db_creature_retaliation_reduces_player_health_but_keeps_survivor_floor() {
+fn db_creature_retaliation_can_kill_player() {
     let mut session = WorldSessionState {
         player_health: 5,
         ..WorldSessionState::default()
@@ -1335,17 +1335,196 @@ fn db_creature_retaliation_reduces_player_health_but_keeps_survivor_floor() {
 
     let retaliation = retaliation_damage_for_db_creature(&mut session, target);
     assert_eq!(retaliation, expected_hit);
-    assert_eq!(
-        session.player_health,
-        (5u32)
-            .saturating_sub(expected_hit)
-            .max(PLAYER_SURVIVOR_HEALTH_FLOOR)
-    );
+    assert_eq!(session.player_health, (5u32).saturating_sub(expected_hit));
 
     session.player_health = 1;
     let retaliation = retaliation_damage_for_db_creature(&mut session, target);
     assert_eq!(retaliation, expected_hit);
-    assert_eq!(session.player_health, PLAYER_SURVIVOR_HEALTH_FLOOR);
+    assert_eq!(session.player_health, 0);
+}
+
+#[test]
+fn player_death_update_sets_health_flags_and_release_timer() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_death_update_body(
+        player,
+        0,
+        PLAYER_FLAGS_GHOST,
+        PLAYER_FIELD_BYTE_RELEASE_TIMER,
+        player_unit_flags(false),
+    )
+    .unwrap();
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, player).unwrap();
+    let values_start = 4 + 1 + 1 + packed.len();
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+    assert_eq!(values[PLAYER_FLAGS_FIELD], Some(PLAYER_FLAGS_GHOST));
+    assert_eq!(
+        values[PLAYER_FIELD_BYTES],
+        Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
+    );
+    assert_eq!(values[UNIT_FIELD_AURA], Some(GHOST_SPELL_ID));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(GHOST_AURA_FLAGS));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(1));
+    assert_eq!(values[UNIT_FIELD_AURAAPPLICATIONS], Some(0));
+}
+
+#[test]
+fn corpse_query_points_ghosts_back_to_their_body() {
+    let corpse = WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0);
+    let body = build_corpse_query_body(Some(corpse));
+
+    assert_eq!(body[0], 1);
+    assert_eq!(&body[1..5], &(corpse.map_id as i32).to_le_bytes());
+    assert_eq!(&body[5..9], &corpse.x.to_le_bytes());
+    assert_eq!(&body[9..13], &corpse.y.to_le_bytes());
+    assert_eq!(&body[13..17], &corpse.z.to_le_bytes());
+    assert_eq!(&body[17..21], &corpse.map_id.to_le_bytes());
+    assert_eq!(build_corpse_query_body(None), vec![0]);
+}
+
+#[test]
+fn player_corpse_create_block_uses_cmangos_corpse_fields() {
+    let corpse = PlayerCorpseRuntime {
+        guid: ObjectGuid::new(HighGuid::Corpse, 0, 7),
+        owner: ObjectGuid::new(HighGuid::Player, 0, 7),
+        position: WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0),
+        corpse_type: PLAYER_CORPSE_TYPE_RESURRECTABLE_PVE,
+        race: 1,
+        class: 1,
+        gender: 0,
+        player_bytes: 0x0403_0201,
+        player_bytes2: 0x0000_0005,
+        equipment_cache: Some("25 0 0 0 38 0".to_string()),
+        guildid: Some(123),
+        player_flags: PLAYER_FLAGS_HIDE_HELM,
+    };
+
+    let block = build_player_corpse_create_block(&corpse).unwrap();
+    let type_id_offset = 1 + PackedGuid::packed_size(corpse.guid);
+    assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+    assert_eq!(block[type_id_offset], TYPEID_CORPSE);
+    assert_eq!(
+        block[type_id_offset + 1],
+        UPDATEFLAG_ALL | UPDATEFLAG_HAS_POSITION
+    );
+    assert_eq!(
+        &block[type_id_offset + 2..type_id_offset + 6],
+        &corpse.position.x.to_le_bytes()
+    );
+    let values_start = type_id_offset + 1 + 1 + 16 + 4;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(values[0x000], Some(corpse.guid.raw() as u32));
+    assert_eq!(values[0x001], Some((corpse.guid.raw() >> 32) as u32));
+    assert_eq!(values[0x002], Some(TYPEMASK_OBJECT_CORPSE));
+    assert_eq!(values[CORPSE_FIELD_OWNER], Some(corpse.owner.raw() as u32));
+    assert_eq!(
+        values[CORPSE_FIELD_OWNER + 1],
+        Some((corpse.owner.raw() >> 32) as u32)
+    );
+    assert_eq!(values[CORPSE_FIELD_DISPLAY_ID], Some(49));
+    assert_eq!(values[CORPSE_FIELD_ITEM], Some(1542 | (21 << 24)));
+    assert_eq!(values[CORPSE_FIELD_ITEM + 2], Some(9891 | (4 << 24)));
+    assert_eq!(values[CORPSE_FIELD_BYTES_1], Some(0x0100_0100));
+    assert_eq!(values[CORPSE_FIELD_BYTES_2], Some(0x0403_0205));
+    assert_eq!(values[CORPSE_FIELD_GUILD], Some(123));
+    assert_eq!(
+        values[CORPSE_FIELD_FLAGS],
+        Some(CORPSE_FLAG_UNK2 | CORPSE_FLAG_HIDE_HELM)
+    );
+}
+
+#[test]
+fn player_bones_update_sets_cmangos_bones_flag() {
+    let corpse = PlayerCorpseRuntime {
+        guid: ObjectGuid::new(HighGuid::Corpse, 0, 7),
+        owner: ObjectGuid::new(HighGuid::Player, 0, 7),
+        position: WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0),
+        corpse_type: PLAYER_CORPSE_TYPE_BONES,
+        race: 1,
+        class: 1,
+        gender: 0,
+        player_bytes: 0,
+        player_bytes2: 0,
+        equipment_cache: None,
+        guildid: None,
+        player_flags: PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK,
+    };
+
+    let body = build_player_corpse_bones_update_body(&corpse).unwrap();
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+    let block = &body[5..];
+    assert_eq!(block[0], UPDATE_TYPE_VALUES);
+    let values_start = 1 + PackedGuid::packed_size(corpse.guid);
+    let values = decode_update_values(&block[values_start..]);
+    assert_eq!(values[CORPSE_FIELD_FLAGS], Some(CORPSE_FLAG_BONES));
+}
+
+#[test]
+fn spirit_healer_detection_accepts_template_flag_or_classic_entry() {
+    let mut flagged = test_creature_spawn(197);
+    flagged.template.npc_flags = UNIT_NPC_FLAG_SPIRITHEALER;
+    assert!(is_spirit_healer_creature(&DbCreatureRuntime::new(flagged)));
+
+    let mut classic = test_creature_spawn(SPIRIT_HEALER_ENTRY);
+    classic.template.npc_flags = 0;
+    assert!(is_spirit_healer_creature(&DbCreatureRuntime::new(classic)));
+
+    let mut trainer = test_creature_spawn(197);
+    trainer.template.npc_flags = UNIT_NPC_FLAG_TRAINER;
+    assert!(!is_spirit_healer_creature(&DbCreatureRuntime::new(trainer)));
+}
+
+#[test]
+fn db_spirit_healer_create_block_forces_spirit_healer_npc_flag() {
+    let mut healer = test_creature_spawn(SPIRIT_HEALER_ENTRY);
+    healer.template.npc_flags = UNIT_NPC_FLAG_GOSSIP;
+    let runtime = DbCreatureRuntime::new(healer);
+    let body = build_db_creature_runtime_create_block(&runtime).unwrap();
+    let packed_guid_mask = body[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(
+        values[UNIT_NPC_FLAGS],
+        Some(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_SPIRITHEALER)
+    );
+}
+
+#[test]
+fn near_teleport_ack_body_uses_player_guid_counter_and_movement_info() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8910.0, -140.0, 82.0, 0.5),
+        movement_flags: 0,
+        client_time: 123,
+        fall_time: 0,
+    };
+    let body = build_near_teleport_ack_body(&character, 9).unwrap();
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, ObjectGuid::new(HighGuid::Player, 0, 7)).unwrap();
+    let packed_len = packed.len();
+    assert_eq!(&body[packed_len..packed_len + 4], &9u32.to_le_bytes());
+    assert_eq!(&body[packed_len + 4..packed_len + 8], &0u32.to_le_bytes());
+    assert_eq!(
+        &body[packed_len + 8..packed_len + 12],
+        &123u32.to_le_bytes()
+    );
+    assert_eq!(
+        &body[packed_len + 12..packed_len + 16],
+        &character.position.x.to_le_bytes()
+    );
 }
 
 #[test]
@@ -1409,6 +1588,44 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
             creature_spawn_guid(&far_hostile)
         ]
     );
+}
+
+#[test]
+fn db_creature_aggro_ignores_ghost_players() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 2,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut defias = test_creature_spawn(38);
+    defias.guid = 45;
+    defias.position_x = -8951.0;
+    defias.template.faction = 17;
+    defias.template.npc_flags = 0;
+    defias.template.creature_type = 7;
+    defias.template.min_level = 2;
+    let attacker = creature_spawn_guid(&defias);
+    let runtime = DbCreatureRuntime::new(defias);
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        player_death_state: PlayerDeathState::Ghost,
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(select_db_creature_aggro_target(&session), None);
+    assert!(!begin_db_creature_combat(
+        &mut session,
+        attacker,
+        Instant::now()
+    ));
 }
 
 #[test]

@@ -9,6 +9,7 @@ struct EnterWorldBootstrap<'a> {
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
     nearby_creatures: &'a [CreatureSpawnQuery],
+    nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
 async fn send_enter_world_bootstrap(
@@ -54,6 +55,7 @@ async fn send_enter_world_bootstrap(
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: &equipped_templates,
             nearby_creatures: bootstrap.nearby_creatures,
+            nearby_player_corpses: bootstrap.nearby_player_corpses,
         },
         header_crypto,
     )
@@ -327,15 +329,7 @@ async fn send_self_spawn_update(
     update: SelfSpawnUpdate<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let bodies = build_self_spawn_update_bodies(
-        update.character,
-        update.inventory,
-        update.world_stats,
-        update.skills,
-        update.quest_statuses,
-        update.equipped_templates,
-        update.nearby_creatures,
-    )?;
+    let bodies = build_self_spawn_update_bodies(&update)?;
     info!(
         guid = update.character.guid,
         name = %update.character.name,
@@ -365,6 +359,7 @@ struct SelfSpawnUpdate<'a> {
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &'a [EquippedItemTemplate],
     nearby_creatures: &'a [CreatureSpawnQuery],
+    nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
 async fn load_equipped_item_templates(
@@ -388,26 +383,11 @@ async fn load_equipped_item_templates(
     Ok(templates)
 }
 
-fn build_self_spawn_update_bodies(
-    character: &CharacterEnumEntry,
-    inventory: &[CharacterInventoryItem],
-    world_stats: &PlayerWorldStats,
-    skills: &[CharacterSkill],
-    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
-    equipped_templates: &[EquippedItemTemplate],
-    nearby_creatures: &[CreatureSpawnQuery],
-) -> anyhow::Result<Vec<Vec<u8>>> {
-    let mut blocks = build_self_spawn_update_blocks(
-        character,
-        inventory,
-        world_stats,
-        skills,
-        quest_statuses,
-        equipped_templates,
-        nearby_creatures,
-    )?;
+fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut blocks = build_self_spawn_update_blocks(update)?;
     let creature_start = 3;
-    let item_start = creature_start + nearby_creatures.len();
+    let item_start =
+        creature_start + update.nearby_creatures.len() + update.nearby_player_corpses.len();
     let item_blocks = blocks.split_off(item_start);
     let creature_blocks = blocks.split_off(creature_start);
 
@@ -421,15 +401,8 @@ fn build_self_spawn_update_bodies(
     Ok(bodies)
 }
 
-fn build_self_spawn_update_blocks(
-    character: &CharacterEnumEntry,
-    inventory: &[CharacterInventoryItem],
-    world_stats: &PlayerWorldStats,
-    skills: &[CharacterSkill],
-    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
-    equipped_templates: &[EquippedItemTemplate],
-    nearby_creatures: &[CreatureSpawnQuery],
-) -> anyhow::Result<Vec<Vec<u8>>> {
+fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
+    let character = update.character;
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -456,22 +429,25 @@ fn build_self_spawn_update_blocks(
         &mut block,
         guid,
         character,
-        inventory,
-        world_stats,
-        skills,
-        quest_statuses,
-        equipped_templates,
+        update.inventory,
+        update.world_stats,
+        update.skills,
+        update.quest_statuses,
+        update.equipped_templates,
     )?;
 
     let npc_block = build_rust_guide_create_block(character)?;
     let combat_dummy_block = build_rust_combat_dummy_create_block(character)?;
-    let creature_blocks = build_db_creature_create_blocks(nearby_creatures)?;
-    let item_blocks = build_inventory_item_create_blocks(character, inventory)?;
-    let mut blocks = Vec::with_capacity(3 + creature_blocks.len() + item_blocks.len());
+    let creature_blocks = build_db_creature_create_blocks(update.nearby_creatures)?;
+    let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;
+    let item_blocks = build_inventory_item_create_blocks(character, update.inventory)?;
+    let mut blocks =
+        Vec::with_capacity(3 + creature_blocks.len() + corpse_blocks.len() + item_blocks.len());
     blocks.push(block);
     blocks.push(npc_block);
     blocks.push(combat_dummy_block);
     blocks.extend(creature_blocks);
+    blocks.extend(corpse_blocks);
     blocks.extend(item_blocks);
     Ok(blocks)
 }
@@ -636,6 +612,68 @@ fn build_db_creature_create_blocks(
         .collect()
 }
 
+fn build_player_corpse_create_blocks(
+    corpses: &[PlayerCorpseRuntime],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    corpses.iter().map(build_player_corpse_create_block).collect()
+}
+
+fn build_player_corpse_create_block(corpse: &PlayerCorpseRuntime) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
+    PackedGuid::write(&mut block, corpse.guid)?;
+    block.push(TYPEID_CORPSE);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&corpse.position.x.to_le_bytes());
+    block.extend_from_slice(&corpse.position.y.to_le_bytes());
+    block.extend_from_slice(&corpse.position.z.to_le_bytes());
+    block.extend_from_slice(&corpse.position.orientation.to_le_bytes());
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    let mut values = vec![None; CORPSE_END_FIELDS];
+    set_update_value(&mut values, 0x000, corpse.guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (corpse.guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_CORPSE)?;
+    set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
+    set_update_value(&mut values, CORPSE_FIELD_OWNER, corpse.owner.raw() as u32)?;
+    set_update_value(
+        &mut values,
+        CORPSE_FIELD_OWNER + 1,
+        (corpse.owner.raw() >> 32) as u32,
+    )?;
+    set_update_value(
+        &mut values,
+        CORPSE_FIELD_FACING,
+        corpse.position.orientation.to_bits(),
+    )?;
+    set_update_value(&mut values, CORPSE_FIELD_POS_X, corpse.position.x.to_bits())?;
+    set_update_value(&mut values, CORPSE_FIELD_POS_Y, corpse.position.y.to_bits())?;
+    set_update_value(&mut values, CORPSE_FIELD_POS_Z, corpse.position.z.to_bits())?;
+    set_update_value(
+        &mut values,
+        CORPSE_FIELD_DISPLAY_ID,
+        display_id_for_corpse(corpse),
+    )?;
+    set_corpse_item_update_values(&mut values, corpse)?;
+    set_update_value(&mut values, CORPSE_FIELD_BYTES_1, corpse_bytes_1(corpse))?;
+    set_update_value(&mut values, CORPSE_FIELD_BYTES_2, corpse_bytes_2(corpse))?;
+    set_update_value(&mut values, CORPSE_FIELD_GUILD, corpse.guildid.unwrap_or(0))?;
+    set_update_value(&mut values, CORPSE_FIELD_FLAGS, corpse_flags(corpse))?;
+    write_update_values(&mut block, &values)?;
+    Ok(block)
+}
+
+fn build_player_corpse_bones_update_body(corpse: &PlayerCorpseRuntime) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, corpse.guid)?;
+    let mut values = vec![None; CORPSE_END_FIELDS];
+    set_update_value(&mut values, CORPSE_FIELD_FLAGS, corpse_flags(corpse))?;
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
 fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Result<Vec<u8>> {
     build_db_creature_create_block_inner(
         creature,
@@ -657,7 +695,7 @@ fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyho
         if creature.life_state == DbCreatureLifeState::Corpse {
             0
         } else {
-            creature.spawn.template.npc_flags
+            db_creature_npc_flags(creature)
         },
     )
 }
@@ -758,6 +796,14 @@ fn write_db_creature_update_values(
 
 fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
     ObjectGuid::new(HighGuid::Unit, creature.entry, creature.guid)
+}
+
+fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
+    if is_spirit_healer_creature(creature) {
+        creature.spawn.template.npc_flags | UNIT_NPC_FLAG_SPIRITHEALER
+    } else {
+        creature.spawn.template.npc_flags
+    }
 }
 
 fn creature_health(template: &CreatureTemplateQuery) -> u32 {
@@ -862,6 +908,11 @@ fn write_minimal_player_update_values(
         combat_stats.off_max_damage.to_bits(),
     )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, unit_bytes_1(character))?;
+    set_player_ghost_aura_update_values(
+        &mut values,
+        character.player_flags & PLAYER_FLAGS_GHOST != 0,
+        character.level,
+    )?;
     set_update_value(&mut values, UNIT_FIELD_AURASTATE, 0)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_player_stat_update_values(&mut values, world_stats)?;
@@ -961,7 +1012,12 @@ fn set_player_vital_update_values(
     character: &CharacterEnumEntry,
     world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
-    let max_health = character.health.max(world_stats.max_health());
+    let max_health = world_stats.max_health().max(1);
+    let health = if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
+        character.health.max(PLAYER_SURVIVOR_HEALTH_FLOOR).min(max_health)
+    } else {
+        max_health
+    };
     let max_mana = world_stats.max_mana();
     let power1 = if character.power1 > 0 {
         character.power1
@@ -977,7 +1033,7 @@ fn set_player_vital_update_values(
         create_power_for_class_power(character.class, POWER_ENERGY)
     };
 
-    set_update_value(values, UNIT_FIELD_HEALTH, max_health)?;
+    set_update_value(values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(values, UNIT_FIELD_POWER1, power1)?;
     set_update_value(values, UNIT_FIELD_POWER2, power2)?;
     set_update_value(
@@ -1777,6 +1833,79 @@ fn starter_item_visual(item_id: u32) -> Option<StarterItemVisual> {
         }),
         _ => None,
     }
+}
+
+fn set_corpse_item_update_values(
+    values: &mut [Option<u32>],
+    corpse: &PlayerCorpseRuntime,
+) -> anyhow::Result<()> {
+    let equipment = parse_equipment_cache(corpse.equipment_cache.as_deref());
+    for (slot, item_id) in equipment
+        .iter()
+        .copied()
+        .take(EQUIPMENT_SLOT_END as usize)
+        .enumerate()
+    {
+        let Some(visual) = starter_item_visual(item_id) else {
+            continue;
+        };
+        set_update_value(
+            values,
+            CORPSE_FIELD_ITEM + slot,
+            visual.display_id | ((visual.inventory_type as u32) << 24),
+        )?;
+    }
+    Ok(())
+}
+
+fn display_id_for_corpse(corpse: &PlayerCorpseRuntime) -> u32 {
+    match (corpse.race, corpse.gender) {
+        (1, 0) => 49,
+        (1, 1) => 50,
+        (2, 0) => 51,
+        (2, 1) => 52,
+        (3, 0) => 53,
+        (3, 1) => 54,
+        (4, 0) => 55,
+        (4, 1) => 56,
+        (5, 0) => 57,
+        (5, 1) => 58,
+        (6, 0) => 59,
+        (6, 1) => 60,
+        (7, 0) => 1563,
+        (7, 1) => 1564,
+        (8, 0) => 1478,
+        (8, 1) => 1479,
+        _ => 49,
+    }
+}
+
+fn corpse_bytes_1(corpse: &PlayerCorpseRuntime) -> u32 {
+    let skin = (corpse.player_bytes & 0xFF) as u8;
+    ((corpse.race as u32) << 8) | ((corpse.gender as u32) << 16) | ((skin as u32) << 24)
+}
+
+fn corpse_bytes_2(corpse: &PlayerCorpseRuntime) -> u32 {
+    let face = (corpse.player_bytes >> 8) & 0xFF;
+    let hairstyle = (corpse.player_bytes >> 16) & 0xFF;
+    let haircolor = (corpse.player_bytes >> 24) & 0xFF;
+    let facialhair = corpse.player_bytes2 & 0xFF;
+    facialhair | (face << 8) | (hairstyle << 16) | (haircolor << 24)
+}
+
+fn corpse_flags(corpse: &PlayerCorpseRuntime) -> u32 {
+    if corpse.corpse_type == PLAYER_CORPSE_TYPE_BONES {
+        return CORPSE_FLAG_BONES;
+    }
+
+    let mut flags = CORPSE_FLAG_UNK2;
+    if corpse.player_flags & PLAYER_FLAGS_HIDE_HELM != 0 {
+        flags |= CORPSE_FLAG_HIDE_HELM;
+    }
+    if corpse.player_flags & PLAYER_FLAGS_HIDE_CLOAK != 0 {
+        flags |= CORPSE_FLAG_HIDE_CLOAK;
+    }
+    flags
 }
 
 fn faction_for_race(race: u8) -> u32 {

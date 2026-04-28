@@ -18,7 +18,7 @@ use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
     CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterSkill, CharacterSpell,
     CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter,
-    PlayerWorldStats, QuestTemplateQuery,
+    NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats, QuestTemplateQuery,
 };
 
 include!("opcodes.rs");
@@ -63,6 +63,7 @@ impl WorldServer {
             world_db_pool,
             runtime_state: WorldRuntimeState {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
+                player_corpses: Arc::new(Mutex::new(HashMap::new())),
                 delete_options,
                 world_data_files,
             },
@@ -167,437 +168,529 @@ async fn handle_client(
     };
     let mut next_world_tick_at = Instant::now() + Duration::from_millis(WORLD_TICK_MILLIS);
 
-    loop {
-        match timeout(
-            world_tick_timeout_duration(next_world_tick_at, Instant::now()),
-            read_client_packet(&mut stream, Some(&mut header_crypto)),
-        )
-        .await
-        {
-            Ok(Ok((opcode, body))) => {
-                if is_movement_opcode(opcode) {
-                    debug!(
-                        opcode = format_args!("0x{opcode:04X}"),
-                        bytes = body.len(),
-                        "Received movement packet after auth"
-                    );
-                } else {
-                    info!(
-                        opcode = format_args!("0x{opcode:04X}"),
-                        bytes = body.len(),
-                        "Received world packet after auth"
-                    );
-                }
-
-                match opcode {
-                    CMSG_CHAR_CREATE => {
-                        handle_char_create(
-                            &mut stream,
-                            &login_db_pool,
-                            &character_db_pool,
-                            &world_db_pool,
-                            account.id,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_CHAR_ENUM => {
-                        let characters =
-                            wow_db::get_character_enum_entries(&character_db_pool, account.id)
-                                .await?;
-                        info!(
-                            account = %auth.account,
-                            count = characters.len(),
-                            "Sending character enum"
-                        );
-                        send_char_enum(&mut stream, &characters, Some(&mut header_crypto)).await?;
-                    }
-                    CMSG_CHAR_DELETE => {
-                        handle_char_delete(
-                            &mut stream,
-                            &login_db_pool,
-                            &character_db_pool,
-                            account.id,
-                            &body,
-                            &mut header_crypto,
-                            &runtime_state,
-                        )
-                        .await?;
-                    }
-                    CMSG_PLAYER_LOGIN => {
-                        handle_player_login(
-                            &mut stream,
-                            PlayerLoginDeps {
-                                character_db_pool: &character_db_pool,
-                                world_db_pool: &world_db_pool,
-                                online_characters: &runtime_state.online_characters,
-                            },
-                            account.id,
-                            &body,
-                            &mut header_crypto,
-                            &mut session,
-                        )
-                        .await?;
-                    }
-                    CMSG_PING => {
-                        handle_ping(&mut stream, &body, Some(&mut header_crypto)).await?;
-                    }
-                    CMSG_NAME_QUERY => {
-                        handle_name_query(
-                            &mut stream,
-                            &character_db_pool,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_ITEM_QUERY_SINGLE => {
-                        handle_item_query_single(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_CREATURE_QUERY => {
-                        handle_creature_query(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUEST_QUERY => {
-                        handle_quest_query(&mut stream, &world_db_pool, &body, &mut header_crypto)
-                            .await?;
-                    }
-                    CMSG_MESSAGECHAT => {
-                        handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
-                            .await?;
-                    }
-                    CMSG_QUERY_TIME => {
-                        handle_query_time(&mut stream, &mut header_crypto).await?;
-                    }
-                    CMSG_REQUEST_ACCOUNT_DATA => {
-                        handle_request_account_data(&mut stream, &body, &mut header_crypto).await?;
-                    }
-                    CMSG_UPDATE_ACCOUNT_DATA => {
-                        handle_update_account_data(&body);
-                    }
-                    CMSG_TUTORIAL_FLAG => {
-                        handle_tutorial_flag(&character_db_pool, account.id, &body).await?;
-                    }
-                    CMSG_TUTORIAL_CLEAR => {
-                        handle_tutorial_clear(&character_db_pool, account.id).await?;
-                    }
-                    CMSG_TUTORIAL_RESET => {
-                        handle_tutorial_reset(&character_db_pool, account.id).await?;
-                    }
-                    CMSG_TEXT_EMOTE => {
-                        handle_text_emote(&mut stream, &body, &session, &mut header_crypto).await?;
-                    }
-                    CMSG_CAST_SPELL => {
-                        handle_cast_spell(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
-                        handle_inventory_swap(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            opcode,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_DESTROYITEM => {
-                        handle_destroy_item(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_SPLIT_ITEM => {
-                        handle_split_item(
-                            &mut stream,
-                            &character_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
-                        info!(
-                            opcode = expected_noop_opcode_name(opcode),
-                            "Ignoring spell cancel opcode for fixture spell slice"
-                        );
-                    }
-                    CMSG_GOSSIP_HELLO => {
-                        handle_gossip_hello(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_GOSSIP_SELECT_OPTION => {
-                        handle_gossip_select_option(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_STATUS_QUERY => {
-                        handle_questgiver_status_query(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_HELLO => {
-                        handle_questgiver_hello(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_QUERY_QUEST => {
-                        handle_questgiver_query_quest(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_ACCEPT_QUEST => {
-                        handle_questgiver_accept_quest(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_COMPLETE_QUEST | CMSG_QUESTGIVER_REQUEST_REWARD => {
-                        handle_questgiver_complete_quest(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_QUESTGIVER_CHOOSE_REWARD => {
-                        handle_questgiver_choose_reward(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_NPC_TEXT_QUERY => {
-                        handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
-                    }
-                    CMSG_LIST_INVENTORY => {
-                        handle_list_inventory(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_SELL_ITEM => {
-                        handle_sell_item(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_BUY_ITEM => {
-                        handle_buy_item(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_TRAINER_LIST => {
-                        handle_trainer_list(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_TRAINER_BUY_SPELL => {
-                        handle_trainer_buy_spell(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_ATTACKSWING => {
-                        handle_attack_swing(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_ATTACKSTOP => {
-                        handle_attack_stop(&mut stream, &mut session, &mut header_crypto).await?;
-                    }
-                    CMSG_LOOT => {
-                        handle_loot(
-                            &mut stream,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_AUTOSTORE_LOOT_ITEM => {
-                        handle_autostore_loot_item(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_LOOT_MONEY => {
-                        handle_loot_money(
-                            &mut stream,
-                            &character_db_pool,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_LOOT_RELEASE => {
-                        handle_loot_release(&mut stream, &body, &mut session, &mut header_crypto)
-                            .await?;
-                    }
-                    CMSG_GMTICKET_GETTICKET => {
-                        handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
-                    }
-                    CMSG_SET_ACTIVE_MOVER => {
-                        handle_set_active_mover(&body, &session)?;
-                    }
-                    MSG_QUERY_NEXT_MAIL_TIME => {
-                        handle_query_next_mail_time(
-                            &mut stream,
-                            &character_db_pool,
-                            &session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    CMSG_LOGOUT_REQUEST => {
-                        handle_logout_request(
-                            &mut stream,
-                            &character_db_pool,
-                            account.id,
-                            &mut header_crypto,
-                            &mut session,
-                            &runtime_state.online_characters,
-                        )
-                        .await?;
-                    }
-                    CMSG_LOGOUT_CANCEL => {
-                        handle_logout_cancel(&mut stream, &mut header_crypto).await?;
-                    }
-                    CMSG_PLAYER_LOGOUT => {
-                        info!("Received client-side player logout notification");
-                    }
-                    _ if is_movement_opcode(opcode) => {
-                        handle_movement(
-                            &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            opcode,
-                            &body,
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                    }
-                    _ if is_expected_noop_opcode(opcode) => {
-                        info!(
-                            opcode = expected_noop_opcode_name(opcode),
-                            bytes = body.len(),
-                            "Ignoring expected world bootstrap opcode"
-                        );
-                    }
-                    _ => {
-                        warn!(
+    let session_result: anyhow::Result<()> = async {
+        loop {
+            match timeout(
+                world_tick_timeout_duration(next_world_tick_at, Instant::now()),
+                read_client_packet(&mut stream, Some(&mut header_crypto)),
+            )
+            .await
+            {
+                Ok(Ok((opcode, body))) => {
+                    if is_movement_opcode(opcode) {
+                        debug!(
                             opcode = format_args!("0x{opcode:04X}"),
-                            "Unhandled authenticated world opcode"
+                            bytes = body.len(),
+                            "Received movement packet after auth"
+                        );
+                    } else {
+                        info!(
+                            opcode = format_args!("0x{opcode:04X}"),
+                            bytes = body.len(),
+                            "Received world packet after auth"
                         );
                     }
+
+                    match opcode {
+                        CMSG_CHAR_CREATE => {
+                            handle_char_create(
+                                &mut stream,
+                                &login_db_pool,
+                                &character_db_pool,
+                                &world_db_pool,
+                                account.id,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_CHAR_ENUM => {
+                            let characters =
+                                wow_db::get_character_enum_entries(&character_db_pool, account.id)
+                                    .await?;
+                            info!(
+                                account = %auth.account,
+                                count = characters.len(),
+                                "Sending character enum"
+                            );
+                            send_char_enum(&mut stream, &characters, Some(&mut header_crypto))
+                                .await?;
+                        }
+                        CMSG_CHAR_DELETE => {
+                            handle_char_delete(
+                                &mut stream,
+                                &login_db_pool,
+                                &character_db_pool,
+                                account.id,
+                                &body,
+                                &mut header_crypto,
+                                &runtime_state,
+                            )
+                            .await?;
+                        }
+                        CMSG_PLAYER_LOGIN => {
+                            handle_player_login(
+                                &mut stream,
+                                PlayerLoginDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    online_characters: &runtime_state.online_characters,
+                                    player_corpses: &runtime_state.player_corpses,
+                                },
+                                account.id,
+                                &body,
+                                &mut header_crypto,
+                                &mut session,
+                            )
+                            .await?;
+                        }
+                        CMSG_PING => {
+                            handle_ping(&mut stream, &body, Some(&mut header_crypto)).await?;
+                        }
+                        CMSG_NAME_QUERY => {
+                            handle_name_query(
+                                &mut stream,
+                                &character_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_ITEM_QUERY_SINGLE => {
+                            handle_item_query_single(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_CREATURE_QUERY => {
+                            handle_creature_query(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUEST_QUERY => {
+                            handle_quest_query(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_MESSAGECHAT => {
+                            handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
+                                .await?;
+                        }
+                        CMSG_QUERY_TIME => {
+                            handle_query_time(&mut stream, &mut header_crypto).await?;
+                        }
+                        CMSG_REQUEST_ACCOUNT_DATA => {
+                            handle_request_account_data(&mut stream, &body, &mut header_crypto)
+                                .await?;
+                        }
+                        CMSG_UPDATE_ACCOUNT_DATA => {
+                            handle_update_account_data(&body);
+                        }
+                        CMSG_TUTORIAL_FLAG => {
+                            handle_tutorial_flag(&character_db_pool, account.id, &body).await?;
+                        }
+                        CMSG_TUTORIAL_CLEAR => {
+                            handle_tutorial_clear(&character_db_pool, account.id).await?;
+                        }
+                        CMSG_TUTORIAL_RESET => {
+                            handle_tutorial_reset(&character_db_pool, account.id).await?;
+                        }
+                        CMSG_TEXT_EMOTE => {
+                            handle_text_emote(&mut stream, &body, &session, &mut header_crypto)
+                                .await?;
+                        }
+                        CMSG_CAST_SPELL => {
+                            handle_cast_spell(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
+                            handle_inventory_swap(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                opcode,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_DESTROYITEM => {
+                            handle_destroy_item(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_SPLIT_ITEM => {
+                            handle_split_item(
+                                &mut stream,
+                                &character_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
+                            info!(
+                                opcode = expected_noop_opcode_name(opcode),
+                                "Ignoring spell cancel opcode for fixture spell slice"
+                            );
+                        }
+                        CMSG_GOSSIP_HELLO => {
+                            handle_gossip_hello(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GOSSIP_SELECT_OPTION => {
+                            handle_gossip_select_option(
+                                &mut stream,
+                                GossipSelectDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    player_corpses: &runtime_state.player_corpses,
+                                    account_id: account.id,
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_STATUS_QUERY => {
+                            handle_questgiver_status_query(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_HELLO => {
+                            handle_questgiver_hello(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_QUERY_QUEST => {
+                            handle_questgiver_query_quest(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_ACCEPT_QUEST => {
+                            handle_questgiver_accept_quest(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_COMPLETE_QUEST | CMSG_QUESTGIVER_REQUEST_REWARD => {
+                            handle_questgiver_complete_quest(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_QUESTGIVER_CHOOSE_REWARD => {
+                            handle_questgiver_choose_reward(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_NPC_TEXT_QUERY => {
+                            handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
+                        }
+                        CMSG_LIST_INVENTORY => {
+                            handle_list_inventory(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_SELL_ITEM => {
+                            handle_sell_item(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_BUY_ITEM => {
+                            handle_buy_item(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_TRAINER_LIST => {
+                            handle_trainer_list(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_TRAINER_BUY_SPELL => {
+                            handle_trainer_buy_spell(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_ATTACKSWING => {
+                            handle_attack_swing(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_ATTACKSTOP => {
+                            handle_attack_stop(&mut stream, &mut session, &mut header_crypto)
+                                .await?;
+                        }
+                        CMSG_REPOP_REQUEST => {
+                            handle_repop_request(
+                                &mut stream,
+                                PlayerDeathDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    player_corpses: &runtime_state.player_corpses,
+                                    account_id: account.id,
+                                },
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_RECLAIM_CORPSE => {
+                            handle_reclaim_corpse(
+                                &mut stream,
+                                PlayerDeathDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    player_corpses: &runtime_state.player_corpses,
+                                    account_id: account.id,
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_SPIRIT_HEALER_ACTIVATE => {
+                            handle_spirit_healer_activate(
+                                &mut stream,
+                                PlayerDeathDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    player_corpses: &runtime_state.player_corpses,
+                                    account_id: account.id,
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        MSG_CORPSE_QUERY => {
+                            handle_corpse_query(&mut stream, &session, &mut header_crypto).await?;
+                        }
+                        CMSG_LOOT => {
+                            handle_loot(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_AUTOSTORE_LOOT_ITEM => {
+                            handle_autostore_loot_item(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOOT_MONEY => {
+                            handle_loot_money(
+                                &mut stream,
+                                &character_db_pool,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOOT_RELEASE => {
+                            handle_loot_release(
+                                &mut stream,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GMTICKET_GETTICKET => {
+                            handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
+                        }
+                        CMSG_SET_ACTIVE_MOVER => {
+                            handle_set_active_mover(&body, &session)?;
+                        }
+                        MSG_QUERY_NEXT_MAIL_TIME => {
+                            handle_query_next_mail_time(
+                                &mut stream,
+                                &character_db_pool,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOGOUT_REQUEST => {
+                            handle_logout_request(
+                                &mut stream,
+                                &character_db_pool,
+                                account.id,
+                                &mut header_crypto,
+                                &mut session,
+                                &runtime_state.online_characters,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOGOUT_CANCEL => {
+                            handle_logout_cancel(&mut stream, &mut header_crypto).await?;
+                        }
+                        CMSG_PLAYER_LOGOUT => {
+                            info!("Received client-side player logout notification");
+                        }
+                        _ if is_movement_opcode(opcode) => {
+                            handle_movement(
+                                &mut stream,
+                                MovementDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    player_corpses: &runtime_state.player_corpses,
+                                },
+                                opcode,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        _ if is_expected_noop_opcode(opcode) => {
+                            info!(
+                                opcode = expected_noop_opcode_name(opcode),
+                                bytes = body.len(),
+                                "Ignoring expected world bootstrap opcode"
+                            );
+                        }
+                        _ => {
+                            warn!(
+                                opcode = format_args!("0x{opcode:04X}"),
+                                "Unhandled authenticated world opcode"
+                            );
+                        }
+                    }
+                    if Instant::now() >= next_world_tick_at {
+                        handle_combat_tick(
+                            &mut stream,
+                            &character_db_pool,
+                            &world_db_pool,
+                            account.id,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                        advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
+                    }
                 }
-                if Instant::now() >= next_world_tick_at {
+                Ok(Err(e)) => {
+                    persist_session_character_state(&character_db_pool, account.id, &session)
+                        .await?;
+                    unregister_active_character(&runtime_state.online_characters, &mut session)
+                        .await;
+                    info!("World client disconnected or read failed: {}", e);
+                    return Ok(());
+                }
+                Err(_) => {
                     handle_combat_tick(
                         &mut stream,
                         &character_db_pool,
                         &world_db_pool,
+                        account.id,
                         &mut session,
                         &mut header_crypto,
                     )
@@ -605,25 +698,23 @@ async fn handle_client(
                     advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
                 }
             }
-            Ok(Err(e)) => {
-                persist_active_character_position(&character_db_pool, account.id, &session).await?;
-                unregister_active_character(&runtime_state.online_characters, &mut session).await;
-                info!("World client disconnected or read failed: {}", e);
-                return Ok(());
-            }
-            Err(_) => {
-                handle_combat_tick(
-                    &mut stream,
-                    &character_db_pool,
-                    &world_db_pool,
-                    &mut session,
-                    &mut header_crypto,
-                )
-                .await?;
-                advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
-            }
         }
     }
+    .await;
+
+    if session_result.is_err() {
+        if let Err(cleanup_error) =
+            persist_session_character_state(&character_db_pool, account.id, &session).await
+        {
+            warn!(
+                "Failed to persist active character state after world session error: {}",
+                cleanup_error
+            );
+        }
+        unregister_active_character(&runtime_state.online_characters, &mut session).await;
+    }
+
+    session_result
 }
 
 fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Duration {
@@ -975,6 +1066,31 @@ async fn handle_player_login(
         client_time: 0,
         fall_time: 0,
     });
+    session.player_visual = Some(PlayerVisualState {
+        gender: character.gender,
+        player_bytes: character.player_bytes,
+        player_bytes2: character.player_bytes2,
+        equipment_cache: character.equipment_cache.clone(),
+        guildid: character.guildid,
+    });
+    session.player_flags = character.player_flags;
+    session.player_death_state = if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
+        PlayerDeathState::Ghost
+    } else {
+        PlayerDeathState::Alive
+    };
+    session.player_corpse = if session.player_death_state == PlayerDeathState::Ghost {
+        let corpse = wow_db::get_player_corpse(deps.character_db_pool, character.guid).await?;
+        corpse.map(player_corpse_runtime_from_query)
+    } else {
+        None
+    };
+    if let Some(corpse) = &session.player_corpse {
+        deps.player_corpses
+            .lock()
+            .await
+            .insert(character.guid, corpse.clone());
+    }
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     session.combat_dummy_lootable = false;
     session.combat_dummy_looting = false;
@@ -992,17 +1108,46 @@ async fn handle_player_login(
     let nearby_creature_runtimes =
         build_db_creature_runtimes_with_respawns(deps.character_db_pool, nearby_creatures).await?;
     let visible_nearby_creatures = visible_db_creature_spawns(&nearby_creature_runtimes);
-    session.db_creatures = nearby_creature_runtimes
-        .into_iter()
-        .map(|creature| (creature.guid().raw(), creature))
-        .collect();
-    session.last_creature_visibility_position = Some(WorldPosition::new(
+    let nearby_db_player_corpses = wow_db::get_nearby_player_corpses(
+        deps.character_db_pool,
+        character.map,
+        character.position_x,
+        character.position_y,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        PLAYER_CORPSE_VISIBILITY_LIMIT,
+    )
+    .await?
+    .into_iter()
+    .map(player_corpse_runtime_from_query)
+    .collect::<Vec<_>>();
+    let login_position = WorldPosition::new(
         character.map,
         character.position_x,
         character.position_y,
         character.position_z,
         character.orientation,
-    ));
+    );
+    let nearby_player_corpses = merge_player_corpse_visibility(
+        nearby_db_player_corpses,
+        nearby_runtime_player_corpses(
+            deps.player_corpses,
+            login_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            PLAYER_CORPSE_VISIBILITY_LIMIT,
+        )
+        .await,
+    );
+    session.visible_player_corpses = nearby_player_corpses
+        .iter()
+        .cloned()
+        .map(|corpse| (corpse.guid.raw(), corpse))
+        .collect();
+    session.db_creatures = nearby_creature_runtimes
+        .into_iter()
+        .map(|creature| (creature.guid().raw(), creature))
+        .collect();
+    session.last_creature_visibility_position = Some(login_position);
+    session.last_player_corpse_visibility_position = session.last_creature_visibility_position;
     session.player_health = character.health;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
@@ -1024,7 +1169,7 @@ async fn handle_player_login(
     if session.player_mana == 0 {
         session.player_mana = world_stats.max_mana();
     }
-    if session.player_health == 0 {
+    if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
         session.player_health = world_stats.max_health().max(1);
     }
     let spells = wow_db::get_character_spells(deps.character_db_pool, character.guid).await?;
@@ -1068,6 +1213,7 @@ async fn handle_player_login(
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
             nearby_creatures: &visible_nearby_creatures,
+            nearby_player_corpses: &nearby_player_corpses,
         },
         Some(header_crypto),
     )
@@ -1080,6 +1226,7 @@ struct PlayerLoginDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     online_characters: &'a OnlineCharacters,
+    player_corpses: &'a PlayerCorpses,
 }
 
 async fn handle_logout_request(
@@ -1115,9 +1262,21 @@ async fn handle_logout_request(
     )
     .await?;
     send_packet(stream, SMSG_LOGOUT_COMPLETE, &[], Some(header_crypto)).await?;
-    persist_active_character_position(character_db_pool, account_id, session).await?;
+    persist_session_character_state(character_db_pool, account_id, session).await?;
     unregister_active_character(online_characters, session).await;
     Ok(())
+}
+
+async fn persist_session_character_state(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    session: &WorldSessionState,
+) -> anyhow::Result<()> {
+    if session.player_death_state == PlayerDeathState::Alive {
+        persist_active_character_position(character_db_pool, account_id, session).await
+    } else {
+        persist_player_death_state(character_db_pool, account_id, session).await
+    }
 }
 
 async fn unregister_active_character(
@@ -1128,6 +1287,11 @@ async fn unregister_active_character(
         online_characters.lock().await.remove(&character.guid);
     }
     session.active_spells.clear();
+    session.player_death_state = PlayerDeathState::Alive;
+    session.player_corpse = None;
+    session.visible_player_corpses.clear();
+    session.player_visual = None;
+    session.player_flags = 0;
 }
 
 fn current_unix_epoch_secs_u64() -> u64 {
@@ -1216,8 +1380,7 @@ async fn handle_logout_cancel(
 
 async fn handle_movement(
     stream: &mut TcpStream,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: MovementDeps<'_>,
     opcode: u32,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -1246,8 +1409,16 @@ async fn handle_movement(
         );
         stream_newly_visible_db_creatures(
             stream,
-            character_db_pool,
-            world_db_pool,
+            deps.character_db_pool,
+            deps.world_db_pool,
+            session,
+            header_crypto,
+        )
+        .await?;
+        stream_nearby_player_corpses(
+            stream,
+            deps.character_db_pool,
+            deps.player_corpses,
             session,
             header_crypto,
         )
@@ -1260,6 +1431,12 @@ async fn handle_movement(
         );
     }
     Ok(())
+}
+
+struct MovementDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    player_corpses: &'a PlayerCorpses,
 }
 
 async fn stream_newly_visible_db_creatures(
@@ -1324,6 +1501,161 @@ async fn stream_newly_visible_db_creatures(
         send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
     }
     Ok(())
+}
+
+async fn stream_nearby_player_corpses(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    player_corpses: &PlayerCorpses,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let position = character.position;
+    if !should_rescan_player_corpse_visibility(session, position) {
+        return Ok(());
+    }
+    session.last_player_corpse_visibility_position = Some(position);
+    let nearby_db_corpses = wow_db::get_nearby_player_corpses(
+        character_db_pool,
+        position.map_id,
+        position.x,
+        position.y,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        PLAYER_CORPSE_VISIBILITY_LIMIT,
+    )
+    .await?
+    .into_iter()
+    .map(player_corpse_runtime_from_query)
+    .collect::<Vec<_>>();
+    let nearby_corpses = merge_player_corpse_visibility(
+        nearby_db_corpses,
+        nearby_runtime_player_corpses(
+            player_corpses,
+            position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            PLAYER_CORPSE_VISIBILITY_LIMIT,
+        )
+        .await,
+    );
+    let nearby_guids = nearby_corpses
+        .iter()
+        .map(|corpse| corpse.guid.raw())
+        .collect::<HashSet<_>>();
+    let mut destroy_guids = Vec::new();
+    for (guid, corpse) in &session.visible_player_corpses {
+        if !nearby_guids.contains(guid)
+            && !is_position_inside_radius(
+                corpse.position,
+                position,
+                CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS,
+            )
+        {
+            destroy_guids.push(*guid);
+        }
+    }
+    for guid in &destroy_guids {
+        session.visible_player_corpses.remove(guid);
+    }
+    let new_corpses = nearby_corpses
+        .into_iter()
+        .filter(|corpse| {
+            !session
+                .visible_player_corpses
+                .contains_key(&corpse.guid.raw())
+        })
+        .collect::<Vec<_>>();
+    let create_blocks = new_corpses
+        .iter()
+        .map(build_player_corpse_create_block)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for corpse in new_corpses {
+        session
+            .visible_player_corpses
+            .insert(corpse.guid.raw(), corpse);
+    }
+
+    for guid in destroy_guids {
+        send_packet(
+            stream,
+            SMSG_DESTROY_OBJECT,
+            &build_destroy_guid_body(ObjectGuid::from_raw(guid)),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if !create_blocks.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_update_object_body(&create_blocks),
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn nearby_runtime_player_corpses(
+    player_corpses: &PlayerCorpses,
+    position: WorldPosition,
+    radius: f32,
+    limit: u32,
+) -> Vec<PlayerCorpseRuntime> {
+    let radius_squared = radius * radius;
+    let mut corpses = player_corpses
+        .lock()
+        .await
+        .values()
+        .filter(|corpse| {
+            corpse.position.map_id == position.map_id
+                && distance_squared_2d(corpse.position.x, corpse.position.y, position.x, position.y)
+                    <= radius_squared
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    corpses.sort_by(|left, right| {
+        distance_squared_2d(left.position.x, left.position.y, position.x, position.y)
+            .partial_cmp(&distance_squared_2d(
+                right.position.x,
+                right.position.y,
+                position.x,
+                position.y,
+            ))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    corpses.truncate(limit as usize);
+    corpses
+}
+
+fn merge_player_corpse_visibility(
+    db_corpses: Vec<PlayerCorpseRuntime>,
+    runtime_corpses: Vec<PlayerCorpseRuntime>,
+) -> Vec<PlayerCorpseRuntime> {
+    let mut merged = db_corpses
+        .into_iter()
+        .map(|corpse| (corpse.guid.raw(), corpse))
+        .collect::<HashMap<_, _>>();
+    for corpse in runtime_corpses {
+        merged.insert(corpse.guid.raw(), corpse);
+    }
+    merged.into_values().collect()
+}
+
+fn should_rescan_player_corpse_visibility(
+    session: &WorldSessionState,
+    position: WorldPosition,
+) -> bool {
+    let Some(previous) = session.last_player_corpse_visibility_position else {
+        return true;
+    };
+    if previous.map_id != position.map_id {
+        return true;
+    }
+    distance_squared_2d(previous.x, previous.y, position.x, position.y)
+        >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
 }
 
 fn should_rescan_db_creature_visibility(
@@ -1475,12 +1807,26 @@ fn is_db_creature_inside_radius(
     position: WorldPosition,
     radius: f32,
 ) -> bool {
-    if creature.current_position.map_id != position.map_id {
+    is_position_inside_radius(creature.current_position, position, radius)
+}
+
+fn is_position_inside_radius(
+    object_position: WorldPosition,
+    position: WorldPosition,
+    radius: f32,
+) -> bool {
+    if object_position.map_id != position.map_id {
         return false;
     }
-    let dx = creature.current_position.x - position.x;
-    let dy = creature.current_position.y - position.y;
+    let dx = object_position.x - position.x;
+    let dy = object_position.y - position.y;
     dx * dx + dy * dy <= radius * radius
+}
+
+fn distance_squared_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> f32 {
+    let dx = left_x - right_x;
+    let dy = left_y - right_y;
+    dx * dx + dy * dy
 }
 
 fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {

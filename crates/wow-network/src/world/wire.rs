@@ -167,6 +167,22 @@ impl MovementInfo {
     }
 }
 
+fn write_movement_info(
+    body: &mut Vec<u8>,
+    flags: u32,
+    client_time: u32,
+    position: WorldPosition,
+    fall_time: u32,
+) {
+    body.extend_from_slice(&flags.to_le_bytes());
+    body.extend_from_slice(&client_time.to_le_bytes());
+    body.extend_from_slice(&position.x.to_le_bytes());
+    body.extend_from_slice(&position.y.to_le_bytes());
+    body.extend_from_slice(&position.z.to_le_bytes());
+    body.extend_from_slice(&position.orientation.to_le_bytes());
+    body.extend_from_slice(&fall_time.to_le_bytes());
+}
+
 fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
     ensure_available(body, *cursor + 4)?;
     let value = u32::from_le_bytes(body[*cursor..*cursor + 4].try_into()?);

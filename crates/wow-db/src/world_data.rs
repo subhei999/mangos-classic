@@ -72,6 +72,17 @@ pub struct CreatureWaypointQuery {
     pub script_id: u32,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct GraveyardQuery {
+    pub id: u32,
+    pub map: u32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub o: f32,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VendorItemQuery {
     pub item: u32,
@@ -286,6 +297,82 @@ pub async fn get_quest_template_query(
     .await?;
 
     Ok(row.map(QuestTemplateRow::into_query))
+}
+
+pub async fn get_closest_graveyard(
+    pool: &MySqlPool,
+    map: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+    faction: u32,
+) -> Result<Option<GraveyardQuery>, DbError> {
+    let row = sqlx::query_as::<_, GraveyardQuery>(
+        "SELECT world_safe_locs.id AS id, world_safe_locs.map AS map, \
+                CAST(world_safe_locs.x AS DOUBLE) AS x, \
+                CAST(world_safe_locs.y AS DOUBLE) AS y, \
+                CAST(world_safe_locs.z AS DOUBLE) AS z, \
+                CAST(world_safe_locs.o AS DOUBLE) AS o, \
+                world_safe_locs.name AS name \
+         FROM game_graveyard_zone \
+         JOIN world_safe_locs ON game_graveyard_zone.ghost_loc = world_safe_locs.id \
+         WHERE game_graveyard_zone.link_kind = 0 \
+           AND world_safe_locs.map = ? \
+           AND (game_graveyard_zone.faction = 0 OR game_graveyard_zone.faction = ?) \
+         ORDER BY ((world_safe_locs.x - ?) * (world_safe_locs.x - ?)) + \
+                  ((world_safe_locs.y - ?) * (world_safe_locs.y - ?)) + \
+                  ((world_safe_locs.z - ?) * (world_safe_locs.z - ?)) ASC, \
+                  world_safe_locs.id ASC \
+         LIMIT 1",
+    )
+    .bind(map)
+    .bind(faction)
+    .bind(x)
+    .bind(x)
+    .bind(y)
+    .bind(y)
+    .bind(z)
+    .bind(z)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+pub async fn get_closest_spirit_healer(
+    pool: &MySqlPool,
+    map: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> Result<Option<GraveyardQuery>, DbError> {
+    let row = sqlx::query_as::<_, GraveyardQuery>(
+        "SELECT creature.guid AS id, creature.map AS map, \
+                CAST(creature.position_x AS DOUBLE) AS x, \
+                CAST(creature.position_y AS DOUBLE) AS y, \
+                CAST(creature.position_z AS DOUBLE) AS z, \
+                CAST(creature.orientation AS DOUBLE) AS o, \
+                creature_template.Name AS name \
+         FROM creature \
+         JOIN creature_template ON creature.id = creature_template.Entry \
+         WHERE creature.map = ? AND creature.id = 6491 \
+         ORDER BY ((creature.position_x - ?) * (creature.position_x - ?)) + \
+                  ((creature.position_y - ?) * (creature.position_y - ?)) + \
+                  ((creature.position_z - ?) * (creature.position_z - ?)) ASC, \
+                  creature.guid ASC \
+         LIMIT 1",
+    )
+    .bind(map)
+    .bind(x)
+    .bind(x)
+    .bind(y)
+    .bind(y)
+    .bind(z)
+    .bind(z)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
 }
 
 pub async fn get_creature_start_quests(

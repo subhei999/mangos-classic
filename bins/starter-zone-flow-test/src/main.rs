@@ -51,6 +51,8 @@ const BROTHER_PAXTON_ENTRY: u32 = FIXTURE_PREFIX + 3;
 const LLANE_BESHERE_ENTRY: u32 = FIXTURE_PREFIX + 6;
 const YOUNG_WOLF_ENTRY: u32 = FIXTURE_PREFIX + 4;
 const KOBOLD_VERMIN_ENTRY: u32 = FIXTURE_PREFIX + 5;
+const DEATH_TESTER_ENTRY: u32 = FIXTURE_PREFIX + 7;
+const DEATH_TESTER_GUID: u32 = FIXTURE_PREFIX + 907;
 const YOUNG_WOLF_DISPLAY_ID: u32 = 372;
 const KOBOLD_VERMIN_DISPLAY_ID: u32 = 365;
 const NORTHSHIRE_CRATE_ENTRY: u32 = FIXTURE_PREFIX + 101;
@@ -68,12 +70,15 @@ const CMSG_QUESTGIVER_CHOOSE_REWARD: u32 = 0x018E;
 const CMSG_TRAINER_LIST: u32 = 0x01B0;
 const CMSG_TRAINER_BUY_SPELL: u32 = 0x01B2;
 const CMSG_ATTACKSWING: u32 = 0x0141;
+const CMSG_REPOP_REQUEST: u32 = 0x015A;
 const CMSG_LOOT: u32 = 0x015D;
 const CMSG_LOOT_MONEY: u32 = 0x015E;
 const CMSG_LOOT_RELEASE: u32 = 0x015F;
 const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
+const CMSG_RECLAIM_CORPSE: u32 = 0x01D2;
 const CMSG_MOVE_HEARTBEAT: u32 = 0x00EE;
+const MSG_CORPSE_QUERY: u32 = 0x0216;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
@@ -96,12 +101,18 @@ const SMSG_LOG_XPGAIN: u32 = 0x01D0;
 const SMSG_LEVELUP_INFO: u32 = 0x01D4;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
+const SMSG_CORPSE_RECLAIM_DELAY: u32 = 0x0269;
+const MSG_MOVE_TELEPORT_ACK: u32 = 0x00C7;
 const AUTH_OK: u8 = 0x0C;
 const UNIT_FIELD_HEALTH: usize = 0x016;
 const UNIT_FIELD_LEVEL: usize = 0x022;
 const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
+const PLAYER_FLAGS_FIELD: usize = 0x0BE;
 const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
+const CORPSE_FIELD_FLAGS: usize = 0x023;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
+const PLAYER_FLAGS_GHOST: u32 = 0x0000_0010;
+const CORPSE_FLAG_BONES: u32 = 0x01;
 const DIALOG_STATUS_AVAILABLE: u32 = 5;
 const DIALOG_STATUS_REWARD2: u32 = 7;
 const QUEST_STATUS_COMPLETE: u32 = 1;
@@ -147,6 +158,8 @@ struct StarterZoneContent {
     wolf_health: u32,
     wolf_loot_money: u32,
     wolf_loot_item: Option<u32>,
+    death_creature: ExpectedCreature,
+    death_position: WorldPosition,
 }
 
 #[tokio::main]
@@ -210,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
     world.move_near_kobold_expect_no_aggro(&starter_zone)?;
     world.complete_kobold_camp_cleanup(&starter_zone)?;
     world.learn_warrior_trainer_spell(&starter_zone)?;
+    let death_proof = world.die_release_and_reclaim_corpse(&starter_zone)?;
     assert_kobold_camp_cleanup_persisted(&character_pool, created.guid, starter_zone.kobold_quest)
         .await?;
     assert_warrior_trainer_spell_persisted(
@@ -219,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     assert_starter_zone_creature_respawns_persisted(&character_pool, &starter_zone).await?;
+    assert_player_death_reclaim_persisted(&character_pool, created.guid, death_proof).await?;
 
     println!(
         "starter-zone {:?} lock passed for account {USERNAME}, character {CHARACTER_NAME}",
@@ -275,6 +290,12 @@ async fn cleanup_account_characters(
         .bind(account_id)
         .fetch_all(character_pool)
         .await?;
+    for guid in &guids {
+        sqlx::query("DELETE FROM corpse WHERE player = ?")
+            .bind(*guid)
+            .execute(character_pool)
+            .await?;
+    }
     for guid in guids {
         let deleted = wow_db::delete_character(character_pool, account_id, guid).await?;
         ensure!(
@@ -306,6 +327,7 @@ async fn cleanup_starter_zone_creature_respawns(
             .iter()
             .map(|target| target.creature.counter),
     );
+    guids.push(content.death_creature.counter);
     guids.sort_unstable();
     guids.dedup();
 
@@ -321,16 +343,22 @@ async fn cleanup_starter_zone_creature_respawns(
     }
     separated.push_unseparated(")");
     builder.build().execute(character_pool).await?;
+    sqlx::query("DELETE FROM creature_respawn WHERE instance = 0 AND guid = ?")
+        .bind(content.death_creature.counter)
+        .execute(character_pool)
+        .await?;
     Ok(())
 }
 
 async fn prepare_northshire_content(world_pool: &MySqlPool) -> anyhow::Result<StarterZoneContent> {
     cleanup_northshire_fixture(world_pool).await?;
     if let Some(real) = load_real_northshire_content(world_pool).await? {
+        seed_death_test_fixture(world_pool).await?;
         return Ok(real);
     }
 
     seed_northshire_fixture(world_pool).await?;
+    seed_death_test_fixture(world_pool).await?;
     load_fixture_northshire_content(world_pool).await
 }
 
@@ -531,6 +559,8 @@ async fn load_real_northshire_content(
             .max_loot_gold
             .max(wolf_spawn.template.min_loot_gold),
         wolf_loot_item: wolf_loot.map(|loot| loot.item),
+        death_creature: death_test_creature(),
+        death_position: death_test_position(),
     }))
 }
 
@@ -609,6 +639,8 @@ async fn load_fixture_northshire_content(
         wolf_health: 4,
         wolf_loot_money: 3,
         wolf_loot_item: wolf_loot.map(|loot| loot.item),
+        death_creature: death_test_creature(),
+        death_position: death_test_position(),
     })
 }
 
@@ -865,6 +897,50 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+async fn seed_death_test_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
+    seed_creature_template(
+        world_pool,
+        DEATH_TESTER_ENTRY,
+        "Rust Death Proof",
+        "Northshire Harness",
+        3,
+        KOBOLD_VERMIN_DISPLAY_ID,
+        14,
+        7,
+        0,
+        50_000,
+        250.0,
+        300.0,
+        0,
+        0,
+        0,
+        0,
+    )
+    .await?;
+    let position = death_test_position();
+    seed_creature_spawn(
+        world_pool,
+        DEATH_TESTER_GUID,
+        DEATH_TESTER_ENTRY,
+        position.x,
+        position.y,
+        position.z,
+        position.orientation,
+    )
+    .await
+}
+
+fn death_test_creature() -> ExpectedCreature {
+    ExpectedCreature {
+        entry: DEATH_TESTER_ENTRY,
+        counter: DEATH_TESTER_GUID,
+    }
+}
+
+fn death_test_position() -> WorldPosition {
+    WorldPosition::new(EASTERN_KINGDOMS_MAP, -9025.0, -132.0, 83.5, 0.0)
 }
 
 async fn cleanup_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
@@ -1350,7 +1426,11 @@ async fn assert_starter_zone_creature_respawns_persisted(
     character_pool: &MySqlPool,
     content: &StarterZoneContent,
 ) -> anyhow::Result<()> {
-    let mut expected_guids = vec![content.wolf.counter];
+    let mut expected_guids = if content.source == StarterZoneSource::Fixture {
+        vec![content.wolf.counter]
+    } else {
+        Vec::new()
+    };
     expected_guids.extend(
         content
             .kobold_targets
@@ -1384,6 +1464,47 @@ async fn assert_starter_zone_creature_respawns_persisted(
         "starter-zone creature deaths did not persist respawn rows: expected={} actual={}",
         expected_guids.len(),
         persisted_count
+    );
+    Ok(())
+}
+
+async fn assert_player_death_reclaim_persisted(
+    character_pool: &MySqlPool,
+    character_guid: u32,
+    proof: DeathReclaimProof,
+) -> anyhow::Result<()> {
+    let corpse_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM corpse WHERE player = ?")
+        .bind(character_guid)
+        .fetch_one(character_pool)
+        .await?;
+    ensure!(
+        corpse_rows == 0,
+        "corpse row was not deleted after corpse reclaim: rows={corpse_rows}"
+    );
+
+    let row: (u32, u32, f32, f32, f32) = sqlx::query_as(
+        "SELECT health, playerFlags, position_x, position_y, position_z \
+         FROM characters WHERE guid = ?",
+    )
+    .bind(character_guid)
+    .fetch_one(character_pool)
+    .await?;
+    ensure!(row.0 > 0, "reclaimed character health did not persist");
+    ensure!(
+        row.1 & PLAYER_FLAGS_GHOST == 0,
+        "ghost flag persisted after corpse reclaim"
+    );
+    ensure!(
+        (row.2 - proof.corpse_position.x).abs() < 0.25
+            && (row.3 - proof.corpse_position.y).abs() < 0.25
+            && (row.4 - proof.corpse_position.z).abs() < 0.25,
+        "reclaimed character position did not persist at corpse: db=({}, {}, {}) corpse=({}, {}, {})",
+        row.2,
+        row.3,
+        row.4,
+        proof.corpse_position.x,
+        proof.corpse_position.y,
+        proof.corpse_position.z
     );
     Ok(())
 }
@@ -1487,6 +1608,11 @@ struct XpProgressionEvidence {
     saw_quest_xp_log: bool,
     saw_levelup: bool,
     saw_progression_update: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeathReclaimProof {
+    corpse_position: WorldPosition,
 }
 
 impl WorldClient {
@@ -2152,6 +2278,184 @@ impl WorldClient {
         Ok(())
     }
 
+    fn die_release_and_reclaim_corpse(
+        &mut self,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<DeathReclaimProof> {
+        let player = ObjectGuid::new(HighGuid::Player, 0, self.character_guid);
+        let killer = ObjectGuid::new(
+            HighGuid::Unit,
+            content.death_creature.entry,
+            content.death_creature.counter,
+        );
+        let corpse = ObjectGuid::new(HighGuid::Corpse, 0, self.character_guid);
+        let attack_positions = nearby_attack_positions(content.death_position);
+        let corpse_position = attack_positions[0];
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(corpse_position),
+            Some(&mut self.crypto),
+        )?;
+        self.drain_immediate_packets()?;
+
+        let mut saw_death_damage = false;
+        let mut saw_player_dead = false;
+        for attempt in 0..80 {
+            let attack_position = attack_positions[attempt % attack_positions.len()];
+            write_client_packet(
+                &mut self.stream,
+                CMSG_MOVE_HEARTBEAT,
+                &movement_body(attack_position),
+                Some(&mut self.crypto),
+            )?;
+            self.stream
+                .set_read_timeout(Some(Duration::from_millis(150)))?;
+            while let Some((opcode, body)) =
+                try_read_server_packet(&mut self.stream, &mut self.crypto)?
+            {
+                if opcode == SMSG_ATTACKERSTATEUPDATE
+                    && attacker_state_update_matches(&body, killer, player)?
+                {
+                    saw_death_damage = true;
+                }
+                if opcode == SMSG_UPDATE_OBJECT
+                    && update_packet_has_values_or_false(&body, player, &[(UNIT_FIELD_HEALTH, 0)])
+                {
+                    saw_player_dead = true;
+                    break;
+                }
+            }
+            if saw_player_dead {
+                break;
+            }
+        }
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        ensure!(
+            saw_death_damage,
+            "death proof creature did not damage the player"
+        );
+        ensure!(
+            saw_player_dead,
+            "death proof creature did not trigger player death"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_REPOP_REQUEST,
+            &[],
+            Some(&mut self.crypto),
+        )?;
+        let mut saw_ghost_update = false;
+        let mut saw_corpse_object = false;
+        let mut saw_reclaim_delay = false;
+        let mut saw_release_teleport = false;
+        for _ in 0..48 {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            match opcode {
+                SMSG_UPDATE_OBJECT => {
+                    if update_packet_has_values_or_false(
+                        &body,
+                        player,
+                        &[
+                            (UNIT_FIELD_HEALTH, 1),
+                            (PLAYER_FLAGS_FIELD, PLAYER_FLAGS_GHOST),
+                        ],
+                    ) {
+                        saw_ghost_update = true;
+                    }
+                    let corpse_bytes = corpse.raw().to_le_bytes();
+                    if body
+                        .windows(corpse_bytes.len())
+                        .any(|window| window == corpse_bytes)
+                    {
+                        saw_corpse_object = true;
+                    }
+                }
+                SMSG_CORPSE_RECLAIM_DELAY => saw_reclaim_delay = true,
+                MSG_MOVE_TELEPORT_ACK => saw_release_teleport = true,
+                _ => {}
+            }
+            if saw_ghost_update && saw_corpse_object && saw_reclaim_delay && saw_release_teleport {
+                break;
+            }
+        }
+        ensure!(saw_ghost_update, "release did not send ghost player update");
+        ensure!(
+            saw_corpse_object,
+            "release did not create a player corpse object"
+        );
+        ensure!(
+            saw_reclaim_delay,
+            "release did not send corpse reclaim delay"
+        );
+        ensure!(
+            saw_release_teleport,
+            "release did not teleport the ghost to a graveyard"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            MSG_CORPSE_QUERY,
+            &[],
+            Some(&mut self.crypto),
+        )?;
+        let query = self.read_until(MSG_CORPSE_QUERY, 12)?;
+        assert_corpse_query_points_to(&query, corpse_position)?;
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(corpse_position),
+            Some(&mut self.crypto),
+        )?;
+        self.drain_immediate_packets()?;
+        write_client_packet(
+            &mut self.stream,
+            CMSG_RECLAIM_CORPSE,
+            &corpse.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+
+        let mut saw_alive_update = false;
+        let mut saw_bones_update = false;
+        let mut saw_reclaim_teleport = false;
+        for _ in 0..48 {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            match opcode {
+                SMSG_UPDATE_OBJECT => {
+                    if update_packet_has_values_or_false(&body, player, &[(PLAYER_FLAGS_FIELD, 0)])
+                    {
+                        saw_alive_update = true;
+                    }
+                    if update_packet_has_values_or_false(
+                        &body,
+                        corpse,
+                        &[(CORPSE_FIELD_FLAGS, CORPSE_FLAG_BONES)],
+                    ) {
+                        saw_bones_update = true;
+                    }
+                }
+                MSG_MOVE_TELEPORT_ACK => saw_reclaim_teleport = true,
+                _ => {}
+            }
+            if saw_alive_update && saw_bones_update && saw_reclaim_teleport {
+                break;
+            }
+        }
+        ensure!(saw_alive_update, "corpse reclaim did not clear ghost flags");
+        ensure!(
+            saw_bones_update,
+            "corpse reclaim did not convert corpse to bones"
+        );
+        ensure!(
+            saw_reclaim_teleport,
+            "corpse reclaim did not send final teleport/movement ack"
+        );
+        Ok(DeathReclaimProof { corpse_position })
+    }
+
     fn read_until(&mut self, expected_opcode: u32, max_packets: usize) -> anyhow::Result<Vec<u8>> {
         for _ in 0..max_packets {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
@@ -2214,6 +2518,32 @@ fn assert_wolf_loot_response(
     ensure!(
         u32::from_le_bytes(body[19..23].try_into()?) == 1,
         "wolf loot item count was not one"
+    );
+    Ok(())
+}
+
+fn assert_corpse_query_points_to(body: &[u8], expected: WorldPosition) -> anyhow::Result<()> {
+    ensure!(body.len() == 21, "corpse query response had wrong size");
+    ensure!(body[0] == 1, "corpse query did not report a corpse");
+    ensure!(
+        i32::from_le_bytes(body[1..5].try_into()?) == expected.map_id as i32,
+        "corpse query used wrong map"
+    );
+    let x = f32::from_le_bytes(body[5..9].try_into()?);
+    let y = f32::from_le_bytes(body[9..13].try_into()?);
+    let z = f32::from_le_bytes(body[13..17].try_into()?);
+    ensure!(
+        (x - expected.x).abs() < 0.25
+            && (y - expected.y).abs() < 0.25
+            && (z - expected.z).abs() < 0.25,
+        "corpse query did not point to the death position: query=({x}, {y}, {z}) expected=({}, {}, {})",
+        expected.x,
+        expected.y,
+        expected.z
+    );
+    ensure!(
+        u32::from_le_bytes(body[17..21].try_into()?) == expected.map_id,
+        "corpse query used wrong corpse map id"
     );
     Ok(())
 }
@@ -2535,6 +2865,14 @@ fn update_packet_has_values(
         }
     }
     Ok(false)
+}
+
+fn update_packet_has_values_or_false(
+    body: &[u8],
+    guid: ObjectGuid,
+    expected: &[(usize, u32)],
+) -> bool {
+    update_packet_has_values(body, guid, expected).unwrap_or(false)
 }
 
 fn read_packed_update_guid(body: &[u8], cursor: &mut usize) -> anyhow::Result<u64> {

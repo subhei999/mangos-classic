@@ -26,8 +26,9 @@ Branch: codex/rust-auth-foundation
 4. G11 Persistence + Relog Sanity
 5. G5 Combat + Loot real-behavior fidelity
 6. G6 Level + Trainer issue #49 polish
-7. G7 Death + Respawn
-8. G12 Multi-client Sanity
+7. G8/G9 Pathing + Movement Fidelity
+8. G7 Death + Respawn
+9. G12 Multi-client Sanity
 
 Recently verified:
 
@@ -42,9 +43,9 @@ Recently verified:
 | G4 Quest Loop | Green-ish | Accept, progress, complete Kobold Camp Cleanup in real client | Harness green; user reports flow looks good | TBD | Keep as regression gate and collect final real-client proof after G3 |
 | G5 Combat + Loot | Yellow | Kill, loot, release, respawn starter mobs in real client with CMaNGOS-like corpse/respawn timing | Basic kill, loot, release, and respawn work; creatures currently revive instantly | TBD | Replace instant revive with narrow CMaNGOS-like corpse/respawn behavior after G3 |
 | G6 Level + Trainer | Yellow | Level up and train Battle Shout, spell appears immediately, persists after relog | Level/trainer flow works; #49 remains visual polish | #49 visual polish | Resolve or explicitly defer #49 after G3/G5 priority |
-| G7 Death + Respawn | Red | Player can die, release spirit, resurrect/respawn, DB state sane | No progress yet | #44 | Start after G3 and core starter loop proof |
-| G8 Combat Agency | Yellow | Starter mobs can aggro, chase or enter range, swing, damage the player, and either kill the player or die with CMaNGOS-like combat rules | Harness now proves a RealClassicDb Kobold Vermin streams in, aggro-starts from movement proximity, sends timed `SMSG_MONSTER_MOVE` chase splines from just outside melee range, advances runtime creature position separately from DB spawn/home position, rechecks/re-paths chase destination on a 250ms CMaNGOS-style cadence even while movement packets are flowing, retains active combat creatures even when their DB spawn point leaves the normal nearby-spawn visibility query, deals creature-origin melee damage only after the motion reaches melee range, and updates player health before the player attacks; real-client observation confirmed Young Wolf is neutral, Defias Thug should aggro, chase response is faster, and terrain/pathing is still glitchy/non-parity | #12, #50 | Add path validity/LOS, then widen range/facing-gated player swings before leash/evade |
-| G9 World Creature Fidelity | Yellow | Starter mobs come from real DB spawn/template data, expose DB loot, persist enough world state, respawn with CMaNGOS-like timing, and eventually support patrol/movement | DB spawn/template/loot basics work; instant revive and patrol/movement fidelity remain missing | TBD | Split persistent creature fidelity from combat agency; improve respawn/corpse timing and patrol data after G8/G5 basics |
+| G7 Death + Respawn | Red | Player can die, release spirit, resurrect/respawn, DB state sane | No progress yet | #44 | Start after pathing/movement fidelity is less fake |
+| G8 Combat Agency | Yellow | Starter mobs can aggro, chase or enter range, swing, damage the player, and either kill the player or die with CMaNGOS-like combat rules | Harness now proves a RealClassicDb Kobold Vermin streams in, aggro-starts from movement proximity using DB-backed `creature_template.Detection` plus the CMaNGOS level-delta attack-distance shape, sends timed `SMSG_MONSTER_MOVE` chase splines from just outside melee range, advances runtime creature position separately from DB spawn/home position, rechecks/re-paths chase destination on a 250ms CMaNGOS-style cadence even while movement packets are flowing, retains active combat creatures even when their DB spawn point leaves the normal nearby-spawn visibility query, deals creature-origin melee damage only after the motion reaches melee range, and updates player health before the player attacks. Aggro eligibility now uses a CMaNGOS-shaped faction-template reaction bridge over local ClassicDB faction IDs instead of a starter creature entry allowlist: Northshire hostile factions aggro, Young Wolf faction stays neutral, and friendly NPC factions stay friendly. Aggro, chase, creature melee reach, and player DB-creature melee hits now pass through explicit range/facing/navigation guardrails; Rust now inspects configured `maps`/`vmaps`/`mmaps` at startup, gates DB-creature path availability on CMaNGOS-style mmap tile presence, and can ask a native Detour bridge for multi-point mmap paths when local generated mmap data covers the start and target tiles. Far player right-click no longer starts creature retaliation before a valid landed hit, far starter melee spells fail before power spend/spell-go/damage, creature aggro now toggles the client-facing in-combat unit flag instead of requiring a player right-click, chase splines now use the CMaNGOS `MonsterMoveFacingTarget` shape, in-range bad-facing swings now publish an in-place facing-target turn before retrying, and multiple nearby hostile DB creatures can own combat/chase state at the same time. A first CMaNGOS-shaped leash/evade/home slice uses the default 30-yard leash radius, clears combat, resets creature health, and starts timed return-home motion; chase stop/re-path now uses the CMaNGOS combined 5-yard melee reach floor and half-range chase destination, trimming Detour paths to that stop distance. Aggro can now call same-faction nearby hostile assists once using `CallForHelp` or the CMaNGOS 5-yard default radius. Real-client observation confirmed Young Wolf is neutral, Defias Thug should aggro, chase response is faster, and pre-mmap-bridge terrain/pathing was still glitchy/non-parity | #12, #50 | Real-client tune Detour-backed chase/home feel, then add DB waypoint/patrol movement |
+| G9 World Creature Fidelity | Yellow | Starter mobs come from real DB spawn/template data, expose DB loot, persist enough world state, respawn with CMaNGOS-like timing, and support generic DB-backed idle/random/waypoint/patrol movement | DB spawn/template/loot basics work; Rust now loads DB `MovementType`/`spawndist` and runs generic random walk splines with CMaNGOS-like 3-10 second pauses for random-movement creatures. Rust also loads CMaNGOS-style `creature_movement` GUID paths with `creature_movement_template` entry/path 0 fallback for `MovementType` 2/4, sends timed multi-point patrol `SMSG_MONSTER_MOVE` splines, waits at DB nodes, and supports linear back-and-forth waypoint movement. Instant revive, `waypoint_path` indirection, true pathfinder random points, and respawn fidelity remain missing | #51, #52 | Real-client smoke DB waypoint/patrol movement, then add corpse/respawn timing; Northshire is proof only, not a source of starter-specific movement logic |
 | G10 NPC Interaction Fidelity | Red | Quest givers, vendors, trainers, gossip NPCs, and non-interactive NPCs expose the correct cursor/status, menus, flags, text, and failure behavior in the real client | Real-client NPC interaction pass plus harness | TBD | Audit Northshire NPC flags/status/menu flows against CMaNGOS |
 | G11 Persistence + Relog Sanity | Red | After quest progress, XP, level-up, loot, inventory changes, trainer learning, death/respawn, and position changes, logout/relog restores correct state with no dupes/loss/corruption | Harness plus real-client relog checklist | TBD | Add relog checkpoints after each major Northshire action |
 | G12 Multi-client Sanity | Red | Two clients can log into Northshire, see each other, move, chat/say, observe creature state consistently, and not duplicate loot/quest/combat state | Two-client real-client pass plus harness if possible | TBD | Add minimal two-session visibility/chat/shared mob test |
@@ -64,14 +65,19 @@ Requirements:
   reactions. Hostile creatures can aggro; neutral creatures do not aggro unless
   attacked or scripted; friendly/allied NPCs, guards, trainers, vendors, and
   quest NPCs must not aggro friendly players.
-- Aggro radius and timing: use the Classic/CMaNGOS level-delta detection shape
-  (same-level roughly 18 yards, modified by level delta, minimum roughly 5
-  yards) and run checks from world/creature ticks, not only player movement.
+- Aggro radius and timing: use CMaNGOS' DB-backed creature detection range
+  (`creature_template.Detection`) as the base for the level-delta detection
+  shape, minimum roughly 5 yards when non-zero, and run checks from
+  world/creature ticks, not only player movement.
 - Combat ownership: track creature victim, threat/attackers, player in-combat
   state, combat start/stop, home position, and invalid target cleanup.
 - Movement to player: aggroed melee creatures must move toward the target,
   stop in melee range, face the target, continue following if the player moves,
   and publish movement updates visible to the client.
+- Movement fidelity priority: because real-client feel is currently limited
+  more by fake-looking creature motion than by damage math, prioritize
+  CMaNGOS chase stop distance, re-path cadence, evade/home movement cleanup,
+  and later idle/random/patrol movement before melee roll/damage parity.
 - Parity guardrail: do not implement chase as an isolated packet shortcut. The
   Rust shape should follow CMaNGOS' chain: `CreatureAI::AttackStart` /
   `Unit::Attack` / combat ownership and threat, `MotionMaster::MoveChase`,
@@ -81,7 +87,9 @@ Requirements:
   stop, evade state, health/reset behavior, and return-home behavior.
 - Range and positioning: melee attacks require valid range. Player and creature
   attacks must not apply damage from spawn point or out of range. Ranged and
-  spell ranges must be separate from melee range.
+  spell ranges must be separate from melee range. Player DB-creature melee now
+  uses the CMaNGOS minimum melee reach shape; combat reach/model-specific
+  modifiers remain future fidelity work.
 - Facing and arc rules: melee validity and defensive outcomes depend on
   orientation. Behind-target attacks must alter parry/block/dodge eligibility
   according to Classic rules; spell casts may require facing where applicable.
@@ -108,9 +116,46 @@ Recommended slice order:
 3. G8.3 Melee chase / move-into-range v1.
 4. G8.4 Range and facing-gated swing timers.
 5. G8.5 Leash, evade, and return home.
-6. G8.6 Melee roll table.
-7. G8.7 Damage formula v1.
-8. G8.8 Spell, GCD, and queued melee integration.
+6. G8.6 CMaNGOS chase stop-distance, re-path, and return-home movement feel.
+7. G8.7 G9 idle/random/patrol movement v1 for starter creatures.
+8. G8.8 Melee roll table.
+9. G8.9 Damage formula v1.
+10. G8.10 Spell, GCD, and queued melee integration.
+
+Next movement slice:
+
+- Compare `MotionMaster`, `ChaseMovementGenerator`,
+  `HomeMovementGenerator`, and `Unit::CanReachWithMeleeAttack`.
+- Chase stop/re-path now uses the CMaNGOS combined melee reach floor: creatures
+  can hit at 5 yards, chase to half that range, and only refresh chase splines
+  when the target leaves the full melee-reach window.
+- Chase, return-home, and random movement can now store and send multi-point
+  paths from local generated mmap data, with server-side interpolation across
+  the same corners.
+- Real-client tune chase and return-home transitions so mobs do not jitter,
+  stall, or appear to run through/around the target in obviously fake ways.
+- Keep vmap LOS, CMaNGOS path flags, and DB waypoint/patrol movement explicit
+  until each piece is wired and proven honestly.
+
+### G9 World Creature Fidelity
+
+G9 owns non-combat creature behavior and world-state fidelity. It should be
+generic CMaNGOS/DB-backed creature movement, not Northshire-specific scripting.
+Northshire is the first proof area because it is the current playable slice.
+
+Requirements:
+
+- Use CMaNGOS source and DB behavior as the reference for `MovementType`,
+  `spawndist`, home position, waypoint/path tables, idle/random movement,
+  patrol movement, respawn timing, and AI update cadence.
+- Do not add hardcoded starter creature movement rules. Harness-only fixtures
+  are acceptable when clearly marked as proof data, but production behavior
+  should come from DB/source-derived creature state.
+- Keep responsibilities clear: G8 owns combat chase, melee reach, leash/evade,
+  and return-home combat cleanup; G9 owns idle, random, waypoint, patrol,
+  respawn, and persistent world-object behavior outside combat.
+- Prove the generic behavior first in Northshire, then leave the shape ready
+  for other zones without per-zone branches.
 
 ### G10 NPC Interaction Fidelity
 

@@ -545,6 +545,17 @@ fn build_db_creature_state_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_unit_flags_update_body(guid: ObjectGuid, flags: u32) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, flags)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
 fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -575,26 +586,88 @@ fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::R
     Ok(body)
 }
 
-fn build_monster_move_body(
+fn build_monster_move_walk_path_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    spline_id: u32,
+    duration_ms: u32,
+) -> anyhow::Result<Vec<u8>> {
+    build_monster_move_path_body_inner(guid, start, path, spline_id, duration_ms, None, false)
+}
+
+fn build_monster_move_facing_target_body(
     guid: ObjectGuid,
     start: WorldPosition,
     destination: WorldPosition,
     spline_id: u32,
     duration_ms: u32,
+    target: ObjectGuid,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(48);
+    build_monster_move_facing_target_path_body(
+        guid,
+        start,
+        &[destination],
+        spline_id,
+        duration_ms,
+        target,
+    )
+}
+
+fn build_monster_move_facing_target_path_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    spline_id: u32,
+    duration_ms: u32,
+    target: ObjectGuid,
+) -> anyhow::Result<Vec<u8>> {
+    build_monster_move_path_body_inner(
+        guid,
+        start,
+        path,
+        spline_id,
+        duration_ms,
+        Some(target),
+        true,
+    )
+}
+
+fn build_monster_move_path_body_inner(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    spline_id: u32,
+    duration_ms: u32,
+    facing_target: Option<ObjectGuid>,
+    run: bool,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(!path.is_empty(), "monster movement path must not be empty");
+    let mut body = Vec::with_capacity(52 + path.len() * 12);
     PackedGuid::write(&mut body, guid)?;
     body.extend_from_slice(&start.x.to_le_bytes());
     body.extend_from_slice(&start.y.to_le_bytes());
     body.extend_from_slice(&start.z.to_le_bytes());
     body.extend_from_slice(&spline_id.to_le_bytes());
-    body.push(MONSTER_MOVE_TYPE_NORMAL);
-    body.extend_from_slice(&MONSTER_MOVE_SPLINE_FLAG_RUNMODE.to_le_bytes());
+    if let Some(target) = facing_target {
+        body.push(MONSTER_MOVE_TYPE_FACING_TARGET);
+        body.extend_from_slice(&target.raw().to_le_bytes());
+    } else {
+        body.push(MONSTER_MOVE_TYPE_NORMAL);
+    }
+    let spline_flags = if run {
+        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
+    } else {
+        0
+    };
+    body.extend_from_slice(&spline_flags.to_le_bytes());
     body.extend_from_slice(&duration_ms.to_le_bytes());
-    body.extend_from_slice(&1u32.to_le_bytes());
-    body.extend_from_slice(&destination.x.to_le_bytes());
-    body.extend_from_slice(&destination.y.to_le_bytes());
-    body.extend_from_slice(&destination.z.to_le_bytes());
+    body.extend_from_slice(&(path.len() as u32).to_le_bytes());
+    for point in path {
+        body.extend_from_slice(&point.x.to_le_bytes());
+        body.extend_from_slice(&point.y.to_le_bytes());
+        body.extend_from_slice(&point.z.to_le_bytes());
+    }
     Ok(body)
 }
 

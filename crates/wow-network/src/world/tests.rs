@@ -203,6 +203,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         display_id4: 0,
         faction: 35,
         scale: 1.0,
+        detection_range: 20,
+        call_for_help: 0,
         family: 0,
         creature_type: 7,
         npc_flags: UNIT_NPC_FLAG_GOSSIP,
@@ -221,6 +223,7 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         trainer_class: 0,
         pet_spell_data_id: 0,
         civilian: 0,
+        movement_type: DB_MOTION_TYPE_IDLE,
         experience_multiplier: 1.0,
     }
 }
@@ -234,7 +237,22 @@ fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
         position_y: -130.0,
         position_z: 83.5,
         orientation: 1.25,
+        spawn_dist: 0.0,
+        movement_type: DB_MOTION_TYPE_IDLE,
         template: test_creature_template(entry),
+        waypoint_path: Vec::new(),
+    }
+}
+
+fn test_waypoint(point: u32, x: f32, y: f32, wait_time: u32) -> wow_db::CreatureWaypointQuery {
+    wow_db::CreatureWaypointQuery {
+        point,
+        position_x: x,
+        position_y: y,
+        position_z: 83.5,
+        orientation: None,
+        wait_time,
+        script_id: 0,
     }
 }
 
@@ -662,7 +680,7 @@ fn movement_visibility_stages_destroy_for_out_of_range_db_creatures() {
     assert!(session.db_creatures.contains_key(&nearby_guid));
     assert!(!session.db_creatures.contains_key(&out_of_range_guid.raw()));
     assert_eq!(session.active_combat_target, None);
-    assert!(session.active_creature_combat.is_none());
+    assert!(session.active_creature_combats.is_empty());
     assert_eq!(
         build_destroy_guid_body(out_of_range_guid),
         out_of_range_guid.raw().to_le_bytes()
@@ -690,11 +708,14 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
         DbCreatureRuntime::new(out_of_query),
     );
     session.active_combat_target = Some(out_of_query_guid);
-    session.active_creature_combat = Some(CreatureCombatState {
-        attacker: out_of_query_guid,
-        victim: ObjectGuid::new(HighGuid::Player, 0, 7),
-        next_swing_at: Instant::now(),
-    });
+    session.active_creature_combats.insert(
+        out_of_query_guid.raw(),
+        CreatureCombatState {
+            attacker: out_of_query_guid,
+            victim: ObjectGuid::new(HighGuid::Player, 0, 7),
+            next_swing_at: Instant::now(),
+        },
+    );
 
     let updates = stage_db_creature_visibility_updates(&mut session, vec![nearby]).unwrap();
 
@@ -703,7 +724,7 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
     assert!(session.db_creatures.contains_key(&nearby_guid));
     assert!(session.db_creatures.contains_key(&out_of_query_guid.raw()));
     assert_eq!(session.active_combat_target, Some(out_of_query_guid));
-    assert!(session.active_creature_combat.is_some());
+    assert!(!session.active_creature_combats.is_empty());
 }
 
 #[test]
@@ -796,6 +817,87 @@ fn combat_packets_match_cmangos_melee_shapes() {
     assert_eq!(read_u32(&state, &mut cursor).unwrap(), 0);
     assert_eq!(read_u32(&state, &mut cursor).unwrap(), 0);
     assert_eq!(read_u32(&state, &mut cursor).unwrap(), VICTIMSTATE_NORMAL);
+}
+
+#[test]
+fn combat_unit_flag_updates_include_cmangos_in_combat_bit() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_unit_flags_update_body(player, player_unit_flags(true)).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_IN_COMBAT)
+    );
+
+    let body = build_unit_flags_update_body(player, player_unit_flags(false)).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+}
+
+#[test]
+fn chase_monster_move_can_face_target_like_cmangos_spline() {
+    let creature = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let start = WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0);
+    let destination = WorldPosition::new(0, 4.0, 5.0, 6.0, 0.0);
+    let body = build_monster_move_facing_target_body(creature, start, destination, 9, 100, player)
+        .unwrap();
+
+    let mut cursor = PackedGuid::packed_size(creature) + 12 + 4;
+    assert_eq!(body[cursor], MONSTER_MOVE_TYPE_FACING_TARGET);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(body[cursor..cursor + 8].try_into().unwrap()),
+        player.raw()
+    );
+    cursor += 8;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
+    );
+}
+
+#[test]
+fn monster_move_path_serializes_multiple_points() {
+    let creature = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let start = WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0);
+    let path = vec![
+        WorldPosition::new(0, 4.0, 5.0, 6.0, 0.0),
+        WorldPosition::new(0, 7.0, 8.0, 9.0, 0.0),
+    ];
+    let body = build_monster_move_walk_path_body(creature, start, &path, 9, 100).unwrap();
+
+    let mut cursor = PackedGuid::packed_size(creature) + 12 + 4;
+    assert_eq!(body[cursor], MONSTER_MOVE_TYPE_NORMAL);
+    cursor += 1;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        0
+    );
+    cursor += 4;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        100
+    );
+    cursor += 4;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        2
+    );
+    cursor += 4;
+    assert_eq!(
+        f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        4.0
+    );
+    cursor += 12;
+    assert_eq!(
+        f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        7.0
+    );
 }
 
 #[test]
@@ -1071,11 +1173,12 @@ fn db_creature_retaliation_reduces_player_health_but_keeps_survivor_floor() {
 
 #[test]
 fn db_creature_attack_distance_matches_cmangos_level_delta_shape() {
-    assert_eq!(db_creature_attack_distance(1, 1), 18.0);
-    assert_eq!(db_creature_attack_distance(1, 3), 20.0);
-    assert_eq!(db_creature_attack_distance(10, 1), 9.0);
-    assert_eq!(db_creature_attack_distance(60, 1), 5.0);
-    assert_eq!(db_creature_attack_distance(1, 60), 43.0);
+    assert_eq!(db_creature_attack_distance(1, 1, 20), 20.0);
+    assert_eq!(db_creature_attack_distance(1, 3, 20), 22.0);
+    assert_eq!(db_creature_attack_distance(10, 1, 20), 11.0);
+    assert_eq!(db_creature_attack_distance(60, 1, 20), 5.0);
+    assert_eq!(db_creature_attack_distance(1, 60, 20), 45.0);
+    assert_eq!(db_creature_attack_distance(1, 1, 0), 0.0);
 }
 
 #[test]
@@ -1113,7 +1216,7 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
         active_character: Some(character),
         ..WorldSessionState::default()
     };
-    for creature in [far_hostile, near_hostile.clone(), friendly] {
+    for creature in [far_hostile.clone(), near_hostile.clone(), friendly] {
         let runtime = DbCreatureRuntime::new(creature);
         session.db_creatures.insert(runtime.guid().raw(), runtime);
     }
@@ -1121,6 +1224,281 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
     assert_eq!(
         select_db_creature_aggro_target(&session),
         Some(creature_spawn_guid(&near_hostile))
+    );
+    assert_eq!(
+        select_db_creature_aggro_targets(&session),
+        vec![
+            creature_spawn_guid(&near_hostile),
+            creature_spawn_guid(&far_hostile)
+        ]
+    );
+}
+
+#[test]
+fn db_creature_combat_can_track_multiple_attackers() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let first = creature_spawn_guid(&test_creature_spawn(6));
+    let mut second_spawn = test_creature_spawn(38);
+    second_spawn.guid = 46;
+    let second = creature_spawn_guid(&second_spawn);
+    let now = Instant::now();
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+
+    assert!(begin_db_creature_combat(&mut session, first, now));
+    assert!(begin_db_creature_combat(
+        &mut session,
+        second,
+        now + Duration::from_millis(10)
+    ));
+    assert_eq!(session.active_creature_combats.len(), 2);
+    assert!(!begin_db_creature_combat(
+        &mut session,
+        first,
+        now + Duration::from_secs(1)
+    ));
+
+    clear_db_creature_combat_if_attacker(&mut session, first);
+    assert!(!session.active_creature_combats.contains_key(&first.raw()));
+    assert!(session.active_creature_combats.contains_key(&second.raw()));
+}
+
+#[test]
+fn db_creature_aggro_uses_template_detection_range() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 45;
+    kobold.position_x = -8931.0;
+    kobold.template.faction = RUST_COMBAT_DUMMY_FACTION_TEMPLATE;
+    kobold.template.npc_flags = 0;
+    kobold.template.min_level = 1;
+    kobold.template.detection_range = 18;
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    let runtime = DbCreatureRuntime::new(kobold.clone());
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(select_db_creature_aggro_target(&session), None);
+
+    session.db_creatures.clear();
+    kobold.template.detection_range = 20;
+    let runtime = DbCreatureRuntime::new(kobold.clone());
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        select_db_creature_aggro_target(&session),
+        Some(creature_spawn_guid(&kobold))
+    );
+}
+
+#[test]
+fn db_creature_player_melee_check_requires_range_and_facing() {
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 45;
+    kobold.position_x = 4.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.npc_flags = 0;
+    let target = creature_spawn_guid(&kobold);
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    let runtime = DbCreatureRuntime::new(kobold);
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::Clear
+    );
+
+    session
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .orientation = std::f32::consts::PI;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::BadFacing
+    );
+
+    session
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .orientation = 0.0;
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 5.0;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::OutOfRange
+    );
+
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 4.0;
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .z = 4.0;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::OutOfRange
+    );
+}
+
+#[test]
+fn db_creature_player_melee_check_uses_navigation_guardrail() {
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 45;
+    kobold.position_x = 4.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.npc_flags = 0;
+    let target = creature_spawn_guid(&kobold);
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        db_creature_navigation: DbCreatureNavigationGuardrail {
+            line_of_sight_clear: false,
+            path_available: true,
+            ..DbCreatureNavigationGuardrail::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let runtime = DbCreatureRuntime::new(kobold);
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked)
+    );
+}
+
+#[test]
+fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 45;
+    kobold.position_x = 8.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.npc_flags = 0;
+    let target = creature_spawn_guid(&kobold);
+    let starter_spell = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+    };
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    let runtime = DbCreatureRuntime::new(kobold);
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        Some(SPELL_FAILED_OUT_OF_RANGE)
+    );
+
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 4.0;
+    session
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .orientation = std::f32::consts::PI;
+    assert_eq!(
+        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        Some(SPELL_FAILED_UNIT_NOT_INFRONT)
+    );
+
+    session
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .orientation = 0.0;
+    assert_eq!(
+        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        None
     );
 }
 
@@ -1179,7 +1557,7 @@ fn db_creature_aggro_ignores_friendly_critter_lootable_and_out_of_range_units() 
 }
 
 #[test]
-fn db_creature_aggro_ignores_non_starter_hostiles_until_factions_are_loaded() {
+fn db_creature_aggro_ignores_unknown_faction_templates() {
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
@@ -1195,7 +1573,7 @@ fn db_creature_aggro_ignores_non_starter_hostiles_until_factions_are_loaded() {
     let mut guard = test_creature_spawn(197);
     guard.guid = 45;
     guard.position_x = -8945.0;
-    guard.template.faction = RUST_COMBAT_DUMMY_FACTION_TEMPLATE;
+    guard.template.faction = 9_999;
     guard.template.npc_flags = 0;
     guard.template.creature_type = 7;
     let runtime = DbCreatureRuntime::new(guard);
@@ -1226,7 +1604,7 @@ fn db_creature_aggro_ignores_neutral_young_wolves() {
     wolf.guid = 45;
     wolf.position_x = -8950.5;
     wolf.position_y = -130.0;
-    wolf.template.faction = RUST_COMBAT_DUMMY_FACTION_TEMPLATE;
+    wolf.template.faction = 32;
     wolf.template.npc_flags = 0;
     wolf.template.creature_type = 7;
     let runtime = DbCreatureRuntime::new(wolf);
@@ -1253,11 +1631,11 @@ fn db_creature_aggro_includes_real_defias_thugs() {
         client_time: 0,
         fall_time: 0,
     };
-    let mut defias = test_creature_spawn(REAL_DEFIAS_THUG_ENTRY);
+    let mut defias = test_creature_spawn(38);
     defias.guid = 45;
     defias.position_x = -8951.0;
     defias.position_y = -130.0;
-    defias.template.faction = RUST_COMBAT_DUMMY_FACTION_TEMPLATE;
+    defias.template.faction = 17;
     defias.template.npc_flags = 0;
     defias.template.creature_type = 7;
     defias.template.min_level = 2;
@@ -1270,6 +1648,31 @@ fn db_creature_aggro_includes_real_defias_thugs() {
     session.db_creatures.insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), Some(defias_guid));
+}
+
+#[test]
+fn db_creature_aggro_uses_cmangos_faction_template_reactions() {
+    assert_eq!(
+        faction_reaction_to(17, 1),
+        FactionReaction::Hostile,
+        "Defias Thug faction should be hostile to Alliance players"
+    );
+    assert_eq!(
+        faction_reaction_to(25, 1),
+        FactionReaction::Hostile,
+        "Kobold faction should be hostile to Alliance players"
+    );
+    assert_eq!(
+        faction_reaction_to(32, 1),
+        FactionReaction::Neutral,
+        "Young Wolf faction should not auto-aggro"
+    );
+    assert_eq!(
+        faction_reaction_to(12, 1),
+        FactionReaction::Friendly,
+        "Northshire friendly NPCs should not auto-aggro Alliance players"
+    );
+    assert!(!can_faction_attack_on_sight(9_999, 1));
 }
 
 #[test]
@@ -1292,17 +1695,49 @@ fn db_creature_combat_state_tracks_victim_and_next_swing() {
         ..WorldSessionState::default()
     };
 
-    begin_db_creature_combat(&mut session, attacker, now);
+    assert!(begin_db_creature_combat(&mut session, attacker, now));
 
     let combat = session
-        .active_creature_combat
+        .active_creature_combats
+        .get(&attacker.raw())
+        .copied()
         .expect("creature combat state should start");
     assert_eq!(combat.attacker, attacker);
     assert_eq!(combat.victim, ObjectGuid::new(HighGuid::Player, 0, 7));
     assert_eq!(combat.next_swing_at, now);
 
+    let later = now + Duration::from_secs(1);
+    assert!(!begin_db_creature_combat(&mut session, attacker, later));
+    let combat = session
+        .active_creature_combats
+        .get(&attacker.raw())
+        .copied()
+        .expect("creature combat state should stay active");
+    assert_eq!(
+        combat.next_swing_at, now,
+        "incoming player hits must not reset the creature swing timer"
+    );
+
+    let overdue = now + Duration::from_secs(3);
+    defer_ready_db_creature_swing_retry(
+        &mut session,
+        attacker,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        overdue,
+    );
+    let combat = session
+        .active_creature_combats
+        .get(&attacker.raw())
+        .copied()
+        .expect("creature combat state should stay active");
+    assert_eq!(
+        combat.next_swing_at,
+        overdue + Duration::from_millis(DB_CREATURE_MELEE_RETRY_MILLIS),
+        "out-of-range ready swings should retry shortly instead of staying overdue"
+    );
+
     clear_db_creature_combat_if_attacker(&mut session, attacker);
-    assert!(session.active_creature_combat.is_none());
+    assert!(session.active_creature_combats.is_empty());
 }
 
 #[test]
@@ -1310,6 +1745,7 @@ fn db_creature_melee_reach_is_position_gated() {
     let mut creature = test_creature_spawn(299);
     creature.position_x = -8950.0;
     creature.position_y = -130.0;
+    creature.orientation = 0.0;
     let target = creature_spawn_guid(&creature);
     let mut session = WorldSessionState {
         active_character: Some(ActiveCharacter {
@@ -1337,9 +1773,244 @@ fn db_creature_melee_reach_is_position_gated() {
         .insert(target.raw(), DbCreatureRuntime::new(creature));
 
     assert!(db_creature_can_reach_player(&session, target));
+    assert!(db_creature_has_player_in_arc(&session, target));
+    session.active_character.as_mut().unwrap().position.x =
+        -8950.0 - DB_CREATURE_MELEE_REACH_YARDS + 0.1;
+    assert!(db_creature_can_reach_player(&session, target));
+    assert!(!db_creature_has_player_in_arc(&session, target));
+    let (facing_position, spline_id) =
+        face_db_creature_toward_player(&mut session, target).expect("creature should face player");
+    assert_eq!(spline_id, 0);
+    assert_eq!(facing_position.x, -8950.0);
+    assert!(db_creature_has_player_in_arc(&session, target));
+    assert_eq!(
+        session
+            .db_creatures
+            .get(&target.raw())
+            .expect("creature should stay loaded")
+            .next_spline_id,
+        1
+    );
+
     session.active_character.as_mut().unwrap().position.x =
         -8950.0 + DB_CREATURE_MELEE_REACH_YARDS + 0.1;
     assert!(!db_creature_can_reach_player(&session, target));
+}
+
+#[test]
+fn db_creature_navigation_guardrail_blocks_aggro_chase_and_melee() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    creature.template.npc_flags = 0;
+    creature.template.min_level = 1;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        db_creature_navigation: DbCreatureNavigationGuardrail {
+            line_of_sight_clear: false,
+            path_available: true,
+            ..DbCreatureNavigationGuardrail::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .db_creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(creature));
+
+    assert_eq!(select_db_creature_aggro_target(&session), None);
+    assert!(!db_creature_can_reach_player(&session, attacker));
+    session.active_character.as_mut().unwrap().position.x = 10.0;
+    assert!(
+        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none()
+    );
+}
+
+#[test]
+fn db_creature_navigation_guardrail_reports_invalid_path_inputs() {
+    let navigation = DbCreatureNavigationGuardrail::default();
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let target = WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0);
+
+    assert_eq!(
+        db_creature_navigation_check(&navigation, start, target),
+        DbCreatureNavigationResult::Clear
+    );
+    assert_eq!(
+        db_creature_navigation_check(
+            &navigation,
+            start,
+            WorldPosition::new(1, 10.0, 0.0, 0.0, 0.0)
+        ),
+        DbCreatureNavigationResult::MapMismatch
+    );
+    assert_eq!(
+        db_creature_navigation_check(
+            &navigation,
+            start,
+            WorldPosition::new(0, f32::NAN, 0.0, 0.0, 0.0)
+        ),
+        DbCreatureNavigationResult::InvalidCoordinate
+    );
+    assert_eq!(
+        db_creature_navigation_check(
+            &DbCreatureNavigationGuardrail {
+                line_of_sight_clear: true,
+                path_available: false,
+                ..DbCreatureNavigationGuardrail::default()
+            },
+            start,
+            target
+        ),
+        DbCreatureNavigationResult::PathUnavailable
+    );
+}
+
+#[test]
+fn mmap_tile_for_position_matches_cmangos_grid_files() {
+    assert_eq!(
+        mmap_tile_for_position(WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0)),
+        Some((48, 32))
+    );
+    assert_eq!(
+        mmap_tile_for_position(WorldPosition::new(0, f32::NAN, 0.0, 0.0, 0.0)),
+        None
+    );
+}
+
+#[test]
+fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
+    let navigation = DbCreatureNavigationGuardrail {
+        world_data_files: Arc::new(WorldDataFiles {
+            data_dir: std::path::PathBuf::from("fixture"),
+            data_dir_for_native: None,
+            maps_available: true,
+            vmaps_available: true,
+            mmap_headers: HashSet::from([0]),
+            mmap_tiles: HashSet::from([(0, 48, 32)]),
+        }),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let northshire = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let same_tile = WorldPosition::new(0, -8948.0, -132.0, 83.5, 0.0);
+    let missing_tile = WorldPosition::new(0, -8400.0, -130.0, 83.5, 0.0);
+
+    assert_eq!(
+        db_creature_navigation_check(&navigation, northshire, same_tile),
+        DbCreatureNavigationResult::Clear
+    );
+    assert_eq!(
+        db_creature_navigation_check(&navigation, northshire, missing_tile),
+        DbCreatureNavigationResult::PathUnavailable
+    );
+}
+
+#[test]
+fn db_creature_mmap_path_corner_uses_local_detour_data_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.has_mmap_tile(0, 48, 32) {
+        return;
+    }
+    let navigation = DbCreatureNavigationGuardrail {
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
+    let (start_tile_x, start_tile_y) = mmap_tile_for_position(start).unwrap();
+    let (target_tile_x, target_tile_y) = mmap_tile_for_position(target).unwrap();
+    let data_dir = std::ffi::CString::new("C:/World of Warcraft Classic").unwrap();
+    let mut native_points = [NativeMmapPathPoint {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    }; 16];
+    let native_count = unsafe {
+        wow_mmap_find_path(
+            data_dir.as_ptr(),
+            0,
+            start_tile_x,
+            start_tile_y,
+            target_tile_x,
+            target_tile_y,
+            start.x,
+            start.y,
+            start.z,
+            target.x,
+            target.y,
+            target.z,
+            native_points.as_mut_ptr(),
+            native_points.len() as i32,
+        )
+    };
+
+    let corner = db_creature_mmap_next_path_corner(&navigation, start, target).unwrap_or_else(|| {
+        panic!(
+            "local Northshire mmap should produce a Detour path corner; native_count={native_count}, tiles={:?}->{:?}",
+            mmap_tile_for_position(start),
+            mmap_tile_for_position(target)
+        )
+    });
+
+    assert_eq!(corner.map_id, 0);
+    assert!(corner.x.is_finite());
+    assert!(corner.y.is_finite());
+    assert!(corner.z.is_finite());
+}
+
+#[test]
+fn db_creature_path_trim_keeps_intermediate_corners() {
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let path = vec![
+        WorldPosition::new(0, 4.0, 0.0, 0.0, 0.0),
+        WorldPosition::new(0, 4.0, 4.0, 0.0, 0.0),
+        WorldPosition::new(0, 10.0, 4.0, 0.0, 0.0),
+    ];
+
+    let trimmed =
+        db_creature_trim_path_to_travel_distance(start, path, 3.0).expect("path should trim");
+
+    assert_eq!(trimmed.len(), 3);
+    assert_eq!(trimmed[0].x, 4.0);
+    assert_eq!(trimmed[1].y, 4.0);
+    assert!(trimmed[2].x > 6.0);
+    assert!(trimmed[2].x < 8.0);
+}
+
+#[test]
+fn db_creature_path_motion_interpolates_across_corners() {
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let path = vec![
+        WorldPosition::new(0, 4.0, 0.0, 0.0, 0.0),
+        WorldPosition::new(0, 4.0, 4.0, 0.0, 0.0),
+    ];
+    let now = Instant::now();
+
+    let position = advance_timed_path_motion(
+        start,
+        &path,
+        now,
+        Duration::from_secs(8),
+        now + Duration::from_secs(6),
+    )
+    .expect("motion should still be active");
+
+    assert_eq!(position.x, 4.0);
+    assert!(position.y > 1.9);
+    assert!(position.y < 2.1);
 }
 
 #[test]
@@ -1363,6 +2034,401 @@ fn db_creature_runtime_position_is_separate_from_home_spawn() {
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert_eq!(runtime.current_position.y, runtime.home_position.y);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.min_level = 1;
+    let attacker = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = DB_CREATURE_LEASH_RADIUS_YARDS + 1.0;
+    runtime.health = runtime.max_health() - 1;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        active_combat_target: Some(attacker),
+        active_combat_next_swing_at: Some(now),
+        ..WorldSessionState::default()
+    };
+    session.active_creature_combats.insert(
+        attacker.raw(),
+        CreatureCombatState {
+            attacker,
+            victim: ObjectGuid::new(HighGuid::Player, 0, 7),
+            next_swing_at: now,
+        },
+    );
+    session.db_creatures.insert(attacker.raw(), runtime);
+
+    assert!(db_creature_should_evade(&session, attacker));
+    prepare_db_creature_evade(&mut session, attacker);
+    let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
+        .expect("leashed creature should run home");
+
+    let destination = *motion.path.last().unwrap();
+    assert_eq!(destination.x, 0.0);
+    assert_eq!(destination.y, 0.0);
+    assert_eq!(motion.spline_id, 0);
+    assert!(motion.duration > Duration::ZERO);
+    assert!(session.active_combat_target.is_none());
+    assert!(session.active_combat_next_swing_at.is_none());
+    assert!(session.active_creature_combats.is_empty());
+    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    assert_eq!(runtime.health, runtime.max_health());
+    assert!(matches!(runtime.motion, CreatureMotionState::ReturnHome(_)));
+    assert!(!db_creature_should_evade(&session, attacker));
+}
+
+#[test]
+fn db_creature_return_home_motion_finishes_at_home() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = 14.0;
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(attacker.raw(), runtime);
+
+    let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
+        .expect("away creature should start return-home motion");
+    let half_duration = Duration::from_millis((motion.duration.as_millis() as u64 / 2).max(1));
+    advance_db_creature_motion(&mut session, attacker, now + half_duration);
+    let mid_x = session
+        .db_creatures
+        .get(&attacker.raw())
+        .expect("creature should still be loaded")
+        .current_position
+        .x;
+    assert!(mid_x < motion.start.x);
+    let destination = *motion.path.last().unwrap();
+    assert!(mid_x > destination.x);
+
+    advance_db_creature_motion(&mut session, attacker, now + motion.duration);
+    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    assert_eq!(runtime.current_position.x, runtime.home_position.x);
+    assert_eq!(runtime.current_position.y, runtime.home_position.y);
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_return_home_motion_advances_without_active_combat() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = 7.0;
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(attacker.raw(), runtime);
+
+    let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
+        .expect("away creature should start return-home motion");
+    assert!(session.active_creature_combats.is_empty());
+
+    advance_db_creature_return_home_motions(&mut session, now + motion.duration);
+    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    assert_eq!(runtime.current_position.x, runtime.home_position.x);
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_return_home_motion_ignores_combat_path_guardrail() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = 9.0;
+    let mut session = WorldSessionState {
+        db_creature_navigation: DbCreatureNavigationGuardrail {
+            line_of_sight_clear: false,
+            path_available: false,
+            ..DbCreatureNavigationGuardrail::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(attacker.raw(), runtime);
+
+    assert!(start_db_creature_return_home_motion(&mut session, attacker, Instant::now()).is_some());
+    assert!(matches!(
+        session.db_creatures.get(&attacker.raw()).unwrap().motion,
+        CreatureMotionState::ReturnHome(_)
+    ));
+}
+
+#[test]
+fn db_creature_returning_home_does_not_reaggro_or_take_damage() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.npc_flags = 0;
+    spawn.template.min_level = 1;
+    let attacker = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = 6.0;
+    runtime.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
+        start: runtime.current_position,
+        destination: runtime.home_position,
+        path: vec![runtime.home_position],
+        started_at: now,
+        duration: Duration::from_secs(1),
+    });
+    let health = runtime.health;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 5.5, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(attacker.raw(), runtime);
+
+    assert_eq!(select_db_creature_aggro_target(&session), None);
+    assert_eq!(apply_db_creature_damage(&mut session, attacker, 1), None);
+    assert_eq!(
+        session.db_creatures.get(&attacker.raw()).unwrap().health,
+        health
+    );
+}
+
+#[test]
+fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_random_motion(&mut session, creature_guid, now)
+        .expect("random movement creature should start a wander spline");
+
+    assert_eq!(motion.spline_id, 0);
+    assert_eq!(motion.start.x, 0.0);
+    assert!(motion.duration >= Duration::from_millis(1));
+    assert!(!motion.path.is_empty());
+    assert!(
+        distance_2d(
+            motion.path.last().unwrap().x,
+            motion.path.last().unwrap().y,
+            0.0,
+            0.0
+        ) <= 5.0,
+        "wander destination should stay inside spawndist"
+    );
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Random(_)));
+    assert_eq!(runtime.next_spline_id, 1);
+
+    advance_db_creature_motion(&mut session, creature_guid, now + motion.duration);
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+    assert!(runtime.next_random_move_at.is_some());
+}
+
+#[test]
+fn db_creature_random_motion_ignores_idle_or_zero_spawndist_creatures() {
+    let mut idle_spawn = test_creature_spawn(6);
+    idle_spawn.movement_type = DB_MOTION_TYPE_IDLE;
+    idle_spawn.spawn_dist = 5.0;
+    let idle_guid = creature_spawn_guid(&idle_spawn);
+    let mut zero_radius_spawn = test_creature_spawn(6);
+    zero_radius_spawn.guid = 45;
+    zero_radius_spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    zero_radius_spawn.spawn_dist = 0.0;
+    let zero_radius_guid = creature_spawn_guid(&zero_radius_spawn);
+    let now = Instant::now();
+    let mut session = WorldSessionState::default();
+    session
+        .db_creatures
+        .insert(idle_guid.raw(), DbCreatureRuntime::new(idle_spawn));
+    session.db_creatures.insert(
+        zero_radius_guid.raw(),
+        DbCreatureRuntime::new(zero_radius_spawn),
+    );
+
+    assert!(start_db_creature_random_motion(&mut session, idle_guid, now).is_none());
+    assert!(start_db_creature_random_motion(&mut session, zero_radius_guid, now).is_none());
+}
+
+#[test]
+fn db_creature_waypoint_motion_uses_db_path_and_wait_time() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    spawn.waypoint_path = vec![test_waypoint(1, 5.0, 0.0, 250)];
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_waypoint_motion(&mut session, creature_guid, now)
+        .expect("waypoint creature should start a DB path spline");
+
+    assert_eq!(motion.spline_id, 0);
+    assert_eq!(motion.start.x, 0.0);
+    assert_eq!(motion.path.last().unwrap().x, 5.0);
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Waypoint(_)));
+    assert_eq!(runtime.next_spline_id, 1);
+    assert_eq!(runtime.next_waypoint_move_at, None);
+
+    advance_db_creature_motion(&mut session, creature_guid, now + motion.duration);
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+    assert_eq!(runtime.current_position.x, 5.0);
+    assert_eq!(runtime.waypoint_next_index, 0);
+    assert!(runtime
+        .next_waypoint_move_at
+        .is_some_and(|at| at == now + motion.duration + Duration::from_millis(250)));
+}
+
+#[test]
+fn db_creature_linear_waypoint_motion_reverses_at_ends() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_LINEAR_WAYPOINT;
+    spawn.waypoint_path = vec![
+        test_waypoint(1, 5.0, 0.0, 0),
+        test_waypoint(2, 10.0, 0.0, 0),
+        test_waypoint(3, 15.0, 0.0, 0),
+    ];
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    let first = start_db_creature_waypoint_motion(&mut session, creature_guid, now).unwrap();
+    advance_db_creature_motion(&mut session, creature_guid, now + first.duration);
+    assert_eq!(
+        session
+            .db_creatures
+            .get(&creature_guid.raw())
+            .unwrap()
+            .waypoint_next_index,
+        1
+    );
+
+    let second_at = now + first.duration;
+    let second = start_db_creature_waypoint_motion(&mut session, creature_guid, second_at).unwrap();
+    advance_db_creature_motion(&mut session, creature_guid, second_at + second.duration);
+    assert_eq!(
+        session
+            .db_creatures
+            .get(&creature_guid.raw())
+            .unwrap()
+            .waypoint_next_index,
+        2
+    );
+
+    let third_at = second_at + second.duration;
+    let third = start_db_creature_waypoint_motion(&mut session, creature_guid, third_at).unwrap();
+    advance_db_creature_motion(&mut session, creature_guid, third_at + third.duration);
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert_eq!(runtime.current_position.x, 15.0);
+    assert_eq!(runtime.waypoint_next_index, 1);
+    assert!(!runtime.waypoint_forward);
+}
+
+#[test]
+fn db_creature_assistance_calls_nearby_same_faction_hostiles_once() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut caller_spawn = test_creature_spawn(6);
+    caller_spawn.position_x = 0.0;
+    caller_spawn.position_y = 0.0;
+    caller_spawn.template.npc_flags = 0;
+    caller_spawn.template.faction = 25;
+    caller_spawn.template.call_for_help = 6;
+    let caller = creature_spawn_guid(&caller_spawn);
+    let mut helper_spawn = test_creature_spawn(6);
+    helper_spawn.guid = 45;
+    helper_spawn.position_x = 5.0;
+    helper_spawn.position_y = 0.0;
+    helper_spawn.template.npc_flags = 0;
+    helper_spawn.template.faction = 25;
+    let helper = creature_spawn_guid(&helper_spawn);
+    let mut far_spawn = test_creature_spawn(6);
+    far_spawn.guid = 46;
+    far_spawn.position_x = 9.0;
+    far_spawn.position_y = 0.0;
+    far_spawn.template.npc_flags = 0;
+    far_spawn.template.faction = 25;
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    session
+        .db_creatures
+        .insert(caller.raw(), DbCreatureRuntime::new(caller_spawn));
+    session
+        .db_creatures
+        .insert(helper.raw(), DbCreatureRuntime::new(helper_spawn));
+    let far_runtime = DbCreatureRuntime::new(far_spawn);
+    session
+        .db_creatures
+        .insert(far_runtime.guid().raw(), far_runtime);
+
+    assert_eq!(
+        select_db_creature_assist_targets(&mut session, caller),
+        vec![helper]
+    );
+    assert!(select_db_creature_assist_targets(&mut session, caller).is_empty());
 }
 
 #[test]
@@ -1393,13 +2459,13 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
-    let (start, destination, spline_id, duration) =
-        start_db_creature_chase_motion(&mut session, attacker, player, now)
-            .expect("out-of-range creature should start chase motion");
-    assert_eq!(spline_id, 0);
-    assert_eq!(start.x, 0.0);
+    let motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
+    assert_eq!(motion.spline_id, 0);
+    assert_eq!(motion.start.x, 0.0);
+    assert!(!motion.path.is_empty());
     assert_eq!(
-        destination.x,
+        motion.path.last().unwrap().x,
         10.0 - DB_CREATURE_MELEE_REACH_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
     );
     let runtime = session
@@ -1410,7 +2476,6 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
         panic!("creature should be in chase motion");
     };
     assert_eq!(chase.target, player);
-    assert_eq!(spline_id, 0);
     assert_eq!(runtime.next_spline_id, 1);
     assert_eq!(
         chase.recheck_at,
@@ -1418,7 +2483,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
     );
     assert!(!db_creature_can_reach_player(&session, attacker));
 
-    let half_duration = Duration::from_millis((duration.as_millis() as u64 / 2).max(1));
+    let half_duration = Duration::from_millis((motion.duration.as_millis() as u64 / 2).max(1));
     advance_db_creature_motion(&mut session, attacker, now + half_duration);
     let mid_x = session
         .db_creatures
@@ -1426,11 +2491,12 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
         .expect("creature should still be loaded")
         .current_position
         .x;
-    assert!(mid_x > start.x);
+    assert!(mid_x > motion.start.x);
+    let destination = *motion.path.last().unwrap();
     assert!(mid_x < destination.x);
     assert!(!db_creature_can_reach_player(&session, attacker));
 
-    advance_db_creature_motion(&mut session, attacker, now + duration);
+    advance_db_creature_motion(&mut session, attacker, now + motion.duration);
     let runtime = session
         .db_creatures
         .get(&attacker.raw())
@@ -1469,9 +2535,8 @@ fn db_creature_chase_motion_waits_for_recheck_before_repathing() {
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
-    let (_, first_destination, _, _) =
-        start_db_creature_chase_motion(&mut session, attacker, player, now)
-            .expect("out-of-range creature should start chase motion");
+    let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
     session.active_character.as_mut().unwrap().position.x = 20.0;
 
     let before_recheck = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS - 1);
@@ -1487,7 +2552,7 @@ fn db_creature_chase_motion_waits_for_recheck_before_repathing() {
     let CreatureMotionState::Chase(chase) = &runtime.motion else {
         panic!("creature should remain in chase motion");
     };
-    assert_eq!(chase.destination.x, first_destination.x);
+    assert_eq!(chase.destination.x, first_motion.path.last().unwrap().x);
     assert_eq!(runtime.next_spline_id, 1);
 }
 
@@ -1519,9 +2584,8 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
-    let (_, first_destination, _, _) =
-        start_db_creature_chase_motion(&mut session, attacker, player, now)
-            .expect("out-of-range creature should start chase motion");
+    let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
     let recheck_at = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS);
     advance_db_creature_motion(&mut session, attacker, recheck_at);
     let moved_start = session
@@ -1532,13 +2596,15 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
     assert!(moved_start.x > 0.0);
 
     session.active_character.as_mut().unwrap().position.x = 20.0;
-    let (second_start, second_destination, second_spline_id, _) =
-        start_db_creature_chase_motion(&mut session, attacker, player, recheck_at)
-            .expect("moved player should trigger a refreshed chase spline");
+    let second_motion = start_db_creature_chase_motion(&mut session, attacker, player, recheck_at)
+        .expect("moved player should trigger a refreshed chase spline");
 
-    assert_eq!(second_spline_id, 1);
-    assert_eq!(second_start.x, moved_start.x);
-    assert!(second_destination.x > first_destination.x + DB_CREATURE_CHASE_REPATH_YARDS);
+    assert_eq!(second_motion.spline_id, 1);
+    assert_eq!(second_motion.start.x, moved_start.x);
+    assert!(
+        second_motion.path.last().unwrap().x
+            > first_motion.path.last().unwrap().x + DB_CREATURE_CHASE_REPATH_YARDS
+    );
     let runtime = session
         .db_creatures
         .get(&attacker.raw())
@@ -1581,9 +2647,8 @@ fn db_creature_chase_motion_ignores_tiny_destination_shift_after_recheck() {
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
-    let (_, first_destination, _, _) =
-        start_db_creature_chase_motion(&mut session, attacker, player, now)
-            .expect("out-of-range creature should start chase motion");
+    let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
     session.active_character.as_mut().unwrap().position.x =
         10.0 + DB_CREATURE_CHASE_REPATH_YARDS * 0.5;
     let recheck_at = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS);
@@ -1597,7 +2662,7 @@ fn db_creature_chase_motion_ignores_tiny_destination_shift_after_recheck() {
     let CreatureMotionState::Chase(chase) = &runtime.motion else {
         panic!("creature should remain in chase motion");
     };
-    assert_eq!(chase.destination.x, first_destination.x);
+    assert_eq!(chase.destination.x, first_motion.path.last().unwrap().x);
 }
 
 #[test]
@@ -1893,6 +2958,7 @@ fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
             power: StarterSpellPower::Rage {
                 cost: HEROIC_STRIKE_RAGE_COST
             },
+            requires_melee: true,
         })
     );
     assert_eq!(
@@ -1902,6 +2968,7 @@ fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST
             },
+            requires_melee: true,
         })
     );
     assert_eq!(supported_starter_spell(1), None);
@@ -3315,6 +4382,12 @@ fn starter_spell_packets_match_cmangos_success_shapes() {
     let result = build_cast_result_ok_body(WARRIOR_HEROIC_STRIKE_RANK_1);
     assert_eq!(&result[0..4], &WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
     assert_eq!(result[4], 0);
+
+    let failure =
+        build_cast_result_failure_body(WARRIOR_HEROIC_STRIKE_RANK_1, SPELL_FAILED_OUT_OF_RANGE);
+    assert_eq!(&failure[0..4], &WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
+    assert_eq!(failure[4], 2);
+    assert_eq!(failure[5], SPELL_FAILED_OUT_OF_RANGE);
 
     let go = build_spell_go_body(caster, WARRIOR_HEROIC_STRIKE_RANK_1, &targets).unwrap();
     let mut cursor = 0;

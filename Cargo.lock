@@ -2122,6 +2122,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "bytes",
+ "cc",
  "rand",
  "sha1",
  "sqlx",

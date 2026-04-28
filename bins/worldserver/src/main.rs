@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         character_pool,
         world_pool,
         delete_options,
+        config.data_dir,
     );
     info!("World server skeleton is ready. Waiting for connections...");
     server.run().await

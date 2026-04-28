@@ -34,6 +34,15 @@ async fn handle_cast_spell(
 
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let targets = normalize_fixture_spell_targets(packet.targets);
+    if let Some(failure) = starter_spell_melee_cast_failure(session, &starter_spell, &targets) {
+        return send_packet(
+            stream,
+            SMSG_CAST_RESULT,
+            &build_cast_result_failure_body(packet.spell_id, failure),
+            Some(header_crypto),
+        )
+        .await;
+    }
     match starter_spell.power {
         StarterSpellPower::Rage { cost } => {
             session.player_rage = session.player_rage.saturating_sub(cost);
@@ -96,50 +105,57 @@ async fn handle_cast_spell(
         )
         .await?;
     } else if let Some(target) = targets.unit_target {
-        if let Some(damage) = apply_db_creature_damage(session, target, starter_spell.damage) {
-            let (health, dynamic_flags, is_dead) = session
-                .db_creatures
-                .get(&target.raw())
-                .map(|creature| {
-                    (
-                        creature.health,
-                        creature.dynamic_flags(),
-                        creature.health == 0,
-                    )
-                })
-                .expect("creature damage target checked above");
-            send_packet(
-                stream,
-                SMSG_ATTACKERSTATEUPDATE,
-                &build_attacker_state_update_body_with_spell_id(
-                    caster,
-                    target,
-                    damage,
-                    packet.spell_id,
-                )?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            send_packet(
-                stream,
-                SMSG_UPDATE_OBJECT,
-                &build_db_creature_state_update_body(target, health, dynamic_flags)?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            if is_dead {
-                finalize_db_creature_death(
+        let can_apply_damage = if starter_spell.requires_melee {
+            db_creature_player_melee_check(session, target) == PlayerMeleeCheck::Clear
+        } else {
+            true
+        };
+        if can_apply_damage {
+            if let Some(damage) = apply_db_creature_damage(session, target, starter_spell.damage) {
+                let (health, dynamic_flags, is_dead) = session
+                    .db_creatures
+                    .get(&target.raw())
+                    .map(|creature| {
+                        (
+                            creature.health,
+                            creature.dynamic_flags(),
+                            creature.health == 0,
+                        )
+                    })
+                    .expect("creature damage target checked above");
+                send_packet(
                     stream,
-                    character_db_pool,
-                    world_db_pool,
-                    session,
-                    caster,
-                    target,
-                    header_crypto,
+                    SMSG_ATTACKERSTATEUPDATE,
+                    &build_attacker_state_update_body_with_spell_id(
+                        caster,
+                        target,
+                        damage,
+                        packet.spell_id,
+                    )?,
+                    Some(&mut *header_crypto),
                 )
                 .await?;
-            } else {
-                begin_db_creature_combat(session, target, Instant::now());
+                send_packet(
+                    stream,
+                    SMSG_UPDATE_OBJECT,
+                    &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+                if is_dead {
+                    finalize_db_creature_death(
+                        stream,
+                        character_db_pool,
+                        world_db_pool,
+                        session,
+                        caster,
+                        target,
+                        header_crypto,
+                    )
+                    .await?;
+                } else {
+                    begin_db_creature_combat(session, target, Instant::now());
+                }
             }
         }
     }
@@ -148,6 +164,25 @@ async fn handle_cast_spell(
         StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
     };
     send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
+}
+
+fn starter_spell_melee_cast_failure(
+    session: &WorldSessionState,
+    starter_spell: &SupportedStarterSpell,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    if !starter_spell.requires_melee {
+        return None;
+    }
+    let target = targets.unit_target?;
+    if target == rust_combat_dummy_guid() {
+        return None;
+    }
+    match db_creature_player_melee_check(session, target) {
+        PlayerMeleeCheck::Clear => None,
+        PlayerMeleeCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        _ => Some(SPELL_FAILED_OUT_OF_RANGE),
+    }
 }
 
 fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTargets {
@@ -161,6 +196,7 @@ fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTa
 struct SupportedStarterSpell {
     damage: u32,
     power: StarterSpellPower,
+    requires_melee: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,12 +212,14 @@ fn supported_starter_spell(spell_id: u32) -> Option<SupportedStarterSpell> {
             power: StarterSpellPower::Rage {
                 cost: HEROIC_STRIKE_RAGE_COST,
             },
+            requires_melee: true,
         }),
         HUNTER_RAPTOR_STRIKE_RANK_1 => Some(SupportedStarterSpell {
             damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST,
             },
+            requires_melee: true,
         }),
         _ => None,
     }
@@ -191,6 +229,14 @@ fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(5);
     body.extend_from_slice(&spell_id.to_le_bytes());
     body.push(0);
+    body
+}
+
+fn build_cast_result_failure_body(spell_id: u32, failure: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(6);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.push(2);
+    body.push(failure);
     body
 }
 

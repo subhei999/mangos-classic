@@ -40,7 +40,8 @@ client and is now a regression gate. Current active priority is G8 Combat
 Agency, then G9 World Creature Fidelity, then G10 NPC Interaction Fidelity,
 then G11 Persistence + Relog Sanity, then G5 Combat and Loot real-behavior
 fidelity, then G6 Level + Trainer issue #49 polish, then G7 Death + Respawn,
-then G12 Multi-client Sanity.
+then G8/G9 Pathing + Movement Fidelity, then G7 Death + Respawn, then G12
+Multi-client Sanity.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -270,6 +271,51 @@ using the repo's bug triage policy, then continue the requested task.
   kobold aggro/combat, then the same kobold is streamed again for the G8 aggro
   proof. This keeps the harness aligned with the new rule: non-combat
   out-of-range creatures are destroyed, active combat creatures are retained.
+- Added the G8 path validity / LOS / navigation guardrail slice. Aggro target
+  selection, chase destination generation, and creature melee reach now all
+  pass through a single DB-creature navigation check. The current backend is an
+  explicit permissive terrain/path placeholder until real map or navmesh data
+  is wired, but the combat API no longer bakes in distance-only assumptions.
+- Added the first G8 leash/evade/return-home slice. Active DB creatures now use
+  the CMaNGOS default 30-yard leash radius as a starter guardrail; when they
+  exceed it, Rust clears player/creature combat state, resets the creature to
+  max health, sends attack stop plus a creature health update, and starts a
+  timed `ReturnHome` motion using the same monster-move packet builder as
+  chase.
+- Fixed the first return-home real-client smoke regression. A creature that was
+  already evading home could immediately reacquire the player from the normal
+  aggro scan when the player walked toward it, causing chase/home flip-flopping.
+  `ReturnHome` now acts as an evade state: DB creatures in that motion cannot
+  auto-aggro and ignore player damage until they finish returning home.
+- Fixed the next return-home smoke regression where creatures could sometimes
+  appear to stop instead of fully running home. Return-home motion now advances
+  from the normal world tick even after combat has been cleared, and home
+  movement no longer reuses the combat LOS/path guardrail; like CMaNGOS'
+  `HomeMovementGenerator`, it still attempts to go home even when combat
+  pathing is imperfect.
+- Tightened G8 aggro parity against the CMaNGOS reference path:
+  `CreatureInfo::Detection` -> `Creature::GetDetectionRange()` ->
+  `Unit::GetAttackDistance()`. Rust now loads `creature_template.Detection`
+  through `CreatureTemplateQuery`, uses it as the base aggro distance before
+  applying the existing level delta/minimum clamp, and seeds starter-zone
+  fixture creatures with a 20-yard detection value so fixture and RealClassicDb
+  paths exercise the same field.
+- Added the G8 range/facing-gated player melee slice after comparing CMaNGOS
+  `Unit::UpdateMeleeAttackingState`, `Unit::CanReachWithMeleeAttack`, and
+  `WorldObject::HasInArc`. DB-creature player swings now start auto-attack but
+  only apply damage when the active player is same-map, navigation-clear,
+  within the CMaNGOS minimum 5-yard 3D melee reach, and inside the 120-degree
+  forward melee arc. Supported starter melee spell fixtures now use the same
+  DB-creature melee validity check before applying direct DB-creature damage.
+- Updated `starter-zone-flow-test` to move into melee range and face the real
+  ClassicDB wolf/kobold before scripted melee proof steps, so the harness
+  proves the new server-side range/facing gates instead of relying on
+  distance-free fixture damage.
+- Fixed two follow-up real-client observations from the range/facing smoke:
+  far right-clicking a DB creature no longer starts creature retaliation/chase
+  before a valid landed player hit, and supported starter melee spells now
+  return a CMaNGOS-shaped `SMSG_CAST_RESULT` failure before power spend,
+  `SMSG_SPELL_GO`, or damage when range/facing is invalid.
 
 ## Tests Run
 
@@ -493,6 +539,245 @@ using the repo's bug triage policy, then continue the requested task.
   before combat, elevated `.\scripts\test-starter-zone-flow.cmd` passed against
   RealClassicDb; final `.\scripts\test-rust.cmd` passed with 120
   `wow-network` tests.
+- G8 navigation guardrail: baseline `.\scripts\test-rust.cmd` passed. After
+  changes, `cargo fmt` passed with the known canonicalize warning; `cargo test
+  -p wow-network db_creature --lib` passed with 23 targeted tests; `cargo check
+  -p wow-network -p starter-zone-flow-test` passed; first non-elevated
+  `.\scripts\test-starter-zone-flow.cmd` failed because Docker access was
+  denied, and the elevated rerun passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- G8 leash/evade/return-home: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature --lib` passed with 25
+  targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; first non-elevated `.\scripts\test-starter-zone-flow.cmd` failed
+  because Docker access was denied, and the elevated rerun passed against
+  RealClassicDb: `starter-zone RealClassicDb lock passed for account STARTZONE,
+  character Startzone`.
+- G8 return-home flip-flop fix: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature --lib` passed with 26
+  targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; first non-elevated `.\scripts\test-starter-zone-flow.cmd` failed
+  because Docker access was denied, the first elevated rerun hit the known
+  local `authserver.exe` / `worldserver.exe` file lock, and the elevated rerun
+  after stopping stale local server processes passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- G8 return-home stall fix: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature --lib` passed with 28
+  targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; first non-elevated `.\scripts\test-starter-zone-flow.cmd` failed
+  because Docker access was denied, the first elevated rerun hit the known
+  local `authserver.exe` / `worldserver.exe` file lock, and the elevated rerun
+  after stopping stale local server processes passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`.
+- G8 aggro detection parity: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature --lib` passed with 29
+  targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; first non-elevated `.\scripts\test-starter-zone-flow.cmd` failed
+  because Docker access was denied, and the elevated rerun passed against
+  RealClassicDb: `starter-zone RealClassicDb lock passed for account STARTZONE,
+  character Startzone`; final `.\scripts\test-rust.cmd` passed with 128
+  `wow-network` tests.
+- G8 range/facing player melee: baseline `.\scripts\test-rust.cmd` passed.
+  After changes, `cargo fmt` passed with the known canonicalize warning;
+  `cargo test -p wow-network db_creature --lib` passed with 31 targeted tests;
+  `cargo check -p wow-network -p starter-zone-flow-test` passed; first
+  non-elevated `.\scripts\test-starter-zone-flow.cmd` failed because Docker
+  access was denied, the first elevated rerun hit the known local
+  `authserver.exe` file lock, and the elevated rerun after clearing stale
+  local processes passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`; final `.\scripts\test-rust.cmd` passed with 130 `wow-network`
+  tests.
+- G8 far attack / melee spell follow-up: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network db_creature --lib` passed
+  with 31 targeted tests; `cargo test -p wow-network starter_spell --lib`
+  passed with 3 targeted tests; `cargo test -p wow-network melee --lib` passed
+  with 6 targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; first non-elevated `.\scripts\test-starter-zone-flow.cmd` failed
+  because Docker access was denied, the first elevated rerun hit the known
+  local `authserver.exe` file lock, and the elevated rerun after clearing stale
+  local processes passed against RealClassicDb:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character
+  Startzone`; final `.\scripts\test-rust.cmd` passed with 131 `wow-network`
+  tests.
+- G8 chase stop/repath parity: baseline `.\scripts\test-rust.cmd` passed.
+  Rust creature melee reach now uses the CMaNGOS combined melee reach floor of
+  5 yards for creature-origin reach checks, chase destinations stop at half
+  that range, and chase re-pathing waits for the full melee-reach window before
+  sending a refreshed spline. The starter-zone kobold aggro proof now starts
+  just outside that 5-yard reach so it still proves `SMSG_MONSTER_MOVE`.
+  `cargo fmt` passed with the known canonicalize warning; `cargo test -p
+  wow-network db_creature_chase --lib` passed with 4 targeted tests; `cargo
+  test -p wow-network db_creature --lib` passed with 31 targeted tests; `cargo
+  check -p wow-network -p starter-zone-flow-test` passed; first non-elevated
+  `.\scripts\test-starter-zone-flow.cmd` failed because Docker access was
+  denied, the first elevated rerun hit the known local `authserver.exe` file
+  lock, and the elevated rerun after stopping stale local server processes
+  passed against RealClassicDb; final `.\scripts\test-rust.cmd` passed with
+  131 `wow-network` tests.
+- G8 real-client combat-state follow-up: creature aggro now sends CMaNGOS-style
+  `UNIT_FIELD_FLAGS` updates with `UNIT_FLAG_IN_COMBAT` for the player and
+  aggroing creature, and evade/death clear the flag again. This targets the
+  real-client issue where crossed swords only appeared after the player
+  right-clicked even though a hostile creature already had aggro.
+- G8 creature-facing follow-up: creature-origin melee now requires the player
+  to be inside the creature's forward melee arc before damage lands. When the
+  player is in reach but behind the creature, Rust turns the creature server
+  position toward the player and uses the same 100ms ready-swing retry cadence
+  shape as the existing out-of-range retry path.
+- G8 real-client combat-state tests: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network
+  combat_unit_flag_updates_include_cmangos_in_combat_bit --lib` passed; `cargo
+  test -p wow-network db_creature --lib` passed with 31 targeted tests; `cargo
+  check -p wow-network -p starter-zone-flow-test` passed; first
+  `.\scripts\test-rust.cmd` hit the known local `authserver.exe` file lock
+  from the running client stack, and the rerun passed after stopping the stale
+  auth/world server processes.
+- G8 CMaNGOS chase-facing follow-up: compared CMaNGOS
+  `ChaseMovementGenerator::DispatchSplineToPosition`, which calls
+  `MoveSplineInit::SetFacing(i_target)`, and
+  `PacketBuilder::WriteCommonMonsterMovePart`, which serializes that as
+  `MonsterMoveFacingTarget`. Rust chase `SMSG_MONSTER_MOVE` packets now carry
+  the facing-target variant for player chase splines instead of plain normal
+  monster movement.
+- G8 chase-facing tests: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network
+  chase_monster_move_can_face_target_like_cmangos_spline --lib` passed; `cargo
+  test -p wow-network db_creature --lib` passed with 31 targeted tests; `cargo
+  check -p wow-network -p starter-zone-flow-test` passed; `.\scripts\test-rust.cmd`
+  passed with 133 `wow-network` tests after stopping the running local
+  auth/world processes to avoid executable locks.
+- G8 in-place facing follow-up: real-client smoke showed mobs still did not
+  visibly need to turn around when already inside melee range. The bad-facing
+  branch now sends a same-position `SMSG_MONSTER_MOVE` with
+  `MonsterMoveFacingTarget`, increments the creature spline id, then uses the
+  short ready-swing retry instead of silently rotating only server-side.
+- G8 in-place facing tests: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network
+  db_creature_melee_reach_is_position_gated --lib` passed; `cargo test -p
+  wow-network db_creature --lib` passed with 31 targeted tests; `cargo check -p
+  wow-network -p starter-zone-flow-test` passed; first `.\scripts\test-rust.cmd`
+  failed on a clippy `question_mark` style lint in the new optional helper,
+  and the rerun passed after applying the clippy fix.
+- G8 multi-creature combat follow-up: session creature combat state is now
+  keyed by attacker GUID instead of a single `Option<CreatureCombatState>`.
+  Aggro selection starts every eligible nearby hostile that is not already in
+  creature combat, combat ticks iterate each active creature attacker, and
+  visibility retention keeps all active combat creatures instead of just one.
+  This is still not full CMaNGOS threat/social aggro, but it removes the
+  one-mob chase ceiling for the current real-client slice.
+- G8 multi-creature combat tests: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network
+  db_creature_combat_can_track_multiple_attackers --lib` passed; `cargo test
+  -p wow-network db_creature --lib` passed with 32 targeted tests; `cargo check
+  -p wow-network -p starter-zone-flow-test` passed; `.\scripts\test-rust.cmd`
+  passed with 134 `wow-network` tests after stopping the running local
+  auth/world processes to avoid executable locks.
+- G8/G9 CMaNGOS-like movement/social follow-up: Rust now loads DB
+  `creature.spawndist`, `creature.MovementType`,
+  `creature_template.MovementType`, and `creature_template.CallForHelp`.
+  Non-combat random-movement creatures start CMaNGOS-shaped walk splines inside
+  their spawn radius after 3-10 second pauses, return-home completion restores
+  idle/random scheduling, and creature aggro can call nearby same-faction
+  eligible hostile assists once using `CallForHelp` or the CMaNGOS default
+  5-yard assistance radius. This is still not waypoint/pathfinder parity.
+- G8/G9 CMaNGOS-like movement/social tests: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network db_creature_random --lib`
+  passed with 2 targeted tests; `cargo test -p wow-network
+  db_creature_assistance --lib` passed; `cargo test -p wow-network
+  db_creature --lib` passed with 35 targeted tests; `cargo check -p
+  wow-network -p starter-zone-flow-test` passed; first `.\scripts\test-rust.cmd`
+  failed on a clippy simplification in the new random-movement guard, and the
+  rerun passed with 137 `wow-network` tests after applying the clippy fix.
+- G8 faction-reaction follow-up: auto-aggro no longer uses the temporary
+  starter entry allowlist. Rust now routes creature/player sight aggro through
+  a CMaNGOS-shaped faction-template reaction bridge using local ClassicDB
+  Northshire faction ids: friendly Northshire NPC factions remain friendly,
+  Young Wolf faction `32` remains neutral, Defias `17` and Kobold `25` are
+  hostile, unknown faction templates default neutral, and the existing creature
+  sanity gates still block civilians, critters, vendors/trainers, lootable
+  corpses, wrong-map creatures, and evading-home creatures. This is still a
+  narrow bridge until Rust has a full `FactionTemplate.dbc` loader, but the
+  live aggro decision is no longer keyed on creature entry ids.
+- G8 faction-reaction tests: `cargo fmt` passed with the known canonicalize
+  warning; `cargo test -p wow-network db_creature_aggro --lib` passed with 7
+  targeted tests; `cargo test -p wow-network db_creature --lib` passed with 36
+  targeted tests; `cargo check -p wow-network -p starter-zone-flow-test`
+  passed; the first `.\scripts\test-rust.cmd` hit clippy's `manual_contains`
+  lint in the new faction helper, and the rerun passed with 138
+  `wow-network` tests after applying the cleanup.
+- G8/G9 mmap groundwork: generated Eastern Kingdoms map 0 mmaps in
+  `C:\World of Warcraft Classic\mmaps`, pointed `config/worldserver.local.toml`
+  at `C:/World of Warcraft Classic`, and wired Rust world startup to inspect
+  configured `maps`, `vmaps`, and `mmaps`. DB-creature navigation now keeps a
+  startup-scanned in-memory set of mmap headers/tiles and gates aggro/chase/
+  melee path availability on CMaNGOS-style tile presence instead of the old
+  unconditional path-success placeholder. If no mmap tiles are configured it
+  still falls back permissively for non-pathing test environments. This is
+  tile availability validation, not full Recast/Detour path solving yet.
+- G8/G9 mmap tests: `cargo fmt` passed with the known canonicalize warning;
+  `cargo test -p wow-network db_creature_navigation --lib` passed with 3
+  targeted tests; `cargo test -p wow-network mmap_tile --lib` passed with 2
+  targeted tests; `cargo test -p wow-network db_creature --lib` passed with 37
+  targeted tests; `cargo check -p wow-network -p worldserver -p
+  starter-zone-flow-test` passed; first `.\scripts\test-rust.cmd` hit clippy's
+  `excessive_precision` lint for the CMaNGOS grid-size constant, and the rerun
+  passed with 140 `wow-network` tests after applying the cleanup. Restarted
+  the real-client stack; `world-client-18085.log` reports
+  `maps=true`, `vmaps=true`, `mmap_maps=1`, and `mmap_tiles=513`.
+- G8/G9 native mmap path generation follow-up: added a small C++ Detour bridge
+  in `crates/wow-network/native/mmap_path.cpp`, compiled from
+  `crates/wow-network/build.rs` against the bundled RecastNavigation Detour
+  sources with `DT_POLYREF64`, matching the generated mmap data's poly-ref
+  expectations. DB-creature chase destination generation now asks Detour for a
+  real mmap-backed next path corner when configured `mmaps` contain the start
+  and target tiles, and falls back to the existing straight-line destination
+  only when no native path is available.
+- G8/G9 native mmap tests: `cargo test -p wow-network db_creature_mmap --lib
+  -- --nocapture` passed against local `C:/World of Warcraft Classic/mmaps`;
+  `cargo fmt` passed; `cargo test -p wow-network db_creature_navigation --lib`
+  passed with 3 targeted tests; `cargo test -p wow-network db_creature --lib`
+  passed with 38 targeted tests; `cargo check -p wow-network -p worldserver -p
+  starter-zone-flow-test` passed; `.\scripts\test-rust.cmd` passed with 141
+  `wow-network` tests after stopping local auth/world processes to avoid
+  executable locks. Restarted the real-client stack; `world-client-18085.log`
+  reports `maps=true`, `vmaps=true`, `mmap_maps=1`, and `mmap_tiles=513`.
+- G8/G9 multi-point path-following follow-up: `SMSG_MONSTER_MOVE` generation
+  now serializes multi-point paths instead of hardcoding a single destination,
+  and DB creature `Random`, `Chase`, and `ReturnHome` motion states store the
+  same path the client receives. Server-side runtime position now interpolates
+  across those path corners, chase trims Detour paths to the CMaNGOS-style
+  melee stop distance, return-home can reuse the native mmap path generator,
+  and random movement asks the same path layer to reach its DB-backed
+  `spawndist` destination when local mmaps cover the area.
+- G8/G9 multi-point path tests: `cargo fmt` passed; `cargo test -p
+  wow-network db_creature --lib` passed with 40 targeted tests; `cargo test -p
+  wow-network monster_move --lib` passed with 2 targeted tests; `cargo test -p
+  wow-network db_creature_mmap --lib -- --nocapture` passed against the local
+  generated mmap data; `cargo check -p wow-network -p worldserver -p
+  starter-zone-flow-test` passed; `.\scripts\test-rust.cmd` passed with 144
+  `wow-network` tests after stopping local auth/world processes to avoid
+  executable locks. Restarted the real-client stack; `world-client-18085.log`
+  reports `maps=true`, `vmaps=true`, `mmap_maps=1`, and `mmap_tiles=513`.
+- G9 DB waypoint/patrol movement v1: Rust now loads waypoint paths for
+  `MovementType` 2/4 creatures from `creature_movement` by creature guid, then
+  falls back to `creature_movement_template` by entry/path 0 like CMaNGOS'
+  default path lookup. Non-combat waypoint creatures send timed multi-point
+  `SMSG_MONSTER_MOVE` walk splines, interpolate server-side along the same
+  path, wait at DB nodes, loop normal waypoint paths, and reverse at ends for
+  linear waypoint movement type 4. `waypoint_path` / spawn-group indirection is
+  intentionally not guessed and is tracked as #51.
+- G9 waypoint tests in this slice: `.\scripts\test-rust.cmd` baseline passed
+  before edits with 144 `wow-network` tests; `cargo test -p wow-network
+  db_creature_waypoint --lib` passed; `cargo test -p wow-network
+  db_creature_linear_waypoint --lib` passed; `cargo fmt` passed; `cargo test
+  -p wow-network db_creature --lib` passed with 42 targeted tests; `cargo
+  check -p wow-db -p wow-network -p worldserver -p starter-zone-flow-test`
+  passed; `cargo test -p wow-network monster_move --lib` passed with 2 tests;
+  final `.\scripts\test-rust.cmd` passed with 146 `wow-network` tests.
 
 ## P0/P1 Fixes In This Slice
 
@@ -572,6 +857,54 @@ using the repo's bug triage policy, then continue the requested task.
   tick from firing, so chase updates appeared to stop after running for a while.
   Combat/chase ticks now run whenever the world tick deadline is due, including
   immediately after handling a packet.
+- No new P0/P1 bugs were discovered during the G8 navigation guardrail slice.
+- No new P0/P1 bugs were discovered during the G8 leash/evade/return-home
+  slice.
+- Fixed a P1 return-home state blocker reported from real-client smoke:
+  returning-home creatures could reacquire and chase again before reaching home.
+  They now remain non-aggroable/non-damageable while in `ReturnHome`.
+- Fixed a P1 return-home motion blocker reported from real-client smoke:
+  returning creatures could sometimes appear to stop because non-combat
+  return-home motion was not advanced after combat cleared. Return-home motion
+  now ticks independently of active combat.
+- Fixed a G8 parity blocker behind the slow-aggro feel: Rust was using a
+  hardcoded aggro base instead of the creature template `Detection` field that
+  CMaNGOS feeds into `GetAttackDistance`. DB-backed detection now drives
+  aggro radius.
+- No new P0/P1 bugs were discovered during the G8 range/facing player melee
+  slice.
+- Fixed the P1 follow-up from real-client smoke where far player attack intent
+  could immediately start the creature's retaliation state before melee
+  validity was satisfied.
+- Fixed the P1 follow-up from real-client smoke where far Heroic Strike could
+  look castable even though no damage landed. Starter melee spells now fail
+  before power spend/spell-go/damage when melee validity fails.
+- No new P0/P1 bugs were discovered during the G8 chase stop/repath parity
+  slice.
+- Fixed the P1 real-client combat-status blocker where creature aggro did not
+  put the player into the client's combat state until the player manually
+  right-clicked. The client-facing in-combat flag is now sent on creature aggro
+  and cleared on evade/death.
+- Fixed a P1 visual-facing parity blocker where chase splines did not include
+  the CMaNGOS `MonsterMoveFacingTarget` payload, so mobs could arrive in range
+  without visibly turning toward the player.
+- Fixed the follow-up P1 visual-facing blocker where mobs already inside melee
+  range could silently rotate server-side and hit before the client saw an
+  in-place turn packet.
+- Fixed the P1 real-client combat agency blocker where only one DB creature
+  could own combat/chase state at a time. Multiple nearby hostile creatures can
+  now enter creature combat and tick their chase/attack state independently.
+- No new P0/P1 bugs were discovered during the G8/G9 random movement and
+  assistance slice. The remaining pathfinder/waypoint/threat gaps are already
+  tracked as broader G8/G9 parity work.
+- Fixed the native mmap bridge blocker discovered during implementation:
+  Detour rejected the local generated `000.mmap` header until the Rust native
+  bridge compiled bundled Detour with `DT_POLYREF64`, matching the extracted
+  mmap data's large `maxPolys` shape.
+- No new P0/P1 bugs were discovered during the G8/G9 multi-point path-following
+  slice.
+- No new P0/P1 bugs were discovered during the G9 DB waypoint/patrol movement
+  slice.
 
 ## Non-blocking Backlog
 
@@ -580,6 +913,12 @@ were discovered during the Quest v1 slice. The follow-up sustainability audit
 logged #48 as P4 world architecture debt: split gameplay handlers before
 XP/combat v2. #48 is now completed/closed. #5 is now completed/closed for the
 `wow-db/src/character.rs` split and character lifecycle transaction debt.
+User real-client smoke noted that aggro response can still feel slow compared
+with CMaNGOS after the return-home fixes; this was added as fresh evidence on
+GitHub #12 for future G8 cadence/AI-notify parity work. The missing
+`waypoint_path` / spawn-group indirection fallback for DB patrol movement is
+tracked as GitHub #51. The first waypoint loader's per-creature DB fallback
+queries are tracked as P4 performance debt in GitHub #52.
 
 Known open directions still include player death/respawn (#44), broader
 DB-backed gossip/trainer/vendor parity, exact combat/stat formulas, map
@@ -606,17 +945,23 @@ and passive/aura effects from learned spells.
 - DB creature combat is still a starter-slice model. It is good enough to prove
   kill credit, loot release, and respawn in the harness, but not full CMaNGOS
   combat pacing or threat.
-- G8 aggro is harness-proven for hostile DB creatures. It still does not
-  implement real pathfinding/navmesh, LOS/path validity, leash/evade, social
-  aggro, faction DB relationship lookup beyond the narrow Northshire
-  hostile/friendly guardrails, player death, or final real-client proof.
+- G8 aggro is harness-proven for hostile DB creatures. It now has first-slice
+  Recast/Detour mmap path generation for configured local `mmaps`, multi-point
+  monster-move splines, and matching server-side interpolation for chase,
+  return-home, and random movement paths. It still does not implement vmap LOS,
+  full CMaNGOS `PathFinder` smooth-path flags, full
+  DBC-backed faction-template loading beyond the narrow Northshire
+  hostile/friendly bridge, player death, or final real-client proof.
   Creature attacks now carry explicit attacker/victim/timer state, chase through
   a timed runtime motion state with 250ms re-pathing and active-combat
-  visibility retention, and require melee reach; player attacks and starter
-  spell damage still use the older fixture-style range assumptions until the
-  range/facing slice is widened. User real-client smoke confirmed terrain
-  clipping/glitchy pathing remains; the evidence was appended to GitHub #12
-  with `gate:G8-combat-agency` / `cmangos-diff`.
+  visibility retention, and require melee reach; player DB-creature swings and
+  supported starter melee spell fixtures now require server-side range, facing,
+  and the explicit navigation guardrail before damage lands. Combat rolls,
+  exact combat reach/model modifiers, swing-error packets, damage formulas,
+  CMaNGOS path flags, `waypoint_path` indirection, and vmap LOS remain future
+  G8/G9 work. User real-client smoke confirmed terrain clipping/glitchy pathing before
+  the native mmap bridge; evidence and the mmap follow-ups were appended to
+  GitHub #12 with `gate:G8-combat-agency` / `cmangos-diff`.
 - G3 movement-triggered DB creature streaming is harness-proven and
   user-verified in the real client; keep it as a regression gate.
 - The repo still relies on local `target/classic-db` / Docker content import for
@@ -626,12 +971,24 @@ and passive/aura effects from learned spells.
 
 Continue Checkpoint 2 with the next narrow starter gameplay slice:
 
-- G8 Combat Agency: build on the chase re-path foundation with path
-  validity/LOS checks, then widen range/facing-gated player swings before
-  leash/evade.
-- G9 World Creature Fidelity: keep DB spawn/template/loot/respawn/patrol
-  fidelity separate from combat agency, so aggro progress does not have to wait
-  for full persistent creature behavior.
+- G8/G9 Creature Pathing + Movement Fidelity: user voted to put pathing before
+  death/respawn. Prioritize fake-looking mob movement before combat
+  roll/damage numbers or G7 death work. Chase stop-distance/re-path now uses
+  the CMaNGOS combined melee reach shape, Rust detects mmap tile availability
+  from `C:/World of Warcraft Classic`, chase/home/random movement can use
+  native Detour multi-point paths when generated mmap files cover the area, and
+  DB waypoint movement now covers `creature_movement` /
+  `creature_movement_template` paths. Next narrow slice is a real-client smoke
+  of waypoint/patrol movement if suitable nearby pathing data exists, or
+  corpse/respawn timing if Northshire has no visible waypoint creature.
+- G9 World Creature Fidelity: after chase/home feel improves, implement
+  generic CMaNGOS DB-backed idle/random/waypoint/patrol movement using
+  `MovementType`, `spawndist`, waypoint/path tables, home position, respawn
+  timing, and AI update references. Northshire is only the proof area; do not
+  add starter-specific movement rules. Keep DB spawn/template/loot/respawn and
+  non-combat movement fidelity separate from combat agency where possible.
+- G8 Combat Agency later: resume melee roll table and damage formula parity
+  after movement feel is less fake.
 - G10 NPC Interaction Fidelity: audit Northshire quest givers, vendors,
   trainers, gossip NPCs, and non-interactive NPCs against CMaNGOS affordances.
 - G11 Persistence + Relog Sanity: add relog checkpoints after each major
@@ -652,6 +1009,8 @@ broader slice.
 - `crates/wow-network/src/world/bootstrap.rs`
 - `crates/wow-network/src/world/interactions.rs`
 - `crates/wow-network/src/world/combat.rs`
+- `crates/wow-network/build.rs`
+- `crates/wow-network/native/mmap_path.cpp`
 - `crates/wow-network/src/world/quests.rs`
 - `crates/wow-network/src/world/trainers.rs`
 - `crates/wow-network/src/world/opcodes.rs`

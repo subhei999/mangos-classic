@@ -135,6 +135,7 @@ struct StarterZoneContent {
     kobold_position: WorldPosition,
     kobold_required_count: u32,
     wolf: ExpectedCreature,
+    wolf_position: WorldPosition,
     wolf_health: u32,
     wolf_loot_money: u32,
     wolf_loot_item: Option<u32>,
@@ -426,6 +427,13 @@ async fn load_real_northshire_content(
             entry: wolf_spawn.entry,
             counter: wolf_spawn.guid,
         },
+        wolf_position: WorldPosition::new(
+            wolf_spawn.map,
+            wolf_spawn.position_x,
+            wolf_spawn.position_y,
+            wolf_spawn.position_z,
+            wolf_spawn.orientation,
+        ),
         wolf_health: wolf_spawn.template.max_level_health,
         wolf_loot_money: wolf_spawn
             .template
@@ -491,6 +499,7 @@ async fn load_fixture_northshire_content(
             entry: YOUNG_WOLF_ENTRY,
             counter: FIXTURE_PREFIX + 4,
         },
+        wolf_position: WorldPosition::new(EASTERN_KINGDOMS_MAP, -8908.0, -145.0, 82.2, 3.4),
         wolf_health: 4,
         wolf_loot_money: 3,
         wolf_loot_item: wolf_loot.map(|loot| loot.item),
@@ -837,10 +846,10 @@ async fn seed_creature_template(
     sqlx::query(
         "INSERT INTO creature_template \
          (Entry, Name, SubName, MinLevel, MaxLevel, DisplayId1, DisplayIdProbability1, \
-          Faction, Scale, Family, CreatureType, NpcFlags, UnitFlags, DynamicFlags, \
+          Faction, Scale, Detection, Family, CreatureType, NpcFlags, UnitFlags, DynamicFlags, \
           Rank, MinLevelHealth, MaxLevelHealth, MinMeleeDmg, MaxMeleeDmg, \
           MeleeBaseAttackTime, RangedBaseAttackTime, TrainerType, TrainerClass, MinLootGold, MaxLootGold) \
-         VALUES (?, ?, ?, ?, ?, ?, 100, ?, 1, 0, ?, ?, 0, 0, 0, ?, ?, ?, ?, 2000, 2000, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 100, ?, 1, 20, 0, ?, ?, 0, 0, 0, ?, ?, ?, ?, 2000, 2000, ?, ?, ?, ?)",
     )
     .bind(entry)
     .bind(name)
@@ -1498,10 +1507,10 @@ impl WorldClient {
         let player = ObjectGuid::new(HighGuid::Player, 0, self.character_guid);
         let aggro_position = WorldPosition::new(
             content.kobold_position.map_id,
-            content.kobold_position.x + 4.0,
+            content.kobold_position.x + 6.0,
             content.kobold_position.y,
             content.kobold_position.z,
-            content.kobold_position.orientation,
+            std::f32::consts::PI,
         );
         write_client_packet(
             &mut self.stream,
@@ -1555,6 +1564,20 @@ impl WorldClient {
         content: &StarterZoneContent,
     ) -> anyhow::Result<()> {
         let wolf = ObjectGuid::new(HighGuid::Unit, content.wolf.entry, content.wolf.counter);
+        let attack_position = WorldPosition::new(
+            content.wolf_position.map_id,
+            content.wolf_position.x + 4.0,
+            content.wolf_position.y,
+            content.wolf_position.z,
+            std::f32::consts::PI,
+        );
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(attack_position),
+            Some(&mut self.crypto),
+        )?;
+        self.drain_immediate_packets()?;
         write_client_packet(
             &mut self.stream,
             CMSG_ATTACKSWING,

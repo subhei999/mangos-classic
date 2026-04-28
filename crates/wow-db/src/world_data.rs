@@ -17,6 +17,8 @@ pub struct CreatureTemplateQuery {
     pub display_id4: u32,
     pub faction: u32,
     pub scale: f32,
+    pub detection_range: u32,
+    pub call_for_help: u32,
     pub family: i32,
     pub creature_type: u32,
     pub npc_flags: u32,
@@ -35,10 +37,11 @@ pub struct CreatureTemplateQuery {
     pub trainer_class: u8,
     pub pet_spell_data_id: u32,
     pub civilian: u8,
+    pub movement_type: u8,
     pub experience_multiplier: f32,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatureSpawnQuery {
     pub guid: u32,
     pub entry: u32,
@@ -47,7 +50,21 @@ pub struct CreatureSpawnQuery {
     pub position_y: f32,
     pub position_z: f32,
     pub orientation: f32,
+    pub spawn_dist: f32,
+    pub movement_type: u8,
     pub template: CreatureTemplateQuery,
+    pub waypoint_path: Vec<CreatureWaypointQuery>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreatureWaypointQuery {
+    pub point: u32,
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub orientation: Option<f32>,
+    pub wait_time: u32,
+    pub script_id: u32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -149,7 +166,8 @@ pub async fn get_creature_template_query(
                 MinLevel AS min_level, MaxLevel AS max_level, \
                 DisplayId1 AS display_id1, DisplayId2 AS display_id2, \
                 DisplayId3 AS display_id3, DisplayId4 AS display_id4, \
-                Faction AS faction, Scale AS scale, Family AS family, \
+                Faction AS faction, Scale AS scale, Detection AS detection_range, \
+                CallForHelp AS call_for_help, Family AS family, \
                 CreatureType AS creature_type, NpcFlags AS npc_flags, \
                 UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, Rank AS rank, \
                 MinLevelHealth AS min_level_health, MaxLevelHealth AS max_level_health, \
@@ -159,6 +177,7 @@ pub async fn get_creature_template_query(
                 RangedBaseAttackTime AS ranged_base_attack_time, \
                 TrainerType AS trainer_type, TrainerClass AS trainer_class, \
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
+                MovementType AS movement_type, \
                 ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          WHERE Entry = ?",
@@ -398,6 +417,8 @@ pub async fn get_nearby_creature_spawns(
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
                 CAST(creature.position_z AS DOUBLE) AS position_z, \
                 CAST(creature.orientation AS DOUBLE) AS orientation, \
+                CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
+                creature.MovementType AS movement_type, \
                 creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
                 creature_template.SubName AS template_subname, \
                 creature_template.MinLevel AS template_min_level, \
@@ -407,6 +428,8 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.DisplayId3 AS template_display_id3, \
                 creature_template.DisplayId4 AS template_display_id4, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.Detection AS template_detection_range, \
+                creature_template.CallForHelp AS template_call_for_help, \
                 creature_template.Family AS template_family, \
                 creature_template.CreatureType AS template_creature_type, \
                 creature_template.NpcFlags AS template_npc_flags, \
@@ -425,6 +448,7 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
                 creature_template.Civilian AS template_civilian, \
+                creature_template.MovementType AS template_movement_type, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
@@ -449,7 +473,95 @@ pub async fn get_nearby_creature_spawns(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(CreatureSpawnRow::into_query).collect())
+    let mut spawns = rows
+        .into_iter()
+        .map(CreatureSpawnRow::into_query)
+        .collect::<Vec<_>>();
+    for spawn in &mut spawns {
+        if creature_effective_movement_type(spawn) == 2
+            || creature_effective_movement_type(spawn) == 4
+        {
+            spawn.waypoint_path =
+                get_creature_default_waypoint_path(pool, spawn.entry, spawn.guid).await?;
+        }
+    }
+
+    Ok(spawns)
+}
+
+pub async fn get_creature_default_waypoint_path(
+    pool: &MySqlPool,
+    entry: u32,
+    guid: u32,
+) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    let guid_path = get_creature_guid_waypoint_path(pool, guid).await?;
+    if !guid_path.is_empty() {
+        return Ok(guid_path);
+    }
+    get_creature_template_waypoint_path(pool, entry, 0).await
+}
+
+async fn get_creature_guid_waypoint_path(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureWaypointRow>(
+        "SELECT Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM creature_movement \
+         WHERE Id = ? \
+         ORDER BY Point",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(creature_waypoint_rows_into_path(rows))
+}
+
+async fn get_creature_template_waypoint_path(
+    pool: &MySqlPool,
+    entry: u32,
+    path_id: u32,
+) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureWaypointRow>(
+        "SELECT Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM creature_movement_template \
+         WHERE Entry = ? AND PathId = ? \
+         ORDER BY Point",
+    )
+    .bind(entry)
+    .bind(path_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(creature_waypoint_rows_into_path(rows))
+}
+
+fn creature_effective_movement_type(spawn: &CreatureSpawnQuery) -> u8 {
+    if spawn.movement_type != 0 {
+        spawn.movement_type
+    } else {
+        spawn.template.movement_type
+    }
+}
+
+fn creature_waypoint_rows_into_path(rows: Vec<CreatureWaypointRow>) -> Vec<CreatureWaypointQuery> {
+    if rows.iter().any(|row| row.point == 0) {
+        return Vec::new();
+    }
+    rows.into_iter()
+        .map(CreatureWaypointRow::into_query)
+        .collect()
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -704,6 +816,31 @@ impl VendorItemRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct CreatureWaypointRow {
+    point: u32,
+    position_x: f64,
+    position_y: f64,
+    position_z: f64,
+    orientation: f64,
+    wait_time: u32,
+    script_id: u32,
+}
+
+impl CreatureWaypointRow {
+    fn into_query(self) -> CreatureWaypointQuery {
+        CreatureWaypointQuery {
+            point: self.point,
+            position_x: self.position_x as f32,
+            position_y: self.position_y as f32,
+            position_z: self.position_z as f32,
+            orientation: (self.orientation as f32 != 100.0).then_some(self.orientation as f32),
+            wait_time: self.wait_time,
+            script_id: self.script_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct CreatureSpawnRow {
     guid: u32,
     entry: u32,
@@ -712,6 +849,8 @@ struct CreatureSpawnRow {
     position_y: f64,
     position_z: f64,
     orientation: f64,
+    spawn_dist: f64,
+    movement_type: u8,
     template_entry: u32,
     template_name: String,
     template_subname: Option<String>,
@@ -723,6 +862,8 @@ struct CreatureSpawnRow {
     template_display_id4: u32,
     template_faction: u32,
     template_scale: f32,
+    template_detection_range: u32,
+    template_call_for_help: u32,
     template_family: i32,
     template_creature_type: u32,
     template_npc_flags: u32,
@@ -741,6 +882,7 @@ struct CreatureSpawnRow {
     template_trainer_class: u8,
     template_pet_spell_data_id: u32,
     template_civilian: u8,
+    template_movement_type: u8,
     template_experience_multiplier: f32,
 }
 
@@ -754,6 +896,8 @@ impl CreatureSpawnRow {
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,
             orientation: self.orientation as f32,
+            spawn_dist: self.spawn_dist as f32,
+            movement_type: self.movement_type,
             template: CreatureTemplateQuery {
                 entry: self.template_entry,
                 name: self.template_name,
@@ -766,6 +910,8 @@ impl CreatureSpawnRow {
                 display_id4: self.template_display_id4,
                 faction: self.template_faction,
                 scale: self.template_scale,
+                detection_range: self.template_detection_range,
+                call_for_help: self.template_call_for_help,
                 family: self.template_family,
                 creature_type: self.template_creature_type,
                 npc_flags: self.template_npc_flags,
@@ -784,8 +930,10 @@ impl CreatureSpawnRow {
                 trainer_class: self.template_trainer_class,
                 pet_spell_data_id: self.template_pet_spell_data_id,
                 civilian: self.template_civilian,
+                movement_type: self.template_movement_type,
                 experience_multiplier: self.template_experience_multiplier,
             },
+            waypoint_path: Vec::new(),
         }
     }
 }

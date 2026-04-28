@@ -38,7 +38,23 @@ impl WorldServer {
         character_db_pool: MySqlPool,
         world_db_pool: MySqlPool,
         delete_options: CharacterDeleteOptions,
+        data_dir: impl Into<std::path::PathBuf>,
     ) -> Self {
+        let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
+        info!(
+            data_dir = %world_data_files.data_dir.display(),
+            maps = world_data_files.maps_available,
+            vmaps = world_data_files.vmaps_available,
+            mmap_maps = world_data_files.mmap_headers.len(),
+            mmap_tiles = world_data_files.mmap_tiles.len(),
+            "World data files inspected",
+        );
+        if world_data_files.mmap_tiles.is_empty() {
+            warn!(
+                data_dir = %world_data_files.data_dir.display(),
+                "No mmap tiles found; DB creature pathing will use the permissive fallback",
+            );
+        }
         Self {
             bind_addr,
             login_db_pool,
@@ -47,6 +63,7 @@ impl WorldServer {
             runtime_state: WorldRuntimeState {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
                 delete_options,
+                world_data_files,
             },
         }
     }
@@ -140,7 +157,13 @@ async fn handle_client(
 
     let mut header_crypto = HeaderCrypto::new(&session_key);
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
-    let mut session = WorldSessionState::default();
+    let mut session = WorldSessionState {
+        db_creature_navigation: DbCreatureNavigationGuardrail {
+            world_data_files: runtime_state.world_data_files.clone(),
+            ..DbCreatureNavigationGuardrail::default()
+        },
+        ..WorldSessionState::default()
+    };
     let mut next_world_tick_at = Instant::now() + Duration::from_millis(WORLD_TICK_MILLIS);
 
     loop {
@@ -1271,7 +1294,7 @@ fn stage_db_creature_visibility_updates(
             retained_combat_guids.insert(target.raw());
         }
     }
-    if let Some(combat) = session.active_creature_combat {
+    for combat in session.active_creature_combats.values() {
         if session.db_creatures.contains_key(&combat.attacker.raw()) {
             retained_combat_guids.insert(combat.attacker.raw());
         }
@@ -1292,13 +1315,9 @@ fn stage_db_creature_visibility_updates(
         session.active_combat_target = None;
         session.active_combat_next_swing_at = None;
     }
-    if session
-        .active_creature_combat
-        .as_ref()
-        .is_some_and(|combat| destroy_guids.contains(&combat.attacker.raw()))
-    {
-        session.active_creature_combat = None;
-    }
+    session
+        .active_creature_combats
+        .retain(|guid, _| !destroy_guids.contains(guid));
 
     let mut new_creatures = Vec::new();
     for spawn in nearby_creatures {

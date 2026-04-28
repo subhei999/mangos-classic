@@ -215,10 +215,22 @@ struct DbCreatureRuntime {
     already_called_assistance: bool,
     next_spline_id: u32,
     health: u32,
+    life_state: DbCreatureLifeState,
+    corpse_expires_at: Option<Instant>,
+    respawn_at: Option<Instant>,
+    respawn_epoch_secs: Option<u64>,
+    client_visible: bool,
     lootable: bool,
     looting: bool,
     loot_money_available: bool,
     loot_item: Option<DbCreatureLootRuntime>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbCreatureLifeState {
+    Alive,
+    Corpse,
+    Dead,
 }
 
 #[derive(Debug, Clone)]

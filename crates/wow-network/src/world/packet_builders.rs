@@ -545,6 +545,26 @@ fn build_db_creature_state_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_db_creature_death_update_body(
+    guid: ObjectGuid,
+    dynamic_flags: u32,
+    unit_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_TARGET, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_TARGET + 1, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+    set_update_value(&mut values, UNIT_NPC_FLAGS, 0)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
 fn build_unit_flags_update_body(guid: ObjectGuid, flags: u32) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -640,7 +660,7 @@ fn build_monster_move_path_body_inner(
     spline_id: u32,
     duration_ms: u32,
     facing_target: Option<ObjectGuid>,
-    run: bool,
+    _run: bool,
 ) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(!path.is_empty(), "monster movement path must not be empty");
     let mut body = Vec::with_capacity(52 + path.len() * 12);
@@ -655,20 +675,37 @@ fn build_monster_move_path_body_inner(
     } else {
         body.push(MONSTER_MOVE_TYPE_NORMAL);
     }
-    let spline_flags = if run {
-        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
-    } else {
-        0
-    };
-    body.extend_from_slice(&spline_flags.to_le_bytes());
+    body.extend_from_slice(&MONSTER_MOVE_SPLINE_FLAG_RUNMODE.to_le_bytes());
     body.extend_from_slice(&duration_ms.to_le_bytes());
-    body.extend_from_slice(&(path.len() as u32).to_le_bytes());
-    for point in path {
-        body.extend_from_slice(&point.x.to_le_bytes());
-        body.extend_from_slice(&point.y.to_le_bytes());
-        body.extend_from_slice(&point.z.to_le_bytes());
+    let destination = path[path.len() - 1];
+    let count_pos = body.len();
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&destination.x.to_le_bytes());
+    body.extend_from_slice(&destination.y.to_le_bytes());
+    body.extend_from_slice(&destination.z.to_le_bytes());
+    let mut offset_count = 1u32;
+    for point in &path[..path.len() - 1] {
+        let offset_x = destination.x - point.x;
+        let offset_y = destination.y - point.y;
+        let offset_z = destination.z - point.z;
+        if (offset_x * offset_x) + (offset_y * offset_y) + (offset_z * offset_z) < 0.5 {
+            continue;
+        }
+        body.extend_from_slice(
+            &pack_monster_move_xyz_offset(offset_x, offset_y, offset_z).to_le_bytes(),
+        );
+        offset_count += 1;
     }
+    body[count_pos..count_pos + 4].copy_from_slice(&offset_count.to_le_bytes());
     Ok(body)
+}
+
+fn pack_monster_move_xyz_offset(x: f32, y: f32, z: f32) -> u32 {
+    let mut packed = 0;
+    packed |= ((x / 0.25) as i32 as u32) & 0x7FF;
+    packed |= (((y / 0.25) as i32 as u32) & 0x7FF) << 11;
+    packed |= (((z / 0.25) as i32 as u32) & 0x3FF) << 22;
+    packed
 }
 
 fn build_log_xp_gain_body(source: Option<ObjectGuid>, given_xp: u32) -> Vec<u8> {

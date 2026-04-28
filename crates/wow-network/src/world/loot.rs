@@ -315,7 +315,10 @@ async fn handle_loot_release(
         );
         return Ok(());
     };
-    creature.respawn();
+    creature.looting = false;
+    creature.reduce_corpse_decay_after_loot(Instant::now());
+    let health = creature.health;
+    let dynamic_flags = creature.dynamic_flags();
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,
@@ -326,7 +329,7 @@ async fn handle_loot_release(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_db_creature_state_update_body(target, creature.health, 0)?,
+        &build_db_creature_state_update_body(target, health, dynamic_flags)?,
         Some(header_crypto),
     )
     .await

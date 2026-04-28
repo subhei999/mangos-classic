@@ -138,7 +138,21 @@ async fn handle_cast_spell(
                 send_packet(
                     stream,
                     SMSG_UPDATE_OBJECT,
-                    &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+                    &if is_dead {
+                        build_db_creature_death_update_body(
+                            target,
+                            dynamic_flags,
+                            db_creature_unit_flags(
+                                session
+                                    .db_creatures
+                                    .get(&target.raw())
+                                    .expect("creature damage target checked above"),
+                                false,
+                            ),
+                        )?
+                    } else {
+                        build_db_creature_state_update_body(target, health, dynamic_flags)?
+                    },
                     Some(&mut *header_crypto),
                 )
                 .await?;

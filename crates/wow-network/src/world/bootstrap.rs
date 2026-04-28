@@ -8,6 +8,7 @@ struct EnterWorldBootstrap<'a> {
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
+    nearby_creatures: &'a [CreatureSpawnQuery],
 }
 
 async fn send_enter_world_bootstrap(
@@ -38,15 +39,6 @@ async fn send_enter_world_bootstrap(
         wow_db::get_character_skills(bootstrap.character_db_pool, bootstrap.character.guid).await?;
     let equipped_templates =
         load_equipped_item_templates(bootstrap.world_db_pool, bootstrap.inventory).await?;
-    let nearby_creatures = wow_db::get_nearby_creature_spawns(
-        bootstrap.world_db_pool,
-        bootstrap.character.map,
-        bootstrap.character.position_x,
-        bootstrap.character.position_y,
-        CREATURE_SPAWN_RADIUS_YARDS,
-        CREATURE_SPAWN_LIMIT,
-    )
-    .await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
@@ -61,7 +53,7 @@ async fn send_enter_world_bootstrap(
             skills: &skills,
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: &equipped_templates,
-            nearby_creatures: &nearby_creatures,
+            nearby_creatures: bootstrap.nearby_creatures,
         },
         header_crypto,
     )
@@ -645,6 +637,39 @@ fn build_db_creature_create_blocks(
 }
 
 fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Result<Vec<u8>> {
+    build_db_creature_create_block_inner(
+        creature,
+        db_creature_spawn_position(creature),
+        creature_health(&creature.template),
+        creature.template.dynamic_flags,
+        creature.template.unit_flags,
+        creature.template.npc_flags,
+    )
+}
+
+fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyhow::Result<Vec<u8>> {
+    build_db_creature_create_block_inner(
+        &creature.spawn,
+        creature.current_position,
+        creature.health,
+        creature.dynamic_flags(),
+        db_creature_unit_flags(creature, false),
+        if creature.life_state == DbCreatureLifeState::Corpse {
+            0
+        } else {
+            creature.spawn.template.npc_flags
+        },
+    )
+}
+
+fn build_db_creature_create_block_inner(
+    creature: &CreatureSpawnQuery,
+    position: WorldPosition,
+    health: u32,
+    dynamic_flags: u32,
+    unit_flags: u32,
+    npc_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
     let guid = creature_spawn_guid(creature);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -654,10 +679,10 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
     block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
     block.extend_from_slice(&0u32.to_le_bytes());
     block.extend_from_slice(&0u32.to_le_bytes());
-    block.extend_from_slice(&creature.position_x.to_le_bytes());
-    block.extend_from_slice(&creature.position_y.to_le_bytes());
-    block.extend_from_slice(&creature.position_z.to_le_bytes());
-    block.extend_from_slice(&creature.orientation.to_le_bytes());
+    block.extend_from_slice(&position.x.to_le_bytes());
+    block.extend_from_slice(&position.y.to_le_bytes());
+    block.extend_from_slice(&position.z.to_le_bytes());
+    block.extend_from_slice(&position.orientation.to_le_bytes());
     block.extend_from_slice(&0u32.to_le_bytes());
     block.extend_from_slice(&2.5f32.to_le_bytes());
     block.extend_from_slice(&7.0f32.to_le_bytes());
@@ -667,7 +692,15 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
     block.extend_from_slice(&std::f32::consts::PI.to_le_bytes());
     block.extend_from_slice(&1u32.to_le_bytes());
 
-    write_db_creature_update_values(&mut block, guid, creature)?;
+    write_db_creature_update_values(
+        &mut block,
+        guid,
+        creature,
+        health,
+        dynamic_flags,
+        unit_flags,
+        npc_flags,
+    )?;
     Ok(block)
 }
 
@@ -675,9 +708,13 @@ fn write_db_creature_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     creature: &CreatureSpawnQuery,
+    health: u32,
+    dynamic_flags: u32,
+    unit_flags: u32,
+    npc_flags: u32,
 ) -> anyhow::Result<()> {
     let template = &creature.template;
-    let health = creature_health(template);
+    let max_health = creature_health(template);
     let display_id = creature_display_id(template);
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
@@ -686,11 +723,11 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, 0x003, creature.entry)?;
     set_update_value(&mut values, 0x004, creature_scale(template).to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
-    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, health)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
     set_update_value(&mut values, UNIT_FIELD_LEVEL, template.min_level as u32)?;
     set_update_value(&mut values, UNIT_FIELD_FACTIONTEMPLATE, template.faction)?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_0, 0)?;
-    set_update_value(&mut values, UNIT_FIELD_FLAGS, template.unit_flags)?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_update_value(
         &mut values,
         UNIT_FIELD_BASEATTACKTIME,
@@ -713,9 +750,9 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, template.min_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, template.max_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
-    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, template.dynamic_flags)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
-    set_update_value(&mut values, UNIT_NPC_FLAGS, template.npc_flags)?;
+    set_update_value(&mut values, UNIT_NPC_FLAGS, npc_flags)?;
     write_update_values(body, &values)
 }
 

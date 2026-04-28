@@ -509,9 +509,16 @@ Detailed path:
      `creature_loot_template` joined to `item_template`, expose
      `MinLootGold`/`MaxLootGold` as corpse money, autostore the item through
      existing inventory insertion/stacking behavior, clear looted money/item
-     state, and immediately respawn the single DB creature on loot release for
-     the harness. Broader drop chances/groups, quest drops, no-space DB loot
-     rollback, and relog durability remain future loot-table work.
+    state. Loot release no longer immediately respawns the DB creature; DB
+    creatures now move through CMaNGOS-like alive -> corpse -> dead -> respawn
+    runtime state using `creature.spawntimesecsmin/max`,
+    `creature_template.CorpseDecay`, rank fallback corpse timers, and
+    CMaNGOS-shaped `characters.creature_respawn` persistence for normal
+    instance `0` DB creatures. Unloaded corpses are now kept as hidden runtime
+    state and recreated as corpses if the player returns before the DB respawn
+    timer. Broader drop chances/groups, quest drops, no-space DB loot rollback,
+    live multi-client creature-state broadcast, and full relog durability remain
+    future loot-table/world-state work.
 5. Quest system v1
    - Implement quest status query, accept, progress update, complete, reward
      grant, and quest-log persistence.

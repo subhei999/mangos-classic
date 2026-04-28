@@ -86,6 +86,11 @@ impl DbCreatureRuntime {
             already_called_assistance: false,
             next_spline_id: 0,
             health,
+            life_state: DbCreatureLifeState::Alive,
+            corpse_expires_at: None,
+            respawn_at: None,
+            respawn_epoch_secs: None,
+            client_visible: true,
             lootable: false,
             looting: false,
             loot_money_available: false,
@@ -98,7 +103,7 @@ impl DbCreatureRuntime {
     }
 
     fn is_alive(&self) -> bool {
-        self.health > 0 && !self.lootable
+        self.life_state == DbCreatureLifeState::Alive && self.health > 0
     }
 
     fn is_evading_home(&self) -> bool {
@@ -111,6 +116,34 @@ impl DbCreatureRuntime {
         } else {
             self.spawn.template.movement_type
         }
+    }
+
+    fn new_with_persisted_respawn(
+        spawn: CreatureSpawnQuery,
+        now: Instant,
+        now_epoch_secs: u64,
+        respawn_epoch_secs: Option<u64>,
+    ) -> Self {
+        let mut creature = Self::new(spawn);
+        if let Some(respawn_epoch_secs) = respawn_epoch_secs {
+            if respawn_epoch_secs > now_epoch_secs {
+                creature.health = 0;
+                creature.life_state = DbCreatureLifeState::Dead;
+                creature.corpse_expires_at = None;
+                creature.respawn_at =
+                    Some(now + Duration::from_secs(respawn_epoch_secs - now_epoch_secs));
+                creature.respawn_epoch_secs = Some(respawn_epoch_secs);
+                creature.client_visible = false;
+                creature.lootable = false;
+                creature.looting = false;
+                creature.loot_money_available = false;
+                creature.loot_item = None;
+                creature.motion = CreatureMotionState::Idle;
+                creature.next_random_move_at = None;
+                creature.next_waypoint_move_at = None;
+            }
+        }
+        creature
     }
 
     fn random_wander_radius(&self) -> f32 {
@@ -174,15 +207,83 @@ impl DbCreatureRuntime {
     }
 
     fn dynamic_flags(&self) -> u32 {
-        if self.lootable {
+        if self.life_state == DbCreatureLifeState::Corpse && self.lootable {
             UNIT_DYNFLAG_LOOTABLE
         } else {
             self.spawn.template.dynamic_flags
         }
     }
 
+    fn begin_corpse(&mut self, now: Instant, now_epoch_secs: u64) {
+        let respawn_delay = db_creature_respawn_delay(&self.spawn);
+        self.health = 0;
+        self.life_state = DbCreatureLifeState::Corpse;
+        self.corpse_expires_at = Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
+        self.respawn_at = Some(now + respawn_delay);
+        self.respawn_epoch_secs = Some(now_epoch_secs + respawn_delay.as_secs());
+        self.client_visible = true;
+        self.lootable = true;
+        self.looting = false;
+        self.loot_money_available = self.loot_money() > 0;
+        self.loot_item = None;
+        self.motion = CreatureMotionState::Idle;
+        self.next_random_move_at = None;
+        self.next_waypoint_move_at = None;
+        self.already_called_assistance = false;
+    }
+
+    fn reduce_corpse_decay_after_loot(&mut self, now: Instant) {
+        if self.life_state != DbCreatureLifeState::Corpse {
+            return;
+        }
+        if self.loot_money_available || self.loot_item.is_some() {
+            return;
+        }
+        self.lootable = false;
+        let reduced_expires_at = now + Duration::from_millis(CMANGOS_MINIMUM_LOOTING_TIME_MILLIS);
+        if self
+            .corpse_expires_at
+            .is_none_or(|expires_at| expires_at > reduced_expires_at)
+        {
+            self.corpse_expires_at = Some(reduced_expires_at);
+        }
+    }
+
+    fn is_corpse_expired(&self, now: Instant) -> bool {
+        self.life_state == DbCreatureLifeState::Corpse
+            && self.corpse_expires_at.is_some_and(|expires_at| now >= expires_at)
+    }
+
+    fn remove_corpse(&mut self) {
+        self.life_state = DbCreatureLifeState::Dead;
+        self.corpse_expires_at = None;
+        self.health = 0;
+        self.client_visible = false;
+        self.lootable = false;
+        self.looting = false;
+        self.loot_money_available = false;
+        self.loot_item = None;
+        self.current_position = self.home_position;
+        self.motion = CreatureMotionState::Idle;
+        self.next_random_move_at = None;
+        self.next_waypoint_move_at = None;
+        self.waypoint_next_index = 0;
+        self.waypoint_forward = true;
+        self.already_called_assistance = false;
+    }
+
+    fn is_ready_to_respawn(&self, now: Instant) -> bool {
+        self.life_state == DbCreatureLifeState::Dead
+            && self.respawn_at.is_none_or(|respawn_at| now >= respawn_at)
+    }
+
     fn respawn(&mut self) {
         self.health = self.max_health();
+        self.life_state = DbCreatureLifeState::Alive;
+        self.corpse_expires_at = None;
+        self.respawn_at = None;
+        self.respawn_epoch_secs = None;
+        self.client_visible = true;
         self.lootable = false;
         self.looting = false;
         self.loot_money_available = false;
@@ -213,6 +314,46 @@ impl DbCreatureRuntime {
             dx * dx + dy * dy
         })
     }
+}
+
+const CMANGOS_MINIMUM_LOOTING_TIME_MILLIS: u64 = 2 * 60 * 1000;
+const CMANGOS_CORPSE_DECAY_NORMAL_SECS: u64 = 300;
+const CMANGOS_CORPSE_DECAY_RARE_SECS: u64 = 900;
+const CMANGOS_CORPSE_DECAY_ELITE_SECS: u64 = 600;
+const CMANGOS_CORPSE_DECAY_RARE_ELITE_SECS: u64 = 1200;
+const CMANGOS_CORPSE_DECAY_WORLD_BOSS_SECS: u64 = 3600;
+
+fn current_unix_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn db_creature_corpse_decay_duration(template: &CreatureTemplateQuery) -> Duration {
+    let seconds = if template.corpse_decay != 0 {
+        template.corpse_decay as u64
+    } else {
+        match template.rank {
+            1 => CMANGOS_CORPSE_DECAY_ELITE_SECS,
+            2 => CMANGOS_CORPSE_DECAY_RARE_ELITE_SECS,
+            3 => CMANGOS_CORPSE_DECAY_WORLD_BOSS_SECS,
+            4 => CMANGOS_CORPSE_DECAY_RARE_SECS,
+            _ => CMANGOS_CORPSE_DECAY_NORMAL_SECS,
+        }
+    };
+    Duration::from_secs(seconds)
+}
+
+fn db_creature_respawn_delay(spawn: &CreatureSpawnQuery) -> Duration {
+    let min = spawn.spawn_time_secs_min;
+    let max = spawn.spawn_time_secs_max.max(min);
+    let seconds = if min == max {
+        min
+    } else {
+        rand::thread_rng().gen_range(min..=max)
+    };
+    Duration::from_secs(seconds as u64)
 }
 
 fn db_creature_spawn_position(spawn: &CreatureSpawnQuery) -> WorldPosition {
@@ -319,23 +460,23 @@ fn faction_template_entry(id: u32) -> Option<FactionTemplateEntry> {
             FACTION_GROUP_MASK_HORDE,
             FACTION_GROUP_MASK_ALLIANCE,
         )),
-        // Local RealClassicDb Northshire rows observed in creature_template:
-        // 12 Marshal McBride/Llane Beshere friendly, 17 Defias Thug hostile,
-        // 25 Kobold family hostile, 32 Young Wolf neutral. The fixture combat
-        // factions keep the same relationship categories.
-        12 | RUST_GUIDE_FACTION_TEMPLATE => Some(faction_template(
+        // Local Vanilla FactionTemplate.dbc / RealClassicDb Northshire rows:
+        // 11/12 are friendly Alliance NPC factions, 17 is hostile Defias,
+        // 25 is neutral Kobold, and 32 is neutral Young Wolf.
+        // The fixture combat faction keeps an explicitly hostile category.
+        11 | 12 | RUST_GUIDE_FACTION_TEMPLATE => Some(faction_template(
             id,
             FACTION_GROUP_MASK_ALLIANCE,
             FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_ALLIANCE,
             FACTION_GROUP_MASK_HORDE,
         )),
-        14 | 17 | 25 => Some(faction_template(
+        14 | 17 => Some(faction_template(
             id,
             FACTION_GROUP_MASK_MONSTER,
             FACTION_GROUP_MASK_MONSTER,
             FACTION_GROUP_MASK_PLAYER,
         )),
-        32 => Some(faction_template(id, 0, 0, 0)),
+        25 | 32 => Some(faction_template(id, FACTION_GROUP_MASK_MONSTER, 0, 0)),
         _ => None,
     }
 }
@@ -369,10 +510,7 @@ fn apply_db_creature_damage(
     let damage = creature.health.min(requested_damage.max(1));
     creature.health = creature.health.saturating_sub(damage);
     if creature.health == 0 {
-        creature.lootable = true;
-        creature.looting = false;
-        creature.loot_money_available = creature.loot_money() > 0;
-        creature.loot_item = None;
+        creature.begin_corpse(Instant::now(), current_unix_epoch_secs());
         session.active_combat_target = None;
         session.active_combat_next_swing_at = None;
         clear_db_creature_combat_if_attacker(session, target);
@@ -388,6 +526,7 @@ async fn handle_combat_tick(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
+    advance_db_creature_lifecycle(stream, character_db_pool, session, now, header_crypto).await?;
     advance_db_creature_return_home_motions(session, now);
     advance_db_creature_idle_motions(stream, session, now, header_crypto).await?;
     if let Some(target) = session.active_combat_target {
@@ -417,6 +556,74 @@ async fn handle_combat_tick(
     send_active_db_creature_attack(stream, session, header_crypto).await
 }
 
+async fn advance_db_creature_lifecycle(
+    stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
+    session: &mut WorldSessionState,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let expired_corpses = session
+        .db_creatures
+        .iter()
+        .filter_map(|(guid, creature)| creature.is_corpse_expired(now).then_some(*guid))
+        .collect::<Vec<_>>();
+    for guid in expired_corpses {
+        let creature_guid = ObjectGuid::from_raw(guid);
+        if let Some(creature) = session.db_creatures.get_mut(&guid) {
+            creature.remove_corpse();
+        }
+        send_packet(
+            stream,
+            SMSG_DESTROY_OBJECT,
+            &build_destroy_guid_body(creature_guid),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+
+    let ready_respawns = session
+        .db_creatures
+        .iter()
+        .filter_map(|(guid, creature)| creature.is_ready_to_respawn(now).then_some(*guid))
+        .collect::<Vec<_>>();
+    let mut create_blocks = Vec::new();
+    let character_position = session
+        .active_character
+        .as_ref()
+        .map(|character| character.position);
+    for guid in ready_respawns {
+        if let Some(creature) = session.db_creatures.get_mut(&guid) {
+            creature.respawn();
+            let should_send_create = character_position
+                .is_some_and(|position| is_db_creature_inside_visibility_radius(creature, position));
+            creature.client_visible = should_send_create;
+            wow_db::save_creature_respawn_time(
+                character_db_pool,
+                ObjectGuid::from_raw(guid).counter(),
+                0,
+                0,
+                current_unix_epoch_secs(),
+            )
+            .await?;
+            if should_send_create {
+                create_blocks.push(build_db_creature_runtime_create_block(creature)?);
+            }
+        }
+    }
+    if !create_blocks.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_update_object_body(&create_blocks),
+            Some(header_crypto),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 fn advance_db_creature_return_home_motions(session: &mut WorldSessionState, now: Instant) {
     let return_home_guids = session
         .db_creatures
@@ -436,17 +643,20 @@ async fn advance_db_creature_idle_motions(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let idle_motion_guids = session
+    let moving_guids = session
         .db_creatures
         .iter()
         .filter_map(|(guid, creature)| {
-            should_tick_db_creature_idle_motion(session, *guid, creature, now).then_some(*guid)
+            should_advance_db_creature_idle_motion(session, *guid, creature).then_some(*guid)
         })
         .collect::<Vec<_>>();
+    for guid in moving_guids {
+        advance_db_creature_motion(session, ObjectGuid::from_raw(guid), now);
+    }
 
-    for guid in idle_motion_guids {
+    let start_guids = db_creature_idle_motion_start_guids(session, now);
+    for guid in start_guids {
         let creature_guid = ObjectGuid::from_raw(guid);
-        advance_db_creature_motion(session, creature_guid, now);
         let motion = start_db_creature_random_motion(session, creature_guid, now)
             .or_else(|| start_db_creature_waypoint_motion(session, creature_guid, now));
         if let Some(motion) = motion {
@@ -469,7 +679,37 @@ async fn advance_db_creature_idle_motions(
     Ok(())
 }
 
-fn should_tick_db_creature_idle_motion(
+fn should_advance_db_creature_idle_motion(
+    session: &WorldSessionState,
+    guid: u64,
+    creature: &DbCreatureRuntime,
+) -> bool {
+    creature.is_alive()
+        && !session.active_creature_combats.contains_key(&guid)
+        && session.active_combat_target.is_none_or(|target| target.raw() != guid)
+        && matches!(
+            creature.motion,
+            CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_)
+        )
+}
+
+fn db_creature_idle_motion_start_guids(
+    session: &WorldSessionState,
+    now: Instant,
+) -> Vec<u64> {
+    let mut guids = session
+        .db_creatures
+        .iter()
+        .filter_map(|(guid, creature)| {
+            should_start_db_creature_idle_motion(session, *guid, creature, now).then_some(*guid)
+        })
+        .collect::<Vec<_>>();
+    guids.sort_unstable();
+    guids.truncate(DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK);
+    guids
+}
+
+fn should_start_db_creature_idle_motion(
     session: &WorldSessionState,
     guid: u64,
     creature: &DbCreatureRuntime,
@@ -478,10 +718,8 @@ fn should_tick_db_creature_idle_motion(
     creature.is_alive()
         && !session.active_creature_combats.contains_key(&guid)
         && session.active_combat_target.is_none_or(|target| target.raw() != guid)
-        && (matches!(
-            creature.motion,
-            CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_)
-        ) || creature.next_random_move_at.is_some_and(|at| now >= at)
+        && matches!(creature.motion, CreatureMotionState::Idle)
+        && (creature.next_random_move_at.is_some_and(|at| now >= at)
             || creature.next_waypoint_move_at.is_some_and(|at| now >= at))
 }
 
@@ -547,7 +785,21 @@ async fn send_db_creature_swing(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+        &if is_dead {
+            build_db_creature_death_update_body(
+                target,
+                dynamic_flags,
+                db_creature_unit_flags(
+                    session
+                        .db_creatures
+                        .get(&target.raw())
+                        .expect("DB creature existed before death update"),
+                    false,
+                ),
+            )?
+        } else {
+            build_db_creature_state_update_body(target, health, dynamic_flags)?
+        },
         Some(&mut *header_crypto),
     )
     .await?;
@@ -584,12 +836,25 @@ async fn finalize_db_creature_death(
     killed: ObjectGuid,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let mut respawn_to_persist = None;
     if let Some(creature) = session.db_creatures.get_mut(&killed.raw()) {
-        if creature.health == 0 {
-            creature.lootable = true;
-            creature.looting = false;
-            creature.loot_money_available = creature.loot_money() > 0;
+        if creature.health == 0 && creature.life_state != DbCreatureLifeState::Corpse {
+            let now_epoch_secs = current_unix_epoch_secs();
+            creature.begin_corpse(Instant::now(), now_epoch_secs);
         }
+        if creature.health == 0 {
+            respawn_to_persist = creature.respawn_epoch_secs;
+        }
+    }
+    if let Some(respawn_epoch_secs) = respawn_to_persist {
+        wow_db::save_creature_respawn_time(
+            character_db_pool,
+            killed.counter(),
+            respawn_epoch_secs,
+            0,
+            current_unix_epoch_secs(),
+        )
+        .await?;
     }
     session.active_combat_target = None;
     session.active_combat_next_swing_at = None;
@@ -1497,6 +1762,10 @@ async fn send_db_creature_evade_and_return_home(
 fn prepare_db_creature_evade(session: &mut WorldSessionState, attacker: ObjectGuid) {
     if let Some(creature) = session.db_creatures.get_mut(&attacker.raw()) {
         creature.health = creature.max_health();
+        creature.life_state = DbCreatureLifeState::Alive;
+        creature.corpse_expires_at = None;
+        creature.respawn_at = None;
+        creature.respawn_epoch_secs = None;
         creature.lootable = false;
         creature.looting = false;
         creature.loot_money_available = false;

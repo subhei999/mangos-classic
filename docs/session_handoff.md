@@ -17,7 +17,7 @@ in `docs/rust_auth_foundation.md`.
 ## Current Branch
 
 - Branch: `codex/rust-auth-foundation`
-- Latest committed base before this slice: `7311b1986`
+- Latest checkpoint commit: `Advance creature combat and lifecycle parity`.
 - Remote: `origin/codex/rust-auth-foundation`
 - Worktree at handoff: contains the current G3/G8 playable-gate stack in Rust
   world/network, `starter-zone-flow-test`, and this handoff update.
@@ -36,12 +36,11 @@ money, and `character_spell`.
 
 Use `docs/playable_gate_board.md` as the executive dashboard before selecting
 work. G3 Movement Visibility Streaming has been user-verified in the real
-client and is now a regression gate. Current active priority is G8 Combat
-Agency, then G9 World Creature Fidelity, then G10 NPC Interaction Fidelity,
-then G11 Persistence + Relog Sanity, then G5 Combat and Loot real-behavior
-fidelity, then G6 Level + Trainer issue #49 polish, then G7 Death + Respawn,
-then G8/G9 Pathing + Movement Fidelity, then G7 Death + Respawn, then G12
-Multi-client Sanity.
+client and is now a regression gate. Current active priority is G7 Player
+Death + Respawn, then G8 Combat Agency, then G9 World Creature Fidelity, then
+G10 NPC Interaction Fidelity, then G11 Persistence + Relog Sanity, then G5
+Combat and Loot real-behavior fidelity, then G6 Level + Trainer issue #49
+polish, then G8/G9 Pathing + Movement Fidelity, then G12 Multi-client Sanity.
 
 Important scope rule:
 We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
@@ -98,6 +97,14 @@ using the repo's bug triage policy, then continue the requested task.
 - Added `finalize_db_creature_death(...)` so DB creature deaths from melee and
   supported starter spell damage converge before quest kill credit and attack
   stop. XP should hook into this finalizer next.
+- Added CMaNGOS-like DB creature corpse/respawn runtime state. Rust now selects
+  respawn delay from `creature.spawntimesecsmin/max`, corpse delay from
+  `creature_template.CorpseDecay` or CMaNGOS rank defaults, keeps creatures in
+  alive/corpse/dead state, destroys expired corpses, recreates respawned
+  creatures, and no longer respawns DB creatures immediately on loot release.
+- Extended `starter-zone-flow-test` so the RealClassicDb Kobold Camp Cleanup
+  proof kills ten distinct Kobold Vermin targets. This keeps the golden path
+  green without depending on same-creature instant respawn.
 - Completed the DB-side sustainability split from #5. `wow-db/src/character.rs`
   now includes focused files under `wow-db/src/character/` for types, queries,
   lifecycle, creation, state, inventory, progression, starter data, and tests.
@@ -778,6 +785,95 @@ using the repo's bug triage policy, then continue the requested task.
   check -p wow-db -p wow-network -p worldserver -p starter-zone-flow-test`
   passed; `cargo test -p wow-network monster_move --lib` passed with 2 tests;
   final `.\scripts\test-rust.cmd` passed with 146 `wow-network` tests.
+- Fixed the real-client report that some moving mobs appeared to fly away after
+  multi-point pathing. Rust's `SMSG_MONSTER_MOVE` linear path writer now matches
+  CMaNGOS' Vanilla layout: point count, raw final destination, then packed
+  quarter-yard XYZ offsets from the destination for intermediate points. The
+  packet also carries the CMaNGOS fake `Runmode` flag for monster move splines.
+  This was a P1 protocol/visual fix for the current movement slice.
+- Fixed the real-client report that Kobold Vermin were still hostile. Local
+  Vanilla `FactionTemplate.dbc` and RealClassicDb rows show faction template
+  `25` has no player enemy mask, so Rust now treats Kobold Vermin like neutral
+  Young Wolves for auto-aggro while preserving Defias faction `17` as hostile.
+  The starter-zone harness now proves walking near Vermin does not start
+  combat, then moves into melee range and attacks them explicitly for Kobold
+  Camp Cleanup.
+- Monster-move encoding tests in this slice: `cargo fmt` passed; `cargo test
+  -p wow-network monster_move --lib` passed; `cargo test -p wow-network
+  db_creature --lib` passed with 42 targeted tests; `cargo check -p wow-network
+  -p worldserver -p starter-zone-flow-test` passed; first `.\scripts\test-rust.cmd`
+  run hit the known Windows executable lock because local `authserver` and
+  `worldserver` were still running, then passed after stopping those processes.
+- Kobold-neutral faction tests in this slice: `cargo fmt` passed; `cargo test
+  -p wow-network db_creature_aggro --lib` passed with 8 targeted tests; `cargo
+  test -p wow-network db_creature --lib` passed with 43 targeted tests; `cargo
+  check -p wow-network -p worldserver -p starter-zone-flow-test` passed;
+  `.\scripts\test-rust.cmd` passed after stopping local auth/world processes
+  that held Windows executable locks; `.\scripts\test-starter-zone-flow.cmd`
+  passed against the Docker-backed RealClassicDb harness after elevated Docker
+  access was allowed.
+- G9 creature corpse/respawn tests in this slice: `cargo fmt` passed with the
+  known canonicalize warning; `cargo test -p wow-network db_creature --lib`
+  passed with 45 targeted tests; `cargo check -p wow-db -p wow-network -p
+  worldserver -p starter-zone-flow-test` passed; elevated
+  `.\scripts\test-starter-zone-flow.cmd` passed against RealClassicDb after the
+  harness moved from same-creature instant respawn to ten distinct Kobold Vermin
+  kills; final elevated `.\scripts\test-rust.cmd` passed.
+- Fixed the repeatable real-client FPS drop that appeared 30-60 seconds after
+  login once DB idle movement was enabled. Rust now advances already-moving DB
+  creature splines every tick but paces new idle random/waypoint starts to
+  `DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK`, avoiding large login-area
+  `SMSG_MONSTER_MOVE` bursts when many Northshire creatures become due at once.
+  The starter-zone harness attack sweep was widened so it remains valid while
+  real DB creatures wander.
+- Idle-movement pacing tests in this slice: `cargo fmt` passed; `cargo test -p
+  wow-network db_creature_idle_motion_start_guids_are_paced_per_tick --lib`
+  passed; `cargo test -p wow-network db_creature --lib` passed with 46 targeted
+  tests; `cargo check -p wow-db -p wow-network -p worldserver -p
+  starter-zone-flow-test` passed; elevated `.\scripts\test-starter-zone-flow.cmd`
+  passed against RealClassicDb; final elevated `.\scripts\test-rust.cmd`
+  passed.
+- Started the multiplayer-ready creature respawn persistence turn before player
+  death/respawn. Rust now writes DB creature deaths to CMaNGOS'
+  `characters.creature_respawn` table for instance `0`, clears the row when the
+  runtime respawn happens, cleans expired rows while loading nearby creatures,
+  and restores future-dead creatures as tracked runtime state without sending
+  create blocks to the client. This keeps relog/restart from resurrecting killed
+  mobs early and gives future multi-client work a shared DB-backed creature
+  truth to build on.
+- Creature-respawn persistence tests in this slice: `cargo fmt` passed; `cargo
+  test -p wow-network movement_visibility --lib` passed with 5 targeted tests;
+  `cargo test -p wow-network db_creature --lib` passed with 46 targeted tests;
+  `cargo check -p wow-db -p wow-network -p worldserver -p starter-zone-flow-test`
+  passed; `.\scripts\test-rust.cmd` passed with 151 `wow-network` tests. One
+  elevated RealClassicDb starter-zone run passed before the final wolf moving
+  target harness/assertion tweak; the final elevated rerun was blocked by the
+  Codex app usage-limit approval gate, not by a Rust/server failure.
+- Fixed the fresh-login real-client FPS drop follow-up after the user reproduced
+  it on a clean server without killing mobs. CMaNGOS'
+  `src/game/Movement/packet_builder.cpp::WriteLinearPath` skips packed
+  intermediate monster-move offsets whose squared distance to the destination is
+  less than `0.5f` because tiny offsets can freeze the client. Rust
+  `SMSG_MONSTER_MOVE` path serialization now applies the same skip/count logic,
+  and per-client movement packet logs were demoted from `INFO` to `DEBUG` to
+  avoid host-side log pressure while testing.
+- FPS follow-up tests in this slice: `cargo fmt` passed with the known
+  canonicalize warning; `cargo test -p wow-network monster_move_path --lib`
+  passed with 2 targeted tests; `cargo check -p wow-network -p worldserver`
+  passed; `git diff --check` passed with only CRLF warnings. The local client
+  stack was restarted on `127.0.0.1:18085` for real-client verification.
+- Fixed the real-client corpse visibility gap found after the FPS fix. When a
+  corpse leaves visibility before respawn, Rust now destroys only the client
+  object, keeps the corpse runtime hidden server-side, and recreates the corpse
+  with zero health, lootable dynamic flags, and no NPC flags if the player
+  returns before the DB respawn timer. Dead future-respawn creatures still stay
+  hidden until their `creature_respawn` row is due.
+- Corpse visibility follow-up tests in this slice: `cargo fmt` passed with the
+  known canonicalize warning; `cargo test -p wow-network
+  movement_visibility_recreates_unloaded_corpse_before_respawn --lib` passed;
+  `cargo test -p wow-network movement_visibility --lib` passed with 7 targeted
+  tests; `cargo check -p wow-network -p worldserver` passed. The local client
+  stack was restarted on `127.0.0.1:18085` for real-client verification.
 
 ## P0/P1 Fixes In This Slice
 
@@ -811,6 +907,8 @@ using the repo's bug triage policy, then continue the requested task.
   credit or by consuming progression packets inside generic `read_until` waits.
   The harness now records progression evidence across combat, loot release,
   quest status, offer, and reward waits.
+- Fixed the fresh-login FPS blocker by matching CMaNGOS' monster-move packed
+  offset guard and reducing movement opcode logging to debug-level diagnostics.
 - Fixed a Trainer v1 data-reference blocker: the previous fixture-oriented
   assumption that Brother Paxton was the Warrior trainer was wrong for
   ClassicDB; the Rust trainer proof now targets Llane Beshere (`911`).
@@ -905,6 +1003,26 @@ using the repo's bug triage policy, then continue the requested task.
   slice.
 - No new P0/P1 bugs were discovered during the G9 DB waypoint/patrol movement
   slice.
+- Fixed a P1 real-client monster-move visual/protocol bug where multi-point
+  paths were serialized as raw XYZ points instead of CMaNGOS' destination plus
+  packed intermediate offsets, which could make mobs appear to fly away.
+- Fixed a P1 real-client faction-reaction bug where Kobold Vermin faction
+  template `25` was incorrectly treated as hostile in Rust's narrow
+  CMaNGOS-shaped faction bridge. Vermin no longer auto-aggro Alliance players,
+  but remain attackable for the quest flow.
+- Fixed the P1 creature-lifecycle parity blocker where loot release respawned a
+  DB creature immediately. Loot release now only clears looting/lootable state
+  and optionally shortens corpse decay; corpse removal and respawn happen from
+  CMaNGOS-like runtime timers.
+- Fixed a P1 real-client movement throughput regression where all idle DB
+  creatures with due random/waypoint timers could start movement in one world
+  tick, producing a burst of `SMSG_MONSTER_MOVE` packets after login. New
+  idle-motion starts are now paced per tick while existing spline advancement
+  remains uncapped.
+- Fixed the P1 mob-death persistence gap for the current single-process world:
+  DB creature deaths now persist future respawn time in `creature_respawn`, and
+  login/movement visibility suppresses creatures with future persisted respawn
+  rows instead of recreating them alive.
 
 ## Non-blocking Backlog
 
@@ -943,8 +1061,9 @@ and passive/aura effects from learned spells.
 - Quest-log serialization now uses deterministic active-quest slotting for this
   narrow path; broader abandon/share/fail timers remain future work.
 - DB creature combat is still a starter-slice model. It is good enough to prove
-  kill credit, loot release, and respawn in the harness, but not full CMaNGOS
-  combat pacing or threat.
+  kill credit, loot release, CMaNGOS-like runtime corpse timing, and distinct
+  creature kills in the harness, but not full CMaNGOS combat pacing, threat, or
+  persistent creature respawn state across worldserver restart.
 - G8 aggro is harness-proven for hostile DB creatures. It now has first-slice
   Recast/Detour mmap path generation for configured local `mmaps`, multi-point
   monster-move splines, and matching server-side interpolation for chase,
@@ -971,16 +1090,16 @@ and passive/aura effects from learned spells.
 
 Continue Checkpoint 2 with the next narrow starter gameplay slice:
 
-- G8/G9 Creature Pathing + Movement Fidelity: user voted to put pathing before
-  death/respawn. Prioritize fake-looking mob movement before combat
-  roll/damage numbers or G7 death work. Chase stop-distance/re-path now uses
-  the CMaNGOS combined melee reach shape, Rust detects mmap tile availability
-  from `C:/World of Warcraft Classic`, chase/home/random movement can use
-  native Detour multi-point paths when generated mmap files cover the area, and
-  DB waypoint movement now covers `creature_movement` /
-  `creature_movement_template` paths. Next narrow slice is a real-client smoke
-  of waypoint/patrol movement if suitable nearby pathing data exists, or
-  corpse/respawn timing if Northshire has no visible waypoint creature.
+- G7 Player death/respawn (#44): starter death state, release spirit, graveyard
+  teleport, resurrection, and persistence. Creature corpse/respawn timing and
+  visibility are now in place, so this is the next major missing
+  death/respawn feature.
+- G8/G9 Creature Pathing + Movement Fidelity: chase stop-distance/re-path now
+  uses the CMaNGOS combined melee reach shape, Rust detects mmap tile
+  availability from `C:/World of Warcraft Classic`, chase/home/random movement
+  can use native Detour multi-point paths when generated mmap files cover the
+  area, and DB waypoint movement now covers `creature_movement` /
+  `creature_movement_template` paths.
 - G9 World Creature Fidelity: after chase/home feel improves, implement
   generic CMaNGOS DB-backed idle/random/waypoint/patrol movement using
   `MovementType`, `spawndist`, waypoint/path tables, home position, respawn
@@ -993,10 +1112,6 @@ Continue Checkpoint 2 with the next narrow starter gameplay slice:
   trainers, gossip NPCs, and non-interactive NPCs against CMaNGOS affordances.
 - G11 Persistence + Relog Sanity: add relog checkpoints after each major
   Northshire action so state bugs cannot hide inside a single live session.
-- After G3, tighten G5 corpse/respawn behavior so kill, loot, release, and
-  respawn are closer to CMaNGOS instead of instant revive.
-- G7 Player death/respawn (#44): starter death state, release spirit, graveyard
-  teleport, resurrection, and persistence.
 - G12 Multi-client Sanity: add minimal two-session visibility, chat, and shared
   creature-state proof before calling the slice MMO-shaped.
 

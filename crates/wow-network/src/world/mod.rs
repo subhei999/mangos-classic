@@ -1,3 +1,4 @@
+use rand::Rng;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::MySqlPool;
 use std::collections::{HashMap, HashSet};
@@ -9,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
@@ -174,11 +175,19 @@ async fn handle_client(
         .await
         {
             Ok(Ok((opcode, body))) => {
-                info!(
-                    opcode = format_args!("0x{opcode:04X}"),
-                    bytes = body.len(),
-                    "Received world packet after auth"
-                );
+                if is_movement_opcode(opcode) {
+                    debug!(
+                        opcode = format_args!("0x{opcode:04X}"),
+                        bytes = body.len(),
+                        "Received movement packet after auth"
+                    );
+                } else {
+                    info!(
+                        opcode = format_args!("0x{opcode:04X}"),
+                        bytes = body.len(),
+                        "Received world packet after auth"
+                    );
+                }
 
                 match opcode {
                     CMSG_CHAR_CREATE => {
@@ -561,6 +570,7 @@ async fn handle_client(
                     _ if is_movement_opcode(opcode) => {
                         handle_movement(
                             &mut stream,
+                            &character_db_pool,
                             &world_db_pool,
                             opcode,
                             &body,
@@ -979,9 +989,11 @@ async fn handle_player_login(
         CREATURE_SPAWN_LIMIT,
     )
     .await?;
-    session.db_creatures = nearby_creatures
+    let nearby_creature_runtimes =
+        build_db_creature_runtimes_with_respawns(deps.character_db_pool, nearby_creatures).await?;
+    let visible_nearby_creatures = visible_db_creature_spawns(&nearby_creature_runtimes);
+    session.db_creatures = nearby_creature_runtimes
         .into_iter()
-        .map(DbCreatureRuntime::new)
         .map(|creature| (creature.guid().raw(), creature))
         .collect();
     session.last_creature_visibility_position = Some(WorldPosition::new(
@@ -1055,6 +1067,7 @@ async fn handle_player_login(
             quest_statuses: &session.quest_statuses,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
+            nearby_creatures: &visible_nearby_creatures,
         },
         Some(header_crypto),
     )
@@ -1117,6 +1130,44 @@ async fn unregister_active_character(
     session.active_spells.clear();
 }
 
+fn current_unix_epoch_secs_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+async fn build_db_creature_runtimes_with_respawns(
+    character_db_pool: &MySqlPool,
+    spawns: Vec<CreatureSpawnQuery>,
+) -> anyhow::Result<Vec<DbCreatureRuntime>> {
+    let now = Instant::now();
+    let now_epoch_secs = current_unix_epoch_secs_u64();
+    let guids = spawns.iter().map(|spawn| spawn.guid).collect::<Vec<_>>();
+    let respawn_times =
+        wow_db::get_creature_respawn_times(character_db_pool, &guids, 0, now_epoch_secs).await?;
+    Ok(spawns
+        .into_iter()
+        .map(|spawn| {
+            let respawn_epoch_secs = respawn_times.get(&spawn.guid).copied();
+            DbCreatureRuntime::new_with_persisted_respawn(
+                spawn,
+                now,
+                now_epoch_secs,
+                respawn_epoch_secs,
+            )
+        })
+        .collect())
+}
+
+fn visible_db_creature_spawns(creatures: &[DbCreatureRuntime]) -> Vec<CreatureSpawnQuery> {
+    creatures
+        .iter()
+        .filter(|creature| creature.life_state != DbCreatureLifeState::Dead)
+        .map(|creature| creature.spawn.clone())
+        .collect()
+}
+
 async fn persist_active_character_position(
     character_db_pool: &MySqlPool,
     account_id: u32,
@@ -1165,6 +1216,7 @@ async fn handle_logout_cancel(
 
 async fn handle_movement(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     opcode: u32,
     body: &[u8],
@@ -1180,7 +1232,7 @@ async fn handle_movement(
         character.movement_flags = movement.flags;
         character.client_time = movement.client_time;
         character.fall_time = movement.fall_time;
-        info!(
+        debug!(
             opcode = movement_opcode_name(opcode),
             guid = character.guid,
             name = %character.name,
@@ -1192,7 +1244,14 @@ async fn handle_movement(
             o = movement.position.orientation,
             "Updated in-memory character movement"
         );
-        stream_newly_visible_db_creatures(stream, world_db_pool, session, header_crypto).await?;
+        stream_newly_visible_db_creatures(
+            stream,
+            character_db_pool,
+            world_db_pool,
+            session,
+            header_crypto,
+        )
+        .await?;
         try_start_db_creature_aggro(stream, session, header_crypto).await?;
     } else {
         warn!(
@@ -1205,6 +1264,7 @@ async fn handle_movement(
 
 async fn stream_newly_visible_db_creatures(
     stream: &mut TcpStream,
+    character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -1229,7 +1289,10 @@ async fn stream_newly_visible_db_creatures(
         CREATURE_SPAWN_LIMIT,
     )
     .await?;
-    let visibility_updates = stage_db_creature_visibility_updates(session, nearby_creatures)?;
+    let nearby_creature_runtimes =
+        build_db_creature_runtimes_with_respawns(character_db_pool, nearby_creatures).await?;
+    let visibility_updates =
+        stage_db_creature_visibility_updates(session, position, nearby_creature_runtimes)?;
     if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
         return Ok(());
     }
@@ -1237,6 +1300,11 @@ async fn stream_newly_visible_db_creatures(
     info!(
         guid,
         name = %name,
+        tracked_creatures = visibility_updates.tracked_creature_count,
+        alive_creatures = visibility_updates.alive_count,
+        corpse_creatures = visibility_updates.corpse_count,
+        dead_creatures = visibility_updates.dead_count,
+        create_objects = visibility_updates.create_count,
         create_packets = visibility_updates.create_bodies.len(),
         destroy_count = visibility_updates.destroy_guids.len(),
         create_bytes = visibility_updates.create_bodies.iter().map(Vec::len).sum::<usize>(),
@@ -1278,15 +1346,21 @@ fn should_rescan_db_creature_visibility(
 struct DbCreatureVisibilityUpdates {
     create_bodies: Vec<Vec<u8>>,
     destroy_guids: Vec<ObjectGuid>,
+    create_count: usize,
+    tracked_creature_count: usize,
+    alive_count: usize,
+    corpse_count: usize,
+    dead_count: usize,
 }
 
 fn stage_db_creature_visibility_updates(
     session: &mut WorldSessionState,
-    nearby_creatures: Vec<CreatureSpawnQuery>,
+    position: WorldPosition,
+    nearby_creatures: Vec<DbCreatureRuntime>,
 ) -> anyhow::Result<DbCreatureVisibilityUpdates> {
     let nearby_guids = nearby_creatures
         .iter()
-        .map(|spawn| creature_spawn_guid(spawn).raw())
+        .map(|creature| creature.guid().raw())
         .collect::<HashSet<_>>();
     let mut retained_combat_guids = HashSet::new();
     if let Some(target) = session.active_combat_target {
@@ -1301,12 +1375,25 @@ fn stage_db_creature_visibility_updates(
     }
     let destroy_guids = session
         .db_creatures
-        .keys()
-        .copied()
-        .filter(|guid| !nearby_guids.contains(guid) && !retained_combat_guids.contains(guid))
+        .iter()
+        .filter(|(guid, creature)| {
+            creature.client_visible
+                && !nearby_guids.contains(guid)
+                && !retained_combat_guids.contains(guid)
+                && !is_db_creature_inside_unload_radius(creature, position)
+        })
+        .map(|(guid, _)| *guid)
         .collect::<Vec<_>>();
     for guid in &destroy_guids {
-        session.db_creatures.remove(guid);
+        if session
+            .db_creatures
+            .get(guid)
+            .is_some_and(|creature| creature.life_state == DbCreatureLifeState::Alive)
+        {
+            session.db_creatures.remove(guid);
+        } else if let Some(creature) = session.db_creatures.get_mut(guid) {
+            creature.client_visible = false;
+        }
     }
     if session
         .active_combat_target
@@ -1319,20 +1406,41 @@ fn stage_db_creature_visibility_updates(
         .active_creature_combats
         .retain(|guid, _| !destroy_guids.contains(guid));
 
-    let mut new_creatures = Vec::new();
-    for spawn in nearby_creatures {
-        let runtime = DbCreatureRuntime::new(spawn);
+    let mut create_blocks = Vec::new();
+    for runtime in nearby_creatures {
         let guid = runtime.guid().raw();
-        if session.db_creatures.contains_key(&guid) {
+        if let Some(creature) = session.db_creatures.get_mut(&guid) {
+            if !creature.client_visible && creature.life_state != DbCreatureLifeState::Dead {
+                creature.client_visible = true;
+                create_blocks.push(build_db_creature_runtime_create_block(creature)?);
+            }
             continue;
         }
-        new_creatures.push(runtime.spawn.clone());
+        if runtime.life_state != DbCreatureLifeState::Dead {
+            create_blocks.push(build_db_creature_runtime_create_block(&runtime)?);
+        }
         session.db_creatures.insert(guid, runtime);
     }
 
-    let blocks = build_db_creature_create_blocks(&new_creatures)?;
+    let create_count = create_blocks.len();
+    let tracked_creature_count = session.db_creatures.len();
+    let alive_count = session
+        .db_creatures
+        .values()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Alive)
+        .count();
+    let corpse_count = session
+        .db_creatures
+        .values()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Corpse)
+        .count();
+    let dead_count = session
+        .db_creatures
+        .values()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Dead)
+        .count();
     Ok(DbCreatureVisibilityUpdates {
-        create_bodies: blocks
+        create_bodies: create_blocks
             .chunks(CREATURE_UPDATE_CHUNK_SIZE)
             .map(build_update_object_body)
             .collect(),
@@ -1340,7 +1448,39 @@ fn stage_db_creature_visibility_updates(
             .into_iter()
             .map(ObjectGuid::from_raw)
             .collect(),
+        create_count,
+        tracked_creature_count,
+        alive_count,
+        corpse_count,
+        dead_count,
     })
+}
+
+fn is_db_creature_inside_unload_radius(
+    creature: &DbCreatureRuntime,
+    position: WorldPosition,
+) -> bool {
+    is_db_creature_inside_radius(creature, position, CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS)
+}
+
+fn is_db_creature_inside_visibility_radius(
+    creature: &DbCreatureRuntime,
+    position: WorldPosition,
+) -> bool {
+    is_db_creature_inside_radius(creature, position, CREATURE_SPAWN_RADIUS_YARDS)
+}
+
+fn is_db_creature_inside_radius(
+    creature: &DbCreatureRuntime,
+    position: WorldPosition,
+    radius: f32,
+) -> bool {
+    if creature.current_position.map_id != position.map_id {
+        return false;
+    }
+    let dx = creature.current_position.x - position.x;
+    let dy = creature.current_position.y - position.y;
+    dx * dx + dy * dy <= radius * radius
 }
 
 fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {

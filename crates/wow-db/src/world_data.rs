@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
-use sqlx::FromRow;
+use sqlx::{FromRow, QueryBuilder};
 
 use crate::pool::DbError;
 
@@ -37,6 +39,7 @@ pub struct CreatureTemplateQuery {
     pub trainer_class: u8,
     pub pet_spell_data_id: u32,
     pub civilian: u8,
+    pub corpse_decay: u32,
     pub movement_type: u8,
     pub experience_multiplier: f32,
 }
@@ -50,6 +53,8 @@ pub struct CreatureSpawnQuery {
     pub position_y: f32,
     pub position_z: f32,
     pub orientation: f32,
+    pub spawn_time_secs_min: u32,
+    pub spawn_time_secs_max: u32,
     pub spawn_dist: f32,
     pub movement_type: u8,
     pub template: CreatureTemplateQuery,
@@ -177,6 +182,7 @@ pub async fn get_creature_template_query(
                 RangedBaseAttackTime AS ranged_base_attack_time, \
                 TrainerType AS trainer_type, TrainerClass AS trainer_class, \
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
+                CorpseDecay AS corpse_decay, \
                 MovementType AS movement_type, \
                 ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
@@ -417,6 +423,8 @@ pub async fn get_nearby_creature_spawns(
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
                 CAST(creature.position_z AS DOUBLE) AS position_z, \
                 CAST(creature.orientation AS DOUBLE) AS orientation, \
+                creature.spawntimesecsmin AS spawn_time_secs_min, \
+                creature.spawntimesecsmax AS spawn_time_secs_max, \
                 CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
                 creature.MovementType AS movement_type, \
                 creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
@@ -448,6 +456,7 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
                 creature_template.Civilian AS template_civilian, \
+                creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
@@ -455,6 +464,8 @@ pub async fn get_nearby_creature_spawns(
          WHERE creature.map = ? \
            AND creature.position_x BETWEEN ? AND ? \
            AND creature.position_y BETWEEN ? AND ? \
+           AND (((creature.position_x - ?) * (creature.position_x - ?)) + \
+                ((creature.position_y - ?) * (creature.position_y - ?))) <= ? \
          ORDER BY ((creature.position_x - ?) * (creature.position_x - ?)) + \
                   ((creature.position_y - ?) * (creature.position_y - ?)) ASC, \
                   creature.guid ASC \
@@ -465,6 +476,11 @@ pub async fn get_nearby_creature_spawns(
     .bind(position_x + radius)
     .bind(position_y - radius)
     .bind(position_y + radius)
+    .bind(position_x)
+    .bind(position_x)
+    .bind(position_y)
+    .bind(position_y)
+    .bind(radius * radius)
     .bind(position_x)
     .bind(position_x)
     .bind(position_y)
@@ -487,6 +503,68 @@ pub async fn get_nearby_creature_spawns(
     }
 
     Ok(spawns)
+}
+
+pub async fn get_creature_respawn_times(
+    pool: &MySqlPool,
+    guids: &[u32],
+    instance: u32,
+    now_epoch_secs: u64,
+) -> Result<HashMap<u32, u64>, DbError> {
+    if guids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    sqlx::query("DELETE FROM creature_respawn WHERE instance = ? AND respawntime <= ?")
+        .bind(instance)
+        .bind(now_epoch_secs)
+        .execute(pool)
+        .await?;
+
+    let mut builder =
+        QueryBuilder::new("SELECT guid, respawntime FROM creature_respawn WHERE instance = ");
+    builder.push_bind(instance);
+    builder.push(" AND guid IN (");
+    let mut separated = builder.separated(", ");
+    for guid in guids {
+        separated.push_bind(*guid);
+    }
+    separated.push_unseparated(")");
+
+    let rows = builder
+        .build_query_as::<CreatureRespawnRow>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.guid, row.respawntime))
+        .collect())
+}
+
+pub async fn save_creature_respawn_time(
+    pool: &MySqlPool,
+    guid: u32,
+    respawn_time_epoch_secs: u64,
+    instance: u32,
+    now_epoch_secs: u64,
+) -> Result<(), DbError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM creature_respawn WHERE guid = ? AND instance = ?")
+        .bind(guid)
+        .bind(instance)
+        .execute(&mut *tx)
+        .await?;
+    if respawn_time_epoch_secs > now_epoch_secs {
+        sqlx::query("INSERT INTO creature_respawn (guid, respawntime, instance) VALUES (?, ?, ?)")
+            .bind(guid)
+            .bind(respawn_time_epoch_secs)
+            .bind(instance)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 pub async fn get_creature_default_waypoint_path(
@@ -826,6 +904,12 @@ struct CreatureWaypointRow {
     script_id: u32,
 }
 
+#[derive(Debug, FromRow)]
+struct CreatureRespawnRow {
+    guid: u32,
+    respawntime: u64,
+}
+
 impl CreatureWaypointRow {
     fn into_query(self) -> CreatureWaypointQuery {
         CreatureWaypointQuery {
@@ -849,6 +933,8 @@ struct CreatureSpawnRow {
     position_y: f64,
     position_z: f64,
     orientation: f64,
+    spawn_time_secs_min: u32,
+    spawn_time_secs_max: u32,
     spawn_dist: f64,
     movement_type: u8,
     template_entry: u32,
@@ -882,6 +968,7 @@ struct CreatureSpawnRow {
     template_trainer_class: u8,
     template_pet_spell_data_id: u32,
     template_civilian: u8,
+    template_corpse_decay: u32,
     template_movement_type: u8,
     template_experience_multiplier: f32,
 }
@@ -896,6 +983,8 @@ impl CreatureSpawnRow {
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,
             orientation: self.orientation as f32,
+            spawn_time_secs_min: self.spawn_time_secs_min,
+            spawn_time_secs_max: self.spawn_time_secs_max,
             spawn_dist: self.spawn_dist as f32,
             movement_type: self.movement_type,
             template: CreatureTemplateQuery {
@@ -930,6 +1019,7 @@ impl CreatureSpawnRow {
                 trainer_class: self.template_trainer_class,
                 pet_spell_data_id: self.template_pet_spell_data_id,
                 civilian: self.template_civilian,
+                corpse_decay: self.template_corpse_decay,
                 movement_type: self.template_movement_type,
                 experience_multiplier: self.template_experience_multiplier,
             },

@@ -223,6 +223,7 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         trainer_class: 0,
         pet_spell_data_id: 0,
         civilian: 0,
+        corpse_decay: 0,
         movement_type: DB_MOTION_TYPE_IDLE,
         experience_multiplier: 1.0,
     }
@@ -237,6 +238,8 @@ fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
         position_y: -130.0,
         position_z: 83.5,
         orientation: 1.25,
+        spawn_time_secs_min: 120,
+        spawn_time_secs_max: 120,
         spawn_dist: 0.0,
         movement_type: DB_MOTION_TYPE_IDLE,
         template: test_creature_template(entry),
@@ -630,8 +633,15 @@ fn movement_visibility_stages_only_new_db_creature_create_blocks() {
         .db_creatures
         .insert(known_guid, DbCreatureRuntime::new(known.clone()));
 
-    let updates =
-        stage_db_creature_visibility_updates(&mut session, vec![known, new_spawn]).unwrap();
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8870.0, -112.0, 83.5, 0.0),
+        vec![known, new_spawn]
+            .into_iter()
+            .map(DbCreatureRuntime::new)
+            .collect(),
+    )
+    .unwrap();
     let bodies = updates.create_bodies;
 
     assert_eq!(bodies.len(), 1);
@@ -650,6 +660,85 @@ fn movement_visibility_stages_only_new_db_creature_create_blocks() {
             .any(|window| window == known_guid.to_le_bytes()),
         "already visible creature should not be recreated"
     );
+}
+
+#[test]
+fn movement_visibility_tracks_persisted_dead_creature_without_create_block() {
+    let dead_spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8790.0,
+        position_y: -95.0,
+        ..test_creature_spawn(6)
+    };
+    let now = Instant::now();
+    let dead_runtime =
+        DbCreatureRuntime::new_with_persisted_respawn(dead_spawn.clone(), now, 1_000, Some(1_120));
+    let dead_guid = creature_spawn_guid(&dead_spawn).raw();
+    let mut session = WorldSessionState::default();
+
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8790.0, -95.0, 83.5, 0.0),
+        vec![dead_runtime],
+    )
+    .unwrap();
+
+    assert!(updates.create_bodies.is_empty());
+    assert!(updates.destroy_guids.is_empty());
+    let runtime = session.db_creatures.get(&dead_guid).unwrap();
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Dead);
+    assert_eq!(runtime.respawn_epoch_secs, Some(1_120));
+    assert!(runtime.is_ready_to_respawn(now + Duration::from_secs(120)));
+}
+
+#[test]
+fn movement_visibility_recreates_unloaded_corpse_before_respawn() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8790.0,
+        position_y: -95.0,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut corpse = DbCreatureRuntime::new(spawn.clone());
+    corpse.begin_corpse(Instant::now(), 1_000);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(guid, corpse);
+
+    let unload = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(unload.destroy_guids, vec![ObjectGuid::from_raw(guid)]);
+    assert!(!session.db_creatures.get(&guid).unwrap().client_visible);
+    assert_eq!(
+        session.db_creatures.get(&guid).unwrap().life_state,
+        DbCreatureLifeState::Corpse
+    );
+
+    let reload = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8790.0, -95.0, 83.5, 0.0),
+        vec![DbCreatureRuntime::new(spawn)],
+    )
+    .unwrap();
+
+    assert_eq!(reload.create_count, 1);
+    assert!(reload.destroy_guids.is_empty());
+    assert!(session.db_creatures.get(&guid).unwrap().client_visible);
+    let body = &reload.create_bodies[0];
+    let block_start = 5;
+    let packed_guid_mask = body[block_start + 1];
+    let update_flags_offset = block_start + 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&body[values_start..]);
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
 }
 
 #[test]
@@ -673,7 +762,15 @@ fn movement_visibility_stages_destroy_for_out_of_range_db_creatures() {
         DbCreatureRuntime::new(out_of_range),
     );
 
-    let updates = stage_db_creature_visibility_updates(&mut session, vec![nearby]).unwrap();
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        vec![nearby]
+            .into_iter()
+            .map(DbCreatureRuntime::new)
+            .collect(),
+    )
+    .unwrap();
 
     assert!(updates.create_bodies.is_empty());
     assert_eq!(updates.destroy_guids, vec![out_of_range_guid]);
@@ -685,6 +782,42 @@ fn movement_visibility_stages_destroy_for_out_of_range_db_creatures() {
         build_destroy_guid_body(out_of_range_guid),
         out_of_range_guid.raw().to_le_bytes()
     );
+}
+
+#[test]
+fn movement_visibility_retains_recently_visible_creature_until_unload_radius() {
+    let nearby = test_creature_spawn(197);
+    let edge_visible = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8835.0,
+        position_y: -130.0,
+        ..test_creature_spawn(6)
+    };
+    let nearby_guid = creature_spawn_guid(&nearby).raw();
+    let edge_visible_guid = creature_spawn_guid(&edge_visible);
+    let mut session = WorldSessionState::default();
+    session
+        .db_creatures
+        .insert(nearby_guid, DbCreatureRuntime::new(nearby.clone()));
+    session.db_creatures.insert(
+        edge_visible_guid.raw(),
+        DbCreatureRuntime::new(edge_visible),
+    );
+
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        vec![nearby]
+            .into_iter()
+            .map(DbCreatureRuntime::new)
+            .collect(),
+    )
+    .unwrap();
+
+    assert!(updates.create_bodies.is_empty());
+    assert!(updates.destroy_guids.is_empty());
+    assert!(session.db_creatures.contains_key(&edge_visible_guid.raw()));
 }
 
 #[test]
@@ -717,7 +850,15 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
         },
     );
 
-    let updates = stage_db_creature_visibility_updates(&mut session, vec![nearby]).unwrap();
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        vec![nearby]
+            .into_iter()
+            .map(DbCreatureRuntime::new)
+            .collect(),
+    )
+    .unwrap();
 
     assert!(updates.create_bodies.is_empty());
     assert!(updates.destroy_guids.is_empty());
@@ -876,7 +1017,7 @@ fn monster_move_path_serializes_multiple_points() {
     cursor += 1;
     assert_eq!(
         u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
-        0
+        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
     );
     cursor += 4;
     assert_eq!(
@@ -891,13 +1032,33 @@ fn monster_move_path_serializes_multiple_points() {
     cursor += 4;
     assert_eq!(
         f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
-        4.0
+        7.0
     );
     cursor += 12;
     assert_eq!(
-        f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
-        7.0
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        pack_monster_move_xyz_offset(3.0, 3.0, 3.0)
     );
+}
+
+#[test]
+fn monster_move_path_skips_tiny_offsets_like_cmangos() {
+    let creature = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let start = WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0);
+    let path = vec![
+        WorldPosition::new(0, 7.25, 8.0, 9.0, 0.0),
+        WorldPosition::new(0, 7.0, 8.0, 9.0, 0.0),
+    ];
+    let body = build_monster_move_walk_path_body(creature, start, &path, 9, 100).unwrap();
+
+    let mut cursor = PackedGuid::packed_size(creature) + 12 + 4;
+    assert_eq!(body[cursor], MONSTER_MOVE_TYPE_NORMAL);
+    cursor += 1 + 4 + 4;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        1
+    );
+    assert_eq!(body.len(), cursor + 4 + 12);
 }
 
 #[test]
@@ -976,6 +1137,22 @@ fn combat_dummy_state_update_sets_health_and_dynamic_flags() {
     assert_eq!(body[5], UPDATE_TYPE_VALUES);
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(20));
     assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
+}
+
+#[test]
+fn db_creature_death_update_clears_cmangos_death_fields() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 6, 45);
+    let body = build_db_creature_death_update_body(guid, UNIT_DYNFLAG_LOOTABLE, 0x20).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(0));
+    assert_eq!(values[UNIT_FIELD_TARGET + 1], Some(0));
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(0x20));
+    assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
 }
 
 #[test]
@@ -1618,6 +1795,37 @@ fn db_creature_aggro_ignores_neutral_young_wolves() {
 }
 
 #[test]
+fn db_creature_aggro_ignores_neutral_kobold_vermin() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8783.0, -161.0, 82.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 45;
+    kobold.position_x = -8783.5;
+    kobold.position_y = -161.0;
+    kobold.template.faction = 25;
+    kobold.template.npc_flags = 0;
+    kobold.template.creature_type = 7;
+    let runtime = DbCreatureRuntime::new(kobold);
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(select_db_creature_aggro_target(&session), None);
+}
+
+#[test]
 fn db_creature_aggro_includes_real_defias_thugs() {
     let character = ActiveCharacter {
         guid: 7,
@@ -1659,8 +1867,8 @@ fn db_creature_aggro_uses_cmangos_faction_template_reactions() {
     );
     assert_eq!(
         faction_reaction_to(25, 1),
-        FactionReaction::Hostile,
-        "Kobold faction should be hostile to Alliance players"
+        FactionReaction::Neutral,
+        "Kobold Vermin faction should not auto-aggro Alliance players"
     );
     assert_eq!(
         faction_reaction_to(32, 1),
@@ -2037,6 +2245,62 @@ fn db_creature_runtime_position_is_separate_from_home_spawn() {
 }
 
 #[test]
+fn db_creature_death_uses_db_respawn_and_cmangos_corpse_timers() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.spawn_time_secs_min = 7;
+    spawn.spawn_time_secs_max = 7;
+    spawn.template.corpse_decay = 11;
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+
+    runtime.begin_corpse(now, 1_000);
+
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Corpse);
+    assert_eq!(runtime.health, 0);
+    assert!(runtime.lootable);
+    assert_eq!(runtime.respawn_at, Some(now + Duration::from_secs(7)));
+    assert_eq!(runtime.respawn_epoch_secs, Some(1_007));
+    assert_eq!(
+        runtime.corpse_expires_at,
+        Some(now + Duration::from_secs(11))
+    );
+    assert!(!runtime.is_corpse_expired(now + Duration::from_secs(10)));
+    assert!(runtime.is_corpse_expired(now + Duration::from_secs(11)));
+}
+
+#[test]
+fn db_creature_loot_release_does_not_respawn_before_corpse_and_spawn_timers() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.spawn_time_secs_min = 3;
+    spawn.spawn_time_secs_max = 3;
+    spawn.template.corpse_decay = 1;
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+
+    runtime.begin_corpse(now, 2_000);
+    runtime.loot_money_available = false;
+    runtime.loot_item = None;
+    runtime.looting = true;
+    runtime.reduce_corpse_decay_after_loot(now);
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Corpse);
+    assert_eq!(runtime.health, 0);
+    assert!(!runtime.lootable);
+    assert!(!runtime.is_ready_to_respawn(now + Duration::from_secs(2)));
+
+    runtime.remove_corpse();
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Dead);
+    assert_eq!(runtime.current_position.x, runtime.home_position.x);
+    assert!(!runtime.is_ready_to_respawn(now + Duration::from_secs(2)));
+    assert!(runtime.is_ready_to_respawn(now + Duration::from_secs(3)));
+    runtime.respawn();
+
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Alive);
+    assert_eq!(runtime.health, runtime.max_health());
+    assert!(!runtime.lootable);
+    assert_eq!(runtime.respawn_at, None);
+}
+
+#[test]
 fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
     let mut spawn = test_creature_spawn(6);
     spawn.position_x = 0.0;
@@ -2289,6 +2553,27 @@ fn db_creature_random_motion_ignores_idle_or_zero_spawndist_creatures() {
 }
 
 #[test]
+fn db_creature_idle_motion_start_guids_are_paced_per_tick() {
+    let now = Instant::now();
+    let mut session = WorldSessionState::default();
+    for index in 0..(DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK + 3) {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = 1_000 + index as u32;
+        spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+        spawn.spawn_dist = 5.0;
+        let guid = creature_spawn_guid(&spawn);
+        let mut runtime = DbCreatureRuntime::new(spawn);
+        runtime.next_random_move_at = Some(now);
+        session.db_creatures.insert(guid.raw(), runtime);
+    }
+
+    let start_guids = db_creature_idle_motion_start_guids(&session, now);
+
+    assert_eq!(start_guids.len(), DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK);
+    assert!(start_guids.windows(2).all(|window| window[0] < window[1]));
+}
+
+#[test]
 fn db_creature_waypoint_motion_uses_db_path_and_wait_time() {
     let mut spawn = test_creature_spawn(6);
     spawn.position_x = 0.0;
@@ -2393,7 +2678,7 @@ fn db_creature_assistance_calls_nearby_same_faction_hostiles_once() {
     caller_spawn.position_x = 0.0;
     caller_spawn.position_y = 0.0;
     caller_spawn.template.npc_flags = 0;
-    caller_spawn.template.faction = 25;
+    caller_spawn.template.faction = 17;
     caller_spawn.template.call_for_help = 6;
     let caller = creature_spawn_guid(&caller_spawn);
     let mut helper_spawn = test_creature_spawn(6);
@@ -2401,14 +2686,14 @@ fn db_creature_assistance_calls_nearby_same_faction_hostiles_once() {
     helper_spawn.position_x = 5.0;
     helper_spawn.position_y = 0.0;
     helper_spawn.template.npc_flags = 0;
-    helper_spawn.template.faction = 25;
+    helper_spawn.template.faction = 17;
     let helper = creature_spawn_guid(&helper_spawn);
     let mut far_spawn = test_creature_spawn(6);
     far_spawn.guid = 46;
     far_spawn.position_x = 9.0;
     far_spawn.position_y = 0.0;
     far_spawn.template.npc_flags = 0;
-    far_spawn.template.faction = 25;
+    far_spawn.template.faction = 17;
     let mut session = WorldSessionState {
         active_character: Some(character),
         ..WorldSessionState::default()

@@ -16,11 +16,12 @@ in `docs/rust_auth_foundation.md`.
 
 ## Current Branch
 
-- Branch: `codex/rust-auth-foundation`
-- Latest checkpoint commit: `Advance creature combat and lifecycle parity`.
-- Remote: `origin/codex/rust-auth-foundation`
-- Worktree at handoff: contains the current G3/G8 playable-gate stack in Rust
-  world/network, `starter-zone-flow-test`, and this handoff update.
+- Branch: `codex/rusty-mangos`
+- Latest checkpoint commit: `8119c7448` (`Implement player death corpse flow`),
+  branched before the later world architecture split.
+- Remote: not pushed yet.
+- Worktree at handoff: contains an uncommitted, behavior-preserving
+  CMaNGOS-shaped runtime type/file split in `crates/wow-network/src/world`.
 
 ## Current Goal
 
@@ -52,6 +53,19 @@ using the repo's bug triage policy, then continue the requested task.
 
 ## What Changed Recently
 
+- Split `crates/wow-network/src/world/session.rs` into CMaNGOS-shaped runtime
+  type files without changing behavior: `entities/player.rs`,
+  `entities/creature.rs`, `entities/corpse.rs`, `motion/motion_master.rs`,
+  `maps/world_data.rs`, and `maps/navigation.rs`.
+- Renamed the underlying runtime types toward CMaNGOS vocabulary while keeping
+  compatibility aliases for existing call sites: `Player` backs
+  `ActiveCharacter`, `Creature` backs `DbCreatureRuntime`, `Corpse` backs
+  `PlayerCorpseRuntime`, and `CreatureLoot` backs `DbCreatureLootRuntime`.
+- Added an inert CMaNGOS parity scaffold under `crates/wow-network/src/world`
+  for subsystems that do not collide with existing live flat modules. See
+  `crates/wow-network/src/world/PARITY_LAYOUT.md` for the mapping and future
+  split targets for live files like `combat.rs`, `chat.rs`, `quests.rs`,
+  `loot.rs`, and `spells.rs`.
 - Implemented Quest System v1 for the Northshire golden path.
 - Confirmed ClassicDB quest ids: `7` is `Kobold Camp Cleanup`;
   `783` is `A Threat Within`.
@@ -328,6 +342,16 @@ using the repo's bug triage policy, then continue the requested task.
 
 ## Tests Run
 
+- CMaNGOS-shaped type split: `cargo fmt --check` passed.
+- CMaNGOS-shaped type split: `cargo check -p wow-network` passed.
+- CMaNGOS-shaped type split: `cargo test -p wow-network --lib` passed
+  (`163` tests).
+- CMaNGOS-shaped parity scaffold: `cargo fmt --check` and
+  `cargo check -p wow-network` passed after adding the placeholder files.
+- CMaNGOS-shaped type split: `.\scripts\test-rust.cmd` reached green
+  formatting/check/unit/doc-test coverage, then failed only at the final
+  `cargo build -p authserver` because `target/debug/authserver.exe` was locked
+  by a running `authserver` process (`Access is denied`, pid `39576`).
 - `git status --short --branch`
 - G8 guardrail follow-up: `cargo fmt` passed; it still prints the known
   `could not canonicalize path C:\Users\subhe` warning.

@@ -1,6 +1,7 @@
 async fn handle_loot(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -17,6 +18,10 @@ async fn handle_loot(
         return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
     }
 
+    let Some(character) = session.active_character.as_ref() else {
+        warn!("Ignoring loot request before character login");
+        return Ok(());
+    };
     let Some(creature) = session.db_creatures.get(&target.raw()) else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -30,29 +35,33 @@ async fn handle_loot(
     }
     let needs_loot_item = creature.loot_item.is_none();
     let entry = creature.spawn.entry;
-    if needs_loot_item {
-        let loot_item = wow_db::get_creature_loot_items(world_db_pool, entry)
+    let loot_item = if needs_loot_item {
+        wow_db::get_creature_loot_items(world_db_pool, entry)
             .await?
             .into_iter()
             .next()
-            .map(DbCreatureLootRuntime::from);
-        if let Some(creature) = session.db_creatures.get_mut(&target.raw()) {
-            creature.loot_item = loot_item;
-        }
-    }
-    let creature = session
-        .db_creatures
-        .get_mut(&target.raw())
-        .expect("DB creature existed before loot query");
-    creature.looting = true;
-    let response = build_db_creature_loot_response_body(target, creature);
+            .map(DbCreatureLootRuntime::from)
+    } else {
+        None
+    };
+    let Some(creature) = shared_world
+        .maps
+        .open_db_creature_loot(character.position.map_id, target.raw(), loot_item)
+        .await
+    else {
+        warn!("Ignoring loot request for DB creature before it is lootable");
+        return Ok(());
+    };
+    session.db_creatures.insert(target.raw(), creature.clone());
+    let response = build_db_creature_loot_response_body(target, &creature);
     send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
 }
 
 async fn handle_autostore_loot_item(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -66,7 +75,7 @@ async fn handle_autostore_loot_item(
         anyhow::bail!("CMSG_AUTOSTORE_LOOT_ITEM payload too short: {} bytes", body.len());
     }
     let loot_slot = body[0];
-    let db_loot = session
+    let db_loot_creature_guid = session
         .db_creatures
         .iter()
         .find_map(|(guid, creature)| {
@@ -74,13 +83,26 @@ async fn handle_autostore_loot_item(
                 .looting
                 .then(|| creature.loot_item.as_ref().map(|loot| (*guid, loot.clone())))
                 .flatten()
+                .map(|(guid, _)| guid)
         });
-    if let Some((creature_guid, loot)) = db_loot {
+    if let Some(creature_guid) = db_loot_creature_guid {
         if loot_slot != 0 {
             warn!(loot_slot, "Ignoring unsupported DB creature loot slot");
             return Ok(());
         }
-        return autostore_loot_item(
+        let map_id = character
+            .position
+            .map_id;
+        let Some((loot, creature)) = shared_world
+            .maps
+            .take_db_creature_loot_item(map_id, creature_guid)
+            .await
+        else {
+            warn!("Ignoring DB creature loot item request after shared loot was claimed");
+            return Ok(());
+        };
+        session.db_creatures.insert(creature_guid, creature);
+        let stored = autostore_loot_item(
             LootAutostoreContext {
                 stream,
                 character_db_pool,
@@ -90,10 +112,20 @@ async fn handle_autostore_loot_item(
                 character_guid,
             },
             creature_guid,
-            loot,
+            loot.clone(),
             loot_slot,
         )
-        .await;
+        .await?;
+        if !stored {
+            if let Some(creature) = shared_world
+                .maps
+                .restore_db_creature_loot_item(map_id, creature_guid, loot)
+                .await
+            {
+                session.db_creatures.insert(creature_guid, creature);
+            }
+        }
+        return Ok(());
     }
 
     if !session.combat_dummy_looting || loot_slot != 0 || !session.combat_dummy_loot_item_available {
@@ -209,8 +241,9 @@ async fn handle_autostore_loot_item(
 }
 
 async fn handle_loot_money(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -218,18 +251,22 @@ async fn handle_loot_money(
         warn!("Ignoring loot money request before character login");
         return Ok(());
     };
-    if let Some((creature_guid, money)) = session
+    if let Some(creature_guid) = session
         .db_creatures
         .iter()
         .find(|(_, creature)| creature.looting && creature.loot_money_available)
-        .map(|(guid, creature)| (*guid, creature.loot_money()))
+        .map(|(guid, _)| *guid)
     {
-        let gained_money = money;
+        let Some((gained_money, creature)) = shared_world
+            .maps
+            .take_db_creature_loot_money(character.position.map_id, creature_guid)
+            .await
+        else {
+            return Ok(());
+        };
         let money =
             wow_db::add_character_money(character_db_pool, character.guid, gained_money).await?;
-        if let Some(creature) = session.db_creatures.get_mut(&creature_guid) {
-            creature.loot_money_available = false;
-        }
+        session.db_creatures.insert(creature_guid, creature);
         send_packet(
             stream,
             SMSG_LOOT_MONEY_NOTIFY,
@@ -280,7 +317,8 @@ async fn handle_loot_money(
 }
 
 async fn handle_loot_release(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -308,17 +346,24 @@ async fn handle_loot_release(
         .await;
     }
 
-    let Some(creature) = session.db_creatures.get_mut(&target.raw()) else {
+    let Some(character) = session.active_character.as_ref() else {
+        warn!("Ignoring loot release before character login");
+        return Ok(());
+    };
+    let Some(creature) = shared_world
+        .maps
+        .release_db_creature_loot(character.position.map_id, target.raw(), Instant::now())
+        .await
+    else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
             "Ignoring loot release for unknown target"
         );
         return Ok(());
     };
-    creature.looting = false;
-    creature.reduce_corpse_decay_after_loot(Instant::now());
     let health = creature.health;
     let dynamic_flags = creature.dynamic_flags();
+    session.db_creatures.insert(target.raw(), creature);
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,

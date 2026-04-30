@@ -1,7 +1,8 @@
 async fn handle_cast_spell(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -135,27 +136,55 @@ async fn handle_cast_spell(
                     Some(&mut *header_crypto),
                 )
                 .await?;
+                let creature_update_body = if is_dead {
+                    build_db_creature_death_update_body(
+                        target,
+                        dynamic_flags,
+                        db_creature_unit_flags(
+                            session
+                                .db_creatures
+                                .get(&target.raw())
+                                .expect("creature damage target checked above"),
+                            false,
+                        ),
+                    )?
+                } else {
+                    build_db_creature_state_update_body(target, health, dynamic_flags)?
+                };
                 send_packet(
                     stream,
                     SMSG_UPDATE_OBJECT,
-                    &if is_dead {
-                        build_db_creature_death_update_body(
-                            target,
-                            dynamic_flags,
-                            db_creature_unit_flags(
-                                session
-                                    .db_creatures
-                                    .get(&target.raw())
-                                    .expect("creature damage target checked above"),
-                                false,
-                            ),
-                        )?
-                    } else {
-                        build_db_creature_state_update_body(target, health, dynamic_flags)?
-                    },
+                    &creature_update_body,
                     Some(&mut *header_crypto),
                 )
                 .await?;
+                if let (Some(character), Some(creature)) = (
+                    session.active_character.as_ref(),
+                    session.db_creatures.get(&target.raw()).cloned(),
+                ) {
+                    let broadcast = CreatureCombatBroadcast {
+                        shared_world,
+                        map_id: character.position.map_id,
+                        player: ObjectGuid::new(HighGuid::Player, 0, character.guid),
+                    };
+                    let packets = shared_world
+                        .maps
+                        .update_db_creature_snapshot_and_broadcast(
+                            character.position.map_id,
+                            creature,
+                            Some(character.guid),
+                            OutboundWorldPacket {
+                                opcode: SMSG_UPDATE_OBJECT,
+                                body: creature_update_body,
+                            },
+                        )
+                        .await;
+                    shared_world.sessions.dispatch(packets).await;
+                    if is_dead {
+                        send_db_creature_motion_stop(stream, broadcast, session, target, header_crypto)
+                            .await?;
+                    }
+                }
                 if is_dead {
                     finalize_db_creature_death(
                         stream,
@@ -168,7 +197,8 @@ async fn handle_cast_spell(
                     )
                     .await?;
                 } else {
-                    begin_db_creature_combat(session, target, Instant::now());
+                    begin_shared_db_creature_combat(shared_world, session, target, Instant::now())
+                        .await;
                 }
             }
         }
@@ -277,7 +307,7 @@ fn build_spell_go_body(
 }
 
 async fn handle_item_query_single(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,

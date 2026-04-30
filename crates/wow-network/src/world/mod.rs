@@ -4,11 +4,13 @@ use sqlx::mysql::MySqlPool;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{debug, error, info, warn};
 use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
@@ -66,6 +68,8 @@ impl WorldServer {
                 player_corpses: Arc::new(Mutex::new(HashMap::new())),
                 delete_options,
                 world_data_files,
+                sessions: Arc::new(SessionRegistry::default()),
+                maps: Arc::new(MapRuntimeManager::default()),
             },
         }
     }
@@ -109,7 +113,7 @@ async fn handle_client(
     world_db_pool: MySqlPool,
     runtime_state: WorldRuntimeState,
 ) -> anyhow::Result<()> {
-    send_packet(
+    send_packet_direct(
         &mut stream,
         SMSG_AUTH_CHALLENGE,
         &SERVER_SEED.to_le_bytes(),
@@ -157,6 +161,30 @@ async fn handle_client(
         "World auth session verified"
     );
 
+    let session_id = SessionId::next();
+    let (read_stream, write_stream) = stream.into_split();
+    let mut read_stream = read_stream;
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(outbound_tx.clone());
+    runtime_state
+        .sessions
+        .register(
+            session_id,
+            SessionHandle {
+                account_id: account.id,
+                character_guid: None,
+                outbound: outbound_tx.clone(),
+            },
+        )
+        .await;
+    let writer_task = tokio::spawn(world_session_writer(
+        session_id,
+        write_stream,
+        outbound_rx,
+        HeaderCrypto::new(&session_key),
+    ));
+
+    let mut read_header_crypto = HeaderCrypto::new(&session_key);
     let mut header_crypto = HeaderCrypto::new(&session_key);
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
     let mut session = WorldSessionState {
@@ -172,7 +200,7 @@ async fn handle_client(
         loop {
             match timeout(
                 world_tick_timeout_duration(next_world_tick_at, Instant::now()),
-                read_client_packet(&mut stream, Some(&mut header_crypto)),
+                read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
             )
             .await
             {
@@ -236,6 +264,9 @@ async fn handle_client(
                                     world_db_pool: &world_db_pool,
                                     online_characters: &runtime_state.online_characters,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                    session_id,
                                 },
                                 account.id,
                                 &body,
@@ -284,8 +315,17 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_MESSAGECHAT => {
-                            handle_message_chat(&mut stream, &body, &session, &mut header_crypto)
-                                .await?;
+                            handle_message_chat(
+                                &mut stream,
+                                ChatDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_QUERY_TIME => {
                             handle_query_time(&mut stream, &mut header_crypto).await?;
@@ -315,6 +355,10 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -377,6 +421,7 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
                                     account_id: account.id,
                                 },
                                 &body,
@@ -507,6 +552,10 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -524,6 +573,7 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
                                     account_id: account.id,
                                 },
                                 &mut session,
@@ -538,6 +588,7 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
                                     account_id: account.id,
                                 },
                                 &body,
@@ -553,6 +604,7 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
                                     account_id: account.id,
                                 },
                                 &body,
@@ -568,6 +620,10 @@ async fn handle_client(
                             handle_loot(
                                 &mut stream,
                                 &world_db_pool,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -579,6 +635,10 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -589,6 +649,10 @@ async fn handle_client(
                             handle_loot_money(
                                 &mut stream,
                                 &character_db_pool,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -597,6 +661,10 @@ async fn handle_client(
                         CMSG_LOOT_RELEASE => {
                             handle_loot_release(
                                 &mut stream,
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -621,11 +689,16 @@ async fn handle_client(
                         CMSG_LOGOUT_REQUEST => {
                             handle_logout_request(
                                 &mut stream,
-                                &character_db_pool,
-                                account.id,
+                                LogoutDeps {
+                                    character_db_pool: &character_db_pool,
+                                    online_characters: &runtime_state.online_characters,
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                    account_id: account.id,
+                                    session_id,
+                                },
                                 &mut header_crypto,
                                 &mut session,
-                                &runtime_state.online_characters,
                             )
                             .await?;
                         }
@@ -642,6 +715,8 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     player_corpses: &runtime_state.player_corpses,
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
                                 },
                                 opcode,
                                 &body,
@@ -669,6 +744,10 @@ async fn handle_client(
                             &mut stream,
                             &character_db_pool,
                             &world_db_pool,
+                            SharedWorldDeps {
+                                maps: &runtime_state.maps,
+                                sessions: &runtime_state.sessions,
+                            },
                             account.id,
                             &mut session,
                             &mut header_crypto,
@@ -680,16 +759,26 @@ async fn handle_client(
                 Ok(Err(e)) => {
                     persist_session_character_state(&character_db_pool, account.id, &session)
                         .await?;
-                    unregister_active_character(&runtime_state.online_characters, &mut session)
-                        .await;
+                    unregister_active_character(
+                        &runtime_state.online_characters,
+                        &runtime_state.maps,
+                        &runtime_state.sessions,
+                        session_id,
+                        &mut session,
+                    )
+                    .await;
                     info!("World client disconnected or read failed: {}", e);
-                    return Ok(());
+                    break Ok(());
                 }
                 Err(_) => {
                     handle_combat_tick(
                         &mut stream,
                         &character_db_pool,
                         &world_db_pool,
+                        SharedWorldDeps {
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                        },
                         account.id,
                         &mut session,
                         &mut header_crypto,
@@ -702,6 +791,24 @@ async fn handle_client(
     }
     .await;
 
+    if let Some(handle) = runtime_state.sessions.unregister(session_id).await {
+        debug!(
+            ?session_id,
+            account_id = handle.account_id,
+            character_guid = ?handle.character_guid,
+            outbound_closed = handle.outbound.is_closed(),
+            "Unregistered world session"
+        );
+    }
+    drop(stream);
+    drop(outbound_tx);
+    if let Err(join_error) = writer_task.await {
+        warn!(
+            ?session_id,
+            "World session writer task failed to join: {}", join_error
+        );
+    }
+
     if session_result.is_err() {
         if let Err(cleanup_error) =
             persist_session_character_state(&character_db_pool, account.id, &session).await
@@ -711,10 +818,43 @@ async fn handle_client(
                 cleanup_error
             );
         }
-        unregister_active_character(&runtime_state.online_characters, &mut session).await;
+        unregister_active_character(
+            &runtime_state.online_characters,
+            &runtime_state.maps,
+            &runtime_state.sessions,
+            session_id,
+            &mut session,
+        )
+        .await;
     }
 
     session_result
+}
+
+async fn world_session_writer(
+    session_id: SessionId,
+    mut write_stream: OwnedWriteHalf,
+    mut outbound_rx: mpsc::UnboundedReceiver<OutboundWorldPacket>,
+    mut header_crypto: HeaderCrypto,
+) {
+    while let Some(packet) = outbound_rx.recv().await {
+        if let Err(error) = send_packet_direct(
+            &mut write_stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut header_crypto),
+        )
+        .await
+        {
+            warn!(
+                ?session_id,
+                opcode = format_args!("0x{:04X}", packet.opcode),
+                "World session writer stopped after socket write failed: {}",
+                error
+            );
+            break;
+        }
+    }
 }
 
 fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Duration {
@@ -803,11 +943,11 @@ fn is_valid_race_class(race: u8, class: u8) -> bool {
 }
 
 async fn send_auth_response(stream: &mut TcpStream, response: u8) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_AUTH_RESPONSE, &[response], None).await
+    send_packet_direct(stream, SMSG_AUTH_RESPONSE, &[response], None).await
 }
 
 async fn send_auth_ok(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut body = Vec::with_capacity(11);
@@ -820,7 +960,7 @@ async fn send_auth_ok(
 }
 
 async fn send_char_enum(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     characters: &[CharacterEnumEntry],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -829,7 +969,7 @@ async fn send_char_enum(
 }
 
 async fn handle_char_delete(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     login_db_pool: &MySqlPool,
     character_db_pool: &MySqlPool,
     account_id: u32,
@@ -877,7 +1017,7 @@ async fn handle_char_delete(
 }
 
 async fn send_char_delete_result(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     result: u8,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -885,7 +1025,7 @@ async fn send_char_delete_result(
 }
 
 async fn handle_char_create(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     login_db_pool: &MySqlPool,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
@@ -973,7 +1113,7 @@ async fn handle_char_create(
 }
 
 async fn send_char_create_result(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     result: u8,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -981,7 +1121,7 @@ async fn send_char_create_result(
 }
 
 async fn handle_player_login(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: PlayerLoginDeps<'_>,
     account_id: u32,
     body: &[u8],
@@ -1046,7 +1186,14 @@ async fn handle_player_login(
         map = character.map,
         "Character login selected"
     );
-    unregister_active_character(deps.online_characters, session).await;
+    unregister_active_character(
+        deps.online_characters,
+        deps.maps,
+        deps.sessions,
+        deps.session_id,
+        session,
+    )
+    .await;
     deps.online_characters.lock().await.insert(character.guid);
     session.active_character = Some(ActiveCharacter {
         guid: character.guid,
@@ -1107,6 +1254,10 @@ async fn handle_player_login(
     .await?;
     let nearby_creature_runtimes =
         build_db_creature_runtimes_with_respawns(deps.character_db_pool, nearby_creatures).await?;
+    let nearby_creature_runtimes = deps
+        .maps
+        .share_db_creature_snapshots(character.map, nearby_creature_runtimes)
+        .await;
     let visible_nearby_creatures = visible_db_creature_spawns(&nearby_creature_runtimes);
     let nearby_db_player_corpses = wow_db::get_nearby_player_corpses(
         deps.character_db_pool,
@@ -1218,6 +1369,35 @@ async fn handle_player_login(
         Some(header_crypto),
     )
     .await?;
+    deps.sessions
+        .set_character_guid(deps.session_id, Some(character.guid))
+        .await;
+    let player_runtime = PlayerRuntime {
+        guid: character.guid,
+        account_id,
+        session_id: deps.session_id,
+        position: login_position,
+        cell: cell_coord_for_position(login_position),
+        visible_objects: HashSet::new(),
+        visual: session
+            .player_visual
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("active player visual missing after login"))?,
+        flags: character.player_flags,
+        level: character.level,
+        race: character.race,
+        class: character.class,
+        gender: character.gender,
+        health: session.player_health,
+        max_health: world_stats.max_health().max(1),
+        power1: session.player_mana,
+        max_power1: world_stats.max_mana(),
+        power2: session.player_rage,
+        player_bytes: character.player_bytes,
+        player_bytes2: character.player_bytes2,
+    };
+    let packets = deps.maps.add_player(player_runtime).await?;
+    deps.sessions.dispatch(packets).await;
 
     Ok(())
 }
@@ -1227,15 +1407,16 @@ struct PlayerLoginDeps<'a> {
     world_db_pool: &'a MySqlPool,
     online_characters: &'a OnlineCharacters,
     player_corpses: &'a PlayerCorpses,
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
+    session_id: SessionId,
 }
 
 async fn handle_logout_request(
-    stream: &mut TcpStream,
-    character_db_pool: &MySqlPool,
-    account_id: u32,
+    stream: &mut WorldPacketSink,
+    deps: LogoutDeps<'_>,
     header_crypto: &mut HeaderCrypto,
     session: &mut WorldSessionState,
-    online_characters: &OnlineCharacters,
 ) -> anyhow::Result<()> {
     if let Some(character) = &session.active_character {
         info!(
@@ -1262,9 +1443,25 @@ async fn handle_logout_request(
     )
     .await?;
     send_packet(stream, SMSG_LOGOUT_COMPLETE, &[], Some(header_crypto)).await?;
-    persist_session_character_state(character_db_pool, account_id, session).await?;
-    unregister_active_character(online_characters, session).await;
+    persist_session_character_state(deps.character_db_pool, deps.account_id, session).await?;
+    unregister_active_character(
+        deps.online_characters,
+        deps.maps,
+        deps.sessions,
+        deps.session_id,
+        session,
+    )
+    .await;
     Ok(())
+}
+
+struct LogoutDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    online_characters: &'a OnlineCharacters,
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
+    account_id: u32,
+    session_id: SessionId,
 }
 
 async fn persist_session_character_state(
@@ -1281,10 +1478,18 @@ async fn persist_session_character_state(
 
 async fn unregister_active_character(
     online_characters: &OnlineCharacters,
+    maps: &Arc<MapRuntimeManager>,
+    sessions: &Arc<SessionRegistry>,
+    session_id: SessionId,
     session: &mut WorldSessionState,
 ) {
     if let Some(character) = session.active_character.take() {
         online_characters.lock().await.remove(&character.guid);
+        sessions.set_character_guid(session_id, None).await;
+        let packets = maps
+            .remove_player(character.position.map_id, character.guid)
+            .await;
+        sessions.dispatch(packets).await;
     }
     session.active_spells.clear();
     session.player_death_state = PlayerDeathState::Alive;
@@ -1372,14 +1577,14 @@ async fn persist_active_character_position(
 }
 
 async fn handle_logout_cancel(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     send_packet(stream, SMSG_LOGOUT_CANCEL_ACK, &[], Some(header_crypto)).await
 }
 
 async fn handle_movement(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: MovementDeps<'_>,
     opcode: u32,
     body: &[u8],
@@ -1407,10 +1612,25 @@ async fn handle_movement(
             o = movement.position.orientation,
             "Updated in-memory character movement"
         );
+        if let Ok(server_opcode) = u16::try_from(opcode) {
+            let mut broadcast_movement = movement.clone();
+            broadcast_movement.position.map_id = character.position.map_id;
+            let packets = deps
+                .maps
+                .update_player_position(
+                    character.position.map_id,
+                    character.guid,
+                    server_opcode,
+                    &broadcast_movement,
+                )
+                .await?;
+            deps.sessions.dispatch(packets).await;
+        }
         stream_newly_visible_db_creatures(
             stream,
             deps.character_db_pool,
             deps.world_db_pool,
+            deps.maps,
             session,
             header_crypto,
         )
@@ -1423,7 +1643,16 @@ async fn handle_movement(
             header_crypto,
         )
         .await?;
-        try_start_db_creature_aggro(stream, session, header_crypto).await?;
+        try_start_db_creature_aggro(
+            stream,
+            SharedWorldDeps {
+                maps: deps.maps,
+                sessions: deps.sessions,
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
     } else {
         warn!(
             opcode = movement_opcode_name(opcode),
@@ -1437,12 +1666,15 @@ struct MovementDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     player_corpses: &'a PlayerCorpses,
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
 }
 
 async fn stream_newly_visible_db_creatures(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1468,6 +1700,9 @@ async fn stream_newly_visible_db_creatures(
     .await?;
     let nearby_creature_runtimes =
         build_db_creature_runtimes_with_respawns(character_db_pool, nearby_creatures).await?;
+    let nearby_creature_runtimes = maps
+        .share_db_creature_snapshots(position.map_id, nearby_creature_runtimes)
+        .await;
     let visibility_updates =
         stage_db_creature_visibility_updates(session, position, nearby_creature_runtimes)?;
     if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
@@ -1504,7 +1739,7 @@ async fn stream_newly_visible_db_creatures(
 }
 
 async fn stream_nearby_player_corpses(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     player_corpses: &PlayerCorpses,
     session: &mut WorldSessionState,
@@ -1705,7 +1940,7 @@ fn stage_db_creature_visibility_updates(
             retained_combat_guids.insert(combat.attacker.raw());
         }
     }
-    let destroy_guids = session
+    let mut destroy_guids = session
         .db_creatures
         .iter()
         .filter(|(guid, creature)| {
@@ -1742,7 +1977,26 @@ fn stage_db_creature_visibility_updates(
     for runtime in nearby_creatures {
         let guid = runtime.guid().raw();
         if let Some(creature) = session.db_creatures.get_mut(&guid) {
-            if !creature.client_visible && creature.life_state != DbCreatureLifeState::Dead {
+            if creature.life_state != DbCreatureLifeState::Alive
+                && runtime.life_state == DbCreatureLifeState::Alive
+            {
+                if !creature.client_visible && creature.life_state != DbCreatureLifeState::Dead {
+                    creature.client_visible = true;
+                    create_blocks.push(build_db_creature_runtime_create_block(creature)?);
+                }
+                continue;
+            }
+            let was_visible = creature.client_visible;
+            let became_dead = runtime.life_state == DbCreatureLifeState::Dead && was_visible;
+            *creature = runtime;
+            creature.client_visible = was_visible && !became_dead;
+            if became_dead {
+                if !destroy_guids.contains(&guid) {
+                    destroy_guids.push(guid);
+                }
+                continue;
+            }
+            if !was_visible && creature.life_state != DbCreatureLifeState::Dead {
                 creature.client_visible = true;
                 create_blocks.push(build_db_creature_runtime_create_block(creature)?);
             }

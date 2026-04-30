@@ -1,5 +1,5 @@
 async fn handle_npc_text_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -22,7 +22,7 @@ async fn handle_npc_text_query(
 }
 
 async fn handle_list_inventory(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
@@ -51,7 +51,7 @@ async fn handle_list_inventory(
 }
 
 async fn handle_buy_item(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],
@@ -192,7 +192,7 @@ async fn vendor_buy_item(
 }
 
 async fn handle_sell_item(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],

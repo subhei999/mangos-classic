@@ -298,7 +298,7 @@ impl From<CreatureLootQuery> for DbCreatureLootRuntime {
 }
 
 struct LootAutostoreContext<'a> {
-    stream: &'a mut TcpStream,
+    stream: &'a mut WorldPacketSink,
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     session: &'a mut WorldSessionState,
@@ -311,7 +311,7 @@ async fn autostore_loot_item(
     creature_guid: u64,
     loot: DbCreatureLootRuntime,
     loot_slot: u8,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let LootAutostoreContext {
         stream,
         character_db_pool,
@@ -377,7 +377,7 @@ async fn autostore_loot_item(
                 header_crypto,
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         };
 
         wow_db::add_character_inventory_item(
@@ -423,7 +423,8 @@ async fn autostore_loot_item(
     )
     .await?;
     let body = build_update_object_body(&update_blocks);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+    Ok(true)
 }
 
 fn build_db_creature_loot_response_body(

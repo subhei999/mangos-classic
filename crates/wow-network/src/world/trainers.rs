@@ -1,5 +1,5 @@
 async fn handle_trainer_list(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],
@@ -19,7 +19,7 @@ async fn handle_trainer_list(
 }
 
 async fn send_trainer_list(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
@@ -74,7 +74,7 @@ async fn send_trainer_list(
 }
 
 async fn handle_trainer_buy_spell(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],

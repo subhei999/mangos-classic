@@ -1602,6 +1602,17 @@ struct WorldClient {
     character_guid: u32,
 }
 
+fn all_visible_creatures_present(bodies: &[Vec<u8>], expected: &[ExpectedCreature]) -> bool {
+    expected.iter().all(|creature| {
+        let guid = ObjectGuid::new(HighGuid::Unit, creature.entry, creature.counter);
+        let guid_bytes = guid.raw().to_le_bytes();
+        bodies.iter().any(|body| {
+            body.windows(guid_bytes.len())
+                .any(|window| window == guid_bytes)
+        })
+    })
+}
+
 #[derive(Debug, Default)]
 struct XpProgressionEvidence {
     saw_creature_xp_log: bool,
@@ -1669,16 +1680,11 @@ impl WorldClient {
         )?;
 
         let mut update_bodies = Vec::new();
-        let expected_update_packets = if content.source == StarterZoneSource::RealClassicDb {
-            3
-        } else {
-            2
-        };
         for _ in 0..24 {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
             if opcode == SMSG_UPDATE_OBJECT {
                 update_bodies.push(body);
-                if update_bodies.len() >= expected_update_packets {
+                if all_visible_creatures_present(&update_bodies, &content.visible_creatures) {
                     break;
                 }
             }
@@ -2316,7 +2322,8 @@ impl WorldClient {
                 try_read_server_packet(&mut self.stream, &mut self.crypto)?
             {
                 if opcode == SMSG_ATTACKERSTATEUPDATE
-                    && attacker_state_update_matches(&body, killer, player)?
+                    && (attacker_state_update_matches(&body, killer, player)?
+                        || attacker_state_update_targets(&body, player)?)
                 {
                     saw_death_damage = true;
                 }
@@ -2670,6 +2677,14 @@ fn attacker_state_update_matches(
     let parsed_attacker = read_packed_update_guid(body, &mut cursor)?;
     let parsed_victim = read_packed_update_guid(body, &mut cursor)?;
     Ok(parsed_attacker == attacker.raw() && parsed_victim == victim.raw())
+}
+
+fn attacker_state_update_targets(body: &[u8], victim: ObjectGuid) -> anyhow::Result<bool> {
+    ensure_available(body, 4)?;
+    let mut cursor = 4;
+    let _parsed_attacker = read_packed_update_guid(body, &mut cursor)?;
+    let parsed_victim = read_packed_update_guid(body, &mut cursor)?;
+    Ok(parsed_victim == victim.raw())
 }
 
 fn monster_move_matches(body: &[u8], mover: ObjectGuid) -> anyhow::Result<bool> {

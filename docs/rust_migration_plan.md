@@ -453,8 +453,41 @@ Success looks like:
   learning persist correctly.
 - The implementation uses CMaNGOS DB/script data where possible, with explicit
   fixture shortcuts documented.
+- Multiplayer is derisked early enough that Checkpoint 2 cannot accidentally
+  become a single-player packet demo: at least two clients share player
+  visibility, movement, chat, and DB creature state through one in-process map
+  runtime.
 
 Detailed path:
+
+User-directed next slice: **Derisk Multiplayer / Shared MapRuntime**
+
+- Keep one monolithic `worldserver`; do not split processes or introduce a
+  separate world service for this milestone.
+- Stop treating each TCP session as its own mini-world.
+- Introduce a shared in-process `MapRuntime` / grid layer inside
+  `WorldRuntimeState`.
+- Route player visibility, movement, `/say`, and DB creature state through that
+  shared runtime.
+- Remove per-movement-heartbeat DB radius queries as the source of creature
+  visibility; use the shared map/grid state as the live visibility source.
+- The user has a detailed implementation plan and will walk the next agent
+  through the exact shape before coding. Follow
+  `docs/g12_shared_mapruntime_plan.md` as the implementation document.
+
+Done for this slice:
+
+- Two clients can log into Northshire at once.
+- Both clients see each other spawn.
+- Both clients see each other move.
+- One client logging out destroys that player for the other.
+- `/say` works between nearby players.
+- Both clients observe the same DB creature state.
+- One client killing/looting a mob cannot duplicate or desync that mob for the
+  other.
+- Existing G3 movement visibility and starter-zone flow tests remain green.
+- Creature visibility no longer depends on DB radius queries per movement
+  heartbeat.
 
 1. Starter-zone fixture lock
    - Seed/import only the CMaNGOS DB rows needed for the Northshire slice:
@@ -573,6 +606,9 @@ Required automated gate:
 - death/release/respawn state transitions;
 - logout/relog durability for position, inventory, money, level, XP, spells,
   quest state, and completed quest rewards.
+- after the shared `MapRuntime` slice, at least a minimal two-session harness
+  or real-client smoke should prove shared player visibility, nearby `/say`,
+  and one shared DB creature state transition.
 
 Real-client grading pass:
 

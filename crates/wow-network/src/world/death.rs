@@ -3,11 +3,12 @@ struct PlayerDeathDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     player_corpses: &'a PlayerCorpses,
+    maps: &'a Arc<MapRuntimeManager>,
     account_id: u32,
 }
 
 async fn handle_repop_request(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -80,6 +81,7 @@ async fn handle_repop_request(
         stream,
         deps.character_db_pool,
         deps.world_db_pool,
+        deps.maps,
         session,
         header_crypto,
     )
@@ -143,7 +145,7 @@ fn graveyard_query_position(graveyard: &wow_db::GraveyardQuery) -> WorldPosition
 }
 
 async fn handle_corpse_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -160,7 +162,7 @@ async fn handle_corpse_query(
 }
 
 async fn handle_reclaim_corpse(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -203,7 +205,7 @@ async fn handle_reclaim_corpse(
 }
 
 async fn handle_spirit_healer_activate(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -264,7 +266,7 @@ fn is_spirit_healer_creature(creature: &DbCreatureRuntime) -> bool {
 }
 
 async fn resurrect_player_at_position(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -334,7 +336,7 @@ async fn resurrect_player_at_position(
 }
 
 async fn kill_player_from_creature(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     account_id: u32,
     session: &mut WorldSessionState,

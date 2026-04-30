@@ -6,6 +6,7 @@ include!("gossip.rs");
 include!("quests.rs");
 include!("vendors.rs");
 include!("trainers.rs");
+include!("mmap_path.rs");
 include!("combat.rs");
 include!("death.rs");
 include!("loot.rs");

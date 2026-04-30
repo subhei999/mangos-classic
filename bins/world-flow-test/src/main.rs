@@ -2,11 +2,12 @@ use anyhow::{ensure, Context};
 use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Cursor, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 use wow_common::guid::{HighGuid, ObjectGuid, PackedGuid};
+use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_proto::{
     AuthCommand, LogonChallengeRequest, LogonChallengeResponse, LogonProofRequest,
@@ -36,7 +37,9 @@ const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_CHAR_DELETE: u32 = 0x0038;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_CREATURE_QUERY: u32 = 0x0060;
+const CMSG_MESSAGECHAT: u32 = 0x0095;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
+const MSG_MOVE_HEARTBEAT: u32 = 0x00EE;
 const CMSG_SWAP_INV_ITEM: u32 = 0x010D;
 const CMSG_SWAP_ITEM: u32 = 0x010C;
 const CMSG_SPLIT_ITEM: u32 = 0x010E;
@@ -55,9 +58,12 @@ const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const SMSG_CHAR_CREATE: u32 = 0x003A;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_CHAR_DELETE: u32 = 0x003C;
+const SMSG_LOGOUT_COMPLETE: u32 = 0x004D;
 const SMSG_CREATURE_QUERY_RESPONSE: u32 = 0x0061;
+const SMSG_MESSAGECHAT: u32 = 0x0096;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
+const SMSG_MONSTER_MOVE: u32 = 0x00DD;
 const SMSG_INVENTORY_CHANGE_FAILURE: u32 = 0x0112;
 const SMSG_CAST_RESULT: u32 = 0x0130;
 const SMSG_SPELL_GO: u32 = 0x0132;
@@ -75,6 +81,8 @@ const SMSG_LOOT_REMOVED: u32 = 0x0162;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const AUTH_OK: u8 = 0x0C;
+const CHAT_MSG_SAY: u32 = 0x00;
+const LANG_UNIVERSAL: u32 = 0x00;
 const CHAR_CREATE_SUCCESS: u8 = 0x2E;
 const CHAR_CREATE_FAILED: u8 = 0x30;
 const CHAR_CREATE_NAME_IN_USE: u8 = 0x31;
@@ -100,6 +108,11 @@ const EMPTY_DB_VENDOR_FIXTURE_GUID: u32 = 96_002;
 const EMPTY_DB_VENDOR_FIXTURE_ENTRY: u32 = 900_011;
 const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
 const RUST_COMBAT_DUMMY_COUNTER: u32 = 2;
+const EASTERN_KINGDOMS_MAP: u32 = 0;
+const HUMAN_START_X: f32 = -8949.95;
+const HUMAN_START_Y: f32 = -132.493;
+const HUMAN_START_Z: f32 = 83.5312;
+const MULTICLIENT_SAY_MESSAGE: &str = "shared map hello";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -113,10 +126,12 @@ async fn main() -> anyhow::Result<()> {
     cleanup_account(&login_pool, &character_pool, account_id).await?;
     cleanup_account(&login_pool, &character_pool, other_account_id).await?;
 
-    complete_auth_flow()?;
-    let session_key = fetch_session_key(&login_pool).await?;
+    complete_auth_flow(USERNAME)?;
+    complete_auth_flow(OTHER_USERNAME)?;
+    let session_key = fetch_session_key(&login_pool, USERNAME).await?;
+    let other_session_key = fetch_session_key(&login_pool, OTHER_USERNAME).await?;
 
-    let mut world = WorldClient::connect(&session_key)?;
+    let mut world = WorldClient::connect(USERNAME, &session_key)?;
     let initial = world.char_enum()?;
     ensure!(
         !initial
@@ -220,6 +235,12 @@ async fn main() -> anyhow::Result<()> {
         "other account character was deleted by packet delete"
     );
     assert_count_row(&login_pool, account_id, 1).await?;
+    prove_two_client_login_logout_visibility(
+        &session_key,
+        created.guid,
+        &other_session_key,
+        other_character.guid,
+    )?;
 
     let no_space_character = wow_db::create_character(
         &character_pool,
@@ -245,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
         RUST_VENDOR_STACK_ITEM,
     )
     .await?;
-    let mut no_space_world = WorldClient::connect(&session_key)?;
+    let mut no_space_world = WorldClient::connect(USERNAME, &session_key)?;
     no_space_world.login_character(no_space_character.guid)?;
     no_space_world.kill_combat_dummy_with_autoattacks()?;
     no_space_world.open_combat_dummy_loot()?;
@@ -267,7 +288,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     assert_count_row(&login_pool, account_id, 1).await?;
 
-    let mut loaded_world = WorldClient::connect(&session_key)?;
+    let mut loaded_world = WorldClient::connect(USERNAME, &session_key)?;
     loaded_world.login_character(created.guid)?;
     assert_first_login_state_seen(&character_pool, account_id, created.guid).await?;
     loaded_world.query_db_creature_template()?;
@@ -411,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
     loaded_world.destroy_bag0_item(3)?;
     assert_inventory_item_absent(&character_pool, created.guid, 38).await?;
     assert_equipment_cache_slot(&character_pool, created.guid, 3, 0).await?;
-    let mut delete_world = WorldClient::connect(&session_key)?;
+    let mut delete_world = WorldClient::connect(USERNAME, &session_key)?;
     delete_world.expect_delete_character_result(created.guid, CHAR_DELETE_FAILED)?;
     ensure!(
         wow_db::get_character_enum_entries(&character_pool, account_id)
@@ -500,7 +521,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(world_pool);
     println!(
-        "world flow check passed: auth session, starter item template audit, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, DB creature query/gossip/vendor list, DB gossip invalid-option guard, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, Heroic Strike known-spell/main-hand/target guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
+        "world flow check passed: auth session, starter item template audit, create/delete happy path, negative create/delete cases, loaded/guild leader rejection, two-client login/logout visibility, two-client movement broadcast and range create/destroy visibility, DB creature query/gossip/vendor list, DB gossip invalid-option guard, empty DB vendor marker, DB vendor BuyPrice charge, sellback, and insufficient-money guard, Heroic Strike known-spell/main-hand/target guard, loot autostore no-space guard, backpack item move persistence, equip/unequip persistence, Rust Guide vendor buys/sell, bag-contained moves, stack merge, loot autostore stack merge and empty-slot fallback, destroy guardrails, partial destroy, split, bag-contained destroy persistence, guild/group/social/pet/mail/auction cleanup, COD mail return, enum/count refresh"
     );
     Ok(())
 }
@@ -1821,9 +1842,90 @@ async fn assert_auction_cleanup(
     Ok(())
 }
 
-fn complete_auth_flow() -> anyhow::Result<()> {
+fn prove_two_client_login_logout_visibility(
+    session_key: &[u8; 40],
+    character_guid: u32,
+    other_session_key: &[u8; 40],
+    other_character_guid: u32,
+) -> anyhow::Result<()> {
+    let mut first = WorldClient::connect(USERNAME, session_key)?;
+    let mut second = WorldClient::connect(OTHER_USERNAME, other_session_key)?;
+
+    first.login_character(character_guid)?;
+    let second_login_updates =
+        second.login_character_collect_extra_packets(other_character_guid)?;
+    ensure!(
+        updates_contain_player_guid(&second_login_updates, character_guid),
+        "second client did not receive first player's create block on login"
+    );
+    let first_observed_second = first.read_until_update_for_player(other_character_guid, 16)?;
+    ensure!(
+        first_observed_second,
+        "first client did not receive second player's create block"
+    );
+
+    second.send_movement(WorldPosition::new(
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X + 1.0,
+        HUMAN_START_Y,
+        HUMAN_START_Z,
+        0.0,
+    ))?;
+    ensure!(
+        first.read_until_movement_for_player(other_character_guid, 8)?,
+        "first client did not receive second player's movement"
+    );
+
+    second.send_movement(WorldPosition::new(
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X + 600.0,
+        HUMAN_START_Y + 600.0,
+        HUMAN_START_Z,
+        0.0,
+    ))?;
+    ensure!(
+        first.read_until_destroy_for_player(other_character_guid, 16)?,
+        "first client did not receive second player's range destroy"
+    );
+
+    first.send_say(MULTICLIENT_SAY_MESSAGE)?;
+    ensure!(
+        !second
+            .read_chat_message_with_timeout(MULTICLIENT_SAY_MESSAGE, Duration::from_millis(200))?,
+        "second client received nearby say while outside chat range"
+    );
+
+    second.send_movement(WorldPosition::new(
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X + 1.0,
+        HUMAN_START_Y,
+        HUMAN_START_Z,
+        0.0,
+    ))?;
+    ensure!(
+        first.read_until_update_for_player(other_character_guid, 16)?,
+        "first client did not receive second player's range re-create"
+    );
+
+    first.send_say(MULTICLIENT_SAY_MESSAGE)?;
+    ensure!(
+        second.read_until_chat_message(MULTICLIENT_SAY_MESSAGE, 8)?,
+        "second client did not receive nearby say from first client"
+    );
+
+    second.send_logout_request()?;
+    let first_observed_destroy = first.read_until_destroy_for_player(other_character_guid, 8)?;
+    ensure!(
+        first_observed_destroy,
+        "first client did not receive second player's destroy block on logout"
+    );
+    first.logout()?;
+    Ok(())
+}
+
+fn complete_auth_flow(username: &str) -> anyhow::Result<()> {
     let mut stream = connect_blocking(AUTH_ADDR)?;
-    let (challenge, client) = perform_challenge(&mut stream)?;
+    let (challenge, client) = perform_challenge(&mut stream, username)?;
     ensure!(
         challenge.error == 0,
         "auth challenge failed with {}",
@@ -1839,8 +1941,9 @@ fn complete_auth_flow() -> anyhow::Result<()> {
 
 fn perform_challenge(
     stream: &mut TcpStream,
+    username: &str,
 ) -> anyhow::Result<(LogonChallengeResponse, SrpClientChallenge)> {
-    stream.write_all(&logon_challenge_request())?;
+    stream.write_all(&logon_challenge_request(username))?;
 
     let challenge_bytes = read_exact_vec(stream, LogonChallengeResponse::SIZE)?;
     let challenge = LogonChallengeResponse::read(&mut &challenge_bytes[..])?;
@@ -1849,7 +1952,7 @@ fn perform_challenge(
     ensure!(challenge.n_len == 32, "unexpected safe-prime length");
 
     let client = SrpClientChallenge::new(
-        NormalizedString::new(USERNAME)?,
+        NormalizedString::new(username)?,
         NormalizedString::new(PASSWORD)?,
         challenge.g,
         challenge.n,
@@ -1880,10 +1983,10 @@ fn send_proof(
     Ok(LogonProofResponse::read(&mut &response[..])?)
 }
 
-async fn fetch_session_key(login_pool: &MySqlPool) -> anyhow::Result<[u8; 40]> {
+async fn fetch_session_key(login_pool: &MySqlPool, username: &str) -> anyhow::Result<[u8; 40]> {
     let session_key: String =
         sqlx::query_scalar("SELECT sessionkey FROM account WHERE username = ?")
-            .bind(USERNAME)
+            .bind(username)
             .fetch_one(login_pool)
             .await?;
     hex_to_array40(&session_key)
@@ -1895,14 +1998,14 @@ struct WorldClient {
 }
 
 impl WorldClient {
-    fn connect(session_key: &[u8; 40]) -> anyhow::Result<Self> {
+    fn connect(username: &str, session_key: &[u8; 40]) -> anyhow::Result<Self> {
         let mut stream = connect_blocking(WORLD_ADDR)?;
         let (opcode, body) = read_server_packet(&mut stream, None)?;
         ensure!(opcode == SMSG_AUTH_CHALLENGE, "expected auth challenge");
         ensure!(body.len() == 4, "world auth challenge body was malformed");
         let server_seed = u32::from_le_bytes(body.as_slice().try_into()?);
 
-        let auth_body = auth_session_body(session_key, server_seed);
+        let auth_body = auth_session_body(username, session_key, server_seed);
         write_client_packet(&mut stream, CMSG_AUTH_SESSION, &auth_body, None)?;
 
         let mut crypto = HeaderCrypto::new(session_key);
@@ -1915,6 +2018,15 @@ impl WorldClient {
         );
 
         Ok(Self { stream, crypto })
+    }
+
+    fn read_server_packet_skipping_monster_move(&mut self) -> anyhow::Result<(u32, Vec<u8>)> {
+        loop {
+            let packet = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if packet.0 != SMSG_MONSTER_MOVE {
+                return Ok(packet);
+            }
+        }
     }
 
     fn char_enum(&mut self) -> anyhow::Result<Vec<EnumCharacter>> {
@@ -1930,6 +2042,11 @@ impl WorldClient {
     }
 
     fn login_character(&mut self, guid: u32) -> anyhow::Result<()> {
+        self.login_character_collect_extra_packets(guid)?;
+        Ok(())
+    }
+
+    fn login_character_collect_extra_packets(&mut self, guid: u32) -> anyhow::Result<Vec<Vec<u8>>> {
         let guid = ObjectGuid::new(HighGuid::Player, 0, guid);
         write_client_packet(
             &mut self.stream,
@@ -1941,7 +2058,144 @@ impl WorldClient {
         for _ in 0..11 {
             let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
         }
-        Ok(())
+        self.drain_extra_login_update_packets()
+    }
+
+    fn drain_extra_login_update_packets(&mut self) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(100)))?;
+        let mut update_bodies = Vec::new();
+        loop {
+            match read_server_packet(&mut self.stream, Some(&mut self.crypto)) {
+                Ok((SMSG_UPDATE_OBJECT, body)) => update_bodies.push(body),
+                Ok((SMSG_MONSTER_MOVE, _)) => {}
+                Ok((opcode, _)) => {
+                    self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    anyhow::bail!("unexpected extra login packet 0x{opcode:04X}");
+                }
+                Err(error) => {
+                    self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                        ensure!(
+                            matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+                            "extra login packet drain failed with unexpected IO error: {io_error}"
+                        );
+                        return Ok(update_bodies);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn read_until_update_for_player(
+        &mut self,
+        character_guid: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_UPDATE_OBJECT && updates_contain_player_guid(&[body], character_guid)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_until_destroy_for_player(
+        &mut self,
+        character_guid: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let body = player.raw().to_le_bytes();
+        for _ in 0..max_packets {
+            let (opcode, packet_body) =
+                read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_DESTROY_OBJECT && packet_body == body {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn send_movement(&mut self, position: WorldPosition) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            MSG_MOVE_HEARTBEAT,
+            &movement_body(position),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn send_say(&mut self, message: &str) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MESSAGECHAT,
+            &chat_message_body(CHAT_MSG_SAY, LANG_UNIVERSAL, message),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn read_until_chat_message(
+        &mut self,
+        message: &str,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_MESSAGECHAT && packet_body_contains_text(&body, message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_chat_message_with_timeout(
+        &mut self,
+        message: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<bool> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        let result = loop {
+            match read_server_packet(&mut self.stream, Some(&mut self.crypto)) {
+                Ok((SMSG_MESSAGECHAT, body)) if packet_body_contains_text(&body, message) => {
+                    break Ok(true);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                        if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                            break Ok(false);
+                        }
+                    }
+                    break Err(error);
+                }
+            }
+        };
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        result
+    }
+
+    fn read_until_movement_for_player(
+        &mut self,
+        character_guid: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let expected = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode != MSG_MOVE_HEARTBEAT {
+                continue;
+            }
+            let mut cursor = Cursor::new(body.as_slice());
+            let guid = PackedGuid::read(&mut cursor)?;
+            if guid == expected {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn swap_inventory_slots(&mut self, src_slot: u8, dst_slot: u8) -> anyhow::Result<()> {
@@ -1951,7 +2205,7 @@ impl WorldClient {
             &[src_slot, dst_slot],
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after inventory move, got 0x{opcode:04X}"
@@ -1972,7 +2226,7 @@ impl WorldClient {
             &[dst_bag, dst_slot, src_bag, src_slot],
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after item swap, got 0x{opcode:04X}"
@@ -1987,7 +2241,7 @@ impl WorldClient {
             &rust_guide_guid().raw().to_le_bytes(),
             Some(&mut self.crypto),
         )?;
-        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, body) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_LIST_INVENTORY,
             "expected SMSG_LIST_INVENTORY, got 0x{opcode:04X}"
@@ -2087,7 +2341,7 @@ impl WorldClient {
             &guid.raw().to_le_bytes(),
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_NPC_TEXT_UPDATE,
             "expected SMSG_NPC_TEXT_UPDATE after DB gossip hello, got 0x{opcode:04X}"
@@ -2131,12 +2385,12 @@ impl WorldClient {
             &guid.raw().to_le_bytes(),
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_NPC_TEXT_UPDATE,
             "expected SMSG_NPC_TEXT_UPDATE after DB gossip hello, got 0x{opcode:04X}"
         );
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_GOSSIP_MESSAGE,
             "expected SMSG_GOSSIP_MESSAGE after DB gossip hello, got 0x{opcode:04X}"
@@ -2154,21 +2408,26 @@ impl WorldClient {
 
         self.stream
             .set_read_timeout(Some(Duration::from_millis(250)))?;
-        let read_result = read_server_packet(&mut self.stream, Some(&mut self.crypto));
-        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        match read_result {
-            Ok((opcode, _)) => anyhow::bail!(
-                "invalid DB gossip option unexpectedly produced packet 0x{opcode:04X}"
-            ),
-            Err(error) => {
-                if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-                    ensure!(
-                        matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
-                        "invalid DB gossip option failed with unexpected IO error: {io_error}"
+        loop {
+            let read_result = read_server_packet(&mut self.stream, Some(&mut self.crypto));
+            match read_result {
+                Ok((SMSG_MONSTER_MOVE, _)) => continue,
+                Ok((opcode, _)) => {
+                    self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    anyhow::bail!(
+                        "invalid DB gossip option unexpectedly produced packet 0x{opcode:04X}"
                     );
-                    Ok(())
-                } else {
-                    Err(error)
+                }
+                Err(error) => {
+                    self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                        ensure!(
+                            matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+                            "invalid DB gossip option failed with unexpected IO error: {io_error}"
+                        );
+                        return Ok(());
+                    }
+                    return Err(error);
                 }
             }
         }
@@ -2251,7 +2510,7 @@ impl WorldClient {
             &body,
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_BUY_ITEM,
             "expected SMSG_BUY_ITEM after vendor buy, got 0x{opcode:04X}"
@@ -2362,12 +2621,12 @@ impl WorldClient {
             &body,
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_UPDATE_OBJECT || opcode == SMSG_DESTROY_OBJECT,
             "expected item/count update after vendor sell, got 0x{opcode:04X}"
         );
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_UPDATE_OBJECT,
             "expected SMSG_UPDATE_OBJECT after vendor sell money update, got 0x{opcode:04X}"
@@ -2396,7 +2655,7 @@ impl WorldClient {
             &[bag, slot, count, 0, 0, 0],
             Some(&mut self.crypto),
         )?;
-        let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, _) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == expected_opcode,
             "expected 0x{expected_opcode:04X} after item destroy, got 0x{opcode:04X}"
@@ -2622,16 +2881,23 @@ impl WorldClient {
     }
 
     fn logout(&mut self) -> anyhow::Result<()> {
+        self.send_logout_request()?;
+        for _ in 0..32 {
+            let (opcode, _) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_LOGOUT_COMPLETE {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("did not receive SMSG_LOGOUT_COMPLETE")
+    }
+
+    fn send_logout_request(&mut self) -> anyhow::Result<()> {
         write_client_packet(
             &mut self.stream,
             CMSG_LOGOUT_REQUEST,
             &[],
             Some(&mut self.crypto),
-        )?;
-        for _ in 0..2 {
-            let _ = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
-        }
-        Ok(())
+        )
     }
 
     fn expect_create_result(
@@ -2754,9 +3020,9 @@ fn parse_char_enum(body: &[u8]) -> anyhow::Result<Vec<EnumCharacter>> {
     Ok(characters)
 }
 
-fn auth_session_body(session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
+fn auth_session_body(username: &str, session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
     let mut hasher = Sha1::new();
-    hasher.update(USERNAME.as_bytes());
+    hasher.update(username.as_bytes());
     hasher.update(0u32.to_le_bytes());
     hasher.update(CLIENT_SEED.to_le_bytes());
     hasher.update(server_seed.to_le_bytes());
@@ -2766,7 +3032,7 @@ fn auth_session_body(session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&(BUILD_1121 as u32).to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(USERNAME.as_bytes());
+    body.extend_from_slice(username.as_bytes());
     body.push(0);
     body.extend_from_slice(&CLIENT_SEED.to_le_bytes());
     body.extend_from_slice(&digest);
@@ -2831,6 +3097,40 @@ async fn assert_count_row(
     Ok(())
 }
 
+fn updates_contain_player_guid(update_bodies: &[Vec<u8>], character_guid: u32) -> bool {
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let bytes = player.raw().to_le_bytes();
+    update_bodies
+        .iter()
+        .any(|body| body.windows(bytes.len()).any(|window| window == bytes))
+}
+
+fn movement_body(position: WorldPosition) -> Vec<u8> {
+    let mut body = Vec::with_capacity(28);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&1_000u32.to_le_bytes());
+    body.extend_from_slice(&position.x.to_le_bytes());
+    body.extend_from_slice(&position.y.to_le_bytes());
+    body.extend_from_slice(&position.z.to_le_bytes());
+    body.extend_from_slice(&position.orientation.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body
+}
+
+fn chat_message_body(chat_type: u32, language: u32, message: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + message.len() + 1);
+    body.extend_from_slice(&chat_type.to_le_bytes());
+    body.extend_from_slice(&language.to_le_bytes());
+    body.extend_from_slice(message.as_bytes());
+    body.push(0);
+    body
+}
+
+fn packet_body_contains_text(body: &[u8], message: &str) -> bool {
+    let message = message.as_bytes();
+    !message.is_empty() && body.windows(message.len()).any(|window| window == message)
+}
+
 fn connect_blocking(addr: &str) -> anyhow::Result<TcpStream> {
     let stream = TcpStream::connect(addr).with_context(|| format!("connect to {addr}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -2838,11 +3138,11 @@ fn connect_blocking(addr: &str) -> anyhow::Result<TcpStream> {
     Ok(stream)
 }
 
-fn logon_challenge_request() -> Vec<u8> {
+fn logon_challenge_request(username: &str) -> Vec<u8> {
     let request = LogonChallengeRequest {
         cmd: AuthCommand::LogonChallenge,
         error: 0,
-        size: 30 + USERNAME.len() as u16,
+        size: 30 + username.len() as u16,
         game_name: *b"WoW\0",
         version_major: 1,
         version_minor: 12,
@@ -2853,7 +3153,7 @@ fn logon_challenge_request() -> Vec<u8> {
         country: *b"enUS",
         timezone_bias: 0,
         ip: [127, 0, 0, 1],
-        account_name: USERNAME.to_string(),
+        account_name: username.to_string(),
     };
 
     let mut bytes = BytesMut::new();

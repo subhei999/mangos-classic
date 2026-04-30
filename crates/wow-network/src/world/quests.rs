@@ -1,5 +1,5 @@
 async fn handle_quest_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
@@ -21,7 +21,7 @@ async fn handle_quest_query(
 }
 
 async fn handle_questgiver_status_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
@@ -39,7 +39,7 @@ async fn handle_questgiver_status_query(
 }
 
 async fn handle_questgiver_hello(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
@@ -76,7 +76,7 @@ async fn handle_questgiver_hello(
 }
 
 async fn handle_questgiver_query_quest(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
@@ -104,7 +104,7 @@ async fn handle_questgiver_query_quest(
 }
 
 async fn handle_questgiver_accept_quest(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],
@@ -139,7 +139,7 @@ async fn handle_questgiver_accept_quest(
 }
 
 async fn handle_questgiver_complete_quest(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
@@ -180,7 +180,7 @@ async fn handle_questgiver_complete_quest(
 }
 
 async fn handle_questgiver_choose_reward(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],
@@ -383,7 +383,7 @@ fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<u
 }
 
 async fn grant_db_creature_kill_credit(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,

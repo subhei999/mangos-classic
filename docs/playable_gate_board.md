@@ -1,7 +1,8 @@
 # Rust Rewrite Playable Gate Board
 
-This board defines the current real-client playable milestone.
-Do not start broad new systems unless they move one of these gates.
+This board defines the current real-client playable milestone and the next
+engineering bet. Use it as a dashboard, not a cage: user direction can reorder
+work when it reduces project risk.
 
 Current milestone: Northshire Human Warrior playable slice
 Client: WoW 1.12.1 / build 5875
@@ -11,24 +12,32 @@ Branch: codex/rust-auth-foundation
 
 - Real-client proof beats harness proof.
 - Harness proof is required before real-client proof when practical.
-- Every new task must map to a gate below.
-- If a bug is discovered but does not block the current gate, log it as
-  P2/P3/P4 and continue.
-- Do not add new broad systems until Gate 3 is green.
-- If a task does not advance the highest-priority red/yellow playable gate, do
-  not start it unless the user explicitly asks.
+- Prefer tasks that advance one of the gates below or reduce crash/desync risk.
+- If a bug or parity gap is discovered, use judgment: fix blockers and safety or
+  data-integrity guardrails when practical; log useful follow-ups when they
+  should wait.
+- G3 is green and remains a regression gate, not a reason to block broader
+  world-runtime work.
 
 ## Current Priority Order
 
-1. G8 Combat Agency
-2. G9 World Creature Fidelity
-3. G10 NPC Interaction Fidelity
-4. G11 Persistence + Relog Sanity
-5. G5 Combat + Loot real-behavior fidelity
-6. G6 Level + Trainer issue #49 polish
-7. G7 Death + Respawn polish
-8. G8/G9 Pathing + Movement Fidelity
-9. G12 Multi-client Sanity
+1. G12 Derisk Multiplayer / Shared MapRuntime.
+2. G8 Combat Agency.
+3. G9 World Creature Fidelity.
+4. G10 NPC Interaction Fidelity.
+5. G11 Persistence + Relog Sanity.
+6. G5 Combat + Loot real-behavior fidelity.
+7. G6 Level + Trainer issue #49 polish.
+8. G7 Death + Respawn polish.
+9. G8/G9 Pathing + Movement Fidelity follow-ups.
+
+Current user-directed milestone: **G12 Derisk Multiplayer / Shared MapRuntime**.
+Keep one monolithic worldserver, but stop treating each TCP session as its own
+mini-world. Introduce a shared in-process `MapRuntime` / grid layer inside
+`WorldRuntimeState`, then route player visibility, movement, `/say`, and DB
+creature state through it. The user has a detailed implementation plan and will
+walk the next agent through it before coding. Follow
+`docs/g12_shared_mapruntime_plan.md` as the G12 implementation document.
 
 Recently verified:
 
@@ -48,7 +57,7 @@ Recently verified:
 | G9 World Creature Fidelity | Yellow | Starter mobs come from real DB spawn/template data, expose DB loot, persist enough world state, respawn with CMaNGOS-like timing, and support generic DB-backed idle/random/waypoint/patrol movement | DB spawn/template/loot basics work; Rust now loads DB `MovementType`/`spawndist` and runs generic random walk splines with CMaNGOS-like 3-10 second pauses for random-movement creatures. Rust also loads CMaNGOS-style `creature_movement` GUID paths with `creature_movement_template` entry/path 0 fallback for `MovementType` 2/4, sends timed multi-point patrol `SMSG_MONSTER_MOVE` splines, waits at DB nodes, supports linear back-and-forth waypoint movement, and keeps DB creatures in alive/corpse/dead/respawn state with DB/template-derived timers. Creature deaths now write CMaNGOS-shaped `characters.creature_respawn` rows for instance `0`; login/movement visibility restores future-dead creatures as tracked runtime state without creating them client-side, unloaded corpses are recreated as corpses when the player returns before respawn, and runtime respawn clears the row. `waypoint_path` indirection, true pathfinder random points, live multi-client broadcast/state sharing, and broader zone proof remain missing | #51, #52 | Continue after G8 if movement/world fidelity is the highest remaining blocker; Northshire is proof only, not a source of starter-specific creature logic |
 | G10 NPC Interaction Fidelity | Red | Quest givers, vendors, trainers, gossip NPCs, and non-interactive NPCs expose the correct cursor/status, menus, flags, text, and failure behavior in the real client | Real-client NPC interaction pass plus harness | TBD | Audit Northshire NPC flags/status/menu flows against CMaNGOS |
 | G11 Persistence + Relog Sanity | Red | After quest progress, XP, level-up, loot, inventory changes, trainer learning, death/respawn, and position changes, logout/relog restores correct state with no dupes/loss/corruption | Harness plus real-client relog checklist | TBD | Add relog checkpoints after each major Northshire action |
-| G12 Multi-client Sanity | Red | Two clients can log into Northshire, see each other, move, chat/say, observe creature state consistently, and not duplicate loot/quest/combat state | Two-client real-client pass plus harness if possible | TBD | Add minimal two-session visibility/chat/shared mob test |
+| G12 Derisk Multiplayer / Shared MapRuntime | Red / active | Two clients can log into Northshire, see each other spawn/move/logout, exchange nearby `/say`, observe shared DB creature state, and avoid duplicated/desynced kill or loot state | Harness now proves two clients can log in together, receive mutual player create blocks, receive movement broadcast, get destroy when the other player leaves visibility range, receive create again on return, observe logout destroy, and exchange nearby `/say` without leaking it to an out-of-range player. User real-client smoke confirmed movement with three players online. Player-player visibility now uses CMaNGOS-shaped grid/cell buckets instead of full player scans. `MapRuntime` now preserves shared DB-creature snapshots across sessions, broadcasts player-caused creature health/death updates to nearby sessions, owns DB-creature loot open/money/item/release claims, owns exclusive DB-creature combat claims, is authoritative for active creature combat attacker/victim plus next-swing/retry timing and victim-wide cleanup on death, and dispatches creature combat-start/chase/facing/evade/return-home packets to nearby observer sessions. A real-client shared-mob bug where observers could keep ticking stale local patrol/chase state after another player killed the mob is fixed by syncing session-local creatures from shared map snapshots before creature ticks and by broadcasting a death-time motion stop. A follow-up patrol regression is fixed by writing random/waypoint/return-home motion back into `MapRuntime` and broadcasting idle motion starts to nearby observers; exact 5-yard melee reach is now accepted. | Creature-origin damage packet execution, lifecycle event authority, lazy grid-loaded creature visibility, loot-flag observer polish after claims, and full two-client shared-mob harness proof are still pending; creature visibility still leans on DB radius queries during movement | Next: real-client retest shared mob death/loot plus random/waypoint patrols on two clients, then move remaining creature-origin lifecycle updates behind `MapRuntime` events or start lazy DB creature grid loading |
 
 ## Gate Detail
 
@@ -148,9 +157,9 @@ Requirements:
 - Use CMaNGOS source and DB behavior as the reference for `MovementType`,
   `spawndist`, home position, waypoint/path tables, idle/random movement,
   patrol movement, respawn timing, and AI update cadence.
-- Do not add hardcoded starter creature movement rules. Harness-only fixtures
-  are acceptable when clearly marked as proof data, but production behavior
-  should come from DB/source-derived creature state.
+- Avoid hardcoded starter creature movement rules. Harness-only fixtures are
+  acceptable when clearly marked as proof data, but production behavior should
+  come from DB/source-derived creature state.
 - Keep responsibilities clear: G8 owns combat chase, melee reach, leash/evade,
   and return-home combat cleanup; G9 owns idle, random, waypoint, patrol,
   respawn, and persistent world-object behavior outside combat.
@@ -177,17 +186,63 @@ Relog checks should cover:
 - dead/alive/corpse state;
 - creature respawn state, if it is persisted or intentionally runtime-scoped.
 
-### G12 Multi-client Sanity
+### G12 Derisk Multiplayer / Shared MapRuntime
+
+Implementation document: `docs/g12_shared_mapruntime_plan.md`.
+
+User-directed near-term goal:
+
+- Keep the server one monolithic worldserver.
+- Stop treating each TCP session as its own mini-world.
+- Introduce a shared in-process `MapRuntime` / grid layer inside
+  `WorldRuntimeState`.
+- Route player visibility, movement, chat, and creature state through the shared
+  map runtime.
+- Creature visibility should no longer depend on DB radius queries per movement
+  heartbeat.
+
+Suggested implementation ladder:
+
+1. Done: add shared `MapRuntime` ownership under `WorldRuntimeState` without
+   changing gameplay behavior.
+2. Done: register/unregister logged-in players in the shared map runtime.
+3. Done: broadcast player spawn, movement, and logout destroy updates to nearby
+   players through the shared map runtime.
+4. Done: implement CMaNGOS-shaped grid/cell primitives for player-player
+   visibility candidate lookup.
+5. Done: route nearby `/say` through shared player visibility.
+6. In progress: move DB creature live state into the shared runtime so all
+   sessions observe the same alive/corpse/loot/respawn state. Shared snapshots,
+   player-caused health/death update broadcast, DB-creature loot claims,
+   exclusive DB-creature combat claims, and shared next-swing/retry timing are
+   in, including victim-wide cleanup on player death. Creature combat-start,
+   chase, facing, evade, and return-home packets now broadcast to nearby
+   observers through `MapRuntime`. Session-local creature caches now refresh
+   from shared snapshots before local ticks, and creature death sends a
+   death-time motion stop to prevent observer clients from seeing a corpse keep
+   patrolling or chasing. Idle/random/waypoint and return-home motion now write
+   updated creature snapshots back into `MapRuntime`, and new idle motion
+   splines broadcast through the shared map to nearby observers. Creature-origin
+   damage packet execution and
+   lifecycle event broadcast authority remain.
+7. Replace movement-heartbeat DB radius visibility as the live creature source
+   with grid/runtime visibility backed by loaded DB spawns.
+8. Add a two-session harness or real-client smoke proof before resuming deeper
+   G8/G9 tuning.
 
 Minimum proof:
 
-- two separate clients can log into Northshire at the same time;
-- both players can see each other enter, move, and logout;
-- local say/chat is visible to the other client;
-- both clients observe the same shared creature state for at least one starter
-  mob;
-- loot, quest credit, and combat state do not duplicate or diverge between
+- Two separate clients can log into Northshire at the same time.
+- Both players can see each other spawn.
+- Both players can see each other move.
+- One client logging out destroys that player for the other.
+- Local `/say` is visible to the other nearby client.
+- Both clients observe the same shared creature state for at least one starter
+  mob.
+- Loot, quest credit, and combat state do not duplicate or diverge between
   clients.
+- Existing G3 movement visibility and `starter-zone-flow-test` flows remain
+  green.
 
 ## GitHub Issue Labels
 

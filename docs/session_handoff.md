@@ -38,21 +38,114 @@ money, and `character_spell`.
 Use `docs/playable_gate_board.md` as the executive dashboard before selecting
 work. G3 Movement Visibility Streaming has been user-verified in the real
 client and is now a regression gate. G7 Player Death + Respawn is now
-core-flow harness-proven and user-smoked in the real client. Current active
-priority is G8 Combat Agency, then G9 World Creature Fidelity, then G10 NPC
-Interaction Fidelity, then G11 Persistence + Relog Sanity, then G5 Combat and
-Loot real-behavior fidelity, then G6 Level + Trainer issue #49 polish, then G7
-death/respawn polish, then G8/G9 Pathing + Movement Fidelity, then G12
-Multi-client Sanity.
+core-flow harness-proven and user-smoked in the real client. User-directed next
+priority is to derisk multiplayer before continuing deeper G8/G9 work: keep one
+monolithic worldserver, introduce a shared in-process `MapRuntime` / grid layer
+inside `WorldRuntimeState`, and route player visibility, movement, `/say`, and
+DB creature state through it. The user has a detailed implementation plan and
+will walk the next agent through it. Follow `docs/g12_shared_mapruntime_plan.md`
+as the implementation document for this G12 slice.
 
 Important scope rule:
-We are proving one vertical slice only. Fix P0/P1 bugs that block this slice.
-Do not chase unrelated horizontal parity issues. For any non-blocking bug,
-mismatch, missing subsystem, or cleanup gap you discover, create a GitHub issue
-using the repo's bug triage policy, then continue the requested task.
+Stay focused on the requested multiplayer derisking step, but keep the agent
+free to make small local safety, protocol, test, or data-integrity fixes needed
+to prove the step. Log larger follow-ups rather than turning the task into a
+broad parity sweep.
 
 ## What Changed Recently
 
+- Completed G12 Shared MapRuntime Phase 1. World sessions now get a `SessionId`,
+  register a `SessionHandle` in `WorldRuntimeState.sessions`, split the socket
+  into a packet reader plus one outbound writer task, and route existing
+  gameplay responses through `WorldPacketSink` / `OutboundWorldPacket` without
+  adding multiplayer behavior yet.
+- Completed G12 Shared MapRuntime Phase 2. `WorldRuntimeState` now owns a shared
+  `MapRuntimeManager`; player login registers a `PlayerRuntime` into the shared
+  map after self bootstrap, nearby already-online players receive the new
+  player's create block, the new player receives nearby existing-player create
+  blocks, and logout/disconnect removes the player and broadcasts
+  `SMSG_DESTROY_OBJECT` to nearby players. The `world-flow-test` harness now
+  proves two simultaneous clients can observe login/logout visibility.
+- Completed G12 Shared MapRuntime Phase 3. Movement handlers now update the
+  shared `MapRuntime`, compute nearby-player visibility diffs, send
+  `SMSG_UPDATE_OBJECT` create packets when players re-enter range, send
+  `SMSG_DESTROY_OBJECT` when players leave range or logout, and broadcast
+  player movement packets to nearby sessions through `SessionRegistry`. The
+  `world-flow-test` harness now proves two clients can see each other spawn,
+  receive movement, lose visibility out of range, regain visibility on return,
+  and observe logout destroy.
+- User real-client smoke confirmed G12 Phase 3 movement with three players
+  online at once.
+- Completed G12 Shared MapRuntime Phase 4. Player-player visibility now uses
+  CMaNGOS-shaped 64-grid / 16-cell coordinate primitives, cell-area radius
+  lookup, and nearby cell visiting over the map runtime's cell buckets instead
+  of scanning every live player on each visibility update. Distance filtering
+  remains after cell candidate lookup.
+- Completed the G12 nearby chat slice. `CMSG_MESSAGECHAT` `/say` still echoes
+  to the sender as before, but also asks `MapRuntime` for nearby visible
+  players and dispatches `SMSG_MESSAGECHAT` through `SessionRegistry` after the
+  map lock is released. The `world-flow-test` two-client proof now verifies a
+  far client does not receive `/say`, then receives it after moving back into
+  visibility range.
+- Started the G12 shared DB-creature runtime slice. `MapRuntime` now owns a
+  shared DB-creature snapshot map keyed by creature object GUID; login,
+  movement, and repop visibility load DB spawns through that shared map so a
+  later session reuses existing corpse/dead/respawn state instead of creating a
+  fresh private runtime copy. Player melee and supported starter spell damage
+  now write the changed DB-creature snapshot back into `MapRuntime` and
+  broadcast the health/death `SMSG_UPDATE_OBJECT` to nearby player sessions
+  through `SessionRegistry` after releasing the map lock. DB-creature loot open,
+  money claim, item claim, item restore on failed autostore, and loot release
+  now mutate the shared map creature snapshot so money/items cannot be claimed
+  from independent per-session copies. DB-creature combat claims now go through
+  `MapRuntime` too, so one creature cannot start separate private combat loops
+  for multiple sessions. The per-session combat tick now mirrors active
+  attacker/victim/next-swing state from `MapRuntime`, and ready-swing retry plus
+  next-swing timing are written back to the shared map. Player melee and
+  supported starter spell retaliation both use the shared combat claim path.
+  When a player is no longer alive, shared map combat claims for that victim are
+  cleared so stale attackers cannot stay reserved after death.
+  Creature combat start, creature in-combat flag updates, facing turns, chase
+  movement, evade attack-stop/state reset, and return-home movement are now
+  dispatched through `MapRuntime` to nearby observer sessions after the direct
+  victim packet send. Creature-origin damage packet execution and lifecycle
+  finalization still run in the owning session tick until a later slice moves
+  those operations behind map events. Lazy grid-loaded DB creature discovery is
+  also still pending.
+- Fixed the first real-client shared-mob desync blocker reported during G12
+  testing: observers could keep a stale session-local DB creature copy moving
+  through patrol/chase after another player killed the creature, producing a
+  dead mob that still walked and sometimes looked lootable without valid loot.
+  Session-local DB creatures now sync from `MapRuntime` snapshots before local
+  creature ticks, movement visibility refreshes existing local entries from the
+  shared snapshot, shared dead snapshots destroy stale visible local creatures,
+  and DB creature death emits a motion-stop `SMSG_MONSTER_MOVE` to nearby
+  observers. The `world-flow-test` harness now skips legitimate interleaved
+  `SMSG_MONSTER_MOVE` packets around DB gossip/vendor responses.
+- Fixed the follow-up real-client blocker where shared state was more correct
+  but random/waypoint patrols stopped working: idle/random/waypoint and
+  return-home motion now write their updated `DbCreatureRuntime` back to
+  `MapRuntime` instead of being overwritten by the next shared snapshot sync.
+  New idle motion starts also broadcast `SMSG_MONSTER_MOVE` through the shared
+  map so nearby clients see the same patrol spline. The exact 5-yard melee
+  boundary is now accepted (`<=`) for player and creature melee reach, avoiding
+  the real-client "slightly out of range" feel at the reach threshold.
+- Fixed the Phase 1 harness blockers exposed by queued outbound packets:
+  self-spawn `SMSG_UPDATE_OBJECT` bodies are chunked by byte size so full
+  backpacks stay under the vanilla server-packet cap, `world-flow-test` drains
+  legal extra login update/monster-move packets, and `starter-zone-flow-test`
+  waits for all expected login creature create blocks instead of assuming a
+  fixed update-packet count.
+- Hardened the Rust/native mmap path boundary used by G8/G9 Detour-backed
+  movement. The only Rust `unsafe` mmap call now lives in
+  `crates/wow-network/src/world/mmap_path.rs` behind finite-position,
+  tile-range, buffer-length, and output validation; gameplay code and tests use
+  the safe wrapper instead of calling FFI directly. The C++ bridge now rejects
+  invalid tile ids/non-finite coordinates, caps `.mmtile` data allocation, uses
+  RAII for Detour queries, and catches native exceptions before they can cross
+  FFI.
+- Added `docs/g12_shared_mapruntime_plan.md` as the dedicated plan for the
+  user-directed G12 Derisk Multiplayer / Shared MapRuntime milestone.
 - Split `crates/wow-network/src/world/session.rs` into CMaNGOS-shaped runtime
   type files without changing behavior: `entities/player.rs`,
   `entities/creature.rs`, `entities/corpse.rs`, `motion/motion_master.rs`,
@@ -342,6 +435,119 @@ using the repo's bug triage policy, then continue the requested task.
 
 ## Tests Run
 
+- G12 shared-mob stale observer fix: `cargo fmt --check` passed.
+- G12 shared-mob stale observer focused visibility test:
+  `cargo test -p wow-network
+  movement_visibility_refreshes_existing_creature_from_shared_dead_snapshot --lib`
+  passed.
+- G12 shared-mob stale observer movement regression:
+  `cargo test -p wow-network movement_visibility --lib` passed (`8` tests).
+- G12 shared-mob stale observer death-stop test:
+  `cargo test -p wow-network db_creature_death_motion_stop_clears_active_motion
+  --lib` passed.
+- G12 shared-mob stale observer map-runtime regression:
+  `cargo test -p wow-network map_runtime --lib` passed (`9` tests).
+- G12 shared-mob stale observer compile/clippy:
+  `cargo check -p wow-network -p world-flow-test` and
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- G12 shared-mob stale observer Rust baseline:
+  `.\scripts\test-rust.cmd` passed after stopping a manual
+  `run-client-stack-18085.cmd` auth/worldserver process that had locked
+  `target\debug\authserver.exe`; `wow-network` now has `175` unit tests.
+- G12 shared-mob stale observer world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed after teaching the harness to drain
+  legal interleaved `SMSG_MONSTER_MOVE` packets during DB vendor sellback.
+- G12 shared-mob patrol restoration checks: `cargo fmt --check` passed.
+- G12 shared-mob patrol restoration focused tests:
+  `cargo test -p wow-network
+  shared_db_creature_idle_motion_updates_map_and_observers --lib`,
+  `cargo test -p wow-network db_creature_melee_reach_is_position_gated --lib`,
+  and `cargo test -p wow-network
+  db_creature_return_home_motion_advances_without_active_combat --lib` passed.
+- G12 shared-mob patrol restoration unit baseline:
+  `cargo test -p wow-network --lib` passed (`176` tests).
+- G12 shared-mob patrol restoration compile/clippy:
+  `cargo check -p wow-network -p world-flow-test` and
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- G12 shared-mob patrol restoration harness/baseline:
+  `.\scripts\test-world-flow.cmd` passed after stopping stale local
+  auth/worldserver processes from manual client testing, and
+  `.\scripts\test-rust.cmd` passed.
+- G12 shared DB-creature tick timing checks: `cargo fmt --check` passed.
+- G12 shared DB-creature tick timing focused test: `cargo test -p wow-network
+  db_creature_combat_state_tracks_victim_and_next_swing --lib` passed.
+- G12 shared DB-creature tick timing map-runtime regression:
+  `cargo test -p wow-network map_runtime --lib` passed (`9` tests).
+- G12 shared DB-creature tick timing compile check:
+  `cargo check -p wow-network -p world-flow-test` passed.
+- G12 shared DB-creature tick timing clippy/baseline:
+  `.\scripts\test-rust.cmd` passed (`wow-network` now has `172` unit tests).
+- G12 shared DB-creature tick timing world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed.
+- G12 shared DB-creature observer broadcast check: `cargo fmt --check` passed.
+- G12 shared DB-creature observer broadcast focused test:
+  `cargo test -p wow-network
+  shared_creature_combat_start_broadcasts_to_nearby_observer --lib` passed.
+- G12 shared DB-creature observer broadcast map-runtime regression:
+  `cargo test -p wow-network map_runtime --lib` passed (`9` tests).
+- G12 shared DB-creature observer broadcast compile/clippy:
+  `cargo check -p wow-network -p world-flow-test` and
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- G12 shared DB-creature observer broadcast baseline:
+  `.\scripts\test-rust.cmd` passed (`wow-network` now has `173` unit tests).
+- G12 shared DB-creature observer broadcast world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed.
+- G12 Phase 1 baseline before code changes: `.\scripts\test-rust.cmd` passed.
+- G12 Phase 1 implementation check: `cargo check -p wow-network` passed.
+- G12 Phase 1 world flow gate: `.\scripts\test-world-flow.cmd` passed.
+- G12 Phase 1 starter-zone/G3 regression gate:
+  `.\scripts\test-starter-zone-flow.cmd` passed:
+  `starter-zone RealClassicDb lock passed for account STARTZONE, character Startzone`.
+- G12 Phase 1 final check after all edits: `.\scripts\test-rust.cmd` passed.
+- G12 Phase 2 implementation check: `cargo check -p wow-network -p
+  world-flow-test -p starter-zone-flow-test` passed.
+- G12 Phase 2 Rust baseline: `.\scripts\test-rust.cmd` passed.
+- G12 Phase 2 two-client proof: `.\scripts\test-world-flow.cmd` passed and now
+  reports `two-client login/logout visibility`.
+- G12 Phase 2 starter-zone/G3 regression: `.\scripts\test-starter-zone-flow.cmd`
+  passed: `starter-zone RealClassicDb lock passed for account STARTZONE,
+  character Startzone`.
+- G12 nearby chat implementation check: `cargo fmt --check` passed.
+- G12 nearby chat implementation check: `cargo check -p wow-network -p
+  world-flow-test` passed.
+- G12 nearby chat two-client proof: `.\scripts\test-world-flow.cmd` passed and
+  now covers nearby `/say` delivery plus out-of-range non-delivery.
+- G12 nearby chat baseline: `.\scripts\test-rust.cmd` passed.
+- G12 shared DB-creature snapshot checks: `cargo fmt --check` passed.
+- G12 shared DB-creature snapshot checks: `cargo test -p wow-network
+  map_runtime --lib` passed (`5` tests).
+- G12 shared DB-creature snapshot compile check: `cargo check -p wow-network -p
+  world-flow-test` passed.
+- G12 shared DB-creature world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed after stopping the manual
+  `run-client-stack-18085.cmd` auth/worldserver processes that had locked
+  `target\debug\authserver.exe`.
+- G12 shared DB-creature baseline: `.\scripts\test-rust.cmd` passed.
+- G12 shared DB-creature loot authority checks: `cargo fmt --check` passed.
+- G12 shared DB-creature loot authority checks: `cargo test -p wow-network
+  map_runtime --lib` passed (`7` tests).
+- G12 shared DB-creature loot compile check: `cargo check -p wow-network -p
+  world-flow-test` passed.
+- G12 shared DB-creature loot world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed.
+- G12 shared DB-creature loot baseline: `.\scripts\test-rust.cmd` passed.
+- G12 shared DB-creature combat-claim checks: `cargo fmt --check` passed.
+- G12 shared DB-creature combat-claim checks: `cargo test -p wow-network
+  map_runtime --lib` passed (`8` tests).
+- G12 shared DB-creature combat-claim world-flow regression:
+  `.\scripts\test-world-flow.cmd` passed.
+- G12 shared DB-creature combat-claim baseline: `.\scripts\test-rust.cmd`
+  passed.
+- Mmap safety hardening baseline before changes: `.\scripts\test-rust.cmd`
+  passed.
+- Mmap safety hardening focused check: `cargo test -p wow-network mmap --
+  --nocapture` passed (`3` tests).
+- Mmap safety hardening final check: `.\scripts\test-rust.cmd` passed.
 - CMaNGOS-shaped type split: `cargo fmt --check` passed.
 - CMaNGOS-shaped type split: `cargo check -p wow-network` passed.
 - CMaNGOS-shaped type split: `cargo test -p wow-network --lib` passed
@@ -1087,6 +1293,14 @@ using the repo's bug triage policy, then continue the requested task.
   Detour rejected the local generated `000.mmap` header until the Rust native
   bridge compiled bundled Detour with `DT_POLYREF64`, matching the extracted
   mmap data's large `maxPolys` shape.
+- Fixed a P1 memory-safety guardrail in the mmap bridge: Rust gameplay/tests no
+  longer perform direct unsafe FFI calls, and the C++ bridge now validates FFI
+  inputs, bounds tile-data allocation, uses RAII cleanup, and returns errors
+  instead of throwing across the Rust boundary.
+- Fixed a P1 shared-combat guardrail during the G12 tick timing slice:
+  `MapRuntime` now clears all active DB-creature combat claims for a player
+  victim when that player is no longer alive, preventing stale shared attackers
+  from remaining reserved after death.
 - No new P0/P1 bugs were discovered during the G8/G9 multi-point path-following
   slice.
 - No new P0/P1 bugs were discovered during the G9 DB waypoint/patrol movement
@@ -1162,7 +1376,12 @@ with CMaNGOS after the return-home fixes; this was added as fresh evidence on
 GitHub #12 for future G8 cadence/AI-notify parity work. The missing
 `waypoint_path` / spawn-group indirection fallback for DB patrol movement is
 tracked as GitHub #51. The first waypoint loader's per-creature DB fallback
-queries are tracked as P4 performance debt in GitHub #52.
+queries are tracked as P4 performance debt in GitHub #52. The fallback
+starter-zone fixture duplicate GUID/counter issue discovered while restoring
+the real ClassicDB test data is tracked as GitHub #54; the real ClassicDB
+starter-zone proof was green after running the repo import script. The
+repeatable starter-zone death proof failure observed during the G12 Phase 4
+verification pass is tracked as GitHub #55.
 
 Known open directions still include final player death/respawn proof and polish
 (#44), broader
@@ -1220,31 +1439,45 @@ and passive/aura effects from learned spells.
 
 ## Next Recommended Task
 
-Continue Checkpoint 2 with the next narrow starter gameplay slice:
+User-directed next slice: **G12 shared DB creature event/broadcast authority or
+lazy creature grid loading, depending on what the user wants to derisk first**.
 
-- G8 Combat Agency: resume the next highest playable gate. Good next slices are
-  melee roll table, damage formula parity, or continued real-client tuning of
-  Detour-backed chase/home feel if that still looks rough in smoke testing.
-- G8/G9 Creature Pathing + Movement Fidelity: chase stop-distance/re-path now
-  uses the CMaNGOS combined melee reach shape, Rust detects mmap tile
-  availability from `C:/World of Warcraft Classic`, chase/home/random movement
-  can use native Detour multi-point paths when generated mmap files cover the
-  area, and DB waypoint movement now covers `creature_movement` /
-  `creature_movement_template` paths.
-- G9 World Creature Fidelity: after chase/home feel improves, implement
-  generic CMaNGOS DB-backed idle/random/waypoint/patrol movement using
-  `MovementType`, `spawndist`, waypoint/path tables, home position, respawn
-  timing, and AI update references. Northshire is only the proof area; do not
-  add starter-specific movement rules. Keep DB spawn/template/loot/respawn and
-  non-combat movement fidelity separate from combat agency where possible.
-- G8 Combat Agency later: resume melee roll table and damage formula parity
-  after movement feel is less fake.
-- G10 NPC Interaction Fidelity: audit Northshire quest givers, vendors,
-  trainers, gossip NPCs, and non-interactive NPCs against CMaNGOS affordances.
-- G11 Persistence + Relog Sanity: add relog checkpoints after each major
-  Northshire action so state bugs cannot hide inside a single live session.
-- G12 Multi-client Sanity: add minimal two-session visibility, chat, and shared
-  creature-state proof before calling the slice MMO-shaped.
+Phases 1-4 plus nearby `/say` and the first DB-creature shared-state slice are
+done: the outbound channel/session registry exists, live players register into
+shared map state with login/logout create/destroy visibility, movement updates
+`MapRuntime` with nearby-player movement broadcast plus range create/destroy
+visibility diffs, player-player visibility now uses CMaNGOS-shaped grid/cell
+primitives instead of full player scans, local `/say` broadcasts to nearby
+players through shared map visibility, and DB-creature snapshots,
+player-caused health/death updates, and DB-creature loot claims are shared
+through `MapRuntime`; DB-creature combat ownership claims are also shared so one
+creature cannot start separate private combat loops for different sessions.
+The tick loop now pulls active creature combats from `MapRuntime` and stores
+next-swing/retry timing back into the shared map, including starter-spell
+retaliation and victim-wide cleanup on death. Combat start, creature
+in-combat-flag updates, chase, facing turns, evade, and return-home packets now
+broadcast to nearby observers through `MapRuntime`. The next multiplayer slice
+should move creature-origin damage and lifecycle updates behind `MapRuntime`
+events with observer broadcasts, or replace movement-time creature DB radius
+queries with lazy grid-loaded creature visibility.
+
+Near-term done definition:
+
+- two clients can log into Northshire at once;
+- both clients see each other spawn;
+- both clients see each other move;
+- one client logging out destroys that player for the other;
+- `/say` works between nearby players;
+- both clients observe the same DB creature state;
+- one client killing/looting a mob cannot duplicate or desync that mob for the
+  other;
+- existing G3 movement visibility and starter-zone flow tests remain green;
+- creature visibility no longer depends on DB radius queries per movement
+  heartbeat.
+
+After this user-directed slice, return to the default playable-gate order:
+G8 Combat Agency, G9 World Creature Fidelity, G10 NPC Interaction Fidelity, G11
+Persistence + Relog Sanity, then G12 follow-up polish.
 
 Keep it Human Warrior / Northshire only unless the user explicitly chooses a
 broader slice.
@@ -1262,6 +1495,7 @@ broader slice.
 - `crates/wow-network/src/world/trainers.rs`
 - `crates/wow-network/src/world/opcodes.rs`
 - `crates/wow-network/src/world/session.rs`
+- `crates/wow-network/src/world/maps/runtime.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `crates/wow-db/src/character.rs`
 - `crates/wow-db/src/character/lifecycle.rs`
@@ -1272,6 +1506,7 @@ broader slice.
 - `bins/starter-zone-flow-test/src/main.rs`
 - `docs/rust_migration_plan.md`
 - `docs/playable_gate_board.md`
+- `docs/g12_shared_mapruntime_plan.md`
 - `docs/rust_auth_foundation.md`
 - `docs/checkpoint2_codebase_audit.md`
 - `scripts/test-rust.cmd`

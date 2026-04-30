@@ -693,6 +693,83 @@ fn movement_visibility_tracks_persisted_dead_creature_without_create_block() {
 }
 
 #[test]
+fn movement_visibility_refreshes_existing_creature_from_shared_dead_snapshot() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8790.0,
+        position_y: -95.0,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut local = DbCreatureRuntime::new(spawn.clone());
+    local.client_visible = true;
+    local.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
+        node_index: 0,
+        start: WorldPosition::new(0, -8790.0, -95.0, 83.5, 0.0),
+        destination: WorldPosition::new(0, -8788.0, -95.0, 83.5, 0.0),
+        path: vec![WorldPosition::new(0, -8788.0, -95.0, 83.5, 0.0)],
+        started_at: Instant::now(),
+        duration: Duration::from_secs(2),
+    });
+    let mut shared = DbCreatureRuntime::new(spawn);
+    shared.health = 0;
+    shared.life_state = DbCreatureLifeState::Dead;
+    shared.client_visible = false;
+    shared.lootable = false;
+    shared.looting = false;
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(guid, local);
+
+    let updates = stage_db_creature_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8790.0, -95.0, 83.5, 0.0),
+        vec![shared],
+    )
+    .unwrap();
+
+    assert_eq!(updates.destroy_guids, vec![ObjectGuid::from_raw(guid)]);
+    let runtime = session.db_creatures.get(&guid).unwrap();
+    assert_eq!(runtime.life_state, DbCreatureLifeState::Dead);
+    assert!(!runtime.client_visible);
+    assert!(!runtime.lootable);
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_death_motion_stop_clears_active_motion() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8790.0,
+        position_y: -95.0,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
+        node_index: 0,
+        start: WorldPosition::new(0, -8790.0, -95.0, 83.5, 0.0),
+        destination: WorldPosition::new(0, -8788.0, -95.0, 83.5, 0.0),
+        path: vec![WorldPosition::new(0, -8788.0, -95.0, 83.5, 0.0)],
+        started_at: Instant::now(),
+        duration: Duration::from_secs(2),
+    });
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(guid.raw(), runtime);
+
+    let body = build_db_creature_motion_stop_body(&mut session, guid)
+        .unwrap()
+        .expect("motion stop body");
+
+    assert!(!body.is_empty());
+    assert!(matches!(
+        session.db_creatures.get(&guid.raw()).unwrap().motion,
+        CreatureMotionState::Idle
+    ));
+}
+
+#[test]
 fn movement_visibility_recreates_unloaded_corpse_before_respawn() {
     let spawn = CreatureSpawnQuery {
         guid: 45,
@@ -1769,6 +1846,17 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
         .x = 5.0;
     assert_eq!(
         db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::Clear
+    );
+
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 5.1;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
         PlayerMeleeCheck::OutOfRange
     );
 
@@ -2100,10 +2188,16 @@ fn db_creature_aggro_uses_cmangos_faction_template_reactions() {
     assert!(!can_faction_attack_on_sight(9_999, 1));
 }
 
-#[test]
-fn db_creature_combat_state_tracks_victim_and_next_swing() {
+#[tokio::test]
+async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let attacker = creature_spawn_guid(&test_creature_spawn(299));
     let now = Instant::now();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
     let mut session = WorldSessionState {
         active_character: Some(ActiveCharacter {
             guid: 7,
@@ -2119,8 +2213,12 @@ fn db_creature_combat_state_tracks_victim_and_next_swing() {
         }),
         ..WorldSessionState::default()
     };
+    session.db_creatures.insert(
+        attacker.raw(),
+        DbCreatureRuntime::new(test_creature_spawn(299)),
+    );
 
-    assert!(begin_db_creature_combat(&mut session, attacker, now));
+    assert!(begin_shared_db_creature_combat(shared_world, &mut session, attacker, now).await);
 
     let combat = session
         .active_creature_combats
@@ -2132,7 +2230,7 @@ fn db_creature_combat_state_tracks_victim_and_next_swing() {
     assert_eq!(combat.next_swing_at, now);
 
     let later = now + Duration::from_secs(1);
-    assert!(!begin_db_creature_combat(&mut session, attacker, later));
+    assert!(!begin_shared_db_creature_combat(shared_world, &mut session, attacker, later).await);
     let combat = session
         .active_creature_combats
         .get(&attacker.raw())
@@ -2145,11 +2243,14 @@ fn db_creature_combat_state_tracks_victim_and_next_swing() {
 
     let overdue = now + Duration::from_secs(3);
     defer_ready_db_creature_swing_retry(
+        shared_world,
+        0,
         &mut session,
         attacker,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         overdue,
-    );
+    )
+    .await;
     let combat = session
         .active_creature_combats
         .get(&attacker.raw())
@@ -2216,6 +2317,9 @@ fn db_creature_melee_reach_is_position_gated() {
             .next_spline_id,
         1
     );
+
+    session.active_character.as_mut().unwrap().position.x = -8950.0 + DB_CREATURE_MELEE_REACH_YARDS;
+    assert!(db_creature_can_reach_player(&session, target));
 
     session.active_character.as_mut().unwrap().position.x =
         -8950.0 + DB_CREATURE_MELEE_REACH_YARDS + 0.1;
@@ -2317,6 +2421,383 @@ fn mmap_tile_for_position_matches_cmangos_grid_files() {
 }
 
 #[test]
+fn map_runtime_grid_coords_match_cmangos_axis_shape() {
+    let northshire = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    assert_eq!(
+        grid_coord_for_position(northshire),
+        GridCoord { x: 32, y: 48 }
+    );
+
+    let cell = cell_coord_for_position(northshire);
+    assert!(cell.x < MAX_NUMBER_OF_CELLS);
+    assert!(cell.y < MAX_NUMBER_OF_CELLS);
+}
+
+#[test]
+fn map_runtime_cell_area_includes_visibility_radius_cells() {
+    let northshire = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let current = (
+        grid_coord_for_position(northshire),
+        cell_coord_for_position(northshire),
+    );
+    let area = calculate_cell_area(northshire, PLAYER_VISIBILITY_RADIUS_YARDS);
+
+    assert!(area.contains(&current));
+    assert!(area.len() > 1);
+    assert!(area.iter().all(|(grid, cell)| {
+        grid.x < MAX_NUMBER_OF_GRIDS
+            && grid.y < MAX_NUMBER_OF_GRIDS
+            && cell.x < MAX_NUMBER_OF_CELLS
+            && cell.y < MAX_NUMBER_OF_CELLS
+    }));
+}
+
+#[test]
+fn map_runtime_nearby_players_use_cell_candidates_then_distance_filter() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let nearby = WorldPosition::new(0, -8950.0, -160.0, 83.5, 0.0);
+    let same_area_but_outside_radius = WorldPosition::new(
+        0,
+        -8950.0 - PLAYER_VISIBILITY_RADIUS_YARDS - 5.0,
+        -130.0,
+        83.5,
+        0.0,
+    );
+    let far = WorldPosition::new(0, -8500.0, -130.0, 83.5, 0.0);
+
+    insert_map_runtime_player_for_test(&mut map, 1, center);
+    insert_map_runtime_player_for_test(&mut map, 2, nearby);
+    insert_map_runtime_player_for_test(&mut map, 3, same_area_but_outside_radius);
+    insert_map_runtime_player_for_test(&mut map, 4, far);
+
+    assert_eq!(
+        map.nearby_player_guids(center, PLAYER_VISIBILITY_RADIUS_YARDS, Some(1)),
+        vec![2]
+    );
+}
+
+#[test]
+fn map_runtime_reuses_shared_db_creature_snapshot_for_later_sessions() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: -8790.0,
+        position_y: -95.0,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut map = MapRuntime::new(0, 0);
+    let mut corpse = DbCreatureRuntime::new(spawn.clone());
+    corpse.begin_corpse(Instant::now(), 1_000);
+
+    let first = map.share_db_creature_snapshots(vec![corpse]).pop().unwrap();
+    assert_eq!(first.life_state, DbCreatureLifeState::Corpse);
+    assert_eq!(map.creatures.len(), 1);
+
+    let second = map
+        .share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)])
+        .pop()
+        .unwrap();
+
+    assert_eq!(second.guid().raw(), guid);
+    assert_eq!(second.life_state, DbCreatureLifeState::Corpse);
+    assert_eq!(second.health, 0);
+    assert!(second.lootable);
+    assert_eq!(map.creatures.len(), 1);
+}
+
+#[test]
+fn map_runtime_broadcasts_db_creature_snapshot_updates_to_nearby_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let nearby = WorldPosition::new(0, -8950.0, -160.0, 83.5, 0.0);
+    let far = WorldPosition::new(0, -8500.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, center);
+    insert_map_runtime_player_for_test(&mut map, 2, nearby);
+    insert_map_runtime_player_for_test(&mut map, 3, far);
+
+    let creature = DbCreatureRuntime::new(CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        position_x: center.x,
+        position_y: center.y,
+        position_z: center.z,
+        orientation: center.orientation,
+        map: center.map_id,
+        ..test_creature_spawn(6)
+    });
+    let packets = map.update_db_creature_snapshot_and_broadcast(
+        creature,
+        Some(1),
+        OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: vec![1, 2, 3],
+        },
+    );
+
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].0, SessionId(2));
+    assert_eq!(packets[0].1.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(packets[0].1.body, vec![1, 2, 3]);
+}
+
+#[test]
+fn map_runtime_db_creature_loot_money_is_claimed_once() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 45;
+    spawn.template.min_loot_gold = 7;
+    spawn.template.max_loot_gold = 7;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+    assert!(map.open_db_creature_loot(guid, None).is_some());
+
+    let first = map.take_db_creature_loot_money(guid);
+    let second = map.take_db_creature_loot_money(guid);
+
+    assert_eq!(first.map(|(money, _)| money), Some(7));
+    assert!(second.is_none());
+    assert!(!map.creatures.get(&guid).unwrap().loot_money_available);
+}
+
+#[test]
+fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    let loot = DbCreatureLootRuntime {
+        item: 117,
+        count: 1,
+        display_id: 117,
+    };
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+    assert!(map
+        .open_db_creature_loot(guid, Some(loot.clone()))
+        .is_some());
+
+    let first = map.take_db_creature_loot_item(guid);
+    let second = map.take_db_creature_loot_item(guid);
+    assert_eq!(first.as_ref().map(|(loot, _)| loot.item), Some(117));
+    assert!(second.is_none());
+
+    let restored = map.restore_db_creature_loot_item(guid, loot).unwrap();
+    assert_eq!(restored.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    let reclaimed = map.take_db_creature_loot_item(guid);
+    assert_eq!(reclaimed.map(|(loot, _)| loot.item), Some(117));
+}
+
+#[test]
+fn map_runtime_db_creature_combat_claim_is_exclusive_until_cleared() {
+    let mut map = MapRuntime::new(0, 0);
+    let attacker = creature_spawn_guid(&test_creature_spawn(6));
+    let first_victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let second_victim = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let now = Instant::now();
+
+    let first = map.begin_db_creature_combat(attacker, first_victim, now);
+    let duplicate_same_victim =
+        map.begin_db_creature_combat(attacker, first_victim, now + Duration::from_secs(1));
+    let duplicate_other_victim =
+        map.begin_db_creature_combat(attacker, second_victim, now + Duration::from_secs(2));
+
+    assert_eq!(first.map(|combat| combat.victim), Some(first_victim));
+    assert!(duplicate_same_victim.is_none());
+    assert!(duplicate_other_victim.is_none());
+
+    map.clear_db_creature_combat(attacker);
+    let second =
+        map.begin_db_creature_combat(attacker, second_victim, now + Duration::from_secs(3));
+    assert_eq!(second.map(|combat| combat.victim), Some(second_victim));
+}
+
+#[test]
+fn map_runtime_db_creature_combats_clear_by_victim() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut first_spawn = test_creature_spawn(6);
+    first_spawn.guid = 44;
+    let mut second_spawn = test_creature_spawn(7);
+    second_spawn.guid = 45;
+    let mut other_spawn = test_creature_spawn(8);
+    other_spawn.guid = 46;
+    let first_attacker = creature_spawn_guid(&first_spawn);
+    let second_attacker = creature_spawn_guid(&second_spawn);
+    let other_attacker = creature_spawn_guid(&other_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let other_victim = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let now = Instant::now();
+
+    assert!(map
+        .begin_db_creature_combat(first_attacker, victim, now)
+        .is_some());
+    assert!(map
+        .begin_db_creature_combat(second_attacker, victim, now)
+        .is_some());
+    assert!(map
+        .begin_db_creature_combat(other_attacker, other_victim, now)
+        .is_some());
+
+    map.clear_db_creature_combats_for_victim(victim);
+
+    assert!(map.active_db_creature_combats_for_victim(victim).is_empty());
+    assert_eq!(
+        map.active_db_creature_combats_for_victim(other_victim)
+            .len(),
+        1
+    );
+}
+
+fn insert_map_runtime_player_for_test(map: &mut MapRuntime, guid: u32, position: WorldPosition) {
+    let grid = grid_coord_for_position(position);
+    let cell = cell_coord_for_position(position);
+    map.grids
+        .entry(grid)
+        .or_default()
+        .cells
+        .entry(cell)
+        .or_default()
+        .players
+        .insert(guid);
+    map.players.insert(
+        guid,
+        test_player_runtime(guid, SessionId(guid as u64), position),
+    );
+}
+
+fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition) -> PlayerRuntime {
+    PlayerRuntime {
+        guid,
+        account_id: guid,
+        session_id,
+        position,
+        cell: cell_coord_for_position(position),
+        visible_objects: HashSet::new(),
+        visual: PlayerVisualState {
+            gender: 0,
+            player_bytes: 0,
+            player_bytes2: 0,
+            equipment_cache: None,
+            guildid: None,
+        },
+        flags: 0,
+        level: 1,
+        race: 1,
+        class: 1,
+        gender: 0,
+        health: 20,
+        max_health: 20,
+        power1: 0,
+        max_power1: 0,
+        power2: 0,
+        player_bytes: 0,
+        player_bytes2: 0,
+    }
+}
+
+#[tokio::test]
+async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let victim_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    let victim_session_id = SessionId(1);
+    let observer_session_id = SessionId(2);
+    let (victim_tx, mut victim_rx) = mpsc::unbounded_channel();
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(victim_tx);
+    sessions
+        .register(
+            observer_session_id,
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+    maps.add_player(test_player_runtime(1, victim_session_id, victim_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(
+        2,
+        observer_session_id,
+        observer_position,
+    ))
+    .await
+    .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 177;
+    spawn.position_x = victim_position.x + 12.0;
+    spawn.position_y = victim_position.y;
+    spawn.position_z = victim_position.z;
+    let attacker = creature_spawn_guid(&spawn);
+    let creature = DbCreatureRuntime::new(spawn);
+    maps.share_db_creature_snapshots(0, vec![creature.clone()])
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: victim_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 20,
+        player_death_state: PlayerDeathState::Alive,
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(attacker.raw(), creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    send_db_creature_combat_start(
+        &mut sink,
+        shared_world,
+        0,
+        &mut session,
+        attacker,
+        player,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let victim_packets = std::iter::from_fn(|| victim_rx.try_recv().ok()).collect::<Vec<_>>();
+    let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
+
+    assert!(victim_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTART));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTART));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
+}
+
+#[test]
 fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
     let navigation = DbCreatureNavigationGuardrail {
         world_data_files: Arc::new(WorldDataFiles {
@@ -2355,36 +2836,22 @@ fn db_creature_mmap_path_corner_uses_local_detour_data_when_available() {
     };
     let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
-    let (start_tile_x, start_tile_y) = mmap_tile_for_position(start).unwrap();
-    let (target_tile_x, target_tile_y) = mmap_tile_for_position(target).unwrap();
-    let data_dir = std::ffi::CString::new("C:/World of Warcraft Classic").unwrap();
-    let mut native_points = [NativeMmapPathPoint {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    }; 16];
-    let native_count = unsafe {
-        wow_mmap_find_path(
-            data_dir.as_ptr(),
-            0,
-            start_tile_x,
-            start_tile_y,
-            target_tile_x,
-            target_tile_y,
-            start.x,
-            start.y,
-            start.z,
-            target.x,
-            target.y,
-            target.z,
-            native_points.as_mut_ptr(),
-            native_points.len() as i32,
-        )
-    };
+    let native_points = native_mmap_find_path_points(
+        navigation
+            .world_data_files
+            .data_dir_for_native
+            .as_ref()
+            .unwrap(),
+        start,
+        target,
+        mmap_tile_for_position(start).unwrap(),
+        mmap_tile_for_position(target).unwrap(),
+    );
 
     let corner = db_creature_mmap_next_path_corner(&navigation, start, target).unwrap_or_else(|| {
         panic!(
-            "local Northshire mmap should produce a Detour path corner; native_count={native_count}, tiles={:?}->{:?}",
+            "local Northshire mmap should produce a Detour path corner; native_points={}, tiles={:?}->{:?}",
+            native_points.as_ref().map_or(0, Vec::len),
             mmap_tile_for_position(start),
             mmap_tile_for_position(target)
         )
@@ -2609,8 +3076,8 @@ fn db_creature_return_home_motion_finishes_at_home() {
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
 }
 
-#[test]
-fn db_creature_return_home_motion_advances_without_active_combat() {
+#[tokio::test]
+async fn db_creature_return_home_motion_advances_without_active_combat() {
     let mut spawn = test_creature_spawn(6);
     spawn.position_x = 0.0;
     spawn.position_y = 0.0;
@@ -2619,14 +3086,37 @@ fn db_creature_return_home_motion_advances_without_active_combat() {
     let now = Instant::now();
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.current_position.x = 7.0;
-    let mut session = WorldSessionState::default();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
+    maps.share_db_creature_snapshots(0, vec![runtime.clone()])
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
     session.db_creatures.insert(attacker.raw(), runtime);
 
     let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
         .expect("away creature should start return-home motion");
     assert!(session.active_creature_combats.is_empty());
 
-    advance_db_creature_return_home_motions(&mut session, now + motion.duration);
+    advance_db_creature_return_home_motions(shared_world, &mut session, now + motion.duration)
+        .await;
     let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
@@ -2788,6 +3278,86 @@ fn db_creature_idle_motion_start_guids_are_paced_per_tick() {
 
     assert_eq!(start_guids.len(), DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK);
     assert!(start_guids.windows(2).all(|window| window[0] < window[1]));
+}
+
+#[tokio::test]
+async fn shared_db_creature_idle_motion_updates_map_and_observers() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, 1.0, 0.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .await
+        .unwrap();
+    let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(direct_tx);
+    sessions
+        .register(
+            SessionId(2),
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    spawn.waypoint_path = vec![test_waypoint(1, 5.0, 0.0, 0)];
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    maps.share_db_creature_snapshots(0, vec![runtime.clone()])
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    advance_db_creature_idle_motions(
+        &mut sink,
+        shared_world,
+        &mut session,
+        now,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(direct_rx.try_recv().unwrap().opcode, SMSG_MONSTER_MOVE);
+    assert_eq!(observer_rx.try_recv().unwrap().opcode, SMSG_MONSTER_MOVE);
+    let snapshot = maps
+        .db_creature_snapshots(0, &[creature_guid.raw()])
+        .await
+        .pop()
+        .unwrap();
+    assert!(matches!(snapshot.motion, CreatureMotionState::Waypoint(_)));
 }
 
 #[test]

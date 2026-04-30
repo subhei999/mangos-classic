@@ -3,11 +3,12 @@ struct GossipSelectDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     player_corpses: &'a PlayerCorpses,
+    maps: &'a Arc<MapRuntimeManager>,
     account_id: u32,
 }
 
 async fn handle_gossip_hello(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
@@ -126,7 +127,7 @@ async fn handle_gossip_hello(
 }
 
 async fn handle_gossip_select_option(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     deps: GossipSelectDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -172,6 +173,7 @@ async fn handle_gossip_select_option(
                     character_db_pool: deps.character_db_pool,
                     world_db_pool: deps.world_db_pool,
                     player_corpses: deps.player_corpses,
+                    maps: deps.maps,
                     account_id: deps.account_id,
                 },
                 body,

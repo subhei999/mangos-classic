@@ -1,5 +1,5 @@
 async fn handle_creature_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,

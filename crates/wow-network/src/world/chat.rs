@@ -1,5 +1,5 @@
 async fn handle_ping(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     body: &[u8],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -12,7 +12,7 @@ async fn handle_ping(
 }
 
 async fn handle_name_query(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
@@ -66,7 +66,8 @@ fn build_name_query_response(
 }
 
 async fn handle_message_chat(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -96,7 +97,30 @@ async fn handle_message_chat(
     }
 
     let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, character);
-    send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await
+    send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await?;
+
+    let radius = chat_radius_yards(chat.chat_type);
+    if radius > 0.0 {
+        let packets = deps
+            .maps
+            .broadcast_nearby_player_packet(
+                character.position.map_id,
+                character.guid,
+                radius,
+                OutboundWorldPacket {
+                    opcode: SMSG_MESSAGECHAT,
+                    body,
+                },
+            )
+            .await;
+        deps.sessions.dispatch(packets).await;
+    }
+    Ok(())
+}
+
+struct ChatDeps<'a> {
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,8 +169,17 @@ fn build_message_chat_body(
     body
 }
 
+fn chat_radius_yards(chat_type: u32) -> f32 {
+    match chat_type {
+        CHAT_MSG_SAY => CHAT_SAY_RADIUS_YARDS,
+        CHAT_MSG_YELL => CHAT_YELL_RADIUS_YARDS,
+        CHAT_MSG_EMOTE => CHAT_EMOTE_RADIUS_YARDS,
+        _ => 0.0,
+    }
+}
+
 async fn handle_text_emote(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,

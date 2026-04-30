@@ -4,6 +4,7 @@
 #include "DetourNavMeshQuery.h"
 #include "DetourStatus.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -16,6 +17,7 @@
 namespace
 {
 constexpr unsigned int MMAP_MAGIC = 0x4d4d4150;
+constexpr unsigned int MAX_TILE_DATA_SIZE = 64u * 1024u * 1024u;
 constexpr int MAX_PATH_POLYS = 74;
 constexpr int MAX_STRAIGHT_POINTS = 32;
 constexpr unsigned short NAV_GROUND = 1;
@@ -143,7 +145,7 @@ bool loadTileLocked(CachedMap& cached, const char* dataDir, unsigned int mapId, 
         std::fclose(file);
         return false;
     }
-    if (header.mmapMagic != MMAP_MAGIC || header.size == 0)
+    if (header.mmapMagic != MMAP_MAGIC || header.size == 0 || header.size > MAX_TILE_DATA_SIZE)
     {
         std::fclose(file);
         return false;
@@ -216,80 +218,86 @@ int wow_mmap_find_path(
     float targetY,
     float targetZ,
     WowMmapPathPoint* outPoints,
-    int maxPoints)
+    int maxPoints) noexcept
 {
-    if (!dataDir || !outPoints || maxPoints < 2)
-        return -1;
-
-    std::lock_guard<std::mutex> lock(g_mapsMutex);
-    int loadMapError = -2;
-    CachedMap* cached = loadMapDataLocked(dataDir, mapId, &loadMapError);
-    if (!cached || !cached->mesh)
-        return loadMapError;
-
-    if (!loadNeighborTilesLocked(*cached, dataDir, mapId, startTileX, startTileY))
-        return -3;
-    if (!loadNeighborTilesLocked(*cached, dataDir, mapId, targetTileX, targetTileY))
-        return -4;
-
-    dtNavMeshQuery* query = dtAllocNavMeshQuery();
-    if (!query)
-        return -5;
-    if (dtStatusFailed(query->init(cached->mesh, 2048)))
+    try
     {
-        dtFreeNavMeshQuery(query);
-        return -6;
+        if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_STRAIGHT_POINTS)
+            return -1;
+        if (startTileX > 63 || startTileY > 63 || targetTileX > 63 || targetTileY > 63)
+            return -7;
+        if (!std::isfinite(startX) || !std::isfinite(startY) || !std::isfinite(startZ) ||
+            !std::isfinite(targetX) || !std::isfinite(targetY) || !std::isfinite(targetZ))
+            return -8;
+
+        std::lock_guard<std::mutex> lock(g_mapsMutex);
+        int loadMapError = -2;
+        CachedMap* cached = loadMapDataLocked(dataDir, mapId, &loadMapError);
+        if (!cached || !cached->mesh)
+            return loadMapError;
+
+        if (!loadNeighborTilesLocked(*cached, dataDir, mapId, startTileX, startTileY))
+            return -3;
+        if (!loadNeighborTilesLocked(*cached, dataDir, mapId, targetTileX, targetTileY))
+            return -4;
+
+        std::unique_ptr<dtNavMeshQuery, decltype(&dtFreeNavMeshQuery)> query(dtAllocNavMeshQuery(), dtFreeNavMeshQuery);
+        if (!query)
+            return -5;
+        if (dtStatusFailed(query->init(cached->mesh, 2048)))
+        {
+            return -6;
+        }
+
+        dtQueryFilter filter;
+        filter.setIncludeFlags(NAV_GROUND);
+        filter.setExcludeFlags(0);
+
+        const float startPoint[3] = { startY, startZ, startX };
+        const float targetPoint[3] = { targetY, targetZ, targetX };
+        const float extents[3] = { 5.0f, 5.0f, 5.0f };
+        float nearestStart[3] = { 0.0f, 0.0f, 0.0f };
+        float nearestTarget[3] = { 0.0f, 0.0f, 0.0f };
+        dtPolyRef startRef = 0;
+        dtPolyRef targetRef = 0;
+
+        if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
+        {
+            return 0;
+        }
+        if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
+        {
+            return 0;
+        }
+
+        dtPolyRef polys[MAX_PATH_POLYS];
+        int polyCount = 0;
+        if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, nearestTarget, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
+        {
+            return 0;
+        }
+
+        const int straightLimit = maxPoints < MAX_STRAIGHT_POINTS ? maxPoints : MAX_STRAIGHT_POINTS;
+        std::vector<float> straight(straightLimit * 3);
+        int straightCount = 0;
+        if (dtStatusFailed(query->findStraightPath(nearestStart, nearestTarget, polys, polyCount, straight.data(), nullptr, nullptr, &straightCount, straightLimit)) || straightCount < 2)
+        {
+            return 0;
+        }
+
+        for (int i = 0; i < straightCount; ++i)
+        {
+            const int offset = i * 3;
+            outPoints[i].x = straight[offset + 2];
+            outPoints[i].y = straight[offset];
+            outPoints[i].z = straight[offset + 1];
+        }
+
+        return straightCount;
     }
-
-    dtQueryFilter filter;
-    filter.setIncludeFlags(NAV_GROUND);
-    filter.setExcludeFlags(0);
-
-    const float startPoint[3] = { startY, startZ, startX };
-    const float targetPoint[3] = { targetY, targetZ, targetX };
-    const float extents[3] = { 5.0f, 5.0f, 5.0f };
-    float nearestStart[3] = { 0.0f, 0.0f, 0.0f };
-    float nearestTarget[3] = { 0.0f, 0.0f, 0.0f };
-    dtPolyRef startRef = 0;
-    dtPolyRef targetRef = 0;
-
-    if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
+    catch (...)
     {
-        dtFreeNavMeshQuery(query);
-        return 0;
+        return -100;
     }
-    if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
-    {
-        dtFreeNavMeshQuery(query);
-        return 0;
-    }
-
-    dtPolyRef polys[MAX_PATH_POLYS];
-    int polyCount = 0;
-    if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, nearestTarget, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
-    {
-        dtFreeNavMeshQuery(query);
-        return 0;
-    }
-
-    const int straightLimit = maxPoints < MAX_STRAIGHT_POINTS ? maxPoints : MAX_STRAIGHT_POINTS;
-    std::vector<float> straight(straightLimit * 3);
-    int straightCount = 0;
-    if (dtStatusFailed(query->findStraightPath(nearestStart, nearestTarget, polys, polyCount, straight.data(), nullptr, nullptr, &straightCount, straightLimit)) || straightCount < 2)
-    {
-        dtFreeNavMeshQuery(query);
-        return 0;
-    }
-
-    for (int i = 0; i < straightCount; ++i)
-    {
-        const int offset = i * 3;
-        outPoints[i].x = straight[offset + 2];
-        outPoints[i].y = straight[offset];
-        outPoints[i].z = straight[offset + 1];
-    }
-
-    dtFreeNavMeshQuery(query);
-    return straightCount;
 }
 }

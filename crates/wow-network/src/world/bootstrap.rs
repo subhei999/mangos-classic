@@ -13,7 +13,7 @@ struct EnterWorldBootstrap<'a> {
 }
 
 async fn send_enter_world_bootstrap(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     bootstrap: EnterWorldBootstrap<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -64,7 +64,7 @@ async fn send_enter_world_bootstrap(
 }
 
 async fn send_login_verify_world(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -73,7 +73,7 @@ async fn send_login_verify_world(
 }
 
 async fn send_account_data_times(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_account_data_times_body();
@@ -81,7 +81,7 @@ async fn send_account_data_times(
 }
 
 async fn send_bindpoint_update(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -114,7 +114,7 @@ fn build_account_data_times_body() -> Vec<u8> {
 }
 
 async fn send_tutorial_flags(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     tutorial_flags: &[u32; 8],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -182,7 +182,7 @@ async fn handle_tutorial_reset(
 }
 
 async fn send_initial_spells(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     spells: &[CharacterSpell],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -210,7 +210,7 @@ fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {
 }
 
 async fn send_action_buttons(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     actions: &[CharacterAction],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -238,7 +238,7 @@ fn pack_action_button(action: u32, action_type: u8) -> u32 {
 }
 
 async fn send_initial_reputations(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     reputations: &[CharacterReputation],
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -275,7 +275,7 @@ fn reputation_list_slot_for_faction(_faction: u32) -> Option<usize> {
 }
 
 async fn send_trigger_cinematic(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     sequence: u32,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -302,7 +302,7 @@ fn cinematic_sequence_for_race(race: u8) -> Option<u32> {
 }
 
 async fn send_login_set_time_speed(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut body = Vec::with_capacity(8);
@@ -312,7 +312,7 @@ async fn send_login_set_time_speed(
 }
 
 async fn send_init_world_states(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -325,7 +325,7 @@ async fn send_init_world_states(
 }
 
 async fn send_self_spawn_update(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     update: SelfSpawnUpdate<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
@@ -393,11 +393,46 @@ fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
 
     let mut first_blocks = blocks;
     first_blocks.extend(item_blocks);
-    let mut bodies = Vec::with_capacity(1 + creature_blocks.len().div_ceil(CREATURE_UPDATE_CHUNK_SIZE));
-    bodies.push(build_update_object_body(&first_blocks));
+    let mut bodies = chunk_update_blocks_by_body_size(&first_blocks)?;
     for chunk in creature_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
-        bodies.push(build_update_object_body(chunk));
+        bodies.extend(chunk_update_blocks_by_body_size(chunk)?);
     }
+    Ok(bodies)
+}
+
+fn chunk_update_blocks_by_body_size(blocks: &[Vec<u8>]) -> anyhow::Result<Vec<Vec<u8>>> {
+    const UPDATE_OBJECT_BODY_PREFIX_BYTES: usize = 5;
+    const MAX_SERVER_PACKET_BODY_BYTES: usize = 0x2800 - 2;
+
+    let mut bodies = Vec::new();
+    let mut current_blocks = Vec::new();
+    let mut current_len = UPDATE_OBJECT_BODY_PREFIX_BYTES;
+
+    for block in blocks {
+        let block_len = block.len();
+        if UPDATE_OBJECT_BODY_PREFIX_BYTES + block_len > MAX_SERVER_PACKET_BODY_BYTES {
+            anyhow::bail!(
+                "single SMSG_UPDATE_OBJECT block exceeds packet body limit: {} bytes",
+                block_len
+            );
+        }
+
+        if !current_blocks.is_empty()
+            && current_len + block_len > MAX_SERVER_PACKET_BODY_BYTES
+        {
+            bodies.push(build_update_object_body(&current_blocks));
+            current_blocks.clear();
+            current_len = UPDATE_OBJECT_BODY_PREFIX_BYTES;
+        }
+
+        current_blocks.push(block.clone());
+        current_len += block_len;
+    }
+
+    if !current_blocks.is_empty() {
+        bodies.push(build_update_object_body(&current_blocks));
+    }
+
     Ok(bodies)
 }
 
@@ -450,6 +485,106 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     blocks.extend(corpse_blocks);
     blocks.extend(item_blocks);
     Ok(blocks)
+}
+
+fn build_other_player_create_block(player: &PlayerRuntime) -> anyhow::Result<Vec<u8>> {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
+    PackedGuid::write(&mut block, guid)?;
+    block.push(TYPEID_PLAYER);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&player.position.x.to_le_bytes());
+    block.extend_from_slice(&player.position.y.to_le_bytes());
+    block.extend_from_slice(&player.position.z.to_le_bytes());
+    block.extend_from_slice(&player.position.orientation.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&7.0f32.to_le_bytes());
+    block.extend_from_slice(&4.5f32.to_le_bytes());
+    block.extend_from_slice(&4.722222f32.to_le_bytes());
+    block.extend_from_slice(&2.5f32.to_le_bytes());
+    block.extend_from_slice(&std::f32::consts::PI.to_le_bytes());
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    write_other_player_update_values(&mut block, guid, player)?;
+    Ok(block)
+}
+
+fn write_other_player_update_values(
+    body: &mut Vec<u8>,
+    guid: ObjectGuid,
+    player: &PlayerRuntime,
+) -> anyhow::Result<()> {
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, 0x000, guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT_PLAYER)?;
+    set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, player.health.max(1))?;
+    set_update_value(&mut values, UNIT_FIELD_POWER1, player.power1)?;
+    set_update_value(&mut values, UNIT_FIELD_POWER2, player.power2)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, player.max_health.max(1))?;
+    set_update_value(&mut values, UNIT_FIELD_MAXPOWER1, player.max_power1)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXPOWER2, POWER_RAGE_DEFAULT)?;
+    set_update_value(&mut values, UNIT_FIELD_LEVEL, player.level as u32)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FACTIONTEMPLATE,
+        faction_for_race(player.race),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_0,
+        player.race as u32
+            | ((player.class as u32) << 8)
+            | ((player.gender as u32) << 16)
+            | (u32::from(player.class == 1) << 24),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
+    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, BASE_ATTACK_TIME_MS)?;
+    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, BASE_ATTACK_TIME_MS)?;
+    set_update_value(&mut values, UNIT_FIELD_BOUNDINGRADIUS, 0.389f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_COMBATREACH, 1.5f32.to_bits())?;
+    set_update_value(&mut values, UNIT_FIELD_DISPLAYID, display_id_for_runtime_player(player))?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_NATIVEDISPLAYID,
+        display_id_for_runtime_player(player),
+    )?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    set_update_value(&mut values, PLAYER_FLAGS_FIELD, player.flags)?;
+    set_update_value(&mut values, PLAYER_BYTES, player.player_bytes)?;
+    set_update_value(&mut values, PLAYER_BYTES_2, player.player_bytes2)?;
+    set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
+    write_update_values(body, &values)
+}
+
+fn display_id_for_runtime_player(player: &PlayerRuntime) -> u32 {
+    match (player.race, player.gender) {
+        (1, 0) => 49,
+        (1, 1) => 50,
+        (2, 0) => 51,
+        (2, 1) => 52,
+        (3, 0) => 53,
+        (3, 1) => 54,
+        (4, 0) => 55,
+        (4, 1) => 56,
+        (5, 0) => 57,
+        (5, 1) => 58,
+        (6, 0) => 59,
+        (6, 1) => 60,
+        (7, 0) => 1563,
+        (7, 1) => 1564,
+        (8, 0) => 1478,
+        (8, 1) => 1479,
+        _ => 49,
+    }
 }
 
 fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {

@@ -1,5 +1,5 @@
 async fn handle_inventory_swap(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     opcode: u32,
@@ -186,7 +186,7 @@ async fn handle_inventory_swap(
 }
 
 async fn handle_destroy_item(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     body: &[u8],
@@ -288,7 +288,7 @@ async fn handle_destroy_item(
 }
 
 async fn handle_split_item(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -806,7 +806,7 @@ fn inventory_opcode_name(opcode: u32) -> &'static str {
 }
 
 async fn send_inventory_change_failure(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     result: u8,
     item: Option<ObjectGuid>,
     item2: Option<ObjectGuid>,

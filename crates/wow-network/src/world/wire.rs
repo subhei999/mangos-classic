@@ -1,5 +1,5 @@
 async fn handle_query_time(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let unix_time = SystemTime::now()
@@ -16,7 +16,7 @@ async fn handle_query_time(
 }
 
 async fn handle_request_account_data(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -56,7 +56,7 @@ fn handle_update_account_data(body: &[u8]) {
 }
 
 async fn handle_gmticket_getticket(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     send_packet(
@@ -91,7 +91,7 @@ fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::
 }
 
 async fn handle_query_next_mail_time(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -181,6 +181,22 @@ fn write_movement_info(
     body.extend_from_slice(&position.z.to_le_bytes());
     body.extend_from_slice(&position.orientation.to_le_bytes());
     body.extend_from_slice(&fall_time.to_le_bytes());
+}
+
+fn build_player_movement_broadcast_body(
+    player_guid: u32,
+    movement: &MovementInfo,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(9 + 28);
+    PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, player_guid))?;
+    write_movement_info(
+        &mut body,
+        movement.flags,
+        movement.client_time,
+        movement.position,
+        movement.fall_time,
+    );
+    Ok(body)
 }
 
 fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
@@ -439,11 +455,23 @@ fn character_flags(character: &CharacterEnumEntry) -> u32 {
 }
 
 async fn send_packet(
-    stream: &mut TcpStream,
+    stream: &mut WorldPacketSink,
+    opcode: u16,
+    body: &[u8],
+    _header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    stream.send(opcode, body)
+}
+
+async fn send_packet_direct<W>(
+    stream: &mut W,
     opcode: u16,
     body: &[u8],
     header_crypto: Option<&mut HeaderCrypto>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     let size = (body.len() + 2) as u16;
     let mut packet = Vec::with_capacity(4 + body.len());
     let mut header = [0u8; 4];
@@ -458,10 +486,13 @@ async fn send_packet(
     Ok(())
 }
 
-async fn read_client_packet(
-    stream: &mut TcpStream,
+async fn read_client_packet<R>(
+    stream: &mut R,
     header_crypto: Option<&mut HeaderCrypto>,
-) -> anyhow::Result<(u32, Vec<u8>)> {
+) -> anyhow::Result<(u32, Vec<u8>)>
+where
+    R: AsyncRead + Unpin,
+{
     let mut header = [0u8; 6];
     stream.read_exact(&mut header).await?;
     if let Some(crypto) = header_crypto {

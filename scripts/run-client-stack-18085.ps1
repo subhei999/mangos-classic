@@ -3,7 +3,9 @@ param(
     [int]$AuthPort = 13724,
     [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
     [switch]$ResetWorldDatabase,
-    [switch]$ResetCharacters
+    [switch]$ResetCharacters,
+    [switch]$NoAutoRestart,
+    [int]$RestartDelaySeconds = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,6 +83,52 @@ function Import-MariaDbSqlFile {
             $input.Dispose()
         }
     }
+}
+
+function Start-StackProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$ProcessName,
+        [Parameter(Mandatory = $true)]
+        [string]$Command,
+        [Parameter(Mandatory = $true)]
+        [string]$LogPath
+    )
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogPath -Value ""
+    Add-Content -Path $LogPath -Value "[$timestamp] starting $Name"
+    $launcher = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $Command -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
+
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $process = Get-Process $ProcessName -ErrorAction SilentlyContinue |
+            Where-Object { $_.StartTime -ge $launcher.StartTime } |
+            Sort-Object StartTime -Descending |
+            Select-Object -First 1
+        if ($process) {
+            return $process
+        }
+        Start-Sleep -Milliseconds 200
+    } while ((Get-Date) -lt $deadline)
+
+    return $launcher
+}
+
+function Stop-StackProcess {
+    param(
+        [AllowNull()]
+        [System.Diagnostics.Process]$Process,
+        [string[]]$ProcessNames = @("authserver", "worldserver")
+    )
+
+    if ($Process -and -not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    Get-Process $ProcessNames -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -273,12 +321,13 @@ Get-Process authserver,worldserver -ErrorAction SilentlyContinue | Stop-Process 
 
 $authLog = Join-Path $repoRoot "auth-client-$AuthPort.log"
 $worldLog = Join-Path $repoRoot "world-client-$WorldPort.log"
+Remove-Item $authLog, $worldLog -ErrorAction SilentlyContinue
 
-$authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml > `"$authLog`" 2>&1"
-$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`" && target\debug\worldserver.exe --config config\worldserver.local.toml > `"$worldLog`" 2>&1"
+$authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml >> `"$authLog`" 2>&1"
+$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`" && target\debug\worldserver.exe --config config\worldserver.local.toml >> `"$worldLog`" 2>&1"
 
-$auth = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $authCmd -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
-$world = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $worldCmd -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
+$auth = Start-StackProcess "authserver" "authserver" $authCmd $authLog
+$world = Start-StackProcess "worldserver" "worldserver" $worldCmd $worldLog
 
 Start-Sleep -Seconds 2
 
@@ -286,3 +335,35 @@ Write-Host "Authserver process: $($auth.Id), log: $authLog"
 Write-Host "Worldserver process: $($world.Id), log: $worldLog"
 Write-Host "WoW realmlist.wtf: set realmlist 127.0.0.1:$AuthPort"
 Write-Host "Realm row points to 127.0.0.1:$WorldPort"
+
+if ($NoAutoRestart) {
+    Write-Host "Auto-restart disabled; leaving started processes running."
+    return
+}
+
+Write-Host "Auto-restart supervisor is running. Press Ctrl+C to stop both servers."
+
+try {
+    while ($true) {
+        if ($auth.HasExited) {
+            Write-Host "Authserver exited with code $($auth.ExitCode); restarting in $RestartDelaySeconds second(s)."
+            Start-Sleep -Seconds $RestartDelaySeconds
+            $auth = Start-StackProcess "authserver" "authserver" $authCmd $authLog
+            Write-Host "Authserver restarted as process $($auth.Id), log: $authLog"
+        }
+
+        if ($world.HasExited) {
+            Write-Host "Worldserver exited with code $($world.ExitCode); restarting in $RestartDelaySeconds second(s)."
+            Start-Sleep -Seconds $RestartDelaySeconds
+            $world = Start-StackProcess "worldserver" "worldserver" $worldCmd $worldLog
+            Write-Host "Worldserver restarted as process $($world.Id), log: $worldLog"
+        }
+
+        Start-Sleep -Seconds 1
+    }
+}
+finally {
+    Write-Host "Stopping client stack processes."
+    Stop-StackProcess $auth
+    Stop-StackProcess $world
+}

@@ -276,6 +276,60 @@ fn test_waypoint(point: u32, x: f32, y: f32, wait_time: u32) -> wow_db::Creature
     }
 }
 
+fn test_quest_template(entry: u32) -> QuestTemplateQuery {
+    QuestTemplateQuery {
+        entry,
+        method: 2,
+        zone_or_sort: 12,
+        min_level: 1,
+        max_level: 255,
+        quest_level: 1,
+        quest_type: 0,
+        required_classes: 0,
+        required_races: 0,
+        rep_objective_faction: 0,
+        rep_objective_value: 0,
+        special_flags: 0,
+        prev_quest_id: 0,
+        next_quest_id: 0,
+        exclusive_group: 0,
+        next_quest_in_chain: 0,
+        rew_or_req_money: 0,
+        rew_money_max_level: 0,
+        rew_spell: 0,
+        rew_spell_cast: 0,
+        src_item_id: 0,
+        quest_flags: 0,
+        title: "Test Quest".to_string(),
+        details: String::new(),
+        objectives: String::new(),
+        offer_reward_text: String::new(),
+        request_items_text: String::new(),
+        end_text: String::new(),
+        req_creature_or_go_id: [0; 4],
+        req_creature_or_go_count: [0; 4],
+        req_item_id: [0; 4],
+        req_item_count: [0; 4],
+        rew_choice_item_id: [0; 6],
+        rew_choice_item_count: [0; 6],
+        rew_item_id: [0; 4],
+        rew_item_count: [0; 4],
+        point_map_id: 0,
+        point_x: 0.0,
+        point_y: 0.0,
+        point_opt: 0,
+        details_emote: [0; 4],
+        details_emote_delay: [0; 4],
+        complete_emote: 0,
+        complete_emote_delay: 0,
+        incomplete_emote: 0,
+        incomplete_emote_delay: 0,
+        offer_reward_emote: [0; 4],
+        offer_reward_emote_delay: [0; 4],
+        objective_text: [String::new(), String::new(), String::new(), String::new()],
+    }
+}
+
 #[test]
 fn server_packet_header_matches_world_shape() {
     let mut packet = Vec::new();
@@ -1716,54 +1770,139 @@ fn creature_xp_reward_matches_cmangos_base_gain_for_starter_levels() {
 
 #[test]
 fn quest_xp_reward_uses_cmangos_rew_money_max_level_formula() {
-    let mut quest = QuestTemplateQuery {
-        entry: 7,
-        method: 2,
-        zone_or_sort: 12,
-        quest_level: 1,
-        quest_type: 0,
-        rep_objective_faction: 0,
-        rep_objective_value: 0,
-        next_quest_in_chain: 0,
-        rew_or_req_money: 0,
-        rew_money_max_level: 210,
-        rew_spell: 0,
-        rew_spell_cast: 0,
-        src_item_id: 0,
-        quest_flags: 0,
-        title: String::new(),
-        details: String::new(),
-        objectives: String::new(),
-        offer_reward_text: String::new(),
-        request_items_text: String::new(),
-        end_text: String::new(),
-        req_creature_or_go_id: [0; 4],
-        req_creature_or_go_count: [0; 4],
-        req_item_id: [0; 4],
-        req_item_count: [0; 4],
-        rew_choice_item_id: [0; 6],
-        rew_choice_item_count: [0; 6],
-        rew_item_id: [0; 4],
-        rew_item_count: [0; 4],
-        point_map_id: 0,
-        point_x: 0.0,
-        point_y: 0.0,
-        point_opt: 0,
-        details_emote: [0; 4],
-        details_emote_delay: [0; 4],
-        complete_emote: 0,
-        complete_emote_delay: 0,
-        incomplete_emote: 0,
-        incomplete_emote_delay: 0,
-        offer_reward_emote: [0; 4],
-        offer_reward_emote_delay: [0; 4],
-        objective_text: Default::default(),
-    };
+    let mut quest = test_quest_template(7);
+    quest.rew_money_max_level = 210;
 
     assert_eq!(quest_xp_reward(1, &quest), 350);
 
     quest.quest_level = 1;
     assert_eq!(quest_xp_reward(10, &quest), 70);
+}
+
+#[test]
+fn quest_visibility_enforces_level_class_and_race_masks() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut quest = test_quest_template(7);
+    quest.min_level = 2;
+    assert!(!satisfies_race_class_level(&quest, &character));
+
+    quest.min_level = 1;
+    quest.max_level = 1;
+    quest.required_classes = 1 << (1 - 1);
+    quest.required_races = 1 << (1 - 1);
+    assert!(satisfies_race_class_level(&quest, &character));
+
+    quest.required_classes = 1 << (2 - 1);
+    assert!(!satisfies_race_class_level(&quest, &character));
+
+    quest.required_classes = 1 << (1 - 1);
+    quest.required_races = 1 << (2 - 1);
+    assert!(!satisfies_race_class_level(&quest, &character));
+}
+
+#[test]
+fn repeatable_quest_status_can_be_started_again_after_reward() {
+    let mut repeatable = test_quest_template(7);
+    repeatable.special_flags = 1;
+    let complete_rewarded = CharacterQuestStatus {
+        quest: 7,
+        status: QUEST_STATUS_COMPLETE,
+        rewarded: 1,
+        mobcount1: 0,
+        mobcount2: 0,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+    assert!(can_quest_be_started_from_status(
+        &repeatable,
+        Some(&complete_rewarded)
+    ));
+
+    let non_repeatable = test_quest_template(8);
+    assert!(!can_quest_be_started_from_status(
+        &non_repeatable,
+        Some(&complete_rewarded)
+    ));
+}
+
+#[test]
+fn prev_quest_requirements_follow_positive_and_negative_rules() {
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        99,
+        CharacterQuestStatus {
+            quest: 99,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    assert!(satisfies_prev_quest_requirement(&statuses, 99));
+    assert!(!satisfies_prev_quest_requirement(&statuses, -99));
+
+    statuses.insert(
+        99,
+        CharacterQuestStatus {
+            quest: 99,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    assert!(!satisfies_prev_quest_requirement(&statuses, 99));
+    assert!(satisfies_prev_quest_requirement(&statuses, -99));
+}
+
+#[test]
+fn exclusive_group_rejects_other_active_quests_in_group() {
+    let mut quest = test_quest_template(10);
+    quest.exclusive_group = 42;
+    let group = vec![10, 11];
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        11,
+        CharacterQuestStatus {
+            quest: 11,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    assert!(!satisfies_exclusive_group(&quest, &group, &statuses));
+
+    statuses.insert(
+        11,
+        CharacterQuestStatus {
+            quest: 11,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    assert!(satisfies_exclusive_group(&quest, &group, &statuses));
 }
 
 #[test]

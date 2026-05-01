@@ -138,10 +138,18 @@ pub struct QuestTemplateQuery {
     pub entry: u32,
     pub method: u32,
     pub zone_or_sort: i16,
+    pub min_level: u8,
+    pub max_level: u8,
     pub quest_level: u32,
     pub quest_type: u32,
+    pub required_classes: u32,
+    pub required_races: u32,
     pub rep_objective_faction: u32,
     pub rep_objective_value: i32,
+    pub special_flags: u32,
+    pub prev_quest_id: i32,
+    pub next_quest_id: i32,
+    pub exclusive_group: i32,
     pub next_quest_in_chain: u32,
     pub rew_or_req_money: i32,
     pub rew_money_max_level: u32,
@@ -179,6 +187,10 @@ pub struct QuestTemplateQuery {
 }
 
 impl QuestTemplateQuery {
+    pub fn is_repeatable(&self) -> bool {
+        (self.special_flags & 0x1) != 0
+    }
+
     pub fn required_creature_index(&self, creature_entry: u32) -> Option<usize> {
         self.req_creature_or_go_id
             .iter()
@@ -269,9 +281,15 @@ pub async fn get_quest_template_query(
     let row = sqlx::query_as::<_, QuestTemplateRow>(
         "SELECT CAST(entry AS UNSIGNED) AS entry, CAST(Method AS UNSIGNED) AS method, \
                 ZoneOrSort AS zone_or_sort, \
+                CAST(MinLevel AS UNSIGNED) AS min_level, CAST(MaxLevel AS UNSIGNED) AS max_level, \
                 CAST(QuestLevel AS UNSIGNED) AS quest_level, CAST(Type AS UNSIGNED) AS quest_type, \
+                CAST(RequiredClasses AS UNSIGNED) AS required_classes, \
+                CAST(RequiredRaces AS UNSIGNED) AS required_races, \
                 CAST(RepObjectiveFaction AS UNSIGNED) AS rep_objective_faction, \
                 RepObjectiveValue AS rep_objective_value, \
+                CAST(SpecialFlags AS UNSIGNED) AS special_flags, \
+                PrevQuestId AS prev_quest_id, NextQuestId AS next_quest_id, \
+                ExclusiveGroup AS exclusive_group, \
                 CAST(NextQuestInChain AS UNSIGNED) AS next_quest_in_chain, \
                 RewOrReqMoney AS rew_or_req_money, RewMoneyMaxLevel AS rew_money_max_level, \
                 CAST(RewSpell AS UNSIGNED) AS rew_spell, CAST(RewSpellCast AS UNSIGNED) AS rew_spell_cast, \
@@ -451,6 +469,71 @@ pub async fn creature_completes_quest(
     .fetch_one(pool)
     .await?;
     Ok(count > 0)
+}
+
+pub async fn get_quest_prev_quests(pool: &MySqlPool, quest: u32) -> Result<Vec<i32>, DbError> {
+    let mut quests: Vec<i32> = Vec::new();
+
+    if let Some(prev_quest_id) =
+        sqlx::query_scalar::<_, i32>("SELECT PrevQuestId FROM quest_template WHERE entry = ?")
+            .bind(quest)
+            .fetch_optional(pool)
+            .await?
+    {
+        if prev_quest_id != 0 {
+            quests.push(prev_quest_id);
+        }
+    }
+
+    let next_positive: Vec<u32> = sqlx::query_scalar(
+        "SELECT CAST(entry AS UNSIGNED) AS entry FROM quest_template WHERE NextQuestId = ? ORDER BY entry",
+    )
+    .bind(quest as i32)
+    .fetch_all(pool)
+    .await?;
+    quests.extend(next_positive.into_iter().map(|entry| entry as i32));
+
+    let next_negative: Vec<u32> = sqlx::query_scalar(
+        "SELECT CAST(entry AS UNSIGNED) AS entry FROM quest_template WHERE NextQuestId = ? ORDER BY entry",
+    )
+    .bind(-(quest as i32))
+    .fetch_all(pool)
+    .await?;
+    quests.extend(next_negative.into_iter().map(|entry| -(entry as i32)));
+
+    Ok(quests)
+}
+
+pub async fn get_quest_prev_chain_quests(
+    pool: &MySqlPool,
+    quest: u32,
+) -> Result<Vec<u32>, DbError> {
+    sqlx::query_scalar(
+        "SELECT CAST(entry AS UNSIGNED) AS entry \
+         FROM quest_template \
+         WHERE NextQuestInChain = ? \
+         ORDER BY entry",
+    )
+    .bind(quest)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_exclusive_group_quests(
+    pool: &MySqlPool,
+    exclusive_group: i32,
+) -> Result<Vec<u32>, DbError> {
+    sqlx::query_scalar(
+        "SELECT CAST(entry AS UNSIGNED) AS entry \
+         FROM quest_template \
+         WHERE ExclusiveGroup = ? \
+         ORDER BY entry",
+    )
+    .bind(exclusive_group)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_item_display_id(pool: &MySqlPool, item: u32) -> Result<Option<u32>, DbError> {
@@ -952,10 +1035,18 @@ struct QuestTemplateRow {
     entry: u32,
     method: u32,
     zone_or_sort: i16,
+    min_level: u8,
+    max_level: u8,
     quest_level: u32,
     quest_type: u32,
+    required_classes: u32,
+    required_races: u32,
     rep_objective_faction: u32,
     rep_objective_value: i32,
+    special_flags: u32,
+    prev_quest_id: i32,
+    next_quest_id: i32,
+    exclusive_group: i32,
     next_quest_in_chain: u32,
     rew_or_req_money: i32,
     rew_money_max_level: u32,
@@ -1041,10 +1132,18 @@ impl QuestTemplateRow {
             entry: self.entry,
             method: self.method,
             zone_or_sort: self.zone_or_sort,
+            min_level: self.min_level,
+            max_level: self.max_level,
             quest_level: self.quest_level,
             quest_type: self.quest_type,
+            required_classes: self.required_classes,
+            required_races: self.required_races,
             rep_objective_faction: self.rep_objective_faction,
             rep_objective_value: self.rep_objective_value,
+            special_flags: self.special_flags,
+            prev_quest_id: self.prev_quest_id,
+            next_quest_id: self.next_quest_id,
+            exclusive_group: self.exclusive_group,
             next_quest_in_chain: self.next_quest_in_chain,
             rew_or_req_money: self.rew_or_req_money,
             rew_money_max_level: self.rew_money_max_level,

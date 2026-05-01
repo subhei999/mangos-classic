@@ -120,6 +120,39 @@ pub struct CreatureLootQuery {
     pub display_id: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameObjectTemplateQuery {
+    pub entry: u32,
+    pub object_type: u8,
+    pub display_id: u32,
+    pub name: String,
+    pub icon_name: String,
+    pub faction: u32,
+    pub flags: u32,
+    pub size: f32,
+    pub raw_data: [u32; 24],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameObjectSpawnQuery {
+    pub guid: u32,
+    pub entry: u32,
+    pub map: u32,
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+    pub orientation: f32,
+    pub rotation0: f32,
+    pub rotation1: f32,
+    pub rotation2: f32,
+    pub rotation3: f32,
+    pub spawn_time_secs_min: i32,
+    pub spawn_time_secs_max: i32,
+    pub state: i8,
+    pub anim_progress: u8,
+    pub template: GameObjectTemplateQuery,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct TrainerSpellQuery {
     pub spell: u32,
@@ -260,6 +293,53 @@ pub async fn get_creature_loot_items(
     .await?;
 
     Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
+}
+
+pub async fn get_gameobject_template_query(
+    pool: &MySqlPool,
+    entry: u32,
+) -> Result<Option<GameObjectTemplateQuery>, DbError> {
+    let row = sqlx::query_as::<_, GameObjectTemplateRow>(
+        "SELECT entry, \
+                type AS object_type, \
+                displayId AS display_id, \
+                name, \
+                IconName AS icon_name, \
+                CAST(faction AS UNSIGNED) AS faction, \
+                CAST(flags AS UNSIGNED) AS flags, \
+                size, \
+                CAST(data0 AS UNSIGNED) AS data0, \
+                CAST(data1 AS UNSIGNED) AS data1, \
+                CAST(data2 AS UNSIGNED) AS data2, \
+                CAST(data3 AS UNSIGNED) AS data3, \
+                CAST(data4 AS UNSIGNED) AS data4, \
+                CAST(data5 AS UNSIGNED) AS data5, \
+                CAST(data6 AS UNSIGNED) AS data6, \
+                CAST(data7 AS UNSIGNED) AS data7, \
+                CAST(data8 AS UNSIGNED) AS data8, \
+                CAST(data9 AS UNSIGNED) AS data9, \
+                CAST(data10 AS UNSIGNED) AS data10, \
+                CAST(data11 AS UNSIGNED) AS data11, \
+                CAST(data12 AS UNSIGNED) AS data12, \
+                CAST(data13 AS UNSIGNED) AS data13, \
+                CAST(data14 AS UNSIGNED) AS data14, \
+                CAST(data15 AS UNSIGNED) AS data15, \
+                CAST(data16 AS UNSIGNED) AS data16, \
+                CAST(data17 AS UNSIGNED) AS data17, \
+                CAST(data18 AS UNSIGNED) AS data18, \
+                CAST(data19 AS UNSIGNED) AS data19, \
+                CAST(data20 AS UNSIGNED) AS data20, \
+                CAST(data21 AS UNSIGNED) AS data21, \
+                CAST(data22 AS UNSIGNED) AS data22, \
+                CAST(data23 AS UNSIGNED) AS data23 \
+         FROM gameobject_template \
+         WHERE entry = ?",
+    )
+    .bind(entry)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(GameObjectTemplateRow::into_query))
 }
 
 pub async fn get_quest_template_query(
@@ -423,6 +503,25 @@ pub async fn get_creature_start_quests(
     Ok(quests)
 }
 
+pub async fn get_gameobject_start_quests(
+    pool: &MySqlPool,
+    gameobject_entry: u32,
+) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let quest_ids: Vec<u32> = sqlx::query_scalar(
+        "SELECT quest FROM gameobject_questrelation WHERE id = ? ORDER BY quest",
+    )
+    .bind(gameobject_entry)
+    .fetch_all(pool)
+    .await?;
+    let mut quests = Vec::new();
+    for quest in quest_ids {
+        if let Some(template) = get_quest_template_query(pool, quest).await? {
+            quests.push(template);
+        }
+    }
+    Ok(quests)
+}
+
 pub async fn creature_starts_quest(
     pool: &MySqlPool,
     creature_entry: u32,
@@ -447,6 +546,36 @@ pub async fn creature_completes_quest(
         "SELECT COUNT(*) FROM creature_involvedrelation WHERE id = ? AND quest = ?",
     )
     .bind(creature_entry)
+    .bind(quest)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn gameobject_starts_quest(
+    pool: &MySqlPool,
+    gameobject_entry: u32,
+    quest: u32,
+) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gameobject_questrelation WHERE id = ? AND quest = ?",
+    )
+    .bind(gameobject_entry)
+    .bind(quest)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn gameobject_completes_quest(
+    pool: &MySqlPool,
+    gameobject_entry: u32,
+    quest: u32,
+) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gameobject_involvedrelation WHERE id = ? AND quest = ?",
+    )
+    .bind(gameobject_entry)
     .bind(quest)
     .fetch_one(pool)
     .await?;
@@ -649,6 +778,97 @@ pub async fn get_nearby_creature_spawns(
     }
 
     Ok(spawns)
+}
+
+pub async fn get_nearby_gameobject_spawns(
+    pool: &MySqlPool,
+    map: u32,
+    position_x: f32,
+    position_y: f32,
+    radius: f32,
+    limit: u32,
+) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
+    let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
+        "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+                CAST(gameobject.position_x AS DOUBLE) AS position_x, \
+                CAST(gameobject.position_y AS DOUBLE) AS position_y, \
+                CAST(gameobject.position_z AS DOUBLE) AS position_z, \
+                CAST(gameobject.orientation AS DOUBLE) AS orientation, \
+                CAST(gameobject.rotation0 AS DOUBLE) AS rotation0, \
+                CAST(gameobject.rotation1 AS DOUBLE) AS rotation1, \
+                CAST(gameobject.rotation2 AS DOUBLE) AS rotation2, \
+                CAST(gameobject.rotation3 AS DOUBLE) AS rotation3, \
+                gameobject.spawntimesecsmin AS spawn_time_secs_min, \
+                gameobject.spawntimesecsmax AS spawn_time_secs_max, \
+                COALESCE(gameobject_addon.state, -1) AS state, \
+                COALESCE(gameobject_addon.animprogress, 100) AS anim_progress, \
+                gameobject_template.entry AS template_entry, \
+                gameobject_template.type AS template_object_type, \
+                gameobject_template.displayId AS template_display_id, \
+                gameobject_template.name AS template_name, \
+                gameobject_template.IconName AS template_icon_name, \
+                CAST(gameobject_template.faction AS UNSIGNED) AS template_faction, \
+                CAST(gameobject_template.flags AS UNSIGNED) AS template_flags, \
+                gameobject_template.size AS template_size, \
+                CAST(gameobject_template.data0 AS UNSIGNED) AS template_data0, \
+                CAST(gameobject_template.data1 AS UNSIGNED) AS template_data1, \
+                CAST(gameobject_template.data2 AS UNSIGNED) AS template_data2, \
+                CAST(gameobject_template.data3 AS UNSIGNED) AS template_data3, \
+                CAST(gameobject_template.data4 AS UNSIGNED) AS template_data4, \
+                CAST(gameobject_template.data5 AS UNSIGNED) AS template_data5, \
+                CAST(gameobject_template.data6 AS UNSIGNED) AS template_data6, \
+                CAST(gameobject_template.data7 AS UNSIGNED) AS template_data7, \
+                CAST(gameobject_template.data8 AS UNSIGNED) AS template_data8, \
+                CAST(gameobject_template.data9 AS UNSIGNED) AS template_data9, \
+                CAST(gameobject_template.data10 AS UNSIGNED) AS template_data10, \
+                CAST(gameobject_template.data11 AS UNSIGNED) AS template_data11, \
+                CAST(gameobject_template.data12 AS UNSIGNED) AS template_data12, \
+                CAST(gameobject_template.data13 AS UNSIGNED) AS template_data13, \
+                CAST(gameobject_template.data14 AS UNSIGNED) AS template_data14, \
+                CAST(gameobject_template.data15 AS UNSIGNED) AS template_data15, \
+                CAST(gameobject_template.data16 AS UNSIGNED) AS template_data16, \
+                CAST(gameobject_template.data17 AS UNSIGNED) AS template_data17, \
+                CAST(gameobject_template.data18 AS UNSIGNED) AS template_data18, \
+                CAST(gameobject_template.data19 AS UNSIGNED) AS template_data19, \
+                CAST(gameobject_template.data20 AS UNSIGNED) AS template_data20, \
+                CAST(gameobject_template.data21 AS UNSIGNED) AS template_data21, \
+                CAST(gameobject_template.data22 AS UNSIGNED) AS template_data22, \
+                CAST(gameobject_template.data23 AS UNSIGNED) AS template_data23 \
+         FROM gameobject \
+         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
+         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
+         WHERE gameobject.map = ? \
+           AND gameobject.position_x BETWEEN ? AND ? \
+           AND gameobject.position_y BETWEEN ? AND ? \
+           AND (((gameobject.position_x - ?) * (gameobject.position_x - ?)) + \
+                ((gameobject.position_y - ?) * (gameobject.position_y - ?))) <= ? \
+         ORDER BY ((gameobject.position_x - ?) * (gameobject.position_x - ?)) + \
+                  ((gameobject.position_y - ?) * (gameobject.position_y - ?)) ASC, \
+                  gameobject.guid ASC \
+         LIMIT ?",
+    )
+    .bind(map)
+    .bind(position_x - radius)
+    .bind(position_x + radius)
+    .bind(position_y - radius)
+    .bind(position_y + radius)
+    .bind(position_x)
+    .bind(position_x)
+    .bind(position_y)
+    .bind(position_y)
+    .bind(radius * radius)
+    .bind(position_x)
+    .bind(position_x)
+    .bind(position_y)
+    .bind(position_y)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(GameObjectSpawnRow::into_query)
+        .collect())
 }
 
 pub async fn get_creature_spawns_in_rect(
@@ -1195,6 +1415,93 @@ struct CreatureRespawnRow {
     respawntime: u64,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct GameObjectTemplateRow {
+    entry: u32,
+    object_type: u8,
+    display_id: u32,
+    name: String,
+    icon_name: String,
+    faction: u32,
+    flags: u32,
+    size: f32,
+    data0: u32,
+    data1: u32,
+    data2: u32,
+    data3: u32,
+    data4: u32,
+    data5: u32,
+    data6: u32,
+    data7: u32,
+    data8: u32,
+    data9: u32,
+    data10: u32,
+    data11: u32,
+    data12: u32,
+    data13: u32,
+    data14: u32,
+    data15: u32,
+    data16: u32,
+    data17: u32,
+    data18: u32,
+    data19: u32,
+    data20: u32,
+    data21: u32,
+    data22: u32,
+    data23: u32,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct GameObjectSpawnRow {
+    guid: u32,
+    entry: u32,
+    map: u32,
+    position_x: f64,
+    position_y: f64,
+    position_z: f64,
+    orientation: f64,
+    rotation0: f64,
+    rotation1: f64,
+    rotation2: f64,
+    rotation3: f64,
+    spawn_time_secs_min: i32,
+    spawn_time_secs_max: i32,
+    state: i8,
+    anim_progress: u8,
+    template_entry: u32,
+    template_object_type: u8,
+    template_display_id: u32,
+    template_name: String,
+    template_icon_name: String,
+    template_faction: u32,
+    template_flags: u32,
+    template_size: f32,
+    template_data0: u32,
+    template_data1: u32,
+    template_data2: u32,
+    template_data3: u32,
+    template_data4: u32,
+    template_data5: u32,
+    template_data6: u32,
+    template_data7: u32,
+    template_data8: u32,
+    template_data9: u32,
+    template_data10: u32,
+    template_data11: u32,
+    template_data12: u32,
+    template_data13: u32,
+    template_data14: u32,
+    template_data15: u32,
+    template_data16: u32,
+    template_data17: u32,
+    template_data18: u32,
+    template_data19: u32,
+    template_data20: u32,
+    template_data21: u32,
+    template_data22: u32,
+    template_data23: u32,
+}
+
 impl CreatureWaypointRow {
     fn into_query(self) -> CreatureWaypointQuery {
         CreatureWaypointQuery {
@@ -1205,6 +1512,47 @@ impl CreatureWaypointRow {
             orientation: (self.orientation as f32 != 100.0).then_some(self.orientation as f32),
             wait_time: self.wait_time,
             script_id: self.script_id,
+        }
+    }
+}
+
+impl GameObjectTemplateRow {
+    fn into_query(self) -> GameObjectTemplateQuery {
+        GameObjectTemplateQuery {
+            entry: self.entry,
+            object_type: self.object_type,
+            display_id: self.display_id,
+            name: self.name,
+            icon_name: self.icon_name,
+            faction: self.faction,
+            flags: self.flags,
+            size: self.size,
+            raw_data: [
+                self.data0,
+                self.data1,
+                self.data2,
+                self.data3,
+                self.data4,
+                self.data5,
+                self.data6,
+                self.data7,
+                self.data8,
+                self.data9,
+                self.data10,
+                self.data11,
+                self.data12,
+                self.data13,
+                self.data14,
+                self.data15,
+                self.data16,
+                self.data17,
+                self.data18,
+                self.data19,
+                self.data20,
+                self.data21,
+                self.data22,
+                self.data23,
+            ],
         }
     }
 }
@@ -1344,6 +1692,64 @@ impl CreatureSpawnRow {
                 experience_multiplier: self.template_experience_multiplier,
             },
             waypoint_path: Vec::new(),
+        }
+    }
+}
+
+impl GameObjectSpawnRow {
+    fn into_query(self) -> GameObjectSpawnQuery {
+        GameObjectSpawnQuery {
+            guid: self.guid,
+            entry: self.entry,
+            map: self.map,
+            position_x: self.position_x as f32,
+            position_y: self.position_y as f32,
+            position_z: self.position_z as f32,
+            orientation: self.orientation as f32,
+            rotation0: self.rotation0 as f32,
+            rotation1: self.rotation1 as f32,
+            rotation2: self.rotation2 as f32,
+            rotation3: self.rotation3 as f32,
+            spawn_time_secs_min: self.spawn_time_secs_min,
+            spawn_time_secs_max: self.spawn_time_secs_max,
+            state: self.state,
+            anim_progress: self.anim_progress,
+            template: GameObjectTemplateQuery {
+                entry: self.template_entry,
+                object_type: self.template_object_type,
+                display_id: self.template_display_id,
+                name: self.template_name,
+                icon_name: self.template_icon_name,
+                faction: self.template_faction,
+                flags: self.template_flags,
+                size: self.template_size,
+                raw_data: [
+                    self.template_data0,
+                    self.template_data1,
+                    self.template_data2,
+                    self.template_data3,
+                    self.template_data4,
+                    self.template_data5,
+                    self.template_data6,
+                    self.template_data7,
+                    self.template_data8,
+                    self.template_data9,
+                    self.template_data10,
+                    self.template_data11,
+                    self.template_data12,
+                    self.template_data13,
+                    self.template_data14,
+                    self.template_data15,
+                    self.template_data16,
+                    self.template_data17,
+                    self.template_data18,
+                    self.template_data19,
+                    self.template_data20,
+                    self.template_data21,
+                    self.template_data22,
+                    self.template_data23,
+                ],
+            },
         }
     }
 }

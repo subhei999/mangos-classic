@@ -284,10 +284,15 @@ fn build_quest_update_add_kill_body(
     count: u32,
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(24);
+    let objective_entry = quest.req_creature_or_go_id[objective_index];
+    let wire_objective = if objective_entry < 0 {
+        objective_entry.unsigned_abs() | 0x8000_0000
+    } else {
+        objective_entry as u32
+    };
 
     body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    body.extend_from_slice(&(quest.req_creature_or_go_id[objective_index] as u32).to_le_bytes());
+    body.extend_from_slice(&wire_objective.to_le_bytes());
 
     body.extend_from_slice(&count.to_le_bytes());
 

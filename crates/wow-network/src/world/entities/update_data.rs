@@ -34,6 +34,7 @@ struct SelfSpawnUpdate<'a> {
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &'a [EquippedItemTemplate],
     nearby_creatures: &'a [DbCreatureRuntime],
+    nearby_gameobjects: &'a [DbGameObjectRuntime],
     nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
@@ -61,8 +62,10 @@ async fn load_equipped_item_templates(
 fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut blocks = build_self_spawn_update_blocks(update)?;
     let creature_start = 3;
-    let item_start =
-        creature_start + update.nearby_creatures.len() + update.nearby_player_corpses.len();
+    let item_start = creature_start
+        + update.nearby_creatures.len()
+        + update.nearby_gameobjects.len()
+        + update.nearby_player_corpses.len();
     let item_blocks = blocks.split_off(item_start);
     let creature_blocks = blocks.split_off(creature_start);
 
@@ -147,12 +150,14 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     )?;
 
     let creature_blocks = build_db_creature_create_blocks(update.nearby_creatures)?;
+    let gameobject_blocks = build_db_gameobject_create_blocks(update.nearby_gameobjects)?;
     let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;
     let item_blocks = build_inventory_item_create_blocks(character, update.inventory)?;
     let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 2 } else { 0 };
     let mut blocks = Vec::with_capacity(
         1 + legacy_fixture_count
             + creature_blocks.len()
+            + gameobject_blocks.len()
             + corpse_blocks.len()
             + item_blocks.len(),
     );
@@ -162,6 +167,7 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
         blocks.push(build_rust_combat_dummy_create_block(character)?);
     }
     blocks.extend(creature_blocks);
+    blocks.extend(gameobject_blocks);
     blocks.extend(corpse_blocks);
     blocks.extend(item_blocks);
     Ok(blocks)

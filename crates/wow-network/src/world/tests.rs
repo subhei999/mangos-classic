@@ -264,6 +264,41 @@ fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
     }
 }
 
+fn test_gameobject_template(entry: u32, object_type: u8) -> wow_db::GameObjectTemplateQuery {
+    wow_db::GameObjectTemplateQuery {
+        entry,
+        object_type,
+        display_id: 12_345,
+        name: format!("GO {entry}"),
+        icon_name: "Attack".to_string(),
+        faction: 0,
+        flags: 0,
+        size: 1.0,
+        raw_data: [0; 24],
+    }
+}
+
+fn test_gameobject_spawn(entry: u32, object_type: u8) -> wow_db::GameObjectSpawnQuery {
+    wow_db::GameObjectSpawnQuery {
+        guid: 77,
+        entry,
+        map: 0,
+        position_x: -8948.0,
+        position_y: -131.0,
+        position_z: 83.4,
+        orientation: 0.75,
+        rotation0: 0.0,
+        rotation1: 0.0,
+        rotation2: 0.0,
+        rotation3: 1.0,
+        spawn_time_secs_min: 45,
+        spawn_time_secs_max: 45,
+        state: -1,
+        anim_progress: 100,
+        template: test_gameobject_template(entry, object_type),
+    }
+}
+
 fn test_waypoint(point: u32, x: f32, y: f32, wait_time: u32) -> wow_db::CreatureWaypointQuery {
     wow_db::CreatureWaypointQuery {
         point,
@@ -647,6 +682,97 @@ fn db_creature_runtime_create_block_preserves_corpse_state() {
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
     assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
     assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
+}
+
+#[test]
+fn db_gameobject_create_block_uses_spawn_and_template_fields() {
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    let runtime = DbGameObjectRuntime::new(spawn.clone());
+    let block = build_db_gameobject_runtime_create_block(&runtime).unwrap();
+    let (values, trailing) = decode_create_update_block(&block, runtime.guid(), TYPEID_GAMEOBJECT);
+
+    assert!(trailing.is_empty());
+    assert_eq!(values[0], Some(runtime.guid().raw() as u32));
+    assert_eq!(values[1], Some((runtime.guid().raw() >> 32) as u32));
+    assert_eq!(values[2], Some(TYPEMASK_OBJECT_GAMEOBJECT));
+    assert_eq!(values[3], Some(spawn.entry));
+    assert_eq!(
+        values[GAMEOBJECT_DISPLAYID],
+        Some(spawn.template.display_id)
+    );
+    assert_eq!(values[GAMEOBJECT_FLAGS], Some(spawn.template.flags));
+    assert_eq!(values[GAMEOBJECT_POS_X], Some(spawn.position_x.to_bits()));
+    assert_eq!(values[GAMEOBJECT_POS_Y], Some(spawn.position_y.to_bits()));
+    assert_eq!(values[GAMEOBJECT_POS_Z], Some(spawn.position_z.to_bits()));
+    assert_eq!(values[GAMEOBJECT_FACING], Some(spawn.orientation.to_bits()));
+    assert_eq!(
+        values[GAMEOBJECT_TYPE_ID],
+        Some(spawn.template.object_type as u32)
+    );
+    assert_eq!(
+        values[GAMEOBJECT_ANIMPROGRESS],
+        Some(spawn.anim_progress as u32)
+    );
+}
+
+#[test]
+fn gameobject_query_response_matches_cmangos_shape() {
+    let template = wow_db::GameObjectTemplateQuery {
+        entry: 161557,
+        object_type: GO_TYPE_GOOBER,
+        display_id: 35,
+        name: "Milly's Harvest".to_string(),
+        icon_name: "Attack".to_string(),
+        faction: 0,
+        flags: 0,
+        size: 1.0,
+        raw_data: [1; 24],
+    };
+
+    let body = build_gameobject_query_response(template.entry, Some(&template));
+    assert_eq!(&body[0..4], &template.entry.to_le_bytes());
+    assert_eq!(&body[4..8], &(GO_TYPE_GOOBER as u32).to_le_bytes());
+    assert_eq!(&body[8..12], &35u32.to_le_bytes());
+    assert!(body
+        .windows("Milly's Harvest\0".len())
+        .any(|w| w == b"Milly's Harvest\0"));
+    assert!(body.windows("Attack\0".len()).any(|w| w == b"Attack\0"));
+    assert_eq!(
+        body.len(),
+        12 + "Milly's Harvest\0".len() + 3 + "Attack\0".len() + 24 * 4
+    );
+}
+
+#[test]
+fn gameobject_visibility_stages_destroy_for_out_of_range_objects() {
+    let nearby = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    let out_of_range = wow_db::GameObjectSpawnQuery {
+        guid: 78,
+        position_x: -8700.0,
+        position_y: -10.0,
+        ..test_gameobject_spawn(161558, GO_TYPE_GOOBER)
+    };
+    let out_guid = gameobject_spawn_guid(&out_of_range).raw();
+    let mut session = WorldSessionState::default();
+    session
+        .db_gameobjects
+        .insert(out_guid, DbGameObjectRuntime::new(out_of_range));
+    session.last_gameobject_visibility_position =
+        Some(WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0));
+
+    let updates = stage_db_gameobject_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        vec![nearby],
+        Instant::now(),
+    )
+    .unwrap();
+
+    assert!(updates
+        .destroy_guids
+        .iter()
+        .any(|guid| guid.raw() == out_guid));
+    assert!(!updates.create_bodies.is_empty());
 }
 
 #[test]
@@ -1764,6 +1890,61 @@ fn quest_xp_reward_uses_cmangos_rew_money_max_level_formula() {
 
     quest.quest_level = 1;
     assert_eq!(quest_xp_reward(10, &quest), 70);
+}
+
+#[test]
+fn quest_update_add_kill_encodes_gameobject_objective_with_high_bit() {
+    let quest = QuestTemplateQuery {
+        entry: 3903,
+        method: 2,
+        zone_or_sort: 12,
+        quest_level: 2,
+        quest_type: 0,
+        rep_objective_faction: 0,
+        rep_objective_value: 0,
+        next_quest_in_chain: 0,
+        rew_or_req_money: 0,
+        rew_money_max_level: 0,
+        rew_spell: 0,
+        rew_spell_cast: 0,
+        src_item_id: 0,
+        quest_flags: 0,
+        title: "Milly's Harvest".to_string(),
+        details: String::new(),
+        objectives: String::new(),
+        offer_reward_text: String::new(),
+        request_items_text: String::new(),
+        end_text: String::new(),
+        req_creature_or_go_id: [-161557, 0, 0, 0],
+        req_creature_or_go_count: [8, 0, 0, 0],
+        req_item_id: [0, 0, 0, 0],
+        req_item_count: [0, 0, 0, 0],
+        rew_choice_item_id: [0; 6],
+        rew_choice_item_count: [0; 6],
+        rew_item_id: [0; 4],
+        rew_item_count: [0; 4],
+        point_map_id: 0,
+        point_x: 0.0,
+        point_y: 0.0,
+        point_opt: 0,
+        details_emote: [0; 4],
+        details_emote_delay: [0; 4],
+        complete_emote: 0,
+        complete_emote_delay: 0,
+        incomplete_emote: 0,
+        incomplete_emote_delay: 0,
+        offer_reward_emote: [0; 4],
+        offer_reward_emote_delay: [0; 4],
+        objective_text: [String::new(), String::new(), String::new(), String::new()],
+    };
+    let guid = ObjectGuid::new(HighGuid::GameObject, 161557, 77);
+    let body = build_quest_update_add_kill_body(&quest, guid, 0, 3);
+
+    assert_eq!(&body[0..4], &3903u32.to_le_bytes());
+    assert_eq!(&body[4..8], &(161557u32 | 0x8000_0000).to_le_bytes());
+    assert_eq!(&body[8..12], &3u32.to_le_bytes());
+    assert_eq!(&body[12..16], &8u32.to_le_bytes());
+    assert_eq!(&body[16..24], &guid.raw().to_le_bytes());
 }
 
 #[test]

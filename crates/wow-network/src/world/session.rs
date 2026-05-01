@@ -1,5 +1,6 @@
 include!("entities/player.rs");
 include!("entities/creature.rs");
+include!("entities/gameobject.rs");
 include!("entities/corpse.rs");
 include!("entities/item.rs");
 include!("motion/motion_master.rs");
@@ -16,6 +17,7 @@ type ActiveCharacter = Player;
 type DbCreatureRuntime = Creature;
 type DbCreatureLifeState = CreatureLifeState;
 type DbCreatureLootRuntime = CreatureLoot;
+type DbGameObjectRuntime = GameObjectRuntime;
 type PlayerCorpseRuntime = Corpse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -141,6 +143,7 @@ struct WorldSessionState {
     combat_dummy_loot_money_available: bool,
     combat_dummy_loot_item_available: bool,
     db_creatures: HashMap<u64, DbCreatureRuntime>,
+    db_gameobjects: HashMap<u64, DbGameObjectRuntime>,
     player_health: u32,
     player_rage: u32,
     player_mana: u32,
@@ -148,6 +151,7 @@ struct WorldSessionState {
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     last_creature_visibility_position: Option<WorldPosition>,
+    last_gameobject_visibility_position: Option<WorldPosition>,
     last_player_corpse_visibility_position: Option<WorldPosition>,
     db_creature_navigation: DbCreatureNavigationGuardrail,
 }

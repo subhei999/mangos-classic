@@ -122,6 +122,16 @@ async fn handle_questgiver_accept_quest(
         warn!(quest = request.quest, "Ignoring quest accept for invalid giver");
         return Ok(());
     }
+    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
+        return Ok(());
+    };
+    if !can_take_start_quest(world_db_pool, &quest, session).await? {
+        warn!(
+            quest = request.quest,
+            "Ignoring quest accept that does not satisfy CMaNGOS-style eligibility"
+        );
+        return Ok(());
+    }
     let status = wow_db::accept_character_quest(character_db_pool, character.guid, request.quest)
         .await?;
     session.quest_statuses.insert(request.quest, status.clone());
@@ -303,25 +313,35 @@ async fn questgiver_dialog_status(
     if !guid.is_creature() {
         return Ok(DIALOG_STATUS_NONE);
     }
+
+    let mut dialog_status = DIALOG_STATUS_NONE;
     for quest in wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await? {
-        match session.quest_statuses.get(&quest.entry) {
-            Some(status) if status.rewarded != 0 => {}
-            Some(status) if status.status == QUEST_STATUS_COMPLETE => {
-                return Ok(DIALOG_STATUS_REWARD2);
+        if let Some(status) = session.quest_statuses.get(&quest.entry) {
+            if quest_status_is_current(status) {
+                if status.status == QUEST_STATUS_COMPLETE
+                    && wow_db::creature_completes_quest(world_db_pool, guid.entry(), quest.entry).await?
+                {
+                    dialog_status = dialog_status.max(DIALOG_STATUS_REWARD2);
+                } else {
+                    dialog_status = dialog_status.max(DIALOG_STATUS_INCOMPLETE);
+                }
+                continue;
             }
-            Some(_) => return Ok(DIALOG_STATUS_INCOMPLETE),
-            None => return Ok(DIALOG_STATUS_AVAILABLE),
+        }
+        if can_take_start_quest(world_db_pool, &quest, session).await? {
+            dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
         }
     }
+
     for status in session.quest_statuses.values() {
         if status.rewarded == 0
             && status.status == QUEST_STATUS_COMPLETE
             && wow_db::creature_completes_quest(world_db_pool, guid.entry(), status.quest).await?
         {
-            return Ok(DIALOG_STATUS_REWARD2);
+            dialog_status = dialog_status.max(DIALOG_STATUS_REWARD2);
         }
     }
-    Ok(DIALOG_STATUS_NONE)
+    Ok(dialog_status)
 }
 
 async fn questgiver_visible_quests(
@@ -333,15 +353,21 @@ async fn questgiver_visible_quests(
         return Ok(Vec::new());
     }
     let quests = wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?;
-    Ok(quests
-        .into_iter()
-        .filter(|quest| {
-            session
-                .quest_statuses
-                .get(&quest.entry)
-                .is_none_or(|status| status.rewarded == 0 && status.status != QUEST_STATUS_COMPLETE)
-        })
-        .collect())
+    let mut visible = Vec::new();
+    for quest in quests {
+        if session
+            .quest_statuses
+            .get(&quest.entry)
+            .is_some_and(quest_status_is_current)
+        {
+            visible.push(quest);
+            continue;
+        }
+        if can_take_start_quest(world_db_pool, &quest, session).await? {
+            visible.push(quest);
+        }
+    }
+    Ok(visible)
 }
 
 async fn questgiver_completed_turnin_quest(
@@ -373,6 +399,127 @@ fn active_quest_statuses_sorted(
         .collect();
     statuses.sort_by_key(|status| status.quest);
     statuses
+}
+
+fn can_quest_be_started_from_status(quest: &QuestTemplateQuery, status: Option<&CharacterQuestStatus>) -> bool {
+    status.is_none_or(|state| {
+        state.status == 0 || (quest.is_repeatable() && state.rewarded != 0 && state.status == QUEST_STATUS_COMPLETE)
+    })
+}
+
+fn quest_status_is_current(status: &CharacterQuestStatus) -> bool {
+    status.rewarded == 0 && (status.status == QUEST_STATUS_INCOMPLETE || status.status == QUEST_STATUS_COMPLETE)
+}
+
+fn quest_is_current(quest_statuses: &HashMap<u32, CharacterQuestStatus>, quest: u32) -> bool {
+    quest_statuses.get(&quest).is_some_and(quest_status_is_current)
+}
+
+fn quest_race_or_class_mask(id: u8) -> u32 {
+    if id == 0 {
+        return 0;
+    }
+    1u32.checked_shl(u32::from(id - 1)).unwrap_or(0)
+}
+
+fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
+    if character.level < quest.min_level || character.level > quest.max_level {
+        return false;
+    }
+
+    let class_mask = quest_race_or_class_mask(character.class);
+    if quest.required_classes != 0 && (quest.required_classes & class_mask) == 0 {
+        return false;
+    }
+
+    let race_mask = quest_race_or_class_mask(character.race);
+    if quest.required_races != 0 && (quest.required_races & race_mask) == 0 {
+        return false;
+    }
+
+    true
+}
+
+fn satisfies_prev_quest_requirement(
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    prev_quest_id: i32,
+) -> bool {
+    let prev_quest = prev_quest_id.unsigned_abs();
+    if prev_quest_id > 0 {
+        return quest_statuses
+            .get(&prev_quest)
+            .is_some_and(|status| status.rewarded != 0);
+    }
+    if prev_quest_id < 0 {
+        return quest_is_current(quest_statuses, prev_quest);
+    }
+    true
+}
+
+fn satisfies_exclusive_group(
+    quest: &QuestTemplateQuery,
+    exclusive_group_quests: &[u32],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> bool {
+    if quest.exclusive_group <= 0 {
+        return true;
+    }
+
+    for other_quest in exclusive_group_quests {
+        if *other_quest == quest.entry {
+            continue;
+        }
+        if quest_statuses.get(other_quest).is_some_and(quest_status_is_current) {
+            return false;
+        }
+    }
+
+    true
+}
+
+async fn can_take_start_quest(
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(false);
+    };
+    if !satisfies_race_class_level(quest, character) {
+        return Ok(false);
+    }
+    if !can_quest_be_started_from_status(quest, session.quest_statuses.get(&quest.entry)) {
+        return Ok(false);
+    }
+
+    let prev_quests = wow_db::get_quest_prev_quests(world_db_pool, quest.entry).await?;
+    if !prev_quests
+        .into_iter()
+        .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
+    {
+        return Ok(false);
+    }
+
+    let prev_chain_quests = wow_db::get_quest_prev_chain_quests(world_db_pool, quest.entry).await?;
+    if prev_chain_quests
+        .into_iter()
+        .any(|prev_chain| quest_is_current(&session.quest_statuses, prev_chain))
+    {
+        return Ok(false);
+    }
+
+    if quest.next_quest_in_chain != 0 && quest_is_current(&session.quest_statuses, quest.next_quest_in_chain)
+    {
+        return Ok(false);
+    }
+
+    let exclusive_group_quests =
+        wow_db::get_exclusive_group_quests(world_db_pool, quest.exclusive_group).await?;
+    if !satisfies_exclusive_group(quest, &exclusive_group_quests, &session.quest_statuses) {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<usize> {

@@ -61,10 +61,18 @@ Playable gate guidance:
 
 - Use `docs/playable_gate_board.md` and `docs/session_handoff.md` as the main
   project compass.
+- Treat `codex/rusty-mangos` as the current integration branch. Focused worker
+  branches should branch from the latest green `codex/rusty-mangos` commit and
+  merge back only after their scoped tests/proof pass.
+- Use `docs/playable_execution_roadmap.md` for branch subjects, branch names,
+  ownership boundaries, merge order, conflict hot spots, and worker contracts.
 - User direction can override the default gate order. When the user names a
   priority, follow that priority and update the docs if it changes the plan.
 - When choosing work without explicit user direction, prefer the current
   user-directed next task first, then the highest-value red/yellow gate.
+- Do not pile unrelated feature work directly onto `codex/rusty-mangos`.
+  Direct integration-branch edits should be limited to small docs/test updates,
+  hot integration fixes, or explicit user-directed landing work.
 
 Subagent guidance:
 
@@ -288,18 +296,26 @@ changed, what was tested, what bugs were fixed, and what issues were logged.
 ## Current Next Task
 
 Current user-directed priority is defined in `docs/session_handoff.md` and
-`docs/playable_gate_board.md`.
+`docs/playable_gate_board.md`. The detailed branch split is defined in
+`docs/playable_execution_roadmap.md`.
 
 Current next task:
 
-1. Derisk Multiplayer / Shared MapRuntime.
-2. Keep one monolithic worldserver, but stop treating each TCP session as its
-   own mini-world.
-3. Introduce a shared in-process `MapRuntime` / grid layer inside
-   `WorldRuntimeState`.
-4. Route player visibility, movement, `/say`, and DB creature state through the
-   shared runtime.
-5. Prove two Northshire clients can see each other spawn/move/logout, exchange
-   nearby `/say`, and observe one shared DB creature state without duplicated
-   kill/loot state.
-6. Keep existing G3 movement visibility and starter-zone flow tests green.
+1. Create `codex/c2-northshire-grade` from the latest green
+   `codex/rusty-mangos`.
+2. Add a Northshire playability grading checklist/harness around the current
+   user-observed missing criteria:
+   - quest availability restrictions;
+   - quest item drops from real loot tables;
+   - gameobject quest pickup;
+   - warrior level 1-6 spells, global cooldown, and Heroic Strike parity;
+   - combat log feedback;
+   - health regeneration and rage degeneration;
+   - skills and weapon skills;
+   - CMaNGOS-like aggro/chase/leash behavior;
+   - patrol runtime stability.
+3. After the grading branch lands, split implementation into focused worker
+   branches from `docs/playable_execution_roadmap.md`, keeping write scopes
+   disjoint where possible.
+4. Keep existing G3 movement visibility, shared `MapRuntime`, and
+   starter-zone flow tests green while building the missing Northshire systems.

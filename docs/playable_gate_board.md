@@ -22,29 +22,30 @@ Execution roadmap: `docs/playable_execution_roadmap.md`
 
 ## Current Priority Order
 
-1. G12 Derisk Multiplayer / Shared MapRuntime hardening: measured lazy
-   creature grid loading, then grid unload/idle eviction, logout/relog torture
-   coverage, and real-client confirmation of shared moving-mob death/loot.
-2. Stabilize and smoke the current G8/G9 shared movement/threat slice, then
-   commit it as the next integration point.
-3. G8 Combat Agency: combat math, timing, reach/model, swing errors, LOS,
-   pathing, and threat fidelity.
-4. G9 World Creature Fidelity: random/waypoint/return-home movement, lifecycle,
-   and grid/runtime cleanup.
-5. G10 NPC Interaction Fidelity.
-6. G11 Persistence + Relog Sanity.
-7. G5 Combat + Loot real-behavior fidelity.
-8. G6 Level + Trainer issue #49 polish.
-9. G7 Death + Respawn polish.
+1. Northshire playability grading harness for the current user-observed missing
+   criteria.
+2. Quest availability restrictions: level, class, race, prerequisites, chains,
+   repeatability, and current quest state.
+3. Real loot tables plus quest item drop eligibility.
+4. Gameobject quest objectives and pickup flow.
+5. Warrior level 1-6 playability: global cooldown, real warrior spells,
+   Heroic Strike next-swing behavior, combat log, health regen, rage decay, and
+   skills/weapon skills.
+6. G8 aggro, chase, and leash parity.
+7. G9 patrol/runtime stability for random and waypoint creatures.
+8. G12 shared runtime hardening: idle-grid unload/eviction, logout/relog
+   torture coverage, and real-client confirmation of shared moving-mob
+   death/loot.
+9. G10/G11 NPC services and relog polish after the state systems above exist.
 
 Current user-directed milestone: **Northshire Human Warrior playable slice with
-shared multiplayer state**. Current active work is G12 lazy DB creature grid
-loading as a measured scalability gate. G12's core shape is substantially
-implemented, so near-term work should keep shared `MapRuntime` authority intact
-while building G8/G9/G10/G11 fidelity. Use
-`docs/playable_execution_roadmap.md` for branchable workstreams and merge order,
-and `docs/g12_shared_mapruntime_plan.md` for shared-runtime design details that
-still matter.
+shared multiplayer state**. Current active planning target is the user-observed
+missing criteria for a believable playable Northshire: quest filtering, quest
+loot drops, gameobject objectives, warrior level 1-6 spell/GCD/resource/skill
+behavior, combat log feedback, CMaNGOS-like aggro/leash, and patrol stability.
+Use `docs/playable_execution_roadmap.md` for branchable workstreams and merge
+order, and `docs/g12_shared_mapruntime_plan.md` for shared-runtime design
+details that still matter.
 
 Recently verified:
 

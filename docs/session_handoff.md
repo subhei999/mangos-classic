@@ -12,25 +12,12 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 ## Current Branch And Worktree
 
 - Branch: `codex/rusty-mangos`.
-- Latest pushed commit reported by prior handoff: `3134dadc4`
-  (`[opcode] Handle selection and channel joins`), pushed to
-  `origin/codex/rusty-mangos`.
-- Worktree at this handoff update:
-  - current G12 grid-scalability Rust slice:
-    `crates/wow-network/src/world/maps/grid.rs`,
-    `crates/wow-network/src/world/maps/map/creature_combat.rs`,
-    `crates/wow-network/src/world/maps/map/creature_damage.rs`,
-    `crates/wow-network/src/world/maps/map/creature_lifecycle.rs`,
-    `crates/wow-network/src/world/maps/map/creature_loot.rs`,
-    `crates/wow-network/src/world/maps/map/creature_motion.rs`,
-    `crates/wow-network/src/world/maps/map/creature_snapshots.rs`,
-    `crates/wow-network/src/world/maps/map/players.rs`,
-    `crates/wow-network/src/world/maps/map_manager.rs`, and
-    `crates/wow-network/src/world/tests.rs`;
-  - roadmap/doc edits in progress:
-    `docs/playable_execution_roadmap.md`,
-    `docs/playable_gate_board.md`, `docs/rust_migration_plan.md`, and this
-    file.
+- Latest pushed commit: `b994ed02e` (`[g12] Track MapRuntime grid load state`),
+  pushed to `origin/codex/rusty-mangos`.
+- Worktree before this roadmap retargeting was clean.
+- Current doc edits retarget `docs/playable_execution_roadmap.md`,
+  `docs/playable_gate_board.md`, and this file around the user's Northshire
+  missing-success-criteria list.
 - Always re-run `git status --short --branch` before editing; this handoff may
   lag behind the live worktree.
 
@@ -39,20 +26,38 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 Current milestone: **Northshire Human Warrior playable slice with shared
 multiplayer state**.
 
-Current user direction: **turn lazy DB creature grid loading into a measured
-G12 scalability gate**. Movement visibility must stay grid-load-driven instead
-of silently regressing to DB-query-per-heartbeat, and `MapRuntime` should be
-ready for safe idle/unload lifecycle work.
+Current user direction: **retarget the parallel branch plan around the missing
+success criteria for a genuinely playable Northshire**.
 
-Near-term integration lane:
+User-observed missing criteria:
 
-1. Finish and verify the current G12 grid-load measurement slice.
-2. Commit it with the existing active-mover test additions in
-   `crates/wow-network/src/world/tests.rs` if desired.
-3. Next implementation target: actual idle-grid unload/eviction policy that
-   respects combat, loot, corpse, respawn, and motion timers.
-4. Keep shared `MapRuntime` authority intact while later G8/G9/G10/G11
-   fidelity branches build on this.
+1. Quest availability is not filtered by level/class/race/chain/prerequisite.
+2. Quest item drops are missing because real loot-table quest drop eligibility
+   is not wired.
+3. Gameobject quest pickup is missing.
+4. Warrior gameplay through level 6 is incomplete: no global cooldown, Heroic
+   Strike is toy-shaped, and other warrior spells are not functional.
+5. Combat log output is missing.
+6. Health regeneration and rage degeneration are missing.
+7. Weapon skills and general skill state are missing or stuck at level 1.
+8. Aggro/chase/leash behavior is not CMaNGOS-like enough when mobs are hit and
+   the player runs beyond the initial radius.
+9. NPC patrols start at server launch but stop working after a while.
+
+Recommended branch split now lives in `docs/playable_execution_roadmap.md` and
+uses low-overlap branches:
+
+- `codex/c2-northshire-grade`
+- `codex/c2-quest-eligibility`
+- `codex/c2-quest-loot-drops`
+- `codex/c2-gameobject-quests`
+- `codex/c2-warrior-spells-gcd`
+- `codex/c2-combat-log`
+- `codex/c2-regen-rage-ticks`
+- `codex/c2-skills-weapon-skill`
+- `codex/c2-aggro-leash-parity`
+- `codex/c2-patrol-stability`
+- `codex/c2-npc-relog-polish`
 
 Important scope rule: stay focused on the current goal, but use judgment. Fix
 blockers and safety or data-integrity guardrails when practical. Log useful
@@ -103,7 +108,7 @@ and log the follow-up.
 - Native VMAP/MMAP code is isolated behind safe Rust wrappers and C++ input
   validation/catch-all boundaries. Gameplay code should use those wrappers only.
 
-## Current Uncommitted G8/G9 Slice To Smoke
+## Recently Landed G8/G9 Context
 
 - Chase stop distance uses CMaNGOS-shaped combined melee reach instead of a
   fixed attack distance.
@@ -129,22 +134,13 @@ and log the follow-up.
 
 ## Roadmap Update From This Session
 
-- Added `docs/playable_execution_roadmap.md`.
-- Updated `docs/playable_gate_board.md` to point to the execution roadmap and
-  reflect the current priority: stabilize the in-flight G8/G9 slice, then use
-  branchable workstreams.
-- Updated `docs/rust_migration_plan.md` with a Checkpoint 2 pointer to the new
-  execution roadmap.
-
-The new roadmap defines:
-
-- the immediate integration lane;
-- Checkpoint 2 finish line;
-- phases A-E from shared combat stabilization through relog sanity;
-- parallel worker streams with suggested `codex/` branch names;
-- branch/merge strategy and conflict hot spots;
-- worker contracts and proof requirements;
-- final real-client closure pass.
+- Retargeted `docs/playable_execution_roadmap.md` around the user's nine
+  Northshire playability gaps.
+- Replaced broad branch buckets with narrower low-overlap branches for quest
+  eligibility, quest loot, gameobjects, warrior spells/GCD, combat log,
+  regen/rage, skills, aggro/leash, patrol stability, NPC/relog polish, and a
+  Northshire grading harness.
+- Updated `docs/playable_gate_board.md` priority order to match this plan.
 
 ## Tests Run
 
@@ -190,18 +186,20 @@ Baseline runs can fail if a live auto-restarting client stack holds
 
 ## Recommended Next Task
 
-Implement the first real idle-grid unload/eviction slice:
+Create `codex/c2-northshire-grade` from `codex/rusty-mangos` and add the
+Northshire playability grading checklist/harness coverage for the nine missing
+criteria. This should be mostly tests/docs, so it can land before deeper
+feature branches and give every worker a clear target.
 
-1. Decide the CMaNGOS-shaped idle delay and unload eligibility boundary.
-2. Add a map/runtime sweep that marks loaded grids idle, then unloads only when
-   no active players and no `UnloadBlocked` reason remains.
-3. Preserve or persist state correctly for combat, corpse, loot, respawn, and
-   active motion/timer cases.
-4. Add tests proving an idle clean grid unloads, blocked grids do not unload,
-   and returning players reload from DB/runtime state without duplicate spawns.
-5. Run `cargo test -p wow-network map_runtime_ --lib`,
-   `cargo test -p wow-network db_creature_ --lib`, and
-   `.\scripts\test-rust.cmd`.
+Then start the lowest-overlap implementation branches:
+
+1. `codex/c2-combat-log` for packet feedback helpers.
+2. `codex/c2-quest-eligibility` for quest marker/status filtering.
+3. `codex/c2-quest-loot-drops` and `codex/c2-gameobject-quests`, rebased onto
+   the quest-status API as needed.
+4. `codex/c2-regen-rage-ticks`, then `codex/c2-warrior-spells-gcd`.
+5. `codex/c2-skills-weapon-skill`.
+6. `codex/c2-aggro-leash-parity`, then `codex/c2-patrol-stability`.
 
 ## Key Files
 

@@ -49,22 +49,20 @@ events and packet builders, with clear branch ownership.
 
 ## Immediate Integration Lane
 
-The next merge should stabilize the current uncommitted G8/G9 work before new
-parallel branches diverge.
+The next planning merge should retarget the parallel branch list around the
+user-observed gaps that still keep Northshire from feeling playable.
 
-1. Real-client smoke current movement/threat changes.
-2. Commit the slice if the smoke is acceptable.
-3. Update `docs/session_handoff.md` with the exact result and tests.
-4. Branch the next workers from that commit.
+1. Keep `codex/rusty-mangos` as the clean integration branch.
+2. Branch workers from the latest green commit.
+3. Prefer branches whose owned files do not overlap.
+4. Merge by dependency order, not by who finishes first.
 
-Proof to collect before branching:
+Proof to collect before broad feature work:
 
-- wolves chase on smooth MMAP-backed paths without hover or vertical snapping;
-- stop-on-reach works for normal and larger-reach creatures;
-- waypoint creatures no longer move as one tiny no-wait spline per node;
-- two clients observe death-time motion stop and no stale local patrol/chase;
-- threat switching transfers creature attacks from player A to player B without
-  duplicate attack-start/stop spam;
+- a real-client Northshire checklist exists for the user-observed missing
+  criteria below;
+- the harness can prove at least the packet/DB side for each new system before
+  real-client smoke;
 - `.\scripts\test-rust.cmd` passes, or any failure is explained as a local
   locked-target artifact.
 
@@ -86,60 +84,101 @@ coherent early-game loop in the real client:
   state through the same `MapRuntime`;
 - pass the required scripts in `docs/rust_migration_plan.md`.
 
+## User-Observed Missing Criteria
+
+These are the current practical blockers for a believable playable Northshire:
+
+1. Quest availability is too broad: the client sees available quests without
+   CMaNGOS level, class, race, chain, prerequisite, and repeatability filters.
+2. Quest item drops are missing: kill quests work, but real loot tables and
+   quest-drop enablement are not wired.
+3. Gameobject quest pickup is missing.
+4. Warrior gameplay is not real enough through level 6: no global cooldown,
+   Heroic Strike is still toy-shaped, and broader warrior spell behavior is not
+   functional.
+5. Combat log output is missing.
+6. Health regeneration and rage degeneration are missing.
+7. Weapon skills and broader skill state are missing or stuck at level 1.
+8. Aggro/chase/leash behavior is not CMaNGOS-like enough: hit/assist/combat
+   activity should affect leash persistence, not simply reset at the initial
+   radius.
+9. NPC patrols start at server launch but stop working after a while.
+
+Treat these as the next branch subjects. The split below is designed to reduce
+cross-talk while still landing meaningful vertical slices.
+
 ## Phase Plan
 
-### Phase A: Stabilize Shared World Combat
+### Phase A: Pin The Northshire Grade
 
-Goal: make multiplayer creature combat feel authoritative instead of
-session-local.
+Goal: turn the user-observed missing criteria into a repeatable harness and
+real-client checklist.
 
-Primary gates: G8, G9, G12.
+Primary gates: all Checkpoint 2 gates.
 
 Deliverables:
 
-- finish the current movement/threat slice;
-- add or extend two-client torture coverage around combat, corpse, loot,
-  logout, relog, and respawn;
-- close the remaining stale-observer classes of bugs before adding broader
-  combat features;
-- keep lazy grid loading from regressing into movement-time DB radius queries.
+- a `Northshire Playability Grade` checklist in docs or harness output;
+- focused harness scenarios for quest visibility, quest drops, gameobjects,
+  warrior spells, combat log packet emission, regen/rage decay, skill state,
+  aggro/leash, and patrol continuity;
+- no gameplay implementation beyond test helpers unless the fix is tiny and
+  local.
 
 Merge proof:
 
-- focused `cargo test -p wow-network map_runtime_ --lib`;
-- focused `cargo test -p wow-network db_creature_ --lib`;
+- focused harness/unit tests for newly added checks;
 - `.\scripts\test-rust.cmd`;
-- real-client two-client smoke for shared death/loot and threat switch when the
-  branch touches player-visible multiplayer state.
+- written manual real-client checklist for anything not automatable yet.
 
-### Phase B: Make Combat Feel Like Classic
+### Phase B: Quest And Objective Fidelity
+
+Goal: quests should appear, progress, and complete only when CMaNGOS says they
+should.
+
+Primary gates: G4, G5, G10, G11.
+
+Deliverables:
+
+- quest giver availability filters by level, class, race, prerequisite,
+  exclusive group, chain state, repeatability, and quest status;
+- quest item drops through real CMaNGOS loot tables and quest-drop eligibility;
+- DB-backed gameobject visibility, query, activation, quest item pickup, and
+  respawn/availability where the selected Northshire route needs it;
+- relog proof for quest progress, quest item inventory, and completed state.
+
+Merge proof:
+
+- `.\scripts\test-starter-zone-flow.cmd`;
+- focused quest/loot/gameobject tests;
+- real-client smoke for yellow/gray markers, drop behavior, and pickup objects.
+
+### Phase C: Warrior Level 1-6 Playability
 
 Goal: starter creatures and the player should fight with CMaNGOS-shaped rules,
-not packet-demo rules.
+with enough warrior systems to play to level 6.
 
-Primary gate: G8.
+Primary gates: G6, G8, G11.
 
 Deliverables:
 
-- player offensive miss/dodge/parry/block/crit/glancing/crushing eligibility
-  where Classic allows it;
-- swing timer reset, offhand, queued next-swing, and retry behavior;
-- player and creature damage formulas tied to DB, DBC, and source-derived
-  stats;
-- moving melee leeway and fuller reach/model data;
-- threat expansion for healing, taunt/fixate-style behavior, group ownership,
-  pets, and edge-case victim selection.
+- global cooldown and per-spell cooldown state;
+- real warrior spell behavior needed through level 6, including a proper
+  Heroic Strike next-swing shape instead of fixture damage;
+- combat log packets for melee, spell, miss, damage, and resource-relevant
+  events;
+- health regeneration and rage degeneration on CMaNGOS-like ticks;
+- skill and weapon-skill state loaded, shown, persisted, and advanced by real
+  actions where needed.
 
 Merge proof:
 
-- `cargo test -p wow-network melee --lib`;
-- `cargo test -p wow-network creature_melee --lib`;
-- `cargo test -p wow-network player_main_hand --lib`;
-- `cargo test -p wow-network db_creature_threat --lib`;
+- focused warrior spell, GCD, combat log, regen/rage, and skill tests;
+- `.\scripts\test-starter-zone-flow.cmd`;
 - `.\scripts\test-rust.cmd`;
-- real-client combat smoke when packet shapes or timing are changed.
+- real-client smoke from level 1 through level 6 warrior actions.
 
-### Phase C: World Creature Fidelity And Navigation
+### Phase D: Creature Agency And Patrol Stability
 
 Goal: creatures should move and live in the world like DB-backed CMaNGOS
 creatures, not as local approximations.
@@ -152,6 +191,10 @@ Deliverables:
   behavior;
 - waypoint pre-send behavior, movement informs, and script hooks where needed;
 - return-home force-destination, shortcut, and high-velocity behavior;
+- CMaNGOS-like aggro, assistance, hit-reactivation, leash, evade, and chase
+  persistence rules;
+- patrol continuity over time, including after combat, death, respawn, grid
+  loading, and observer churn;
 - grid unload and idle eviction rules that preserve combat, corpse, loot, and
   respawn correctness;
 - query-count instrumentation proving grid loading is the hot path, not DB
@@ -166,7 +209,7 @@ Merge proof:
 - `.\scripts\test-rust.cmd`;
 - real-client motion smoke in Northshire open space and around obstacles.
 
-### Phase D: Quest, XP, Level, Trainer, Vendor, Inventory Loop
+### Phase E: Integration, Trainer, Vendor, And Relog
 
 Goal: the player can make durable character progress through normal starter
 zone actions.
@@ -193,43 +236,26 @@ Merge proof:
 - focused unit tests for packet builders and DB writes;
 - real-client smoke for every newly player-visible interaction.
 
-### Phase E: Death, Relog, And Long-Run Sanity
-
-Goal: the playable loop survives failure, disconnect, and persistence edges.
-
-Primary gates: G7, G11, G12.
-
-Deliverables:
-
-- logout/relog during combat, corpse, loot, ghost, and resurrection states;
-- player corpse/bones expiry behavior;
-- durability loss and resurrection sickness if needed for Classic fidelity;
-- reconnect behavior for visible players and shared creatures;
-- longer two-client smoke script or documented manual checklist.
-
-Merge proof:
-
-- `.\scripts\test-starter-zone-flow.cmd`;
-- `.\scripts\test-rust.cmd`;
-- dedicated two-client logout/relog torture coverage;
-- real-client smoke for death/release/reclaim/healer and relog edge cases.
-
 ## Parallel Workstreams
 
-Use these streams once the immediate integration lane is committed. Each stream
+Use these streams from the clean integration branch. Each stream
 should use a separate branch and avoid touching another stream's owned files
 unless the parent integrator explicitly coordinates it.
 
 | Stream | Suggested Branch | Primary Owner Scope | Good Worker Task | Merge Dependency |
 | --- | --- | --- | --- | --- |
-| Shared runtime hardening | `codex/c2-mapruntime-hardening` | `crates/wow-network/src/world/maps/`, shared creature lifecycle tests, multi-client harness | Grid unload/idle eviction, logout/relog torture, query-count assertions | Start after current G8/G9 movement-threat commit |
-| Combat math and timing | `codex/c2-combat-parity` | `crates/wow-network/src/world/combat/`, combat packet builders, combat tests | Offensive rolls, swing timer reset/queue, damage formula parity | Rebase after shared runtime changes that alter damage events |
-| Creature movement/navigation | `codex/c2-creature-navigation` | `crates/wow-network/native/`, `mmap_path.rs`, `combat/motion.rs`, DB creature motion tests | Random point pathing, waypoint pre-send, return-home fidelity | Needs current MMAP/chase slice committed |
-| Quest/progression | `codex/c2-progression-loop` | `world/quests.rs`, XP/level helpers, progression DB writes, starter harness steps | Kill credit to XP, quest reward XP/money/items, level-up packet/state | Should consume shared death finalizer and avoid combat internals |
-| NPC services | `codex/c2-npc-services` | `world/gossip.rs`, `world/vendors.rs`, trainer module if split, NPC interaction tests | Trainer list/learn path, vendor buy/sell polish, gossip affordance audit | Can run beside combat if DB mutation helpers are coordinated |
-| Persistence/relog | `codex/c2-relog-sanity` | character DB mutation helpers, starter harness relog checkpoints, session logout/login state | Relog matrix for quest, XP, inventory, trainer, death, corpse, creature respawn | Best after progression and death state APIs settle |
-| Harness and tooling | `codex/c2-harness-multiclient` | `bins/*flow-test`, `scripts/test-*.cmd`, packet test helpers | Dedicated multiclient world-flow test and scenario helpers | Can start early if it only adds helpers and tests |
-| Codebase sustainability | `codex/c2-world-split-followup` | mechanical module splits, no behavior changes | Split large tests or DB character modules along existing boundaries | Run between feature branches, not during hot behavior merges |
+| Northshire grading harness | `codex/c2-northshire-grade` | `bins/starter-zone-flow-test/`, `scripts/test-starter-zone-flow.*`, docs checklist | Add explicit pass/fail checks for the nine user-observed missing criteria | Can start immediately; should avoid gameplay code |
+| Quest availability | `codex/c2-quest-eligibility` | `crates/wow-network/src/world/quests.rs`, quest DB reads, quest packet tests | Filter quest markers/status/list by level, class, race, prerequisites, chains, repeatability, and current status | Can start immediately; avoid loot and gameobject logic |
+| Quest loot drops | `codex/c2-quest-loot-drops` | `crates/wow-network/src/world/loot.rs`, world loot DB helpers, inventory insertion tests | Use real loot tables and enable quest item drops only for eligible active quests | Needs stable quest-status read API; otherwise can run beside eligibility with a narrow interface |
+| Gameobject quest objectives | `codex/c2-gameobject-quests` | new/focused `world/gameobjects` module, gameobject DB helpers, object update/query tests | Spawn/query/use quest gameobjects and grant pickup objective/items with respawn rules | Can run beside quest loot; depends on quest-status API before final merge |
+| Warrior spells and GCD | `codex/c2-warrior-spells-gcd` | `world/spells.rs`, spell cooldown/GCD state, warrior spell tests | Implement global cooldown, spell validation, and real warrior actions through level 6 | Rebase after combat-log packet helpers if they touch shared builders |
+| Combat log packets | `codex/c2-combat-log` | combat packet builders/broadcast helpers, combat tests | Emit real combat log feedback for melee/spell damage, misses, failures, resource events | Can start immediately if it owns packet builders only |
+| Health and rage ticks | `codex/c2-regen-rage-ticks` | player runtime/session tick state, health/rage update builders, persistence tests | Add health regen and rage degeneration with CMaNGOS-like timing and packet updates | Coordinate with warrior spell branch on rage spend/gain fields |
+| Skills and weapon skills | `codex/c2-skills-weapon-skill` | character skill DB helpers, skill update packets, narrow combat skillup hook | Load/show/persist skills and weapon skills; advance weapon skill from real actions | Can run beside spells if combat hook is one small interface |
+| Aggro, chase, and leash parity | `codex/c2-aggro-leash-parity` | `world/combat/{aggro,motion,evade}`, MapRuntime combat events, chase tests | Compare CMaNGOS aggro/leash rules and fix reset/chase persistence while in combat or recently hit | Avoid patrol files except shared motion interface |
+| Patrol runtime stability | `codex/c2-patrol-stability` | DB creature waypoint/random motion, MapRuntime motion/lifecycle tests | Find why patrols stop after time; keep patrols alive across ticks, combat, death, respawn, and grid activity | Should merge after or carefully rebase around aggro/leash if both touch motion |
+| NPC services and relog polish | `codex/c2-npc-relog-polish` | `world/gossip.rs`, `world/vendors.rs`, trainer module, relog harness | Trainer/vendor/gossip polish plus relog checks after progression systems land | Merge after quest/spell/progression state exists |
+| Codebase sustainability | `codex/c2-world-split-followup` | mechanical module splits, no behavior changes | Split large tests or DB character modules along established boundaries | Run between feature branches, not during hot behavior merges |
 
 ## Branch And Merge Strategy
 
@@ -244,19 +270,23 @@ Recommended branch rules:
 - merge branches through the parent integrator in dependency order, not by who
   finishes first.
 
-Suggested merge order after the current uncommitted slice:
+Suggested merge order:
 
-1. `codex/c2-harness-multiclient`, if it adds test infrastructure without
-   gameplay behavior.
-2. `codex/c2-mapruntime-hardening`, because many later branches depend on
-   authoritative shared state.
-3. `codex/c2-creature-navigation`, if it changes motion packets or path state.
-4. `codex/c2-combat-parity`, rebased onto shared runtime and navigation.
-5. `codex/c2-progression-loop`, because XP and quest reward hooks should attach
-   to settled death/reward finalizers.
-6. `codex/c2-npc-services`, if trainer/vendor changes are mostly independent.
-7. `codex/c2-relog-sanity`, once the state it verifies exists.
-8. mechanical split branches between feature merges when the tree is green.
+1. `codex/c2-northshire-grade`, because it gives every branch a target.
+2. `codex/c2-combat-log`, if it is limited to packet builders/helpers.
+3. `codex/c2-quest-eligibility`, because quest status is the dependency for
+   quest drops and gameobjects.
+4. `codex/c2-quest-loot-drops` and `codex/c2-gameobject-quests`, rebased onto
+   quest eligibility when needed.
+5. `codex/c2-regen-rage-ticks`, then `codex/c2-warrior-spells-gcd`, because
+   warrior spell behavior needs resource timing to be real.
+6. `codex/c2-skills-weapon-skill`, before deeper combat math depends on skill
+   values.
+7. `codex/c2-aggro-leash-parity`.
+8. `codex/c2-patrol-stability`, after aggro/leash if both touch creature
+   motion.
+9. `codex/c2-npc-relog-polish`, once quest/spell/progression state exists.
+10. mechanical split branches between feature merges when the tree is green.
 
 Conflict hot spots:
 
@@ -266,6 +296,8 @@ Conflict hot spots:
 - `crates/wow-network/src/world/maps/map_manager.rs`;
 - `crates/wow-network/src/world/combat/`;
 - `crates/wow-network/src/world/quests.rs`;
+- `crates/wow-network/src/world/loot.rs`;
+- `crates/wow-network/src/world/spells.rs`;
 - `crates/wow-db/src/character.rs`.
 
 Avoid assigning two active workers to the same hot spot unless their write

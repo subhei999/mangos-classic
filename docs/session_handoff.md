@@ -109,13 +109,16 @@ and log the follow-up.
 - Native VMAP/MMAP code is isolated behind safe Rust wrappers and C++ input
   validation/catch-all boundaries. Gameplay code should use those wrappers only.
 - C2 integration has landed the Northshire grading checklist, combat log packet
-  helpers, and quest eligibility. The quest eligibility merge needed follow-up
-  fixes for real-client quest flow:
+  helpers, quest eligibility, and active quest item loot drops. The quest
+  eligibility merge needed follow-up fixes for real-client quest flow:
   - active/incomplete/reward quests are separated from newly available quests;
   - abandon clears the quest-log slot and allows reaccepting the abandoned row;
   - `SrcItemId/SrcItemCount` source items are granted on accept;
   - objective-free and source-item delivery quests can complete on accept;
   - quest reward completion packets now match the vanilla success/reward shape.
+- Quest loot now reads negative `ChanceOrQuestChance` rows and selects a quest
+  drop only when the player has an active incomplete item objective needing
+  that item. Full CMaNGOS loot-table rolling remains issue #58.
 
 ## Recently Landed G8/G9 Context
 
@@ -175,6 +178,11 @@ and log the follow-up.
 - `cargo test -p wow-network --lib` passed (`257` tests).
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-quest-reaccept-fix-test` passed.
+- `cargo test -p wow-network quest_loot --lib` passed after merging
+  `codex/c2-quest-loot-drops`.
+- `cargo test -p wow-network loot --lib` passed.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-merge-quest-loot-test` passed.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -197,12 +205,16 @@ Baseline runs can fail if a live auto-restarting client stack holds
   shape, but no eviction loop has been implemented yet.
 - G10/G11 remain broader red/yellow areas: NPC interaction fidelity and
   persistence/relog sanity across every major starter-zone action.
+- GitHub issue #58 tracks full CMaNGOS creature loot-table rolling beyond the
+  current active quest item-drop bridge.
 
 ## Recommended Next Task
 
-Restart the client stack and real-client smoke the corrected quest flow:
-abandon and reaccept a quest, turn in `A Threat Within`, and confirm `A Simple
-Letter` grants its source item and can progress. If that passes, continue
+Restart the client stack and real-client smoke the quest-loot merge. Suggested
+check: accept an item-drop quest in Northshire such as `Kobold Camp Cleanup` /
+nearby starter item objectives if available in the current DB, kill the relevant
+mob, loot it, and confirm an active required quest item can appear while
+non-active quest drops do not clutter normal loot. If that passes, continue
 merging the remaining C2 workstream branches one at a time with the same
 restart plus real-client check loop.
 

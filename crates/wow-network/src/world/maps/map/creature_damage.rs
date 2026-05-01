@@ -18,12 +18,26 @@ impl MapRuntime {
             .unwrap_or_else(|| request.damage.max(1));
         let damage = creature.health.min(requested_damage);
         creature.health = creature.health.saturating_sub(damage);
-        if creature.health == 0 {
+        let is_dead = creature.health == 0;
+        let motion_stop_packet = if is_dead && !matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            let stop = stop_db_creature_motion_runtime(creature);
+            Some(OutboundWorldPacket {
+                opcode: SMSG_MONSTER_MOVE,
+                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
+            })
+        } else {
+            None
+        };
+        if is_dead {
             creature.begin_corpse(request.now, request.now_epoch_secs);
-            self.active_creature_combats.remove(&creature_guid.raw());
         }
         let creature = creature.clone();
-        let is_dead = creature.health == 0;
+        self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
+        if is_dead {
+            self.active_creature_combats.remove(&creature_guid.raw());
+            self.creature_threats.remove(&creature_guid.raw());
+        }
         let update_body = if is_dead {
             build_db_creature_death_update_body(
                 creature_guid,
@@ -107,15 +121,20 @@ impl MapRuntime {
             let observer_packets = nearby_observers
                 .into_iter()
                 .flat_map(|session_id| {
-                    [
-                        (session_id, combat_flag_packet.clone()),
-                        (session_id, attack_stop_packet.clone()),
-                    ]
+                    motion_stop_packet
+                        .iter()
+                        .cloned()
+                        .chain([
+                            combat_flag_packet.clone(),
+                            attack_stop_packet.clone(),
+                        ])
+                        .map(move |packet| (session_id, packet))
                 })
                 .collect();
             Some(DbCreatureDeathFinalizationEvent {
                 killed: creature_guid,
                 respawn_epoch_secs: creature.respawn_epoch_secs,
+                motion_stop_packet,
                 attack_stop_packet,
                 combat_flag_packet,
                 observer_packets,
@@ -123,12 +142,21 @@ impl MapRuntime {
         } else {
             None
         };
+        let target_switch = if is_dead {
+            None
+        } else {
+            self.switch_db_creature_threat_victim_if_needed(
+                creature_guid,
+                request.exclude_character_guid,
+            )?
+        };
         Ok(Some(DbCreatureDamageEvent {
             damage,
             creature,
             attacker_state_body,
             update_body,
             death_finalization,
+            target_switch,
             observer_packets,
         }))
     }

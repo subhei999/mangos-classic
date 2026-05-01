@@ -35,6 +35,7 @@ include!("server/player_login.rs");
 include!("server/logout.rs");
 include!("server/movement.rs");
 include!("server/visibility.rs");
+include!("server/action_buttons.rs");
 
 pub struct WorldServer {
     bind_addr: SocketAddr,

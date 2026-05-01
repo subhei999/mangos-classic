@@ -36,6 +36,7 @@ struct MapRuntime {
     players: HashMap<u32, PlayerRuntime>,
     creatures: HashMap<u64, DbCreatureRuntime>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
+    creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
 }
 
@@ -55,6 +56,7 @@ struct DbCreatureDamageEvent {
     attacker_state_body: Vec<u8>,
     update_body: Vec<u8>,
     death_finalization: Option<DbCreatureDeathFinalizationEvent>,
+    target_switch: Option<DbCreatureThreatTargetSwitchEvent>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
@@ -74,8 +76,19 @@ struct DbCreatureDamageRequest {
 struct DbCreatureDeathFinalizationEvent {
     killed: ObjectGuid,
     respawn_epoch_secs: Option<u64>,
+    motion_stop_packet: Option<OutboundWorldPacket>,
     attack_stop_packet: OutboundWorldPacket,
     combat_flag_packet: OutboundWorldPacket,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug)]
+struct DbCreatureThreatTargetSwitchEvent {
+    attacker: ObjectGuid,
+    old_victim: ObjectGuid,
+    new_victim: ObjectGuid,
+    combat: CreatureCombatState,
+    direct_packets: Vec<OutboundWorldPacket>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
@@ -85,6 +98,13 @@ struct DbCreatureLifecycleEvent {
     direct_packets: Vec<OutboundWorldPacket>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
     clear_respawn_guid: Option<u32>,
+}
+
+#[derive(Debug)]
+struct DbCreatureLootReleaseEvent {
+    creature: DbCreatureRuntime,
+    direct_packet: OutboundWorldPacket,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 impl MapRuntime {
@@ -97,6 +117,7 @@ impl MapRuntime {
             players: HashMap::new(),
             creatures: HashMap::new(),
             active_creature_combats: HashMap::new(),
+            creature_threats: HashMap::new(),
             corpses: HashMap::new(),
         }
     }
@@ -108,4 +129,5 @@ include!("map/creature_damage.rs");
 include!("map/creature_lifecycle.rs");
 include!("map/creature_loot.rs");
 include!("map/creature_combat.rs");
+include!("map/creature_motion.rs");
 include!("map/spatial.rs");

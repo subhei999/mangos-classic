@@ -4,7 +4,7 @@
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = session.active_character.clone() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
@@ -24,7 +24,17 @@
         )
         .await?;
 
-        for assistant in select_db_creature_assist_targets(session, attacker) {
+        let assistants = shared_world
+            .maps
+            .select_db_creature_assist_targets(map_id, attacker, &character)
+            .await;
+        let assistant_targets = if let Some((caller, assistants)) = assistants {
+            session.db_creatures.insert(attacker.raw(), caller);
+            assistants
+        } else {
+            Vec::new()
+        };
+        for assistant in assistant_targets {
             if begin_shared_db_creature_combat(shared_world, session, assistant, Instant::now()).await {
                 send_db_creature_combat_start(
                     stream,
@@ -125,6 +135,9 @@ async fn send_active_db_creature_attack(
         .maps
         .active_db_creature_combats_for_victim(character.position.map_id, player)
         .await;
+    if !active_combats.is_empty() {
+        send_player_combat_flag_if_changed(stream, session, true, header_crypto).await?;
+    }
     session.active_creature_combats = active_combats
         .iter()
         .map(|combat| (combat.attacker.raw(), *combat))
@@ -347,6 +360,42 @@ async fn defer_ready_db_creature_swing_retry(
     }
 }
 
+async fn send_db_creature_threat_target_switch(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    event: Option<DbCreatureThreatTargetSwitchEvent>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(event) = event else {
+        return Ok(());
+    };
+    let current_player = session
+        .active_character
+        .as_ref()
+        .map(|character| ObjectGuid::new(HighGuid::Player, 0, character.guid));
+    if current_player == Some(event.old_victim) {
+        session.active_creature_combats.remove(&event.attacker.raw());
+    }
+    if current_player == Some(event.new_victim) {
+        session
+            .active_creature_combats
+            .insert(event.attacker.raw(), event.combat);
+        send_player_combat_flag_if_changed(stream, session, true, header_crypto).await?;
+    }
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    shared_world.sessions.dispatch(event.observer_packets).await;
+    Ok(())
+}
+
 #[cfg(test)]
 fn select_db_creature_aggro_target(session: &WorldSessionState) -> Option<ObjectGuid> {
     select_db_creature_aggro_targets(session).into_iter().next()
@@ -395,6 +444,7 @@ fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGu
     targets.into_iter().map(|(_, guid)| guid).collect()
 }
 
+#[cfg(test)]
 fn select_db_creature_assist_targets(
     session: &mut WorldSessionState,
     caller_guid: ObjectGuid,

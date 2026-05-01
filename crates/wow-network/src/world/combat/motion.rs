@@ -6,6 +6,19 @@ struct StartedCreatureMotion {
     duration: Duration,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StoppedCreatureMotion {
+    position: WorldPosition,
+    spline_id: u32,
+}
+
+// The LOS-only straight chase path reused the creature's start Z for the
+// destination, which made wolves hover/jitter on uneven Northshire terrain.
+// Keep chase on mmap-backed paths until the fast path can sample terrain/nav
+// height like CMaNGOS' straight-line PathFinder branch.
+const DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED: bool = false;
+
+#[cfg(test)]
 fn advance_db_creature_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
@@ -14,6 +27,10 @@ fn advance_db_creature_motion(
     let Some(creature) = session.db_creatures.get_mut(&creature_guid.raw()) else {
         return;
     };
+    advance_db_creature_motion_runtime(creature, now);
+}
+
+fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Instant) {
     match &creature.motion {
         CreatureMotionState::Idle => {}
         CreatureMotionState::Random(random) => {
@@ -102,32 +119,58 @@ fn advance_db_creature_motion(
 
 fn advance_db_creature_waypoint_index(creature: &mut DbCreatureRuntime, arrived_node: usize) {
     let node_count = creature.spawn.waypoint_path.len();
+    let (next_index, next_forward) = db_creature_next_waypoint_state(
+        node_count,
+        creature.default_movement_type(),
+        arrived_node,
+        creature.waypoint_forward,
+    );
+    creature.waypoint_next_index = next_index;
+    creature.waypoint_forward = next_forward;
+}
+
+fn db_creature_next_waypoint_state(
+    node_count: usize,
+    movement_type: u8,
+    arrived_node: usize,
+    waypoint_forward: bool,
+) -> (usize, bool) {
     if node_count == 0 {
-        creature.waypoint_next_index = 0;
-        return;
+        return (0, waypoint_forward);
     }
-    if creature.default_movement_type() == DB_MOTION_TYPE_LINEAR_WAYPOINT && node_count > 1 {
-        if creature.waypoint_forward && arrived_node + 1 >= node_count {
-            creature.waypoint_forward = false;
-        } else if !creature.waypoint_forward && arrived_node == 0 {
-            creature.waypoint_forward = true;
-        }
-        creature.waypoint_next_index = if creature.waypoint_forward {
+    if movement_type == DB_MOTION_TYPE_LINEAR_WAYPOINT && node_count > 1 {
+        let next_forward = if waypoint_forward && arrived_node + 1 >= node_count {
+            false
+        } else if !waypoint_forward && arrived_node == 0 {
+            true
+        } else {
+            waypoint_forward
+        };
+        let next_index = if next_forward {
             arrived_node.saturating_add(1).min(node_count - 1)
         } else {
             arrived_node.saturating_sub(1)
         };
-    } else {
-        creature.waypoint_next_index = (arrived_node + 1) % node_count;
+        return (next_index, next_forward);
     }
+    ((arrived_node + 1) % node_count, waypoint_forward)
 }
 
+#[cfg(test)]
 fn start_db_creature_random_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get(&creature_guid.raw())?;
+    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    start_db_creature_random_motion_runtime(&session.db_creature_navigation, creature, now)
+}
+
+fn start_db_creature_random_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> Option<StartedCreatureMotion> {
     if !matches!(creature.motion, CreatureMotionState::Idle) {
         return None;
     }
@@ -143,7 +186,7 @@ fn start_db_creature_random_motion(
         creature.next_spline_id,
     )?;
     let path_result = db_creature_path_to_destination(
-        &session.db_creature_navigation,
+        navigation,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -152,15 +195,11 @@ fn start_db_creature_random_motion(
     let destination = *path.last()?;
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {
-        session
-            .db_creatures
-            .get_mut(&creature_guid.raw())?
-            .next_random_move_at =
+        creature.next_random_move_at =
             Some(now + Duration::from_millis(DB_CREATURE_RANDOM_DELAY_MIN_MILLIS));
         return None;
     }
     let duration = db_creature_walk_path_motion_duration(start, &path);
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
@@ -179,12 +218,21 @@ fn start_db_creature_random_motion(
     })
 }
 
+#[cfg(test)]
 fn start_db_creature_waypoint_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get(&creature_guid.raw())?;
+    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    start_db_creature_waypoint_motion_runtime(&session.db_creature_navigation, creature, now)
+}
+
+fn start_db_creature_waypoint_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> Option<StartedCreatureMotion> {
     if !matches!(creature.motion, CreatureMotionState::Idle) {
         return None;
     }
@@ -195,43 +243,32 @@ fn start_db_creature_waypoint_motion(
     let node_index = creature
         .waypoint_next_index
         .min(creature.spawn.waypoint_path.len().saturating_sub(1));
-    let node = creature.spawn.waypoint_path.get(node_index)?;
     let start = creature.current_position;
-    let raw_destination = WorldPosition::new(
-        creature.spawn.map,
-        node.position_x,
-        node.position_y,
-        node.position_z,
-        node.orientation.unwrap_or(creature.current_position.orientation),
-    );
-    let path_result = db_creature_path_to_destination(
-        &session.db_creature_navigation,
+    let (path, arrived_node) = db_creature_waypoint_buffered_path(
+        navigation,
+        creature,
         start,
-        raw_destination,
-        CreaturePathMode::Full,
+        node_index,
     )?;
-    let path = path_result.points;
     let destination = *path.last()?;
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {
-        let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
         creature.current_position = destination;
-        advance_db_creature_waypoint_index(creature, node_index);
+        advance_db_creature_waypoint_index(creature, arrived_node);
         let wait_time = creature
             .spawn
             .waypoint_path
-            .get(node_index)
+            .get(arrived_node)
             .map(|node| node.wait_time)
             .unwrap_or(0);
         creature.next_waypoint_move_at = Some(now + Duration::from_millis(wait_time as u64));
         return None;
     }
     let duration = db_creature_walk_path_motion_duration(start, &path);
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
-        node_index,
+        node_index: arrived_node,
         start,
         destination,
         path: path.clone(),
@@ -247,6 +284,66 @@ fn start_db_creature_waypoint_motion(
     })
 }
 
+fn db_creature_waypoint_buffered_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    first_node_index: usize,
+) -> Option<(Vec<WorldPosition>, usize)> {
+    let node_count = creature.spawn.waypoint_path.len();
+    if node_count == 0 {
+        return None;
+    }
+    let movement_type = creature.default_movement_type();
+    let mut path = Vec::new();
+    let mut current_start = start;
+    let mut node_index = first_node_index.min(node_count.saturating_sub(1));
+    let mut waypoint_forward = creature.waypoint_forward;
+    let mut arrived_node = node_index;
+
+    for _ in 0..node_count {
+        let node = creature.spawn.waypoint_path.get(node_index)?;
+        let raw_destination = WorldPosition::new(
+            creature.spawn.map,
+            node.position_x,
+            node.position_y,
+            node.position_z,
+            node.orientation.unwrap_or(current_start.orientation),
+        );
+        let path_result = db_creature_path_to_destination(
+            navigation,
+            current_start,
+            raw_destination,
+            CreaturePathMode::Full,
+        )?;
+        let mut leg = path_result.points;
+        let leg_destination = *leg.last()?;
+        path.append(&mut leg);
+        arrived_node = node_index;
+
+        let duration = db_creature_walk_path_motion_duration(start, &path);
+        if node.wait_time != 0
+            || duration.as_millis() as u64 >= DB_CREATURE_WAYPOINT_MIN_PATH_MILLIS
+            || node_count <= 1
+        {
+            break;
+        }
+
+        let next = db_creature_next_waypoint_state(
+            node_count,
+            movement_type,
+            node_index,
+            waypoint_forward,
+        );
+        node_index = next.0;
+        waypoint_forward = next.1;
+        current_start = leg_destination;
+    }
+
+    (!path.is_empty()).then_some((path, arrived_node))
+}
+
+#[cfg(test)]
 fn start_db_creature_chase_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
@@ -254,12 +351,30 @@ fn start_db_creature_chase_motion(
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let target_position = session.active_character.as_ref()?.position;
-    let creature = session.db_creatures.get(&creature_guid.raw())?;
-    let start = creature.current_position;
-    let path_result = db_creature_chase_path(
+    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    start_db_creature_chase_motion_runtime(
         &session.db_creature_navigation,
+        creature,
+        target,
+        target_position,
+        now,
+    )
+}
+
+fn start_db_creature_chase_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &mut DbCreatureRuntime,
+    target: ObjectGuid,
+    target_position: WorldPosition,
+    now: Instant,
+) -> Option<StartedCreatureMotion> {
+    let start = creature.current_position;
+    let stop_distance = db_creature_chase_stop_distance(creature);
+    let path_result = db_creature_chase_path(
+        navigation,
         start,
         target_position,
+        stop_distance,
     )?;
     let path = path_result.points;
     let destination = *path.last()?;
@@ -284,7 +399,6 @@ fn start_db_creature_chase_motion(
         return None;
     }
     let duration = db_creature_path_motion_duration(start, &path);
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
@@ -304,25 +418,36 @@ fn start_db_creature_chase_motion(
     })
 }
 
+#[cfg(test)]
 fn start_db_creature_return_home_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get(&creature_guid.raw())?;
+    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    start_db_creature_return_home_motion_runtime(&session.db_creature_navigation, creature, now)
+}
+
+fn start_db_creature_return_home_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> Option<StartedCreatureMotion> {
+    if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
+        return None;
+    }
     let start = creature.current_position;
     let raw_destination = creature.home_position;
     if start.map_id != raw_destination.map_id
         || !world_position_is_finite(start)
         || !world_position_is_finite(raw_destination)
     {
-        let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
         creature.current_position = raw_destination;
         creature.motion = CreatureMotionState::Idle;
         return None;
     }
     let path_result = db_creature_path_to_destination(
-        &session.db_creature_navigation,
+        navigation,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -331,13 +456,11 @@ fn start_db_creature_return_home_motion(
     let destination = *path.last()?;
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {
-        let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
         creature.current_position = destination;
         creature.motion = CreatureMotionState::Idle;
         return None;
     }
     let duration = db_creature_path_motion_duration(start, &path);
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
@@ -353,6 +476,16 @@ fn start_db_creature_return_home_motion(
         spline_id,
         duration,
     })
+}
+
+fn stop_db_creature_motion_runtime(creature: &mut DbCreatureRuntime) -> StoppedCreatureMotion {
+    let stop = StoppedCreatureMotion {
+        position: creature.current_position,
+        spline_id: creature.next_spline_id,
+    };
+    creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.motion = CreatureMotionState::Idle;
+    stop
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -400,17 +533,85 @@ fn db_creature_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
+    stop_distance: f32,
 ) -> Option<DbCreaturePath> {
     if !db_creature_pathing_check(navigation, start, target_position).is_clear() {
         return None;
     }
-    let stop_distance = ATTACK_DISTANCE_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR;
-    db_creature_path_to_destination(
+    if DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED
+        && db_creature_can_use_straight_chase_path(navigation, start, target_position)
+    {
+        if let Some(points) =
+            db_creature_straight_path(start, target_position, CreaturePathMode::StopShort(stop_distance))
+        {
+            return Some(DbCreaturePath {
+                flags: DbCreaturePathFlags::NORMAL,
+                points,
+            });
+        }
+    }
+
+    let mut path = db_creature_path_to_destination(
         navigation,
         start,
         target_position,
-        CreaturePathMode::StopShort(stop_distance),
-    )
+        CreaturePathMode::Full,
+    )?;
+    path.points = if path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH) {
+        db_creature_trim_path_to_travel_distance(start, path.points, stop_distance)?
+    } else {
+        db_creature_cut_chase_path(navigation, start, path.points, target_position, stop_distance)?
+    };
+    Some(path)
+}
+
+fn db_creature_chase_stop_distance(creature: &DbCreatureRuntime) -> f32 {
+    combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS)
+        * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
+}
+
+fn db_creature_can_use_straight_chase_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    start: WorldPosition,
+    target_position: WorldPosition,
+) -> bool {
+    if !db_creature_has_native_los_data_for_positions(navigation, start, target_position) {
+        return false;
+    }
+    if !db_creature_navigation_check(navigation, start, target_position).is_clear() {
+        return false;
+    }
+    if (start.z - target_position.z).abs() >= 5.0 {
+        return false;
+    }
+    distance_2d(start.x, start.y, target_position.x, target_position.y) <= 200.0
+}
+
+fn db_creature_cut_chase_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    start: WorldPosition,
+    path: Vec<WorldPosition>,
+    target_position: WorldPosition,
+    stop_distance: f32,
+) -> Option<Vec<WorldPosition>> {
+    if path.is_empty() {
+        return None;
+    }
+    let stop_distance_sq = stop_distance * stop_distance;
+    let mut cut = Vec::new();
+    for point in path.iter().copied() {
+        cut.push(point);
+        let dx = point.x - target_position.x;
+        let dy = point.y - target_position.y;
+        if dx * dx + dy * dy > stop_distance_sq {
+            continue;
+        }
+        if !db_creature_has_line_of_sight(navigation, point, target_position) {
+            continue;
+        }
+        return Some(cut);
+    }
+    db_creature_trim_path_to_travel_distance(start, path, stop_distance)
 }
 
 fn db_creature_path_to_destination(
@@ -560,6 +761,30 @@ fn db_creature_has_line_of_sight(
         false,
     )
     .unwrap_or(true)
+}
+
+fn db_creature_has_native_los_data_for_positions(
+    navigation: &DbCreatureNavigationGuardrail,
+    start: WorldPosition,
+    target_position: WorldPosition,
+) -> bool {
+    if navigation.world_data_files.vmap_tiles.is_empty() {
+        return false;
+    }
+    let map_id = start.map_id;
+    let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(start) else {
+        return false;
+    };
+    let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(target_position) else {
+        return false;
+    };
+    navigation.world_data_files.has_vmap_support_for_map(map_id)
+        && navigation
+            .world_data_files
+            .has_vmap_tile(map_id, start_tile_x, start_tile_y)
+        && navigation
+            .world_data_files
+            .has_vmap_tile(map_id, target_tile_x, target_tile_y)
 }
 
 fn db_creature_has_valid_path(

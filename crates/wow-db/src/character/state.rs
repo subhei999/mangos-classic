@@ -167,10 +167,7 @@ pub async fn update_character_death_state(
     Ok(result.rows_affected())
 }
 
-pub async fn save_player_corpse(
-    pool: &MySqlPool,
-    corpse: &NewPlayerCorpse,
-) -> Result<(), DbError> {
+pub async fn save_player_corpse(pool: &MySqlPool, corpse: &NewPlayerCorpse) -> Result<(), DbError> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM corpse WHERE player = ? AND corpse_type <> 0")
         .bind(corpse.player)
@@ -298,13 +295,11 @@ pub async fn learn_character_spell(
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query(
-        "INSERT INTO character_spell (guid, spell, active, disabled) VALUES (?, ?, 1, 0)",
-    )
-    .bind(guid)
-    .bind(spell)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO character_spell (guid, spell, active, disabled) VALUES (?, ?, 1, 0)")
+        .bind(guid)
+        .bind(spell)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
 
     Ok(Some(new_money))
@@ -322,6 +317,42 @@ pub async fn get_character_actions(
     .await?;
 
     Ok(rows)
+}
+
+pub async fn upsert_character_action(
+    pool: &MySqlPool,
+    guid: u32,
+    button: u8,
+    action: u32,
+    action_type: u8,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO character_action (guid, button, action, type) \
+         VALUES (?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE action = VALUES(action), type = VALUES(type)",
+    )
+    .bind(guid)
+    .bind(button)
+    .bind(action)
+    .bind(action_type)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn delete_character_action(
+    pool: &MySqlPool,
+    guid: u32,
+    button: u8,
+) -> Result<(), DbError> {
+    sqlx::query("DELETE FROM character_action WHERE guid = ? AND button = ?")
+        .bind(guid)
+        .bind(button)
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }
 
 pub async fn get_character_skills(
@@ -477,4 +508,3 @@ pub async fn get_character_reputations(
 
     Ok(rows)
 }
-

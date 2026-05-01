@@ -350,10 +350,15 @@ async fn handle_loot_release(
         warn!("Ignoring loot release before character login");
         return Ok(());
     };
-    let Some(creature) = shared_world
+    let Some(event) = shared_world
         .maps
-        .release_db_creature_loot(character.position.map_id, target.raw(), Instant::now())
-        .await
+        .release_db_creature_loot(
+            character.position.map_id,
+            target.raw(),
+            Instant::now(),
+            Some(character.guid),
+        )
+        .await?
     else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -361,9 +366,7 @@ async fn handle_loot_release(
         );
         return Ok(());
     };
-    let health = creature.health;
-    let dynamic_flags = creature.dynamic_flags();
-    session.db_creatures.insert(target.raw(), creature);
+    session.db_creatures.insert(target.raw(), event.creature);
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,
@@ -373,10 +376,11 @@ async fn handle_loot_release(
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
-        &build_db_creature_state_update_body(target, health, dynamic_flags)?,
+        event.direct_packet.opcode,
+        &event.direct_packet.body,
         Some(header_crypto),
     )
-    .await
+    .await?;
+    shared_world.sessions.dispatch(event.observer_packets).await;
+    Ok(())
 }
-

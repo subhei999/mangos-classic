@@ -277,6 +277,9 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_SET_ACTION_BUTTON => {
+                            handle_set_action_button(&character_db_pool, &body, &session).await?;
+                        }
                         CMSG_DESTROYITEM => {
                             handle_destroy_item(
                                 &mut stream,
@@ -771,4 +774,3 @@ fn advance_world_tick_deadline(next_world_tick_at: &mut Instant, now: Instant) {
         *next_world_tick_at += tick;
     }
 }
-

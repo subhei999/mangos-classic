@@ -272,6 +272,7 @@ impl MapRuntime {
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
         if let Some(grid) = self
             .grids
@@ -284,9 +285,10 @@ impl MapRuntime {
             }
         }
 
+        self.clear_db_creature_combats_for_victim(player_guid);
         let destroy = OutboundWorldPacket {
             opcode: SMSG_DESTROY_OBJECT,
-            body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, character_guid)),
+            body: build_destroy_guid_body(player_guid),
         };
         self.nearby_player_guids(
             player.position,

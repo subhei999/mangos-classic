@@ -5,6 +5,12 @@ struct CreatureCombatState {
     next_swing_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CreatureThreatEntry {
+    victim: ObjectGuid,
+    threat: f32,
+}
+
 #[derive(Debug, Clone)]
 struct Creature {
     spawn: CreatureSpawnQuery,

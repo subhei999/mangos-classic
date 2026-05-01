@@ -146,6 +146,7 @@ async fn handle_cast_spell(
             {
                 let damage = event.damage;
                 let death_finalization = event.death_finalization;
+                let target_switch = event.target_switch;
                 let is_dead = death_finalization.is_some();
                 session
                     .db_creatures
@@ -195,6 +196,14 @@ async fn handle_cast_spell(
                     )
                     .await?;
                 } else {
+                    send_db_creature_threat_target_switch(
+                        stream,
+                        shared_world,
+                        session,
+                        target_switch,
+                        header_crypto,
+                    )
+                    .await?;
                     begin_shared_db_creature_combat(shared_world, session, target, Instant::now())
                         .await;
                 }

@@ -218,9 +218,18 @@ async fn send_db_creature_motion_stop(
     creature_guid: ObjectGuid,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(body) = build_db_creature_motion_stop_body(session, creature_guid)? else {
+    let Some((creature, stop)) = broadcast
+        .shared_world
+        .maps
+        .stop_db_creature_motion(broadcast.map_id, creature_guid)
+        .await
+    else {
         return Ok(());
     };
+    session
+        .db_creatures
+        .insert(creature_guid.raw(), creature.clone());
+    let body = build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?;
     send_packet(
         stream,
         SMSG_MONSTER_MOVE,
@@ -228,10 +237,9 @@ async fn send_db_creature_motion_stop(
         Some(&mut *header_crypto),
     )
     .await?;
-    broadcast_db_creature_packet(
+    broadcast_db_creature_snapshot_packet(
         broadcast,
-        session,
-        creature_guid,
+        creature,
         SMSG_MONSTER_MOVE,
         body,
     )
@@ -239,6 +247,7 @@ async fn send_db_creature_motion_stop(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_db_creature_motion_stop_body(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,

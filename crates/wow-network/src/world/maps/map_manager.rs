@@ -349,10 +349,14 @@ impl MapRuntimeManager {
         map_id: u32,
         creature_guid: u64,
         now: Instant,
-    ) -> Option<DbCreatureRuntime> {
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureLootReleaseEvent>> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let creature = map.lock().await.release_db_creature_loot(creature_guid, now);
-        creature
+        let event = map
+            .lock()
+            .await
+            .release_db_creature_loot(creature_guid, now, exclude_character_guid);
+        event
     }
 
     async fn begin_db_creature_combat(
@@ -446,6 +450,104 @@ impl MapRuntimeManager {
             .await
             .defer_ready_db_creature_swing_retry(attacker, victim, now);
         combat
+    }
+
+    async fn advance_db_creature_motion(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        now: Instant,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map
+            .lock()
+            .await
+            .advance_db_creature_motion(creature_guid, now);
+        creature
+    }
+
+    async fn start_db_creature_idle_motion(
+        &self,
+        map_id: u32,
+        navigation: &DbCreatureNavigationGuardrail,
+        creature_guid: ObjectGuid,
+        now: Instant,
+    ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let motion = map
+            .lock()
+            .await
+            .start_db_creature_idle_motion(navigation, creature_guid, now);
+        motion
+    }
+
+    async fn start_db_creature_chase_motion(
+        &self,
+        map_id: u32,
+        navigation: &DbCreatureNavigationGuardrail,
+        creature_guid: ObjectGuid,
+        target: ObjectGuid,
+        target_position: WorldPosition,
+        now: Instant,
+    ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let motion = map.lock().await.start_db_creature_chase_motion(
+            navigation,
+            creature_guid,
+            target,
+            target_position,
+            now,
+        );
+        motion
+    }
+
+    async fn start_db_creature_return_home_motion(
+        &self,
+        map_id: u32,
+        navigation: &DbCreatureNavigationGuardrail,
+        creature_guid: ObjectGuid,
+        now: Instant,
+    ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let motion = map
+            .lock()
+            .await
+            .start_db_creature_return_home_motion(navigation, creature_guid, now);
+        motion
+    }
+
+    async fn stop_db_creature_motion(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+    ) -> Option<(DbCreatureRuntime, StoppedCreatureMotion)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let motion = map.lock().await.stop_db_creature_motion(creature_guid);
+        motion
+    }
+
+    async fn prepare_db_creature_evade(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map.lock().await.prepare_db_creature_evade(creature_guid);
+        creature
+    }
+
+    async fn select_db_creature_assist_targets(
+        &self,
+        map_id: u32,
+        caller_guid: ObjectGuid,
+        character: &ActiveCharacter,
+    ) -> Option<(DbCreatureRuntime, Vec<ObjectGuid>)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let targets = map
+            .lock()
+            .await
+            .select_db_creature_assist_targets(caller_guid, character);
+        targets
     }
 
     async fn get_or_create_map(&self, map_id: u32, instance_id: u32) -> Arc<Mutex<MapRuntime>> {

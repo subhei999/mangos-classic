@@ -930,8 +930,8 @@ pub async fn get_nearby_gameobject_spawns(
                 CAST(gameobject.rotation3 AS DOUBLE) AS rotation3, \
                 gameobject.spawntimesecsmin AS spawn_time_secs_min, \
                 gameobject.spawntimesecsmax AS spawn_time_secs_max, \
-                COALESCE(gameobject_addon.state, -1) AS state, \
-                COALESCE(gameobject_addon.animprogress, 100) AS anim_progress, \
+                CAST(COALESCE(gameobject_addon.state, -1) AS SIGNED) AS state, \
+                CAST(COALESCE(gameobject_addon.animprogress, 100) AS UNSIGNED) AS anim_progress, \
                 gameobject_template.entry AS template_entry, \
                 gameobject_template.type AS template_object_type, \
                 gameobject_template.displayId AS template_display_id, \

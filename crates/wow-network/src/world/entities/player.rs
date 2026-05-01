@@ -88,6 +88,7 @@ fn write_other_player_update_values(
             | (u32::from(player.class == 1) << 24),
     )?;
     set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.selected_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, BASE_ATTACK_TIME_MS)?;
@@ -166,6 +167,7 @@ fn write_minimal_player_update_values(
     )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_0, unit_bytes_0(character))?;
     set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, None)?;
     let combat_stats = player_combat_stats(character, world_stats, equipped_templates);
     set_update_value(
         &mut values,
@@ -392,6 +394,33 @@ fn set_player_vital_update_values(
     set_update_value(values, UNIT_FIELD_BASE_HEALTH, world_stats.base_health)?;
 
     Ok(())
+}
+
+fn set_object_guid_update_values(
+    values: &mut [Option<u32>],
+    field: usize,
+    guid: Option<ObjectGuid>,
+) -> anyhow::Result<()> {
+    let raw = guid.unwrap_or(ObjectGuid::EMPTY).raw();
+    set_update_value(values, field, raw as u32)?;
+    set_update_value(values, field + 1, (raw >> 32) as u32)?;
+    Ok(())
+}
+
+fn build_player_selection_update_body(
+    player_guid: u32,
+    selected_target: Option<ObjectGuid>,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, player_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, selected_target)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
 }
 
 fn set_player_stat_update_values(

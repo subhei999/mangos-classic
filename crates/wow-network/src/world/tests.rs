@@ -4021,6 +4021,7 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         guid,
         account_id: guid,
         session_id,
+        selected_target: None,
         position,
         movement_flags: 0,
         client_time: 0,
@@ -4096,6 +4097,23 @@ fn other_player_create_block_includes_equipment_and_movement_state() {
 }
 
 #[test]
+fn other_player_create_block_includes_selected_target() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let selected = ObjectGuid::new(HighGuid::Unit, 0, 99);
+    let mut player =
+        test_player_runtime(7, SessionId(7), WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0));
+    player.selected_target = Some(selected);
+
+    let values =
+        decode_other_player_create_values(&build_other_player_create_block(&player).unwrap(), guid);
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(selected.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_TARGET + 1],
+        Some((selected.raw() >> 32) as u32)
+    );
+}
+
+#[test]
 fn player_visible_equipment_update_block_updates_observer_item_visual() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let mut visible_equipment = [0; ENUM_EQUIPMENT_SLOTS];
@@ -4135,6 +4153,59 @@ fn map_runtime_player_health_update_refreshes_shared_state_and_observers() {
     let (values, trailing) = decode_values_update_block(&packets[0].1.body[5..], player);
     assert!(trailing.is_empty());
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(10));
+}
+
+#[test]
+fn player_selection_update_body_sets_unit_target_guid() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let selected = ObjectGuid::new(HighGuid::Unit, 0, 99);
+    let body = build_player_selection_update_body(7, Some(selected)).unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(selected.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_TARGET + 1],
+        Some((selected.raw() >> 32) as u32)
+    );
+}
+
+#[test]
+fn player_selection_update_body_clears_unit_target_guid() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_selection_update_body(7, None).unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(0));
+    assert_eq!(values[UNIT_FIELD_TARGET + 1], Some(0));
+}
+
+#[test]
+fn map_runtime_player_selection_update_refreshes_shared_state_and_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let selected = ObjectGuid::new(HighGuid::Unit, 0, 77);
+    let packets = map.update_player_selection(1, Some(selected)).unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].0, SessionId(2));
+    assert_eq!(packets[0].1.opcode, SMSG_UPDATE_OBJECT);
+    let (values, trailing) = decode_values_update_block(
+        &packets[0].1.body[5..],
+        ObjectGuid::new(HighGuid::Player, 0, 1),
+    );
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(selected.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_TARGET + 1],
+        Some((selected.raw() >> 32) as u32)
+    );
+    assert_eq!(map.players.get(&1).unwrap().selected_target, Some(selected));
 }
 
 #[tokio::test]
@@ -7186,6 +7257,97 @@ fn message_chat_body_matches_cmangos_say_shape() {
 }
 
 #[test]
+fn join_channel_request_reads_name_and_password() {
+    let request = JoinChannelRequest::read(b"General - Elwynn Forest\0hunter2\0").unwrap();
+    assert_eq!(request.channel_name, "General - Elwynn Forest");
+    assert_eq!(request.password, "hunter2");
+}
+
+#[test]
+fn join_channel_request_allows_missing_password_string() {
+    let request = JoinChannelRequest::read(b"Rustaceans\0").unwrap();
+    assert_eq!(request.channel_name, "Rustaceans");
+    assert!(request.password.is_empty());
+}
+
+#[test]
+fn build_channel_notify_you_joined_body_uses_cmangos_layout() {
+    let body = build_channel_notify_you_joined_body("Rustaceans");
+    assert_eq!(body[0], CHAT_YOU_JOINED_NOTICE);
+    assert_eq!(&body[1..12], b"Rustaceans\0");
+    assert_eq!(
+        u32::from_le_bytes(body[12..16].try_into().unwrap()),
+        CHANNEL_FLAG_CUSTOM
+    );
+    assert_eq!(u32::from_le_bytes(body[16..20].try_into().unwrap()), 0);
+}
+
+#[test]
+fn build_channel_notify_you_joined_body_uses_builtin_general_flags() {
+    let body = build_channel_notify_you_joined_body("General - Elwynn Forest");
+    let flags_offset = "General - Elwynn Forest".len() + 2;
+    assert_eq!(
+        u32::from_le_bytes(body[flags_offset..flags_offset + 4].try_into().unwrap()),
+        CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG
+    );
+}
+
+#[test]
+fn build_channel_notify_you_joined_body_uses_builtin_trade_flags() {
+    let body = build_channel_notify_you_joined_body("Trade - Stormwind City");
+    let flags_offset = "Trade - Stormwind City".len() + 2;
+    assert_eq!(
+        u32::from_le_bytes(body[flags_offset..flags_offset + 4].try_into().unwrap()),
+        CHANNEL_FLAG_CITY | CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG | CHANNEL_FLAG_TRADE
+    );
+}
+
+#[test]
+fn build_channel_notify_you_joined_body_uses_builtin_lfg_flags() {
+    let body = build_channel_notify_you_joined_body("LookingForGroup");
+    let flags_offset = "LookingForGroup".len() + 2;
+    assert_eq!(
+        u32::from_le_bytes(body[flags_offset..flags_offset + 4].try_into().unwrap()),
+        CHANNEL_FLAG_LFG | CHANNEL_FLAG_GENERAL
+    );
+}
+
+#[tokio::test]
+async fn handle_join_channel_sends_you_joined_notify_packet() {
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_join_channel(
+        &mut sink,
+        b"General - Elwynn Forest\0hunter2\0",
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, SMSG_CHANNEL_NOTIFY);
+    assert_eq!(
+        packet.body,
+        build_channel_notify_you_joined_body("General - Elwynn Forest")
+    );
+}
+
+#[tokio::test]
+async fn handle_join_channel_ignores_empty_channel_name() {
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_join_channel(&mut sink, b"\0hunter2\0", &mut header_crypto)
+        .await
+        .unwrap();
+
+    assert!(outbound_rx.try_recv().is_err());
+}
+
+#[test]
 fn parses_text_emote_packet() {
     let mut body = Vec::new();
     body.extend_from_slice(&12u32.to_le_bytes());
@@ -7413,7 +7575,6 @@ fn recognizes_observed_movement_opcodes() {
 #[test]
 fn recognizes_expected_world_bootstrap_noise() {
     for opcode in [
-        CMSG_JOIN_CHANNEL,
         CMSG_CANCEL_TRADE,
         CMSG_ZONEUPDATE,
         CMSG_MEETINGSTONE_INFO,
@@ -7424,7 +7585,13 @@ fn recognizes_expected_world_bootstrap_noise() {
         assert!(is_expected_noop_opcode(opcode), "opcode 0x{opcode:04X}");
     }
 
-    for opcode in [CMSG_TUTORIAL_FLAG, CMSG_TUTORIAL_CLEAR, CMSG_TUTORIAL_RESET] {
+    for opcode in [
+        CMSG_TUTORIAL_FLAG,
+        CMSG_TUTORIAL_CLEAR,
+        CMSG_TUTORIAL_RESET,
+        CMSG_JOIN_CHANNEL,
+        CMSG_SET_SELECTION,
+    ] {
         assert!(
             !is_expected_noop_opcode(opcode),
             "tutorial opcode 0x{opcode:04X} should be handled, not ignored"

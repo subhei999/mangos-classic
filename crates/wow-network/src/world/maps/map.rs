@@ -4,6 +4,7 @@ struct PlayerRuntime {
     guid: u32,
     account_id: u32,
     session_id: SessionId,
+    selected_target: Option<ObjectGuid>,
     position: WorldPosition,
     movement_flags: u32,
     client_time: u32,

@@ -100,6 +100,23 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn update_player_selection(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        selected_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .update_player_selection(character_guid, selected_target);
+        packets
+    }
+
     async fn broadcast_nearby_player_packet(
         &self,
         map_id: u32,

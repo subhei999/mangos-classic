@@ -221,6 +221,9 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_JOIN_CHANNEL => {
+                            handle_join_channel(&mut stream, &body, &mut header_crypto).await?;
+                        }
                         CMSG_QUERY_TIME => {
                             handle_query_time(&mut stream, &mut header_crypto).await?;
                         }
@@ -279,6 +282,17 @@ async fn handle_client(
                         }
                         CMSG_SET_ACTION_BUTTON => {
                             handle_set_action_button(&character_db_pool, &body, &session).await?;
+                        }
+                        CMSG_SET_SELECTION => {
+                            handle_set_selection(
+                                SharedWorldDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &mut session,
+                            )
+                            .await?;
                         }
                         CMSG_DESTROYITEM => {
                             handle_destroy_item(

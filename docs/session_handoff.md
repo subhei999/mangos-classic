@@ -11,30 +11,17 @@ in `docs/playable_gate_board.md`; detailed G12 design belongs in
 ## Current Branch And Worktree
 
 - Branch: `codex/rusty-mangos`.
-- Latest pushed commit: `30094c12a` (`Update session handoff checkpoint hash`).
-- Latest local commit: `3b03a4572` (`Add CMaNGOS-style mmap path smoothing`);
-  local branch is ahead of origin by 1.
-- Current worktree has uncommitted G8/G9 movement and threat work:
-  - `crates/wow-network/src/world/combat/motion.rs`
-  - `crates/wow-network/src/world/combat/broadcast.rs`
-  - `crates/wow-network/src/world/combat/melee.rs`
-  - `crates/wow-network/src/world/combat/evade.rs`
-  - `crates/wow-network/src/world/combat/aggro.rs`
-  - `crates/wow-network/src/world/combat/lifecycle.rs`
-  - `crates/wow-network/src/world/entities/creature.rs`
-  - `crates/wow-network/src/world/loot.rs`
-  - `crates/wow-network/src/world/maps/map.rs`
-  - `crates/wow-network/src/world/maps/map/creature_combat.rs`
-  - `crates/wow-network/src/world/maps/map/creature_damage.rs`
-  - `crates/wow-network/src/world/maps/map/creature_loot.rs`
-  - `crates/wow-network/src/world/maps/map/creature_motion.rs`
-  - `crates/wow-network/src/world/maps/map/players.rs`
-  - `crates/wow-network/src/world/maps/map_manager.rs`
-  - `crates/wow-network/src/world/opcodes.rs`
-  - `crates/wow-network/src/world/spells.rs`
-  - `crates/wow-network/src/world/tests.rs`
-  - this handoff file
-- Do not revert unrelated user changes if more dirty files appear.
+- Base commit before opcode review: `950a4610b` (`Advance shared creature
+  motion and chase pathing`), pushed to `origin/codex/rusty-mangos`.
+- Current opcode-parity review patch adds:
+  - `CMSG_JOIN_CHANNEL` minimal join handling in
+    `crates/wow-network/src/world/{opcodes.rs,wire.rs,server/session_loop.rs}`.
+  - `CMSG_SET_SELECTION` support in
+    `crates/wow-network/src/world/{wire.rs,session.rs}` and shared
+    player-target replication in
+    `crates/wow-network/src/world/{entities/player.rs,maps/map.rs,maps/map/players.rs,maps/map_manager.rs,server/player_login.rs}`.
+- Always re-run `git status --short --branch` before editing; this handoff may
+  lag behind the live worktree.
 
 ## Current Goal
 
@@ -79,6 +66,18 @@ the follow-up.
   block, DB-backed creature attack timers, CMaNGOS-style combined melee reach,
   swing error packets, compatible `VMAP_7.0` LOS guardrails, and explicit MMAP
   path result flags.
+- `CMSG_SET_SELECTION` now follows the basic CMaNGOS selection path for player
+  state: the server reads the selected GUID, stores it on the session/shared
+  map player snapshot, writes it into `UNIT_FIELD_TARGET`, includes it in other
+  player create blocks, and broadcasts observer `SMSG_UPDATE_OBJECT` value
+  updates when a player changes or clears selection. Reputation visibility and
+  mover-side selection mirroring remain unimplemented follow-ups.
+- `CMSG_JOIN_CHANNEL` now has a minimal CMaNGOS-shaped response: the server
+  reads channel name/password, ignores empty channel names, and emits
+  `SMSG_CHANNEL_NOTIFY` / `CHAT_YOU_JOINED_NOTICE` with built-in/custom channel
+  flags and channel index `0`. Full channel membership state, password checks,
+  owner/moderator behavior, announcements, leave/list/password/owner opcodes,
+  and localized channel validation remain follow-ups.
 - Legacy Rust Guide / Rust Combat Dummy fixture NPCs are disabled in normal
   client startup unless `WORLD_ENABLE_LEGACY_FIXTURE_NPCS` is set.
 - Native VMAP/MMAP code is isolated behind safe Rust wrappers and C++ input
@@ -164,8 +163,13 @@ the follow-up.
 - `cargo test -p wow-network db_creature_aggro --lib`
 - `cargo test -p wow-network starter_spell --lib`
 - `cargo test -p wow-network map_runtime_db_creature_combat --lib`
+- `cargo test -p wow-network other_player_create_block_includes_selected_target --lib`
+- `cargo test -p wow-network player_selection_update_body_sets_unit_target_guid --lib`
+- `cargo test -p wow-network player_selection_update_body_clears_unit_target_guid --lib`
+- `cargo test -p wow-network map_runtime_player_selection_update_refreshes_shared_state_and_observers --lib`
+- `cargo test -p wow-network join_channel --lib`
 - `cargo test -p wow-network db_creature_random_motion --lib`
-- `cargo test -p wow-network --lib` (`221` tests)
+- `cargo test -p wow-network --lib` (`240` tests)
 - `cargo test -p wow-network map_runtime_ --lib` (`22` tests)
 - `cargo test -p wow-network map_runtime_ --lib` (`25` tests) with
   `CARGO_TARGET_DIR=target\codex-map-motion-authority`
@@ -189,6 +193,8 @@ the follow-up.
   `CARGO_TARGET_DIR=target\codex-shared-mob-fix`
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-map-motion-authority`
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-opcode-selection`
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate

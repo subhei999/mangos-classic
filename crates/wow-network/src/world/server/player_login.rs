@@ -263,6 +263,7 @@ async fn handle_player_login(
         guid: character.guid,
         account_id,
         session_id: deps.session_id,
+        selected_target: session.selected_target,
         position: login_position,
         movement_flags: 0,
         client_time: 0,

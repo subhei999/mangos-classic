@@ -268,6 +268,36 @@ impl MapRuntime {
             .collect())
     }
 
+    fn update_player_selection(
+        &mut self,
+        character_guid: u32,
+        selected_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.selected_target = selected_target;
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_selection_update_body(character_guid, selected_target)?,
+        };
+
+        Ok(self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .map(|other| (other.session_id, packet.clone()))
+            })
+            .collect())
+    }
+
     fn remove_player(&mut self, character_guid: u32) -> Vec<(SessionId, OutboundWorldPacket)> {
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();

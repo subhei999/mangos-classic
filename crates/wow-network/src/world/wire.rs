@@ -68,6 +68,20 @@ async fn handle_gmticket_getticket(
     .await
 }
 
+async fn handle_join_channel(
+    stream: &mut WorldPacketSink,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let request = JoinChannelRequest::read(body)?;
+    if request.channel_name.is_empty() {
+        return Ok(());
+    }
+
+    let response = build_channel_notify_you_joined_body(&request.channel_name);
+    send_packet(stream, SMSG_CHANNEL_NOTIFY, &response, Some(header_crypto)).await
+}
+
 fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::Result<()> {
     if body.len() != 8 {
         anyhow::bail!(
@@ -87,6 +101,30 @@ fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::
             );
         }
     }
+    Ok(())
+}
+
+async fn handle_set_selection(
+    shared_world: SharedWorldDeps<'_>,
+    body: &[u8],
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    let selected_target = read_packet_guid(body, "CMSG_SET_SELECTION")?;
+    let selected_target = if selected_target == ObjectGuid::EMPTY {
+        None
+    } else {
+        Some(selected_target)
+    };
+    session.selected_target = selected_target;
+
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let packets = shared_world
+        .maps
+        .update_player_selection(character.position.map_id, character.guid, selected_target)
+        .await?;
+    shared_world.sessions.dispatch(packets).await;
     Ok(())
 }
 
@@ -114,6 +152,62 @@ async fn handle_query_next_mail_time(
 fn build_query_next_mail_time_body(has_unread: bool) -> Vec<u8> {
     let delay = if has_unread { 0.0f32 } else { -86400.0f32 };
     delay.to_le_bytes().to_vec()
+}
+
+const CHAT_YOU_JOINED_NOTICE: u8 = 0x02;
+const CHANNEL_FLAG_CUSTOM: u32 = 0x01;
+const CHANNEL_FLAG_TRADE: u32 = 0x04;
+const CHANNEL_FLAG_NOT_LFG: u32 = 0x08;
+const CHANNEL_FLAG_GENERAL: u32 = 0x10;
+const CHANNEL_FLAG_CITY: u32 = 0x20;
+const CHANNEL_FLAG_LFG: u32 = 0x40;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JoinChannelRequest {
+    channel_name: String,
+    password: String,
+}
+
+impl JoinChannelRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let mut cursor = 0;
+        let channel_name = read_c_string(body, &mut cursor)?;
+        let password = if cursor < body.len() {
+            read_c_string(body, &mut cursor)?
+        } else {
+            String::new()
+        };
+        Ok(Self {
+            channel_name,
+            password,
+        })
+    }
+}
+
+fn build_channel_notify_you_joined_body(channel_name: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(1 + channel_name.len() + 1 + 4 + 4);
+    body.push(CHAT_YOU_JOINED_NOTICE);
+    write_c_string(&mut body, channel_name);
+    write_u32(&mut body, channel_join_flags(channel_name));
+    write_u32(&mut body, 0);
+    body
+}
+
+fn channel_join_flags(channel_name: &str) -> u32 {
+    let lowercase = channel_name.to_ascii_lowercase();
+    if lowercase.starts_with("general") {
+        CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG
+    } else if lowercase.starts_with("trade") {
+        CHANNEL_FLAG_CITY | CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG | CHANNEL_FLAG_TRADE
+    } else if lowercase.starts_with("localdefense") || lowercase.starts_with("worlddefense") {
+        CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG
+    } else if lowercase.starts_with("guildrecruitment") {
+        CHANNEL_FLAG_CITY | CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG
+    } else if lowercase.starts_with("lookingforgroup") {
+        CHANNEL_FLAG_LFG | CHANNEL_FLAG_GENERAL
+    } else {
+        CHANNEL_FLAG_CUSTOM
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,9 +378,7 @@ fn is_movement_opcode(opcode: u32) -> bool {
 fn is_expected_noop_opcode(opcode: u32) -> bool {
     matches!(
         opcode,
-        CMSG_JOIN_CHANNEL
-            | CMSG_CANCEL_TRADE
-            | CMSG_SET_SELECTION
+        CMSG_CANCEL_TRADE
             | CMSG_ZONEUPDATE
             | CMSG_MEETINGSTONE_INFO
             | CMSG_REQUEST_RAID_INFO
@@ -297,11 +389,9 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
 
 fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     match opcode {
-        CMSG_JOIN_CHANNEL => "CMSG_JOIN_CHANNEL",
         CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
         CMSG_CANCEL_CAST => "CMSG_CANCEL_CAST",
         CMSG_CANCEL_AUTO_REPEAT_SPELL => "CMSG_CANCEL_AUTO_REPEAT_SPELL",
-        CMSG_SET_SELECTION => "CMSG_SET_SELECTION",
         CMSG_ZONEUPDATE => "CMSG_ZONEUPDATE",
         CMSG_SET_ACTIVE_MOVER => "CMSG_SET_ACTIVE_MOVER",
         MSG_QUERY_NEXT_MAIL_TIME => "MSG_QUERY_NEXT_MAIL_TIME",

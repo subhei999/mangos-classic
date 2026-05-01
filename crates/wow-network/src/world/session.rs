@@ -124,6 +124,7 @@ struct SharedWorldDeps<'a> {
 #[derive(Debug, Default)]
 struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
+    selected_target: Option<ObjectGuid>,
     combat_dummy_health: u32,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,

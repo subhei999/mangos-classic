@@ -1,0 +1,166 @@
+#[derive(Debug, Clone)]
+struct GameObjectRuntime {
+    spawn: wow_db::GameObjectSpawnQuery,
+    client_visible: bool,
+    consumed_until: Option<Instant>,
+}
+
+impl GameObjectRuntime {
+    fn new(spawn: wow_db::GameObjectSpawnQuery) -> Self {
+        Self {
+            spawn,
+            client_visible: true,
+            consumed_until: None,
+        }
+    }
+
+    fn guid(&self) -> ObjectGuid {
+        gameobject_spawn_guid(&self.spawn)
+    }
+
+    fn position(&self) -> WorldPosition {
+        gameobject_spawn_position(&self.spawn)
+    }
+
+    fn is_consumed(&self, now: Instant) -> bool {
+        self.consumed_until.is_some_and(|until| now < until)
+    }
+
+    fn mark_consumed(&mut self, now: Instant) {
+        let delay = gameobject_respawn_delay(&self.spawn);
+        self.client_visible = false;
+        self.consumed_until = Some(now + delay);
+    }
+}
+
+fn build_db_gameobject_create_blocks(
+    gameobjects: &[DbGameObjectRuntime],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    gameobjects
+        .iter()
+        .map(build_db_gameobject_runtime_create_block)
+        .collect()
+}
+
+fn build_db_gameobject_runtime_create_block(
+    gameobject: &DbGameObjectRuntime,
+) -> anyhow::Result<Vec<u8>> {
+    let guid = gameobject.guid();
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_CREATE_OBJECT);
+    PackedGuid::write(&mut block, guid)?;
+    block.push(TYPEID_GAMEOBJECT);
+    block.push(UPDATEFLAG_ALL);
+    block.extend_from_slice(&1u32.to_le_bytes());
+
+    let mut values = vec![None; GAMEOBJECT_END_FIELDS];
+    set_update_value(&mut values, 0x000, guid.raw() as u32)?;
+    set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
+    set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_GAMEOBJECT)?;
+    set_update_value(&mut values, 0x003, gameobject.spawn.entry)?;
+    set_update_value(
+        &mut values,
+        0x004,
+        if gameobject.spawn.template.size > 0.0 {
+            gameobject.spawn.template.size.to_bits()
+        } else {
+            1.0f32.to_bits()
+        },
+    )?;
+    set_object_guid_update_values(&mut values, GAMEOBJECT_FIELD_CREATED_BY, None)?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_DISPLAYID,
+        gameobject.spawn.template.display_id,
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_FLAGS,
+        gameobject.spawn.template.flags & !GO_FLAG_IN_USE,
+    )?;
+    set_update_value(&mut values, GAMEOBJECT_ROTATION, gameobject.spawn.rotation0.to_bits())?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_ROTATION + 1,
+        gameobject.spawn.rotation1.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_ROTATION + 2,
+        gameobject.spawn.rotation2.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_ROTATION + 3,
+        gameobject.spawn.rotation3.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_STATE,
+        if gameobject.spawn.state >= 0 {
+            gameobject.spawn.state as u32
+        } else {
+            1
+        },
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_POS_X,
+        gameobject.spawn.position_x.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_POS_Y,
+        gameobject.spawn.position_y.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_POS_Z,
+        gameobject.spawn.position_z.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_FACING,
+        gameobject.spawn.orientation.to_bits(),
+    )?;
+    set_update_value(&mut values, GAMEOBJECT_DYN_FLAGS, 0)?;
+    set_update_value(&mut values, GAMEOBJECT_FACTION, gameobject.spawn.template.faction)?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_TYPE_ID,
+        gameobject.spawn.template.object_type as u32,
+    )?;
+    set_update_value(&mut values, GAMEOBJECT_LEVEL, 0)?;
+    set_update_value(&mut values, GAMEOBJECT_ARTKIT, 0)?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_ANIMPROGRESS,
+        gameobject.spawn.anim_progress as u32,
+    )?;
+    write_update_values(&mut block, &values)?;
+    Ok(block)
+}
+
+fn gameobject_spawn_guid(gameobject: &wow_db::GameObjectSpawnQuery) -> ObjectGuid {
+    ObjectGuid::new(HighGuid::GameObject, gameobject.entry, gameobject.guid)
+}
+
+fn gameobject_spawn_position(gameobject: &wow_db::GameObjectSpawnQuery) -> WorldPosition {
+    WorldPosition::new(
+        gameobject.map,
+        gameobject.position_x,
+        gameobject.position_y,
+        gameobject.position_z,
+        gameobject.orientation,
+    )
+}
+
+fn gameobject_respawn_delay(spawn: &wow_db::GameObjectSpawnQuery) -> Duration {
+    let min = spawn.spawn_time_secs_min.max(0) as u64;
+    let max = spawn.spawn_time_secs_max.max(spawn.spawn_time_secs_min).max(0) as u64;
+    if max <= min {
+        Duration::from_secs(min)
+    } else {
+        Duration::from_secs(rand::thread_rng().gen_range(min..=max))
+    }
+}

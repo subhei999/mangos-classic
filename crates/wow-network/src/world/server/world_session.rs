@@ -10,6 +10,7 @@ struct EnterWorldBootstrap<'a> {
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
     nearby_creatures: &'a [DbCreatureRuntime],
+    nearby_gameobjects: &'a [DbGameObjectRuntime],
     nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
@@ -56,6 +57,7 @@ async fn send_enter_world_bootstrap(
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: &equipped_templates,
             nearby_creatures: bootstrap.nearby_creatures,
+            nearby_gameobjects: bootstrap.nearby_gameobjects,
             nearby_player_corpses: bootstrap.nearby_player_corpses,
         },
         header_crypto,

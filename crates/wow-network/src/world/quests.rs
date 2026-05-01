@@ -83,10 +83,8 @@ async fn handle_questgiver_query_quest(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_QUERY_QUEST")?;
-    if !request.guid.is_creature()
-        || !wow_db::creature_starts_quest(world_db_pool, request.guid.entry(), request.quest).await?
-            && !wow_db::creature_completes_quest(world_db_pool, request.guid.entry(), request.quest)
-                .await?
+    if !questgiver_starts_quest(world_db_pool, request.guid, request.quest).await?
+        && !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await?
     {
         warn!(quest = request.quest, "Ignoring quest details request for invalid giver");
         return Ok(());
@@ -118,9 +116,7 @@ async fn handle_questgiver_accept_quest(
         return Ok(());
     };
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_ACCEPT_QUEST")?;
-    if !request.guid.is_creature()
-        || !wow_db::creature_starts_quest(world_db_pool, request.guid.entry(), request.quest).await?
-    {
+    if !questgiver_starts_quest(world_db_pool, request.guid, request.quest).await? {
         warn!(quest = request.quest, "Ignoring quest accept for invalid giver");
         return Ok(());
     }
@@ -208,10 +204,7 @@ async fn handle_questgiver_complete_quest(
         return Ok(());
     };
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_COMPLETE_QUEST")?;
-    if !request.guid.is_creature()
-        || !wow_db::creature_completes_quest(world_db_pool, request.guid.entry(), request.quest)
-            .await?
-    {
+    if !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await? {
         return Ok(());
     }
     let Some(status) = session.quest_statuses.get(&request.quest) else {
@@ -288,10 +281,7 @@ async fn handle_questgiver_choose_reward(
         warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward choice");
         return Ok(());
     }
-    if !request.guid.is_creature()
-        || !wow_db::creature_completes_quest(world_db_pool, request.guid.entry(), request.quest)
-            .await?
-    {
+    if !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await? {
         warn!(quest = request.quest, "Ignoring reward request for invalid giver");
         return Ok(());
     }
@@ -496,12 +486,12 @@ async fn questgiver_dialog_status(
     guid: ObjectGuid,
     session: &WorldSessionState,
 ) -> anyhow::Result<u32> {
-    if !guid.is_creature() {
+    if !guid.is_creature() && !guid.is_game_object() {
         return Ok(DIALOG_STATUS_NONE);
     }
 
     let mut dialog_status = DIALOG_STATUS_NONE;
-    for quest in wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await? {
+    for quest in questgiver_complete_quests(world_db_pool, guid).await? {
         let Some(status) = session.quest_statuses.get(&quest.entry) else {
             continue;
         };
@@ -514,7 +504,7 @@ async fn questgiver_dialog_status(
             dialog_status = dialog_status.max(DIALOG_STATUS_INCOMPLETE);
         }
     }
-    for quest in wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await? {
+    for quest in questgiver_start_quests(world_db_pool, guid).await? {
         if can_take_start_quest(world_db_pool, &quest, session).await? {
             dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
         }
@@ -522,7 +512,7 @@ async fn questgiver_dialog_status(
 
     for status in session.quest_statuses.values() {
         if status.rewarded == 0
-            && wow_db::creature_completes_quest(world_db_pool, guid.entry(), status.quest).await?
+            && questgiver_completes_quest(world_db_pool, guid, status.quest).await?
         {
             if let Some(quest) = wow_db::get_quest_template_query(world_db_pool, status.quest).await?
             {
@@ -540,12 +530,12 @@ async fn questgiver_visible_quests(
     guid: ObjectGuid,
     session: &WorldSessionState,
 ) -> anyhow::Result<Vec<QuestListItem>> {
-    if !guid.is_creature() {
+    if !guid.is_creature() && !guid.is_game_object() {
         return Ok(Vec::new());
     }
     let mut visible = Vec::new();
     let mut seen = HashSet::new();
-    for quest in wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await? {
+    for quest in questgiver_complete_quests(world_db_pool, guid).await? {
         let Some(status) = session.quest_statuses.get(&quest.entry) else {
             continue;
         };
@@ -562,7 +552,7 @@ async fn questgiver_visible_quests(
         seen.insert(quest.entry);
         visible.push(QuestListItem { quest, dialog_status });
     }
-    let quests = wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?;
+    let quests = questgiver_start_quests(world_db_pool, guid).await?;
     for quest in quests {
         if seen.contains(&quest.entry) {
             continue;
@@ -582,12 +572,12 @@ async fn questgiver_completed_turnin_quest(
     guid: ObjectGuid,
     session: &WorldSessionState,
 ) -> anyhow::Result<Option<QuestTemplateQuery>> {
-    if !guid.is_creature() {
+    if !guid.is_creature() && !guid.is_game_object() {
         return Ok(None);
     }
 
     for status in active_quest_statuses_sorted(&session.quest_statuses) {
-        if wow_db::creature_completes_quest(world_db_pool, guid.entry(), status.quest).await? {
+        if questgiver_completes_quest(world_db_pool, guid, status.quest).await? {
             let Some(quest) = wow_db::get_quest_template_query(world_db_pool, status.quest).await?
             else {
                 continue;
@@ -599,6 +589,60 @@ async fn questgiver_completed_turnin_quest(
     }
 
     Ok(None)
+}
+
+async fn questgiver_start_quests(
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+) -> anyhow::Result<Vec<QuestTemplateQuery>> {
+    if guid.is_creature() {
+        Ok(wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?)
+    } else if guid.is_game_object() {
+        Ok(wow_db::get_gameobject_start_quests(world_db_pool, guid.entry()).await?)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+async fn questgiver_complete_quests(
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+) -> anyhow::Result<Vec<QuestTemplateQuery>> {
+    if guid.is_creature() {
+        Ok(wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await?)
+    } else if guid.is_game_object() {
+        Ok(wow_db::get_gameobject_complete_quests(world_db_pool, guid.entry()).await?)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+async fn questgiver_starts_quest(
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+    quest: u32,
+) -> anyhow::Result<bool> {
+    if guid.is_creature() {
+        Ok(wow_db::creature_starts_quest(world_db_pool, guid.entry(), quest).await?)
+    } else if guid.is_game_object() {
+        Ok(wow_db::gameobject_starts_quest(world_db_pool, guid.entry(), quest).await?)
+    } else {
+        Ok(false)
+    }
+}
+
+async fn questgiver_completes_quest(
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+    quest: u32,
+) -> anyhow::Result<bool> {
+    if guid.is_creature() {
+        Ok(wow_db::creature_completes_quest(world_db_pool, guid.entry(), quest).await?)
+    } else if guid.is_game_object() {
+        Ok(wow_db::gameobject_completes_quest(world_db_pool, guid.entry(), quest).await?)
+    } else {
+        Ok(false)
+    }
 }
 
 fn active_quest_statuses_sorted(

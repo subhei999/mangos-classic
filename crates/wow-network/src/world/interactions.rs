@@ -2,6 +2,7 @@ include!("chat.rs");
 include!("spells.rs");
 include!("inventory.rs");
 include!("creatures.rs");
+include!("gameobjects.rs");
 include!("gossip.rs");
 include!("quests.rs");
 include!("vendors.rs");

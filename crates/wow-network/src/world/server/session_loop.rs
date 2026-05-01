@@ -190,6 +190,15 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_GAMEOBJECT_QUERY => {
+                            handle_gameobject_query(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
                         CMSG_CREATURE_QUERY => {
                             handle_creature_query(
                                 &mut stream,
@@ -342,6 +351,17 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
                                 },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GAMEOBJ_USE => {
+                            handle_gameobject_use(
+                                &mut stream,
+                                &character_db_pool,
+                                &world_db_pool,
                                 &body,
                                 &mut session,
                                 &mut header_crypto,

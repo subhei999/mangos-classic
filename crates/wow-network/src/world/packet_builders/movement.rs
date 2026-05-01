@@ -121,7 +121,7 @@ fn build_monster_move_path_body_inner(
 
     facing_target: Option<ObjectGuid>,
 
-    _run: bool,
+    run: bool,
 ) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(!path.is_empty(), "monster movement path must not be empty");
 
@@ -145,7 +145,13 @@ fn build_monster_move_path_body_inner(
         body.push(MONSTER_MOVE_TYPE_NORMAL);
     }
 
-    body.extend_from_slice(&MONSTER_MOVE_SPLINE_FLAG_RUNMODE.to_le_bytes());
+    let spline_flags = if run {
+        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
+    } else {
+        0
+    };
+
+    body.extend_from_slice(&spline_flags.to_le_bytes());
 
     body.extend_from_slice(&duration_ms.to_le_bytes());
 

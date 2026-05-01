@@ -1472,7 +1472,7 @@ fn monster_move_path_serializes_multiple_points() {
     cursor += 1;
     assert_eq!(
         u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
-        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
+        0
     );
     cursor += 4;
     assert_eq!(
@@ -1493,6 +1493,27 @@ fn monster_move_path_serializes_multiple_points() {
     assert_eq!(
         u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
         pack_monster_move_xyz_offset(3.0, 3.0, 3.0)
+    );
+}
+
+#[test]
+fn monster_move_facing_target_path_serializes_run_mode() {
+    let creature = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let start = WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0);
+    let path = vec![
+        WorldPosition::new(0, 4.0, 5.0, 6.0, 0.0),
+        WorldPosition::new(0, 7.0, 8.0, 9.0, 0.0),
+    ];
+    let body =
+        build_monster_move_facing_target_path_body(creature, start, &path, 9, 100, player).unwrap();
+
+    let mut cursor = PackedGuid::packed_size(creature) + 12 + 4;
+    assert_eq!(body[cursor], MONSTER_MOVE_TYPE_FACING_TARGET);
+    cursor += 1 + 8;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        MONSTER_MOVE_SPLINE_FLAG_RUNMODE
     );
 }
 
@@ -3924,6 +3945,40 @@ fn db_creature_mmap_path_corner_uses_local_detour_data_when_available() {
     assert!(corner.x.is_finite());
     assert!(corner.y.is_finite());
     assert!(corner.z.is_finite());
+}
+
+#[test]
+fn db_creature_mmap_path_uses_cmangos_smooth_steps_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.has_mmap_tile(0, 48, 32) {
+        return;
+    }
+    let navigation = DbCreatureNavigationGuardrail {
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
+
+    let path = db_creature_path_to_destination(&navigation, start, target, CreaturePathMode::Full)
+        .expect("local Northshire mmap should produce a smoothed path");
+
+    assert!(path.flags.contains(DbCreaturePathFlags::NORMAL));
+    assert!(!path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH));
+    assert!(
+        path.points.len() > 1,
+        "CMaNGOS-style smooth path should expose intermediate 4-yard-ish steps"
+    );
+
+    let mut previous = start;
+    for point in &path.points {
+        let segment = distance_2d(previous.x, previous.y, point.x, point.y);
+        assert!(
+            segment <= 5.0,
+            "smooth path segment should stay near CMaNGOS 4-yard step size, got {segment}"
+        );
+        previous = *point;
+    }
 }
 
 #[test]

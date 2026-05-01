@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-const MAX_NATIVE_MMAP_PATH_POINTS: usize = 32;
+const MAX_NATIVE_MMAP_PATH_POINTS: usize = 74;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeMmapPathStatus {

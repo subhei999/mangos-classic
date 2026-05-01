@@ -1,5 +1,6 @@
 #include "DetourAlloc.h"
 #include "DetourCommon.h"
+#include "DetourMath.h"
 #include "DetourNavMesh.h"
 #include "DetourNavMeshQuery.h"
 #include "DetourStatus.h"
@@ -19,7 +20,10 @@ namespace
 constexpr unsigned int MMAP_MAGIC = 0x4d4d4150;
 constexpr unsigned int MAX_TILE_DATA_SIZE = 64u * 1024u * 1024u;
 constexpr int MAX_PATH_POLYS = 74;
-constexpr int MAX_STRAIGHT_POINTS = 32;
+constexpr int MAX_SMOOTH_POINTS = 74;
+constexpr int VERTEX_SIZE = 3;
+constexpr float SMOOTH_PATH_STEP_SIZE = 4.0f;
+constexpr float SMOOTH_PATH_SLOP = 0.3f;
 constexpr unsigned short NAV_GROUND = 1;
 
 struct MmapTileHeader
@@ -193,6 +197,231 @@ bool loadNeighborTilesLocked(CachedMap& cached, const char* dataDir, unsigned in
     }
     return loadedCenter;
 }
+
+bool inRangeYzx(const float* left, const float* right, float radius, float height)
+{
+    const float dx = right[0] - left[0];
+    const float dy = right[1] - left[1];
+    const float dz = right[2] - left[2];
+    return (dx * dx + dz * dz) < radius * radius && std::fabs(dy) < height;
+}
+
+unsigned int fixupCorridor(dtPolyRef* path, unsigned int pathCount, unsigned int maxPath, const dtPolyRef* visited, unsigned int visitedCount)
+{
+    int furthestPath = -1;
+    int furthestVisited = -1;
+
+    for (int i = static_cast<int>(pathCount) - 1; i >= 0; --i)
+    {
+        bool found = false;
+        for (int j = static_cast<int>(visitedCount) - 1; j >= 0; --j)
+        {
+            if (path[i] == visited[j])
+            {
+                furthestPath = i;
+                furthestVisited = j;
+                found = true;
+            }
+        }
+        if (found)
+            break;
+    }
+
+    if (furthestPath == -1 || furthestVisited == -1)
+        return pathCount;
+
+    const unsigned int required = visitedCount - static_cast<unsigned int>(furthestVisited);
+    const unsigned int original = static_cast<unsigned int>(furthestPath + 1) < pathCount ? static_cast<unsigned int>(furthestPath + 1) : pathCount;
+    unsigned int size = pathCount > original ? pathCount - original : 0;
+    if (required + size > maxPath)
+        size = maxPath - required;
+    if (required >= maxPath)
+        return pathCount;
+
+    if (size)
+        std::memmove(path + required, path + original, size * sizeof(dtPolyRef));
+
+    for (unsigned int i = 0; i < required; ++i)
+        path[i] = visited[(visitedCount - 1) - i];
+
+    return required + size;
+}
+
+bool getSteerTarget(
+    dtNavMeshQuery* query,
+    const dtPolyRef* path,
+    unsigned int pathCount,
+    const dtQueryFilter& filter,
+    const float* startPos,
+    const float* endPos,
+    float minTargetDistance,
+    float* steerPos,
+    unsigned char& steerPosFlag,
+    dtPolyRef& steerPosRef)
+{
+    constexpr unsigned int MAX_STEER_POINTS = 3;
+    float steerPath[MAX_STEER_POINTS * VERTEX_SIZE];
+    unsigned char steerPathFlags[MAX_STEER_POINTS];
+    dtPolyRef steerPathPolys[MAX_STEER_POINTS];
+    int steerPathCount = 0;
+
+    const dtStatus status = query->findStraightPath(
+        startPos,
+        endPos,
+        path,
+        static_cast<int>(pathCount),
+        steerPath,
+        steerPathFlags,
+        steerPathPolys,
+        &steerPathCount,
+        static_cast<int>(MAX_STEER_POINTS));
+    if (!steerPathCount || dtStatusFailed(status))
+        return false;
+
+    int steerIndex = 0;
+    while (steerIndex < steerPathCount)
+    {
+        const float* point = &steerPath[steerIndex * VERTEX_SIZE];
+        if ((steerPathFlags[steerIndex] & DT_STRAIGHTPATH_OFFMESH_CONNECTION) ||
+            !inRangeYzx(point, startPos, minTargetDistance, 1000.0f))
+        {
+            break;
+        }
+        ++steerIndex;
+    }
+    if (steerIndex >= steerPathCount)
+        return false;
+
+    dtVcopy(steerPos, &steerPath[steerIndex * VERTEX_SIZE]);
+    steerPos[1] = startPos[1];
+    steerPosFlag = steerPathFlags[steerIndex];
+    steerPosRef = steerPathPolys[steerIndex];
+    return true;
+}
+
+dtStatus findSmoothPath(
+    dtNavMesh* mesh,
+    dtNavMeshQuery* query,
+    const dtQueryFilter& filter,
+    const float* startPos,
+    const float* endPos,
+    const dtPolyRef* polyPath,
+    int polyPathCount,
+    float* smoothPath,
+    int* smoothPathCount,
+    int maxSmoothPathCount)
+{
+    *smoothPathCount = 0;
+    if (!mesh || !query || !polyPath || polyPathCount <= 0 || !smoothPath || maxSmoothPathCount < 2)
+        return DT_FAILURE;
+
+    dtPolyRef smoothPolys[MAX_PATH_POLYS];
+    const int copiedPolys = polyPathCount < MAX_PATH_POLYS ? polyPathCount : MAX_PATH_POLYS;
+    std::memcpy(smoothPolys, polyPath, copiedPolys * sizeof(dtPolyRef));
+    unsigned int polyCount = static_cast<unsigned int>(copiedPolys);
+
+    float iterPos[VERTEX_SIZE];
+    if (dtStatusFailed(query->closestPointOnPolyBoundary(smoothPolys[0], startPos, iterPos)))
+        return DT_FAILURE;
+
+    float targetPos[VERTEX_SIZE];
+    if (dtStatusFailed(query->closestPointOnPolyBoundary(smoothPolys[polyCount - 1], endPos, targetPos)))
+        return DT_FAILURE;
+
+    unsigned int smoothCount = 0;
+    dtVcopy(&smoothPath[smoothCount * VERTEX_SIZE], iterPos);
+    ++smoothCount;
+
+    while (polyCount && smoothCount < static_cast<unsigned int>(maxSmoothPathCount))
+    {
+        float steerPos[VERTEX_SIZE];
+        unsigned char steerPosFlag = 0;
+        dtPolyRef steerPosRef = 0;
+        if (!getSteerTarget(query, smoothPolys, polyCount, filter, iterPos, targetPos, SMOOTH_PATH_SLOP, steerPos, steerPosFlag, steerPosRef))
+            break;
+
+        const bool endOfPath = (steerPosFlag & DT_STRAIGHTPATH_END) != 0;
+        const bool offMeshConnection = (steerPosFlag & DT_STRAIGHTPATH_OFFMESH_CONNECTION) != 0;
+
+        float delta[VERTEX_SIZE];
+        dtVsub(delta, steerPos, iterPos);
+        float length = dtMathSqrtf(dtVdot(delta, delta));
+        if ((endOfPath || offMeshConnection) && length < SMOOTH_PATH_STEP_SIZE)
+            length = 1.0f;
+        else if (length > 0.0f)
+            length = SMOOTH_PATH_STEP_SIZE / length;
+        else
+            break;
+
+        float moveTarget[VERTEX_SIZE];
+        dtVmad(moveTarget, iterPos, delta, length);
+
+        float result[VERTEX_SIZE];
+        constexpr unsigned int MAX_VISIT_POLY = 16;
+        dtPolyRef visited[MAX_VISIT_POLY];
+        int visitedCount = 0;
+        if (dtStatusFailed(query->moveAlongSurface(smoothPolys[0], iterPos, moveTarget, &filter, result, visited, &visitedCount, static_cast<int>(MAX_VISIT_POLY))))
+            break;
+
+        polyCount = fixupCorridor(smoothPolys, polyCount, MAX_PATH_POLYS, visited, static_cast<unsigned int>(visitedCount));
+
+        if (dtStatusFailed(query->getPolyHeight(smoothPolys[0], result, &result[1])))
+            break;
+        result[1] += 0.5f;
+        dtVcopy(iterPos, result);
+
+        if (endOfPath && inRangeYzx(iterPos, steerPos, SMOOTH_PATH_SLOP, 1.0f))
+        {
+            dtVcopy(iterPos, targetPos);
+            if (smoothCount < static_cast<unsigned int>(maxSmoothPathCount))
+            {
+                dtVcopy(&smoothPath[smoothCount * VERTEX_SIZE], iterPos);
+                ++smoothCount;
+            }
+            break;
+        }
+
+        if (offMeshConnection && inRangeYzx(iterPos, steerPos, SMOOTH_PATH_SLOP, 1.0f))
+        {
+            dtPolyRef prevRef = 0;
+            dtPolyRef polyRef = smoothPolys[0];
+            unsigned int position = 0;
+            while (position < polyCount && polyRef != steerPosRef)
+            {
+                prevRef = polyRef;
+                polyRef = smoothPolys[position];
+                ++position;
+            }
+
+            for (unsigned int i = position; i < polyCount; ++i)
+                smoothPolys[i - position] = smoothPolys[i];
+            polyCount -= position;
+
+            float newStartPos[VERTEX_SIZE];
+            float newEndPos[VERTEX_SIZE];
+            if (dtStatusSucceed(mesh->getOffMeshConnectionPolyEndPoints(prevRef, polyRef, newStartPos, newEndPos)))
+            {
+                if (smoothCount < static_cast<unsigned int>(maxSmoothPathCount))
+                {
+                    dtVcopy(&smoothPath[smoothCount * VERTEX_SIZE], startPos);
+                    ++smoothCount;
+                }
+                dtVcopy(iterPos, endPos);
+                if (polyCount && dtStatusSucceed(query->getPolyHeight(smoothPolys[0], iterPos, &iterPos[1])))
+                    iterPos[1] += 0.5f;
+            }
+        }
+
+        if (smoothCount < static_cast<unsigned int>(maxSmoothPathCount))
+        {
+            dtVcopy(&smoothPath[smoothCount * VERTEX_SIZE], iterPos);
+            ++smoothCount;
+        }
+    }
+
+    *smoothPathCount = static_cast<int>(smoothCount);
+    return smoothCount < MAX_PATH_POLYS ? DT_SUCCESS : DT_FAILURE;
+}
 }
 
 extern "C"
@@ -222,7 +451,7 @@ int wow_mmap_find_path(
 {
     try
     {
-        if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_STRAIGHT_POINTS)
+        if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
             return -1;
         if (startTileX > 63 || startTileY > 63 || targetTileX > 63 || targetTileY > 63)
             return -7;
@@ -277,23 +506,23 @@ int wow_mmap_find_path(
             return 0;
         }
 
-        const int straightLimit = maxPoints < MAX_STRAIGHT_POINTS ? maxPoints : MAX_STRAIGHT_POINTS;
-        std::vector<float> straight(straightLimit * 3);
-        int straightCount = 0;
-        if (dtStatusFailed(query->findStraightPath(nearestStart, nearestTarget, polys, polyCount, straight.data(), nullptr, nullptr, &straightCount, straightLimit)) || straightCount < 2)
+        const int smoothLimit = maxPoints < MAX_SMOOTH_POINTS ? maxPoints : MAX_SMOOTH_POINTS;
+        std::vector<float> smooth(smoothLimit * VERTEX_SIZE);
+        int smoothCount = 0;
+        if (dtStatusFailed(findSmoothPath(cached->mesh, query.get(), filter, nearestStart, nearestTarget, polys, polyCount, smooth.data(), &smoothCount, smoothLimit)) || smoothCount < 2)
         {
             return 0;
         }
 
-        for (int i = 0; i < straightCount; ++i)
+        for (int i = 0; i < smoothCount; ++i)
         {
-            const int offset = i * 3;
-            outPoints[i].x = straight[offset + 2];
-            outPoints[i].y = straight[offset];
-            outPoints[i].z = straight[offset + 1];
+            const int offset = i * VERTEX_SIZE;
+            outPoints[i].x = smooth[offset + 2];
+            outPoints[i].y = smooth[offset];
+            outPoints[i].z = smooth[offset + 1];
         }
 
-        return straightCount;
+        return smoothCount;
     }
     catch (...)
     {

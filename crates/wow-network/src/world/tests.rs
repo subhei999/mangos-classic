@@ -1071,6 +1071,83 @@ fn combat_packets_match_cmangos_melee_shapes() {
 }
 
 #[test]
+fn combat_log_spell_packets_match_cmangos_shapes() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let target = ObjectGuid::new(HighGuid::Unit, 0, 45);
+
+    let spell_damage = build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+        attacker: caster,
+        target,
+        spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+        damage: 11,
+        school: 0,
+        absorb: 2,
+        resist: -1,
+        periodic: false,
+        blocked: 3,
+        hit_info: 0,
+    })
+    .unwrap();
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&spell_damage, &mut cursor).unwrap(),
+        target
+    );
+    assert_eq!(
+        read_packed_guid(&spell_damage, &mut cursor).unwrap(),
+        caster
+    );
+    assert_eq!(
+        read_u32(&spell_damage, &mut cursor).unwrap(),
+        WARRIOR_HEROIC_STRIKE_RANK_1
+    );
+    assert_eq!(read_u32(&spell_damage, &mut cursor).unwrap(), 11);
+    assert_eq!(spell_damage[cursor], 0);
+    cursor += 1;
+    assert_eq!(read_u32(&spell_damage, &mut cursor).unwrap(), 2);
+    assert_eq!(
+        i32::from_le_bytes(spell_damage[cursor..cursor + 4].try_into().unwrap()),
+        -1
+    );
+    cursor += 4;
+    assert_eq!(spell_damage[cursor], 0);
+    cursor += 1;
+    assert_eq!(spell_damage[cursor], 0);
+    cursor += 1;
+    assert_eq!(read_u32(&spell_damage, &mut cursor).unwrap(), 3);
+    assert_eq!(read_u32(&spell_damage, &mut cursor).unwrap(), 0);
+    assert_eq!(spell_damage[cursor], 0);
+    cursor += 1;
+    assert_eq!(cursor, spell_damage.len());
+
+    let spell_failure = build_spell_failure_body(
+        caster,
+        WARRIOR_HEROIC_STRIKE_RANK_1,
+        SPELL_FAILED_OUT_OF_RANGE,
+    )
+    .unwrap();
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&spell_failure, &mut cursor).unwrap(),
+        caster
+    );
+    assert_eq!(
+        read_u32(&spell_failure, &mut cursor).unwrap(),
+        WARRIOR_HEROIC_STRIKE_RANK_1
+    );
+    assert_eq!(spell_failure[cursor], SPELL_FAILED_OUT_OF_RANGE);
+    cursor += 1;
+    assert_eq!(cursor, spell_failure.len());
+
+    let spell_failed_other = build_spell_failed_other_body(caster, WARRIOR_HEROIC_STRIKE_RANK_1);
+    assert_eq!(&spell_failed_other[0..8], &caster.raw().to_le_bytes());
+    assert_eq!(
+        &spell_failed_other[8..12],
+        &WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes()
+    );
+}
+
+#[test]
 fn melee_roll_table_orders_cmangos_defensive_outcomes() {
     let chances = MeleeRollChances {
         miss: 5.0,
@@ -3623,6 +3700,56 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
         .observer_packets
         .iter()
         .all(|(session_id, _)| *session_id == SessionId(2)));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKERSTATEUPDATE));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 178;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 11,
+            melee_outcome: None,
+            spell_id: Some(WARRIOR_HEROIC_STRIKE_RANK_1),
+            now,
+            now_epoch_secs: 2_000,
+            exclude_character_guid: Some(1),
+        })
+        .unwrap()
+        .expect("spell damage event");
+
+    assert!(event.spell_non_melee_log_body.is_some());
+    assert_eq!(event.observer_packets.len(), 3);
+    assert!(event
+        .observer_packets
+        .iter()
+        .all(|(session_id, _)| *session_id == SessionId(2)));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG));
     assert!(event
         .observer_packets
         .iter()

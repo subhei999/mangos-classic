@@ -37,10 +37,24 @@ async fn handle_cast_spell(
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let targets = normalize_fixture_spell_targets(packet.targets);
     if let Some(failure) = starter_spell_melee_cast_failure(session, &starter_spell, &targets) {
-        return send_packet(
+        send_packet(
             stream,
             SMSG_CAST_RESULT,
             &build_cast_result_failure_body(packet.spell_id, failure),
+            Some(header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_SPELL_FAILURE,
+            &build_spell_failure_body(caster, packet.spell_id, failure)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        return send_packet(
+            stream,
+            SMSG_SPELL_FAILED_OTHER,
+            &build_spell_failed_other_body(caster, packet.spell_id),
             Some(header_crypto),
         )
         .await;
@@ -94,6 +108,24 @@ async fn handle_cast_spell(
             session.combat_dummy_loot_item_available = true;
             session.active_combat_target = None;
         }
+        send_packet(
+            stream,
+            SMSG_SPELLNONMELEEDAMAGELOG,
+            &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                attacker: caster,
+                target: rust_combat_dummy_guid(),
+                spell_id: packet.spell_id,
+                damage,
+                school: 0,
+                absorb: 0,
+                resist: 0,
+                periodic: false,
+                blocked: 0,
+                hit_info: 0,
+            })?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
         send_packet(
             stream,
             SMSG_ATTACKERSTATEUPDATE,
@@ -155,6 +187,15 @@ async fn handle_cast_spell(
                     session.active_combat_target = None;
                     session.active_combat_next_swing_at = None;
                     clear_db_creature_combat_if_attacker(session, target);
+                }
+                if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
+                    send_packet(
+                        stream,
+                        SMSG_SPELLNONMELEEDAMAGELOG,
+                        spell_non_melee_log_body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
                 }
                 send_packet(
                     stream,

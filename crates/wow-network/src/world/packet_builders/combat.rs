@@ -70,6 +70,88 @@ fn build_attacker_state_update_body_for_outcome(
     Ok(body)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SpellNonMeleeDamageLogPacket {
+    attacker: ObjectGuid,
+    target: ObjectGuid,
+    spell_id: u32,
+    damage: u32,
+    school: u8,
+    absorb: u32,
+    resist: i32,
+    periodic: bool,
+    blocked: u32,
+    hit_info: u32,
+}
+
+fn build_spell_non_melee_damage_log_body(
+    log: SpellNonMeleeDamageLogPacket,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(44);
+    PackedGuid::write(&mut body, log.target)?;
+    PackedGuid::write(&mut body, log.attacker)?;
+    body.extend_from_slice(&log.spell_id.to_le_bytes());
+    body.extend_from_slice(&log.damage.to_le_bytes());
+    body.push(log.school);
+    body.extend_from_slice(&log.absorb.to_le_bytes());
+    body.extend_from_slice(&log.resist.to_le_bytes());
+    body.push(log.periodic as u8);
+    body.push(0); // unused
+    body.extend_from_slice(&log.blocked.to_le_bytes());
+    body.extend_from_slice(&log.hit_info.to_le_bytes());
+    body.push(0); // debug switch disabled
+    Ok(body)
+}
+
+#[allow(dead_code)]
+fn build_spell_log_miss_body(
+    caster: ObjectGuid,
+    target: ObjectGuid,
+    spell_id: u32,
+    miss_info: u8,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(26);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&caster.raw().to_le_bytes());
+    body.push(0); // can be 0 or 1 in CMaNGOS
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.push(miss_info);
+    Ok(body)
+}
+
+fn build_spell_failure_body(caster: ObjectGuid, spell_id: u32, result: u8) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(13);
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.push(result);
+    Ok(body)
+}
+
+fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&caster.raw().to_le_bytes());
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body
+}
+
+#[allow(dead_code)]
+fn build_spell_energize_log_body(
+    caster: ObjectGuid,
+    target: ObjectGuid,
+    spell_id: u32,
+    power_type: u32,
+    amount: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(28);
+    PackedGuid::write(&mut body, target)?;
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&power_type.to_le_bytes());
+    body.extend_from_slice(&amount.to_le_bytes());
+    Ok(body)
+}
+
 fn build_combat_dummy_state_update_body(
     health: u32,
     dynamic_flags: u32,

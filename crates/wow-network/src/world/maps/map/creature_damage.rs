@@ -85,26 +85,52 @@ impl MapRuntime {
         } else {
             build_attacker_state_update_body(request.killer, creature_guid, damage)?
         };
+        let spell_non_melee_log_body = request
+            .spell_id
+            .map(|spell_id| {
+                build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                    attacker: request.killer,
+                    target: creature_guid,
+                    spell_id,
+                    damage,
+                    school: 0,
+                    absorb: 0,
+                    resist: 0,
+                    periodic: false,
+                    blocked: 0,
+                    hit_info: 0,
+                })
+            })
+            .transpose()?;
         let observer_packets = nearby_observers
             .iter()
             .copied()
             .flat_map(|session_id| {
-                [
-                    (
+                let mut packets = Vec::with_capacity(3);
+                if let Some(spell_non_melee_log_body) = &spell_non_melee_log_body {
+                    packets.push((
                         session_id,
                         OutboundWorldPacket {
-                            opcode: SMSG_ATTACKERSTATEUPDATE,
-                            body: attacker_state_body.clone(),
+                            opcode: SMSG_SPELLNONMELEEDAMAGELOG,
+                            body: spell_non_melee_log_body.clone(),
                         },
-                    ),
-                    (
-                        session_id,
-                        OutboundWorldPacket {
-                            opcode: SMSG_UPDATE_OBJECT,
-                            body: update_body.clone(),
-                        },
-                    ),
-                ]
+                    ));
+                }
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_ATTACKERSTATEUPDATE,
+                        body: attacker_state_body.clone(),
+                    },
+                ));
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: update_body.clone(),
+                    },
+                ));
+                packets
             })
             .collect();
         let death_finalization = if is_dead {
@@ -155,6 +181,7 @@ impl MapRuntime {
             damage,
             creature,
             attacker_state_body,
+            spell_non_melee_log_body,
             update_body,
             death_finalization,
             target_switch,

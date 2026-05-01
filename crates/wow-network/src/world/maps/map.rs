@@ -55,6 +55,7 @@ struct DbCreatureDamageEvent {
     damage: u32,
     creature: DbCreatureRuntime,
     attacker_state_body: Vec<u8>,
+    spell_non_melee_log_body: Option<Vec<u8>>,
     update_body: Vec<u8>,
     death_finalization: Option<DbCreatureDeathFinalizationEvent>,
     target_switch: Option<DbCreatureThreatTargetSwitchEvent>,

@@ -250,15 +250,21 @@ Baseline runs can fail if a live auto-restarting client stack holds
 - GitHub issue #59 tracks moving DB gameobject consumed/respawn state from
   per-session storage into shared `MapRuntime`/world state for multiplayer
   consistency.
+- GitHub issue #60 tracks a real-client combat/visibility desync where the
+  client attacked visible Defias Thug GUID `0xF130000026013939` but the session
+  treated it as unknown or not alive.
+- GitHub issue #61 tracks the DB-heavy questgiver status-query path amplified
+  by gameobject visibility; repeated `CMSG_QUESTGIVER_STATUS_QUERY` traffic may
+  be contributing to sluggish gameplay feel.
 
 ## Recommended Next Task
 
-Restart the client stack and real-client smoke gameobject quests plus the
-reward regressions: confirm nearby Northshire gameobjects render/query, an
-object-use quest such as Milly's Harvest advances from object clicks, reward
-items still appear with real icons, and required quest items still disappear on
-turn-in. If that passes, continue with `codex/c2-skills-weapon-skill` before
-`codex/c2-warrior-spells-gcd`.
+Pause the next feature merge and do a foundation correction branch first:
+move gameobjects into shared `MapRuntime`/world ownership, make questgiver
+status checks cheap/cached, and make combat target resolution refresh from
+shared map state when the client attacks a visible DB creature. Then restart
+and real-client smoke login, object quests, Defias/wolf/vermin combat feel, and
+reward regressions before continuing with `codex/c2-skills-weapon-skill`.
 
 ## Key Files
 

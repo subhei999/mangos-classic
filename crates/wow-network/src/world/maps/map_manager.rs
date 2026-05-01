@@ -216,6 +216,37 @@ impl MapRuntimeManager {
         Ok(())
     }
 
+    #[cfg(test)]
+    async fn ensure_db_creature_grids_loaded_for_test(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+        mut runtimes_for_grid: impl FnMut(GridCoord) -> Vec<DbCreatureRuntime>,
+    ) {
+        self.creature_grid_load_ensure_calls
+            .fetch_add(1, Ordering::Relaxed);
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_creature_grids_for_area(position, radius)
+        };
+        if grids.is_empty() {
+            self.creature_grid_load_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        for grid in grids {
+            let runtimes = runtimes_for_grid(grid);
+            self.creature_grid_load_db_queries
+                .fetch_add(1, Ordering::Relaxed);
+            self.creature_grid_load_rows
+                .fetch_add(runtimes.len() as u64, Ordering::Relaxed);
+            map.lock().await.insert_loaded_creature_grid(grid, runtimes);
+        }
+    }
+
     #[allow(dead_code)]
     fn creature_grid_load_stats(&self) -> CreatureGridLoadStats {
         CreatureGridLoadStats {

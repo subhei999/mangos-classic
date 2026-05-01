@@ -51,7 +51,7 @@ impl MapRuntime {
     ) -> Vec<DbCreatureRuntime> {
         self.loaded_creature_grids.insert(grid_coord);
         self.grids.entry(grid_coord).or_default().last_touched = Instant::now();
-        creatures
+        let loaded = creatures
             .into_iter()
             .map(|creature| {
                 let guid = creature.guid().raw();
@@ -68,7 +68,9 @@ impl MapRuntime {
                     .insert(shared.guid().raw());
                 shared.clone()
             })
-            .collect()
+            .collect();
+        self.refresh_grid_state(grid_coord);
+        loaded
     }
 
     fn nearby_db_creature_snapshots(
@@ -123,27 +125,29 @@ impl MapRuntime {
     fn update_db_creature_snapshot(&mut self, creature: DbCreatureRuntime) {
         let guid = creature.guid().raw();
         let new_grid = grid_coord_for_position(creature.current_position);
-        let new_cell = cell_coord_for_position(creature.current_position);
-        if let Some(previous) = self.creatures.get(&guid) {
-            let previous_grid = grid_coord_for_position(previous.current_position);
-            let previous_cell = cell_coord_for_position(previous.current_position);
-            if previous_grid != new_grid || previous_cell != new_cell {
-                if let Some(grid) = self.grids.get_mut(&previous_grid) {
-                    if let Some(cell) = grid.cells.get_mut(&previous_cell) {
-                        cell.creatures.remove(&creature.guid().raw());
-                    }
-                }
-            }
+        if let Some(previous_position) = self.creatures.get(&guid).map(|creature| creature.current_position) {
+            self.refresh_db_creature_spatial_index(
+                guid,
+                previous_position,
+                creature.current_position,
+            );
+        } else {
+            let new_cell = cell_coord_for_position(creature.current_position);
+            self.grids
+                .entry(new_grid)
+                .or_default()
+                .cells
+                .entry(new_cell)
+                .or_default()
+                .creatures
+                .insert(guid);
         }
         self.grids
             .entry(new_grid)
             .or_default()
-            .cells
-            .entry(new_cell)
-            .or_default()
-            .creatures
-            .insert(creature.guid().raw());
+            .last_touched = Instant::now();
         self.creatures.insert(guid, creature);
+        self.refresh_grid_state(new_grid);
     }
 
     fn update_db_creature_snapshot_and_broadcast(
@@ -166,5 +170,62 @@ impl MapRuntime {
                 .map(|player| (player.session_id, packet.clone()))
         })
         .collect()
+    }
+
+    fn refresh_grid_state(&mut self, grid_coord: GridCoord) {
+        let Some(grid) = self.grids.get(&grid_coord) else {
+            return;
+        };
+        let state = if grid.active_player_count > 0
+            || grid.cells.values().any(|cell| !cell.players.is_empty())
+        {
+            GridState::Active
+        } else if let Some(blocker) = self.creature_grid_unload_blocker(grid_coord) {
+            GridState::UnloadBlocked(blocker)
+        } else if self.loaded_creature_grids.contains(&grid_coord) {
+            GridState::Idle
+        } else {
+            GridState::Loaded
+        };
+        if let Some(grid) = self.grids.get_mut(&grid_coord) {
+            grid.state = state;
+        }
+    }
+
+    fn creature_grid_unload_blocker(&self, grid_coord: GridCoord) -> Option<GridUnloadBlocker> {
+        let grid = self.grids.get(&grid_coord)?;
+        let creature_guids = grid
+            .cells
+            .values()
+            .flat_map(|cell| cell.creatures.iter().copied())
+            .collect::<HashSet<_>>();
+        if creature_guids
+            .iter()
+            .any(|guid| self.active_creature_combats.contains_key(guid))
+        {
+            return Some(GridUnloadBlocker::Combat);
+        }
+
+        for guid in creature_guids {
+            let Some(creature) = self.creatures.get(&guid) else {
+                continue;
+            };
+            if creature.looting || creature.lootable || creature.loot_money_available || creature.loot_item.is_some() {
+                return Some(GridUnloadBlocker::Loot);
+            }
+            if creature.life_state == DbCreatureLifeState::Corpse {
+                return Some(GridUnloadBlocker::Corpse);
+            }
+            if creature.corpse_expires_at.is_some()
+                || creature.respawn_at.is_some()
+                || creature.next_random_move_at.is_some()
+                || creature.next_waypoint_move_at.is_some()
+                || !matches!(creature.motion, CreatureMotionState::Idle)
+            {
+                return Some(GridUnloadBlocker::Timer);
+            }
+        }
+
+        None
     }
 }

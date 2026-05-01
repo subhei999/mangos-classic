@@ -185,6 +185,7 @@ impl MapRuntime {
                 if let Some(cell) = grid.cells.get_mut(&old_cell) {
                     cell.creatures.remove(&creature_guid);
                 }
+                grid.last_touched = Instant::now();
             }
         }
         self.grids
@@ -195,5 +196,9 @@ impl MapRuntime {
             .or_default()
             .creatures
             .insert(creature_guid);
+        if old_grid != new_grid {
+            self.refresh_grid_state(old_grid);
+        }
+        self.refresh_grid_state(new_grid);
     }
 }

@@ -38,6 +38,7 @@ impl MapRuntime {
             self.active_creature_combats.remove(&creature_guid.raw());
             self.creature_threats.remove(&creature_guid.raw());
         }
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let update_body = if is_dead {
             build_db_creature_death_update_body(
                 creature_guid,

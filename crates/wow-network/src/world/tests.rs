@@ -2997,6 +2997,18 @@ fn map_runtime_grid_world_bounds_contain_position() {
     assert!((min_y..=max_y).contains(&northshire.y));
 }
 
+fn grid_center_position(grid: GridCoord) -> WorldPosition {
+    let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
+    WorldPosition::new(0, (min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 83.5, 0.0)
+}
+
+fn map_cell_has_creature(map: &MapRuntime, position: WorldPosition, guid: u64) -> bool {
+    map.grids
+        .get(&grid_coord_for_position(position))
+        .and_then(|grid| grid.cells.get(&cell_coord_for_position(position)))
+        .is_some_and(|cell| cell.creatures.contains(&guid))
+}
+
 #[test]
 fn map_runtime_lazy_creature_grid_tracks_loaded_grids_and_nearby_snapshots() {
     let mut map = MapRuntime::new(0, 0);
@@ -3021,6 +3033,200 @@ fn map_runtime_lazy_creature_grid_tracks_loaded_grids_and_nearby_snapshots() {
     let nearby = map.nearby_db_creature_snapshots(center, CREATURE_SPAWN_RADIUS_YARDS, 16);
     assert_eq!(nearby.len(), 1);
     assert_eq!(nearby[0].guid().raw(), creature_guid);
+}
+
+#[tokio::test]
+async fn map_runtime_grid_load_counters_prove_movement_reuses_loaded_area() {
+    let maps = MapRuntimeManager::default();
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+
+    maps.ensure_db_creature_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS, |grid| {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = 10_000 + grid.x * 64 + grid.y;
+        spawn.position_x = center.x;
+        spawn.position_y = center.y;
+        vec![DbCreatureRuntime::new(spawn)]
+    })
+    .await;
+    assert_eq!(
+        maps.creature_grid_load_stats(),
+        CreatureGridLoadStats {
+            ensure_calls: 1,
+            cache_hits: 0,
+            db_queries: 1,
+            rows_loaded: 1,
+        }
+    );
+
+    maps.ensure_db_creature_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS, |_| {
+        Vec::new()
+    })
+    .await;
+    maps.ensure_db_creature_grids_loaded_for_test(
+        0,
+        WorldPosition::new(
+            0,
+            center.x + 5.0,
+            center.y + 5.0,
+            center.z,
+            center.orientation,
+        ),
+        CREATURE_SPAWN_RADIUS_YARDS,
+        |_| Vec::new(),
+    )
+    .await;
+
+    assert_eq!(
+        maps.creature_grid_load_stats(),
+        CreatureGridLoadStats {
+            ensure_calls: 3,
+            cache_hits: 2,
+            db_queries: 1,
+            rows_loaded: 1,
+        },
+        "movement inside already loaded cells must not become DB-query-per-heartbeat"
+    );
+}
+
+#[tokio::test]
+async fn map_runtime_grid_load_counters_load_new_grid_once_and_reuse_for_nearby_players() {
+    let maps = MapRuntimeManager::default();
+    let first = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let first_grid = grid_coord_for_position(first);
+    let second_grid = GridCoord {
+        x: first_grid.x + 1,
+        y: first_grid.y,
+    };
+    let second = grid_center_position(second_grid);
+
+    maps.ensure_db_creature_grids_loaded_for_test(0, first, 1.0, |_| Vec::new())
+        .await;
+    maps.ensure_db_creature_grids_loaded_for_test(0, second, 1.0, |_| Vec::new())
+        .await;
+    maps.ensure_db_creature_grids_loaded_for_test(
+        0,
+        WorldPosition::new(0, second.x + 2.0, second.y, second.z, second.orientation),
+        1.0,
+        |_| Vec::new(),
+    )
+    .await;
+
+    assert_eq!(
+        maps.creature_grid_load_stats(),
+        CreatureGridLoadStats {
+            ensure_calls: 3,
+            cache_hits: 1,
+            db_queries: 2,
+            rows_loaded: 0,
+        },
+        "crossing into one unloaded grid should add one DB rectangle load; a nearby second player should reuse it"
+    );
+}
+
+#[test]
+fn map_runtime_grid_states_prepare_idle_and_unload_blockers() {
+    assert_eq!(GridRuntime::default().state, GridState::Loaded);
+
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 303;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(spawn)]);
+    assert_eq!(map.grids.get(&grid).unwrap().state, GridState::Idle);
+
+    map.add_player(test_player_runtime(7, SessionId(7), center))
+        .unwrap();
+    assert_eq!(map.grids.get(&grid).unwrap().state, GridState::Active);
+    let mut corpse = map.creatures.get(&creature_guid.raw()).unwrap().clone();
+    corpse.begin_corpse(Instant::now(), 1_000);
+    corpse.lootable = false;
+    corpse.loot_money_available = false;
+    map.update_db_creature_snapshot(corpse);
+    let packets = map.remove_player(7);
+    assert!(packets.is_empty());
+
+    assert!(map.loaded_creature_grids.contains(&grid));
+    assert_eq!(
+        map.creatures.get(&creature_guid.raw()).unwrap().life_state,
+        DbCreatureLifeState::Corpse,
+        "logout should not unload or corrupt active shared creature state"
+    );
+    assert_eq!(
+        map.grids.get(&grid).unwrap().state,
+        GridState::UnloadBlocked(GridUnloadBlocker::Corpse)
+    );
+
+    let combat = map.begin_db_creature_combat(
+        creature_guid,
+        ObjectGuid::new(HighGuid::Player, 0, 99),
+        Instant::now(),
+    );
+    assert!(combat.is_some());
+    assert_eq!(
+        map.grids.get(&grid).unwrap().state,
+        GridState::UnloadBlocked(GridUnloadBlocker::Combat)
+    );
+}
+
+#[test]
+fn map_runtime_creature_cell_buckets_follow_move_return_home_and_lifecycle() {
+    let mut map = MapRuntime::new(0, 0);
+    let home = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let moved = WorldPosition::new(
+        0,
+        home.x + CELL_SIZE_YARDS * 2.0,
+        home.y,
+        home.z,
+        home.orientation,
+    );
+    let grid = grid_coord_for_position(home);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 304;
+    spawn.position_x = home.x;
+    spawn.position_y = home.y;
+    spawn.position_z = home.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+
+    map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(spawn)]);
+    assert!(map_cell_has_creature(&map, home, creature_guid.raw()));
+
+    let mut creature = map.creatures.get(&creature_guid.raw()).unwrap().clone();
+    creature.current_position = moved;
+    map.update_db_creature_snapshot(creature);
+    assert!(!map_cell_has_creature(&map, home, creature_guid.raw()));
+    assert!(map_cell_has_creature(&map, moved, creature_guid.raw()));
+
+    let now = Instant::now();
+    let (_, motion) = map
+        .start_db_creature_return_home_motion(
+            &DbCreatureNavigationGuardrail::default(),
+            creature_guid,
+            now,
+        )
+        .expect("moved creature should start returning home");
+    map.advance_db_creature_motion(creature_guid, now + motion.duration);
+    assert!(map_cell_has_creature(&map, home, creature_guid.raw()));
+    assert!(!map_cell_has_creature(&map, moved, creature_guid.raw()));
+
+    let mut corpse = map.creatures.get(&creature_guid.raw()).unwrap().clone();
+    corpse.current_position = moved;
+    corpse.begin_corpse(now, 1_000);
+    corpse.lootable = false;
+    corpse.loot_money_available = false;
+    corpse.corpse_expires_at = Some(now);
+    map.update_db_creature_snapshot(corpse);
+    assert!(map_cell_has_creature(&map, moved, creature_guid.raw()));
+
+    let events = map
+        .advance_db_creature_lifecycle(&[creature_guid.raw()], home, None, now)
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(map_cell_has_creature(&map, home, creature_guid.raw()));
+    assert!(!map_cell_has_creature(&map, moved, creature_guid.raw()));
 }
 
 #[test]
@@ -7200,6 +7406,57 @@ fn active_mover_rejects_truncated_payload() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("CMSG_SET_ACTIVE_MOVER payload must be 8 bytes"));
+}
+
+#[test]
+fn active_mover_accepts_matching_player_guid() {
+    let guid = 77u32;
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid,
+            name: "Mover".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    let mover_guid = ObjectGuid::new(HighGuid::Player, 0, guid)
+        .raw()
+        .to_le_bytes();
+
+    let result = handle_set_active_mover(&mover_guid, &session);
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn active_mover_mismatch_is_non_fatal() {
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 77,
+            name: "Mover".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    let mismatched_mover_guid = ObjectGuid::new(HighGuid::Player, 0, 99).raw().to_le_bytes();
+
+    let result = handle_set_active_mover(&mismatched_mover_guid, &session);
+
+    assert!(result.is_ok());
 }
 
 #[test]

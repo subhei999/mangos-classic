@@ -184,6 +184,10 @@ impl MapRuntime {
                 .or_default()
                 .players
                 .insert(character_guid);
+            if old_grid != new_grid {
+                self.refresh_grid_state(old_grid);
+            }
+            self.refresh_grid_state(new_grid);
         }
 
         if let Some(player) = self.players.get_mut(&character_guid) {
@@ -304,10 +308,8 @@ impl MapRuntime {
         };
         let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
-        if let Some(grid) = self
-            .grids
-            .get_mut(&grid_coord_for_position(player.position))
-        {
+        let player_grid = grid_coord_for_position(player.position);
+        if let Some(grid) = self.grids.get_mut(&player_grid) {
             grid.active_player_count = grid.active_player_count.saturating_sub(1);
             grid.last_touched = Instant::now();
             if let Some(cell) = grid.cells.get_mut(&player.cell) {
@@ -316,6 +318,7 @@ impl MapRuntime {
         }
 
         self.clear_db_creature_combats_for_victim(player_guid);
+        self.refresh_grid_state(player_grid);
         let destroy = OutboundWorldPacket {
             opcode: SMSG_DESTROY_OBJECT,
             body: build_destroy_guid_body(player_guid),

@@ -24,15 +24,36 @@ impl MapRuntime {
         };
         self.active_creature_combats.insert(attacker.raw(), combat);
         self.add_db_creature_threat(attacker, victim, 0.0);
+        if let Some(position) = self
+            .creatures
+            .get(&attacker.raw())
+            .map(|creature| creature.current_position)
+        {
+            self.refresh_grid_state(grid_coord_for_position(position));
+        }
         Some(combat)
     }
 
     fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
         self.active_creature_combats.remove(&attacker.raw());
         self.creature_threats.remove(&attacker.raw());
+        if let Some(position) = self
+            .creatures
+            .get(&attacker.raw())
+            .map(|creature| creature.current_position)
+        {
+            self.refresh_grid_state(grid_coord_for_position(position));
+        }
     }
 
     fn clear_db_creature_combats_for_victim(&mut self, victim: ObjectGuid) {
+        let changed_grids = self
+            .active_creature_combats
+            .values()
+            .filter(|combat| combat.victim == victim)
+            .filter_map(|combat| self.creatures.get(&combat.attacker.raw()))
+            .map(|creature| grid_coord_for_position(creature.current_position))
+            .collect::<HashSet<_>>();
         self.active_creature_combats
             .retain(|_, combat| combat.victim != victim);
         for threats in self.creature_threats.values_mut() {
@@ -45,6 +66,9 @@ impl MapRuntime {
             .collect::<HashSet<_>>();
         self.creature_threats
             .retain(|attacker, threats| active_attackers.contains(attacker) || !threats.is_empty());
+        for grid in changed_grids {
+            self.refresh_grid_state(grid);
+        }
     }
 
     fn active_db_creature_combats_for_victim(

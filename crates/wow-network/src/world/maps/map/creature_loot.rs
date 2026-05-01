@@ -14,7 +14,9 @@ impl MapRuntime {
             creature.loot_item = loot_item;
         }
         creature.looting = true;
-        Some(creature.clone())
+        let creature = creature.clone();
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
+        Some(creature)
     }
 
     fn take_db_creature_loot_money(
@@ -27,7 +29,9 @@ impl MapRuntime {
         }
         let money = creature.loot_money();
         creature.loot_money_available = false;
-        Some((money, creature.clone()))
+        let creature = creature.clone();
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
+        Some((money, creature))
     }
 
     fn take_db_creature_loot_item(
@@ -39,7 +43,9 @@ impl MapRuntime {
             return None;
         }
         let loot = creature.loot_item.take()?;
-        Some((loot, creature.clone()))
+        let creature = creature.clone();
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
+        Some((loot, creature))
     }
 
     fn restore_db_creature_loot_item(
@@ -51,7 +57,9 @@ impl MapRuntime {
         if creature.loot_item.is_none() {
             creature.loot_item = Some(loot);
         }
-        Some(creature.clone())
+        let creature = creature.clone();
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
+        Some(creature)
     }
 
     fn release_db_creature_loot(
@@ -66,6 +74,7 @@ impl MapRuntime {
         creature.looting = false;
         creature.reduce_corpse_decay_after_loot(now);
         let creature = creature.clone();
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let direct_packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_db_creature_state_update_body(

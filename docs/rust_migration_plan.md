@@ -14,7 +14,7 @@ that cannot be run. Each milestone must leave the repo in a testable state.
 
 ## Current State
 
-- Branch: `codex/rust-auth-foundation`
+- Branch: `codex/rusty-mangos`
 - Base: `master`
 - C++ tree: untouched and still the canonical behavior reference
 - Rust status: authserver foundation exists and builds locally; worldserver
@@ -457,6 +457,13 @@ Success looks like:
   become a single-player packet demo: at least two clients share player
   visibility, movement, chat, and DB creature state through one in-process map
   runtime.
+
+Execution plan:
+
+- Use `docs/playable_execution_roadmap.md` for the branchable Checkpoint 2
+  workstream map, merge order, worker contracts, and final real-client closure
+  pass. Keep this migration plan focused on durable milestone memory instead
+  of per-branch execution detail.
 
 Detailed path:
 

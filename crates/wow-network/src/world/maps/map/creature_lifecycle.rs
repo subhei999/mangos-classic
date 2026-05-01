@@ -15,8 +15,14 @@ impl MapRuntime {
             };
             let creature_guid = creature.guid();
             if creature.is_corpse_expired(now) {
+                let old_position = creature.current_position;
                 creature.remove_corpse();
                 let creature = creature.clone();
+                self.refresh_db_creature_spatial_index(
+                    creature_guid.raw(),
+                    old_position,
+                    creature.current_position,
+                );
                 let packet = OutboundWorldPacket {
                     opcode: SMSG_DESTROY_OBJECT,
                     body: build_destroy_guid_body(creature_guid),
@@ -44,8 +50,14 @@ impl MapRuntime {
             }
 
             if creature.is_ready_to_respawn(now) {
+                let old_position = creature.current_position;
                 creature.respawn();
                 let creature = creature.clone();
+                self.refresh_db_creature_spatial_index(
+                    creature_guid.raw(),
+                    old_position,
+                    creature.current_position,
+                );
                 let should_send_create =
                     is_db_creature_inside_visibility_radius(&creature, viewer_position);
                 let create_packet = if should_send_create {

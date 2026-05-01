@@ -14,6 +14,16 @@ struct CellCoord {
 enum GridState {
     Loaded,
     Active,
+    Idle,
+    UnloadBlocked(GridUnloadBlocker),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GridUnloadBlocker {
+    Combat,
+    Loot,
+    Corpse,
+    Timer,
 }
 
 #[derive(Debug, Default)]

@@ -6,7 +6,8 @@ work when it reduces project risk.
 
 Current milestone: Northshire Human Warrior playable slice
 Client: WoW 1.12.1 / build 5875
-Branch: codex/rust-auth-foundation
+Branch: codex/rusty-mangos
+Execution roadmap: `docs/playable_execution_roadmap.md`
 
 ## Rules
 
@@ -21,23 +22,29 @@ Branch: codex/rust-auth-foundation
 
 ## Current Priority Order
 
-1. G12 Derisk Multiplayer / Shared MapRuntime.
-2. G8 Combat Agency.
-3. G9 World Creature Fidelity.
-4. G10 NPC Interaction Fidelity.
-5. G11 Persistence + Relog Sanity.
-6. G5 Combat + Loot real-behavior fidelity.
-7. G6 Level + Trainer issue #49 polish.
-8. G7 Death + Respawn polish.
-9. G8/G9 Pathing + Movement Fidelity follow-ups.
+1. G12 Derisk Multiplayer / Shared MapRuntime hardening: measured lazy
+   creature grid loading, then grid unload/idle eviction, logout/relog torture
+   coverage, and real-client confirmation of shared moving-mob death/loot.
+2. Stabilize and smoke the current G8/G9 shared movement/threat slice, then
+   commit it as the next integration point.
+3. G8 Combat Agency: combat math, timing, reach/model, swing errors, LOS,
+   pathing, and threat fidelity.
+4. G9 World Creature Fidelity: random/waypoint/return-home movement, lifecycle,
+   and grid/runtime cleanup.
+5. G10 NPC Interaction Fidelity.
+6. G11 Persistence + Relog Sanity.
+7. G5 Combat + Loot real-behavior fidelity.
+8. G6 Level + Trainer issue #49 polish.
+9. G7 Death + Respawn polish.
 
-Current user-directed milestone: **G12 Derisk Multiplayer / Shared MapRuntime**.
-Keep one monolithic worldserver, but stop treating each TCP session as its own
-mini-world. Introduce a shared in-process `MapRuntime` / grid layer inside
-`WorldRuntimeState`, then route player visibility, movement, `/say`, and DB
-creature state through it. The user has a detailed implementation plan and will
-walk the next agent through it before coding. Follow
-`docs/g12_shared_mapruntime_plan.md` as the G12 implementation document.
+Current user-directed milestone: **Northshire Human Warrior playable slice with
+shared multiplayer state**. Current active work is G12 lazy DB creature grid
+loading as a measured scalability gate. G12's core shape is substantially
+implemented, so near-term work should keep shared `MapRuntime` authority intact
+while building G8/G9/G10/G11 fidelity. Use
+`docs/playable_execution_roadmap.md` for branchable workstreams and merge order,
+and `docs/g12_shared_mapruntime_plan.md` for shared-runtime design details that
+still matter.
 
 Recently verified:
 
@@ -57,7 +64,7 @@ Recently verified:
 | G9 World Creature Fidelity | Yellow | Starter mobs come from real DB spawn/template data, expose DB loot, persist enough world state, respawn with CMaNGOS-like timing, and support generic DB-backed idle/random/waypoint/patrol movement | DB spawn/template/loot basics work; Rust now loads DB `MovementType`/`spawndist` and runs generic random walk splines with CMaNGOS-like 3-10 second pauses for random-movement creatures. Rust also loads CMaNGOS-style `creature_movement` GUID paths, `creature_movement_template` entry/path 0 fallback, and spawn-group formation `waypoint_path` indirection for `MovementType` 2/4, sends timed multi-point patrol `SMSG_MONSTER_MOVE` splines, waits at DB nodes, supports linear back-and-forth waypoint movement, and keeps DB creatures in alive/corpse/dead/respawn state with DB/template-derived timers. Creature deaths now write CMaNGOS-shaped `characters.creature_respawn` rows for instance `0`; login/movement visibility restores future-dead creatures as tracked runtime state without creating them client-side, unloaded corpses are recreated as corpses when the player returns before respawn, and runtime respawn clears the row. True pathfinder random points, follower formation movement, broader real-client zone proof, and remaining multi-client polish remain missing | #51, #52 | Continue after G8 if movement/world fidelity is the highest remaining blocker; Northshire is proof only, not a source of starter-specific creature logic |
 | G10 NPC Interaction Fidelity | Red | Quest givers, vendors, trainers, gossip NPCs, and non-interactive NPCs expose the correct cursor/status, menus, flags, text, and failure behavior in the real client | Real-client NPC interaction pass plus harness | TBD | Audit Northshire NPC flags/status/menu flows against CMaNGOS |
 | G11 Persistence + Relog Sanity | Red | After quest progress, XP, level-up, loot, inventory changes, trainer learning, death/respawn, and position changes, logout/relog restores correct state with no dupes/loss/corruption | Harness plus real-client relog checklist | TBD | Add relog checkpoints after each major Northshire action |
-| G12 Derisk Multiplayer / Shared MapRuntime | Red / active | Two clients can log into Northshire, see each other spawn/move/logout, exchange nearby `/say`, observe shared DB creature state, and avoid duplicated/desynced kill or loot state | Harness now proves two clients can log in together, receive mutual player create blocks, receive movement broadcast, get destroy when the other player leaves visibility range, receive create again on return, observe logout destroy, and exchange nearby `/say` without leaking it to an out-of-range player. The starter-zone harness now also runs two simultaneous Northshire clients through shared wolf combat: the observer sees the primary player, movement, `/say`, shared wolf damage/death state, and cannot duplicate loot after the primary claims the corpse. User real-client smoke confirmed movement with three players online. Player-player visibility now uses CMaNGOS-shaped grid/cell buckets instead of full player scans. `MapRuntime` now preserves shared DB-creature snapshots across sessions, applies player melee and supported starter spell creature damage through shared map events, broadcasts shared creature health/death updates to nearby sessions, owns DB-creature loot open/money/item/release claims, broadcasts loot-release corpse flag updates to observers, clears shared creature combat/threat claims when a victim player leaves the map, owns exclusive DB-creature combat claims, is authoritative for active creature combat attacker/victim plus retry timing and victim-wide cleanup on death, owns DB-creature idle/random/waypoint/chase/return-home motion transitions, owns evade reset and assistance-call flags, applies creature-origin melee damage to the shared player snapshot before victim-session packet sends, advances DB-creature corpse expiry/respawn through shared map lifecycle events, dispatches creature combat-start/chase/facing/evade/return-home packets to nearby observer sessions, and gates DB respawn persistence plus killer quest credit/XP/final attack-stop/combat-flag/motion-stop cleanup behind `MapRuntime` events. A focused same-mob unit torture test now proves A/B shared damage observation, death, no post-death damage, death-time motion stop for observers, single loot money claim, observer loot-release update, single corpse expiry, and single respawn. A real-client shared-mob bug where observers could keep ticking stale local patrol/chase state after another player killed the mob is fixed by syncing session-local creatures from shared map snapshots before creature ticks and by broadcasting a death-time motion stop. A follow-up patrol regression is fixed by routing random/waypoint/return-home motion through `MapRuntime` and broadcasting idle motion starts to nearby observers; exact 5-yard melee reach is now accepted. Other-player create blocks now carry movement timing and visible equipped item fields, equipment changes broadcast visible item updates to nearby players, equip/unequip refreshes the local player's derived combat-stat fields, resurrection refreshes shared map player health, and player attack/spell packets now broadcast `SMSG_ATTACKSTART`, `SMSG_SPELL_GO`, and attacker-state updates to observers. DB creatures now lazy-load by CMaNGOS-shaped grid rectangle into shared `MapRuntime` cell buckets, login/movement visibility stages nearby creatures from loaded map state instead of DB radius queries, and grid-load counters/logs expose actual DB rectangle loads. | Grid unload/idle eviction, broader group/reward eligibility, dedicated logout/relog torture coverage during combat/corpse/loot states, and real-client confirmation of the player-facing visual fix are still pending | Next: real-client smoke lazy grid loading/player visuals plus shared moving-mob death/loot, then continue G8/G9 fidelity or G12 harness polish |
+| G12 Derisk Multiplayer / Shared MapRuntime | Red / active | Two clients can log into Northshire, see each other spawn/move/logout, exchange nearby `/say`, observe shared DB creature state, and avoid duplicated/desynced kill or loot state | Harness now proves two clients can log in together, receive mutual player create blocks, receive movement broadcast, get destroy when the other player leaves visibility range, receive create again on return, observe logout destroy, and exchange nearby `/say` without leaking it to an out-of-range player. The starter-zone harness now also runs two simultaneous Northshire clients through shared wolf combat: the observer sees the primary player, movement, `/say`, shared wolf damage/death state, and cannot duplicate loot after the primary claims the corpse. User real-client smoke confirmed movement with three players online. Player-player visibility now uses CMaNGOS-shaped grid/cell buckets instead of full player scans. `MapRuntime` now preserves shared DB-creature snapshots across sessions, applies player melee and supported starter spell creature damage through shared map events, broadcasts shared creature health/death updates to nearby sessions, owns DB-creature loot open/money/item/release claims, broadcasts loot-release corpse flag updates to observers, clears shared creature combat/threat claims when a victim player leaves the map, owns exclusive DB-creature combat claims, is authoritative for active creature combat attacker/victim plus retry timing and victim-wide cleanup on death, owns DB-creature idle/random/waypoint/chase/return-home motion transitions, owns evade reset and assistance-call flags, applies creature-origin melee damage to the shared player snapshot before victim-session packet sends, advances DB-creature corpse expiry/respawn through shared map lifecycle events, dispatches creature combat-start/chase/facing/evade/return-home packets to nearby observer sessions, and gates DB respawn persistence plus killer quest credit/XP/final attack-stop/combat-flag/motion-stop cleanup behind `MapRuntime` events. A focused same-mob unit torture test now proves A/B shared damage observation, death, no post-death damage, death-time motion stop for observers, single loot money claim, observer loot-release update, single corpse expiry, and single respawn. A real-client shared-mob bug where observers could keep ticking stale local patrol/chase state after another player killed the mob is fixed by syncing session-local creatures from shared map snapshots before creature ticks and by broadcasting a death-time motion stop. A follow-up patrol regression is fixed by routing random/waypoint/return-home motion through `MapRuntime` and broadcasting idle motion starts to nearby observers; exact 5-yard melee reach is now accepted. Other-player create blocks now carry movement timing and visible equipped item fields, equipment changes broadcast visible item updates to nearby players, equip/unequip refreshes the local player's derived combat-stat fields, resurrection refreshes shared map player health, and player attack/spell packets now broadcast `SMSG_ATTACKSTART`, `SMSG_SPELL_GO`, and attacker-state updates to observers. DB creatures now lazy-load by CMaNGOS-shaped grid rectangle into shared `MapRuntime` cell buckets, login/movement visibility stages nearby creatures from loaded map state instead of DB radius queries, and grid-load counters/logs expose actual DB rectangle loads. Regression tests now assert loaded-area movement does not increase DB grid query count, crossing into one unloaded grid triggers one new rectangle load, nearby players reuse loaded grids, logout preserves shared creature state, explicit `Loaded`/`Active`/`Idle`/`UnloadBlocked` grid states exist, and creature cell buckets update across movement, return-home, corpse expiry, and respawn-style home repositioning. | Actual grid unload/idle eviction, broader group/reward eligibility, dedicated logout/relog torture coverage during combat/corpse/loot states, and real-client confirmation of the player-facing visual fix are still pending | Next: implement the first idle-grid unload/eviction slice using the measured counters and unload-blocker states, then real-client smoke lazy grid loading/player visuals plus shared moving-mob death/loot |
 
 ## Gate Detail
 

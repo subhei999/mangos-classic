@@ -156,6 +156,7 @@ pub struct QuestTemplateQuery {
     pub rew_spell: u32,
     pub rew_spell_cast: u32,
     pub src_item_id: u32,
+    pub src_item_count: u32,
     pub quest_flags: u32,
     pub title: String,
     pub details: String,
@@ -293,7 +294,8 @@ pub async fn get_quest_template_query(
                 CAST(NextQuestInChain AS UNSIGNED) AS next_quest_in_chain, \
                 RewOrReqMoney AS rew_or_req_money, RewMoneyMaxLevel AS rew_money_max_level, \
                 CAST(RewSpell AS UNSIGNED) AS rew_spell, CAST(RewSpellCast AS UNSIGNED) AS rew_spell_cast, \
-                CAST(SrcItemId AS UNSIGNED) AS src_item_id, CAST(QuestFlags AS UNSIGNED) AS quest_flags, \
+                CAST(SrcItemId AS UNSIGNED) AS src_item_id, CAST(SrcItemCount AS UNSIGNED) AS src_item_count, \
+                CAST(QuestFlags AS UNSIGNED) AS quest_flags, \
                 COALESCE(Title, '') AS title, COALESCE(Details, '') AS details, \
                 COALESCE(Objectives, '') AS objectives, \
                 COALESCE(OfferRewardText, '') AS offer_reward_text, \
@@ -432,6 +434,25 @@ pub async fn get_creature_start_quests(
             .bind(creature_entry)
             .fetch_all(pool)
             .await?;
+    let mut quests = Vec::new();
+    for quest in quest_ids {
+        if let Some(template) = get_quest_template_query(pool, quest).await? {
+            quests.push(template);
+        }
+    }
+    Ok(quests)
+}
+
+pub async fn get_creature_complete_quests(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let quest_ids: Vec<u32> = sqlx::query_scalar(
+        "SELECT quest FROM creature_involvedrelation WHERE id = ? ORDER BY quest",
+    )
+    .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
     let mut quests = Vec::new();
     for quest in quest_ids {
         if let Some(template) = get_quest_template_query(pool, quest).await? {
@@ -1053,6 +1074,7 @@ struct QuestTemplateRow {
     rew_spell: u32,
     rew_spell_cast: u32,
     src_item_id: u32,
+    src_item_count: u32,
     quest_flags: u32,
     title: String,
     details: String,
@@ -1150,6 +1172,7 @@ impl QuestTemplateRow {
             rew_spell: self.rew_spell,
             rew_spell_cast: self.rew_spell_cast,
             src_item_id: self.src_item_id,
+            src_item_count: self.src_item_count,
             quest_flags: self.quest_flags,
             title: self.title,
             details: self.details,

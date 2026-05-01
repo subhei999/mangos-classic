@@ -10,7 +10,13 @@ fn build_questgiver_status_body(guid: ObjectGuid, status: u32) -> Vec<u8> {
     body
 }
 
-fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestTemplateQuery]) -> Vec<u8> {
+#[derive(Debug, Clone)]
+struct QuestListItem {
+    quest: QuestTemplateQuery,
+    dialog_status: u32,
+}
+
+fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestListItem]) -> Vec<u8> {
     let mut body = Vec::with_capacity(64 + quests.len() * 24);
 
     body.extend_from_slice(&guid.raw().to_le_bytes());
@@ -23,10 +29,12 @@ fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestTemplateQue
 
     body.push(quests.len().min(u8::MAX as usize) as u8);
 
-    for quest in quests.iter().take(u8::MAX as usize) {
+    for item in quests.iter().take(u8::MAX as usize) {
+        let quest = &item.quest;
+
         body.extend_from_slice(&quest.entry.to_le_bytes());
 
-        body.extend_from_slice(&2u32.to_le_bytes()); // yellow exclamation mark
+        body.extend_from_slice(&item.dialog_status.to_le_bytes());
 
         body.extend_from_slice(&quest.quest_level.to_le_bytes());
 

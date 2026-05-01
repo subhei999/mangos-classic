@@ -457,6 +457,50 @@ pub async fn update_character_quest_mob_count(
         .expect("updated quest row must exist"))
 }
 
+pub async fn complete_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+) -> Result<CharacterQuestStatus, DbError> {
+    sqlx::query(
+        "UPDATE character_queststatus \
+         SET status = 1 \
+         WHERE guid = ? AND quest = ? AND status = 3 AND rewarded = 0",
+    )
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?;
+
+    Ok(get_character_quest_status(pool, guid, quest)
+        .await?
+        .expect("completed quest row must exist"))
+}
+
+pub async fn abandon_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+) -> Result<Option<CharacterQuestStatus>, DbError> {
+    let changed = sqlx::query(
+        "UPDATE character_queststatus \
+         SET status = 0, rewarded = 0, mobcount1 = 0, mobcount2 = 0, mobcount3 = 0, mobcount4 = 0, \
+             itemcount1 = 0, itemcount2 = 0, itemcount3 = 0, itemcount4 = 0 \
+         WHERE guid = ? AND quest = ? AND rewarded = 0",
+    )
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if changed == 0 {
+        return Ok(None);
+    }
+
+    get_character_quest_status(pool, guid, quest).await
+}
+
 pub async fn reward_character_quest(
     pool: &MySqlPool,
     guid: u32,

@@ -299,6 +299,7 @@ fn test_quest_template(entry: u32) -> QuestTemplateQuery {
         rew_spell: 0,
         rew_spell_cast: 0,
         src_item_id: 0,
+        src_item_count: 0,
         quest_flags: 0,
         title: "Test Quest".to_string(),
         details: String::new(),
@@ -1980,6 +1981,130 @@ fn exclusive_group_rejects_other_active_quests_in_group() {
         },
     );
     assert!(satisfies_exclusive_group(&quest, &group, &statuses));
+}
+
+#[test]
+fn questgiver_list_uses_current_quest_dialog_status() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 197, 1);
+    let mut available = test_quest_template(7);
+    available.title = "Available".to_string();
+    let mut incomplete = test_quest_template(8);
+    incomplete.title = "Incomplete".to_string();
+    let mut reward = test_quest_template(9);
+    reward.title = "Reward".to_string();
+
+    let body = build_questgiver_quest_list_body(
+        guid,
+        &[
+            QuestListItem {
+                quest: available,
+                dialog_status: DIALOG_STATUS_AVAILABLE,
+            },
+            QuestListItem {
+                quest: incomplete,
+                dialog_status: DIALOG_STATUS_INCOMPLETE,
+            },
+            QuestListItem {
+                quest: reward,
+                dialog_status: DIALOG_STATUS_REWARD2,
+            },
+        ],
+    );
+
+    let mut cursor = 8;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    cursor += 8;
+    assert_eq!(body[cursor], 3);
+    cursor += 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 7);
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        DIALOG_STATUS_AVAILABLE
+    );
+    cursor += 4;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 8);
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        DIALOG_STATUS_INCOMPLETE
+    );
+    cursor += 4;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 9);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), DIALOG_STATUS_REWARD2);
+}
+
+#[test]
+fn active_quest_log_slots_skip_abandoned_status_rows() {
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        7,
+        CharacterQuestStatus {
+            quest: 7,
+            status: 0,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    statuses.insert(
+        8,
+        CharacterQuestStatus {
+            quest: 8,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    let active = active_quest_statuses_sorted(&statuses);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].quest, 8);
+}
+
+#[test]
+fn source_item_delivery_quest_can_complete_from_inventory() {
+    let mut quest = test_quest_template(3100);
+    quest.src_item_id = 9542;
+    quest.src_item_count = 1;
+    quest.req_item_id[0] = 9542;
+    quest.req_item_count[0] = 1;
+    let inventory = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 9542,
+        count: 1,
+        durability: 0,
+    }];
+
+    assert!(quest_can_complete_from_inventory(&quest, &inventory));
+
+    let empty_inventory = [];
+    assert!(!quest_can_complete_from_inventory(&quest, &empty_inventory));
+}
+
+#[test]
+fn objective_free_quest_can_complete_on_accept() {
+    let quest = test_quest_template(783);
+    assert!(quest_can_complete_from_inventory(&quest, &[]));
 }
 
 #[test]

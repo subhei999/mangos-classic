@@ -409,6 +409,16 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_QUESTLOG_REMOVE_QUEST => {
+                            handle_questlog_remove_quest(
+                                &mut stream,
+                                &character_db_pool,
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
                         CMSG_NPC_TEXT_QUERY => {
                             handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
                         }

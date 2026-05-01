@@ -111,7 +111,7 @@ async fn handle_questgiver_accept_quest(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid) else {
         warn!("Ignoring quest accept before character login");
         return Ok(());
     };
@@ -132,9 +132,22 @@ async fn handle_questgiver_accept_quest(
         );
         return Ok(());
     }
-    let status = wow_db::accept_character_quest(character_db_pool, character.guid, request.quest)
+    let mut status = wow_db::accept_character_quest(character_db_pool, character_guid, request.quest)
         .await?;
     session.quest_statuses.insert(request.quest, status.clone());
+    let source_item = grant_quest_source_item_if_needed(
+        character_db_pool,
+        world_db_pool,
+        character_guid,
+        &quest,
+        session,
+    )
+    .await?;
+    if quest_can_complete_from_inventory(&quest, &session.inventory) {
+        status = wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
+            .await?;
+        session.quest_statuses.insert(request.quest, status.clone());
+    }
     let Some(slot) = quest_log_slot_for_quest(session, request.quest) else {
         warn!(quest = request.quest, "Accepted quest but no quest-log slot was available");
         return Ok(());
@@ -142,10 +155,42 @@ async fn handle_questgiver_accept_quest(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_player_quest_log_update_body(character.guid, slot, &status)?,
-        Some(header_crypto),
+        &build_player_quest_log_update_body(character_guid, slot, &status)?,
+        Some(&mut *header_crypto),
     )
-    .await
+    .await?;
+    if let Some(item) = source_item {
+        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let container_slots =
+            if let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await? {
+                (template.container_slots > 0).then_some(template.container_slots)
+            } else {
+                None
+            };
+        let create_body = build_update_object_body(&[build_item_create_update_block(
+            owner_guid,
+            owner_guid,
+            &item,
+            container_slots,
+        )?]);
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &create_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if status.status == QUEST_STATUS_COMPLETE {
+        send_packet(
+            stream,
+            SMSG_QUESTUPDATE_COMPLETE,
+            &request.quest.to_le_bytes(),
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn handle_questgiver_complete_quest(
@@ -264,6 +309,53 @@ async fn handle_questgiver_choose_reward(
     .await
 }
 
+async fn handle_questlog_remove_quest(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid) else {
+        warn!("Ignoring quest abandon before character login");
+        return Ok(());
+    };
+    let Some(slot) = body.first().copied().map(usize::from) else {
+        anyhow::bail!("CMSG_QUESTLOG_REMOVE_QUEST payload too short: {} bytes", body.len());
+    };
+    if slot >= MAX_QUEST_LOG_SIZE {
+        return Ok(());
+    }
+    let Some(status) = active_quest_statuses_sorted(&session.quest_statuses)
+        .into_iter()
+        .nth(slot)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    if wow_db::abandon_character_quest(character_db_pool, character_guid, status.quest)
+        .await?
+        .is_some()
+    {
+        if let Some(local_status) = session.quest_statuses.get_mut(&status.quest) {
+            local_status.status = 0;
+            local_status.rewarded = 0;
+            local_status.mobcount1 = 0;
+            local_status.mobcount2 = 0;
+            local_status.mobcount3 = 0;
+            local_status.mobcount4 = 0;
+        }
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_quest_log_clear_body(character_guid, slot)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct QuestgiverQuestRequest {
     guid: ObjectGuid,
@@ -315,19 +407,20 @@ async fn questgiver_dialog_status(
     }
 
     let mut dialog_status = DIALOG_STATUS_NONE;
-    for quest in wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await? {
-        if let Some(status) = session.quest_statuses.get(&quest.entry) {
-            if quest_status_is_current(status) {
-                if status.status == QUEST_STATUS_COMPLETE
-                    && wow_db::creature_completes_quest(world_db_pool, guid.entry(), quest.entry).await?
-                {
-                    dialog_status = dialog_status.max(DIALOG_STATUS_REWARD2);
-                } else {
-                    dialog_status = dialog_status.max(DIALOG_STATUS_INCOMPLETE);
-                }
-                continue;
-            }
+    for quest in wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await? {
+        let Some(status) = session.quest_statuses.get(&quest.entry) else {
+            continue;
+        };
+        if status.rewarded != 0 {
+            continue;
         }
+        if status.status == QUEST_STATUS_COMPLETE {
+            dialog_status = dialog_status.max(DIALOG_STATUS_REWARD2);
+        } else if status.status == QUEST_STATUS_INCOMPLETE {
+            dialog_status = dialog_status.max(DIALOG_STATUS_INCOMPLETE);
+        }
+    }
+    for quest in wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await? {
         if can_take_start_quest(world_db_pool, &quest, session).await? {
             dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
         }
@@ -348,23 +441,39 @@ async fn questgiver_visible_quests(
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     session: &WorldSessionState,
-) -> anyhow::Result<Vec<QuestTemplateQuery>> {
+) -> anyhow::Result<Vec<QuestListItem>> {
     if !guid.is_creature() {
         return Ok(Vec::new());
     }
-    let quests = wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?;
     let mut visible = Vec::new();
+    let mut seen = HashSet::new();
+    for quest in wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await? {
+        let Some(status) = session.quest_statuses.get(&quest.entry) else {
+            continue;
+        };
+        if status.rewarded != 0 {
+            continue;
+        }
+        let dialog_status = if status.status == QUEST_STATUS_COMPLETE {
+            DIALOG_STATUS_REWARD2
+        } else if status.status == QUEST_STATUS_INCOMPLETE {
+            DIALOG_STATUS_INCOMPLETE
+        } else {
+            continue;
+        };
+        seen.insert(quest.entry);
+        visible.push(QuestListItem { quest, dialog_status });
+    }
+    let quests = wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?;
     for quest in quests {
-        if session
-            .quest_statuses
-            .get(&quest.entry)
-            .is_some_and(quest_status_is_current)
-        {
-            visible.push(quest);
+        if seen.contains(&quest.entry) {
             continue;
         }
         if can_take_start_quest(world_db_pool, &quest, session).await? {
-            visible.push(quest);
+            visible.push(QuestListItem {
+                quest,
+                dialog_status: DIALOG_STATUS_AVAILABLE,
+            });
         }
     }
     Ok(visible)
@@ -395,10 +504,99 @@ fn active_quest_statuses_sorted(
 ) -> Vec<&CharacterQuestStatus> {
     let mut statuses: Vec<_> = quest_statuses
         .values()
-        .filter(|status| status.rewarded == 0)
+        .filter(|status| quest_status_is_current(status))
         .collect();
     statuses.sort_by_key(|status| status.quest);
     statuses
+}
+
+async fn grant_quest_source_item_if_needed(
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    character_guid: u32,
+    quest: &QuestTemplateQuery,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<Option<CharacterInventoryItem>> {
+    if quest.src_item_id == 0 {
+        return Ok(None);
+    }
+    let required_count = quest.src_item_count.max(1);
+    let current_count = session
+        .inventory
+        .iter()
+        .filter(|item| item.item_template == quest.src_item_id)
+        .map(|item| item.count)
+        .sum::<u32>();
+    if current_count >= required_count {
+        return Ok(None);
+    }
+    let Some(slot) = first_empty_backpack_slot(&session.inventory) else {
+        warn!(
+            quest = quest.entry,
+            item = quest.src_item_id,
+            "Cannot grant quest source item because backpack is full"
+        );
+        return Ok(None);
+    };
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, quest.src_item_id).await?
+    else {
+        warn!(
+            quest = quest.entry,
+            item = quest.src_item_id,
+            "Cannot grant missing quest source item template"
+        );
+        return Ok(None);
+    };
+    let item = wow_db::add_character_inventory_item(
+        character_db_pool,
+        character_guid,
+        INVENTORY_SLOT_BAG_0 as u32,
+        slot,
+        quest.src_item_id,
+        required_count - current_count,
+        template.max_durability,
+    )
+    .await?;
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+        .await?;
+    Ok(Some(item))
+}
+
+fn quest_can_complete_from_inventory(
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    const QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT: u32 = 0x002;
+    if (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0
+        || quest.rep_objective_faction != 0
+    {
+        return false;
+    }
+
+    if quest
+        .req_creature_or_go_id
+        .iter()
+        .zip(quest.req_creature_or_go_count.iter())
+        .any(|(id, count)| *id != 0 && *count != 0)
+    {
+        return false;
+    }
+
+    for (item_id, required_count) in quest.req_item_id.iter().zip(quest.req_item_count.iter()) {
+        if *item_id == 0 || *required_count == 0 {
+            continue;
+        }
+        let current_count = inventory
+            .iter()
+            .filter(|item| item.item_template == *item_id)
+            .map(|item| item.count)
+            .sum::<u32>();
+        if current_count < *required_count {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn can_quest_be_started_from_status(quest: &QuestTemplateQuery, status: Option<&CharacterQuestStatus>) -> bool {

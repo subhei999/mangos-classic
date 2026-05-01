@@ -6161,6 +6161,109 @@ fn db_creature_chase_motion_ignores_tiny_destination_shift_after_recheck() {
     assert_eq!(chase.destination.x, first_motion.path.last().unwrap().x);
 }
 
+fn quest_template_with_required_item(
+    quest_id: u32,
+    item_id: u32,
+    item_count: u32,
+) -> QuestTemplateQuery {
+    let mut quest = test_quest_template(quest_id);
+    quest.req_item_id[0] = item_id;
+    quest.req_item_count[0] = item_count;
+    quest
+}
+
+#[test]
+fn quest_loot_selection_prefers_active_required_quest_item() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 100.0,
+        },
+        CreatureLootQuery {
+            item: 777,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: -100.0,
+        },
+    ];
+    let mut active_quests = HashMap::new();
+    active_quests.insert(31, quest_template_with_required_item(31, 777, 1));
+    let mut quest_statuses = HashMap::new();
+    quest_statuses.insert(
+        31,
+        CharacterQuestStatus {
+            quest: 31,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    let selected =
+        select_creature_loot_for_active_quests(&loot_rows, &active_quests, &quest_statuses, &[])
+            .expect("quest item should be selected for active quest");
+    assert_eq!(selected.item, 777);
+}
+
+#[test]
+fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 100.0,
+        },
+        CreatureLootQuery {
+            item: 777,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: -100.0,
+        },
+    ];
+    let mut active_quests = HashMap::new();
+    active_quests.insert(31, quest_template_with_required_item(31, 777, 1));
+    let mut quest_statuses = HashMap::new();
+    quest_statuses.insert(
+        31,
+        CharacterQuestStatus {
+            quest: 31,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    let inventory = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: 23,
+        item: 901,
+        item_template: 777,
+        count: 1,
+        durability: 0,
+    }];
+
+    let selected = select_creature_loot_for_active_quests(
+        &loot_rows,
+        &active_quests,
+        &quest_statuses,
+        &inventory,
+    )
+    .expect("normal loot should be selected when quest item is already satisfied");
+    assert_eq!(selected.item, 159);
+}
+
 #[test]
 fn combat_dummy_loot_packets_match_empty_corpse_shape() {
     let loot = build_combat_dummy_loot_response_body(&WorldSessionState::default());

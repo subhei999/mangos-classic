@@ -36,11 +36,7 @@ async fn handle_loot(
     let needs_loot_item = creature.loot_item.is_none();
     let entry = creature.spawn.entry;
     let loot_item = if needs_loot_item {
-        wow_db::get_creature_loot_items(world_db_pool, entry)
-            .await?
-            .into_iter()
-            .next()
-            .map(DbCreatureLootRuntime::from)
+        select_db_creature_loot_item_for_character(world_db_pool, session, entry).await?
     } else {
         None
     };
@@ -55,6 +51,90 @@ async fn handle_loot(
     session.db_creatures.insert(target.raw(), creature.clone());
     let response = build_db_creature_loot_response_body(target, &creature);
     send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
+}
+
+async fn select_db_creature_loot_item_for_character(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    creature_entry: u32,
+) -> anyhow::Result<Option<DbCreatureLootRuntime>> {
+    let loot_rows = wow_db::get_creature_loot_items(world_db_pool, creature_entry).await?;
+    if loot_rows.is_empty() {
+        return Ok(None);
+    }
+
+    let active_quest_ids: Vec<u32> = session
+        .quest_statuses
+        .values()
+        .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
+        .map(|status| status.quest)
+        .collect();
+    let mut active_quests = HashMap::new();
+    for quest_id in active_quest_ids {
+        if let Some(quest) = wow_db::get_quest_template_query(world_db_pool, quest_id).await? {
+            active_quests.insert(quest_id, quest);
+        }
+    }
+
+    Ok(select_creature_loot_for_active_quests(
+        &loot_rows,
+        &active_quests,
+        &session.quest_statuses,
+        &session.inventory,
+    )
+    .map(DbCreatureLootRuntime::from))
+}
+
+fn select_creature_loot_for_active_quests(
+    loot_rows: &[CreatureLootQuery],
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+) -> Option<CreatureLootQuery> {
+    let mut first_normal = None;
+    let mut first_quest = None;
+    for loot in loot_rows {
+        if loot.is_quest_drop() {
+            if player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory) {
+                first_quest = Some(loot.clone());
+                break;
+            }
+            continue;
+        }
+        if first_normal.is_none() {
+            first_normal = Some(loot.clone());
+        }
+    }
+
+    first_quest.or(first_normal)
+}
+
+fn player_needs_quest_loot_item(
+    item_id: u32,
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    let owned_count: u32 = inventory
+        .iter()
+        .filter(|item| item.item_template == item_id)
+        .map(|item| item.count)
+        .sum();
+
+    quest_statuses
+        .values()
+        .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
+        .any(|status| {
+            let Some(quest) = active_quests.get(&status.quest) else {
+                return false;
+            };
+            quest.req_item_id
+                .iter()
+                .zip(quest.req_item_count.iter())
+                .any(|(req_item_id, req_count)| {
+                    *req_item_id == item_id && owned_count < *req_count && *req_count > 0
+                })
+        })
 }
 
 async fn handle_autostore_loot_item(

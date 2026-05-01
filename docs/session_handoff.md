@@ -15,7 +15,7 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 - Latest pushed commit: `b994ed02e` (`[g12] Track MapRuntime grid load state`),
   pushed to `origin/codex/rusty-mangos`.
 - Latest local unpushed commit: current `HEAD` after this task
-  (`Merge branch 'codex/c2-gameobject-quests' into codex/rusty-mangos`).
+  (`[c2] Fix gameobject login decode`).
 - Local branch is intentionally ahead while C2 workstream merges are being
   real-client smoked.
 - Always re-run `git status --short --branch` before editing; this handoff may
@@ -134,6 +134,9 @@ and log the follow-up.
   - gameobject questgivers reuse the shared quest list/reward helpers;
   - negative `ReqCreatureOrGOId` objectives award gameobject-use credit and
     encode the high-bit gameobject objective in quest progress packets.
+- Follow-up login kick fix: gameobject visibility SQL now explicitly casts
+  `gameobject_addon.state` / `animprogress` COALESCE expressions so MySQL
+  does not decode the fallback as `DECIMAL` during character login.
 
 ## Recently Landed G8/G9 Context
 
@@ -217,6 +220,9 @@ and log the follow-up.
 - `cargo test -p wow-db gameobject --lib` passed (`0` filtered tests).
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-merge-gameobjects-test` passed.
+- `cargo fmt --check` passed after fixing gameobject login decode.
+- `cargo test -p wow-network gameobject --lib` passed (`4` tests) after
+  fixing gameobject login decode.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate

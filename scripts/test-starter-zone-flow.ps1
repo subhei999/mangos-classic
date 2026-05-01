@@ -2,7 +2,8 @@ param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
     [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
-    [switch]$ResetWorldDatabase
+    [switch]$ResetWorldDatabase,
+    [switch]$NorthshireGrade
 )
 
 $ErrorActionPreference = "Stop"
@@ -174,7 +175,11 @@ try {
         throw "worldserver exited during startup with code $($world.ExitCode); see $worldLog"
     }
 
-    Invoke-Checked cargo @("run", "-p", "starter-zone-flow-test")
+    $starterZoneArgs = @("run", "-p", "starter-zone-flow-test")
+    if ($NorthshireGrade) {
+        $starterZoneArgs += @("--", "--northshire-grade")
+    }
+    Invoke-Checked cargo $starterZoneArgs
 }
 finally {
     Get-Process -Id $auth.Id,$world.Id -ErrorAction SilentlyContinue | Stop-Process -Force

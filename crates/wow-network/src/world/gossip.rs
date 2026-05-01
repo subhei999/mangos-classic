@@ -59,7 +59,8 @@ async fn handle_gossip_hello(
         }
 
         if let Some(quest) = questgiver_completed_turnin_quest(world_db_pool, guid, session).await? {
-            let response = build_quest_offer_reward_body(guid, &quest);
+            let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
+            let response = build_quest_offer_reward_body(guid, &quest, &displays);
             return send_packet(
                 stream,
                 SMSG_QUESTGIVER_OFFER_REWARD,

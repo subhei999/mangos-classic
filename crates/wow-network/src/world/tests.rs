@@ -2047,6 +2047,62 @@ fn questgiver_list_uses_current_quest_dialog_status() {
 }
 
 #[test]
+fn quest_reward_packets_use_item_display_ids() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 197, 1);
+    let mut quest = test_quest_template(783);
+    quest.rew_choice_item_id[0] = 25;
+    quest.rew_choice_item_count[0] = 1;
+    quest.rew_item_id[0] = 35;
+    quest.rew_item_count[0] = 2;
+    let mut displays = QuestRewardItemDisplays::default();
+    displays.choice[0] = 1001;
+    displays.reward[0] = 2002;
+
+    let body = build_quest_offer_reward_body(guid, &quest, &displays);
+    let mut cursor = 8;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 783);
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 25);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1001);
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 35);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 2);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 2002);
+}
+
+#[test]
+fn selected_quest_rewards_include_choice_and_fixed_items() {
+    let mut quest = test_quest_template(783);
+    quest.rew_choice_item_id[1] = 25;
+    quest.rew_choice_item_count[1] = 1;
+    quest.rew_item_id[0] = 35;
+    quest.rew_item_count[0] = 2;
+
+    let selected = selected_quest_reward_items(&quest, 1).unwrap();
+    assert_eq!(
+        selected,
+        vec![
+            QuestRewardItem { item: 25, count: 1 },
+            QuestRewardItem { item: 35, count: 2 },
+        ]
+    );
+    assert!(selected_quest_reward_items(&quest, 0).is_none());
+}
+
+#[test]
 fn active_quest_log_slots_skip_abandoned_status_rows() {
     let mut statuses = HashMap::new();
     statuses.insert(

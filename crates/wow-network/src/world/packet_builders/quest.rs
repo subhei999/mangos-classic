@@ -16,6 +16,12 @@ struct QuestListItem {
     dialog_status: u32,
 }
 
+#[derive(Debug, Clone, Default)]
+struct QuestRewardItemDisplays {
+    choice: [u32; 6],
+    reward: [u32; 4],
+}
+
 fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestListItem]) -> Vec<u8> {
     let mut body = Vec::with_capacity(64 + quests.len() * 24);
 
@@ -44,7 +50,11 @@ fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestListItem]) 
     body
 }
 
-fn build_quest_details_body(guid: ObjectGuid, quest: &QuestTemplateQuery) -> Vec<u8> {
+fn build_quest_details_body(
+    guid: ObjectGuid,
+    quest: &QuestTemplateQuery,
+    displays: &QuestRewardItemDisplays,
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(256);
 
     body.extend_from_slice(&guid.raw().to_le_bytes());
@@ -63,9 +73,15 @@ fn build_quest_details_body(guid: ObjectGuid, quest: &QuestTemplateQuery) -> Vec
         &mut body,
         &quest.rew_choice_item_id,
         &quest.rew_choice_item_count,
+        &displays.choice,
     );
 
-    write_quest_reward_items(&mut body, &quest.rew_item_id, &quest.rew_item_count);
+    write_quest_reward_items(
+        &mut body,
+        &quest.rew_item_id,
+        &quest.rew_item_count,
+        &displays.reward,
+    );
 
     body.extend_from_slice(&(quest.rew_or_req_money.max(0) as u32).to_le_bytes());
 
@@ -218,7 +234,11 @@ fn build_quest_request_items_body(
     body
 }
 
-fn build_quest_offer_reward_body(guid: ObjectGuid, quest: &QuestTemplateQuery) -> Vec<u8> {
+fn build_quest_offer_reward_body(
+    guid: ObjectGuid,
+    quest: &QuestTemplateQuery,
+    displays: &QuestRewardItemDisplays,
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(192);
 
     body.extend_from_slice(&guid.raw().to_le_bytes());
@@ -249,9 +269,15 @@ fn build_quest_offer_reward_body(guid: ObjectGuid, quest: &QuestTemplateQuery) -
         &mut body,
         &quest.rew_choice_item_id,
         &quest.rew_choice_item_count,
+        &displays.choice,
     );
 
-    write_quest_reward_items(&mut body, &quest.rew_item_id, &quest.rew_item_count);
+    write_quest_reward_items(
+        &mut body,
+        &quest.rew_item_id,
+        &quest.rew_item_count,
+        &displays.reward,
+    );
 
     body.extend_from_slice(&(quest.rew_or_req_money.max(0) as u32).to_le_bytes());
 
@@ -391,20 +417,26 @@ fn quest_log_count_state(status: &CharacterQuestStatus) -> u32 {
     count | complete
 }
 
-fn write_quest_reward_items<const N: usize>(body: &mut Vec<u8>, ids: &[u32; N], counts: &[u32; N]) {
+fn write_quest_reward_items<const N: usize>(
+    body: &mut Vec<u8>,
+    ids: &[u32; N],
+    counts: &[u32; N],
+    displays: &[u32; N],
+) {
     let non_zero: Vec<_> = ids
         .iter()
         .zip(counts.iter())
-        .filter(|(id, count)| **id != 0 && **count != 0)
+        .zip(displays.iter())
+        .filter(|((id, count), _display)| **id != 0 && **count != 0)
         .collect();
 
     body.extend_from_slice(&(non_zero.len() as u32).to_le_bytes());
 
-    for (id, count) in non_zero {
+    for ((id, count), display) in non_zero {
         body.extend_from_slice(&id.to_le_bytes());
 
         body.extend_from_slice(&(*count).to_le_bytes());
 
-        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&display.to_le_bytes());
     }
 }

@@ -14,8 +14,8 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 - Branch: `codex/rusty-mangos`.
 - Latest pushed commit: `b994ed02e` (`[g12] Track MapRuntime grid load state`),
   pushed to `origin/codex/rusty-mangos`.
-- Latest local unpushed commit: current `HEAD`
-  (`[c2] Fix quest reaccept and completion packet`).
+- Latest local unpushed commit: current `HEAD` after this task
+  (`[c2] Grant quest rewards and consume turn-in items`).
 - Local branch is intentionally ahead while C2 workstream merges are being
   real-client smoked.
 - Always re-run `git status --short --branch` before editing; this handoff may
@@ -122,6 +122,10 @@ and log the follow-up.
   satisfied quests complete, and allow already-satisfied item quests to show and
   turn in even if the DB row was still incomplete. Full CMaNGOS loot-table
   rolling remains issue #58.
+- Quest reward turn-in now resolves reward item display IDs from
+  `item_template`, grants the selected choice reward plus fixed reward items,
+  checks backpack space including stacks freed by required-item turn-in, and
+  consumes required quest items on successful reward.
 
 ## Recently Landed G8/G9 Context
 
@@ -191,6 +195,12 @@ and log the follow-up.
 - `cargo test -p wow-network loot --lib` passed.
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-quest-item-complete-test` passed.
+- `cargo fmt --check` passed after the quest reward item fix.
+- `cargo test -p wow-network quest --lib` passed (`17` tests) after the quest
+  reward item fix.
+- `cargo test -p wow-network inventory --lib` passed (`16` tests).
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-quest-reward-items-test` passed.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -218,10 +228,11 @@ Baseline runs can fail if a live auto-restarting client stack holds
 
 ## Recommended Next Task
 
-Restart the client stack and real-client smoke the quest-loot completion fix:
-accept an item-drop quest, loot all required quest items, confirm the quest
-becomes complete/reward-ready, and turn it in. If that passes, continue with
-`codex/c2-gameobject-quests` as the next merge candidate.
+Restart the client stack and real-client smoke quest reward turn-in: choose a
+reward, confirm the item appears in inventory with a real icon, confirm required
+quest items are removed, and confirm the reward screen advances/closes cleanly.
+If that passes, continue with `codex/c2-gameobject-quests` as the next merge
+candidate.
 
 ## Key Files
 

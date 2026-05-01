@@ -47,7 +47,8 @@ async fn handle_questgiver_hello(
 ) -> anyhow::Result<()> {
     let guid = read_packet_guid(body, "CMSG_QUESTGIVER_HELLO")?;
     if let Some(quest) = questgiver_completed_turnin_quest(world_db_pool, guid, session).await? {
-        let response = build_quest_offer_reward_body(guid, &quest);
+        let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
+        let response = build_quest_offer_reward_body(guid, &quest, &displays);
         return send_packet(
             stream,
             SMSG_QUESTGIVER_OFFER_REWARD,
@@ -93,7 +94,8 @@ async fn handle_questgiver_query_quest(
     let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
         return Ok(());
     };
-    let response = build_quest_details_body(request.guid, &quest);
+    let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
+    let response = build_quest_details_body(request.guid, &quest, &displays);
     send_packet(
         stream,
         SMSG_QUESTGIVER_QUEST_DETAILS,
@@ -246,7 +248,8 @@ async fn handle_questgiver_complete_quest(
         false
     };
     if reward_ready {
-        let response = build_quest_offer_reward_body(request.guid, &quest);
+        let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
+        let response = build_quest_offer_reward_body(request.guid, &quest, &displays);
         send_packet(
             stream,
             SMSG_QUESTGIVER_OFFER_REWARD,
@@ -298,6 +301,29 @@ async fn handle_questgiver_choose_reward(
     let reward_money = quest.rew_or_req_money.max(0) as u32;
     let reward_xp = quest_xp_reward(character_level, &quest);
     let slot = quest_log_slot_for_quest(session, request.quest);
+    let Some(reward_items) = selected_quest_reward_items(&quest, request.reward) else {
+        warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward item choice");
+        return Ok(());
+    };
+    let reward_grants = load_quest_reward_grants(world_db_pool, &reward_items).await?;
+    let required_item_slots = quest_required_item_inventory_slots(&quest, &session.inventory);
+    let reward_slots_needed = reward_grants.len();
+    let empty_slots = empty_backpack_slots(&session.inventory);
+    let slots_freed_by_turnin = required_item_slots
+        .iter()
+        .filter(|consume| consume.removes_stack)
+        .count();
+    if empty_slots.len() + slots_freed_by_turnin < reward_slots_needed {
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
     if let Some(status) = session.quest_statuses.get(&request.quest).cloned() {
         if status.status != QUEST_STATUS_COMPLETE
             && quest_status_can_reward_from_inventory(&status, &quest, &session.inventory)
@@ -308,6 +334,22 @@ async fn handle_questgiver_choose_reward(
             session.quest_statuses.insert(request.quest, updated);
         }
     }
+    consume_quest_required_items(
+        stream,
+        character_db_pool,
+        character_guid,
+        &quest,
+        session,
+        header_crypto,
+    )
+    .await?;
+    let reward_update_blocks = grant_quest_reward_items(
+        character_db_pool,
+        character_guid,
+        &reward_grants,
+        session,
+    )
+    .await?;
     let Some(new_money) =
         wow_db::reward_character_quest(character_db_pool, character_guid, request.quest, reward_money)
             .await?
@@ -332,6 +374,16 @@ async fn handle_questgiver_choose_reward(
         Some(&mut *header_crypto),
     )
     .await?;
+    if !reward_update_blocks.is_empty() {
+        let body = build_update_object_body(&reward_update_blocks);
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     award_character_xp(
         stream,
         character_db_pool,
@@ -647,6 +699,269 @@ fn quest_can_complete_from_inventory(
     }
 
     true
+}
+
+async fn quest_reward_item_displays(
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+) -> anyhow::Result<QuestRewardItemDisplays> {
+    let mut displays = QuestRewardItemDisplays::default();
+    for (index, item) in quest.rew_choice_item_id.iter().enumerate() {
+        if *item != 0 {
+            displays.choice[index] =
+                wow_db::get_item_display_id(world_db_pool, *item).await?.unwrap_or(0);
+        }
+    }
+    for (index, item) in quest.rew_item_id.iter().enumerate() {
+        if *item != 0 {
+            displays.reward[index] =
+                wow_db::get_item_display_id(world_db_pool, *item).await?.unwrap_or(0);
+        }
+    }
+    Ok(displays)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuestRewardItem {
+    item: u32,
+    count: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuestRewardGrant {
+    item: u32,
+    count: u32,
+    max_durability: u32,
+    container_slots: Option<u32>,
+}
+
+fn selected_quest_reward_items(
+    quest: &QuestTemplateQuery,
+    reward: u32,
+) -> Option<Vec<QuestRewardItem>> {
+    let mut items = Vec::new();
+    let has_choice = quest
+        .rew_choice_item_id
+        .iter()
+        .zip(quest.rew_choice_item_count.iter())
+        .any(|(item, count)| *item != 0 && *count != 0);
+    if has_choice {
+        let index = usize::try_from(reward).ok()?;
+        let item = *quest.rew_choice_item_id.get(index)?;
+        let count = *quest.rew_choice_item_count.get(index)?;
+        if item == 0 || count == 0 {
+            return None;
+        }
+        items.push(QuestRewardItem { item, count });
+    }
+    for (item, count) in quest.rew_item_id.iter().zip(quest.rew_item_count.iter()) {
+        if *item != 0 && *count != 0 {
+            items.push(QuestRewardItem {
+                item: *item,
+                count: *count,
+            });
+        }
+    }
+    Some(items)
+}
+
+async fn load_quest_reward_grants(
+    world_db_pool: &MySqlPool,
+    items: &[QuestRewardItem],
+) -> anyhow::Result<Vec<QuestRewardGrant>> {
+    let mut grants = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item).await?
+        else {
+            anyhow::bail!("Quest reward item {} has no item_template row", item.item);
+        };
+        grants.push(QuestRewardGrant {
+            item: item.item,
+            count: item.count,
+            max_durability: template.max_durability,
+            container_slots: (template.container_slots > 0).then_some(template.container_slots),
+        });
+    }
+    Ok(grants)
+}
+
+async fn grant_quest_reward_items(
+    character_db_pool: &MySqlPool,
+    character_guid: u32,
+    rewards: &[QuestRewardGrant],
+    session: &mut WorldSessionState,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut update_blocks = Vec::new();
+    for reward in rewards {
+        let Some(slot) = first_empty_backpack_slot(&session.inventory) else {
+            anyhow::bail!("Quest reward inventory space check passed but no slot was available");
+        };
+        let item = wow_db::add_character_inventory_item(
+            character_db_pool,
+            character_guid,
+            INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            reward.item,
+            reward.count,
+            reward.max_durability,
+        )
+        .await?;
+        session.inventory =
+            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        update_blocks.push(build_item_create_update_block(
+            owner_guid,
+            owner_guid,
+            &item,
+            reward.container_slots,
+        )?);
+        update_blocks.push(build_inventory_slots_update_block(
+            character_guid,
+            &session.inventory,
+            &[slot],
+        )?);
+    }
+    Ok(update_blocks)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuestRequiredItemConsume {
+    bag: u32,
+    slot: u8,
+    count: u32,
+    removes_stack: bool,
+}
+
+fn quest_required_item_inventory_slots(
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> Vec<QuestRequiredItemConsume> {
+    let mut consumes = Vec::new();
+    for (required_item, required_count) in quest.req_item_id.iter().zip(quest.req_item_count.iter()) {
+        if *required_item == 0 || *required_count == 0 {
+            continue;
+        }
+        let mut remaining = *required_count;
+        let mut stacks: Vec<_> = inventory
+            .iter()
+            .filter(|item| item.item_template == *required_item)
+            .collect();
+        stacks.sort_by_key(|item| {
+            let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                0
+            } else {
+                1
+            };
+            (bag_order, item.bag, item.slot)
+        });
+        for item in stacks {
+            if remaining == 0 {
+                break;
+            }
+            let count = remaining.min(item.count);
+            remaining -= count;
+            consumes.push(QuestRequiredItemConsume {
+                bag: item.bag,
+                slot: item.slot,
+                count,
+                removes_stack: count >= item.count,
+            });
+        }
+    }
+    consumes
+}
+
+fn empty_backpack_slots(inventory: &[CharacterInventoryItem]) -> Vec<u8> {
+    (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .filter(|slot| {
+            inventory
+                .iter()
+                .all(|item| item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != *slot)
+        })
+        .collect()
+}
+
+async fn consume_quest_required_items(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    character_guid: u32,
+    quest: &QuestTemplateQuery,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let consumes = quest_required_item_inventory_slots(quest, &session.inventory);
+    let mut stack_update_blocks = Vec::new();
+    let mut removed_positions = Vec::new();
+    let mut removed_non_backpack_items = Vec::new();
+
+    for consume in consumes {
+        match wow_db::destroy_character_inventory_item_count(
+            character_db_pool,
+            character_guid,
+            consume.bag,
+            consume.slot,
+            consume.count,
+        )
+        .await?
+        {
+            Some(wow_db::InventoryDestroyResult::CountChanged { item, count }) => {
+                stack_update_blocks.push(build_item_stack_count_update_block(item, count)?);
+            }
+            Some(wow_db::InventoryDestroyResult::Removed { item }) => {
+                removed_positions.push((consume.bag, consume.slot));
+                if consume.bag != INVENTORY_SLOT_BAG_0 as u32 {
+                    removed_non_backpack_items.push(item);
+                }
+            }
+            None => {
+                warn!(
+                    quest = quest.entry,
+                    bag = consume.bag,
+                    slot = consume.slot,
+                    "Quest required item disappeared before reward consumption"
+                );
+            }
+        }
+    }
+
+    if stack_update_blocks.is_empty() && removed_positions.is_empty() {
+        return Ok(());
+    }
+
+    session.inventory =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    let mut update_blocks = stack_update_blocks;
+    for (bag, slot) in removed_positions {
+        let Ok(bag) = u8::try_from(bag) else {
+            continue;
+        };
+        update_blocks.extend(build_inventory_position_update_blocks(
+            character_guid,
+            &session.inventory,
+            bag,
+            slot,
+        )?);
+    }
+    if !update_blocks.is_empty() {
+        let body = build_update_object_body(&update_blocks);
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    for item in removed_non_backpack_items {
+        send_packet(
+            stream,
+            SMSG_DESTROY_OBJECT,
+            &build_destroy_object_body(item),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn quest_status_can_reward_from_inventory(

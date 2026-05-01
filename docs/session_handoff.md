@@ -241,6 +241,9 @@ Baseline runs can fail if a live auto-restarting client stack holds
   persistence/relog sanity across every major starter-zone action.
 - GitHub issue #58 tracks full CMaNGOS creature loot-table rolling beyond the
   current active quest item-drop bridge.
+- GitHub issue #59 tracks moving DB gameobject consumed/respawn state from
+  per-session storage into shared `MapRuntime`/world state for multiplayer
+  consistency.
 
 ## Recommended Next Task
 

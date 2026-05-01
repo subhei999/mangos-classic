@@ -375,13 +375,27 @@ open, money claim, item claim, item restore on failed autostore, and release
 now mutate the shared map creature snapshot. DB-creature combat claims are also
 exclusive in `MapRuntime`, preventing one creature from entering separate
 private combat loops for different sessions. The active creature tick mirrors
-attacker/victim/next-swing state from `MapRuntime`, and ready-swing retry plus
-next-swing timing are written back to the shared map. Player melee and
-supported starter spell damage both enter retaliation through this shared claim
-path, including victim-wide cleanup on player death. Creature-origin damage
-packet execution and lifecycle finalization still run in the owning session
-tick, but creature combat-start, in-combat flag, facing, chase, evade, and
-return-home packets now broadcast through `MapRuntime` to nearby observers.
+attacker/victim/next-swing state from `MapRuntime`, and ready-swing retry is
+written back to the shared map. Player melee and supported starter spell damage
+both apply creature damage through `MapRuntime::apply_db_creature_damage(...)`,
+so health, death, corpse, respawn timestamp, and observer update packets are
+derived from the shared creature snapshot before the owning session sends its
+direct packets. Player melee and starter spells both enter retaliation through
+the shared combat-claim path when the creature survives, including victim-wide
+cleanup on player death. Creature-origin melee damage now applies through a
+`MapRuntime` event that mutates the shared player health snapshot, advances the
+shared creature swing timer, and returns attacker-state/health observer packets
+for nearby sessions before the victim session sends its direct packets. DB
+corpse expiry and respawn transitions now advance through
+`MapRuntime::advance_db_creature_lifecycle(...)`, so only the shared creature
+snapshot can destroy an expired corpse or recreate the live spawn, and nearby
+observer packets are emitted from that map event. DB respawn persistence, quest
+credit, XP, and final attack-stop/combat-flag cleanup now run only from a
+`MapRuntime`-originated death-finalization event, so the shared creature owner
+decides the one authoritative death/respawn transition before the owning
+session applies player-specific reward side effects. Creature combat-start,
+in-combat flag, facing, chase, evade, and return-home packets now broadcast
+through `MapRuntime` to nearby observers.
 Session-local DB creature caches refresh from shared snapshots before local
 ticks, and movement visibility refreshes existing local creatures from shared
 snapshots instead of letting stale session copies keep patrolling. Creature
@@ -390,9 +404,38 @@ not continue a previously queued chase or patrol spline in another client.
 Idle/random/waypoint and return-home motion now write their updated creature
 snapshot back into `MapRuntime`, and new idle motion starts broadcast
 `SMSG_MONSTER_MOVE` through the shared map to nearby observers so clients share
-the same patrol spline instead of rebuilding private per-session patrols. Lazy
-grid loading, observer loot-flag polish after claims, and full two-client
-shared-mob harness proof remain follow-up work.
+the same patrol spline instead of rebuilding private per-session patrols.
+Real-client multiplayer notes then showed three remaining player-replication
+gaps: other players could snap to a stale/fixed facing after movement, did not
+show equipped items, and looked idle while attacking. Rust now carries movement
+flags/client time/fall time in `PlayerRuntime`, includes visible equipped item
+fields in other-player create blocks, broadcasts visible equipment changes
+after equip/unequip moves, broadcasts player `SMSG_ATTACKSTART`, broadcasts
+starter spell `SMSG_SPELL_GO`, and includes player attacker-state packets in
+shared DB-creature damage observer events. Lazy grid loading, observer loot-flag
+polish after claims, broader group/reward eligibility, full two-client
+shared-mob harness proof, and real-client confirmation of the facing fix remain
+follow-up work.
+
+Lazy DB creature grid loading is now started. `MapRuntime` tracks which
+creature grids have been loaded, computes the CMaNGOS-shaped world bounds for
+each grid, loads all DB creature spawns in those grid rectangles once, applies
+`characters.creature_respawn` state while creating shared `DbCreatureRuntime`
+snapshots, and inserts the creatures into grid/cell buckets keyed by their full
+object GUID. Login and movement visibility now call
+`ensure_db_creature_grids_loaded(...)` and then stage visibility from
+`MapRuntime::nearby_db_creature_snapshots(...)` instead of issuing a DB radius
+query for every visibility rescan. Grid unload/idle eviction and DB query-count
+instrumentation remain follow-up work.
+
+Grid-load query instrumentation is now present at the `MapRuntimeManager`
+boundary. Each call to `ensure_db_creature_grids_loaded(...)` increments an
+ensure counter; already-loaded areas increment a cache-hit counter and emit a
+debug log, while each actual DB rectangle load increments DB-query and row
+counters and emits an info log: `Loaded DB creature grid into MapRuntime`.
+For manual performance proof, run with info logs, walk around inside already
+loaded Northshire grids, and confirm no additional grid-load info lines appear
+until crossing into an unloaded grid.
 
 Move these from `WorldSessionState` into `MapRuntime`:
 

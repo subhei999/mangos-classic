@@ -29,7 +29,8 @@ Line-count audit:
 - `crates/wow-network/src/world/tests.rs`: about 2.3k lines.
 - `crates/wow-db/src/character.rs`: about 2.4k lines.
 - `bins/starter-zone-flow-test/src/main.rs`: about 1.8k lines.
-- `crates/wow-network/src/world/bootstrap.rs`: about 1.6k lines.
+- `crates/wow-network/src/world/entities/update_data.rs`: about 1.8k lines
+  after the old `bootstrap.rs` staging file was drained.
 - `crates/wow-network/src/world/mod.rs`: about 1.5k lines.
 
 `interactions.rs` currently mixes:

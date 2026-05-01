@@ -104,6 +104,8 @@ const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 const DB_CREATURE_FIXTURE_GUID: u32 = 96_001;
 const DB_CREATURE_FIXTURE_ENTRY: u32 = 1;
 const DB_CREATURE_FIXTURE_NAME: &str = "Waypoint (Only GM can see it)";
+const DB_CREATURE_FORMATION_GROUP_ID: u32 = 96_003;
+const DB_CREATURE_FORMATION_PATH_ID: u32 = 96_004;
 const EMPTY_DB_VENDOR_FIXTURE_GUID: u32 = 96_002;
 const EMPTY_DB_VENDOR_FIXTURE_ENTRY: u32 = 900_011;
 const RUST_COMBAT_DUMMY_ENTRY: u32 = 900_002;
@@ -199,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
     assert_heroic_strike_known(&character_pool, created.guid).await?;
     seed_inventory_edge_fixture(&character_pool, created.guid).await?;
     seed_db_creature_fixture(&world_pool, &created_db).await?;
+    assert_spawn_group_waypoint_path_indirection(&world_pool, &created_db).await?;
 
     world.expect_create_result(
         CHARACTER_NAME,
@@ -835,6 +838,27 @@ async fn seed_db_creature_fixture(
     world_pool: &MySqlPool,
     character: &wow_db::CharacterEnumEntry,
 ) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM spawn_group_spawn WHERE Id = ? OR Guid = ?")
+        .bind(DB_CREATURE_FORMATION_GROUP_ID)
+        .bind(DB_CREATURE_FIXTURE_GUID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query("DELETE FROM spawn_group_formation WHERE Id = ?")
+        .bind(DB_CREATURE_FORMATION_GROUP_ID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query("DELETE FROM spawn_group WHERE Id = ?")
+        .bind(DB_CREATURE_FORMATION_GROUP_ID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query("DELETE FROM waypoint_path WHERE PathId = ?")
+        .bind(DB_CREATURE_FORMATION_PATH_ID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query("DELETE FROM waypoint_path_name WHERE PathId = ?")
+        .bind(DB_CREATURE_FORMATION_PATH_ID)
+        .execute(world_pool)
+        .await?;
     sqlx::query("DELETE FROM creature WHERE guid = ?")
         .bind(DB_CREATURE_FIXTURE_GUID)
         .execute(world_pool)
@@ -880,6 +904,88 @@ async fn seed_db_creature_fixture(
     .bind(character.orientation)
     .execute(world_pool)
     .await?;
+    Ok(())
+}
+
+async fn assert_spawn_group_waypoint_path_indirection(
+    world_pool: &MySqlPool,
+    character: &wow_db::CharacterEnumEntry,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO spawn_group \
+         (Id, Name, Type, MaxCount, WorldState, WorldStateExpression, Flags, StringId) \
+         VALUES (?, 'Rust formation waypoint fixture', 0, 0, 0, 0, 0, 0)",
+    )
+    .bind(DB_CREATURE_FORMATION_GROUP_ID)
+    .execute(world_pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO spawn_group_formation \
+         (Id, FormationType, FormationSpread, FormationOptions, PathId, MovementType, Comment) \
+         VALUES (?, 0, 0, 0, ?, 2, 'Rust formation waypoint fixture')",
+    )
+    .bind(DB_CREATURE_FORMATION_GROUP_ID)
+    .bind(DB_CREATURE_FORMATION_PATH_ID)
+    .execute(world_pool)
+    .await?;
+    sqlx::query("INSERT INTO spawn_group_spawn (Id, Guid, SlotId, Chance) VALUES (?, ?, 0, 0)")
+        .bind(DB_CREATURE_FORMATION_GROUP_ID)
+        .bind(DB_CREATURE_FIXTURE_GUID)
+        .execute(world_pool)
+        .await?;
+    sqlx::query("INSERT INTO waypoint_path_name (PathId, Name) VALUES (?, ?)")
+        .bind(DB_CREATURE_FORMATION_PATH_ID)
+        .bind("Rust formation waypoint fixture")
+        .execute(world_pool)
+        .await?;
+    for (point, x_offset, wait_time) in [(1u32, 10.0f32, 125u32), (2, 16.0, 250)] {
+        sqlx::query(
+            "INSERT INTO waypoint_path \
+             (PathId, Point, PositionX, PositionY, PositionZ, Orientation, WaitTime, ScriptId) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        )
+        .bind(DB_CREATURE_FORMATION_PATH_ID)
+        .bind(point)
+        .bind(character.position_x + x_offset)
+        .bind(character.position_y + 1.0)
+        .bind(character.position_z)
+        .bind(character.orientation)
+        .bind(wait_time)
+        .execute(world_pool)
+        .await?;
+    }
+
+    let spawns = wow_db::get_nearby_creature_spawns(
+        world_pool,
+        character.map,
+        character.position_x,
+        character.position_y,
+        32.0,
+        16,
+    )
+    .await?;
+    let fixture = spawns
+        .iter()
+        .find(|spawn| spawn.guid == DB_CREATURE_FIXTURE_GUID)
+        .context("formation waypoint fixture creature was missing from nearby spawns")?;
+    ensure!(
+        fixture.movement_type == 2,
+        "formation waypoint movement type did not override fixture movement type"
+    );
+    ensure!(
+        fixture.formation_waypoint_path_id == Some(DB_CREATURE_FORMATION_PATH_ID),
+        "fixture did not expose formation waypoint path id"
+    );
+    ensure!(
+        fixture.waypoint_path.len() == 2,
+        "fixture did not load waypoint_path nodes through spawn_group_formation"
+    );
+    ensure!(
+        fixture.waypoint_path[0].point == 1
+            && fixture.waypoint_path[0].wait_time == 125
+            && (fixture.waypoint_path[0].position_x - (character.position_x + 10.0)).abs() < 0.1,
+        "first formation waypoint node was not loaded from waypoint_path"
+    );
     Ok(())
 }
 
@@ -2675,7 +2781,7 @@ impl WorldClient {
             &[bag, slot, 0, 0, 0, 0],
             Some(&mut self.crypto),
         )?;
-        let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+        let (opcode, body) = self.read_server_packet_skipping_monster_move()?;
         ensure!(
             opcode == SMSG_INVENTORY_CHANGE_FAILURE,
             "expected SMSG_INVENTORY_CHANGE_FAILURE after rejected item destroy, got 0x{opcode:04X}"

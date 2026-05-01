@@ -22,6 +22,37 @@ pub async fn update_character_position(
     Ok(result.rows_affected())
 }
 
+pub async fn update_character_position_and_vitals(
+    pool: &MySqlPool,
+    account_id: u32,
+    guid: u32,
+    position: WorldPosition,
+    health: u32,
+    power1: u32,
+    power2: u32,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE characters \
+         SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ?, \
+             health = ?, power1 = ?, power2 = ? \
+         WHERE guid = ? AND account = ?",
+    )
+    .bind(position.map_id)
+    .bind(position.x)
+    .bind(position.y)
+    .bind(position.z)
+    .bind(position.orientation)
+    .bind(health)
+    .bind(power1)
+    .bind(power2)
+    .bind(guid)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 pub async fn mark_character_first_login_seen(
     pool: &MySqlPool,
     account_id: u32,

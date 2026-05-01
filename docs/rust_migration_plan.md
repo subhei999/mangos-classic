@@ -324,8 +324,8 @@ Detailed path:
    - Add packet tests for accepted/rejected message shapes.
 7. World module cleanup gate
    - Completed as a mechanical, no-behavior-change split before real item
-     movement: `world/mod.rs` now includes focused `bootstrap.rs`,
-     `interactions.rs`, `wire.rs`, and `tests.rs` files.
+     movement: `world/mod.rs` now includes focused server/session,
+     entity-update, interaction, wire, and test files.
    - The split is include-based for now so visibility and behavior stay
      unchanged while future Checkpoint 1 slices become easier to review.
    - Verified with `test-rust.cmd` and `test-world-flow.cmd`.

@@ -16,6 +16,7 @@ async fn handle_cast_spell(
         return Ok(());
     };
     let character_guid = character.guid;
+    let map_id = character.position.map_id;
 
     let Some(starter_spell) = supported_starter_spell(packet.spell_id) else {
         warn!(
@@ -59,13 +60,27 @@ async fn handle_cast_spell(
         Some(&mut *header_crypto),
     )
     .await?;
+    let spell_go_body = build_spell_go_body(caster, packet.spell_id, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_GO,
-        &build_spell_go_body(caster, packet.spell_id, &targets)?,
+        &spell_go_body,
         Some(&mut *header_crypto),
     )
     .await?;
+    let observer_packets = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_GO,
+                body: spell_go_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(observer_packets).await;
     if targets.unit_target == Some(rust_combat_dummy_guid())
         && !session.combat_dummy_lootable
         && session.combat_dummy_health > 0
@@ -112,18 +127,34 @@ async fn handle_cast_spell(
             true
         };
         if can_apply_damage {
-            if let Some(damage) = apply_db_creature_damage(session, target, starter_spell.damage) {
-                let (health, dynamic_flags, is_dead) = session
+            if let Some(event) = shared_world
+                .maps
+                .apply_db_creature_damage(
+                    map_id,
+                    DbCreatureDamageRequest {
+                        creature_guid: target,
+                        killer: caster,
+                        damage: starter_spell.damage,
+                        melee_outcome: None,
+                        spell_id: Some(packet.spell_id),
+                        now: Instant::now(),
+                        now_epoch_secs: current_unix_epoch_secs(),
+                        exclude_character_guid: Some(character_guid),
+                    },
+                )
+                .await?
+            {
+                let damage = event.damage;
+                let death_finalization = event.death_finalization;
+                let is_dead = death_finalization.is_some();
+                session
                     .db_creatures
-                    .get(&target.raw())
-                    .map(|creature| {
-                        (
-                            creature.health,
-                            creature.dynamic_flags(),
-                            creature.health == 0,
-                        )
-                    })
-                    .expect("creature damage target checked above");
+                    .insert(target.raw(), event.creature.clone());
+                if is_dead {
+                    session.active_combat_target = None;
+                    session.active_combat_next_swing_at = None;
+                    clear_db_creature_combat_if_attacker(session, target);
+                }
                 send_packet(
                     stream,
                     SMSG_ATTACKERSTATEUPDATE,
@@ -136,21 +167,7 @@ async fn handle_cast_spell(
                     Some(&mut *header_crypto),
                 )
                 .await?;
-                let creature_update_body = if is_dead {
-                    build_db_creature_death_update_body(
-                        target,
-                        dynamic_flags,
-                        db_creature_unit_flags(
-                            session
-                                .db_creatures
-                                .get(&target.raw())
-                                .expect("creature damage target checked above"),
-                            false,
-                        ),
-                    )?
-                } else {
-                    build_db_creature_state_update_body(target, health, dynamic_flags)?
-                };
+                let creature_update_body = event.update_body.clone();
                 send_packet(
                     stream,
                     SMSG_UPDATE_OBJECT,
@@ -158,41 +175,22 @@ async fn handle_cast_spell(
                     Some(&mut *header_crypto),
                 )
                 .await?;
-                if let (Some(character), Some(creature)) = (
-                    session.active_character.as_ref(),
-                    session.db_creatures.get(&target.raw()).cloned(),
-                ) {
-                    let broadcast = CreatureCombatBroadcast {
-                        shared_world,
-                        map_id: character.position.map_id,
-                        player: ObjectGuid::new(HighGuid::Player, 0, character.guid),
-                    };
-                    let packets = shared_world
-                        .maps
-                        .update_db_creature_snapshot_and_broadcast(
-                            character.position.map_id,
-                            creature,
-                            Some(character.guid),
-                            OutboundWorldPacket {
-                                opcode: SMSG_UPDATE_OBJECT,
-                                body: creature_update_body,
-                            },
-                        )
-                        .await;
-                    shared_world.sessions.dispatch(packets).await;
-                    if is_dead {
-                        send_db_creature_motion_stop(stream, broadcast, session, target, header_crypto)
-                            .await?;
-                    }
-                }
+                let broadcast = CreatureCombatBroadcast {
+                    shared_world,
+                    map_id,
+                    player: caster,
+                };
+                shared_world.sessions.dispatch(event.observer_packets).await;
                 if is_dead {
+                    send_db_creature_motion_stop(stream, broadcast, session, target, header_crypto)
+                        .await?;
                     finalize_db_creature_death(
                         stream,
                         character_db_pool,
                         world_db_pool,
+                        shared_world,
                         session,
-                        caster,
-                        target,
+                        death_finalization,
                         header_crypto,
                     )
                     .await?;
@@ -225,6 +223,9 @@ fn starter_spell_melee_cast_failure(
     match db_creature_player_melee_check(session, target) {
         PlayerMeleeCheck::Clear => None,
         PlayerMeleeCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        PlayerMeleeCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
+            Some(SPELL_FAILED_LINE_OF_SIGHT)
+        }
         _ => Some(SPELL_FAILED_OUT_OF_RANGE),
     }
 }

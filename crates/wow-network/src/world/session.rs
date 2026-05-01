@@ -1,10 +1,13 @@
 include!("entities/player.rs");
 include!("entities/creature.rs");
 include!("entities/corpse.rs");
+include!("entities/item.rs");
 include!("motion/motion_master.rs");
 include!("maps/world_data.rs");
 include!("maps/navigation.rs");
-include!("maps/runtime.rs");
+include!("maps/grid.rs");
+include!("maps/map.rs");
+include!("maps/map_manager.rs");
 
 type OnlineCharacters = Arc<Mutex<HashSet<u32>>>;
 type PlayerCorpses = Arc<Mutex<HashMap<u32, PlayerCorpseRuntime>>>;
@@ -124,6 +127,7 @@ struct WorldSessionState {
     combat_dummy_health: u32,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,
+    last_player_melee_swing_error: Option<PlayerMeleeSwingError>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     player_in_combat: bool,
     player_death_state: PlayerDeathState,

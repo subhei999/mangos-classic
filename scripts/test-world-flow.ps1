@@ -104,7 +104,7 @@ $authLog = Join-Path $repoRoot "auth-world-flow-$AuthPort.log"
 $worldLog = Join-Path $repoRoot "world-flow-$WorldPort.log"
 
 $authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml > `"$authLog`" 2>&1"
-$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`" && target\debug\worldserver.exe --config config\worldserver.local.toml > `"$worldLog`" 2>&1"
+$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`" && set `"WORLD_ENABLE_LEGACY_FIXTURE_NPCS=1`" && target\debug\worldserver.exe --config config\worldserver.local.toml > `"$worldLog`" 2>&1"
 
 $auth = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $authCmd -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
 $world = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $worldCmd -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru

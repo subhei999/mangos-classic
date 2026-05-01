@@ -1,7 +1,6 @@
 async fn handle_inventory_swap(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: InventoryDeps<'_>,
     opcode: u32,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -16,7 +15,7 @@ async fn handle_inventory_swap(
     };
     let character_guid = character.guid;
     let Some(move_request) = (if opcode == CMSG_AUTOEQUIP_ITEM {
-        InventoryMoveRequest::read_auto_equip(body, world_db_pool, session).await?
+        InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?
     } else {
         Some(InventoryMoveRequest::read(opcode, body)?)
     }) else {
@@ -64,7 +63,7 @@ async fn handle_inventory_swap(
         && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot))
     {
         let Some(template) =
-            wow_db::get_item_template_query(world_db_pool, src_item.item_template).await?
+            wow_db::get_item_template_query(deps.world_db_pool, src_item.item_template).await?
         else {
             warn!(
                 opcode = inventory_opcode_name(opcode),
@@ -117,7 +116,7 @@ async fn handle_inventory_swap(
         item.item_template == src_item.item_template && item.item != src_item.item
     }) {
         let Some(template) =
-            wow_db::get_item_template_query(world_db_pool, dst_item.item_template).await?
+            wow_db::get_item_template_query(deps.world_db_pool, dst_item.item_template).await?
         else {
             return Ok(());
         };
@@ -127,7 +126,7 @@ async fn handle_inventory_swap(
     };
 
     let moved = wow_db::swap_character_inventory_slots_with_stack(
-        character_db_pool,
+        deps.character_db_pool,
         character_guid,
         move_request.src_bag as u32,
         move_request.src_slot,
@@ -149,14 +148,63 @@ async fn handle_inventory_swap(
         return Ok(());
     };
 
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+    session.inventory = wow_db::get_character_inventory_items(deps.character_db_pool, character_guid)
         .await?;
+    let changed_equipment_slots = bag0_changed_slots(&move_request)
+        .into_iter()
+        .filter(|slot| *slot < EQUIPMENT_SLOT_END)
+        .collect::<Vec<_>>();
+    let mut combat_stats_update_body = None;
+    if !changed_equipment_slots.is_empty() {
+        if let Some(character) = session.active_character.as_ref() {
+            let world_stats = wow_db::get_player_world_stats(
+                deps.world_db_pool,
+                character.race,
+                character.class,
+                character.level,
+            )
+            .await?;
+            let equipped_templates =
+                load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+            let combat_stats = player_combat_stats_for_values(
+                character.class,
+                character.level,
+                &world_stats,
+                &equipped_templates,
+            );
+            combat_stats_update_body =
+                Some(build_player_combat_stats_update_body(character_guid, &combat_stats)?);
+
+            let visible_equipment = visible_equipment_for_inventory(
+                session
+                    .player_visual
+                    .as_ref()
+                    .and_then(|visual| visual.equipment_cache.as_deref()),
+                &session.inventory,
+            );
+            let packets = deps
+                .shared_world
+                .maps
+                .update_player_visible_equipment(
+                    character.position.map_id,
+                    character_guid,
+                    visible_equipment,
+                    &changed_equipment_slots,
+                )
+                .await?;
+            deps.shared_world.sessions.dispatch(packets).await;
+        }
+    }
     match moved {
         wow_db::InventoryMoveResult::Swapped => {
             let blocks =
                 build_inventory_move_update_blocks(character_guid, &session.inventory, &move_request)?;
             let body = build_update_object_body(&blocks);
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+            if let Some(body) = combat_stats_update_body {
+                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+            }
+            Ok(())
         }
         wow_db::InventoryMoveResult::Merged {
             source_item,
@@ -180,9 +228,19 @@ async fn handle_inventory_swap(
                 destination_count,
             )?);
             let body = build_update_object_body(&blocks);
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+            if let Some(body) = combat_stats_update_body {
+                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+            }
+            Ok(())
         }
     }
+}
+
+struct InventoryDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    shared_world: SharedWorldDeps<'a>,
 }
 
 async fn handle_destroy_item(

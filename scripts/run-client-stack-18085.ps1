@@ -5,6 +5,7 @@ param(
     [switch]$ResetWorldDatabase,
     [switch]$ResetCharacters,
     [switch]$NoAutoRestart,
+    [switch]$SeedLegacyRustFixtures,
     [int]$RestartDelaySeconds = 2
 )
 
@@ -268,7 +269,8 @@ ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
 "@
 Invoke-MariaDb "characters" $realmCharacterCountSql
 
-$seedCreatureSql = @"
+if ($SeedLegacyRustFixtures) {
+    $seedCreatureSql = @"
 DROP TEMPORARY TABLE IF EXISTS rust_client_creature_template;
 CREATE TEMPORARY TABLE rust_client_creature_template LIKE mangos.creature_template;
 INSERT INTO rust_client_creature_template
@@ -311,7 +313,15 @@ ORDER BY CASE WHEN c.name = 'Rustone' THEN 0 ELSE 1 END, c.guid
 LIMIT 1;
 DROP TEMPORARY TABLE rust_client_creature_template;
 "@
-Invoke-MariaDb "mangos" $seedCreatureSql
+    Invoke-MariaDb "mangos" $seedCreatureSql
+} else {
+    $removeLegacyCreatureSql = @"
+DELETE FROM mangos.creature WHERE guid = 900010;
+DELETE FROM mangos.npc_vendor WHERE entry = 900010 AND item IN (117, 2102);
+DELETE FROM mangos.creature_template WHERE Entry = 900010;
+"@
+    Invoke-MariaDb "mangos" $removeLegacyCreatureSql
+}
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 Invoke-Checked cargo @("build", "-p", "authserver")
@@ -324,7 +334,11 @@ $worldLog = Join-Path $repoRoot "world-client-$WorldPort.log"
 Remove-Item $authLog, $worldLog -ErrorAction SilentlyContinue
 
 $authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml >> `"$authLog`" 2>&1"
-$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`" && target\debug\worldserver.exe --config config\worldserver.local.toml >> `"$worldLog`" 2>&1"
+$worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`""
+if ($SeedLegacyRustFixtures) {
+    $worldCmd += " && set `"WORLD_ENABLE_LEGACY_FIXTURE_NPCS=1`""
+}
+$worldCmd += " && target\debug\worldserver.exe --config config\worldserver.local.toml >> `"$worldLog`" 2>&1"
 
 $auth = Start-StackProcess "authserver" "authserver" $authCmd $authLog
 $world = Start-StackProcess "worldserver" "worldserver" $worldCmd $worldLog

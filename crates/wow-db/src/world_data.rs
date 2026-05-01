@@ -17,6 +17,8 @@ pub struct CreatureTemplateQuery {
     pub display_id2: u32,
     pub display_id3: u32,
     pub display_id4: u32,
+    pub model_bounding_radius: f32,
+    pub model_combat_reach: f32,
     pub faction: u32,
     pub scale: f32,
     pub detection_range: u32,
@@ -26,15 +28,29 @@ pub struct CreatureTemplateQuery {
     pub npc_flags: u32,
     pub unit_flags: u32,
     pub dynamic_flags: u32,
+    pub unit_class: u8,
     pub rank: u32,
+    pub health_multiplier: f32,
+    pub power_multiplier: f32,
+    pub damage_multiplier: f32,
+    pub damage_variance: f32,
+    pub armor_multiplier: f32,
     pub min_level_health: u32,
     pub max_level_health: u32,
+    pub min_level_mana: u32,
+    pub max_level_mana: u32,
     pub min_melee_dmg: f32,
     pub max_melee_dmg: f32,
+    pub min_ranged_dmg: f32,
+    pub max_ranged_dmg: f32,
+    pub armor: u32,
+    pub melee_attack_power: u32,
+    pub ranged_attack_power: u32,
     pub min_loot_gold: u32,
     pub max_loot_gold: u32,
     pub melee_base_attack_time: u32,
     pub ranged_base_attack_time: u32,
+    pub damage_school: i8,
     pub trainer_type: i8,
     pub trainer_class: u8,
     pub pet_spell_data_id: u32,
@@ -57,6 +73,7 @@ pub struct CreatureSpawnQuery {
     pub spawn_time_secs_max: u32,
     pub spawn_dist: f32,
     pub movement_type: u8,
+    pub formation_waypoint_path_id: Option<u32>,
     pub template: CreatureTemplateQuery,
     pub waypoint_path: Vec<CreatureWaypointQuery>,
 }
@@ -182,21 +199,34 @@ pub async fn get_creature_template_query(
                 MinLevel AS min_level, MaxLevel AS max_level, \
                 DisplayId1 AS display_id1, DisplayId2 AS display_id2, \
                 DisplayId3 AS display_id3, DisplayId4 AS display_id4, \
+                COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
+                COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
                 Faction AS faction, Scale AS scale, Detection AS detection_range, \
                 CallForHelp AS call_for_help, Family AS family, \
                 CreatureType AS creature_type, NpcFlags AS npc_flags, \
-                UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, Rank AS rank, \
+                UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, \
+                UnitClass AS unit_class, Rank AS rank, \
+                HealthMultiplier AS health_multiplier, PowerMultiplier AS power_multiplier, \
+                DamageMultiplier AS damage_multiplier, DamageVariance AS damage_variance, \
+                ArmorMultiplier AS armor_multiplier, \
                 MinLevelHealth AS min_level_health, MaxLevelHealth AS max_level_health, \
+                MinLevelMana AS min_level_mana, MaxLevelMana AS max_level_mana, \
                 MinMeleeDmg AS min_melee_dmg, MaxMeleeDmg AS max_melee_dmg, \
+                MinRangedDmg AS min_ranged_dmg, MaxRangedDmg AS max_ranged_dmg, \
+                Armor AS armor, MeleeAttackPower AS melee_attack_power, \
+                RangedAttackPower AS ranged_attack_power, \
                 MinLootGold AS min_loot_gold, MaxLootGold AS max_loot_gold, \
                 MeleeBaseAttackTime AS melee_base_attack_time, \
                 RangedBaseAttackTime AS ranged_base_attack_time, \
+                DamageSchool AS damage_school, \
                 TrainerType AS trainer_type, TrainerClass AS trainer_class, \
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
                 CorpseDecay AS corpse_decay, \
                 MovementType AS movement_type, \
                 ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
+         LEFT JOIN creature_model_info \
+           ON creature_model_info.modelid = COALESCE(NULLIF(DisplayId1, 0), NULLIF(DisplayId2, 0), NULLIF(DisplayId3, 0), NULLIF(DisplayId4, 0), 0) \
          WHERE Entry = ?",
     )
     .bind(entry)
@@ -514,6 +544,8 @@ pub async fn get_nearby_creature_spawns(
                 creature.spawntimesecsmax AS spawn_time_secs_max, \
                 CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
                 creature.MovementType AS movement_type, \
+                CAST(spawn_group_formation.MovementType AS UNSIGNED) AS formation_movement_type, \
+                CAST(spawn_group_formation.PathId AS UNSIGNED) AS formation_waypoint_path_id, \
                 creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
                 creature_template.SubName AS template_subname, \
                 creature_template.MinLevel AS template_min_level, \
@@ -522,6 +554,8 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.DisplayId2 AS template_display_id2, \
                 creature_template.DisplayId3 AS template_display_id3, \
                 creature_template.DisplayId4 AS template_display_id4, \
+                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
+                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
@@ -530,15 +564,29 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.NpcFlags AS template_npc_flags, \
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
+                creature_template.UnitClass AS template_unit_class, \
                 creature_template.Rank AS template_rank, \
+                creature_template.HealthMultiplier AS template_health_multiplier, \
+                creature_template.PowerMultiplier AS template_power_multiplier, \
+                creature_template.DamageMultiplier AS template_damage_multiplier, \
+                creature_template.DamageVariance AS template_damage_variance, \
+                creature_template.ArmorMultiplier AS template_armor_multiplier, \
                 creature_template.MinLevelHealth AS template_min_level_health, \
                 creature_template.MaxLevelHealth AS template_max_level_health, \
+                creature_template.MinLevelMana AS template_min_level_mana, \
+                creature_template.MaxLevelMana AS template_max_level_mana, \
                 creature_template.MinMeleeDmg AS template_min_melee_dmg, \
                 creature_template.MaxMeleeDmg AS template_max_melee_dmg, \
+                creature_template.MinRangedDmg AS template_min_ranged_dmg, \
+                creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
+                creature_template.Armor AS template_armor, \
+                creature_template.MeleeAttackPower AS template_melee_attack_power, \
+                creature_template.RangedAttackPower AS template_ranged_attack_power, \
                 creature_template.MinLootGold AS template_min_loot_gold, \
                 creature_template.MaxLootGold AS template_max_loot_gold, \
                 creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
+                creature_template.DamageSchool AS template_damage_school, \
                 creature_template.TrainerType AS template_trainer_type, \
                 creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
@@ -548,6 +596,12 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN creature_model_info \
+           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN spawn_group_spawn \
+           ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
+         LEFT JOIN spawn_group_formation \
+           ON spawn_group_formation.Id = spawn_group_spawn.Id \
          WHERE creature.map = ? \
            AND creature.position_x BETWEEN ? AND ? \
            AND creature.position_y BETWEEN ? AND ? \
@@ -584,8 +638,123 @@ pub async fn get_nearby_creature_spawns(
         if creature_effective_movement_type(spawn) == 2
             || creature_effective_movement_type(spawn) == 4
         {
-            spawn.waypoint_path =
-                get_creature_default_waypoint_path(pool, spawn.entry, spawn.guid).await?;
+            spawn.waypoint_path = get_creature_default_waypoint_path(
+                pool,
+                spawn.entry,
+                spawn.guid,
+                spawn.formation_waypoint_path_id,
+            )
+            .await?;
+        }
+    }
+
+    Ok(spawns)
+}
+
+pub async fn get_creature_spawns_in_rect(
+    pool: &MySqlPool,
+    map: u32,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+) -> Result<Vec<CreatureSpawnQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureSpawnRow>(
+        "SELECT creature.guid, creature.id AS entry, creature.map, \
+                CAST(creature.position_x AS DOUBLE) AS position_x, \
+                CAST(creature.position_y AS DOUBLE) AS position_y, \
+                CAST(creature.position_z AS DOUBLE) AS position_z, \
+                CAST(creature.orientation AS DOUBLE) AS orientation, \
+                creature.spawntimesecsmin AS spawn_time_secs_min, \
+                creature.spawntimesecsmax AS spawn_time_secs_max, \
+                CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
+                creature.MovementType AS movement_type, \
+                CAST(spawn_group_formation.MovementType AS UNSIGNED) AS formation_movement_type, \
+                CAST(spawn_group_formation.PathId AS UNSIGNED) AS formation_waypoint_path_id, \
+                creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
+                creature_template.SubName AS template_subname, \
+                creature_template.MinLevel AS template_min_level, \
+                creature_template.MaxLevel AS template_max_level, \
+                creature_template.DisplayId1 AS template_display_id1, \
+                creature_template.DisplayId2 AS template_display_id2, \
+                creature_template.DisplayId3 AS template_display_id3, \
+                creature_template.DisplayId4 AS template_display_id4, \
+                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
+                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
+                creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.Detection AS template_detection_range, \
+                creature_template.CallForHelp AS template_call_for_help, \
+                creature_template.Family AS template_family, \
+                creature_template.CreatureType AS template_creature_type, \
+                creature_template.NpcFlags AS template_npc_flags, \
+                creature_template.UnitFlags AS template_unit_flags, \
+                creature_template.DynamicFlags AS template_dynamic_flags, \
+                creature_template.UnitClass AS template_unit_class, \
+                creature_template.Rank AS template_rank, \
+                creature_template.HealthMultiplier AS template_health_multiplier, \
+                creature_template.PowerMultiplier AS template_power_multiplier, \
+                creature_template.DamageMultiplier AS template_damage_multiplier, \
+                creature_template.DamageVariance AS template_damage_variance, \
+                creature_template.ArmorMultiplier AS template_armor_multiplier, \
+                creature_template.MinLevelHealth AS template_min_level_health, \
+                creature_template.MaxLevelHealth AS template_max_level_health, \
+                creature_template.MinLevelMana AS template_min_level_mana, \
+                creature_template.MaxLevelMana AS template_max_level_mana, \
+                creature_template.MinMeleeDmg AS template_min_melee_dmg, \
+                creature_template.MaxMeleeDmg AS template_max_melee_dmg, \
+                creature_template.MinRangedDmg AS template_min_ranged_dmg, \
+                creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
+                creature_template.Armor AS template_armor, \
+                creature_template.MeleeAttackPower AS template_melee_attack_power, \
+                creature_template.RangedAttackPower AS template_ranged_attack_power, \
+                creature_template.MinLootGold AS template_min_loot_gold, \
+                creature_template.MaxLootGold AS template_max_loot_gold, \
+                creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
+                creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
+                creature_template.DamageSchool AS template_damage_school, \
+                creature_template.TrainerType AS template_trainer_type, \
+                creature_template.TrainerClass AS template_trainer_class, \
+                creature_template.PetSpellDataId AS template_pet_spell_data_id, \
+                creature_template.Civilian AS template_civilian, \
+                creature_template.CorpseDecay AS template_corpse_decay, \
+                creature_template.MovementType AS template_movement_type, \
+                creature_template.ExperienceMultiplier AS template_experience_multiplier \
+         FROM creature \
+         JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN creature_model_info \
+           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN spawn_group_spawn \
+           ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
+         LEFT JOIN spawn_group_formation \
+           ON spawn_group_formation.Id = spawn_group_spawn.Id \
+         WHERE creature.map = ? \
+           AND creature.position_x BETWEEN ? AND ? \
+           AND creature.position_y BETWEEN ? AND ? \
+         ORDER BY creature.guid ASC",
+    )
+    .bind(map)
+    .bind(min_x)
+    .bind(max_x)
+    .bind(min_y)
+    .bind(max_y)
+    .fetch_all(pool)
+    .await?;
+
+    let mut spawns = rows
+        .into_iter()
+        .map(CreatureSpawnRow::into_query)
+        .collect::<Vec<_>>();
+    for spawn in &mut spawns {
+        if creature_effective_movement_type(spawn) == 2
+            || creature_effective_movement_type(spawn) == 4
+        {
+            spawn.waypoint_path = get_creature_default_waypoint_path(
+                pool,
+                spawn.entry,
+                spawn.guid,
+                spawn.formation_waypoint_path_id,
+            )
+            .await?;
         }
     }
 
@@ -658,12 +827,41 @@ pub async fn get_creature_default_waypoint_path(
     pool: &MySqlPool,
     entry: u32,
     guid: u32,
+    formation_path_id: Option<u32>,
 ) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    if let Some(path_id) = formation_path_id.filter(|path_id| *path_id != 0) {
+        let formation_path = get_waypoint_path(pool, path_id).await?;
+        if !formation_path.is_empty() {
+            return Ok(formation_path);
+        }
+    }
     let guid_path = get_creature_guid_waypoint_path(pool, guid).await?;
     if !guid_path.is_empty() {
         return Ok(guid_path);
     }
     get_creature_template_waypoint_path(pool, entry, 0).await
+}
+
+async fn get_waypoint_path(
+    pool: &MySqlPool,
+    path_id: u32,
+) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureWaypointRow>(
+        "SELECT Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM waypoint_path \
+         WHERE PathId = ? \
+         ORDER BY Point",
+    )
+    .bind(path_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(creature_waypoint_rows_into_path(rows))
 }
 
 async fn get_creature_guid_waypoint_path(
@@ -1024,6 +1222,8 @@ struct CreatureSpawnRow {
     spawn_time_secs_max: u32,
     spawn_dist: f64,
     movement_type: u8,
+    formation_movement_type: Option<u8>,
+    formation_waypoint_path_id: Option<u32>,
     template_entry: u32,
     template_name: String,
     template_subname: Option<String>,
@@ -1033,6 +1233,8 @@ struct CreatureSpawnRow {
     template_display_id2: u32,
     template_display_id3: u32,
     template_display_id4: u32,
+    template_model_bounding_radius: f32,
+    template_model_combat_reach: f32,
     template_faction: u32,
     template_scale: f32,
     template_detection_range: u32,
@@ -1042,15 +1244,29 @@ struct CreatureSpawnRow {
     template_npc_flags: u32,
     template_unit_flags: u32,
     template_dynamic_flags: u32,
+    template_unit_class: u8,
     template_rank: u32,
+    template_health_multiplier: f32,
+    template_power_multiplier: f32,
+    template_damage_multiplier: f32,
+    template_damage_variance: f32,
+    template_armor_multiplier: f32,
     template_min_level_health: u32,
     template_max_level_health: u32,
+    template_min_level_mana: u32,
+    template_max_level_mana: u32,
     template_min_melee_dmg: f32,
     template_max_melee_dmg: f32,
+    template_min_ranged_dmg: f32,
+    template_max_ranged_dmg: f32,
+    template_armor: u32,
+    template_melee_attack_power: u32,
+    template_ranged_attack_power: u32,
     template_min_loot_gold: u32,
     template_max_loot_gold: u32,
     template_melee_base_attack_time: u32,
     template_ranged_base_attack_time: u32,
+    template_damage_school: i8,
     template_trainer_type: i8,
     template_trainer_class: u8,
     template_pet_spell_data_id: u32,
@@ -1073,7 +1289,8 @@ impl CreatureSpawnRow {
             spawn_time_secs_min: self.spawn_time_secs_min,
             spawn_time_secs_max: self.spawn_time_secs_max,
             spawn_dist: self.spawn_dist as f32,
-            movement_type: self.movement_type,
+            movement_type: self.formation_movement_type.unwrap_or(self.movement_type),
+            formation_waypoint_path_id: self.formation_waypoint_path_id,
             template: CreatureTemplateQuery {
                 entry: self.template_entry,
                 name: self.template_name,
@@ -1084,6 +1301,8 @@ impl CreatureSpawnRow {
                 display_id2: self.template_display_id2,
                 display_id3: self.template_display_id3,
                 display_id4: self.template_display_id4,
+                model_bounding_radius: self.template_model_bounding_radius,
+                model_combat_reach: self.template_model_combat_reach,
                 faction: self.template_faction,
                 scale: self.template_scale,
                 detection_range: self.template_detection_range,
@@ -1093,15 +1312,29 @@ impl CreatureSpawnRow {
                 npc_flags: self.template_npc_flags,
                 unit_flags: self.template_unit_flags,
                 dynamic_flags: self.template_dynamic_flags,
+                unit_class: self.template_unit_class,
                 rank: self.template_rank,
+                health_multiplier: self.template_health_multiplier,
+                power_multiplier: self.template_power_multiplier,
+                damage_multiplier: self.template_damage_multiplier,
+                damage_variance: self.template_damage_variance,
+                armor_multiplier: self.template_armor_multiplier,
                 min_level_health: self.template_min_level_health,
                 max_level_health: self.template_max_level_health,
+                min_level_mana: self.template_min_level_mana,
+                max_level_mana: self.template_max_level_mana,
                 min_melee_dmg: self.template_min_melee_dmg,
                 max_melee_dmg: self.template_max_melee_dmg,
+                min_ranged_dmg: self.template_min_ranged_dmg,
+                max_ranged_dmg: self.template_max_ranged_dmg,
+                armor: self.template_armor,
+                melee_attack_power: self.template_melee_attack_power,
+                ranged_attack_power: self.template_ranged_attack_power,
                 min_loot_gold: self.template_min_loot_gold,
                 max_loot_gold: self.template_max_loot_gold,
                 melee_base_attack_time: self.template_melee_base_attack_time,
                 ranged_base_attack_time: self.template_ranged_base_attack_time,
+                damage_school: self.template_damage_school,
                 trainer_type: self.template_trainer_type,
                 trainer_class: self.template_trainer_class,
                 pet_spell_data_id: self.template_pet_spell_data_id,

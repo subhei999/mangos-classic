@@ -4,6 +4,7 @@ struct PlayerDeathDeps<'a> {
     world_db_pool: &'a MySqlPool,
     player_corpses: &'a PlayerCorpses,
     maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
     account_id: u32,
 }
 
@@ -294,6 +295,11 @@ async fn resurrect_player_at_position(
     character.fall_time = 0;
 
     let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let packets = deps
+        .maps
+        .update_player_health(character.position.map_id, character.guid, session.player_health)
+        .await?;
+    deps.sessions.dispatch(packets).await;
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,

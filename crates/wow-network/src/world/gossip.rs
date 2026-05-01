@@ -4,6 +4,7 @@ struct GossipSelectDeps<'a> {
     world_db_pool: &'a MySqlPool,
     player_corpses: &'a PlayerCorpses,
     maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
     account_id: u32,
 }
 
@@ -174,6 +175,7 @@ async fn handle_gossip_select_option(
                     world_db_pool: deps.world_db_pool,
                     player_corpses: deps.player_corpses,
                     maps: deps.maps,
+                    sessions: deps.sessions,
                     account_id: deps.account_id,
                 },
                 body,

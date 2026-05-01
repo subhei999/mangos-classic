@@ -6,18 +6,37 @@ protocol for Codex and other AI coding agents.
 
 ## Startup Protocol
 
-Before planning or editing, read these files in order:
+Before planning or editing, read:
 
 1. `docs/session_handoff.md`
-2. `docs/playable_gate_board.md`
-3. `docs/rust_migration_plan.md`
-4. `docs/rust_auth_foundation.md`
+
+Then read only the relevant reference sections for the task:
+
+- `docs/playable_gate_board.md` for gate status, current priority, or playable
+  milestone decisions.
+- `docs/rust_migration_plan.md` for durable roadmap, crate ownership, or broad
+  migration architecture.
+- `docs/rust_auth_foundation.md` for authserver setup, auth DB expectations, or
+  auth protocol work.
+
+Do not spend tokens reading the full roadmap/auth docs on every task when the
+current handoff already contains enough context. If `docs/session_handoff.md`
+is stale or missing needed context, refresh it from the reference docs and prune
+it back to a concise operating brief.
 
 Then run:
 
 ```powershell
 git status --short --branch
 ```
+
+Task start checklist:
+
+- Confirm the current goal from `docs/session_handoff.md`.
+- Identify the gate or subsystem touched.
+- Check dirty worktree files before editing.
+- Identify the smallest useful tests before changing code.
+- For gameplay parity, identify the CMaNGOS source or DB/DBC backing first.
 
 Performance reminder for every task:
 
@@ -31,6 +50,13 @@ Performance reminder for every task:
   implement the CMaNGOS behavior first, then log the optimization as a future
   P4/performance follow-up with evidence and a suggested measurement.
 
+Gameplay data rule:
+
+- Do not fake or hardcode gameplay values when implementing parity behavior.
+  Use DB data, DBC/source-derived values, or CMaNGOS formulas. If the real data
+  source is not wired yet, leave the behavior unimplemented or narrowly guarded
+  and log the follow-up rather than inventing constants.
+
 Playable gate guidance:
 
 - Use `docs/playable_gate_board.md` and `docs/session_handoff.md` as the main
@@ -39,6 +65,31 @@ Playable gate guidance:
   priority, follow that priority and update the docs if it changes the plan.
 - When choosing work without explicit user direction, prefer the current
   user-directed next task first, then the highest-value red/yellow gate.
+
+Subagent guidance:
+
+- Use GPT-5.5 as the architect, reviewer, and final integrator for complex
+  CMaNGOS parity work, shared-world ownership decisions, safety-critical
+  changes, and final verification.
+- Prefer GPT-5.3-Codex workers for bounded implementation or investigation
+  tasks with clear ownership, especially when the work can run in parallel.
+  GPT-5.3-Codex is materially cheaper in Codex token pricing, so it is a good
+  default worker model when the parent agent can specify the task precisely and
+  review the result.
+- Do not use subagents automatically. They are most useful for independent
+  codebase searches, CMaNGOS reference comparisons, focused tests/harness work,
+  mechanical refactors, or disjoint implementation slices. For small,
+  tightly-coupled edits, a single GPT-5.5 pass is often faster and safer.
+- When spawning workers, give each one a concrete goal, explicit write scope,
+  files or modules it owns, tests to run, and a reminder not to revert
+  unrelated worktree changes. Keep write scopes disjoint when using multiple
+  workers.
+- Give workers stop conditions: stay in scope, do not broaden architecture, do
+  not edit docs unless asked, run focused tests, and report changed files plus
+  test results.
+- The parent agent must inspect and integrate worker output, remove duplication,
+  enforce the no-fake/no-hardcoded parity rule, run the relevant tests, update
+  docs when the plan changes, and close worker agents when done.
 
 If the task involves Rust code, run the baseline test script before and after
 changes when practical:
@@ -65,13 +116,19 @@ If the task touches auth protocol behavior, also run:
   asks to change it.
 - Preserve protocol and schema compatibility with WoW 1.12.1 and
   `sql/base/realmd.sql`.
-- Update `docs/session_handoff.md` at the end of substantial work with:
-  - latest commit,
-  - what changed,
-  - tests run,
-  - blockers,
-  - recommended next task,
+- Maintain `docs/session_handoff.md` as a short current-state operating brief,
+  not a chronological log. At the end of substantial work, prune stale detail
+  and update it with:
+  - latest commit or current uncommitted state,
+  - current goal and recommended next task,
+  - what changed recently that still matters,
+  - tests run and current confidence,
+  - blockers or unproven areas,
   - key files for the next agent.
+  Replace obsolete entries instead of appending endlessly; durable roadmap
+  history belongs in `docs/rust_migration_plan.md`, the gate dashboard belongs
+  in `docs/playable_gate_board.md`, and detailed feature plans belong in their
+  own focused docs.
 - Do not leave a session without a clean explanation of what is tested and what
   remains unproven.
 

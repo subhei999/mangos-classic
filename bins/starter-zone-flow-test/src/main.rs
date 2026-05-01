@@ -25,8 +25,10 @@ const WORLD_DATABASE_URL: &str = "mysql://mangos:mangos@127.0.0.1:3307/mangos";
 const AUTH_ADDR: &str = "127.0.0.1:13724";
 const WORLD_ADDR: &str = "127.0.0.1:18085";
 const USERNAME: &str = "STARTZONE";
+const OTHER_USERNAME: &str = "STARTOTHER";
 const PASSWORD: &str = "STARTPASS";
 const CHARACTER_NAME: &str = "Startzone";
+const OTHER_CHARACTER_NAME: &str = "Startother";
 const BUILD_1121: u16 = 5875;
 const CLIENT_SEED: u32 = 0x5A17_0201;
 const REALM_ID: u32 = 1;
@@ -61,6 +63,7 @@ const KOBOLD_CAMP_CLEANUP_QUEST: u32 = FIXTURE_PREFIX + 202;
 const FIXTURE_GRAVEYARD_ID: u32 = FIXTURE_PREFIX + 301;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
+const CMSG_MESSAGECHAT: u32 = 0x0095;
 const CMSG_CAST_SPELL: u32 = 0x012E;
 const CMSG_GOSSIP_HELLO: u32 = 0x017B;
 const CMSG_QUESTGIVER_STATUS_QUERY: u32 = 0x0182;
@@ -80,6 +83,7 @@ const CMSG_RECLAIM_CORPSE: u32 = 0x01D2;
 const CMSG_MOVE_HEARTBEAT: u32 = 0x00EE;
 const MSG_CORPSE_QUERY: u32 = 0x0216;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
+const SMSG_MESSAGECHAT: u32 = 0x0096;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
 const SMSG_QUESTGIVER_STATUS: u32 = 0x0183;
@@ -104,6 +108,8 @@ const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
 const SMSG_CORPSE_RECLAIM_DELAY: u32 = 0x0269;
 const MSG_MOVE_TELEPORT_ACK: u32 = 0x00C7;
 const AUTH_OK: u8 = 0x0C;
+const CHAT_MSG_SAY: u32 = 0x00;
+const LANG_UNIVERSAL: u32 = 0x00;
 const UNIT_FIELD_HEALTH: usize = 0x016;
 const UNIT_FIELD_LEVEL: usize = 0x022;
 const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
@@ -168,8 +174,10 @@ async fn main() -> anyhow::Result<()> {
     let character_pool = connect(CHARACTER_DATABASE_URL).await?;
     let world_pool = connect(WORLD_DATABASE_URL).await?;
 
-    let account_id = seed_account(&login_pool).await?;
+    let account_id = seed_account(&login_pool, USERNAME).await?;
+    let other_account_id = seed_account(&login_pool, OTHER_USERNAME).await?;
     cleanup_account_characters(&character_pool, account_id).await?;
+    cleanup_account_characters(&character_pool, other_account_id).await?;
     let starter_zone = prepare_northshire_content(&world_pool).await?;
     cleanup_starter_zone_creature_respawns(&character_pool, &starter_zone).await?;
 
@@ -192,8 +200,40 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     wow_db::refresh_realm_character_count(&login_pool, &character_pool, account_id, REALM_ID)
         .await?;
+    let other_created = wow_db::create_character(
+        &character_pool,
+        &world_pool,
+        wow_db::NewCharacter {
+            account_id: other_account_id,
+            name: OTHER_CHARACTER_NAME.to_string(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await?;
+    wow_db::refresh_realm_character_count(&login_pool, &character_pool, other_account_id, REALM_ID)
+        .await?;
 
-    assert_human_warrior_enters_northshire(&character_pool, account_id, created.guid).await?;
+    assert_human_warrior_enters_northshire(
+        &character_pool,
+        account_id,
+        created.guid,
+        CHARACTER_NAME,
+    )
+    .await?;
+    assert_human_warrior_enters_northshire(
+        &character_pool,
+        other_account_id,
+        other_created.guid,
+        OTHER_CHARACTER_NAME,
+    )
+    .await?;
     assert_starter_zone_creatures_available(&world_pool, created.position, &starter_zone).await?;
     match starter_zone.source {
         StarterZoneSource::RealClassicDb => assert_real_starter_zone_rows(&world_pool).await?,
@@ -204,10 +244,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     assert_count_row(&login_pool, account_id, 1).await?;
+    assert_count_row(&login_pool, other_account_id, 1).await?;
 
-    complete_auth_flow()?;
-    let session_key = fetch_session_key(&login_pool).await?;
-    let mut world = WorldClient::connect(&session_key)?;
+    complete_auth_flow(USERNAME)?;
+    complete_auth_flow(OTHER_USERNAME)?;
+    let session_key = fetch_session_key(&login_pool, USERNAME).await?;
+    let other_session_key = fetch_session_key(&login_pool, OTHER_USERNAME).await?;
+    let mut world = WorldClient::connect(USERNAME, &session_key)?;
     let enum_rows = world.char_enum()?;
     ensure!(
         enum_rows
@@ -216,7 +259,14 @@ async fn main() -> anyhow::Result<()> {
         "fresh Northshire character was missing from SMSG_CHAR_ENUM"
     );
     world.login_character_expect_northshire_creatures(created.guid, &starter_zone)?;
-    world.kill_loot_and_release_young_wolf(&starter_zone)?;
+    prove_two_client_shared_wolf_state(
+        &mut world,
+        created.guid,
+        OTHER_USERNAME,
+        &other_session_key,
+        other_created.guid,
+        &starter_zone,
+    )?;
     world.move_to_expect_streamed_creature(&starter_zone)?;
     world.move_to_expect_destroyed_creature(&starter_zone)?;
     world.move_to_expect_streamed_creature(&starter_zone)?;
@@ -250,33 +300,33 @@ async fn connect(url: &str) -> anyhow::Result<MySqlPool> {
         .with_context(|| format!("connect to {url}"))
 }
 
-async fn seed_account(login_pool: &MySqlPool) -> anyhow::Result<u32> {
+async fn seed_account(login_pool: &MySqlPool, username: &str) -> anyhow::Result<u32> {
     let verifier = SrpVerifier::from_username_and_password(
-        NormalizedString::new(USERNAME)?,
+        NormalizedString::new(username)?,
         NormalizedString::new(PASSWORD)?,
     );
     sqlx::query(
         "DELETE FROM realmcharacters WHERE acctid IN (SELECT id FROM account WHERE username = ?)",
     )
-    .bind(USERNAME)
+    .bind(username)
     .execute(login_pool)
     .await?;
     sqlx::query("DELETE FROM account WHERE username = ?")
-        .bind(USERNAME)
+        .bind(username)
         .execute(login_pool)
         .await?;
     sqlx::query(
         "INSERT INTO account (username, gmlevel, sessionkey, v, s, email, locked, expansion, locale, os) \
          VALUES (?, 0, '', ?, ?, '', 0, 0, '', 'Win')",
     )
-    .bind(USERNAME)
+    .bind(username)
     .bind(bytes_to_hex(verifier.password_verifier()))
     .bind(bytes_to_hex(verifier.salt()))
     .execute(login_pool)
     .await?;
 
     let account_id: u32 = sqlx::query_scalar("SELECT id FROM account WHERE username = ?")
-        .bind(USERNAME)
+        .bind(username)
         .fetch_one(login_pool)
         .await?;
     Ok(account_id)
@@ -1151,16 +1201,14 @@ async fn assert_human_warrior_enters_northshire(
     character_pool: &MySqlPool,
     account_id: u32,
     guid: u32,
+    expected_name: &str,
 ) -> anyhow::Result<()> {
     let character = wow_db::get_character_enum_entries(character_pool, account_id)
         .await?
         .into_iter()
         .find(|character| character.guid == guid)
         .context("fresh Human Warrior is missing from character enum rows")?;
-    ensure!(
-        character.name == CHARACTER_NAME,
-        "unexpected character name"
-    );
+    ensure!(character.name == expected_name, "unexpected character name");
     ensure!(character.race == 1, "fresh character race was not Human");
     ensure!(
         character.class == 1,
@@ -1509,10 +1557,10 @@ async fn assert_player_death_reclaim_persisted(
     Ok(())
 }
 
-async fn fetch_session_key(login_pool: &MySqlPool) -> anyhow::Result<[u8; 40]> {
+async fn fetch_session_key(login_pool: &MySqlPool, username: &str) -> anyhow::Result<[u8; 40]> {
     let session_key: String =
         sqlx::query_scalar("SELECT sessionkey FROM account WHERE username = ?")
-            .bind(USERNAME)
+            .bind(username)
             .fetch_one(login_pool)
             .await?;
     hex_to_array40(&session_key)
@@ -1537,9 +1585,9 @@ async fn assert_count_row(
     Ok(())
 }
 
-fn complete_auth_flow() -> anyhow::Result<()> {
+fn complete_auth_flow(username: &str) -> anyhow::Result<()> {
     let mut stream = connect_blocking(AUTH_ADDR)?;
-    let (challenge, client) = perform_challenge(&mut stream)?;
+    let (challenge, client) = perform_challenge(&mut stream, username)?;
     ensure!(
         challenge.error == 0,
         "auth challenge failed with {}",
@@ -1555,8 +1603,9 @@ fn complete_auth_flow() -> anyhow::Result<()> {
 
 fn perform_challenge(
     stream: &mut TcpStream,
+    username: &str,
 ) -> anyhow::Result<(LogonChallengeResponse, SrpClientChallenge)> {
-    stream.write_all(&logon_challenge_request())?;
+    stream.write_all(&logon_challenge_request(username))?;
 
     let challenge_bytes = read_exact_vec(stream, LogonChallengeResponse::SIZE)?;
     let challenge = LogonChallengeResponse::read(&mut &challenge_bytes[..])?;
@@ -1565,7 +1614,7 @@ fn perform_challenge(
     ensure!(challenge.n_len == 32, "unexpected safe-prime length");
 
     let client = SrpClientChallenge::new(
-        NormalizedString::new(USERNAME)?,
+        NormalizedString::new(username)?,
         NormalizedString::new(PASSWORD)?,
         challenge.g,
         challenge.n,
@@ -1613,6 +1662,71 @@ fn all_visible_creatures_present(bodies: &[Vec<u8>], expected: &[ExpectedCreatur
     })
 }
 
+fn updates_contain_player_guid(update_bodies: &[Vec<u8>], character_guid: u32) -> bool {
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let player_bytes = player.raw().to_le_bytes();
+    update_bodies.iter().any(|body| {
+        body.windows(player_bytes.len())
+            .any(|window| window == player_bytes)
+    })
+}
+
+fn prove_two_client_shared_wolf_state(
+    primary: &mut WorldClient,
+    primary_guid: u32,
+    observer_username: &str,
+    observer_session_key: &[u8; 40],
+    observer_guid: u32,
+    content: &StarterZoneContent,
+) -> anyhow::Result<()> {
+    let mut observer = WorldClient::connect(observer_username, observer_session_key)?;
+    let observer_enum = observer.char_enum()?;
+    ensure!(
+        observer_enum
+            .iter()
+            .any(|character| character.guid == observer_guid),
+        "observer character was missing from SMSG_CHAR_ENUM"
+    );
+
+    let observer_login_updates =
+        observer.login_character_collect_northshire_updates(observer_guid, content)?;
+    let observer_saw_primary = updates_contain_player_guid(&observer_login_updates, primary_guid)
+        || observer.read_until_update_for_player(primary_guid, 24)?;
+    ensure!(
+        observer_saw_primary,
+        "observer did not receive primary player's create block on login"
+    );
+    ensure!(
+        primary.read_until_update_for_player(observer_guid, 24)?,
+        "primary did not receive observer player's create block"
+    );
+
+    let observer_move = WorldPosition::new(
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X + 1.5,
+        HUMAN_START_Y,
+        83.5312,
+        0.0,
+    );
+    observer.send_movement(observer_move)?;
+    ensure!(
+        primary.read_until_movement_for_player(observer_guid, 16)?,
+        "primary did not receive observer movement"
+    );
+
+    let message = "shared northshire wolf";
+    primary.send_say(message)?;
+    ensure!(
+        observer.read_until_chat_message(message, 16)?,
+        "observer did not receive nearby /say"
+    );
+
+    primary.drain_immediate_packets()?;
+    observer.drain_immediate_packets()?;
+    primary.kill_loot_and_release_young_wolf_observed(content, &mut observer)?;
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 struct XpProgressionEvidence {
     saw_creature_xp_log: bool,
@@ -1627,14 +1741,14 @@ struct DeathReclaimProof {
 }
 
 impl WorldClient {
-    fn connect(session_key: &[u8; 40]) -> anyhow::Result<Self> {
+    fn connect(username: &str, session_key: &[u8; 40]) -> anyhow::Result<Self> {
         let mut stream = connect_blocking(WORLD_ADDR)?;
         let (opcode, body) = read_server_packet(&mut stream, None)?;
         ensure!(opcode == SMSG_AUTH_CHALLENGE, "expected auth challenge");
         ensure!(body.len() == 4, "world auth challenge body was malformed");
         let server_seed = u32::from_le_bytes(body.as_slice().try_into()?);
 
-        let auth_body = auth_session_body(session_key, server_seed);
+        let auth_body = auth_session_body(username, session_key, server_seed);
         write_client_packet(&mut stream, CMSG_AUTH_SESSION, &auth_body, None)?;
 
         let mut crypto = HeaderCrypto::new(session_key);
@@ -1670,6 +1784,15 @@ impl WorldClient {
         guid: u32,
         content: &StarterZoneContent,
     ) -> anyhow::Result<()> {
+        self.login_character_collect_northshire_updates(guid, content)?;
+        Ok(())
+    }
+
+    fn login_character_collect_northshire_updates(
+        &mut self,
+        guid: u32,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
         self.character_guid = guid;
         let guid = ObjectGuid::new(HighGuid::Player, 0, guid);
         write_client_packet(
@@ -1706,7 +1829,79 @@ impl WorldClient {
                 expected.counter
             );
         }
-        Ok(())
+        Ok(update_bodies)
+    }
+
+    fn send_movement(&mut self, position: WorldPosition) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MOVE_HEARTBEAT,
+            &movement_body(position),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn send_say(&mut self, message: &str) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_MESSAGECHAT,
+            &chat_message_body(CHAT_MSG_SAY, LANG_UNIVERSAL, message),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn read_until_chat_message(
+        &mut self,
+        message: &str,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_MESSAGECHAT && packet_body_contains_text(&body, message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_until_update_for_player(
+        &mut self,
+        character_guid: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let player_bytes = player.raw().to_le_bytes();
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_UPDATE_OBJECT
+                && body
+                    .windows(player_bytes.len())
+                    .any(|window| window == player_bytes)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_until_movement_for_player(
+        &mut self,
+        character_guid: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode != CMSG_MOVE_HEARTBEAT {
+                continue;
+            }
+            let mut cursor = 0;
+            let observed = read_packed_update_guid(&body, &mut cursor)?;
+            if observed == player.raw() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn move_to_expect_streamed_creature(
@@ -1835,9 +2030,10 @@ impl WorldClient {
         Ok(())
     }
 
-    fn kill_loot_and_release_young_wolf(
+    fn kill_loot_and_release_young_wolf_observed(
         &mut self,
         content: &StarterZoneContent,
+        observer: &mut WorldClient,
     ) -> anyhow::Result<()> {
         let wolf = ObjectGuid::new(HighGuid::Unit, content.wolf.entry, content.wolf.counter);
         let attack_positions = nearby_attack_positions(content.wolf_position);
@@ -1851,6 +2047,8 @@ impl WorldClient {
 
         let mut saw_damage = false;
         let mut saw_dead_lootable = false;
+        let mut observer_saw_damage = false;
+        let mut observer_saw_dead_lootable = false;
         for attempt in 0..48 {
             let attack_position = attack_positions[attempt % attack_positions.len()];
             write_client_packet(
@@ -1875,40 +2073,33 @@ impl WorldClient {
                     saw_damage = true;
                 }
                 if opcode == SMSG_UPDATE_OBJECT
-                    && update_packet_has_values(
-                        &body,
-                        wolf,
-                        &[
-                            (
-                                UNIT_FIELD_HEALTH,
-                                if content.source == StarterZoneSource::RealClassicDb {
-                                    content.wolf_health.saturating_sub(2)
-                                } else {
-                                    0
-                                },
-                            ),
-                            (
-                                UNIT_DYNAMIC_FLAGS,
-                                if content.source == StarterZoneSource::RealClassicDb {
-                                    0
-                                } else {
-                                    UNIT_DYNFLAG_LOOTABLE
-                                },
-                            ),
-                        ],
-                    )?
+                    && shared_wolf_runtime_state_observed(&body, wolf, content)
                 {
                     saw_dead_lootable = true;
                     break;
                 }
             }
             self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            observer.collect_shared_wolf_observations(
+                wolf,
+                content,
+                &mut observer_saw_damage,
+                &mut observer_saw_dead_lootable,
+            )?;
             if saw_dead_lootable {
                 break;
             }
         }
         ensure!(saw_damage, "Young Wolf did not receive combat damage");
+        ensure!(
+            observer_saw_damage,
+            "observer did not receive shared Young Wolf damage"
+        );
         if content.source == StarterZoneSource::RealClassicDb {
+            ensure!(
+                observer_saw_dead_lootable,
+                "observer did not receive shared real ClassicDB Young Wolf runtime state"
+            );
             ensure!(
                 saw_dead_lootable,
                 "real ClassicDB Young Wolf did not transition to damaged runtime state"
@@ -1918,6 +2109,10 @@ impl WorldClient {
         ensure!(
             saw_dead_lootable,
             "Young Wolf did not transition to a lootable corpse"
+        );
+        ensure!(
+            observer_saw_dead_lootable,
+            "observer did not receive shared Young Wolf lootable corpse state"
         );
 
         write_client_packet(
@@ -1949,6 +2144,8 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
         let _ = self.read_until(SMSG_UPDATE_OBJECT, 6)?;
+
+        observer.open_wolf_loot_expect_empty(wolf)?;
 
         write_client_packet(
             &mut self.stream,
@@ -1990,6 +2187,65 @@ impl WorldClient {
             }
         }
         self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        Ok(())
+    }
+
+    fn collect_shared_wolf_observations(
+        &mut self,
+        wolf: ObjectGuid,
+        content: &StarterZoneContent,
+        saw_damage: &mut bool,
+        saw_dead_lootable: &mut bool,
+    ) -> anyhow::Result<()> {
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(25)))?;
+        while let Some((opcode, body)) = try_read_server_packet(&mut self.stream, &mut self.crypto)?
+        {
+            if opcode == SMSG_ATTACKERSTATEUPDATE && attacker_state_update_targets(&body, wolf)? {
+                *saw_damage = true;
+            }
+            if opcode == SMSG_UPDATE_OBJECT
+                && shared_wolf_runtime_state_observed(&body, wolf, content)
+            {
+                *saw_dead_lootable = true;
+            }
+        }
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        Ok(())
+    }
+
+    fn open_wolf_loot_expect_empty(&mut self, wolf: ObjectGuid) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LOOT,
+            &wolf.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let loot_body = self.read_until(SMSG_LOOT_RESPONSE, 8)?;
+        ensure!(
+            loot_body.len() >= 14,
+            "observer loot response was too short"
+        );
+        ensure!(
+            &loot_body[0..8] == wolf.raw().to_le_bytes().as_slice(),
+            "observer loot response target guid mismatch"
+        );
+        ensure!(
+            u32::from_le_bytes(loot_body[9..13].try_into()?) == 0,
+            "observer saw duplicate wolf loot money"
+        );
+        ensure!(loot_body[13] == 0, "observer saw duplicate wolf loot item");
+        write_client_packet(
+            &mut self.stream,
+            CMSG_LOOT_RELEASE,
+            &wolf.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let release = self.read_until(SMSG_LOOT_RELEASE_RESPONSE, 8)?;
+        ensure!(
+            release == [wolf.raw().to_le_bytes().as_slice(), &[1]].concat(),
+            "observer wolf loot release response was malformed"
+        );
         Ok(())
     }
 
@@ -2304,11 +2560,27 @@ impl WorldClient {
             &movement_body(corpse_position),
             Some(&mut self.crypto),
         )?;
-        self.drain_immediate_packets()?;
-
         let mut saw_death_damage = false;
         let mut saw_player_dead = false;
-        for attempt in 0..80 {
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(250)))?;
+        while let Some((opcode, body)) = try_read_server_packet(&mut self.stream, &mut self.crypto)?
+        {
+            if opcode == SMSG_ATTACKERSTATEUPDATE
+                && (attacker_state_update_matches(&body, killer, player)?
+                    || attacker_state_update_targets(&body, player)?)
+            {
+                saw_death_damage = true;
+            }
+            if opcode == SMSG_UPDATE_OBJECT
+                && update_packet_has_values_or_false(&body, player, &[(UNIT_FIELD_HEALTH, 0)])
+            {
+                saw_death_damage = true;
+                saw_player_dead = true;
+                break;
+            }
+        }
+        for attempt in 0..120 {
             let attack_position = attack_positions[attempt % attack_positions.len()];
             write_client_packet(
                 &mut self.stream,
@@ -2317,7 +2589,7 @@ impl WorldClient {
                 Some(&mut self.crypto),
             )?;
             self.stream
-                .set_read_timeout(Some(Duration::from_millis(150)))?;
+                .set_read_timeout(Some(Duration::from_millis(350)))?;
             while let Some((opcode, body)) =
                 try_read_server_packet(&mut self.stream, &mut self.crypto)?
             {
@@ -2330,12 +2602,36 @@ impl WorldClient {
                 if opcode == SMSG_UPDATE_OBJECT
                     && update_packet_has_values_or_false(&body, player, &[(UNIT_FIELD_HEALTH, 0)])
                 {
+                    saw_death_damage = true;
                     saw_player_dead = true;
                     break;
                 }
             }
             if saw_player_dead {
                 break;
+            }
+        }
+        if !saw_player_dead {
+            self.stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            for _ in 0..24 {
+                let Some((opcode, body)) =
+                    try_read_server_packet(&mut self.stream, &mut self.crypto)?
+                else {
+                    break;
+                };
+                if opcode == SMSG_ATTACKERSTATEUPDATE
+                    && (attacker_state_update_matches(&body, killer, player)?
+                        || attacker_state_update_targets(&body, player)?)
+                {
+                    saw_death_damage = true;
+                }
+                if opcode == SMSG_UPDATE_OBJECT
+                    && update_packet_has_values_or_false(&body, player, &[(UNIT_FIELD_HEALTH, 0)])
+                {
+                    saw_death_damage = true;
+                    saw_player_dead = true;
+                    break;
+                }
             }
         }
         self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -2574,6 +2870,20 @@ fn movement_body(position: WorldPosition) -> Vec<u8> {
     body
 }
 
+fn chat_message_body(chat_type: u32, language: u32, message: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + message.len() + 1);
+    body.extend_from_slice(&chat_type.to_le_bytes());
+    body.extend_from_slice(&language.to_le_bytes());
+    body.extend_from_slice(message.as_bytes());
+    body.push(0);
+    body
+}
+
+fn packet_body_contains_text(body: &[u8], message: &str) -> bool {
+    let message = message.as_bytes();
+    !message.is_empty() && body.windows(message.len()).any(|window| window == message)
+}
+
 fn nearby_attack_positions(target: WorldPosition) -> Vec<WorldPosition> {
     let mut positions = Vec::with_capacity(64);
     for radius in [3.0_f32, 5.0, 7.0, 10.0] {
@@ -2727,11 +3037,11 @@ fn observe_xp_progression_packet(
             evidence.saw_levelup = true;
         }
         SMSG_UPDATE_OBJECT
-            if update_packet_has_values(
+            if update_packet_has_values_or_false(
                 body,
                 player,
                 &[(UNIT_FIELD_LEVEL, 2), (PLAYER_NEXT_LEVEL_XP, 900)],
-            )? =>
+            ) =>
         {
             evidence.saw_progression_update = true;
         }
@@ -2890,6 +3200,82 @@ fn update_packet_has_values_or_false(
     update_packet_has_values(body, guid, expected).unwrap_or(false)
 }
 
+fn shared_wolf_runtime_state_observed(
+    body: &[u8],
+    wolf: ObjectGuid,
+    content: &StarterZoneContent,
+) -> bool {
+    if content.source == StarterZoneSource::RealClassicDb {
+        return update_packet_has_field_matching(body, wolf, UNIT_FIELD_HEALTH, |health| {
+            health < content.wolf_health
+        })
+        .unwrap_or(false);
+    }
+
+    update_packet_has_values_or_false(
+        body,
+        wolf,
+        &[
+            (UNIT_FIELD_HEALTH, 0),
+            (UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE),
+        ],
+    )
+}
+
+fn update_packet_has_field_matching(
+    body: &[u8],
+    guid: ObjectGuid,
+    field: usize,
+    predicate: impl Fn(u32) -> bool,
+) -> anyhow::Result<bool> {
+    ensure_available(body, 5)?;
+    let block_count = u32::from_le_bytes(body[0..4].try_into()?) as usize;
+    let mut cursor = 5;
+    for _ in 0..block_count {
+        ensure_available(body, cursor + 1)?;
+        let update_type = body[cursor];
+        cursor += 1;
+        let block_guid = read_packed_update_guid(body, &mut cursor)?;
+
+        match update_type {
+            0 => {
+                let values_start = cursor;
+                let values_len = update_values_encoded_len(&body[values_start..])?;
+                let values = decode_update_values(&body[values_start..values_start + values_len])?;
+                cursor += values_len;
+                if block_guid == guid.raw()
+                    && values
+                        .get(field)
+                        .and_then(|value| *value)
+                        .is_some_and(&predicate)
+                {
+                    return Ok(true);
+                }
+            }
+            2 | 3 => {
+                ensure_available(body, cursor + 1)?;
+                cursor += 1;
+                ensure_available(body, cursor + 1)?;
+                let update_flags = body[cursor];
+                cursor += 1;
+                if update_flags & 0x20 != 0 {
+                    ensure_available(body, cursor + 56)?;
+                    cursor += 56;
+                }
+                if update_flags & 0x10 != 0 {
+                    ensure_available(body, cursor + 4)?;
+                    cursor += 4;
+                }
+                let values_start = cursor;
+                let values_len = update_values_encoded_len(&body[values_start..])?;
+                cursor += values_len;
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(false)
+}
+
 fn read_packed_update_guid(body: &[u8], cursor: &mut usize) -> anyhow::Result<u64> {
     ensure_available(body, *cursor + 1)?;
     let mask = body[*cursor];
@@ -2942,9 +3328,9 @@ fn decode_update_values(body: &[u8]) -> anyhow::Result<Vec<Option<u32>>> {
     Ok(values)
 }
 
-fn auth_session_body(session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
+fn auth_session_body(username: &str, session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
     let mut hasher = Sha1::new();
-    hasher.update(USERNAME.as_bytes());
+    hasher.update(username.as_bytes());
     hasher.update(0u32.to_le_bytes());
     hasher.update(CLIENT_SEED.to_le_bytes());
     hasher.update(server_seed.to_le_bytes());
@@ -2954,7 +3340,7 @@ fn auth_session_body(session_key: &[u8; 40], server_seed: u32) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&(BUILD_1121 as u32).to_le_bytes());
     body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(USERNAME.as_bytes());
+    body.extend_from_slice(username.as_bytes());
     body.push(0);
     body.extend_from_slice(&CLIENT_SEED.to_le_bytes());
     body.extend_from_slice(&digest);
@@ -3026,11 +3412,11 @@ fn connect_blocking(addr: &str) -> anyhow::Result<TcpStream> {
     Ok(stream)
 }
 
-fn logon_challenge_request() -> Vec<u8> {
+fn logon_challenge_request(username: &str) -> Vec<u8> {
     let request = LogonChallengeRequest {
         cmd: AuthCommand::LogonChallenge,
         error: 0,
-        size: 30 + USERNAME.len() as u16,
+        size: 30 + username.len() as u16,
         game_name: *b"WoW\0",
         version_major: 1,
         version_minor: 12,
@@ -3041,7 +3427,7 @@ fn logon_challenge_request() -> Vec<u8> {
         country: *b"enUS",
         timezone_bias: 0,
         ip: [127, 0, 0, 1],
-        account_name: USERNAME.to_string(),
+        account_name: username.to_string(),
     };
 
     let mut bytes = BytesMut::new();

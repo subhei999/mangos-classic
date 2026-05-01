@@ -104,6 +104,7 @@ compile_commands.json
 # Rust build output
 #
 /target
+/build-cmangos-tools/
 *.swp
 *.swo
 .env

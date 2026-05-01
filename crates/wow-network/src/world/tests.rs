@@ -201,6 +201,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         display_id2: 0,
         display_id3: 0,
         display_id4: 0,
+        model_bounding_radius: DEFAULT_WORLD_OBJECT_SIZE,
+        model_combat_reach: PLAYER_COMBAT_REACH_YARDS,
         faction: 35,
         scale: 1.0,
         detection_range: 20,
@@ -210,15 +212,29 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         npc_flags: UNIT_NPC_FLAG_GOSSIP,
         unit_flags: 0x20,
         dynamic_flags: 0,
+        unit_class: 1,
         rank: 1,
+        health_multiplier: 1.0,
+        power_multiplier: 1.0,
+        damage_multiplier: 1.0,
+        damage_variance: 1.0,
+        armor_multiplier: 1.0,
         min_level_health: 80,
         max_level_health: 120,
+        min_level_mana: 0,
+        max_level_mana: 0,
         min_melee_dmg: 3.0,
         max_melee_dmg: 5.0,
+        min_ranged_dmg: 0.0,
+        max_ranged_dmg: 0.0,
+        armor: 0,
+        melee_attack_power: 0,
+        ranged_attack_power: 0,
         min_loot_gold: 2,
         max_loot_gold: 4,
         melee_base_attack_time: 1800,
         ranged_base_attack_time: 2200,
+        damage_school: 0,
         trainer_type: 0,
         trainer_class: 0,
         pet_spell_data_id: 0,
@@ -242,6 +258,7 @@ fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
         spawn_time_secs_max: 120,
         spawn_dist: 0.0,
         movement_type: DB_MOTION_TYPE_IDLE,
+        formation_waypoint_path_id: None,
         template: test_creature_template(entry),
         waypoint_path: Vec::new(),
     }
@@ -614,6 +631,22 @@ fn db_creature_create_block_defaults_zero_template_scale_to_one() {
     let values = decode_update_values(&block[values_start..]);
 
     assert_eq!(values[4], Some(0.7f32.to_bits()));
+}
+
+#[test]
+fn db_creature_runtime_create_block_preserves_corpse_state() {
+    let mut runtime = DbCreatureRuntime::new(test_creature_spawn(6));
+    runtime.begin_corpse(Instant::now(), 1_000);
+
+    let block = build_db_creature_runtime_create_block(&runtime).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(values[UNIT_DYNAMIC_FLAGS], Some(UNIT_DYNFLAG_LOOTABLE));
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
 }
 
 #[test]
@@ -1038,6 +1071,351 @@ fn combat_packets_match_cmangos_melee_shapes() {
 }
 
 #[test]
+fn melee_roll_table_orders_cmangos_defensive_outcomes() {
+    let chances = MeleeRollChances {
+        miss: 5.0,
+        dodge: 5.0,
+        parry: 5.0,
+        block: 5.0,
+        glancing: 5.0,
+        crit: 5.0,
+        crushing: 5.0,
+    };
+
+    assert_eq!(roll_melee_outcome(chances, 1), MeleeHitOutcome::Miss);
+    assert_eq!(roll_melee_outcome(chances, 501), MeleeHitOutcome::Dodge);
+    assert_eq!(roll_melee_outcome(chances, 1_001), MeleeHitOutcome::Parry);
+    assert_eq!(roll_melee_outcome(chances, 1_501), MeleeHitOutcome::Block);
+    assert_eq!(
+        roll_melee_outcome(chances, 2_001),
+        MeleeHitOutcome::Glancing
+    );
+    assert_eq!(roll_melee_outcome(chances, 2_501), MeleeHitOutcome::Crit);
+    assert_eq!(
+        roll_melee_outcome(chances, 3_001),
+        MeleeHitOutcome::Crushing
+    );
+    assert_eq!(roll_melee_outcome(chances, 3_501), MeleeHitOutcome::Normal);
+}
+
+#[test]
+fn melee_damage_outcome_serializes_miss_and_block_like_attacker_state_update() {
+    let attacker = ObjectGuid::new(HighGuid::Unit, 0, 101);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let input = MeleeDamageInput {
+        attacker_level: 1,
+        victim_level: 1,
+        min_damage: 10.0,
+        max_damage: 10.0,
+        victim_armor: 0,
+        victim_block_value: 4,
+        chances: MeleeRollChances {
+            miss: 5.0,
+            dodge: 0.0,
+            parry: 0.0,
+            block: 5.0,
+            glancing: 0.0,
+            crit: 0.0,
+            crushing: 0.0,
+        },
+    };
+
+    let miss = calculate_melee_damage(input, 1, 1);
+    assert_eq!(miss.total_damage, 0);
+    assert_eq!(miss.hit_info, HITINFO_NORMALSWING2 | HITINFO_MISS);
+    assert_eq!(miss.victim_state, VICTIMSTATE_UNAFFECTED);
+    let body = build_attacker_state_update_body_for_outcome(attacker, victim, miss, 0).unwrap();
+    let mut cursor = 0;
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        HITINFO_NORMALSWING2 | HITINFO_MISS
+    );
+    cursor += PackedGuid::packed_size(attacker) + PackedGuid::packed_size(victim);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+
+    let block = calculate_melee_damage(input, 1, 501);
+    assert_eq!(block.total_damage, 6);
+    assert_eq!(block.blocked, 4);
+    assert_eq!(block.hit_info, HITINFO_NORMALSWING2 | HITINFO_BLOCK);
+    assert_eq!(block.victim_state, VICTIMSTATE_NORMAL);
+}
+
+#[test]
+fn armor_reduced_damage_matches_cmangos_cap_shape() {
+    assert_eq!(armor_reduced_damage(1, 0, 10.0), 10);
+    let reduced = armor_reduced_damage(1, 100, 10.0);
+    assert!(reduced < 10);
+    assert_eq!(armor_reduced_damage(60, 999_999, 100.0), 25);
+}
+
+#[test]
+fn player_main_hand_damage_uses_equipped_weapon_and_attack_power() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+
+    assert_eq!(stats.main_attack_time_ms, 2000);
+    assert!(stats.main_min_damage > 2.0);
+    assert!(stats.main_max_damage > 4.0);
+    assert_eq!(
+        calculate_player_main_hand_melee_damage(&stats, 1, 0, 1),
+        stats.main_min_damage.round() as u32
+    );
+    assert_eq!(
+        calculate_player_main_hand_melee_damage(&stats, 1, 0, 10_000),
+        stats.main_max_damage.round() as u32
+    );
+}
+
+#[test]
+fn player_swing_timer_uses_equipped_main_hand_delay() {
+    let mut weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    weapon.delay = 2800;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let now = Instant::now();
+
+    assert_eq!(stats.main_attack_time_ms, 2800);
+    assert_eq!(
+        player_main_hand_next_swing_at(now, &stats),
+        now + Duration::from_millis(2800)
+    );
+}
+
+#[test]
+fn player_swing_timer_defaults_to_base_attack_time_without_weapon() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+    let now = Instant::now();
+
+    assert_eq!(stats.main_attack_time_ms, BASE_ATTACK_TIME_MS);
+    assert_eq!(
+        player_main_hand_next_swing_at(now, &stats),
+        now + Duration::from_millis(BASE_ATTACK_TIME_MS as u64)
+    );
+}
+
+#[test]
+fn player_main_hand_outcome_uses_db_creature_template_armor() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.armor = 100;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, &creature, 1, 10_000,
+    );
+
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
+    assert_eq!(
+        outcome.total_damage,
+        armor_reduced_damage(1, 100, stats.main_min_damage)
+    );
+}
+
+#[test]
+fn db_creature_swing_timer_uses_template_melee_base_attack_time() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.melee_base_attack_time = 1450;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    assert_eq!(creature.base_attack_duration(), Duration::from_millis(1450));
+}
+
+#[test]
+fn db_creature_swing_timer_clamps_zero_template_time() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.melee_base_attack_time = 0;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    assert_eq!(creature.base_attack_duration(), Duration::from_millis(1));
+}
+
+#[test]
+fn creature_melee_outcome_uses_player_armor_from_defense_input() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.min_melee_dmg = 20.0;
+    spawn.template.max_melee_dmg = 20.0;
+    let creature = DbCreatureRuntime::new(spawn);
+    let defense = PlayerMeleeDefenseInput {
+        level: 1,
+        armor: 100,
+        block_value: 0,
+        dodge_percent: 0.0,
+        parry_percent: 0.0,
+        block_percent: 0.0,
+    };
+
+    let outcome = calculate_melee_damage(
+        creature_melee_input_against_player(&creature, defense),
+        1,
+        10_000,
+    );
+
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
+    assert_eq!(outcome.total_damage, armor_reduced_damage(1, 100, 20.0));
+}
+
+#[test]
+fn creature_block_outcome_uses_supplied_player_shield_block_value() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.min_melee_dmg = 20.0;
+    spawn.template.max_melee_dmg = 20.0;
+    let creature = DbCreatureRuntime::new(spawn);
+    let defense = PlayerMeleeDefenseInput {
+        level: 1,
+        armor: 0,
+        block_value: 7,
+        dodge_percent: 0.0,
+        parry_percent: 0.0,
+        block_percent: 100.0,
+    };
+
+    let outcome = calculate_melee_damage(
+        creature_melee_input_against_player(&creature, defense),
+        1,
+        501,
+    );
+
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Block);
+    assert_eq!(outcome.blocked, 7);
+    assert_eq!(outcome.total_damage, 13);
+}
+
+#[test]
+fn equipped_shield_block_value_reads_live_item_template_block_stat() {
+    let mut shield = test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 0);
+    shield.block = 11;
+    let equipped_templates = [equipped_template(EQUIPMENT_SLOT_OFFHAND, shield)];
+
+    assert_eq!(equipped_shield_block_value(&equipped_templates), 11);
+}
+
+#[test]
+fn player_combat_stats_armor_increases_with_equipped_armor() {
+    const EQUIPMENT_SLOT_CHEST: u8 = 4;
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let no_armor = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+    let chest = test_item_template(38, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 12);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_CHEST, chest)];
+    let with_armor = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+
+    assert_eq!(no_armor.armor, 40);
+    assert_eq!(with_armor.armor, 52);
+    assert_eq!(with_armor.resistances[0], with_armor.armor);
+}
+
+#[test]
+fn player_combat_stats_uses_equipped_shield_block_value() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let mut shield = test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 3);
+    shield.block = 11;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_OFFHAND, shield)];
+    let with_shield = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let no_shield = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+
+    assert_eq!(with_shield.shield_block_value, 11);
+    assert_eq!(no_shield.shield_block_value, 0);
+}
+
+#[test]
+fn player_combat_stats_shield_block_value_includes_strength_component() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [40, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let mut shield = test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 3);
+    shield.block = 11;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_OFFHAND, shield)];
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+
+    assert_eq!(stats.shield_block_value, 12);
+}
+
+#[test]
+fn player_combat_stats_update_body_refreshes_weapon_damage_fields() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+
+    let body = build_player_combat_stats_update_body(7, &stats).unwrap();
+    assert_eq!(u32::from_le_bytes(body[0..4].try_into().unwrap()), 1);
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_BASEATTACKTIME],
+        Some(stats.main_attack_time_ms)
+    );
+    assert_eq!(
+        values[UNIT_FIELD_MINDAMAGE],
+        Some(stats.main_min_damage.to_bits())
+    );
+    assert_eq!(
+        values[UNIT_FIELD_MAXDAMAGE],
+        Some(stats.main_max_damage.to_bits())
+    );
+    assert_eq!(
+        values[UNIT_FIELD_ATTACK_POWER],
+        Some(stats.melee_attack_power)
+    );
+    assert_eq!(
+        values[PLAYER_CRIT_PERCENTAGE],
+        Some(stats.crit_percent.to_bits())
+    );
+}
+
+#[test]
 fn combat_unit_flag_updates_include_cmangos_in_combat_bit() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let body = build_unit_flags_update_body(player, player_unit_flags(true)).unwrap();
@@ -1136,6 +1514,27 @@ fn monster_move_path_skips_tiny_offsets_like_cmangos() {
         1
     );
     assert_eq!(body.len(), cursor + 4 + 12);
+}
+
+#[test]
+fn monster_move_stop_uses_cmangos_stop_shape() {
+    let creature = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let position = WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0);
+    let body = build_monster_move_stop_body(creature, position, 9).unwrap();
+
+    let mut cursor = PackedGuid::packed_size(creature);
+    assert_eq!(
+        f32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        1.0
+    );
+    cursor += 12;
+    assert_eq!(
+        u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+        9
+    );
+    cursor += 4;
+    assert_eq!(body[cursor], MONSTER_MOVE_TYPE_STOP);
+    assert_eq!(body.len(), cursor + 1);
 }
 
 #[test]
@@ -1879,6 +2278,116 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
 }
 
 #[test]
+fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
+    assert_eq!(
+        combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, PLAYER_COMBAT_REACH_YARDS),
+        ATTACK_DISTANCE_YARDS
+    );
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 145;
+    kobold.position_x = 5.75;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.model_combat_reach = 3.0;
+    kobold.template.scale = 1.0;
+    let target = creature_spawn_guid(&kobold);
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        ..WorldSessionState::default()
+    };
+    let runtime = DbCreatureRuntime::new(kobold);
+    session.db_creatures.insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::Clear
+    );
+
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 5.9;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::OutOfRange
+    );
+
+    session
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .spawn
+        .template
+        .scale = 2.0;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::Clear
+    );
+}
+
+#[test]
+fn db_creature_create_block_uses_model_radius_and_combat_reach() {
+    let mut runtime = DbCreatureRuntime::new(test_creature_spawn(6));
+    runtime.spawn.template.model_bounding_radius = 0.5;
+    runtime.spawn.template.model_combat_reach = 2.0;
+    runtime.spawn.template.scale = 1.25;
+    let block = build_db_creature_runtime_create_block(&runtime).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(
+        values[UNIT_FIELD_BOUNDINGRADIUS],
+        Some((0.5f32 * 1.25).to_bits())
+    );
+    assert_eq!(
+        values[UNIT_FIELD_COMBATREACH],
+        Some((2.0f32 * 1.25).to_bits())
+    );
+}
+
+#[test]
+fn player_melee_swing_error_packets_are_empty_vanilla_opcodes() {
+    let cases = [
+        (
+            PlayerMeleeSwingError::NotInRange,
+            SMSG_ATTACKSWING_NOTINRANGE,
+        ),
+        (PlayerMeleeSwingError::BadFacing, SMSG_ATTACKSWING_BADFACING),
+        (
+            PlayerMeleeSwingError::DeadTarget,
+            SMSG_ATTACKSWING_DEADTARGET,
+        ),
+        (
+            PlayerMeleeSwingError::CantAttack,
+            SMSG_ATTACKSWING_CANT_ATTACK,
+        ),
+    ];
+
+    for (error, opcode) in cases {
+        let packet = error.packet();
+        assert_eq!(packet.opcode, opcode);
+        assert!(packet.body.is_empty());
+    }
+}
+
+#[test]
 fn db_creature_player_melee_check_uses_navigation_guardrail() {
     let mut kobold = test_creature_spawn(6);
     kobold.guid = 45;
@@ -2283,7 +2792,7 @@ fn db_creature_melee_reach_is_position_gated() {
             xp: 0,
             position: WorldPosition::new(
                 0,
-                -8950.0 + DB_CREATURE_MELEE_REACH_YARDS - 0.1,
+                -8950.0 + ATTACK_DISTANCE_YARDS - 0.1,
                 -130.0,
                 83.5,
                 0.0,
@@ -2300,8 +2809,7 @@ fn db_creature_melee_reach_is_position_gated() {
 
     assert!(db_creature_can_reach_player(&session, target));
     assert!(db_creature_has_player_in_arc(&session, target));
-    session.active_character.as_mut().unwrap().position.x =
-        -8950.0 - DB_CREATURE_MELEE_REACH_YARDS + 0.1;
+    session.active_character.as_mut().unwrap().position.x = -8950.0 - ATTACK_DISTANCE_YARDS + 0.1;
     assert!(db_creature_can_reach_player(&session, target));
     assert!(!db_creature_has_player_in_arc(&session, target));
     let (facing_position, spline_id) =
@@ -2318,16 +2826,15 @@ fn db_creature_melee_reach_is_position_gated() {
         1
     );
 
-    session.active_character.as_mut().unwrap().position.x = -8950.0 + DB_CREATURE_MELEE_REACH_YARDS;
+    session.active_character.as_mut().unwrap().position.x = -8950.0 + ATTACK_DISTANCE_YARDS;
     assert!(db_creature_can_reach_player(&session, target));
 
-    session.active_character.as_mut().unwrap().position.x =
-        -8950.0 + DB_CREATURE_MELEE_REACH_YARDS + 0.1;
+    session.active_character.as_mut().unwrap().position.x = -8950.0 + ATTACK_DISTANCE_YARDS + 0.1;
     assert!(!db_creature_can_reach_player(&session, target));
 }
 
 #[test]
-fn db_creature_navigation_guardrail_blocks_aggro_chase_and_melee() {
+fn db_creature_navigation_guardrail_blocks_aggro_and_melee_but_not_chase_pathing() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
     creature.position_y = 0.0;
@@ -2364,7 +2871,14 @@ fn db_creature_navigation_guardrail_blocks_aggro_chase_and_melee() {
     assert!(!db_creature_can_reach_player(&session, attacker));
     session.active_character.as_mut().unwrap().position.x = 10.0;
     assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none()
+        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_some(),
+        "blocked LOS should prevent aggro/melee, but should not stop an already-combat creature from trying to path around geometry"
+    );
+
+    session.db_creature_navigation.path_available = false;
+    assert!(
+        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none(),
+        "path availability still gates chase movement"
     );
 }
 
@@ -2450,6 +2964,42 @@ fn map_runtime_cell_area_includes_visibility_radius_cells() {
             && cell.x < MAX_NUMBER_OF_CELLS
             && cell.y < MAX_NUMBER_OF_CELLS
     }));
+}
+
+#[test]
+fn map_runtime_grid_world_bounds_contain_position() {
+    let northshire = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(northshire);
+    let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
+
+    assert!((min_x..=max_x).contains(&northshire.x));
+    assert!((min_y..=max_y).contains(&northshire.y));
+}
+
+#[test]
+fn map_runtime_lazy_creature_grid_tracks_loaded_grids_and_nearby_snapshots() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 44;
+    spawn.position_x = center.x + 10.0;
+    spawn.position_y = center.y;
+    let creature_guid = creature_spawn_guid(&spawn).raw();
+
+    assert_eq!(
+        map.unloaded_creature_grids_for_area(center, CREATURE_SPAWN_RADIUS_YARDS),
+        vec![grid]
+    );
+    let loaded = map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(spawn)]);
+    assert_eq!(loaded.len(), 1);
+    assert!(map
+        .unloaded_creature_grids_for_area(center, CREATURE_SPAWN_RADIUS_YARDS)
+        .is_empty());
+
+    let nearby = map.nearby_db_creature_snapshots(center, CREATURE_SPAWN_RADIUS_YARDS, 16);
+    assert_eq!(nearby.len(), 1);
+    assert_eq!(nearby[0].guid().raw(), creature_guid);
 }
 
 #[test]
@@ -2655,6 +3205,290 @@ fn map_runtime_db_creature_combats_clear_by_victim() {
     );
 }
 
+#[test]
+fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let victim_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let attacker = creature_spawn_guid(&test_creature_spawn(6));
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    assert!(map
+        .begin_db_creature_combat(attacker, victim, now)
+        .is_some());
+
+    let event = map
+        .apply_db_creature_player_damage(attacker, victim, 7, now + Duration::from_secs(2))
+        .unwrap()
+        .expect("damage event");
+
+    assert_eq!(event.damage, 7);
+    assert_eq!(event.victim_health, 13);
+    assert_eq!(map.players.get(&1).unwrap().health, 13);
+    assert_eq!(event.combat.next_swing_at, now + Duration::from_secs(2));
+    assert_eq!(event.observer_packets.len(), 2);
+    assert!(event
+        .observer_packets
+        .iter()
+        .all(|(session_id, _)| *session_id == SessionId(2)));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKERSTATEUPDATE));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 77;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.spawn_time_secs_min = 7;
+    spawn.spawn_time_secs_max = 7;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    assert!(map
+        .begin_db_creature_combat(
+            creature_guid,
+            ObjectGuid::new(HighGuid::Player, 0, 1),
+            Instant::now(),
+        )
+        .is_some());
+    let now = Instant::now();
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 9_999,
+            melee_outcome: None,
+            spell_id: None,
+            now,
+            now_epoch_secs: 2_000,
+            exclude_character_guid: Some(1),
+        })
+        .unwrap()
+        .expect("death event");
+
+    let finalization = event
+        .death_finalization
+        .as_ref()
+        .expect("death should produce one finalization event");
+    assert_eq!(finalization.killed, creature_guid);
+    assert_eq!(finalization.respawn_epoch_secs, Some(2_007));
+    assert_eq!(finalization.combat_flag_packet.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(finalization.attack_stop_packet.opcode, SMSG_ATTACKSTOP);
+    assert_eq!(finalization.observer_packets.len(), 2);
+    assert!(finalization
+        .observer_packets
+        .iter()
+        .all(|(session_id, _)| *session_id == SessionId(2)));
+    assert!(finalization
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(finalization
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTOP));
+    assert_eq!(event.creature.life_state, DbCreatureLifeState::Corpse);
+    assert_eq!(event.creature.health, 0);
+    assert_eq!(event.creature.respawn_epoch_secs, Some(2_007));
+    assert_eq!(
+        map.creatures
+            .get(&creature_guid.raw())
+            .unwrap()
+            .respawn_epoch_secs,
+        Some(2_007)
+    );
+    assert!(!map
+        .active_db_creature_combats_for_victim(ObjectGuid::new(HighGuid::Player, 0, 1))
+        .iter()
+        .any(|combat| combat.attacker == creature_guid));
+    assert_eq!(event.observer_packets.len(), 2);
+    assert_eq!(event.observer_packets[0].0, SessionId(2));
+    assert_eq!(event.observer_packets[0].1.opcode, SMSG_ATTACKERSTATEUPDATE);
+    assert_eq!(event.observer_packets[1].0, SessionId(2));
+    assert_eq!(event.observer_packets[1].1.opcode, SMSG_UPDATE_OBJECT);
+    assert!(map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 2),
+            damage: 9_999,
+            melee_outcome: None,
+            spell_id: None,
+            now,
+            now_epoch_secs: 2_001,
+            exclude_character_guid: Some(2),
+        },)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 79;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let miss = MeleeDamageOutcome {
+        hit_info: HITINFO_NORMALSWING2 | HITINFO_MISS,
+        victim_state: VICTIMSTATE_UNAFFECTED,
+        outcome: MeleeHitOutcome::Miss,
+        total_damage: 0,
+        school_damage: 0,
+        absorbed: 0,
+        resisted: 0,
+        blocked: 0,
+    };
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 99,
+            melee_outcome: Some(miss),
+            spell_id: None,
+            now: Instant::now(),
+            now_epoch_secs: 2_000,
+            exclude_character_guid: Some(1),
+        })
+        .unwrap()
+        .expect("miss event");
+
+    assert_eq!(event.damage, 0);
+    assert_eq!(event.creature.health, 120);
+    assert_eq!(
+        u32::from_le_bytes(event.attacker_state_body[0..4].try_into().unwrap()),
+        HITINFO_NORMALSWING2 | HITINFO_MISS
+    );
+    assert_eq!(event.observer_packets[0].0, SessionId(2));
+    assert_eq!(event.observer_packets[0].1.opcode, SMSG_ATTACKERSTATEUPDATE);
+}
+
+#[test]
+fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 88;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.spawn_time_secs_min = 3;
+    spawn.spawn_time_secs_max = 3;
+    spawn.template.corpse_decay = 1;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let killed_at = Instant::now();
+    map.apply_db_creature_damage(DbCreatureDamageRequest {
+        creature_guid,
+        killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+        damage: 9_999,
+        melee_outcome: None,
+        spell_id: None,
+        now: killed_at,
+        now_epoch_secs: 3_000,
+        exclude_character_guid: Some(1),
+    })
+    .unwrap()
+    .expect("death event");
+
+    let corpse_events = map
+        .advance_db_creature_lifecycle(
+            &[creature_guid.raw()],
+            player_position,
+            Some(1),
+            killed_at + Duration::from_secs(1),
+        )
+        .unwrap();
+
+    assert_eq!(corpse_events.len(), 1);
+    assert_eq!(
+        corpse_events[0].creature.life_state,
+        DbCreatureLifeState::Dead
+    );
+    assert_eq!(corpse_events[0].direct_packets.len(), 1);
+    assert_eq!(
+        corpse_events[0].direct_packets[0].opcode,
+        SMSG_DESTROY_OBJECT
+    );
+    assert_eq!(corpse_events[0].observer_packets.len(), 1);
+    assert_eq!(corpse_events[0].observer_packets[0].0, SessionId(2));
+    assert_eq!(
+        map.creatures.get(&creature_guid.raw()).unwrap().life_state,
+        DbCreatureLifeState::Dead
+    );
+    assert!(map
+        .advance_db_creature_lifecycle(
+            &[creature_guid.raw()],
+            observer_position,
+            Some(2),
+            killed_at + Duration::from_secs(1),
+        )
+        .unwrap()
+        .is_empty());
+
+    let respawn_events = map
+        .advance_db_creature_lifecycle(
+            &[creature_guid.raw()],
+            player_position,
+            Some(1),
+            killed_at + Duration::from_secs(3),
+        )
+        .unwrap();
+
+    assert_eq!(respawn_events.len(), 1);
+    assert_eq!(
+        respawn_events[0].creature.life_state,
+        DbCreatureLifeState::Alive
+    );
+    assert_eq!(respawn_events[0].clear_respawn_guid, Some(88));
+    assert_eq!(respawn_events[0].direct_packets.len(), 1);
+    assert_eq!(
+        respawn_events[0].direct_packets[0].opcode,
+        SMSG_UPDATE_OBJECT
+    );
+    assert_eq!(respawn_events[0].observer_packets.len(), 1);
+    assert_eq!(respawn_events[0].observer_packets[0].0, SessionId(2));
+    assert_eq!(
+        map.creatures.get(&creature_guid.raw()).unwrap().life_state,
+        DbCreatureLifeState::Alive
+    );
+    assert!(map
+        .advance_db_creature_lifecycle(
+            &[creature_guid.raw()],
+            observer_position,
+            Some(2),
+            killed_at + Duration::from_secs(3),
+        )
+        .unwrap()
+        .is_empty());
+}
+
 fn insert_map_runtime_player_for_test(map: &mut MapRuntime, guid: u32, position: WorldPosition) {
     let grid = grid_coord_for_position(position);
     let cell = cell_coord_for_position(position);
@@ -2678,6 +3512,9 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         account_id: guid,
         session_id,
         position,
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
         cell: cell_coord_for_position(position),
         visible_objects: HashSet::new(),
         visual: PlayerVisualState {
@@ -2687,6 +3524,7 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
             equipment_cache: None,
             guildid: None,
         },
+        visible_equipment: [0; ENUM_EQUIPMENT_SLOTS],
         flags: 0,
         level: 1,
         race: 1,
@@ -2700,6 +3538,93 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         player_bytes: 0,
         player_bytes2: 0,
     }
+}
+
+fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
+    assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+    let type_id_offset = 1 + PackedGuid::packed_size(guid);
+    assert_eq!(block[type_id_offset], TYPEID_PLAYER);
+    let flags_offset = type_id_offset + 1;
+    assert_eq!(
+        block[flags_offset],
+        UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION
+    );
+    let values_start = flags_offset + 1 + 56;
+    decode_update_values(&block[values_start..])
+}
+
+#[test]
+fn other_player_create_block_includes_equipment_and_movement_state() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.25);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.movement_flags = 0x21;
+    player.client_time = 1234;
+    player.fall_time = 456;
+    player.visible_equipment[EQUIPMENT_SLOT_MAINHAND as usize] = 25;
+    let block = build_other_player_create_block(&player).unwrap();
+    let type_id_offset = 1 + PackedGuid::packed_size(guid);
+    let movement_start = type_id_offset + 2;
+    assert_eq!(
+        &block[movement_start..movement_start + 4],
+        &0x21u32.to_le_bytes()
+    );
+    assert_eq!(
+        &block[movement_start + 4..movement_start + 8],
+        &1234u32.to_le_bytes()
+    );
+    assert_eq!(
+        &block[movement_start + 24..movement_start + 28],
+        &456u32.to_le_bytes()
+    );
+
+    let values = decode_other_player_create_values(&block, guid);
+    assert_eq!(
+        values[0x104 + EQUIPMENT_SLOT_MAINHAND as usize * 12],
+        Some(25)
+    );
+}
+
+#[test]
+fn player_visible_equipment_update_block_updates_observer_item_visual() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut visible_equipment = [0; ENUM_EQUIPMENT_SLOTS];
+    visible_equipment[EQUIPMENT_SLOT_MAINHAND as usize] = 25;
+
+    let block = build_player_visible_equipment_update_block(
+        7,
+        &visible_equipment,
+        &[EQUIPMENT_SLOT_MAINHAND],
+    )
+    .unwrap();
+    let (values, trailing) = decode_values_update_block(&block, guid);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[0x104 + EQUIPMENT_SLOT_MAINHAND as usize * 12],
+        Some(25)
+    );
+}
+
+#[test]
+fn map_runtime_player_health_update_refreshes_shared_state_and_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let packets = map.update_player_health(1, 10).unwrap();
+
+    assert_eq!(map.players.get(&1).unwrap().health, 10);
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].0, SessionId(2));
+    assert_eq!(packets[0].1.opcode, SMSG_UPDATE_OBJECT);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let (values, trailing) = decode_values_update_block(&packets[0].1.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(10));
 }
 
 #[tokio::test]
@@ -2797,6 +3722,107 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
         .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
 }
 
+#[tokio::test]
+async fn shared_chase_motion_advances_map_position_for_other_attackers() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let victim_position = WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 188;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    let creature = DbCreatureRuntime::new(spawn);
+    maps.share_db_creature_snapshots(0, vec![creature.clone()])
+        .await;
+    let mut owner_session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: victim_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 20,
+        player_death_state: PlayerDeathState::Alive,
+        ..WorldSessionState::default()
+    };
+    owner_session.db_creatures.insert(attacker.raw(), creature);
+    let now = Instant::now();
+    let motion = start_db_creature_chase_motion(
+        &mut owner_session,
+        attacker,
+        ObjectGuid::new(HighGuid::Player, 0, 1),
+        now,
+    )
+    .expect("chase should start");
+    maps.update_db_creature_snapshot(
+        0,
+        owner_session
+            .db_creatures
+            .get(&attacker.raw())
+            .cloned()
+            .unwrap(),
+    )
+    .await;
+
+    let half_duration = Duration::from_millis((motion.duration.as_millis() as u64 / 2).max(1));
+    advance_db_creature_motion_and_share(
+        shared_world,
+        0,
+        &mut owner_session,
+        attacker,
+        now + half_duration,
+    )
+    .await;
+
+    let shared = maps
+        .db_creature_snapshots(0, &[attacker.raw()])
+        .await
+        .pop()
+        .expect("shared creature snapshot");
+    let owner = owner_session.db_creatures.get(&attacker.raw()).unwrap();
+    assert!(shared.current_position.x > motion.start.x);
+    assert_eq!(shared.current_position.x, owner.current_position.x);
+
+    let mut observer_session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 2,
+            name: "Ben".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: shared.current_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 20,
+        player_death_state: PlayerDeathState::Alive,
+        ..WorldSessionState::default()
+    };
+    observer_session.db_creatures.insert(
+        attacker.raw(),
+        DbCreatureRuntime::new(test_creature_spawn(6)),
+    );
+    sync_session_db_creatures_from_map(shared_world, &mut observer_session).await;
+    assert_eq!(
+        db_creature_player_melee_check(&observer_session, attacker),
+        PlayerMeleeCheck::Clear
+    );
+}
+
 #[test]
 fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
     let navigation = DbCreatureNavigationGuardrail {
@@ -2807,6 +3833,8 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             vmaps_available: true,
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
+            vmap_trees: HashSet::new(),
+            vmap_tiles: HashSet::new(),
         }),
         ..DbCreatureNavigationGuardrail::default()
     };
@@ -2822,6 +3850,41 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
         db_creature_navigation_check(&navigation, northshire, missing_tile),
         DbCreatureNavigationResult::PathUnavailable
     );
+}
+
+#[test]
+fn world_data_parses_cmangos_vmap_file_names() {
+    assert_eq!(parse_vmap_tree_file_name("000.vmtree"), Some(0));
+    assert_eq!(parse_vmap_tree_file_name("530.vmtree"), Some(530));
+    assert_eq!(
+        parse_vmap_tile_file_name("000_32_48.vmtile"),
+        Some((0, 48, 32))
+    );
+    assert_eq!(
+        parse_vmap_tile_file_name("530_24_31.vmtile"),
+        Some((530, 31, 24))
+    );
+    assert_eq!(parse_vmap_tile_file_name("000_48_32.vmtile.tmp"), None);
+}
+
+#[test]
+fn db_creature_vmap_los_uses_local_cmangos_data_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.has_vmap_tile(0, 48, 32) {
+        return;
+    }
+    let start = WorldPosition::new(0, -8950.0, -130.0, 85.5, 0.0);
+    let target = WorldPosition::new(0, -8940.0, -130.0, 85.5, 0.0);
+    let result = native_vmap_line_of_sight(
+        data.data_dir_for_native.as_ref().unwrap(),
+        start,
+        target,
+        mmap_tile_for_position(start).unwrap(),
+        mmap_tile_for_position(target).unwrap(),
+        false,
+    );
+
+    assert_eq!(result, Some(true));
 }
 
 #[test]
@@ -2861,6 +3924,63 @@ fn db_creature_mmap_path_corner_uses_local_detour_data_when_available() {
     assert!(corner.x.is_finite());
     assert!(corner.y.is_finite());
     assert!(corner.z.is_finite());
+}
+
+#[test]
+fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
+    let fallback_navigation = DbCreatureNavigationGuardrail::default();
+
+    let fallback_path = db_creature_path_to_destination(
+        &fallback_navigation,
+        start,
+        target,
+        CreaturePathMode::Full,
+    )
+    .expect("missing mmap data should preserve the permissive straight fallback");
+    assert_eq!(fallback_path.points.len(), 1);
+    assert_eq!(fallback_path.points[0].x, target.x);
+    assert!(fallback_path
+        .flags
+        .contains(DbCreaturePathFlags::NOT_USING_PATH));
+
+    let native_missing_navigation = DbCreatureNavigationGuardrail {
+        world_data_files: Arc::new(WorldDataFiles {
+            data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+            data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data").ok(),
+            maps_available: true,
+            vmaps_available: false,
+            mmap_headers: HashSet::from([0]),
+            mmap_tiles: HashSet::from([(0, 48, 32)]),
+            vmap_trees: HashSet::new(),
+            vmap_tiles: HashSet::new(),
+        }),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    assert!(
+        matches!(
+            db_creature_mmap_path(
+                &native_missing_navigation,
+                start,
+                target,
+                CreaturePathMode::Full,
+            ),
+            DbCreaturePathBuild::NoPath(flags) if flags.contains(DbCreaturePathFlags::NOPATH)
+        ),
+        "advertised-but-unloadable mmap data should be reported as a real no-path result"
+    );
+    assert!(
+        db_creature_path_to_destination(
+            &native_missing_navigation,
+            start,
+            target,
+            CreaturePathMode::Full,
+        )
+        .is_none(),
+        "when MMAP data is advertised for both tiles, native query failure should not collapse to a through-geometry straight path"
+    );
 }
 
 #[test]
@@ -3538,7 +4658,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
     assert!(!motion.path.is_empty());
     assert_eq!(
         motion.path.last().unwrap().x,
-        10.0 - DB_CREATURE_MELEE_REACH_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
+        10.0 - ATTACK_DISTANCE_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
     );
     let runtime = session
         .db_creatures
@@ -4269,6 +5389,7 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
 fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let mut character = test_character(1, 1);
+    character.health = 37;
     character.explored_zones = Some("1 0 4 4294967295".to_string());
 
     let mut body = Vec::new();
@@ -4312,7 +5433,7 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
     let expected_ranged_ap = class_ranged_attack_power(character.class, character.level as u32, 20);
     let expected_main_bonus = expected_melee_ap as f32 / 14.0 * 2.0;
 
-    assert_eq!(values[UNIT_FIELD_HEALTH], Some(60));
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(37));
     assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(60));
     assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(1000));
     assert_eq!(values[UNIT_FIELD_LEVEL], Some(1));

@@ -1,6 +1,22 @@
 use std::ffi::CStr;
 
-const MAX_NATIVE_MMAP_PATH_POINTS: usize = 16;
+const MAX_NATIVE_MMAP_PATH_POINTS: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeMmapPathStatus {
+    Normal,
+    Incomplete,
+    NoPath,
+    Unavailable,
+    InvalidInput,
+    NativeError,
+}
+
+#[derive(Debug, Clone)]
+struct NativeMmapPath {
+    status: NativeMmapPathStatus,
+    points: Vec<WorldPosition>,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +45,7 @@ extern "C" {
     ) -> i32;
 }
 
+#[cfg(test)]
 fn native_mmap_find_path_points(
     data_dir: &CStr,
     start: WorldPosition,
@@ -36,13 +53,31 @@ fn native_mmap_find_path_points(
     start_tile: (u32, u32),
     target_tile: (u32, u32),
 ) -> Option<Vec<WorldPosition>> {
+    let path = native_mmap_find_path(data_dir, start, target, start_tile, target_tile);
+    matches!(
+        path.status,
+        NativeMmapPathStatus::Normal | NativeMmapPathStatus::Incomplete
+    )
+    .then_some(path.points)
+}
+
+fn native_mmap_find_path(
+    data_dir: &CStr,
+    start: WorldPosition,
+    target: WorldPosition,
+    start_tile: (u32, u32),
+    target_tile: (u32, u32),
+) -> NativeMmapPath {
     if start.map_id != target.map_id
         || !native_mmap_world_position_is_finite(start)
         || !native_mmap_world_position_is_finite(target)
         || !native_mmap_tile_is_valid(start_tile)
         || !native_mmap_tile_is_valid(target_tile)
     {
-        return None;
+        return NativeMmapPath {
+            status: NativeMmapPathStatus::InvalidInput,
+            points: Vec::new(),
+        };
     }
 
     let mut points = [NativeMmapPathPoint {
@@ -75,14 +110,32 @@ fn native_mmap_find_path_points(
         )
     };
 
-    if count < 0 || count as usize > points.len() {
-        return None;
+    if count < 0 {
+        return NativeMmapPath {
+            status: native_mmap_status_from_error(count),
+            points: Vec::new(),
+        };
+    }
+    if count as usize > points.len() {
+        return NativeMmapPath {
+            status: NativeMmapPathStatus::NativeError,
+            points: Vec::new(),
+        };
+    }
+    if count == 0 {
+        return NativeMmapPath {
+            status: NativeMmapPathStatus::NoPath,
+            points: Vec::new(),
+        };
     }
 
     let mut path = Vec::with_capacity(count as usize);
     for point in points.iter().take(count as usize) {
         if !point.x.is_finite() || !point.y.is_finite() || !point.z.is_finite() {
-            return None;
+            return NativeMmapPath {
+                status: NativeMmapPathStatus::NativeError,
+                points: Vec::new(),
+            };
         }
         path.push(WorldPosition::new(
             start.map_id,
@@ -92,7 +145,22 @@ fn native_mmap_find_path_points(
             0.0,
         ));
     }
-    Some(path)
+    NativeMmapPath {
+        status: if count as usize == MAX_NATIVE_MMAP_PATH_POINTS {
+            NativeMmapPathStatus::Incomplete
+        } else {
+            NativeMmapPathStatus::Normal
+        },
+        points: path,
+    }
+}
+
+fn native_mmap_status_from_error(error: i32) -> NativeMmapPathStatus {
+    match error {
+        -20 | -21 | -22 | -23 | -3 | -4 | -5 | -6 => NativeMmapPathStatus::Unavailable,
+        -1 | -7 | -8 => NativeMmapPathStatus::InvalidInput,
+        _ => NativeMmapPathStatus::NativeError,
+    }
 }
 
 fn native_mmap_world_position_is_finite(position: WorldPosition) -> bool {

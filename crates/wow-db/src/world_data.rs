@@ -118,6 +118,13 @@ pub struct CreatureLootQuery {
     pub min_count: u32,
     pub max_count: u32,
     pub display_id: u32,
+    pub chance_or_quest_chance: f32,
+}
+
+impl CreatureLootQuery {
+    pub fn is_quest_drop(&self) -> bool {
+        self.chance_or_quest_chance < 0.0
+    }
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -257,16 +264,16 @@ pub async fn get_creature_loot_items(
         "SELECT creature_loot_template.item, \
                 CAST(GREATEST(creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
                 CAST(GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
-                item_template.displayid AS display_id \
+                item_template.displayid AS display_id, \
+                creature_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
          FROM creature_loot_template \
          JOIN item_template ON creature_loot_template.item = item_template.entry \
          WHERE creature_loot_template.entry = ? \
            AND creature_loot_template.condition_id = 0 \
-           AND creature_loot_template.ChanceOrQuestChance > 0 \
+           AND creature_loot_template.ChanceOrQuestChance <> 0 \
            AND creature_loot_template.groupid = 0 \
            AND creature_loot_template.mincountOrRef > 0 \
-         ORDER BY creature_loot_template.item \
-         LIMIT 1",
+         ORDER BY creature_loot_template.item",
     )
     .bind(creature_entry)
     .fetch_all(pool)
@@ -1049,6 +1056,7 @@ struct CreatureLootRow {
     min_count: u32,
     max_count: u32,
     display_id: u32,
+    chance_or_quest_chance: f32,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1281,6 +1289,7 @@ impl CreatureLootRow {
             min_count: self.min_count,
             max_count: self.max_count,
             display_id: self.display_id,
+            chance_or_quest_chance: self.chance_or_quest_chance,
         }
     }
 }

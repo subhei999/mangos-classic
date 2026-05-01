@@ -19,7 +19,7 @@ in `docs/playable_gate_board.md`; detailed G12 design belongs in
 ## Current Branch And Worktree
 
 - Branch: `codex/rusty-mangos`.
-- Latest pushed checkpoint commit: `6cb0632de` (`Reshape world runtime ownership and shared gameplay systems`).
+- Latest pushed checkpoint commit: `6ae2a32d3` (`Reshape world runtime ownership and shared gameplay systems`).
 - Current worktree is intentionally dirty with uncommitted follow-up work across
   G12 shared MapRuntime, G8 combat fidelity, G9 creature movement, harnesses,
   docs, and script updates.

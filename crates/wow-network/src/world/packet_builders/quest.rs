@@ -263,21 +263,36 @@ fn build_quest_offer_reward_body(guid: ObjectGuid, quest: &QuestTemplateQuery) -
 }
 
 fn build_questgiver_quest_complete_body_with_xp(
-    quest: u32,
+    quest: &QuestTemplateQuery,
 
     reward_xp: u32,
 
     reward_money: u32,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(16);
+    let reward_items: Vec<_> = quest
+        .rew_item_id
+        .iter()
+        .zip(quest.rew_item_count.iter())
+        .filter(|(id, count)| **id != 0 && **count != 0)
+        .collect();
 
-    body.extend_from_slice(&quest.to_le_bytes());
+    let mut body = Vec::with_capacity(20 + reward_items.len() * 8);
+
+    body.extend_from_slice(&quest.entry.to_le_bytes());
+
+    body.extend_from_slice(&3u32.to_le_bytes());
 
     body.extend_from_slice(&reward_xp.to_le_bytes());
 
-    body.extend_from_slice(&0u32.to_le_bytes());
-
     body.extend_from_slice(&reward_money.to_le_bytes());
+
+    body.extend_from_slice(&(reward_items.len() as u32).to_le_bytes());
+
+    for (id, count) in reward_items {
+        body.extend_from_slice(&id.to_le_bytes());
+
+        body.extend_from_slice(&(*count).to_le_bytes());
+    }
 
     body
 }

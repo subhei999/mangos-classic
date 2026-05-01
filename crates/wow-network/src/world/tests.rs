@@ -2108,6 +2108,29 @@ fn objective_free_quest_can_complete_on_accept() {
 }
 
 #[test]
+fn quest_complete_packet_matches_vanilla_reward_shape() {
+    let mut quest = test_quest_template(783);
+    quest.rew_item_id[0] = 25;
+    quest.rew_item_count[0] = 1;
+    quest.rew_item_id[1] = 35;
+    quest.rew_item_count[1] = 2;
+
+    let body = build_questgiver_quest_complete_body_with_xp(&quest, 40, 12);
+    let mut cursor = 0;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 783);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 3);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 40);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 12);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 2);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 25);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 35);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 2);
+    assert_eq!(cursor, body.len());
+}
+
+#[test]
 fn xp_gain_packets_match_vanilla_shapes() {
     let source = ObjectGuid::new(HighGuid::Unit, 6, 44);
     let kill = build_log_xp_gain_body(Some(source), 52);

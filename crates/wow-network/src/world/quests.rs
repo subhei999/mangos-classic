@@ -279,7 +279,7 @@ async fn handle_questgiver_choose_reward(
     send_packet(
         stream,
         SMSG_QUESTGIVER_QUEST_COMPLETE,
-        &build_questgiver_quest_complete_body_with_xp(request.quest, reward_xp, reward_money),
+        &build_questgiver_quest_complete_body_with_xp(&quest, reward_xp, reward_money),
         Some(&mut *header_crypto),
     )
     .await?;

@@ -410,10 +410,22 @@ pub async fn accept_character_quest(
     quest: u32,
 ) -> Result<CharacterQuestStatus, DbError> {
     sqlx::query(
-        "INSERT IGNORE INTO character_queststatus \
+        "INSERT INTO character_queststatus \
          (guid, quest, status, rewarded, explored, timer, mobcount1, mobcount2, mobcount3, mobcount4, \
           itemcount1, itemcount2, itemcount3, itemcount4) \
-         VALUES (?, ?, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+         VALUES (?, ?, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) \
+         ON DUPLICATE KEY UPDATE \
+           explored = IF(rewarded = 0 AND status = 0, 0, explored), \
+           timer = IF(rewarded = 0 AND status = 0, 0, timer), \
+           mobcount1 = IF(rewarded = 0 AND status = 0, 0, mobcount1), \
+           mobcount2 = IF(rewarded = 0 AND status = 0, 0, mobcount2), \
+           mobcount3 = IF(rewarded = 0 AND status = 0, 0, mobcount3), \
+           mobcount4 = IF(rewarded = 0 AND status = 0, 0, mobcount4), \
+           itemcount1 = IF(rewarded = 0 AND status = 0, 0, itemcount1), \
+           itemcount2 = IF(rewarded = 0 AND status = 0, 0, itemcount2), \
+           itemcount3 = IF(rewarded = 0 AND status = 0, 0, itemcount3), \
+           itemcount4 = IF(rewarded = 0 AND status = 0, 0, itemcount4), \
+           status = IF(rewarded = 0 AND status = 0, VALUES(status), status)",
     )
     .bind(guid)
     .bind(quest)

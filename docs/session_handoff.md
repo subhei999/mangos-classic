@@ -14,10 +14,10 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 - Branch: `codex/rusty-mangos`.
 - Latest pushed commit: `b994ed02e` (`[g12] Track MapRuntime grid load state`),
   pushed to `origin/codex/rusty-mangos`.
-- Worktree before this roadmap retargeting was clean.
-- Current doc edits retarget `docs/playable_execution_roadmap.md`,
-  `docs/playable_gate_board.md`, and this file around the user's Northshire
-  missing-success-criteria list.
+- Latest local unpushed commit: current `HEAD`
+  (`[c2] Fix quest reaccept and completion packet`).
+- Local branch is intentionally ahead while C2 workstream merges are being
+  real-client smoked.
 - Always re-run `git status --short --branch` before editing; this handoff may
   lag behind the live worktree.
 
@@ -26,8 +26,9 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 Current milestone: **Northshire Human Warrior playable slice with shared
 multiplayer state**.
 
-Current user direction: **retarget the parallel branch plan around the missing
-success criteria for a genuinely playable Northshire**.
+Current user direction: **merge C2 workstreams one at a time, restart the
+client stack, and use real-client smoke feedback before taking the next
+branch**.
 
 User-observed missing criteria:
 
@@ -107,6 +108,14 @@ and log the follow-up.
   client startup unless `WORLD_ENABLE_LEGACY_FIXTURE_NPCS` is set.
 - Native VMAP/MMAP code is isolated behind safe Rust wrappers and C++ input
   validation/catch-all boundaries. Gameplay code should use those wrappers only.
+- C2 integration has landed the Northshire grading checklist, combat log packet
+  helpers, and quest eligibility. The quest eligibility merge needed follow-up
+  fixes for real-client quest flow:
+  - active/incomplete/reward quests are separated from newly available quests;
+  - abandon clears the quest-log slot and allows reaccepting the abandoned row;
+  - `SrcItemId/SrcItemCount` source items are granted on accept;
+  - objective-free and source-item delivery quests can complete on accept;
+  - quest reward completion packets now match the vanilla success/reward shape.
 
 ## Recently Landed G8/G9 Context
 
@@ -161,6 +170,11 @@ and log the follow-up.
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-commit-push-test` passed during commit/push
   prep.
+- `cargo test -p wow-network quest --lib` passed (`12` tests) for the quest
+  reaccept/completion fix.
+- `cargo test -p wow-network --lib` passed (`257` tests).
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-quest-reaccept-fix-test` passed.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -186,20 +200,11 @@ Baseline runs can fail if a live auto-restarting client stack holds
 
 ## Recommended Next Task
 
-Create `codex/c2-northshire-grade` from `codex/rusty-mangos` and add the
-Northshire playability grading checklist/harness coverage for the nine missing
-criteria. This should be mostly tests/docs, so it can land before deeper
-feature branches and give every worker a clear target.
-
-Then start the lowest-overlap implementation branches:
-
-1. `codex/c2-combat-log` for packet feedback helpers.
-2. `codex/c2-quest-eligibility` for quest marker/status filtering.
-3. `codex/c2-quest-loot-drops` and `codex/c2-gameobject-quests`, rebased onto
-   the quest-status API as needed.
-4. `codex/c2-regen-rage-ticks`, then `codex/c2-warrior-spells-gcd`.
-5. `codex/c2-skills-weapon-skill`.
-6. `codex/c2-aggro-leash-parity`, then `codex/c2-patrol-stability`.
+Restart the client stack and real-client smoke the corrected quest flow:
+abandon and reaccept a quest, turn in `A Threat Within`, and confirm `A Simple
+Letter` grants its source item and can progress. If that passes, continue
+merging the remaining C2 workstream branches one at a time with the same
+restart plus real-client check loop.
 
 ## Key Files
 

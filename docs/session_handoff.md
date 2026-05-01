@@ -118,7 +118,10 @@ and log the follow-up.
   - quest reward completion packets now match the vanilla success/reward shape.
 - Quest loot now reads negative `ChanceOrQuestChance` rows and selects a quest
   drop only when the player has an active incomplete item objective needing
-  that item. Full CMaNGOS loot-table rolling remains issue #58.
+  that item. Looted quest items now re-check active item objectives, mark newly
+  satisfied quests complete, and allow already-satisfied item quests to show and
+  turn in even if the DB row was still incomplete. Full CMaNGOS loot-table
+  rolling remains issue #58.
 
 ## Recently Landed G8/G9 Context
 
@@ -183,6 +186,11 @@ and log the follow-up.
 - `cargo test -p wow-network loot --lib` passed.
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-merge-quest-loot-test` passed.
+- `cargo test -p wow-network quest --lib` passed (`15` tests) after fixing
+  item-loot quest completion.
+- `cargo test -p wow-network loot --lib` passed.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-quest-item-complete-test` passed.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -210,13 +218,10 @@ Baseline runs can fail if a live auto-restarting client stack holds
 
 ## Recommended Next Task
 
-Restart the client stack and real-client smoke the quest-loot merge. Suggested
-check: accept an item-drop quest in Northshire such as `Kobold Camp Cleanup` /
-nearby starter item objectives if available in the current DB, kill the relevant
-mob, loot it, and confirm an active required quest item can appear while
-non-active quest drops do not clutter normal loot. If that passes, continue
-merging the remaining C2 workstream branches one at a time with the same
-restart plus real-client check loop.
+Restart the client stack and real-client smoke the quest-loot completion fix:
+accept an item-drop quest, loot all required quest items, confirm the quest
+becomes complete/reward-ready, and turn it in. If that passes, continue with
+`codex/c2-gameobject-quests` as the next merge candidate.
 
 ## Key Files
 

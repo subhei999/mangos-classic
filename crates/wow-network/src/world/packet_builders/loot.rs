@@ -206,6 +206,16 @@ async fn autostore_loot_item(
 
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
 
+    complete_inventory_item_quests(
+        stream,
+        character_db_pool,
+        world_db_pool,
+        session,
+        character_guid,
+        header_crypto,
+    )
+    .await?;
+
     Ok(true)
 }
 

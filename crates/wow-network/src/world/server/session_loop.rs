@@ -391,9 +391,10 @@ async fn handle_client(
                         CMSG_QUESTGIVER_COMPLETE_QUEST | CMSG_QUESTGIVER_REQUEST_REWARD => {
                             handle_questgiver_complete_quest(
                                 &mut stream,
+                                &character_db_pool,
                                 &world_db_pool,
                                 &body,
-                                &session,
+                                &mut session,
                                 &mut header_crypto,
                             )
                             .await?;

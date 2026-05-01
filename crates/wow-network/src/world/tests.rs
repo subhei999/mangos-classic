@@ -2102,6 +2102,44 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
 }
 
 #[test]
+fn incomplete_item_quest_can_reward_when_inventory_satisfies_objective() {
+    let mut quest = test_quest_template(33);
+    quest.req_item_id[0] = 777;
+    quest.req_item_count[0] = 2;
+    let status = CharacterQuestStatus {
+        quest: 33,
+        status: QUEST_STATUS_INCOMPLETE,
+        rewarded: 0,
+        mobcount1: 0,
+        mobcount2: 0,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+    let inventory = [
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_ITEM_START,
+            item: 77,
+            item_template: 777,
+            count: 1,
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_ITEM_START + 1,
+            item: 78,
+            item_template: 777,
+            count: 1,
+            durability: 0,
+        },
+    ];
+
+    assert!(quest_status_can_reward_from_inventory(
+        &status, &quest, &inventory
+    ));
+}
+
+#[test]
 fn objective_free_quest_can_complete_on_accept() {
     let quest = test_quest_template(783);
     assert!(quest_can_complete_from_inventory(&quest, &[]));

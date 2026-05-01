@@ -11,9 +11,9 @@ in `docs/playable_gate_board.md`; detailed G12 design belongs in
 ## Current Branch And Worktree
 
 - Branch: `codex/rusty-mangos`.
-- Base commit before opcode review: `950a4610b` (`Advance shared creature
-  motion and chase pathing`), pushed to `origin/codex/rusty-mangos`.
-- Current opcode-parity review patch adds:
+- Latest pushed commit: `3134dadc4` (`[opcode] Handle selection and channel
+  joins`), pushed to `origin/codex/rusty-mangos`.
+- Recently landed opcode-parity patch added:
   - `CMSG_JOIN_CHANNEL` minimal join handling in
     `crates/wow-network/src/world/{opcodes.rs,wire.rs,server/session_loop.rs}`.
   - `CMSG_SET_SELECTION` support in

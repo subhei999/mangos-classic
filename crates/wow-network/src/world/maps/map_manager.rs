@@ -1160,6 +1160,25 @@ impl MapRuntimeManager {
         Ok(DbCreatureIdleMotionTick { creatures, packets })
     }
 
+    async fn advance_all_player_regen_ticks(
+        &self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_player_regen_tick(now)?);
+        }
+        Ok(packets)
+    }
+
     #[allow(dead_code)]
     async fn db_creature_idle_motion_advancement_guids(
         &self,

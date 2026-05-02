@@ -315,6 +315,7 @@ async fn handle_player_login(
         level: character.level,
         race: character.race,
         class: character.class,
+        spirit: world_stats.stats[4],
         gender: character.gender,
         health: session.player_health,
         max_health: world_stats.max_health().max(1),

@@ -6440,6 +6440,80 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     );
 }
 
+#[tokio::test]
+async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_tick() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let swing_delay = Duration::from_millis(1200);
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: character_guid,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+
+    let first_next =
+        scheduled_player_auto_attack_next_swing(shared_world, &session, target, now, swing_delay)
+            .await;
+    maps.set_player_auto_attack(map_id, character_guid, Some(target), Some(first_next))
+        .await;
+
+    let repeated_next = scheduled_player_auto_attack_next_swing(
+        shared_world,
+        &session,
+        target,
+        now + Duration::from_millis(150),
+        swing_delay,
+    )
+    .await;
+    assert_eq!(repeated_next, first_next);
+
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            first_next - Duration::from_millis(1)
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            first_next + Duration::from_millis(1)
+        )
+        .await,
+        Some(target)
+    );
+
+    session.active_character = None;
+}
+
 #[test]
 fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
     let navigation = DbCreatureNavigationGuardrail {

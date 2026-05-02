@@ -21,20 +21,28 @@ async fn handle_gameobject_query(
 
 async fn handle_gameobject_use(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: GameObjectUseDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.active_character.clone() else {
         return Ok(());
     };
     let guid = read_packet_guid(body, "CMSG_GAMEOBJ_USE")?;
     if !guid.is_game_object() {
         return Ok(());
     }
-    let Some(runtime) = session.db_gameobjects.get(&guid.raw()).cloned() else {
+    let runtime = if let Some(runtime) = deps
+        .maps
+        .db_gameobject_snapshot(character.position.map_id, guid)
+        .await
+    {
+        session.db_gameobjects.insert(guid.raw(), runtime.clone());
+        runtime
+    } else if let Some(runtime) = session.db_gameobjects.get(&guid.raw()).cloned() {
+        runtime
+    } else {
         return Ok(());
     };
     if runtime.spawn.map != character.position.map_id {
@@ -62,11 +70,12 @@ async fn handle_gameobject_use(
     }
 
     let handled_questgiver =
-        handle_gameobject_questgiver_use(stream, world_db_pool, session, guid, header_crypto).await?;
+        handle_gameobject_questgiver_use(stream, deps.world_db_pool, session, guid, header_crypto)
+            .await?;
     let objective_updated = grant_gameobject_use_credit(
         stream,
-        character_db_pool,
-        world_db_pool,
+        deps.character_db_pool,
+        deps.world_db_pool,
         session,
         guid,
         header_crypto,
@@ -78,7 +87,14 @@ async fn handle_gameobject_use(
     }
 
     if should_consume_gameobject_on_use(&runtime.spawn.template) {
-        if let Some(gameobject) = session.db_gameobjects.get_mut(&guid.raw()) {
+        let consumed = deps
+            .maps
+            .consume_db_gameobject(character.position.map_id, guid, now, Some(character.guid))
+            .await;
+        if let Some((gameobject, observer_packets)) = consumed {
+            session.db_gameobjects.insert(guid.raw(), gameobject);
+            deps.sessions.dispatch(observer_packets).await;
+        } else if let Some(gameobject) = session.db_gameobjects.get_mut(&guid.raw()) {
             gameobject.mark_consumed(now);
         }
         send_packet(
@@ -93,9 +109,18 @@ async fn handle_gameobject_use(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct GameObjectUseDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
+}
+
 async fn stream_newly_visible_db_gameobjects(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -106,15 +131,21 @@ async fn stream_newly_visible_db_gameobjects(
         return Ok(());
     }
     session.last_gameobject_visibility_position = Some(character.position);
-    let nearby_gameobjects = wow_db::get_nearby_gameobject_spawns(
+    maps.ensure_db_gameobject_grids_loaded(
         world_db_pool,
         character.position.map_id,
-        character.position.x,
-        character.position.y,
+        character.position,
         CREATURE_SPAWN_RADIUS_YARDS,
-        CREATURE_SPAWN_LIMIT,
     )
     .await?;
+    let nearby_gameobjects = maps
+        .nearby_db_gameobject_snapshots(
+            character.position.map_id,
+            character.position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            CREATURE_SPAWN_LIMIT,
+        )
+        .await;
     let updates =
         stage_db_gameobject_visibility_updates(session, character.position, nearby_gameobjects, Instant::now())?;
     for guid in updates.destroy_guids {
@@ -194,13 +225,12 @@ fn should_rescan_db_gameobject_visibility(
 fn stage_db_gameobject_visibility_updates(
     session: &mut WorldSessionState,
     position: WorldPosition,
-    nearby_gameobjects: Vec<wow_db::GameObjectSpawnQuery>,
+    nearby_gameobjects: Vec<DbGameObjectRuntime>,
     now: Instant,
 ) -> anyhow::Result<DbGameObjectVisibilityUpdates> {
     let nearby_guids = nearby_gameobjects
         .iter()
-        .map(gameobject_spawn_guid)
-        .map(|guid| guid.raw())
+        .map(|gameobject| gameobject.guid().raw())
         .collect::<HashSet<_>>();
 
     let mut destroy_guids = session
@@ -223,25 +253,34 @@ fn stage_db_gameobject_visibility_updates(
     }
 
     let mut create_blocks = Vec::new();
-    for spawn in nearby_gameobjects {
-        let guid = gameobject_spawn_guid(&spawn).raw();
+    for mut runtime in nearby_gameobjects {
+        let guid = runtime.guid().raw();
         if let Some(existing) = session.db_gameobjects.get_mut(&guid) {
-            existing.spawn = spawn;
+            existing.spawn = runtime.spawn;
+            existing.consumed_until = runtime.consumed_until;
             if existing.is_consumed(now) {
+                if existing.client_visible {
+                    destroy_guids.push(guid);
+                }
                 existing.client_visible = false;
                 continue;
             }
             if !existing.client_visible {
                 existing.client_visible = true;
-                create_blocks.push(build_db_gameobject_runtime_create_block(existing)?);
+                create_blocks.push(build_db_gameobject_runtime_create_block_for_quest_statuses(
+                    existing,
+                    &session.quest_statuses,
+                )?);
             }
             continue;
         }
 
-        let mut runtime = DbGameObjectRuntime::new(spawn);
         runtime.client_visible = !runtime.is_consumed(now);
         if runtime.client_visible {
-            create_blocks.push(build_db_gameobject_runtime_create_block(&runtime)?);
+            create_blocks.push(build_db_gameobject_runtime_create_block_for_quest_statuses(
+                &runtime,
+                &session.quest_statuses,
+            )?);
         }
         session.db_gameobjects.insert(guid, runtime);
     }
@@ -312,6 +351,25 @@ async fn handle_gameobject_questgiver_use(
     )
     .await?;
     Ok(true)
+}
+
+fn gameobject_chest_loot_id(template: &wow_db::GameObjectTemplateQuery) -> Option<u32> {
+    (template.object_type == GO_TYPE_CHEST && template.raw_data[1] > 0).then_some(template.raw_data[1])
+}
+
+fn gameobject_chest_has_loot_id(template: &wow_db::GameObjectTemplateQuery) -> bool {
+    gameobject_chest_loot_id(template).is_some()
+}
+
+fn visible_db_gameobject_runtimes(
+    gameobjects: &[DbGameObjectRuntime],
+    now: Instant,
+) -> Vec<DbGameObjectRuntime> {
+    gameobjects
+        .iter()
+        .filter(|gameobject| !gameobject.is_consumed(now))
+        .cloned()
+        .collect()
 }
 
 async fn grant_gameobject_use_credit(

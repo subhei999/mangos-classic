@@ -35,22 +35,48 @@ impl GameObjectRuntime {
 
 fn build_db_gameobject_create_blocks(
     gameobjects: &[DbGameObjectRuntime],
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
     gameobjects
         .iter()
-        .map(build_db_gameobject_runtime_create_block)
+        .map(|gameobject| {
+            build_db_gameobject_runtime_create_block_for_quest_statuses(gameobject, quest_statuses)
+        })
         .collect()
 }
 
+#[cfg(test)]
 fn build_db_gameobject_runtime_create_block(
     gameobject: &DbGameObjectRuntime,
 ) -> anyhow::Result<Vec<u8>> {
+    build_db_gameobject_runtime_create_block_with_dynamic_flags(gameobject, 0)
+}
+
+fn build_db_gameobject_runtime_create_block_for_quest_statuses(
+    gameobject: &DbGameObjectRuntime,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> anyhow::Result<Vec<u8>> {
+    build_db_gameobject_runtime_create_block_with_dynamic_flags(
+        gameobject,
+        gameobject_dynamic_flags_for_quest_statuses(gameobject, quest_statuses),
+    )
+}
+
+fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
+    gameobject: &DbGameObjectRuntime,
+    dynamic_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
     let guid = gameobject.guid();
     let mut block = Vec::new();
-    block.push(UPDATE_TYPE_CREATE_OBJECT);
+    block.push(UPDATE_TYPE_CREATE_OBJECT2);
     PackedGuid::write(&mut block, guid)?;
     block.push(TYPEID_GAMEOBJECT);
-    block.push(UPDATEFLAG_ALL);
+
+    block.push(UPDATEFLAG_ALL | UPDATEFLAG_HAS_POSITION);
+    block.extend_from_slice(&gameobject.spawn.position_x.to_le_bytes());
+    block.extend_from_slice(&gameobject.spawn.position_y.to_le_bytes());
+    block.extend_from_slice(&gameobject.spawn.position_z.to_le_bytes());
+    block.extend_from_slice(&gameobject.spawn.orientation.to_le_bytes());
     block.extend_from_slice(&1u32.to_le_bytes());
 
     let mut values = vec![None; GAMEOBJECT_END_FIELDS];
@@ -123,7 +149,7 @@ fn build_db_gameobject_runtime_create_block(
         GAMEOBJECT_FACING,
         gameobject.spawn.orientation.to_bits(),
     )?;
-    set_update_value(&mut values, GAMEOBJECT_DYN_FLAGS, 0)?;
+    set_update_value(&mut values, GAMEOBJECT_DYN_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, GAMEOBJECT_FACTION, gameobject.spawn.template.faction)?;
     set_update_value(
         &mut values,
@@ -139,6 +165,42 @@ fn build_db_gameobject_runtime_create_block(
     )?;
     write_update_values(&mut block, &values)?;
     Ok(block)
+}
+
+fn gameobject_dynamic_flags_for_quest_statuses(
+    gameobject: &DbGameObjectRuntime,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> u32 {
+    if !gameobject_activates_for_quest_statuses(gameobject, quest_statuses) {
+        return 0;
+    }
+
+    match gameobject.spawn.template.object_type {
+        GO_TYPE_CHEST | GO_TYPE_QUESTGIVER => GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE,
+        GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER => GO_DYNFLAG_LO_ACTIVATE,
+        _ => 0,
+    }
+}
+
+fn gameobject_activates_for_quest_statuses(
+    gameobject: &DbGameObjectRuntime,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> bool {
+    let template = &gameobject.spawn.template;
+    if template.flags & GO_FLAG_INTERACT_COND == 0 {
+        return matches!(
+            template.object_type,
+            GO_TYPE_CHEST | GO_TYPE_QUESTGIVER | GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER
+        );
+    }
+
+    if let Some(required_quest) = gameobject_required_active_quest(template) {
+        return quest_statuses
+            .get(&required_quest)
+            .is_some_and(|status| status.status == QUEST_STATUS_INCOMPLETE && status.rewarded == 0);
+    }
+
+    template.object_type == GO_TYPE_CHEST && gameobject_chest_has_loot_id(template)
 }
 
 fn gameobject_spawn_guid(gameobject: &wow_db::GameObjectSpawnQuery) -> ObjectGuid {

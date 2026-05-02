@@ -246,6 +246,7 @@ impl CastSpellPacket {
 struct SpellCastTargets {
     target_mask: u16,
     unit_target: Option<ObjectGuid>,
+    gameobject_target: Option<ObjectGuid>,
 }
 
 impl SpellCastTargets {
@@ -257,10 +258,17 @@ impl SpellCastTargets {
             } else {
                 None
             };
+        let gameobject_target =
+            if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
+                Some(read_packed_guid(body, cursor)?)
+            } else {
+                None
+            };
 
         Ok(Self {
             target_mask,
             unit_target,
+            gameobject_target,
         })
     }
 
@@ -269,6 +277,9 @@ impl SpellCastTargets {
         body.extend_from_slice(&target_mask.to_le_bytes());
         if target_mask & SPELL_CAST_TARGET_UNIT != 0 {
             PackedGuid::write(body, self.unit_target.unwrap_or(ObjectGuid::EMPTY))?;
+        }
+        if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
+            PackedGuid::write(body, self.gameobject_target.unwrap_or(ObjectGuid::EMPTY))?;
         }
         Ok(())
     }

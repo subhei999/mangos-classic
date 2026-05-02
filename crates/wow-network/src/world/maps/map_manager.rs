@@ -117,6 +117,24 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn update_player_db_creature_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        create_guids: &[ObjectGuid],
+        destroy_guids: &[ObjectGuid],
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock().await.update_player_db_creature_visibility(
+            character_guid,
+            create_guids,
+            destroy_guids,
+        );
+    }
+
     async fn broadcast_nearby_player_packet(
         &self,
         map_id: u32,
@@ -279,6 +297,115 @@ impl MapRuntimeManager {
             .await
             .nearby_db_creature_snapshots(position, radius, limit);
         snapshots
+    }
+
+    async fn ensure_db_gameobject_grids_loaded(
+        &self,
+        world_db_pool: &MySqlPool,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) -> anyhow::Result<()> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_gameobject_grids_for_area(position, radius)
+        };
+        for grid in grids {
+            let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
+            let spawns = wow_db::get_gameobject_spawns_in_rect(
+                world_db_pool,
+                map_id,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            )
+            .await?;
+            let runtimes = spawns.into_iter().map(DbGameObjectRuntime::new).collect();
+            map.lock()
+                .await
+                .insert_loaded_gameobject_grid(grid, runtimes);
+            info!(
+                map_id,
+                grid_x = grid.x,
+                grid_y = grid.y,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                "Loaded DB gameobject grid into MapRuntime"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn ensure_db_gameobject_grids_loaded_for_test(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+        mut runtimes_for_grid: impl FnMut(GridCoord) -> Vec<DbGameObjectRuntime>,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_gameobject_grids_for_area(position, radius)
+        };
+        for grid in grids {
+            let runtimes = runtimes_for_grid(grid);
+            map.lock()
+                .await
+                .insert_loaded_gameobject_grid(grid, runtimes);
+        }
+    }
+
+    async fn nearby_db_gameobject_snapshots(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+        limit: u32,
+    ) -> Vec<DbGameObjectRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let snapshots = map
+            .lock()
+            .await
+            .nearby_db_gameobject_snapshots(position, radius, limit);
+        snapshots
+    }
+
+    async fn db_gameobject_snapshot(
+        &self,
+        map_id: u32,
+        gameobject_guid: ObjectGuid,
+    ) -> Option<DbGameObjectRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let snapshot = map.lock().await.db_gameobject_snapshot(gameobject_guid);
+        snapshot
+    }
+
+    async fn consume_db_gameobject(
+        &self,
+        map_id: u32,
+        gameobject_guid: ObjectGuid,
+        now: Instant,
+        exclude_character_guid: Option<u32>,
+    ) -> Option<(DbGameObjectRuntime, Vec<(SessionId, OutboundWorldPacket)>)> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let consumed = map
+            .lock()
+            .await
+            .consume_db_gameobject(gameobject_guid, now, exclude_character_guid);
+        consumed
     }
 
     async fn db_creature_snapshots(
@@ -514,6 +641,69 @@ impl MapRuntimeManager {
         creature
     }
 
+    #[allow(dead_code)]
+    async fn advance_active_db_creature_idle_motions(
+        &self,
+        map_id: u32,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<DbCreatureIdleMotionTick> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let tick = map
+            .lock()
+            .await
+            .advance_active_db_creature_idle_motions(navigation, now);
+        tick
+    }
+
+    async fn advance_all_active_db_creature_idle_motions(
+        &self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<DbCreatureIdleMotionTick> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut creatures = Vec::new();
+        let mut packets = Vec::new();
+        for map in maps {
+            let tick = map
+                .lock()
+                .await
+                .advance_active_db_creature_idle_motions(navigation, now)?;
+            creatures.extend(tick.creatures);
+            packets.extend(tick.packets);
+        }
+        Ok(DbCreatureIdleMotionTick { creatures, packets })
+    }
+
+    #[allow(dead_code)]
+    async fn db_creature_idle_motion_advancement_guids(
+        &self,
+        map_id: u32,
+    ) -> Vec<u64> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let guids = map.lock().await.db_creature_idle_motion_advancement_guids();
+        guids
+    }
+
+    #[allow(dead_code)]
+    async fn db_creature_idle_motion_start_guids(
+        &self,
+        map_id: u32,
+        now: Instant,
+    ) -> Vec<u64> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let guids = map.lock().await.db_creature_idle_motion_start_guids(now);
+        guids
+    }
+
+    #[allow(dead_code)]
     async fn start_db_creature_idle_motion(
         &self,
         map_id: u32,
@@ -582,6 +772,22 @@ impl MapRuntimeManager {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map.lock().await.prepare_db_creature_evade(creature_guid);
         creature
+    }
+
+    async fn select_db_creature_sight_aggro_targets(
+        &self,
+        map_id: u32,
+        character: &ActiveCharacter,
+    ) -> Vec<DbCreatureRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let targets = map
+            .lock()
+            .await
+            .select_db_creature_sight_aggro_targets(character);
+        targets
     }
 
     async fn select_db_creature_assist_targets(

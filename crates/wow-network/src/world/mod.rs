@@ -29,6 +29,7 @@ include!("fixtures/legacy_npcs.rs");
 include!("server/world_session.rs");
 include!("entities/update_data.rs");
 include!("server/runtime_helpers.rs");
+include!("server/map_update.rs");
 include!("server/session_loop.rs");
 include!("server/character_screen.rs");
 include!("server/player_login.rs");
@@ -96,6 +97,10 @@ impl WorldServer {
     pub async fn run(&self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(self.bind_addr).await?;
         info!("World server listening on {}", self.bind_addr);
+        let map_update_state = self.runtime_state.clone();
+        tokio::spawn(async move {
+            run_map_runtime_update_loop(map_update_state).await;
+        });
 
         loop {
             match listener.accept().await {

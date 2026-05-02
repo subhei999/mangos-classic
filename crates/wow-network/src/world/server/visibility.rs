@@ -37,11 +37,18 @@ async fn stream_newly_visible_db_creatures(
         .await;
     let visibility_updates =
         stage_db_creature_visibility_updates(session, position, nearby_creature_runtimes)?;
+    maps.update_player_db_creature_visibility(
+        position.map_id,
+        guid,
+        &visibility_updates.create_guids,
+        &visibility_updates.destroy_guids,
+    )
+    .await;
     if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
         return Ok(());
     }
 
-    info!(
+    debug!(
         guid,
         name = %name,
         tracked_creatures = visibility_updates.tracked_creature_count,
@@ -244,6 +251,7 @@ fn should_rescan_db_creature_visibility(
 #[derive(Debug, Default)]
 struct DbCreatureVisibilityUpdates {
     create_bodies: Vec<Vec<u8>>,
+    create_guids: Vec<ObjectGuid>,
     destroy_guids: Vec<ObjectGuid>,
     create_count: usize,
     tracked_creature_count: usize,
@@ -306,6 +314,7 @@ fn stage_db_creature_visibility_updates(
         .retain(|guid, _| !destroy_guids.contains(guid));
 
     let mut create_blocks = Vec::new();
+    let mut create_guids = Vec::new();
     for runtime in nearby_creatures {
         let guid = runtime.guid().raw();
         if let Some(creature) = session.db_creatures.get_mut(&guid) {
@@ -314,6 +323,7 @@ fn stage_db_creature_visibility_updates(
             {
                 if !creature.client_visible && creature.life_state != DbCreatureLifeState::Dead {
                     creature.client_visible = true;
+                    create_guids.push(creature.guid());
                     create_blocks.push(build_db_creature_runtime_create_block(creature)?);
                 }
                 continue;
@@ -330,11 +340,13 @@ fn stage_db_creature_visibility_updates(
             }
             if !was_visible && creature.life_state != DbCreatureLifeState::Dead {
                 creature.client_visible = true;
+                create_guids.push(creature.guid());
                 create_blocks.push(build_db_creature_runtime_create_block(creature)?);
             }
             continue;
         }
         if runtime.life_state != DbCreatureLifeState::Dead {
+            create_guids.push(runtime.guid());
             create_blocks.push(build_db_creature_runtime_create_block(&runtime)?);
         }
         session.db_creatures.insert(guid, runtime);
@@ -362,6 +374,7 @@ fn stage_db_creature_visibility_updates(
             .chunks(CREATURE_UPDATE_CHUNK_SIZE)
             .map(build_update_object_body)
             .collect(),
+        create_guids,
         destroy_guids: destroy_guids
             .into_iter()
             .map(ObjectGuid::from_raw)

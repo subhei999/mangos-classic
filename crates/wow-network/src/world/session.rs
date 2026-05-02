@@ -144,6 +144,8 @@ struct WorldSessionState {
     combat_dummy_loot_item_available: bool,
     db_creatures: HashMap<u64, DbCreatureRuntime>,
     db_gameobjects: HashMap<u64, DbGameObjectRuntime>,
+    db_gameobject_looting: Option<u64>,
+    db_gameobject_loot_item: Option<DbCreatureLootRuntime>,
     player_health: u32,
     player_rage: u32,
     player_mana: u32,

@@ -16,8 +16,69 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
   pushed to `origin/codex/rusty-mangos`.
 - Latest local unpushed commit: current `HEAD` after this task
   (`[c2] Fix gameobject login decode`).
+- Current uncommitted investigation edit: high-volume authenticated packet and
+  DB-creature visibility movement logs were demoted from `info` to `debug`
+  after Defias smoke showed the worldserver spending measurable CPU in a
+  packet/status/visibility churn state.
+- Current uncommitted combat fix: DB creatures now immediately announce
+  retaliation (`SMSG_ATTACKSTART`, combat flags, and chase if needed) when a
+  player hit starts shared creature combat, including the 1 HP player case.
+- Current uncommitted stall fix: hostile sight-aggro now checks cheap
+  detection distance before VMAP/MMAP navigation, avoiding native LOS/path
+  calls for every visible out-of-range Defias during camp entry. Spell-cancel
+  fixture spam is also debug-only.
+- Current uncommitted map-runtime aggro performance fix: production sight
+  aggro now asks shared `MapRuntime` for cell-bucketed nearby hostile
+  candidates, applies CMaNGOS-shaped detection range before native navigation,
+  and keeps VMAP/MMAP checks outside the map mutex. This avoids returning to a
+  session-owned full visible-creature scan.
+- Current uncommitted creature-ownership fix: idle random/waypoint motion
+  candidate selection now comes from shared `MapRuntime` creature state in
+  `Active` or `UnloadBlocked` grids instead of `session.db_creatures`. Session
+  caches now only remember moved/started creatures when they were already
+  tracked locally or are still inside the viewer's visibility radius. This is
+  the first deliberate CMaNGOS-close step away from session-owned creature
+  runtime ticking and directly targets the Northshire-to-Defias patrol freeze.
+- Current uncommitted patrol-start fix: map-owned idle/waypoint start candidates
+  now use nearby cell buckets plus an exact player visibility-radius check
+  instead of admitting every ready creature in a coarse player-interest grid.
+  This prevents far same-grid zero-wait movers from starving visible patrols
+  under the per-tick start budget.
+- Current uncommitted map-owned patrol tick fix: worldserver startup now spawns
+  a background map runtime update loop. Idle/waypoint patrol advancement/start
+  runs from that map loop through `MapRuntime`, not from per-session ticks. The
+  shared world/map tick interval is now `100ms`, matching CMaNGOS'
+  `MapUpdateInterval` default.
+  `MapRuntime` also tracks DB-creature visibility in player `visible_objects`
+  so the map-owned tick can send create-before-move when needed and plain
+  movement when the player already knows the creature. Session ticks only sync
+  their local viewer cache from map-owned creature snapshots.
+- Current uncommitted map-runtime gameobject ownership fix: DB gameobjects now
+  load into shared `MapRuntime` grid/cell buckets, login and movement stream
+  snapshots from the map, and `CMSG_GAMEOBJ_USE` prefers the shared snapshot
+  before session cache. Consumable quest objects such as Milly's Harvest now
+  update a shared consumed timer and broadcast `SMSG_DESTROY_OBJECT` to nearby
+  observers. Follow-up visibility fix: DB gameobject create blocks now use the
+  positioned `CREATE_OBJECT2` / `UPDATEFLAG_HAS_POSITION` shape so the client
+  places Milly's Harvest objects in the field instead of receiving only update
+  fields. Follow-up interaction fix: quest chest gameobjects now send
+  CMaNGOS-style activation/sparkle dynamic flags and `gameobject_loot_template`
+  quest loot can be opened/autostored through the normal loot window path.
+  Follow-up Opening spell fix: gameobject clicks now accept the client `Opening`
+  spell (`6478`), send `SMSG_SPELL_START` with a cast timer, then send
+  `SMSG_SPELL_GO` and the gameobject loot response. Follow-up cast-bar fix:
+  outgoing Opening spell targets now force `TARGET_FLAG_GAMEOBJECT` alongside
+  `TARGET_FLAG_LOCKED`, matching the resolved CMaNGOS gameobject target mask.
+  Follow-up CMaNGOS lifecycle fix: removed the hidden failure cleanup guess and
+  changed Opening ordering to CMaNGOS' real sequence: `SMSG_SPELL_START` at
+  cast start, then after the timer `SMSG_CAST_RESULT` OK, `SMSG_SPELL_GO`, and
+  finally the loot response.
 - Local branch is intentionally ahead while C2 workstream merges are being
   real-client smoked.
+- Live client stack was restarted after the 100ms map tick change:
+  authserver PID `15860` on `127.0.0.1:13724`, worldserver PID `28740` on
+  `127.0.0.1:18085`, logs `auth-client-13724.log` and
+  `world-client-18085.log`. Auto-restart is disabled for this run.
 - Always re-run `git status --short --branch` before editing; this handoff may
   lag behind the live worktree.
 
@@ -127,13 +188,16 @@ and log the follow-up.
   checks backpack space including stacks freed by required-item turn-in, and
   consumes required quest items on successful reward.
 - Gameobject quest interaction has been merged:
-  - nearby DB gameobjects stream on login and movement;
+  - nearby DB gameobjects stream on login and movement from shared
+    `MapRuntime` grid/cell buckets;
   - `CMSG_GAMEOBJECT_QUERY` returns DB-backed template data;
-  - `CMSG_GAMEOBJ_USE` gates interaction by map/range/flags/required active
-    quest;
+  - `CMSG_GAMEOBJ_USE` gates interaction by shared map state, map/range/flags,
+    and required active quest;
   - gameobject questgivers reuse the shared quest list/reward helpers;
   - negative `ReqCreatureOrGOId` objectives award gameobject-use credit and
     encode the high-bit gameobject objective in quest progress packets.
+  - consumable quest objects update shared consumed/respawn state and destroy
+    for nearby observers instead of staying session-owned.
 - Follow-up login kick fix: gameobject visibility SQL now explicitly casts
   `gameobject_addon.state` / `animprogress` COALESCE expressions so MySQL
   does not decode the fallback as `DECIMAL` during character login.
@@ -218,11 +282,99 @@ and log the follow-up.
   quest/gameobject merge overlap.
 - `cargo test -p wow-network --lib` passed (`266` tests).
 - `cargo test -p wow-db gameobject --lib` passed (`0` filtered tests).
+- `cargo fmt --check` passed after the Defias workload logging demotion.
+- `cargo test -p wow-network --lib` passed (`266` tests) after the Defias
+  workload logging demotion.
+- `cargo test -p wow-network db_creature_combat --lib` passed after the
+  retaliation-start fix.
+- `cargo test -p wow-network player_hit_announces --lib` passed.
+- `cargo test -p wow-network --lib` passed (`267` tests) after the
+  retaliation-start fix.
+- `cargo test -p wow-network db_creature_aggro --lib` passed after moving
+  aggro distance filtering before native navigation.
+- `cargo test -p wow-network --lib` passed (`267` tests) after the aggro
+  stall fix.
+- `cargo test -p wow-network map_runtime_sight_aggro_uses_cell_buckets_and_detection_range --lib`
+  passed.
+- `cargo test -p wow-network db_creature_aggro --lib` passed (`9` tests).
+- `cargo test -p wow-network --lib` passed (`268` tests) after moving
+  production sight aggro to shared MapRuntime cell-bucket candidate selection.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-mapruntime-aggro-test` passed.
+- `cargo test -p wow-db gameobject --lib` passed (`0` filtered tests) after
+  adding DB gameobject rectangle loading.
+- `cargo fmt --check` passed after map-owned gameobject changes.
+- `cargo test -p wow-network gameobject --lib` passed (`7` tests).
+- `cargo test -p wow-network --lib` passed (`271` tests).
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-mapruntime-gameobjects-test` passed.
+- `cargo fmt --check`, `cargo test -p wow-network gameobject --lib`,
+  `cargo test -p wow-network --lib`, and `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-gameobject-position-test` passed after
+  switching DB gameobject creates to positioned create blocks.
+- `cargo fmt --check`, `cargo test -p wow-network gameobject --lib`,
+  `cargo test -p wow-network loot --lib`, `cargo test -p wow-network --lib`,
+  and `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-gameobject-loot-test` passed after wiring
+  Milly-style quest chest dynamic flags and gameobject loot.
 - `.\scripts\test-rust.cmd` with
   `CARGO_TARGET_DIR=target\codex-merge-gameobjects-test` passed.
 - `cargo fmt --check` passed after fixing gameobject login decode.
 - `cargo test -p wow-network gameobject --lib` passed (`4` tests) after
   fixing gameobject login decode.
+- `cargo fmt --check`, `cargo test -p wow-network gameobject --lib`,
+  `cargo test -p wow-network spell --lib`, `cargo test -p wow-network loot --lib`,
+  `cargo test -p wow-network --lib`, and `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-gameobject-opening-test` passed after wiring
+  the client `Opening` spell for gameobject loot.
+- `cargo fmt --check`, `cargo test -p wow-network opening_spell_packets_include_gameobject_target_mask --lib`,
+  `cargo test -p wow-network gameobject --lib`, `cargo test -p wow-network spell --lib`,
+  `cargo test -p wow-network loot --lib`, and `cargo test -p wow-network --lib`
+  passed after forcing `TARGET_FLAG_GAMEOBJECT` into the outgoing Opening spell
+  target mask.
+- `cargo fmt --check`, `cargo test -p wow-network opening_spell --lib`,
+  `cargo test -p wow-network gameobject --lib`, `cargo test -p wow-network spell --lib`,
+  and `cargo test -p wow-network --lib` passed after changing Opening to the
+  CMaNGOS packet order and removing the hidden failure cleanup guess.
+- `cargo test -p wow-network map_runtime_idle_motion_start_guids_include_timer_blocked_grids_without_players --lib`
+  passed after moving idle random/waypoint motion candidate selection to
+  shared `MapRuntime`.
+- `cargo test -p wow-network shared_db_creature_idle_motion_updates_map_and_observers --lib`
+  passed after the shared idle-motion ownership shift.
+- `cargo test -p wow-network map_runtime_grid_states_prepare_idle_and_unload_blockers --lib`
+  passed after the shared idle-motion ownership shift.
+- `cargo test -p wow-network db_creature_ --lib` passed (`78` tests) after
+  the shared idle-motion ownership shift.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-mapruntime-idle-motion-test` passed after the
+  shared idle-motion ownership shift.
+- `cargo test -p wow-network map_runtime_idle_motion_start_guids_ignore_far_same_grid_creatures --lib`
+  failed before the patrol-start radius fix and passed after it.
+- `cargo test -p wow-network idle_motion --lib` passed (`6` tests) after the
+  patrol-start radius fix.
+- `cargo fmt --check` passed after the patrol-start radius fix.
+- `cargo test -p wow-network db_creature_ --lib` passed (`80` tests) after the
+  patrol-start radius fix.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-patrol-investigation-test` passed after the
+  patrol-start radius fix.
+- `cargo fmt --check` and `cargo test -p wow-network idle_motion --lib` passed
+  (`7` tests) after moving idle/waypoint patrol advancement to a map-owned tick
+  surface.
+- `cargo test -p wow-network db_creature_ --lib` passed (`80` tests) after the
+  map-owned patrol tick change.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-map-owned-motion-test` passed after the
+  map-owned patrol tick change.
+- `cargo fmt --check`, `cargo test -p wow-network idle_motion --lib`,
+  `cargo test -p wow-network db_creature_ --lib`, and `.\scripts\test-rust.cmd`
+  with `CARGO_TARGET_DIR=target\codex-map-loop-motion-test` passed after moving
+  idle/waypoint patrol scheduling from session-triggered calls into the
+  background map runtime update loop.
+- `cargo fmt --check`, `cargo test -p wow-network idle_motion --lib`,
+  `cargo test -p wow-network world_tick --lib`, and `.\scripts\test-rust.cmd`
+  with `CARGO_TARGET_DIR=target\codex-100ms-map-tick-test` passed after changing
+  `WORLD_TICK_MILLIS` from `250` to the CMaNGOS-default `100`.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -243,6 +395,14 @@ Baseline runs can fail if a live auto-restarting client stack holds
   eligibility, dedicated two-client logout/relog torture coverage, and more
   real-client confirmation. The unload blockers now have an explicit state
   shape, but no eviction loop has been implemented yet.
+- Session-local creature runtime still exists in important readers:
+  `active_combat_target` / melee checks, retaliation/chase/evade helpers,
+  movement visibility retention, and parts of combat packet production still
+  consult `session.db_creatures` after the new shared idle/patrol start
+  selection. The current correction removes session ownership from the idle
+  random/waypoint candidate list and the once-per-tick patrol start/advance
+  scheduler; that scheduler is now invoked by the background map runtime update
+  loop.
 - G10/G11 remain broader red/yellow areas: NPC interaction fidelity and
   persistence/relog sanity across every major starter-zone action.
 - GitHub issue #58 tracks full CMaNGOS creature loot-table rolling beyond the
@@ -255,16 +415,39 @@ Baseline runs can fail if a live auto-restarting client stack holds
   treated it as unknown or not alive.
 - GitHub issue #61 tracks the DB-heavy questgiver status-query path amplified
   by gameobject visibility; repeated `CMSG_QUESTGIVER_STATUS_QUERY` traffic may
-  be contributing to sluggish gameplay feel.
+  be contributing to sluggish gameplay feel. Live Defias smoke showed
+  worldserver CPU around 31% of one core over a 10s sample while recent logs
+  contained heavy `0x0182` status-query bursts plus creature visibility
+  create/destroy churn in the 40-50 tracked-creature range.
+- Real-client Defias smoke found player attacks could damage a hostile DB
+  creature without the creature visibly engaging. The immediate fix now sends
+  the same creature-side combat-start/chase path used by proximity aggro when
+  retaliation combat begins.
+- Defias camp smoke also showed a broader stall/freezing pattern: the
+  worldserver log contained a long synchronous VMAP load burst before gameplay
+  packets resumed, followed by ability cancel spam and unknown-target attacks
+  for Defias GUID `0xF13000002601396E` (entry 38 / spawn 80238). The aggro
+  path was doing native navigation before cheap distance filtering, which could
+  block the single session loop for many visible but out-of-range hostiles.
+  The immediate mitigation is merged locally; remaining follow-up is to add
+  tick-lag/native-call instrumentation and make visible-target attack recovery
+  refresh from shared `MapRuntime` when the client attacks a visible DB GUID
+  missing from `session.db_creatures`.
+- Patrol-start starvation from far same-grid movers is fixed in unit coverage,
+  but still needs a restarted real-client Northshire/Defias smoke to verify the
+  visible patrol packet stream and long-run stability.
 
 ## Recommended Next Task
 
-Pause the next feature merge and do a foundation correction branch first:
-move gameobjects into shared `MapRuntime`/world ownership, make questgiver
-status checks cheap/cached, and make combat target resolution refresh from
-shared map state when the client attacks a visible DB creature. Then restart
-and real-client smoke login, object quests, Defias/wolf/vermin combat feel, and
-reward regressions before continuing with `codex/c2-skills-weapon-skill`.
+Continue the CMaNGOS-close creature ownership correction before the next
+feature merge:
+
+1. move the remaining chase/evade/combat readers off `session.db_creatures`
+   where practical, starting with melee range/facing checks and visible-target
+   recovery;
+2. keep session creature state as a viewer cache only, not the source of truth;
+3. then restart and real-client smoke the Northshire start area plus the run to
+   Defias to confirm patrols keep moving after leaving the initial zone.
 
 ## Key Files
 

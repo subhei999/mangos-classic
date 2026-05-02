@@ -101,8 +101,14 @@ async fn handle_movement(
             header_crypto,
         )
         .await?;
-        stream_newly_visible_db_gameobjects(stream, deps.world_db_pool, session, header_crypto)
-            .await?;
+        stream_newly_visible_db_gameobjects(
+            stream,
+            deps.world_db_pool,
+            deps.maps,
+            session,
+            header_crypto,
+        )
+        .await?;
         stream_nearby_player_corpses(
             stream,
             deps.character_db_pool,

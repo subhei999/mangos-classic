@@ -17,6 +17,25 @@ async fn handle_cast_spell(
     };
     let character_guid = character.guid;
     let map_id = character.position.map_id;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+
+    if packet.spell_id == OPENING_SPELL_ID {
+        let request = OpeningSpellRequest {
+            caster,
+            map_id,
+            character_guid,
+            targets: packet.targets,
+        };
+        return handle_opening_spell(
+            stream,
+            world_db_pool,
+            shared_world,
+            session,
+            header_crypto,
+            request,
+        )
+        .await;
+    }
 
     let Some(starter_spell) = supported_starter_spell(packet.spell_id) else {
         warn!(
@@ -34,7 +53,6 @@ async fn handle_cast_spell(
         return Ok(());
     }
 
-    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let targets = normalize_fixture_spell_targets(packet.targets);
     if let Some(failure) = starter_spell_melee_cast_failure(session, &starter_spell, &targets) {
         send_packet(
@@ -258,6 +276,124 @@ async fn handle_cast_spell(
     send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
 }
 
+struct OpeningSpellRequest {
+    caster: ObjectGuid,
+    map_id: u32,
+    character_guid: u32,
+    targets: SpellCastTargets,
+}
+
+async fn handle_opening_spell(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    request: OpeningSpellRequest,
+) -> anyhow::Result<()> {
+    let mut targets = request.targets;
+    let Some(gameobject_guid) = targets
+        .gameobject_target
+        .or(targets.unit_target)
+        .filter(|guid| guid.is_game_object())
+    else {
+        warn!("Ignoring Opening spell without gameobject target");
+        return Ok(());
+    };
+    let Some(gameobject) = session.db_gameobjects.get(&gameobject_guid.raw()).cloned() else {
+        warn!(
+            target = format_args!("0x{:016X}", gameobject_guid.raw()),
+            "Ignoring Opening spell for unknown gameobject"
+        );
+        return Ok(());
+    };
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    if gameobject.spawn.map != request.map_id
+        || !is_position_inside_radius(gameobject.position(), character.position, 8.0)
+    {
+        warn!("Ignoring Opening spell outside gameobject interaction range");
+        return Ok(());
+    }
+    if !gameobject_chest_has_loot_id(&gameobject.spawn.template) {
+        warn!("Ignoring Opening spell for gameobject without chest loot");
+        return Ok(());
+    }
+    targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
+    targets.gameobject_target = Some(gameobject_guid);
+
+    let loot_item =
+        select_db_gameobject_loot_item_for_character(world_db_pool, session, &gameobject.spawn.template)
+            .await?;
+    session.db_gameobject_looting = Some(gameobject_guid.raw());
+    session.db_gameobject_loot_item = loot_item;
+
+    let spell_start_body =
+        build_spell_start_body(request.caster, OPENING_SPELL_ID, OPENING_SPELL_CAST_TIME_MS, &targets)?;
+    send_packet(
+        stream,
+        SMSG_SPELL_START,
+        &spell_start_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_start = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            request.map_id,
+            request.character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_START,
+                body: spell_start_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(observer_start).await;
+
+    tokio::time::sleep(Duration::from_millis(OPENING_SPELL_CAST_TIME_MS as u64)).await;
+
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_ok_body(OPENING_SPELL_ID),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let spell_go_body = build_spell_go_body(request.caster, OPENING_SPELL_ID, &targets)?;
+    send_packet(
+        stream,
+        SMSG_SPELL_GO,
+        &spell_go_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_go = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            request.map_id,
+            request.character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_GO,
+                body: spell_go_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(observer_go).await;
+
+    let response =
+        build_gameobject_loot_response_body(gameobject_guid, session.db_gameobject_loot_item.as_ref());
+    send_packet(
+        stream,
+        SMSG_LOOT_RESPONSE,
+        &response,
+        Some(header_crypto),
+    )
+    .await
+}
+
 fn starter_spell_melee_cast_failure(
     session: &WorldSessionState,
     starter_spell: &SupportedStarterSpell,
@@ -284,6 +420,7 @@ fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTa
     targets.target_mask =
         (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
     targets.unit_target = Some(targets.unit_target.unwrap_or_else(rust_combat_dummy_guid));
+    targets.gameobject_target = None;
     targets
 }
 
@@ -346,13 +483,29 @@ fn build_spell_go_body(
     body.extend_from_slice(&spell_id.to_le_bytes());
     body.extend_from_slice(&CAST_FLAG_SPELL_GO.to_le_bytes());
 
-    if let Some(target) = targets.unit_target {
+    if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
         body.push(1);
         body.extend_from_slice(&target.raw().to_le_bytes());
     } else {
         body.push(0);
     }
     body.push(0); // miss count
+    targets.write(&mut body)?;
+    Ok(body)
+}
+
+fn build_spell_start_body(
+    caster: ObjectGuid,
+    spell_id: u32,
+    cast_time_ms: u32,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(44);
+    PackedGuid::write(&mut body, caster)?;
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&CAST_FLAG_SPELL_START.to_le_bytes());
+    body.extend_from_slice(&cast_time_ms.to_le_bytes());
     targets.write(&mut body)?;
     Ok(body)
 }

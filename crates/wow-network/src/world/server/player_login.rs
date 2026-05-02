@@ -149,18 +149,25 @@ async fn handle_player_login(
         )
         .await;
     let visible_nearby_creatures = visible_db_creature_runtimes(&nearby_creature_runtimes);
-    let nearby_gameobject_runtimes = wow_db::get_nearby_gameobject_spawns(
-        deps.world_db_pool,
-        character.map,
-        character.position_x,
-        character.position_y,
-        CREATURE_SPAWN_RADIUS_YARDS,
-        CREATURE_SPAWN_LIMIT,
-    )
-    .await?
-    .into_iter()
-    .map(DbGameObjectRuntime::new)
-    .collect::<Vec<_>>();
+    deps.maps
+        .ensure_db_gameobject_grids_loaded(
+            deps.world_db_pool,
+            character.map,
+            login_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+        )
+        .await?;
+    let nearby_gameobject_runtimes = deps
+        .maps
+        .nearby_db_gameobject_snapshots(
+            character.map,
+            login_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            CREATURE_SPAWN_LIMIT,
+        )
+        .await;
+    let visible_nearby_gameobjects =
+        visible_db_gameobject_runtimes(&nearby_gameobject_runtimes, Instant::now());
     let nearby_db_player_corpses = wow_db::get_nearby_player_corpses(
         deps.character_db_pool,
         character.map,
@@ -269,7 +276,7 @@ async fn handle_player_login(
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
             nearby_creatures: &visible_nearby_creatures,
-            nearby_gameobjects: &nearby_gameobject_runtimes,
+            nearby_gameobjects: &visible_nearby_gameobjects,
             nearby_player_corpses: &nearby_player_corpses,
         },
         Some(header_crypto),

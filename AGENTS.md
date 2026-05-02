@@ -38,6 +38,29 @@ Task start checklist:
 - Identify the smallest useful tests before changing code.
 - For gameplay parity, identify the CMaNGOS source or DB/DBC backing first.
 
+Architecture-correct scope rule:
+
+- "Small scoped" must not mean "halfway architecture." When the CMaNGOS
+  reference shows that ownership, scheduling, persistence, or authority belongs
+  in a different subsystem, implement the smallest complete move to that correct
+  owner rather than adding an adapter, shim, or session-local workaround that
+  preserves the wrong ownership boundary.
+- If a bug was caused by session-owned state, duplicated per-client ticking, or
+  stale viewer caches, do not stop after filtering or throttling the symptom.
+  Move the source of truth and scheduler to the map/world owner when practical,
+  then leave session state as a viewer/input/output cache.
+- Prefer thin, architecture-correct vertical slices over tiny patches that make
+  the immediate symptom disappear while keeping the wrong control flow. A larger
+  patch is acceptable when it removes the bad ownership edge and has focused
+  tests proving the new boundary.
+- Branch splits and worker scopes are coordination tools, not a reason to defer
+  the core fix. If the correct CMaNGOS-shaped fix crosses several nearby files
+  in one subsystem, keep it together and test it as one coherent change.
+- If an agent intentionally chooses an interim workaround because the full
+  ownership move is too risky for the current turn, it must say so explicitly,
+  document what remains wrong, and prefer a follow-up that removes the
+  workaround before taking unrelated feature work.
+
 Performance reminder for every task:
 
 - While reading CMaNGOS parity paths, keep an audit eye out for large,
@@ -289,8 +312,16 @@ Use this reminder when starting new work:
 Important scope rule:
 Stay focused on the current goal, but use judgment. Fix blockers and safety or
 data-integrity guardrails when they are practical. Log useful follow-ups when
-they should not be handled immediately. Keep the final response clear about what
-changed, what was tested, what bugs were fixed, and what issues were logged.
+they should not be handled immediately.
+
+Do not make tiny symptom patches when the CMaNGOS reference shows the wrong
+owner or scheduler. If the current bug is caused by session-owned state,
+duplicated per-client ticking, stale viewer caches, or misplaced authority,
+make the smallest architecture-correct ownership move and prove that boundary
+with focused tests.
+
+Keep the final response clear about what changed, what was tested, what bugs
+were fixed, and what issues were logged.
 ```
 
 ## Current Next Task
@@ -316,6 +347,8 @@ Current next task:
    - patrol runtime stability.
 3. After the grading branch lands, split implementation into focused worker
    branches from `docs/playable_execution_roadmap.md`, keeping write scopes
-   disjoint where possible.
+   disjoint where possible. Do not split a subsystem so narrowly that an agent
+   preserves the wrong ownership boundary just to keep a patch small; shared
+   map/world ownership fixes should land as complete vertical slices.
 4. Keep existing G3 movement visibility, shared `MapRuntime`, and
    starter-zone flow tests green while building the missing Northshire systems.

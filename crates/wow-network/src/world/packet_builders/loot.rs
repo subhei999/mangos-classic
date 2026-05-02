@@ -262,6 +262,31 @@ fn build_db_creature_loot_response_body(
     body
 }
 
+fn build_gameobject_loot_response_body(
+    target: ObjectGuid,
+    loot_item: Option<&DbCreatureLootRuntime>,
+) -> Vec<u8> {
+    let item_count = u8::from(loot_item.is_some());
+    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
+
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.push(CLIENT_LOOT_CORPSE);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.push(item_count);
+
+    if let Some(loot) = loot_item {
+        body.push(0);
+        body.extend_from_slice(&loot.item.to_le_bytes());
+        body.extend_from_slice(&loot.count.to_le_bytes());
+        body.extend_from_slice(&loot.display_id.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(LOOT_SLOT_NORMAL);
+    }
+
+    body
+}
+
 fn build_loot_release_response_body(target: ObjectGuid, released: bool) -> Vec<u8> {
     let mut body = Vec::with_capacity(9);
 

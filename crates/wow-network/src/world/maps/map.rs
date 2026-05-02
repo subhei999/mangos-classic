@@ -34,11 +34,14 @@ struct MapRuntime {
     instance_id: u32,
     grids: HashMap<GridCoord, GridRuntime>,
     loaded_creature_grids: HashSet<GridCoord>,
+    loaded_gameobject_grids: HashSet<GridCoord>,
     players: HashMap<u32, PlayerRuntime>,
     creatures: HashMap<u64, DbCreatureRuntime>,
+    gameobjects: HashMap<u64, DbGameObjectRuntime>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
+    next_idle_motion_tick_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -116,17 +119,21 @@ impl MapRuntime {
             instance_id,
             grids: HashMap::new(),
             loaded_creature_grids: HashSet::new(),
+            loaded_gameobject_grids: HashSet::new(),
             players: HashMap::new(),
             creatures: HashMap::new(),
+            gameobjects: HashMap::new(),
             active_creature_combats: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
+            next_idle_motion_tick_at: None,
         }
     }
 }
 
 include!("map/players.rs");
 include!("map/creature_snapshots.rs");
+include!("map/gameobject_snapshots.rs");
 include!("map/creature_damage.rs");
 include!("map/creature_lifecycle.rs");
 include!("map/creature_loot.rs");

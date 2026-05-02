@@ -355,4 +355,21 @@ impl MapRuntime {
             })
             .collect()
     }
+
+    fn update_player_db_creature_visibility(
+        &mut self,
+        character_guid: u32,
+        create_guids: &[ObjectGuid],
+        destroy_guids: &[ObjectGuid],
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        for guid in create_guids {
+            player.visible_objects.insert(*guid);
+        }
+        for guid in destroy_guids {
+            player.visible_objects.remove(guid);
+        }
+    }
 }

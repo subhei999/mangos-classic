@@ -106,7 +106,7 @@ async fn handle_client(
                             "Received movement packet after auth"
                         );
                     } else {
-                        info!(
+                        debug!(
                             opcode = format_args!("0x{opcode:04X}"),
                             bytes = body.len(),
                             "Received world packet after auth"
@@ -325,7 +325,7 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
-                            info!(
+                            debug!(
                                 opcode = expected_noop_opcode_name(opcode),
                                 "Ignoring spell cancel opcode for fixture spell slice"
                             );
@@ -360,8 +360,12 @@ async fn handle_client(
                         CMSG_GAMEOBJ_USE => {
                             handle_gameobject_use(
                                 &mut stream,
-                                &character_db_pool,
-                                &world_db_pool,
+                                GameObjectUseDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,

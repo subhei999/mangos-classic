@@ -150,7 +150,8 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     )?;
 
     let creature_blocks = build_db_creature_create_blocks(update.nearby_creatures)?;
-    let gameobject_blocks = build_db_gameobject_create_blocks(update.nearby_gameobjects)?;
+    let gameobject_blocks =
+        build_db_gameobject_create_blocks(update.nearby_gameobjects, update.quest_statuses)?;
     let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;
     let item_blocks = build_inventory_item_create_blocks(character, update.inventory)?;
     let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 2 } else { 0 };

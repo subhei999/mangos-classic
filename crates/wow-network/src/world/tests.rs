@@ -80,6 +80,31 @@ fn decode_create_update_block(
     )
 }
 
+fn decode_positioned_create_update_block(
+    block: &[u8],
+    guid: ObjectGuid,
+    type_id: u8,
+) -> (Vec<Option<u32>>, &[u8]) {
+    assert_eq!(block[0], UPDATE_TYPE_CREATE_OBJECT2);
+    let type_id_offset = 1 + PackedGuid::packed_size(guid);
+    assert_eq!(block[type_id_offset], type_id);
+    assert_eq!(
+        block[type_id_offset + 1],
+        UPDATEFLAG_ALL | UPDATEFLAG_HAS_POSITION
+    );
+    assert_eq!(
+        &block[type_id_offset + 18..type_id_offset + 22],
+        &1u32.to_le_bytes()
+    );
+
+    let values_start = type_id_offset + 22;
+    let values_len = update_values_encoded_len(&block[values_start..]);
+    (
+        decode_update_values(&block[values_start..values_start + values_len]),
+        &block[values_start + values_len..],
+    )
+}
+
 fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
     CharacterEnumEntry {
         guid: 7,
@@ -744,7 +769,25 @@ fn db_gameobject_create_block_uses_spawn_and_template_fields() {
     let spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
     let runtime = DbGameObjectRuntime::new(spawn.clone());
     let block = build_db_gameobject_runtime_create_block(&runtime).unwrap();
-    let (values, trailing) = decode_create_update_block(&block, runtime.guid(), TYPEID_GAMEOBJECT);
+    let type_id_offset = 1 + PackedGuid::packed_size(runtime.guid());
+    assert_eq!(
+        &block[type_id_offset + 2..type_id_offset + 6],
+        &spawn.position_x.to_le_bytes()
+    );
+    assert_eq!(
+        &block[type_id_offset + 6..type_id_offset + 10],
+        &spawn.position_y.to_le_bytes()
+    );
+    assert_eq!(
+        &block[type_id_offset + 10..type_id_offset + 14],
+        &spawn.position_z.to_le_bytes()
+    );
+    assert_eq!(
+        &block[type_id_offset + 14..type_id_offset + 18],
+        &spawn.orientation.to_le_bytes()
+    );
+    let (values, trailing) =
+        decode_positioned_create_update_block(&block, runtime.guid(), TYPEID_GAMEOBJECT);
 
     assert!(trailing.is_empty());
     assert_eq!(values[0], Some(runtime.guid().raw() as u32));
@@ -767,6 +810,29 @@ fn db_gameobject_create_block_uses_spawn_and_template_fields() {
     assert_eq!(
         values[GAMEOBJECT_ANIMPROGRESS],
         Some(spawn.anim_progress as u32)
+    );
+}
+
+#[test]
+fn db_gameobject_create_block_sets_quest_chest_dynamic_flags_for_condition_chests() {
+    let mut spawn = test_gameobject_spawn(161557, GO_TYPE_CHEST);
+    spawn.template.flags = GO_FLAG_INTERACT_COND;
+    spawn.template.raw_data[1] = 10119;
+    let runtime = DbGameObjectRuntime::new(spawn);
+    let session = WorldSessionState::default();
+
+    let block = build_db_gameobject_runtime_create_block_for_quest_statuses(
+        &runtime,
+        &session.quest_statuses,
+    )
+    .unwrap();
+    let (values, trailing) =
+        decode_positioned_create_update_block(&block, runtime.guid(), TYPEID_GAMEOBJECT);
+
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[GAMEOBJECT_DYN_FLAGS],
+        Some(GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE)
     );
 }
 
@@ -818,7 +884,7 @@ fn gameobject_visibility_stages_destroy_for_out_of_range_objects() {
     let updates = stage_db_gameobject_visibility_updates(
         &mut session,
         WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-        vec![nearby],
+        vec![DbGameObjectRuntime::new(nearby)],
         Instant::now(),
     )
     .unwrap();
@@ -828,6 +894,33 @@ fn gameobject_visibility_stages_destroy_for_out_of_range_objects() {
         .iter()
         .any(|guid| guid.raw() == out_guid));
     assert!(!updates.create_bodies.is_empty());
+}
+
+#[test]
+fn gameobject_visibility_stages_destroy_for_shared_consumed_object() {
+    let now = Instant::now();
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    let guid = gameobject_spawn_guid(&spawn).raw();
+    let mut session = WorldSessionState::default();
+    session
+        .db_gameobjects
+        .insert(guid, DbGameObjectRuntime::new(spawn.clone()));
+    let mut shared = DbGameObjectRuntime::new(spawn);
+    shared.mark_consumed(now);
+
+    let updates = stage_db_gameobject_visibility_updates(
+        &mut session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        vec![shared],
+        now,
+    )
+    .unwrap();
+
+    assert!(updates
+        .destroy_guids
+        .iter()
+        .any(|destroy| destroy.raw() == guid));
+    assert!(!session.db_gameobjects.get(&guid).unwrap().client_visible);
 }
 
 #[test]
@@ -3060,6 +3153,7 @@ fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     let targets = SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target),
+        gameobject_target: None,
     };
     let character = ActiveCharacter {
         guid: 7,
@@ -3396,6 +3490,65 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     assert!(session.active_creature_combats.is_empty());
 }
 
+#[tokio::test]
+async fn player_hit_announces_db_creature_retaliation_start() {
+    let attacker_spawn = test_creature_spawn(299);
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 1,
+        player_death_state: PlayerDeathState::Alive,
+        ..WorldSessionState::default()
+    };
+    session
+        .db_creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    begin_db_creature_retaliation_if_needed(
+        &mut sink,
+        shared_world,
+        0,
+        &mut session,
+        attacker,
+        player,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| outbound_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(session
+        .active_creature_combats
+        .contains_key(&attacker.raw()));
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTART));
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
 #[test]
 fn db_creature_melee_reach_is_position_gated() {
     let mut creature = test_creature_spawn(299);
@@ -3633,6 +3786,161 @@ fn map_runtime_lazy_creature_grid_tracks_loaded_grids_and_nearby_snapshots() {
     let nearby = map.nearby_db_creature_snapshots(center, CREATURE_SPAWN_RADIUS_YARDS, 16);
     assert_eq!(nearby.len(), 1);
     assert_eq!(nearby[0].guid().raw(), creature_guid);
+}
+
+#[test]
+fn map_runtime_lazy_gameobject_grid_tracks_loaded_grids_and_nearby_snapshots() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    spawn.guid = 44;
+    spawn.position_x = center.x + 10.0;
+    spawn.position_y = center.y;
+    let gameobject_guid = gameobject_spawn_guid(&spawn).raw();
+
+    assert_eq!(
+        map.unloaded_gameobject_grids_for_area(center, CREATURE_SPAWN_RADIUS_YARDS),
+        vec![grid]
+    );
+    let loaded = map.insert_loaded_gameobject_grid(grid, vec![DbGameObjectRuntime::new(spawn)]);
+    assert_eq!(loaded.len(), 1);
+    assert!(map
+        .unloaded_gameobject_grids_for_area(center, CREATURE_SPAWN_RADIUS_YARDS)
+        .is_empty());
+
+    let nearby = map.nearby_db_gameobject_snapshots(center, CREATURE_SPAWN_RADIUS_YARDS, 16);
+    assert_eq!(nearby.len(), 1);
+    assert_eq!(nearby[0].guid().raw(), gameobject_guid);
+}
+
+#[tokio::test]
+async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    spawn.guid = 44;
+    spawn.position_x = center.x + 4.0;
+    spawn.position_y = center.y;
+    let guid = gameobject_spawn_guid(&spawn);
+    let observer_session = SessionId::next();
+    maps.add_player(PlayerRuntime {
+        guid: 99,
+        account_id: 1,
+        session_id: observer_session,
+        selected_target: None,
+        position: center,
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        cell: cell_coord_for_position(center),
+        visible_objects: HashSet::new(),
+        visual: PlayerVisualState {
+            gender: 0,
+            player_bytes: 0,
+            player_bytes2: 0,
+            equipment_cache: None,
+            guildid: None,
+        },
+        visible_equipment: [0; ENUM_EQUIPMENT_SLOTS],
+        flags: 0,
+        level: 1,
+        race: 1,
+        class: 1,
+        gender: 0,
+        health: 20,
+        max_health: 20,
+        power1: 0,
+        max_power1: 0,
+        power2: 0,
+        player_bytes: 0,
+        player_bytes2: 0,
+    })
+    .await
+    .unwrap();
+    maps.ensure_db_gameobject_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS, |_| {
+        vec![DbGameObjectRuntime::new(spawn.clone())]
+    })
+    .await;
+
+    let (consumed, packets) = maps
+        .consume_db_gameobject(0, guid, Instant::now(), None)
+        .await
+        .expect("loaded gameobject should be consumable");
+
+    assert!(consumed.consumed_until.is_some());
+    assert!(packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == observer_session
+            && packet.opcode == SMSG_DESTROY_OBJECT
+            && packet.body == guid.raw().to_le_bytes()));
+    let snapshots = maps
+        .nearby_db_gameobject_snapshots(0, center, CREATURE_SPAWN_RADIUS_YARDS, 16)
+        .await;
+    assert_eq!(snapshots.len(), 1);
+    assert!(snapshots[0].consumed_until.is_some());
+}
+
+#[test]
+fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
+    let mut map = MapRuntime::new(0, 0);
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let grid = grid_coord_for_position(character.position);
+
+    let mut near_hostile = test_creature_spawn(38);
+    near_hostile.guid = 45;
+    near_hostile.position_x = character.position.x + 8.0;
+    near_hostile.template.faction = 17;
+    near_hostile.template.npc_flags = 0;
+    near_hostile.template.creature_type = 7;
+    near_hostile.template.min_level = 1;
+    near_hostile.template.detection_range = 20;
+    let near_guid = creature_spawn_guid(&near_hostile);
+
+    let mut out_of_detection = near_hostile.clone();
+    out_of_detection.guid = 46;
+    out_of_detection.position_x = character.position.x + 25.0;
+
+    map.insert_loaded_creature_grid(
+        grid,
+        vec![
+            DbCreatureRuntime::new(near_hostile),
+            DbCreatureRuntime::new(out_of_detection),
+        ],
+    );
+
+    let mut unindexed_hostile = test_creature_spawn(38);
+    unindexed_hostile.guid = 47;
+    unindexed_hostile.position_x = character.position.x + 4.0;
+    unindexed_hostile.template.faction = 17;
+    unindexed_hostile.template.npc_flags = 0;
+    unindexed_hostile.template.creature_type = 7;
+    unindexed_hostile.template.min_level = 1;
+    map.creatures.insert(
+        creature_spawn_guid(&unindexed_hostile).raw(),
+        DbCreatureRuntime::new(unindexed_hostile),
+    );
+
+    let targets = map.select_db_creature_sight_aggro_targets(&character);
+
+    assert_eq!(
+        targets
+            .into_iter()
+            .map(|creature| creature.guid())
+            .collect::<Vec<_>>(),
+        vec![near_guid]
+    );
 }
 
 #[tokio::test]
@@ -4990,6 +5298,229 @@ fn player_visible_equipment_update_block_updates_observer_item_visual() {
 }
 
 #[test]
+fn map_runtime_idle_motion_start_guids_require_player_interest() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 305;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+    map.insert_loaded_creature_grid(grid, vec![runtime]);
+
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+    let packets = map.remove_player(8);
+    assert!(packets.is_empty());
+    assert_eq!(
+        map.grids.get(&grid).unwrap().state,
+        GridState::UnloadBlocked(GridUnloadBlocker::Timer)
+    );
+
+    assert_eq!(
+        map.db_creature_idle_motion_start_guids(now),
+        Vec::<u64>::new(),
+        "CMaNGOS-shaped idle patrol starts should pause once no player keeps the area active"
+    );
+}
+
+#[test]
+fn map_runtime_idle_motion_start_guids_ignore_far_same_grid_creatures() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let far_same_grid = WorldPosition::new(
+        0,
+        center.x + CREATURE_SPAWN_RADIUS_YARDS + 40.0,
+        center.y,
+        center.z,
+        center.orientation,
+    );
+    assert_eq!(
+        grid_coord_for_position(center),
+        grid_coord_for_position(far_same_grid),
+        "test fixture needs far creatures to share the player's grid"
+    );
+    let grid = grid_coord_for_position(center);
+    let now = Instant::now();
+    let mut runtimes = Vec::new();
+    for guid in 300..(300 + DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK as u32) {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = guid;
+        spawn.position_x = far_same_grid.x;
+        spawn.position_y = far_same_grid.y;
+        spawn.position_z = far_same_grid.z;
+        spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+        spawn.waypoint_path = vec![test_waypoint(1, far_same_grid.x + 5.0, far_same_grid.y, 0)];
+        let mut runtime = DbCreatureRuntime::new(spawn);
+        runtime.next_waypoint_move_at = Some(now);
+        runtimes.push(runtime);
+    }
+
+    let mut visible_spawn = test_creature_spawn(6);
+    visible_spawn.guid = 999;
+    visible_spawn.position_x = center.x + 5.0;
+    visible_spawn.position_y = center.y;
+    visible_spawn.position_z = center.z;
+    visible_spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    visible_spawn.waypoint_path = vec![test_waypoint(1, center.x + 10.0, center.y, 0)];
+    let visible_guid = creature_spawn_guid(&visible_spawn);
+    let mut visible_runtime = DbCreatureRuntime::new(visible_spawn);
+    visible_runtime.next_waypoint_move_at = Some(now);
+    runtimes.push(visible_runtime);
+
+    map.insert_loaded_creature_grid(grid, runtimes);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    assert_eq!(
+        map.db_creature_idle_motion_start_guids(now),
+        vec![visible_guid.raw()],
+        "same-grid creatures outside visibility should not starve the nearby patrol start budget"
+    );
+}
+
+#[test]
+fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let now = Instant::now();
+    let mut runtimes = Vec::new();
+    for guid in 300..(300 + DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK as u32 + 1) {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = guid;
+        spawn.position_x = center.x;
+        spawn.position_y = center.y;
+        spawn.position_z = center.z;
+        spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+        spawn.waypoint_path = vec![test_waypoint(1, center.x + 5.0, center.y, 0)];
+        let mut runtime = DbCreatureRuntime::new(spawn);
+        runtime.next_waypoint_move_at = Some(now);
+        runtimes.push(runtime);
+    }
+    map.insert_loaded_creature_grid(grid_coord_for_position(center), runtimes);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    let first = map
+        .advance_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(
+        first
+            .packets
+            .iter()
+            .filter(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE)
+            .count(),
+        DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK
+    );
+
+    let duplicate = map
+        .advance_active_db_creature_idle_motions(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(1),
+        )
+        .unwrap();
+    assert!(duplicate.creatures.is_empty());
+    assert!(duplicate.packets.is_empty());
+
+    let next = map
+        .advance_active_db_creature_idle_motions(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(WORLD_TICK_MILLIS),
+        )
+        .unwrap();
+    assert_eq!(
+        next.packets
+            .iter()
+            .filter(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn shared_db_creature_idle_motion_prioritizes_player_interest_over_far_guid_order() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+
+    let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            SessionId(1),
+            SessionHandle {
+                account_id: 1,
+                character_guid: Some(1),
+                outbound: direct_tx,
+            },
+        )
+        .await;
+    let now = Instant::now();
+
+    let mut runtimes = Vec::new();
+    for guid in 300..304 {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = guid;
+        spawn.position_x = 4000.0;
+        spawn.position_y = 4000.0;
+        spawn.position_z = 83.5;
+        spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+        spawn.spawn_dist = 5.0;
+        let mut runtime = DbCreatureRuntime::new(spawn);
+        runtime.next_random_move_at = Some(now);
+        runtimes.push(runtime);
+    }
+
+    let mut valid_spawn = test_creature_spawn(6);
+    valid_spawn.guid = 304;
+    valid_spawn.position_x = 0.0;
+    valid_spawn.position_y = 0.0;
+    valid_spawn.position_z = 83.5;
+    valid_spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    valid_spawn.waypoint_path = vec![test_waypoint(1, 5.0, 0.0, 0)];
+    let valid_guid = creature_spawn_guid(&valid_spawn);
+    let mut valid_runtime = DbCreatureRuntime::new(valid_spawn);
+    valid_runtime.next_waypoint_move_at = Some(now);
+    runtimes.push(valid_runtime);
+
+    maps.share_db_creature_snapshots(0, runtimes).await;
+
+    let tick = maps
+        .advance_all_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .await
+        .unwrap();
+    sessions.dispatch(tick.packets).await;
+
+    assert_eq!(
+        direct_rx.try_recv().unwrap().opcode,
+        SMSG_UPDATE_OBJECT,
+        "nearby patrol should recreate local visibility before motion when the session has not streamed the creature yet"
+    );
+    assert_eq!(
+        direct_rx.try_recv().unwrap().opcode,
+        SMSG_MONSTER_MOVE,
+        "nearby patrol should still start even when lower GUID patrols exist in unrelated far grids"
+    );
+    let creature = maps
+        .db_creature_snapshots(0, &[valid_guid.raw()])
+        .await
+        .pop()
+        .expect("valid creature should stay loaded");
+    assert!(
+        matches!(creature.motion, CreatureMotionState::Waypoint(_)),
+        "nearby creature should enter waypoint motion instead of starving behind far-map GUID order"
+    );
+}
+
+#[test]
 fn map_runtime_player_health_update_refreshes_shared_state_and_observers() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -5878,10 +6409,6 @@ fn db_creature_idle_motion_start_guids_are_paced_per_tick() {
 async fn shared_db_creature_idle_motion_updates_map_and_observers() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
-    let shared_world = SharedWorldDeps {
-        maps: &maps,
-        sessions: &sessions,
-    };
     let player_position = WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0);
     let observer_position = WorldPosition::new(0, 1.0, 0.0, 83.5, 0.0);
     maps.add_player(test_player_runtime(1, SessionId(1), player_position))
@@ -5892,7 +6419,16 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
         .unwrap();
     let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
     let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
-    let mut sink = WorldPacketSink::new(direct_tx);
+    sessions
+        .register(
+            SessionId(1),
+            SessionHandle {
+                account_id: 1,
+                character_guid: Some(1),
+                outbound: direct_tx,
+            },
+        )
+        .await;
     sessions
         .register(
             SessionId(2),
@@ -5916,33 +6452,16 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
     runtime.next_waypoint_move_at = Some(now);
     maps.share_db_creature_snapshots(0, vec![runtime.clone()])
         .await;
-    let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-        }),
-        ..WorldSessionState::default()
-    };
-    session.db_creatures.insert(creature_guid.raw(), runtime);
-    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    maps.update_player_db_creature_visibility(0, 1, &[creature_guid], &[])
+        .await;
+    maps.update_player_db_creature_visibility(0, 2, &[creature_guid], &[])
+        .await;
 
-    advance_db_creature_idle_motions(
-        &mut sink,
-        shared_world,
-        &mut session,
-        now,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap();
+    let tick = maps
+        .advance_all_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .await
+        .unwrap();
+    sessions.dispatch(tick.packets).await;
 
     assert_eq!(direct_rx.try_recv().unwrap().opcode, SMSG_MONSTER_MOVE);
     assert_eq!(observer_rx.try_recv().unwrap().opcode, SMSG_MONSTER_MOVE);
@@ -5952,6 +6471,49 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
         .pop()
         .unwrap();
     assert!(matches!(snapshot.motion, CreatureMotionState::Waypoint(_)));
+}
+
+#[tokio::test]
+async fn shared_db_creature_idle_motion_recreates_local_visibility_before_move() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+
+    let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            SessionId(1),
+            SessionHandle {
+                account_id: 1,
+                character_guid: Some(1),
+                outbound: direct_tx,
+            },
+        )
+        .await;
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    spawn.waypoint_path = vec![test_waypoint(1, 5.0, 0.0, 0)];
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    maps.share_db_creature_snapshots(0, vec![runtime.clone()])
+        .await;
+
+    let tick = maps
+        .advance_all_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .await
+        .unwrap();
+    sessions.dispatch(tick.packets).await;
+
+    assert_eq!(direct_rx.try_recv().unwrap().opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(direct_rx.try_recv().unwrap().opcode, SMSG_MONSTER_MOVE);
 }
 
 #[test]
@@ -8389,6 +8951,7 @@ fn parses_cast_spell_packet_with_unit_target() {
     assert_eq!(cast.spell_id, WARRIOR_HEROIC_STRIKE_RANK_1);
     assert_eq!(cast.targets.target_mask, SPELL_CAST_TARGET_UNIT);
     assert_eq!(cast.targets.unit_target, Some(target));
+    assert_eq!(cast.targets.gameobject_target, None);
 }
 
 #[test]
@@ -8398,6 +8961,7 @@ fn starter_spell_packets_match_cmangos_success_shapes() {
     let targets = SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target),
+        gameobject_target: None,
     };
 
     let result = build_cast_result_ok_body(WARRIOR_HEROIC_STRIKE_RANK_1);
@@ -8444,12 +9008,75 @@ fn starter_spell_packets_match_cmangos_success_shapes() {
 }
 
 #[test]
+fn opening_spell_packets_include_gameobject_target_mask() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let gameobject = ObjectGuid::new(HighGuid::GameObject, 0, 12345);
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_LOCKED | SPELL_CAST_TARGET_GAMEOBJECT,
+        unit_target: None,
+        gameobject_target: Some(gameobject),
+    };
+
+    let start = build_spell_start_body(
+        caster,
+        OPENING_SPELL_ID,
+        OPENING_SPELL_CAST_TIME_MS,
+        &targets,
+    )
+    .unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2;
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), OPENING_SPELL_ID);
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_START
+    );
+    cursor += 2;
+    assert_eq!(
+        read_u32(&start, &mut cursor).unwrap(),
+        OPENING_SPELL_CAST_TIME_MS
+    );
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_LOCKED | SPELL_CAST_TARGET_GAMEOBJECT
+    );
+    cursor += 2;
+    assert_eq!(read_packed_guid(&start, &mut cursor).unwrap(), gameobject);
+    assert_eq!(cursor, start.len());
+
+    let go = build_spell_go_body(caster, OPENING_SPELL_ID, &targets).unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2;
+    assert_eq!(read_u32(&go, &mut cursor).unwrap(), OPENING_SPELL_ID);
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_GO
+    );
+    cursor += 2;
+    assert_eq!(go[cursor], 1);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(go[cursor..cursor + 8].try_into().unwrap()),
+        gameobject.raw()
+    );
+    cursor += 8;
+    assert_eq!(go[cursor], 0);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_LOCKED | SPELL_CAST_TARGET_GAMEOBJECT
+    );
+    cursor += 2;
+    assert_eq!(read_packed_guid(&go, &mut cursor).unwrap(), gameobject);
+    assert_eq!(cursor, go.len());
+}
+
+#[test]
 fn raptor_strike_starter_spell_packets_match_success_shapes() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
     let target = rust_combat_dummy_guid();
     let targets = normalize_fixture_spell_targets(SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
         unit_target: Some(target),
+        gameobject_target: None,
     });
 
     let result = build_cast_result_ok_body(HUNTER_RAPTOR_STRIKE_RANK_1);

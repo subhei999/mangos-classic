@@ -9,7 +9,22 @@
     };
     let map_id = character.position.map_id;
     let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    for attacker in select_db_creature_aggro_targets(session) {
+    let sight_candidates = shared_world
+        .maps
+        .select_db_creature_sight_aggro_targets(map_id, &character)
+        .await;
+    for creature in sight_candidates {
+        let attacker = creature.guid();
+        session.db_creatures.insert(attacker.raw(), creature.clone());
+        if !db_creature_navigation_check(
+            &session.db_creature_navigation,
+            creature.current_position,
+            character.position,
+        )
+        .is_clear()
+        {
+            continue;
+        }
         if !begin_shared_db_creature_combat(shared_world, session, attacker, Instant::now()).await {
             continue;
         }
@@ -401,6 +416,7 @@ fn select_db_creature_aggro_target(session: &WorldSessionState) -> Option<Object
     select_db_creature_aggro_targets(session).into_iter().next()
 }
 
+#[cfg(test)]
 fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGuid> {
     if session.player_death_state != PlayerDeathState::Alive {
         return Vec::new();
@@ -418,6 +434,15 @@ fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGu
         })
         .filter(|creature| creature.can_aggro_player(character))
         .filter_map(|creature| {
+            let distance_sq = creature.distance_to_player_squared(character)?;
+            let attack_distance = db_creature_attack_distance(
+                character.level,
+                creature.spawn.template.min_level,
+                creature.spawn.template.detection_range,
+            );
+            if distance_sq > attack_distance * attack_distance {
+                return None;
+            }
             if !db_creature_navigation_check(
                 &session.db_creature_navigation,
                 creature.current_position,
@@ -427,13 +452,7 @@ fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGu
             {
                 return None;
             }
-            let distance_sq = creature.distance_to_player_squared(character)?;
-            let attack_distance = db_creature_attack_distance(
-                character.level,
-                creature.spawn.template.min_level,
-                creature.spawn.template.detection_range,
-            );
-            (distance_sq <= attack_distance * attack_distance).then_some((distance_sq, creature.guid()))
+            Some((distance_sq, creature.guid()))
         })
         .collect::<Vec<_>>();
     targets.sort_by(|(left_distance, left_guid), (right_distance, right_guid)| {

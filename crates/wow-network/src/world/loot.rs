@@ -22,6 +22,28 @@ async fn handle_loot(
         warn!("Ignoring loot request before character login");
         return Ok(());
     };
+    if target.is_game_object() {
+        let Some(gameobject) = session.db_gameobjects.get(&target.raw()).cloned() else {
+            warn!(
+                target = format_args!("0x{:016X}", target.raw()),
+                "Ignoring loot request for unknown gameobject"
+            );
+            return Ok(());
+        };
+        if gameobject.spawn.map != character.position.map_id
+            || !is_position_inside_radius(gameobject.position(), character.position, 8.0)
+        {
+            warn!("Ignoring gameobject loot request outside interaction range");
+            return Ok(());
+        }
+        let loot_item =
+            select_db_gameobject_loot_item_for_character(world_db_pool, session, &gameobject.spawn.template)
+                .await?;
+        session.db_gameobject_looting = Some(target.raw());
+        session.db_gameobject_loot_item = loot_item;
+        let response = build_gameobject_loot_response_body(target, session.db_gameobject_loot_item.as_ref());
+        return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
+    }
     let Some(creature) = session.db_creatures.get(&target.raw()) else {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -82,6 +104,42 @@ async fn select_db_creature_loot_item_for_character(
         &session.quest_statuses,
         &session.inventory,
     )
+    .map(DbCreatureLootRuntime::from))
+}
+
+async fn select_db_gameobject_loot_item_for_character(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    template: &wow_db::GameObjectTemplateQuery,
+) -> anyhow::Result<Option<DbCreatureLootRuntime>> {
+    let Some(loot_id) = gameobject_chest_loot_id(template) else {
+        return Ok(None);
+    };
+    let loot_rows = wow_db::get_gameobject_loot_items(world_db_pool, loot_id).await?;
+    if loot_rows.is_empty() {
+        return Ok(None);
+    }
+
+    let active_quest_ids: Vec<u32> = session
+        .quest_statuses
+        .values()
+        .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
+        .map(|status| status.quest)
+        .collect();
+    let mut active_quests = HashMap::new();
+    for quest_id in active_quest_ids {
+        if let Some(quest) = wow_db::get_quest_template_query(world_db_pool, quest_id).await? {
+            active_quests.insert(quest_id, quest);
+        }
+    }
+
+    Ok(select_creature_loot_for_active_quests(
+        &loot_rows,
+        &active_quests,
+        &session.quest_statuses,
+        &session.inventory,
+    )
+    .filter(|loot| loot.is_quest_drop())
     .map(DbCreatureLootRuntime::from))
 }
 
@@ -151,6 +209,7 @@ async fn handle_autostore_loot_item(
         return Ok(());
     };
     let character_guid = character.guid;
+    let character_map_id = character.position.map_id;
     if body.is_empty() {
         anyhow::bail!("CMSG_AUTOSTORE_LOOT_ITEM payload too short: {} bytes", body.len());
     }
@@ -204,6 +263,52 @@ async fn handle_autostore_loot_item(
             {
                 session.db_creatures.insert(creature_guid, creature);
             }
+        }
+        return Ok(());
+    }
+
+    if let Some(gameobject_guid) = session.db_gameobject_looting {
+        if loot_slot != 0 {
+            warn!(loot_slot, "Ignoring unsupported DB gameobject loot slot");
+            return Ok(());
+        }
+        let Some(loot) = session.db_gameobject_loot_item.take() else {
+            return Ok(());
+        };
+        let stored = autostore_loot_item(
+            LootAutostoreContext {
+                stream,
+                character_db_pool,
+                world_db_pool,
+                session,
+                header_crypto,
+                character_guid,
+            },
+            gameobject_guid,
+            loot.clone(),
+            loot_slot,
+        )
+        .await?;
+        if !stored {
+            session.db_gameobject_loot_item = Some(loot);
+        } else {
+            let guid = ObjectGuid::from_raw(gameobject_guid);
+            let consumed = shared_world
+                .maps
+                .consume_db_gameobject(character_map_id, guid, Instant::now(), Some(character_guid))
+                .await;
+            if let Some((gameobject, observer_packets)) = consumed {
+                session.db_gameobjects.insert(gameobject_guid, gameobject);
+                shared_world.sessions.dispatch(observer_packets).await;
+            }
+            send_packet(
+                stream,
+                SMSG_DESTROY_OBJECT,
+                &gameobject_guid.to_le_bytes(),
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            session.db_gameobject_looting = None;
         }
         return Ok(());
     }
@@ -404,6 +509,17 @@ async fn handle_loot_release(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let target = read_packet_guid(body, "CMSG_LOOT_RELEASE")?;
+    if target.is_game_object() {
+        session.db_gameobject_looting = None;
+        session.db_gameobject_loot_item = None;
+        return send_packet(
+            stream,
+            SMSG_LOOT_RELEASE_RESPONSE,
+            &build_loot_release_response_body(target, true),
+            Some(header_crypto),
+        )
+        .await;
+    }
     if target == rust_combat_dummy_guid() {
         session.combat_dummy_looting = false;
         session.combat_dummy_lootable = false;

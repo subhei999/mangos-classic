@@ -41,7 +41,7 @@ async fn handle_combat_tick(
     )
     .await?;
     advance_db_creature_return_home_motions(shared_world, session, now).await;
-    advance_db_creature_idle_motions(stream, shared_world, session, now, header_crypto).await?;
+    sync_session_db_creature_idle_motions_from_map(shared_world, session).await;
     if session.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
@@ -213,74 +213,51 @@ async fn advance_db_creature_motion_and_share(
     }
 }
 
-async fn advance_db_creature_idle_motions(
-    stream: &mut WorldPacketSink,
+async fn sync_session_db_creature_idle_motions_from_map(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
-    now: Instant,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
+) {
     let Some(character) = session.active_character.as_ref() else {
-        return Ok(());
+        return;
     };
-    let map_id = character.position.map_id;
-    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let moving_guids = session
-        .db_creatures
-        .iter()
-        .filter_map(|(guid, creature)| {
-            should_advance_db_creature_idle_motion(session, *guid, creature).then_some(*guid)
-        })
-        .collect::<Vec<_>>();
-    for guid in moving_guids {
-        if let Some(creature) = shared_world
-            .maps
-            .advance_db_creature_motion(map_id, ObjectGuid::from_raw(guid), now)
-            .await
-        {
-            session.db_creatures.insert(guid, creature);
-        }
+    let character_position = character.position;
+    let map_id = character_position.map_id;
+    let moving_guids = shared_world
+        .maps
+        .db_creature_idle_motion_advancement_guids(map_id)
+        .await;
+    let snapshots = shared_world
+        .maps
+        .db_creature_snapshots(map_id, &moving_guids)
+        .await;
+    for creature in snapshots {
+        remember_db_creature_snapshot_if_relevant(session, character_position, creature);
     }
-
-    let start_guids = db_creature_idle_motion_start_guids(session, now);
-    for guid in start_guids {
-        let creature_guid = ObjectGuid::from_raw(guid);
-        if let Some((creature, motion)) = shared_world
-            .maps
-            .start_db_creature_idle_motion(
-                map_id,
-                &session.db_creature_navigation,
-                creature_guid,
-                now,
-            )
-            .await
-        {
-            session.db_creatures.insert(guid, creature.clone());
-            let body = build_monster_move_walk_path_body(
-                creature_guid,
-                motion.start,
-                &motion.path,
-                motion.spline_id,
-                motion.duration.as_millis().max(1) as u32,
-            )?;
-            send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(&mut *header_crypto)).await?;
-            broadcast_db_creature_snapshot_packet(
-                CreatureCombatBroadcast {
-                    shared_world,
-                    map_id,
-                    player,
-                },
-                creature,
-                SMSG_MONSTER_MOVE,
-                body,
-            )
-            .await;
-        }
-    }
-
-    Ok(())
 }
 
+fn remember_db_creature_snapshot_if_relevant(
+    session: &mut WorldSessionState,
+    character_position: WorldPosition,
+    mut creature: DbCreatureRuntime,
+) {
+    let guid = creature.guid().raw();
+    let is_visible = is_db_creature_inside_visibility_radius(&creature, character_position);
+    let Some(previously_visible) = session
+        .db_creatures
+        .get(&guid)
+        .map(|existing| existing.client_visible)
+        .or_else(|| (is_visible && creature.life_state != DbCreatureLifeState::Dead).then_some(false))
+    else {
+        return;
+    };
+    let direct_visible = is_visible && creature.life_state != DbCreatureLifeState::Dead;
+    let _became_visible = direct_visible && !previously_visible;
+    creature.client_visible = direct_visible;
+    session.db_creatures.insert(guid, creature);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn should_advance_db_creature_idle_motion(
     session: &WorldSessionState,
     guid: u64,
@@ -295,6 +272,7 @@ fn should_advance_db_creature_idle_motion(
         )
 }
 
+#[cfg(test)]
 fn db_creature_idle_motion_start_guids(
     session: &WorldSessionState,
     now: Instant,
@@ -311,6 +289,7 @@ fn db_creature_idle_motion_start_guids(
     guids
 }
 
+#[cfg(test)]
 fn should_start_db_creature_idle_motion(
     session: &WorldSessionState,
     guid: u64,
@@ -457,7 +436,16 @@ async fn send_db_creature_swing(
     session.player_rage =
         (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
     if !is_dead {
-        begin_shared_db_creature_combat(shared_world, session, target, Instant::now()).await;
+        begin_db_creature_retaliation_if_needed(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            target,
+            attacker,
+            header_crypto,
+        )
+        .await?;
     }
 
     send_packet(
@@ -507,6 +495,30 @@ async fn send_db_creature_swing(
         .await?;
     }
 
+    Ok(())
+}
+
+async fn begin_db_creature_retaliation_if_needed(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    session: &mut WorldSessionState,
+    creature: ObjectGuid,
+    player: ObjectGuid,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if begin_shared_db_creature_combat(shared_world, session, creature, Instant::now()).await {
+        send_db_creature_combat_start(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            creature,
+            player,
+            header_crypto,
+        )
+        .await?;
+    }
     Ok(())
 }
 

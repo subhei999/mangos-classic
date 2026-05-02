@@ -315,6 +315,32 @@ pub async fn get_creature_loot_items(
     Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
 }
 
+pub async fn get_gameobject_loot_items(
+    pool: &MySqlPool,
+    loot_entry: u32,
+) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let rows = sqlx::query_as::<_, CreatureLootRow>(
+        "SELECT gameobject_loot_template.item, \
+                CAST(GREATEST(gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
+                CAST(GREATEST(gameobject_loot_template.maxcount, gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
+                item_template.displayid AS display_id, \
+                gameobject_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
+         FROM gameobject_loot_template \
+         JOIN item_template ON gameobject_loot_template.item = item_template.entry \
+         WHERE gameobject_loot_template.entry = ? \
+           AND gameobject_loot_template.condition_id = 0 \
+           AND gameobject_loot_template.ChanceOrQuestChance <> 0 \
+           AND gameobject_loot_template.groupid = 0 \
+           AND gameobject_loot_template.mincountOrRef > 0 \
+         ORDER BY gameobject_loot_template.item",
+    )
+    .bind(loot_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
+}
+
 pub async fn get_gameobject_template_query(
     pool: &MySqlPool,
     entry: u32,
@@ -992,6 +1018,82 @@ pub async fn get_nearby_gameobject_spawns(
     .bind(position_y)
     .bind(position_y)
     .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(GameObjectSpawnRow::into_query)
+        .collect())
+}
+
+pub async fn get_gameobject_spawns_in_rect(
+    pool: &MySqlPool,
+    map: u32,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
+    let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
+        "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+                CAST(gameobject.position_x AS DOUBLE) AS position_x, \
+                CAST(gameobject.position_y AS DOUBLE) AS position_y, \
+                CAST(gameobject.position_z AS DOUBLE) AS position_z, \
+                CAST(gameobject.orientation AS DOUBLE) AS orientation, \
+                CAST(gameobject.rotation0 AS DOUBLE) AS rotation0, \
+                CAST(gameobject.rotation1 AS DOUBLE) AS rotation1, \
+                CAST(gameobject.rotation2 AS DOUBLE) AS rotation2, \
+                CAST(gameobject.rotation3 AS DOUBLE) AS rotation3, \
+                gameobject.spawntimesecsmin AS spawn_time_secs_min, \
+                gameobject.spawntimesecsmax AS spawn_time_secs_max, \
+                CAST(COALESCE(gameobject_addon.state, -1) AS SIGNED) AS state, \
+                CAST(COALESCE(gameobject_addon.animprogress, 100) AS UNSIGNED) AS anim_progress, \
+                gameobject_template.entry AS template_entry, \
+                gameobject_template.type AS template_object_type, \
+                gameobject_template.displayId AS template_display_id, \
+                gameobject_template.name AS template_name, \
+                gameobject_template.IconName AS template_icon_name, \
+                CAST(gameobject_template.faction AS UNSIGNED) AS template_faction, \
+                CAST(gameobject_template.flags AS UNSIGNED) AS template_flags, \
+                gameobject_template.size AS template_size, \
+                CAST(gameobject_template.data0 AS UNSIGNED) AS template_data0, \
+                CAST(gameobject_template.data1 AS UNSIGNED) AS template_data1, \
+                CAST(gameobject_template.data2 AS UNSIGNED) AS template_data2, \
+                CAST(gameobject_template.data3 AS UNSIGNED) AS template_data3, \
+                CAST(gameobject_template.data4 AS UNSIGNED) AS template_data4, \
+                CAST(gameobject_template.data5 AS UNSIGNED) AS template_data5, \
+                CAST(gameobject_template.data6 AS UNSIGNED) AS template_data6, \
+                CAST(gameobject_template.data7 AS UNSIGNED) AS template_data7, \
+                CAST(gameobject_template.data8 AS UNSIGNED) AS template_data8, \
+                CAST(gameobject_template.data9 AS UNSIGNED) AS template_data9, \
+                CAST(gameobject_template.data10 AS UNSIGNED) AS template_data10, \
+                CAST(gameobject_template.data11 AS UNSIGNED) AS template_data11, \
+                CAST(gameobject_template.data12 AS UNSIGNED) AS template_data12, \
+                CAST(gameobject_template.data13 AS UNSIGNED) AS template_data13, \
+                CAST(gameobject_template.data14 AS UNSIGNED) AS template_data14, \
+                CAST(gameobject_template.data15 AS UNSIGNED) AS template_data15, \
+                CAST(gameobject_template.data16 AS UNSIGNED) AS template_data16, \
+                CAST(gameobject_template.data17 AS UNSIGNED) AS template_data17, \
+                CAST(gameobject_template.data18 AS UNSIGNED) AS template_data18, \
+                CAST(gameobject_template.data19 AS UNSIGNED) AS template_data19, \
+                CAST(gameobject_template.data20 AS UNSIGNED) AS template_data20, \
+                CAST(gameobject_template.data21 AS UNSIGNED) AS template_data21, \
+                CAST(gameobject_template.data22 AS UNSIGNED) AS template_data22, \
+                CAST(gameobject_template.data23 AS UNSIGNED) AS template_data23 \
+         FROM gameobject \
+         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
+         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
+         WHERE gameobject.map = ? \
+           AND gameobject.position_x BETWEEN ? AND ? \
+           AND gameobject.position_y BETWEEN ? AND ? \
+         ORDER BY gameobject.guid ASC",
+    )
+    .bind(map)
+    .bind(min_x)
+    .bind(max_x)
+    .bind(min_y)
+    .bind(max_y)
     .fetch_all(pool)
     .await?;
 

@@ -7637,9 +7637,15 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         },
     );
 
-    let selected =
-        select_creature_loot_for_active_quests(&loot_rows, &active_quests, &quest_statuses, &[])
-            .expect("quest item should be selected for active quest");
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &active_quests,
+        &quest_statuses,
+        &[],
+        || 0.0,
+        |min_count, _max_count| min_count,
+    )
+    .expect("quest item should be selected for active quest");
     assert_eq!(selected.item, 777);
 }
 
@@ -7685,14 +7691,68 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         durability: 0,
     }];
 
-    let selected = select_creature_loot_for_active_quests(
+    let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
         &active_quests,
         &quest_statuses,
         &inventory,
+        || 0.0,
+        |min_count, _max_count| min_count,
     )
     .expect("normal loot should be selected when quest item is already satisfied");
     assert_eq!(selected.item, 159);
+}
+
+#[test]
+fn creature_loot_roll_respects_chance_thresholds() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 49.9,
+        },
+        CreatureLootQuery {
+            item: 160,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: 50.0,
+        },
+    ];
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 49.95,
+        |min_count, _max_count| min_count,
+    )
+    .expect("second loot row should pass chance roll");
+    assert_eq!(selected.item, 160);
+}
+
+#[test]
+fn creature_loot_roll_uses_randomized_count_range() {
+    let loot_rows = vec![CreatureLootQuery {
+        item: 118,
+        min_count: 2,
+        max_count: 5,
+        display_id: 9,
+        chance_or_quest_chance: 100.0,
+    }];
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 0.0,
+        |_min_count, _max_count| 4,
+    )
+    .expect("loot should be selected");
+    assert_eq!(selected.min_count, 4);
+    assert_eq!(selected.max_count, 4);
 }
 
 #[test]

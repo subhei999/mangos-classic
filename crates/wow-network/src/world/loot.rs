@@ -189,21 +189,59 @@ fn select_creature_loot_for_active_quests(
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
 ) -> Option<CreatureLootQuery> {
+    let mut chance_rng = rand::thread_rng();
+    let mut count_rng = rand::thread_rng();
+    select_creature_loot_for_active_quests_with_rolls(
+        loot_rows,
+        active_quests,
+        quest_statuses,
+        inventory,
+        || rand::Rng::gen_range(&mut chance_rng, 0.0f32..100.0f32),
+        |min_count, max_count| rand::Rng::gen_range(&mut count_rng, min_count..=max_count),
+    )
+}
+
+fn select_creature_loot_for_active_quests_with_rolls(
+    loot_rows: &[CreatureLootQuery],
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+    mut chance_roll: impl FnMut() -> f32,
+    mut count_roll: impl FnMut(u32, u32) -> u32,
+) -> Option<CreatureLootQuery> {
     let mut first_normal = None;
     let mut first_quest = None;
     for loot in loot_rows {
-        if loot.is_quest_drop() {
-            if player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory) {
-                first_quest = Some(loot.clone());
-                break;
-            }
+        let is_quest_drop = loot.is_quest_drop();
+        if is_quest_drop
+            && !player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory)
+        {
             continue;
         }
+        let chance = if is_quest_drop {
+            -loot.chance_or_quest_chance
+        } else {
+            loot.chance_or_quest_chance
+        }
+        .clamp(0.0, 100.0);
+        if chance <= 0.0 || chance_roll() >= chance {
+            continue;
+        }
+
+        let min_count = loot.min_count.max(1);
+        let max_count = loot.max_count.max(min_count);
+        let rolled_count = count_roll(min_count, max_count).clamp(min_count, max_count);
+        let mut rolled_loot = loot.clone();
+        rolled_loot.min_count = rolled_count;
+        rolled_loot.max_count = rolled_count;
+        if is_quest_drop {
+            first_quest = Some(rolled_loot);
+            break;
+        }
         if first_normal.is_none() {
-            first_normal = Some(loot.clone());
+            first_normal = Some(rolled_loot);
         }
     }
-
     first_quest.or(first_normal)
 }
 

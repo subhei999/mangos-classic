@@ -193,13 +193,76 @@ fn write_db_creature_update_values(
         UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 2,
         template.equip_display_id3,
     )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO,
+        packed_virtual_item_info0(
+            template.equip_class1,
+            template.equip_subclass1,
+            template.equip_material1,
+            template.equip_inventory_type1,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 1,
+        packed_virtual_item_info1(template.equip_sheath1),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 2,
+        packed_virtual_item_info0(
+            template.equip_class2,
+            template.equip_subclass2,
+            template.equip_material2,
+            template.equip_inventory_type2,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 3,
+        packed_virtual_item_info1(template.equip_sheath2),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 4,
+        packed_virtual_item_info0(
+            template.equip_class3,
+            template.equip_subclass3,
+            template.equip_material3,
+            template.equip_inventory_type3,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 5,
+        packed_virtual_item_info1(template.equip_sheath3),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, template.min_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, template.max_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_update_value(&mut values, UNIT_NPC_FLAGS, npc_flags)?;
     write_update_values(body, &values)
+}
+
+fn packed_virtual_item_info0(class: u32, subclass: u32, material: i32, inventory_type: u32) -> u32 {
+    (class & 0xFF)
+        | ((subclass & 0xFF) << 8)
+        | (((material as u32) & 0xFF) << 16)
+        | ((inventory_type & 0xFF) << 24)
+}
+
+fn packed_virtual_item_info1(sheath: u32) -> u32 {
+    sheath & 0xFF
+}
+
+fn creature_unit_bytes_2() -> u32 {
+    const SHEATH_STATE_MELEE: u32 = 1;
+    const UNIT_BYTE2_FLAG_AURAS: u32 = 0x10;
+    SHEATH_STATE_MELEE | (UNIT_BYTE2_FLAG_AURAS << 8)
 }
 
 fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {

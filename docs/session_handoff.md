@@ -14,12 +14,12 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   - `1de9b747b` (`Merge quest status markers`);
   - `a41449b76` (`Merge combat resource feel`);
   - `8627829d1` (`Merge creature template fidelity`).
-- Current uncommitted state: Heroic Strike delayed rage-cost fix plus this
-  handoff refresh.
+- Current uncommitted state: creature visual fidelity plus proactive questgiver
+  status refresh for real-client side-by-side testing.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the delayed rage-cost fix:
-  - authserver PID `40568` on `127.0.0.1:13724`;
-  - worldserver PID `13792` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the creature/status refresh:
+  - authserver PID `47208` on `127.0.0.1:13724`;
+  - worldserver PID `16448` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -67,6 +67,16 @@ log the follow-up.
     client queues the attack;
   - the queue packet path no longer sends a power update at cast time for
     next-melee spells.
+- Current creature/status patch:
+  - DB creature template projections now include `item_template` class,
+    subclass, material, inventory type, and sheath data for all three creature
+    equipment slots;
+  - DB creature create blocks now send `UNIT_VIRTUAL_ITEM_INFO` and
+    `UNIT_FIELD_BYTES_2` melee/aura bytes like CMaNGOS, so armed creatures have
+    the metadata the client uses for weapon animations;
+  - quest accept/reward handlers now proactively resend visible questgiver
+    status packets after quest state changes, including gray unavailable
+    status for level-locked visible quests.
 
 ## Still Unmerged Worker Branches
 
@@ -117,6 +127,17 @@ client stack, and giving the user concrete real-client success criteria.
   - `cargo test -p wow-network heroic_strike --lib`;
   - `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue --lib`;
   - `.\scripts\test-rust.cmd`.
+- Current creature/status patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network creature_create --lib`;
+  - `cargo test -p wow-network quest_state_refresh --lib`;
+  - `cargo test -p wow-network quest --lib`;
+  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`.
 
 ## Known Follow-Ups
 
@@ -124,14 +145,18 @@ client stack, and giving the user concrete real-client success criteria.
   queued, consumes rage when the swing lands, does not generate rage from that
   swing, and that prior fixes remain stable: trainer `Train me` no disconnect,
   autoattack stop/start no acceleration.
+- Current real-client smoke should also confirm that after turning in/accepting
+  early Deputy Willem quests, newly visible but level-locked quests show a gray
+  `!`, and that armed NPCs such as Defias Thugs swing with weapon animations
+  instead of looking like unarmed punches.
 - User confirmed: Milly quest is no longer incorrectly available at level 2;
   creature speed feels fixed; overkill packet damage is improved but combat log
   still needs explicit `(overkill)` display parity; wolf/drop items and other
   previously fixed items should remain under smoke watch.
-- Still observed: gray unavailable quest marker is not visible; creature visual
-  scale still does not match; NPCs with weapons can look like they punch while
-  holding a sword; CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still
-  unhandled.
+- Still observed before the latest patch: gray unavailable quest marker was not
+  visible; creature visual scale still did not match; NPCs with weapons could
+  look like they punched while holding a sword. Re-test these on the restarted
+  stack. CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
 - Continue user-led side-by-side testing and turn observations into generalized
   system tasks. Current observation list includes NPC work animations, rage
   formula, creature speed/scale/equipment, gray quest markers, overkill, combo
@@ -148,6 +173,8 @@ client stack, and giving the user concrete real-client success criteria.
 - `crates/wow-db/src/world_data.rs`
 - `crates/wow-network/src/world/server/player_login.rs`
 - `crates/wow-network/src/world/entities/update_data.rs`
+- `crates/wow-network/src/world/entities/creature.rs`
+- `crates/wow-network/src/world/quests.rs`
 - `crates/wow-network/src/world/combat/lifecycle.rs`
 - `crates/wow-network/src/world/combat/melee.rs`
 - `crates/wow-network/src/world/maps/map.rs`

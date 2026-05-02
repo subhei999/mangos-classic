@@ -353,6 +353,42 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    async fn prime_creature_complete_quest_ids_for_test(
+        &self,
+        creature_entry: u32,
+        quests: Vec<u32>,
+    ) {
+        self.creature_complete_quest_ids
+            .lock()
+            .await
+            .insert(creature_entry, quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_quest_prev_quests_for_test(&self, quest: u32, prev_quests: Vec<i32>) {
+        self.quest_prev_quests
+            .lock()
+            .await
+            .insert(quest, prev_quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_quest_prev_chain_quests_for_test(&self, quest: u32, prev_chain_quests: Vec<u32>) {
+        self.quest_prev_chain_quests
+            .lock()
+            .await
+            .insert(quest, prev_chain_quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_exclusive_group_quests_for_test(&self, exclusive_group: i32, quests: Vec<u32>) {
+        self.exclusive_group_quests
+            .lock()
+            .await
+            .insert(exclusive_group, quests);
+    }
+
+    #[cfg(test)]
     async fn prime_creature_loot_template_for_test(
         &self,
         creature_entry: u32,

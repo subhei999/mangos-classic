@@ -65,6 +65,21 @@ pub struct CreatureTemplateQuery {
     pub equip_display_id1: u32,
     pub equip_display_id2: u32,
     pub equip_display_id3: u32,
+    pub equip_class1: u32,
+    pub equip_class2: u32,
+    pub equip_class3: u32,
+    pub equip_subclass1: u32,
+    pub equip_subclass2: u32,
+    pub equip_subclass3: u32,
+    pub equip_material1: i32,
+    pub equip_material2: i32,
+    pub equip_material3: i32,
+    pub equip_inventory_type1: u32,
+    pub equip_inventory_type2: u32,
+    pub equip_inventory_type3: u32,
+    pub equip_sheath1: u32,
+    pub equip_sheath2: u32,
+    pub equip_sheath3: u32,
     pub experience_multiplier: f32,
 }
 
@@ -290,6 +305,21 @@ pub async fn get_creature_template_query(
                 CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS equip_display_id1, \
                 CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS equip_display_id2, \
                 CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS equip_sheath3, \
                 creature_template.ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          LEFT JOIN creature_model_info \
@@ -903,6 +933,21 @@ pub async fn get_nearby_creature_spawns(
                 CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
                 CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
                 CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
@@ -1206,6 +1251,21 @@ pub async fn get_creature_spawns_in_rect(
                 CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
                 CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
                 CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
@@ -1921,6 +1981,21 @@ struct CreatureSpawnRow {
     template_equip_display_id1: u32,
     template_equip_display_id2: u32,
     template_equip_display_id3: u32,
+    template_equip_class1: u32,
+    template_equip_class2: u32,
+    template_equip_class3: u32,
+    template_equip_subclass1: u32,
+    template_equip_subclass2: u32,
+    template_equip_subclass3: u32,
+    template_equip_material1: i32,
+    template_equip_material2: i32,
+    template_equip_material3: i32,
+    template_equip_inventory_type1: u32,
+    template_equip_inventory_type2: u32,
+    template_equip_inventory_type3: u32,
+    template_equip_sheath1: u32,
+    template_equip_sheath2: u32,
+    template_equip_sheath3: u32,
     template_experience_multiplier: f32,
 }
 
@@ -1997,6 +2072,21 @@ impl CreatureSpawnRow {
                 equip_display_id1: self.template_equip_display_id1,
                 equip_display_id2: self.template_equip_display_id2,
                 equip_display_id3: self.template_equip_display_id3,
+                equip_class1: self.template_equip_class1,
+                equip_class2: self.template_equip_class2,
+                equip_class3: self.template_equip_class3,
+                equip_subclass1: self.template_equip_subclass1,
+                equip_subclass2: self.template_equip_subclass2,
+                equip_subclass3: self.template_equip_subclass3,
+                equip_material1: self.template_equip_material1,
+                equip_material2: self.template_equip_material2,
+                equip_material3: self.template_equip_material3,
+                equip_inventory_type1: self.template_equip_inventory_type1,
+                equip_inventory_type2: self.template_equip_inventory_type2,
+                equip_inventory_type3: self.template_equip_inventory_type3,
+                equip_sheath1: self.template_equip_sheath1,
+                equip_sheath2: self.template_equip_sheath2,
+                equip_sheath3: self.template_equip_sheath3,
                 experience_multiplier: self.template_experience_multiplier,
             },
             waypoint_path: Vec::new(),

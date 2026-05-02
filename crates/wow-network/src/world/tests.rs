@@ -274,6 +274,21 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         equip_display_id1: 0,
         equip_display_id2: 0,
         equip_display_id3: 0,
+        equip_class1: 0,
+        equip_class2: 0,
+        equip_class3: 0,
+        equip_subclass1: 0,
+        equip_subclass2: 0,
+        equip_subclass3: 0,
+        equip_material1: 0,
+        equip_material2: 0,
+        equip_material3: 0,
+        equip_inventory_type1: 0,
+        equip_inventory_type2: 0,
+        equip_inventory_type3: 0,
+        equip_sheath1: 0,
+        equip_sheath2: 0,
+        equip_sheath3: 0,
         experience_multiplier: 1.0,
     }
 }
@@ -764,6 +779,16 @@ fn db_creature_create_block_uses_template_speed_rates_and_equipment_displays() {
     creature.template.equip_display_id1 = 1001;
     creature.template.equip_display_id2 = 1002;
     creature.template.equip_display_id3 = 1003;
+    creature.template.equip_class1 = 2;
+    creature.template.equip_subclass1 = 7;
+    creature.template.equip_material1 = 1;
+    creature.template.equip_inventory_type1 = 21;
+    creature.template.equip_sheath1 = 3;
+    creature.template.equip_class2 = 4;
+    creature.template.equip_subclass2 = 6;
+    creature.template.equip_material2 = -1;
+    creature.template.equip_inventory_type2 = 14;
+    creature.template.equip_sheath2 = 1;
 
     let block = build_db_creature_create_block(&creature).unwrap();
     let packed_guid_mask = block[1];
@@ -781,6 +806,13 @@ fn db_creature_create_block_uses_template_speed_rates_and_equipment_displays() {
     assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY], Some(1001));
     assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 1], Some(1002));
     assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 2], Some(1003));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO], Some(0x1501_0702));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 1], Some(3));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 2], Some(0x0EFF_0604));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 3], Some(1));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 4], Some(0));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 5], Some(0));
+    assert_eq!(values[UNIT_FIELD_BYTES_2], Some(creature_unit_bytes_2()));
 }
 
 #[test]
@@ -2448,6 +2480,80 @@ fn start_quest_dialog_status_distinguishes_available_gray_and_hidden() {
         Some(DIALOG_STATUS_UNAVAILABLE)
     );
     assert_eq!(start_quest_dialog_status(false, false), None);
+}
+
+#[tokio::test]
+async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiver() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.min_level = 2;
+    quest.exclusive_group = 0;
+    let giver = ObjectGuid::new(HighGuid::Unit, 823, 55);
+    object_mgr
+        .prime_creature_start_quest_ids_for_test(823, vec![18])
+        .await;
+    object_mgr
+        .prime_creature_complete_quest_ids_for_test(823, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(18, Some(quest))
+        .await;
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    send_visible_questgiver_status_updates(
+        &mut sink,
+        &object_mgr,
+        &pool,
+        shared_world,
+        &session,
+        &[giver],
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, SMSG_QUESTGIVER_STATUS);
+    assert_eq!(
+        packet.body,
+        build_questgiver_status_body(giver, DIALOG_STATUS_UNAVAILABLE)
+    );
+    assert!(outbound_rx.try_recv().is_err());
 }
 
 #[test]

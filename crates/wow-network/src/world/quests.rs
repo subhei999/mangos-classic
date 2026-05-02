@@ -109,15 +109,24 @@ async fn handle_questgiver_query_quest(
     .await
 }
 
+#[derive(Clone, Copy)]
+struct QuestMutationDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    object_mgr: &'a ObjectMgr,
+    world_db_pool: &'a MySqlPool,
+    shared_world: SharedWorldDeps<'a>,
+}
+
 async fn handle_questgiver_accept_quest(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    object_mgr: &ObjectMgr,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let object_mgr = deps.object_mgr;
+    let world_db_pool = deps.world_db_pool;
     let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid) else {
         warn!("Ignoring quest accept before character login");
         return Ok(());
@@ -191,10 +200,20 @@ async fn handle_questgiver_accept_quest(
             stream,
             SMSG_QUESTUPDATE_COMPLETE,
             &request.quest.to_le_bytes(),
-            Some(header_crypto),
+            Some(&mut *header_crypto),
         )
         .await?;
     }
+    send_visible_questgiver_status_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        deps.shared_world,
+        session,
+        &[request.guid],
+        header_crypto,
+    )
+    .await?;
     Ok(())
 }
 
@@ -272,13 +291,14 @@ async fn handle_questgiver_complete_quest(
 
 async fn handle_questgiver_choose_reward(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    object_mgr: &ObjectMgr,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let object_mgr = deps.object_mgr;
+    let world_db_pool = deps.world_db_pool;
     let Some(character) = &session.active_character else {
         warn!("Ignoring quest reward before character login");
         return Ok(());
@@ -397,7 +417,17 @@ async fn handle_questgiver_choose_reward(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_player_quest_log_clear_body(character_guid, slot.unwrap_or(0))?,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_visible_questgiver_status_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        deps.shared_world,
+        session,
+        &[request.guid],
+        header_crypto,
     )
     .await
 }
@@ -534,6 +564,77 @@ async fn questgiver_dialog_status(
         }
     }
     Ok(dialog_status)
+}
+
+async fn send_visible_questgiver_status_updates(
+    stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    extra_guids: &[ObjectGuid],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+
+    let mut seen = HashSet::new();
+    let mut guids = Vec::new();
+    for guid in extra_guids {
+        if !guid.is_creature() && !guid.is_game_object() {
+            continue;
+        }
+        if seen.insert(guid.raw()) {
+            guids.push(*guid);
+        }
+    }
+
+    let visible_creature_guids = shared_world
+        .maps
+        .player_visible_db_creature_guids(character.position.map_id, character.guid)
+        .await;
+    let visible_creatures = shared_world
+        .maps
+        .db_creature_snapshots(character.position.map_id, &visible_creature_guids)
+        .await;
+    for creature in visible_creatures {
+        let guid = creature.guid();
+        if seen.insert(guid.raw()) {
+            guids.push(guid);
+        }
+    }
+
+    for guid in guids {
+        if !questgiver_has_quest_relation(object_mgr, world_db_pool, guid).await? {
+            continue;
+        }
+        let status = questgiver_dialog_status(object_mgr, world_db_pool, guid, session).await?;
+        send_packet(
+            stream,
+            SMSG_QUESTGIVER_STATUS,
+            &build_questgiver_status_body(guid, status),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn questgiver_has_quest_relation(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+) -> anyhow::Result<bool> {
+    if !guid.is_creature() && !guid.is_game_object() {
+        return Ok(false);
+    }
+    Ok(!questgiver_start_quests(object_mgr, world_db_pool, guid)
+        .await?
+        .is_empty()
+        || !questgiver_complete_quests(object_mgr, world_db_pool, guid)
+            .await?
+            .is_empty())
 }
 
 async fn questgiver_visible_quests(

@@ -413,9 +413,16 @@ async fn handle_client(
                         CMSG_QUESTGIVER_ACCEPT_QUEST => {
                             handle_questgiver_accept_quest(
                                 &mut stream,
-                                &character_db_pool,
-                                &runtime_state.object_mgr,
-                                &world_db_pool,
+                                QuestMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -437,9 +444,16 @@ async fn handle_client(
                         CMSG_QUESTGIVER_CHOOSE_REWARD => {
                             handle_questgiver_choose_reward(
                                 &mut stream,
-                                &character_db_pool,
-                                &runtime_state.object_mgr,
-                                &world_db_pool,
+                                QuestMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                },
                                 &body,
                                 &mut session,
                                 &mut header_crypto,

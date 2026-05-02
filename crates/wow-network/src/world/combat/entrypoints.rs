@@ -129,6 +129,9 @@ async fn scheduled_player_auto_attack_next_swing(
             }
             return now;
         }
+        if let Some(next_swing) = snapshot.active_combat_next_swing_at {
+            return next_swing.max(now);
+        }
     }
     now
 }

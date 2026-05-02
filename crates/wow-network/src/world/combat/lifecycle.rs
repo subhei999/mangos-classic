@@ -473,7 +473,11 @@ async fn send_db_creature_swing(
             .set_player_next_swing_at(map_id, character_snapshot.guid, Some(next_swing))
             .await;
     }
-    let rage_gain = rage_gain_from_damage(event.damage, character_snapshot.level, true);
+    let rage_gain = if queued_spell.is_some() {
+        0
+    } else {
+        rage_gain_from_damage(event.damage, character_snapshot.level, true)
+    };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
         .maps
@@ -1012,7 +1016,11 @@ async fn send_combat_dummy_swing(
         .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
     let damage = session.combat_dummy_health.min(hit_damage);
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-    let rage_gain = rage_gain_from_damage(damage, character.level, true);
+    let rage_gain = if queued_spell.is_some() {
+        0
+    } else {
+        rage_gain_from_damage(damage, character.level, true)
+    };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
         .maps

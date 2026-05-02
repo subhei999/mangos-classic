@@ -256,47 +256,49 @@ pub async fn get_creature_template_query(
     entry: u32,
 ) -> Result<Option<CreatureTemplateQuery>, DbError> {
     let row = sqlx::query_as::<_, CreatureTemplateQuery>(
-        "SELECT Entry AS entry, Name AS name, SubName AS subname, \
-                MinLevel AS min_level, MaxLevel AS max_level, \
-                DisplayId1 AS display_id1, DisplayId2 AS display_id2, \
-                DisplayId3 AS display_id3, DisplayId4 AS display_id4, \
+        "SELECT creature_template.Entry AS entry, creature_template.Name AS name, creature_template.SubName AS subname, \
+                creature_template.MinLevel AS min_level, creature_template.MaxLevel AS max_level, \
+                creature_template.DisplayId1 AS display_id1, creature_template.DisplayId2 AS display_id2, \
+                creature_template.DisplayId3 AS display_id3, creature_template.DisplayId4 AS display_id4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
-                Faction AS faction, Scale AS scale, SpeedWalk AS speed_walk, SpeedRun AS speed_run, Detection AS detection_range, \
-                CallForHelp AS call_for_help, Pursuit AS pursuit, Leash AS leash, \
-                Family AS family, \
-                CreatureType AS creature_type, NpcFlags AS npc_flags, \
-                UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, \
-                UnitClass AS unit_class, Rank AS rank, \
-                HealthMultiplier AS health_multiplier, PowerMultiplier AS power_multiplier, \
-                DamageMultiplier AS damage_multiplier, DamageVariance AS damage_variance, \
-                ArmorMultiplier AS armor_multiplier, \
-                MinLevelHealth AS min_level_health, MaxLevelHealth AS max_level_health, \
-                MinLevelMana AS min_level_mana, MaxLevelMana AS max_level_mana, \
-                MinMeleeDmg AS min_melee_dmg, MaxMeleeDmg AS max_melee_dmg, \
-                MinRangedDmg AS min_ranged_dmg, MaxRangedDmg AS max_ranged_dmg, \
-                Armor AS armor, MeleeAttackPower AS melee_attack_power, \
-                RangedAttackPower AS ranged_attack_power, \
-                MinLootGold AS min_loot_gold, MaxLootGold AS max_loot_gold, \
-                MeleeBaseAttackTime AS melee_base_attack_time, \
-                RangedBaseAttackTime AS ranged_base_attack_time, \
-                DamageSchool AS damage_school, \
-                TrainerType AS trainer_type, TrainerClass AS trainer_class, \
-                PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
-                CorpseDecay AS corpse_decay, \
-                MovementType AS movement_type, EquipmentTemplateId AS equipment_template_id, \
+                creature_template.Faction AS faction, creature_template.Scale AS scale, \
+                creature_template.SpeedWalk AS speed_walk, creature_template.SpeedRun AS speed_run, \
+                creature_template.Detection AS detection_range, \
+                creature_template.CallForHelp AS call_for_help, creature_template.Pursuit AS pursuit, creature_template.Leash AS leash, \
+                creature_template.Family AS family, \
+                creature_template.CreatureType AS creature_type, creature_template.NpcFlags AS npc_flags, \
+                creature_template.UnitFlags AS unit_flags, creature_template.DynamicFlags AS dynamic_flags, \
+                creature_template.UnitClass AS unit_class, creature_template.Rank AS rank, \
+                creature_template.HealthMultiplier AS health_multiplier, creature_template.PowerMultiplier AS power_multiplier, \
+                creature_template.DamageMultiplier AS damage_multiplier, creature_template.DamageVariance AS damage_variance, \
+                creature_template.ArmorMultiplier AS armor_multiplier, \
+                creature_template.MinLevelHealth AS min_level_health, creature_template.MaxLevelHealth AS max_level_health, \
+                creature_template.MinLevelMana AS min_level_mana, creature_template.MaxLevelMana AS max_level_mana, \
+                creature_template.MinMeleeDmg AS min_melee_dmg, creature_template.MaxMeleeDmg AS max_melee_dmg, \
+                creature_template.MinRangedDmg AS min_ranged_dmg, creature_template.MaxRangedDmg AS max_ranged_dmg, \
+                creature_template.Armor AS armor, creature_template.MeleeAttackPower AS melee_attack_power, \
+                creature_template.RangedAttackPower AS ranged_attack_power, \
+                creature_template.MinLootGold AS min_loot_gold, creature_template.MaxLootGold AS max_loot_gold, \
+                creature_template.MeleeBaseAttackTime AS melee_base_attack_time, \
+                creature_template.RangedBaseAttackTime AS ranged_base_attack_time, \
+                creature_template.DamageSchool AS damage_school, \
+                creature_template.TrainerType AS trainer_type, creature_template.TrainerClass AS trainer_class, \
+                creature_template.PetSpellDataId AS pet_spell_data_id, creature_template.Civilian AS civilian, \
+                creature_template.CorpseDecay AS corpse_decay, \
+                creature_template.MovementType AS movement_type, creature_template.EquipmentTemplateId AS equipment_template_id, \
                 CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS equip_display_id1, \
                 CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS equip_display_id2, \
                 CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS equip_display_id3, \
-                ExperienceMultiplier AS experience_multiplier \
+                creature_template.ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          LEFT JOIN creature_model_info \
-           ON creature_model_info.modelid = COALESCE(NULLIF(DisplayId1, 0), NULLIF(DisplayId2, 0), NULLIF(DisplayId3, 0), NULLIF(DisplayId4, 0), 0) \
+           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
          LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
          LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
          LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
-         WHERE Entry = ?",
+         WHERE creature_template.Entry = ?",
     )
     .bind(entry)
     .fetch_optional(pool)

@@ -6927,6 +6927,28 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
         Some(target)
     );
 
+    let future_next = now + swing_delay;
+    maps.set_player_auto_attack(map_id, character_guid, None, Some(future_next))
+        .await;
+    let restarted_next = scheduled_player_auto_attack_next_swing(
+        shared_world,
+        &session,
+        target,
+        now + Duration::from_millis(250),
+        swing_delay,
+    )
+    .await;
+    assert_eq!(
+        restarted_next, future_next,
+        "manual attack stop/start must preserve the existing swing cooldown"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, future_next)
+            .await,
+        None,
+        "a preserved cooldown without an active target must not swing by itself"
+    );
+
     session.active_character = None;
 }
 
@@ -8653,6 +8675,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
         RUST_COMBAT_DUMMY_HIT_DAMAGE + HEROIC_STRIKE_FIXTURE_DAMAGE
     );
     assert!(session.queued_next_melee_spell.is_none());
+    assert_eq!(
+        session.player_rage, 0,
+        "Heroic Strike replaces the white swing and must not award attack rage"
+    );
 
     send_combat_dummy_swing(&mut stream, shared_world, &mut session, &mut header_crypto)
         .await
@@ -8661,6 +8687,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
     assert_eq!(
         total_damage,
         RUST_COMBAT_DUMMY_HIT_DAMAGE * 2 + HEROIC_STRIKE_FIXTURE_DAMAGE
+    );
+    assert!(
+        session.player_rage > 0,
+        "the following normal white swing should still award rage"
     );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();

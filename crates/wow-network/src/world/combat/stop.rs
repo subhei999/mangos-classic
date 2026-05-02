@@ -8,16 +8,24 @@ async fn handle_attack_stop(
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let victim = shared_world
         .maps
-        .player_auto_attack_target(character.position.map_id, character.guid)
+        .player_auto_attack_target(map_id, character_guid)
         .await
         .unwrap_or_else(rust_combat_dummy_guid);
+    let next_swing_at = shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .and_then(|snapshot| snapshot.active_combat_next_swing_at);
     session.last_player_melee_swing_error = None;
+    mirror_session_player_auto_attack(session, None, next_swing_at);
     shared_world
         .maps
-        .set_player_auto_attack(character.position.map_id, character.guid, None, None)
+        .set_player_auto_attack(map_id, character_guid, None, next_swing_at)
         .await;
     send_packet(
         stream,

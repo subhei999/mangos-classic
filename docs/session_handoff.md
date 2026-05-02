@@ -14,10 +14,11 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   - `1de9b747b` (`Merge quest status markers`);
   - `a41449b76` (`Merge combat resource feel`);
   - `8627829d1` (`Merge creature template fidelity`).
-- Current uncommitted state: login-disconnect fix in
-  `crates/wow-db/src/world_data.rs` plus this handoff refresh.
+- Current uncommitted state: real-client feedback fixes for trainer lookup,
+  Heroic Strike rage gain, and autoattack stop/start swing timer preservation,
+  plus this handoff refresh.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the login-disconnect fix:
+- Live client stack before the current patch:
   - authserver PID `17780` on `127.0.0.1:13724`;
   - worldserver PID `41328` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
@@ -50,9 +51,16 @@ log the follow-up.
   regen cap sync, and immediate first-swing scheduling are integrated.
 - Creature template fidelity: DB-backed walk/run speed, model scale, and
   equipment display fields are integrated for creature create blocks.
-- Login-disconnect fix in progress: creature equipment display projections now
+- Login-disconnect fix: creature equipment display projections now
   cast `COALESCE(item_template.displayid, 0)` to unsigned integers so MariaDB
   does not return a decimal type that `sqlx` refuses to decode into `u32`.
+- Current real-client feedback patch:
+  - trainer `Train me` disconnect was caused by an ambiguous `Entry` column in
+    the joined creature-template query; the query is now fully
+    `creature_template.`-qualified;
+  - Heroic Strike/next-melee rage-spending swings no longer award attack rage;
+  - manual attack stop/start preserves the map-owned next swing timestamp so
+    players cannot reset swing timers by toggling autoattack.
 
 ## Still Unmerged Worker Branches
 
@@ -89,11 +97,28 @@ client stack, and giving the user concrete real-client success criteria.
     `127.0.0.1:18085`;
   - live MariaDB equipment-display join returned numeric display IDs with the
     new cast.
+- Current real-client feedback patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_tick --lib`;
+  - `cargo test -p wow-network heroic_strike_queue_consumes_on_next_swing_only_once --lib`;
+  - live MariaDB `get_creature_template_query`-shape query for Lyria Du Lac
+    returned successfully with joined equipment rows.
 
 ## Known Follow-Ups
 
 - Real-client smoke still needs to confirm that the latest stack no longer
-  disconnects on character login after the equipment-display SQL cast fix.
+  disconnects on trainer `Train me`, that Heroic Strike does not generate rage,
+  and that autoattack stop/start no longer accelerates swings.
+- User confirmed: Milly quest is no longer incorrectly available at level 2;
+  creature speed feels fixed; overkill packet damage is improved but combat log
+  still needs explicit `(overkill)` display parity; wolf/drop items and other
+  previously fixed items should remain under smoke watch.
+- Still observed: gray unavailable quest marker is not visible; creature visual
+  scale still does not match; NPCs with weapons can look like they punch while
+  holding a sword; CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still
+  unhandled.
 - Continue user-led side-by-side testing and turn observations into generalized
   system tasks. Current observation list includes NPC work animations, rage
   formula, creature speed/scale/equipment, gray quest markers, overkill, combo

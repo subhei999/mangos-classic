@@ -199,7 +199,7 @@ fn start_db_creature_random_motion_runtime(
             Some(now + Duration::from_millis(DB_CREATURE_RANDOM_DELAY_MIN_MILLIS));
         return None;
     }
-    let duration = db_creature_walk_path_motion_duration(start, &path);
+    let duration = db_creature_walk_path_motion_duration(start, &path, creature.walk_speed());
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
@@ -264,7 +264,7 @@ fn start_db_creature_waypoint_motion_runtime(
         creature.next_waypoint_move_at = Some(now + Duration::from_millis(wait_time as u64));
         return None;
     }
-    let duration = db_creature_walk_path_motion_duration(start, &path);
+    let duration = db_creature_walk_path_motion_duration(start, &path, creature.walk_speed());
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
@@ -321,7 +321,7 @@ fn db_creature_waypoint_buffered_path(
         path.append(&mut leg);
         arrived_node = node_index;
 
-        let duration = db_creature_walk_path_motion_duration(start, &path);
+        let duration = db_creature_walk_path_motion_duration(start, &path, creature.walk_speed());
         if node.wait_time != 0
             || duration.as_millis() as u64 >= DB_CREATURE_WAYPOINT_MIN_PATH_MILLIS
             || node_count <= 1
@@ -398,7 +398,7 @@ fn start_db_creature_chase_motion_runtime(
     if move_distance <= f32::EPSILON {
         return None;
     }
-    let duration = db_creature_path_motion_duration(start, &path);
+    let duration = db_creature_path_motion_duration(start, &path, creature.run_speed());
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
@@ -460,7 +460,7 @@ fn start_db_creature_return_home_motion_runtime(
         creature.motion = CreatureMotionState::Idle;
         return None;
     }
-    let duration = db_creature_path_motion_duration(start, &path);
+    let duration = db_creature_path_motion_duration(start, &path, creature.run_speed());
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
@@ -978,9 +978,13 @@ fn db_creature_trim_path_to_travel_distance(
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-fn db_creature_path_motion_duration(start: WorldPosition, path: &[WorldPosition]) -> Duration {
+fn db_creature_path_motion_duration(
+    start: WorldPosition,
+    path: &[WorldPosition],
+    run_speed: f32,
+) -> Duration {
     Duration::from_millis(
-        ((path_distance_2d(start, path) / DB_CREATURE_RUN_SPEED_YARDS_PER_SEC) * 1000.0)
+        ((path_distance_2d(start, path) / run_speed.max(f32::EPSILON)) * 1000.0)
             .ceil()
             .max(1.0) as u64,
     )
@@ -989,9 +993,10 @@ fn db_creature_path_motion_duration(start: WorldPosition, path: &[WorldPosition]
 fn db_creature_walk_path_motion_duration(
     start: WorldPosition,
     path: &[WorldPosition],
+    walk_speed: f32,
 ) -> Duration {
     Duration::from_millis(
-        ((path_distance_2d(start, path) / DB_CREATURE_WALK_SPEED_YARDS_PER_SEC) * 1000.0)
+        ((path_distance_2d(start, path) / walk_speed.max(f32::EPSILON)) * 1000.0)
             .ceil()
             .max(1.0) as u64,
     )

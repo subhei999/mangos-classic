@@ -21,6 +21,8 @@ pub struct CreatureTemplateQuery {
     pub model_combat_reach: f32,
     pub faction: u32,
     pub scale: f32,
+    pub speed_walk: f32,
+    pub speed_run: f32,
     pub detection_range: u32,
     pub call_for_help: u32,
     pub pursuit: u32,
@@ -59,6 +61,10 @@ pub struct CreatureTemplateQuery {
     pub civilian: u8,
     pub corpse_decay: u32,
     pub movement_type: u8,
+    pub equipment_template_id: u32,
+    pub equip_display_id1: u32,
+    pub equip_display_id2: u32,
+    pub equip_display_id3: u32,
     pub experience_multiplier: f32,
 }
 
@@ -256,7 +262,7 @@ pub async fn get_creature_template_query(
                 DisplayId3 AS display_id3, DisplayId4 AS display_id4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
-                Faction AS faction, Scale AS scale, Detection AS detection_range, \
+                Faction AS faction, Scale AS scale, SpeedWalk AS speed_walk, SpeedRun AS speed_run, Detection AS detection_range, \
                 CallForHelp AS call_for_help, Pursuit AS pursuit, Leash AS leash, \
                 Family AS family, \
                 CreatureType AS creature_type, NpcFlags AS npc_flags, \
@@ -278,11 +284,18 @@ pub async fn get_creature_template_query(
                 TrainerType AS trainer_type, TrainerClass AS trainer_class, \
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
                 CorpseDecay AS corpse_decay, \
-                MovementType AS movement_type, \
+                MovementType AS movement_type, EquipmentTemplateId AS equipment_template_id, \
+                COALESCE(equip_1.displayid, 0) AS equip_display_id1, \
+                COALESCE(equip_2.displayid, 0) AS equip_display_id2, \
+                COALESCE(equip_3.displayid, 0) AS equip_display_id3, \
                 ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(DisplayId1, 0), NULLIF(DisplayId2, 0), NULLIF(DisplayId3, 0), NULLIF(DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
          WHERE Entry = ?",
     )
     .bind(entry)
@@ -845,6 +858,7 @@ pub async fn get_nearby_creature_spawns(
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
                 creature_template.Pursuit AS template_pursuit, \
@@ -883,11 +897,19 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
+                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
+                COALESCE(equip_1.displayid, 0) AS template_equip_display_id1, \
+                COALESCE(equip_2.displayid, 0) AS template_equip_display_id2, \
+                COALESCE(equip_3.displayid, 0) AS template_equip_display_id3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
          LEFT JOIN spawn_group_spawn \
            ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
          LEFT JOIN spawn_group_formation \
@@ -1139,6 +1161,7 @@ pub async fn get_creature_spawns_in_rect(
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
                 creature_template.Pursuit AS template_pursuit, \
@@ -1177,11 +1200,19 @@ pub async fn get_creature_spawns_in_rect(
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
+                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
+                COALESCE(equip_1.displayid, 0) AS template_equip_display_id1, \
+                COALESCE(equip_2.displayid, 0) AS template_equip_display_id2, \
+                COALESCE(equip_3.displayid, 0) AS template_equip_display_id3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
          LEFT JOIN spawn_group_spawn \
            ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
          LEFT JOIN spawn_group_formation \
@@ -1844,6 +1875,8 @@ struct CreatureSpawnRow {
     template_model_combat_reach: f32,
     template_faction: u32,
     template_scale: f32,
+    template_speed_walk: f32,
+    template_speed_run: f32,
     template_detection_range: u32,
     template_call_for_help: u32,
     template_pursuit: u32,
@@ -1882,6 +1915,10 @@ struct CreatureSpawnRow {
     template_civilian: u8,
     template_corpse_decay: u32,
     template_movement_type: u8,
+    template_equipment_template_id: u32,
+    template_equip_display_id1: u32,
+    template_equip_display_id2: u32,
+    template_equip_display_id3: u32,
     template_experience_multiplier: f32,
 }
 
@@ -1914,6 +1951,8 @@ impl CreatureSpawnRow {
                 model_combat_reach: self.template_model_combat_reach,
                 faction: self.template_faction,
                 scale: self.template_scale,
+                speed_walk: self.template_speed_walk,
+                speed_run: self.template_speed_run,
                 detection_range: self.template_detection_range,
                 call_for_help: self.template_call_for_help,
                 pursuit: self.template_pursuit,
@@ -1952,6 +1991,10 @@ impl CreatureSpawnRow {
                 civilian: self.template_civilian,
                 corpse_decay: self.template_corpse_decay,
                 movement_type: self.template_movement_type,
+                equipment_template_id: self.template_equipment_template_id,
+                equip_display_id1: self.template_equip_display_id1,
+                equip_display_id2: self.template_equip_display_id2,
+                equip_display_id3: self.template_equip_display_id3,
                 experience_multiplier: self.template_experience_multiplier,
             },
             waypoint_path: Vec::new(),

@@ -1940,35 +1940,34 @@ fn monster_move_stop_uses_cmangos_stop_shape() {
 }
 
 #[test]
-fn heroic_strike_fixture_damage_marks_attacker_state_spell_id() {
+fn heroic_strike_fixture_damage_builds_spell_damage_log() {
     let attacker = ObjectGuid::new(HighGuid::Player, 0, 7);
     let victim = rust_combat_dummy_guid();
-    let state = build_attacker_state_update_body_with_spell_id(
+    let state = build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
         attacker,
-        victim,
-        HEROIC_STRIKE_FIXTURE_DAMAGE,
-        WARRIOR_HEROIC_STRIKE_RANK_1,
-    )
+        target: victim,
+        spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+        damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+        school: 0,
+        absorb: 0,
+        resist: 0,
+        periodic: false,
+        blocked: 0,
+        hit_info: 0,
+    })
     .unwrap();
     let mut cursor = 0;
-    assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
-    cursor += PackedGuid::packed_size(attacker) + PackedGuid::packed_size(victim);
-    assert_eq!(
-        read_u32(&state, &mut cursor).unwrap(),
-        HEROIC_STRIKE_FIXTURE_DAMAGE
-    );
-    cursor += 1; // damage school count
-    cursor += 4; // normal school
-    cursor += 4; // float damage
-    cursor += 4; // integer damage
-    cursor += 4; // absorb
-    cursor += 4; // resist
-    cursor += 4; // victim state
-    cursor += 4; // unknown
+    assert_eq!(read_packed_guid(&state, &mut cursor).unwrap(), victim);
+    assert_eq!(read_packed_guid(&state, &mut cursor).unwrap(), attacker);
     assert_eq!(
         read_u32(&state, &mut cursor).unwrap(),
         WARRIOR_HEROIC_STRIKE_RANK_1
     );
+    assert_eq!(
+        read_u32(&state, &mut cursor).unwrap(),
+        HEROIC_STRIKE_FIXTURE_DAMAGE
+    );
+    assert_eq!(state[cursor], 0);
 }
 
 #[test]
@@ -4882,6 +4881,7 @@ fn map_runtime_db_creature_damage_switches_active_target_from_threat() {
             damage: 140,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 0,
             exclude_character_guid: Some(new_victim.counter()),
@@ -5084,6 +5084,7 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
         damage: 1,
         melee_outcome: None,
         spell_id: None,
+        suppress_attacker_state: false,
         now: refreshed_at,
         now_epoch_secs: current_unix_epoch_secs(),
         exclude_character_guid: None,
@@ -5181,6 +5182,7 @@ fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
             damage: 11,
             melee_outcome: None,
             spell_id: Some(WARRIOR_HEROIC_STRIKE_RANK_1),
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
@@ -5240,6 +5242,7 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             damage: 9_999,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
@@ -5294,6 +5297,7 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             damage: 9_999,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 2_001,
             exclude_character_guid: Some(2),
@@ -5335,6 +5339,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             damage: 10,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 1_000,
             exclude_character_guid: Some(1),
@@ -5356,6 +5361,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             damage: 15,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 1_001,
             exclude_character_guid: Some(2),
@@ -5389,6 +5395,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             damage: 99,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 1_002,
             exclude_character_guid: Some(1),
@@ -5423,6 +5430,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             damage: 99,
             melee_outcome: None,
             spell_id: None,
+            suppress_attacker_state: false,
             now,
             now_epoch_secs: 1_003,
             exclude_character_guid: Some(2),
@@ -5660,6 +5668,7 @@ fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
             damage: 99,
             melee_outcome: Some(miss),
             spell_id: None,
+            suppress_attacker_state: false,
             now: Instant::now(),
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
@@ -5670,7 +5679,11 @@ fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
     assert_eq!(event.damage, 0);
     assert_eq!(event.creature.health, 120);
     assert_eq!(
-        u32::from_le_bytes(event.attacker_state_body[0..4].try_into().unwrap()),
+        u32::from_le_bytes(
+            event.attacker_state_body.as_ref().unwrap()[0..4]
+                .try_into()
+                .unwrap(),
+        ),
         HITINFO_NORMALSWING2 | HITINFO_MISS
     );
     assert_eq!(event.observer_packets[0].0, SessionId(2));
@@ -5701,6 +5714,7 @@ fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
         damage: 9_999,
         melee_outcome: None,
         spell_id: None,
+        suppress_attacker_state: false,
         now: killed_at,
         now_epoch_secs: 3_000,
         exclude_character_guid: Some(1),
@@ -8472,19 +8486,99 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
     );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == SMSG_SPELL_GO)
+            .count(),
+        1
+    );
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG)
+            .count(),
+        1
+    );
     let attacker_packets = packets
         .iter()
         .filter(|packet| packet.opcode == SMSG_ATTACKERSTATEUPDATE)
         .collect::<Vec<_>>();
-    assert!(attacker_packets.len() >= 2);
-    assert!(attacker_packets[0]
+    assert_eq!(attacker_packets.len(), 1);
+    assert!(!attacker_packets[0]
         .body
         .windows(4)
         .any(|window| { window == WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes().as_slice() }));
-    assert!(!attacker_packets[1]
-        .body
-        .windows(4)
-        .any(|window| { window == WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes().as_slice() }));
+}
+
+#[tokio::test]
+async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let target = rust_combat_dummy_guid();
+    let mut body = Vec::new();
+    body.extend_from_slice(&WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(WARRIOR_HEROIC_STRIKE_RANK_1);
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_rage: POWER_RAGE_DEFAULT,
+        active_spells,
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        &character_db_pool,
+        &world_db_pool,
+        shared_world,
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        session.queued_next_melee_spell,
+        Some(QueuedNextMeleeSpell {
+            spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+            target,
+            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+        })
+    );
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_CAST_RESULT));
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_START));
+    assert!(!packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
 }
 
 #[tokio::test]

@@ -94,9 +94,10 @@ struct CreatureCombatLeashState {
 
 #[derive(Debug)]
 struct DbCreatureDamageEvent {
+    #[allow(dead_code)]
     damage: u32,
     creature: DbCreatureRuntime,
-    attacker_state_body: Vec<u8>,
+    attacker_state_body: Option<Vec<u8>>,
     spell_non_melee_log_body: Option<Vec<u8>>,
     update_body: Vec<u8>,
     death_finalization: Option<DbCreatureDeathFinalizationEvent>,
@@ -111,6 +112,7 @@ struct DbCreatureDamageRequest {
     damage: u32,
     melee_outcome: Option<MeleeDamageOutcome>,
     spell_id: Option<u32>,
+    suppress_attacker_state: bool,
     now: Instant,
     now_epoch_secs: u64,
     exclude_character_guid: Option<u32>,

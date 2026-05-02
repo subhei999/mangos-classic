@@ -102,28 +102,28 @@ async fn handle_cast_spell(
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = build_spell_go_body(caster, packet.spell_id, &targets)?;
-    send_packet(
-        stream,
-        SMSG_SPELL_GO,
-        &spell_go_body,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    let observer_packets = shared_world
-        .maps
-        .broadcast_nearby_player_packet(
-            map_id,
-            character_guid,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            OutboundWorldPacket {
-                opcode: SMSG_SPELL_GO,
-                body: spell_go_body,
-            },
-        )
-        .await;
-    shared_world.sessions.dispatch(observer_packets).await;
     if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
+        let spell_start_body = build_spell_start_body(caster, packet.spell_id, 0, &targets)?;
+        send_packet(
+            stream,
+            SMSG_SPELL_START,
+            &spell_start_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let observer_packets = shared_world
+            .maps
+            .broadcast_nearby_player_packet(
+                map_id,
+                character_guid,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                OutboundWorldPacket {
+                    opcode: SMSG_SPELL_START,
+                    body: spell_start_body,
+                },
+            )
+            .await;
+        shared_world.sessions.dispatch(observer_packets).await;
         if let Some(target) = targets.unit_target {
             session.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
                 spell_id: packet.spell_id,
@@ -131,7 +131,29 @@ async fn handle_cast_spell(
                 bonus_damage: starter_spell.bonus_damage,
             });
         }
-    } else if targets.unit_target == Some(rust_combat_dummy_guid())
+    } else {
+        let spell_go_body = build_spell_go_body(caster, packet.spell_id, &targets)?;
+        send_packet(
+            stream,
+            SMSG_SPELL_GO,
+            &spell_go_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let observer_packets = shared_world
+            .maps
+            .broadcast_nearby_player_packet(
+                map_id,
+                character_guid,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                OutboundWorldPacket {
+                    opcode: SMSG_SPELL_GO,
+                    body: spell_go_body,
+                },
+            )
+            .await;
+        shared_world.sessions.dispatch(observer_packets).await;
+        if targets.unit_target == Some(rust_combat_dummy_guid())
         && !session.combat_dummy_lootable
         && session.combat_dummy_health > 0
     {
@@ -192,7 +214,7 @@ async fn handle_cast_spell(
             Some(&mut *header_crypto),
         )
         .await?;
-    } else if let Some(target) = targets.unit_target {
+        } else if let Some(target) = targets.unit_target {
         let can_apply_damage = if starter_spell.requires_melee {
             db_creature_player_melee_check_from_map(shared_world, session, target).await
                 == PlayerMeleeCheck::Clear
@@ -210,6 +232,7 @@ async fn handle_cast_spell(
                         damage: starter_spell.damage,
                         melee_outcome: None,
                         spell_id: Some(packet.spell_id),
+                        suppress_attacker_state: false,
                         now: Instant::now(),
                         now_epoch_secs: current_unix_epoch_secs(),
                         exclude_character_guid: Some(character_guid),
@@ -217,7 +240,6 @@ async fn handle_cast_spell(
                 )
                 .await?
             {
-                let damage = event.damage;
                 let death_finalization = event.death_finalization;
                 let target_switch = event.target_switch;
                 let is_dead = death_finalization.is_some();
@@ -239,18 +261,15 @@ async fn handle_cast_spell(
                     )
                     .await?;
                 }
-                send_packet(
-                    stream,
-                    SMSG_ATTACKERSTATEUPDATE,
-                    &build_attacker_state_update_body_with_spell_id(
-                        caster,
-                        target,
-                        damage,
-                        packet.spell_id,
-                    )?,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
+                if let Some(attacker_state_body) = &event.attacker_state_body {
+                    send_packet(
+                        stream,
+                        SMSG_ATTACKERSTATEUPDATE,
+                        attacker_state_body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                }
                 let creature_update_body = event.update_body.clone();
                 send_packet(
                     stream,
@@ -292,6 +311,7 @@ async fn handle_cast_spell(
                 }
             }
         }
+    }
     }
     let power_update = match starter_spell.power {
         StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,

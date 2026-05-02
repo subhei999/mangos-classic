@@ -430,8 +430,13 @@ async fn send_db_creature_swing(
                 creature_guid: target,
                 killer: attacker,
                 damage: requested_damage,
-                melee_outcome: Some(melee_outcome),
+                melee_outcome: if queued_spell.is_some() {
+                    None
+                } else {
+                    Some(melee_outcome)
+                },
                 spell_id: queued_spell.map(|queued| queued.spell_id),
+                suppress_attacker_state: queued_spell.is_some(),
                 now: Instant::now(),
                 now_epoch_secs: current_unix_epoch_secs(),
                 exclude_character_guid: Some(character_snapshot.guid),
@@ -487,13 +492,51 @@ async fn send_db_creature_swing(
         .await?;
     }
 
-    send_packet(
-        stream,
-        SMSG_ATTACKERSTATEUPDATE,
-        &event.attacker_state_body,
-        Some(&mut *header_crypto),
-    )
-    .await?;
+    if let Some(queued) = queued_spell {
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(target),
+            gameobject_target: None,
+        };
+        let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
+        send_packet(
+            stream,
+            SMSG_SPELL_GO,
+            &spell_go_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let observer_packets = shared_world
+            .maps
+            .broadcast_nearby_player_packet(
+                map_id,
+                character_snapshot.guid,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                OutboundWorldPacket {
+                    opcode: SMSG_SPELL_GO,
+                    body: spell_go_body,
+                },
+            )
+            .await;
+        shared_world.sessions.dispatch(observer_packets).await;
+        if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
+            send_packet(
+                stream,
+                SMSG_SPELLNONMELEEDAMAGELOG,
+                spell_non_melee_log_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    } else if let Some(attacker_state_body) = &event.attacker_state_body {
+        send_packet(
+            stream,
+            SMSG_ATTACKERSTATEUPDATE,
+            attacker_state_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     let creature_update_body = event.update_body.clone();
     send_packet(
         stream,
@@ -962,17 +1005,50 @@ async fn send_combat_dummy_swing(
 
     let attacker_state = if let Some(queued) = queued_spell {
         session.queued_next_melee_spell = None;
-        build_attacker_state_update_body_with_spell_id(attacker, target, damage, queued.spell_id)?
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(target),
+            gameobject_target: None,
+        };
+        let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
+        send_packet(
+            stream,
+            SMSG_SPELL_GO,
+            &spell_go_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_SPELLNONMELEEDAMAGELOG,
+            &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                attacker,
+                target,
+                spell_id: queued.spell_id,
+                damage,
+                school: 0,
+                absorb: 0,
+                resist: 0,
+                periodic: false,
+                blocked: 0,
+                hit_info: 0,
+            })?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        None
     } else {
-        build_attacker_state_update_body(attacker, target, damage)?
+        Some(build_attacker_state_update_body(attacker, target, damage)?)
     };
-    send_packet(
-        stream,
-        SMSG_ATTACKERSTATEUPDATE,
-        &attacker_state,
-        Some(&mut *header_crypto),
-    )
-    .await?;
+    if let Some(attacker_state) = &attacker_state {
+        send_packet(
+            stream,
+            SMSG_ATTACKERSTATEUPDATE,
+            attacker_state,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,

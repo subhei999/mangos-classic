@@ -68,25 +68,31 @@ impl MapRuntime {
                     .map(|player| player.session_id)
             })
             .collect::<Vec<_>>();
-        let attacker_state_body = if let Some(outcome) = request.melee_outcome {
+        let attacker_state_body = if request.suppress_attacker_state {
+            None
+        } else if let Some(outcome) = request.melee_outcome {
             let mut outcome = outcome;
             outcome.total_damage = damage;
             outcome.school_damage = outcome.school_damage.min(damage);
-            build_attacker_state_update_body_for_outcome(
+            Some(build_attacker_state_update_body_for_outcome(
                 request.killer,
                 creature_guid,
                 outcome,
                 request.spell_id.unwrap_or(0),
-            )?
+            )?)
         } else if let Some(spell_id) = request.spell_id {
-            build_attacker_state_update_body_with_spell_id(
+            Some(build_attacker_state_update_body_with_spell_id(
                 request.killer,
                 creature_guid,
                 damage,
                 spell_id,
-            )?
+            )?)
         } else {
-            build_attacker_state_update_body(request.killer, creature_guid, damage)?
+            Some(build_attacker_state_update_body(
+                request.killer,
+                creature_guid,
+                damage,
+            )?)
         };
         let spell_non_melee_log_body = request
             .spell_id
@@ -119,13 +125,15 @@ impl MapRuntime {
                         },
                     ));
                 }
-                packets.push((
-                    session_id,
-                    OutboundWorldPacket {
-                        opcode: SMSG_ATTACKERSTATEUPDATE,
-                        body: attacker_state_body.clone(),
-                    },
-                ));
+                if let Some(attacker_state_body) = &attacker_state_body {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_ATTACKERSTATEUPDATE,
+                            body: attacker_state_body.clone(),
+                        },
+                    ));
+                }
                 packets.push((
                     session_id,
                     OutboundWorldPacket {

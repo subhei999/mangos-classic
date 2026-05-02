@@ -860,22 +860,46 @@ fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
 
 fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
     match inventory_type {
+        1 => Some(0),   // INVTYPE_HEAD
+        2 => Some(1),   // INVTYPE_NECK
+        3 => Some(2),   // INVTYPE_SHOULDERS
         4 => Some(3),   // INVTYPE_BODY
+        5 | 20 => Some(4), // INVTYPE_CHEST / ROBE
+        6 => Some(5),   // INVTYPE_WAIST
         7 => Some(6),   // INVTYPE_LEGS
         8 => Some(7),   // INVTYPE_FEET
+        9 => Some(8),   // INVTYPE_WRISTS
+        10 => Some(9),  // INVTYPE_HANDS
+        11 => Some(10), // INVTYPE_FINGER
+        12 => Some(12), // INVTYPE_TRINKET
         13 | 17 | 21 => Some(15), // one-hand/two-hand/main-hand weapon
-        14 => Some(16), // shield
+        14 | 22 | 23 => Some(16), // shield/offhand/held-in-offhand
+        15 | 25 | 26 => Some(17), // ranged/thrown/ranged right
+        16 => Some(14), // INVTYPE_CLOAK
+        19 => Some(18), // INVTYPE_TABARD
         _ => None,
     }
 }
 
 fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
     match slot {
+        0 => inventory_type == 1,
+        1 => inventory_type == 2,
+        2 => inventory_type == 3,
         3 => inventory_type == 4,
+        4 => matches!(inventory_type, 5 | 20),
+        5 => inventory_type == 6,
         6 => inventory_type == 7,
         7 => inventory_type == 8,
+        8 => inventory_type == 9,
+        9 => inventory_type == 10,
+        10 | 11 => inventory_type == 11,
+        12 | 13 => inventory_type == 12,
+        14 => inventory_type == 16,
         15 => matches!(inventory_type, 13 | 17 | 21),
-        16 => inventory_type == 14,
+        16 => matches!(inventory_type, 14 | 22 | 23),
+        17 => matches!(inventory_type, 15 | 25 | 26),
+        18 => inventory_type == 19,
         _ => false,
     }
 }

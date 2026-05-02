@@ -8916,6 +8916,29 @@ fn parses_equipment_inventory_move_packets() {
     );
     assert!(unequip.is_supported_inventory_move());
     assert!(item_fits_equipment_slot(4, 3));
+    assert!(item_fits_equipment_slot(1, 0));
+    assert!(item_fits_equipment_slot(3, 2));
+    assert!(item_fits_equipment_slot(5, 4));
+    assert!(item_fits_equipment_slot(20, 4));
+    assert!(item_fits_equipment_slot(6, 5));
+    assert!(item_fits_equipment_slot(9, 8));
+    assert!(item_fits_equipment_slot(10, 9));
+    assert!(item_fits_equipment_slot(11, 10));
+    assert!(item_fits_equipment_slot(11, 11));
+    assert!(item_fits_equipment_slot(12, 12));
+    assert!(item_fits_equipment_slot(12, 13));
+    assert!(item_fits_equipment_slot(16, 14));
+    assert!(item_fits_equipment_slot(14, 16));
+    assert!(item_fits_equipment_slot(23, 16));
+    assert!(item_fits_equipment_slot(26, 17));
+    assert!(item_fits_equipment_slot(19, 18));
+    assert_eq!(preferred_equipment_slot(1), Some(0));
+    assert_eq!(preferred_equipment_slot(5), Some(4));
+    assert_eq!(preferred_equipment_slot(6), Some(5));
+    assert_eq!(preferred_equipment_slot(9), Some(8));
+    assert_eq!(preferred_equipment_slot(10), Some(9));
+    assert_eq!(preferred_equipment_slot(14), Some(16));
+    assert_eq!(preferred_equipment_slot(26), Some(17));
     assert!(!item_fits_equipment_slot(4, 15));
 }
 

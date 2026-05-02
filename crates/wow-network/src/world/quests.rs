@@ -515,8 +515,10 @@ async fn questgiver_dialog_status(
         }
     }
     for quest in questgiver_start_quests(object_mgr, world_db_pool, guid).await? {
-        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
-            dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
+        if let Some(start_status) =
+            quest_start_dialog_status(object_mgr, world_db_pool, &quest, session).await?
+        {
+            dialog_status = dialog_status.max(start_status);
         }
     }
 
@@ -567,10 +569,12 @@ async fn questgiver_visible_quests(
         if seen.contains(&quest.entry) {
             continue;
         }
-        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
+        if let Some(start_status) =
+            quest_start_dialog_status(object_mgr, world_db_pool, &quest, session).await?
+        {
             visible.push(QuestListItem {
                 quest,
-                dialog_status: DIALOG_STATUS_AVAILABLE,
+                dialog_status: start_status,
             });
         }
     }
@@ -1141,6 +1145,20 @@ fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveChar
     true
 }
 
+fn satisfies_race_class(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
+    let class_mask = quest_race_or_class_mask(character.class);
+    if quest.required_classes != 0 && (quest.required_classes & class_mask) == 0 {
+        return false;
+    }
+
+    let race_mask = quest_race_or_class_mask(character.race);
+    if quest.required_races != 0 && (quest.required_races & race_mask) == 0 {
+        return false;
+    }
+
+    true
+}
+
 fn satisfies_prev_quest_requirement(
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     prev_quest_id: i32,
@@ -1225,6 +1243,80 @@ async fn can_take_start_quest(
     }
 
     Ok(true)
+}
+
+async fn can_see_start_quest(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(false);
+    };
+    if !satisfies_race_class(quest, character) {
+        return Ok(false);
+    }
+    if !can_quest_be_started_from_status(quest, session.quest_statuses.get(&quest.entry)) {
+        return Ok(false);
+    }
+
+    let prev_quests = object_mgr.quest_prev_quests(world_db_pool, quest.entry).await?;
+    if !prev_quests
+        .into_iter()
+        .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
+    {
+        return Ok(false);
+    }
+
+    let prev_chain_quests = object_mgr
+        .quest_prev_chain_quests(world_db_pool, quest.entry)
+        .await?;
+    if prev_chain_quests
+        .into_iter()
+        .any(|prev_chain| quest_is_current(&session.quest_statuses, prev_chain))
+    {
+        return Ok(false);
+    }
+
+    if quest.next_quest_in_chain != 0 && quest_is_current(&session.quest_statuses, quest.next_quest_in_chain)
+    {
+        return Ok(false);
+    }
+
+    let exclusive_group_quests = object_mgr
+        .exclusive_group_quests(world_db_pool, quest.exclusive_group)
+        .await?;
+    if !satisfies_exclusive_group(quest, &exclusive_group_quests, &session.quest_statuses) {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+async fn quest_start_dialog_status(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+) -> anyhow::Result<Option<u32>> {
+    let can_take = can_take_start_quest(object_mgr, world_db_pool, quest, session).await?;
+    let can_see = if can_take {
+        true
+    } else {
+        can_see_start_quest(object_mgr, world_db_pool, quest, session).await?
+    };
+    Ok(start_quest_dialog_status(can_take, can_see))
+}
+
+fn start_quest_dialog_status(can_take: bool, can_see: bool) -> Option<u32> {
+    if can_take {
+        Some(DIALOG_STATUS_AVAILABLE)
+    } else if can_see {
+        Some(DIALOG_STATUS_UNAVAILABLE)
+    } else {
+        None
+    }
 }
 
 fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<usize> {

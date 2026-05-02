@@ -5015,7 +5015,7 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
         .is_some());
 
     let event = map
-        .apply_db_creature_player_damage(attacker, victim, 7, now + Duration::from_secs(2))
+        .apply_db_creature_player_damage(attacker, victim, 7, now, now + Duration::from_secs(2))
         .unwrap()
         .expect("damage event");
 
@@ -5036,6 +5036,58 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
         .observer_packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_evade_waits_for_combat_timer_before_leash_check() {
+    let mut map = MapRuntime::new(0, 0);
+    let attacker_spawn = test_creature_spawn(6);
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let victim_position =
+        WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    map.creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("combat should start");
+
+    assert!(!map.db_creature_should_evade(attacker, now + Duration::from_secs(14),));
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+}
+
+#[test]
+fn map_runtime_db_creature_damage_refreshes_leash_timer() {
+    let mut map = MapRuntime::new(0, 0);
+    let attacker_spawn = test_creature_spawn(6);
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let victim_position =
+        WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    map.creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("combat should start");
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+
+    let refreshed_at = now + Duration::from_secs(16);
+    map.apply_db_creature_damage(DbCreatureDamageRequest {
+        creature_guid: attacker,
+        killer: victim,
+        damage: 1,
+        melee_outcome: None,
+        spell_id: None,
+        now: refreshed_at,
+        now_epoch_secs: current_unix_epoch_secs(),
+        exclude_character_guid: None,
+    })
+    .expect("damage apply should succeed")
+    .expect("damage event");
+
+    assert!(!map.db_creature_should_evade(attacker, refreshed_at + Duration::from_secs(14),));
 }
 
 #[test]

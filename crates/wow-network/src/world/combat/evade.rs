@@ -2,19 +2,12 @@ async fn db_creature_should_evade_from_map(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     attacker: ObjectGuid,
+    now: Instant,
 ) -> bool {
-    let Some(creature) = shared_world.maps.db_creature_snapshot(map_id, attacker).await else {
-        return false;
-    };
-    if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
-        return false;
-    }
-    distance_2d(
-        creature.current_position.x,
-        creature.current_position.y,
-        creature.home_position.x,
-        creature.home_position.y,
-    ) > DB_CREATURE_LEASH_RADIUS_YARDS
+    shared_world
+        .maps
+        .db_creature_should_evade(map_id, attacker, now)
+        .await
 }
 
 #[cfg(test)]

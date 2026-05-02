@@ -2333,6 +2333,8 @@ fn questgiver_list_uses_current_quest_dialog_status() {
     incomplete.title = "Incomplete".to_string();
     let mut reward = test_quest_template(9);
     reward.title = "Reward".to_string();
+    let mut unavailable = test_quest_template(10);
+    unavailable.title = "Unavailable".to_string();
 
     let body = build_questgiver_quest_list_body(
         guid,
@@ -2349,6 +2351,10 @@ fn questgiver_list_uses_current_quest_dialog_status() {
                 quest: reward,
                 dialog_status: DIALOG_STATUS_REWARD2,
             },
+            QuestListItem {
+                quest: unavailable,
+                dialog_status: DIALOG_STATUS_UNAVAILABLE,
+            },
         ],
     );
 
@@ -2358,7 +2364,7 @@ fn questgiver_list_uses_current_quest_dialog_status() {
     }
     cursor += 1;
     cursor += 8;
-    assert_eq!(body[cursor], 3);
+    assert_eq!(body[cursor], 4);
     cursor += 1;
 
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 7);
@@ -2385,6 +2391,30 @@ fn questgiver_list_uses_current_quest_dialog_status() {
 
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 9);
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), DIALOG_STATUS_REWARD2);
+    cursor += 4;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 10);
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        DIALOG_STATUS_UNAVAILABLE
+    );
+}
+
+#[test]
+fn start_quest_dialog_status_distinguishes_available_gray_and_hidden() {
+    assert_eq!(
+        start_quest_dialog_status(true, true),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+    assert_eq!(
+        start_quest_dialog_status(false, true),
+        Some(DIALOG_STATUS_UNAVAILABLE)
+    );
+    assert_eq!(start_quest_dialog_status(false, false), None);
 }
 
 #[test]

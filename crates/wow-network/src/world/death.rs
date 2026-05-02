@@ -193,16 +193,8 @@ async fn handle_reclaim_corpse(
         return Ok(());
     };
     let corpse_position = corpse.position;
-    if character.position.map_id != corpse_position.map_id {
-        return Ok(());
-    }
-    if distance_2d(
-        character.position.x,
-        character.position.y,
-        corpse_position.x,
-        corpse_position.y,
-    ) > CORPSE_RECLAIM_RADIUS_YARDS
-    {
+    let ghost_position = character.position;
+    if !can_reclaim_corpse_at_ghost_position(ghost_position, corpse_position) {
         return Ok(());
     }
 
@@ -211,9 +203,24 @@ async fn handle_reclaim_corpse(
         deps,
         session,
         header_crypto,
-        corpse_position,
+        ghost_position,
     )
     .await
+}
+
+fn can_reclaim_corpse_at_ghost_position(
+    ghost_position: WorldPosition,
+    corpse_position: WorldPosition,
+) -> bool {
+    if ghost_position.map_id != corpse_position.map_id {
+        return false;
+    }
+    distance_2d(
+        ghost_position.x,
+        ghost_position.y,
+        corpse_position.x,
+        corpse_position.y,
+    ) <= CORPSE_RECLAIM_RADIUS_YARDS
 }
 
 async fn handle_spirit_healer_activate(

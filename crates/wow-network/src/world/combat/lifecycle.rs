@@ -454,8 +454,10 @@ async fn send_db_creature_swing(
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
-    if queued_spell.is_some() {
+    if let Some(queued) = queued_spell {
         session.queued_next_melee_spell = None;
+        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
+        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
     }
     mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if is_dead {
@@ -1022,6 +1024,10 @@ async fn send_combat_dummy_swing(
         rage_gain_from_damage(damage, character.level, true)
     };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
+    if let Some(queued) = queued_spell {
+        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
+        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
+    }
     shared_world
         .maps
         .set_player_power2(map_id, character_guid, session.player_rage)

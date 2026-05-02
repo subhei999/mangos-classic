@@ -8662,7 +8662,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             target: rust_combat_dummy_guid(),
             bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            rage_cost: HEROIC_STRIKE_RAGE_COST,
+            mana_cost: 0,
         }),
+        player_rage: HEROIC_STRIKE_RAGE_COST,
         ..WorldSessionState::default()
     };
 
@@ -8777,7 +8780,13 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             target,
             bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            rage_cost: HEROIC_STRIKE_RAGE_COST,
+            mana_cost: 0,
         })
+    );
+    assert_eq!(
+        session.player_rage, POWER_RAGE_DEFAULT,
+        "next-melee rage is spent when the queued swing fires, not when it is queued"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(packets
@@ -8787,6 +8796,9 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
         .iter()
         .any(|packet| packet.opcode == SMSG_SPELL_START));
     assert!(!packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
+    assert!(!packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
 }
 
 #[tokio::test]
@@ -8849,6 +8861,8 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
         spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
         target,
         bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+        rage_cost: HEROIC_STRIKE_RAGE_COST,
+        mana_cost: 0,
     });
     assert_eq!(
         starter_spell_cast_failure(

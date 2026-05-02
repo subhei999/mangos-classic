@@ -14,13 +14,12 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   - `1de9b747b` (`Merge quest status markers`);
   - `a41449b76` (`Merge combat resource feel`);
   - `8627829d1` (`Merge creature template fidelity`).
-- Current uncommitted state: real-client feedback fixes for trainer lookup,
-  Heroic Strike rage gain, and autoattack stop/start swing timer preservation,
-  plus this handoff refresh.
+- Current uncommitted state: Heroic Strike delayed rage-cost fix plus this
+  handoff refresh.
 - Re-run `git status --short --branch` before editing.
-- Live client stack before the current patch:
-  - authserver PID `17780` on `127.0.0.1:13724`;
-  - worldserver PID `41328` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the delayed rage-cost fix:
+  - authserver PID `40568` on `127.0.0.1:13724`;
+  - worldserver PID `13792` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -61,6 +60,13 @@ log the follow-up.
   - Heroic Strike/next-melee rage-spending swings no longer award attack rage;
   - manual attack stop/start preserves the map-owned next swing timestamp so
     players cannot reset swing timers by toggling autoattack.
+- Current delayed rage-cost patch:
+  - next-melee starter spells now validate power at queue time but store the
+    cost on the queued swing;
+  - Heroic Strike rage is consumed when the queued swing resolves, not when the
+    client queues the attack;
+  - the queue packet path no longer sends a power update at cast time for
+    next-melee spells.
 
 ## Still Unmerged Worker Branches
 
@@ -105,12 +111,19 @@ client stack, and giving the user concrete real-client success criteria.
   - `cargo test -p wow-network heroic_strike_queue_consumes_on_next_swing_only_once --lib`;
   - live MariaDB `get_creature_template_query`-shape query for Lyria Du Lac
     returned successfully with joined equipment rows.
+- Current delayed rage-cost patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network heroic_strike --lib`;
+  - `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue --lib`;
+  - `.\scripts\test-rust.cmd`.
 
 ## Known Follow-Ups
 
-- Real-client smoke still needs to confirm that the latest stack no longer
-  disconnects on trainer `Train me`, that Heroic Strike does not generate rage,
-  and that autoattack stop/start no longer accelerates swings.
+- Real-client smoke still needs to confirm that Heroic Strike keeps rage while
+  queued, consumes rage when the swing lands, does not generate rage from that
+  swing, and that prior fixes remain stable: trainer `Train me` no disconnect,
+  autoattack stop/start no acceleration.
 - User confirmed: Milly quest is no longer incorrectly available at level 2;
   creature speed feels fixed; overkill packet damage is improved but combat log
   still needs explicit `(overkill)` display parity; wolf/drop items and other

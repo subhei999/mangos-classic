@@ -86,12 +86,14 @@ async fn handle_cast_spell(
         .await;
     }
     let now = Instant::now();
-    match starter_spell.power {
-        StarterSpellPower::Rage { cost } => {
-            session.player_rage = session.player_rage.saturating_sub(cost);
-        }
-        StarterSpellPower::Mana { cost } => {
-            session.player_mana = session.player_mana.saturating_sub(cost);
+    if starter_spell.kind != StarterSpellKind::NextMeleeSwing {
+        match starter_spell.power {
+            StarterSpellPower::Rage { cost } => {
+                session.player_rage = session.player_rage.saturating_sub(cost);
+            }
+            StarterSpellPower::Mana { cost } => {
+                session.player_mana = session.player_mana.saturating_sub(cost);
+            }
         }
     }
     apply_starter_spell_cooldowns(session, &starter_spell, now);
@@ -125,10 +127,16 @@ async fn handle_cast_spell(
             .await;
         shared_world.sessions.dispatch(observer_packets).await;
         if let Some(target) = targets.unit_target {
+            let (rage_cost, mana_cost) = match starter_spell.power {
+                StarterSpellPower::Rage { cost } => (cost, 0),
+                StarterSpellPower::Mana { cost } => (0, cost),
+            };
             session.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
                 spell_id: packet.spell_id,
                 target,
                 bonus_damage: starter_spell.bonus_damage,
+                rage_cost,
+                mana_cost,
             });
         }
     } else {
@@ -313,11 +321,15 @@ async fn handle_cast_spell(
         }
     }
     }
-    let power_update = match starter_spell.power {
-        StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
-        StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
-    };
-    send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
+    if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
+        Ok(())
+    } else {
+        let power_update = match starter_spell.power {
+            StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
+            StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
+        };
+        send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
+    }
 }
 
 struct OpeningSpellRequest {

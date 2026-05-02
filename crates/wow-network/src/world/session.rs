@@ -172,6 +172,8 @@ struct QueuedNextMeleeSpell {
     spell_id: u32,
     target: ObjectGuid,
     bonus_damage: u32,
+    rage_cost: u32,
+    mana_cost: u32,
 }
 
 #[cfg(test)]

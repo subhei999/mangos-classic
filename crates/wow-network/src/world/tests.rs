@@ -8927,11 +8927,37 @@ fn inventory_warrior_armor_proficiency_controls_cloth_leather_mail_equips() {
     leather.subclass = 2;
     let mut mail = test_item_template(1002, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 3);
     mail.subclass = 3;
-    let skills = vec![test_skill(9078, 1, 1)];
+    let warrior_skills = vec![
+        test_skill(415, 1, 1),
+        test_skill(414, 1, 1),
+        test_skill(413, 1, 1),
+    ];
+    let cloth_only_skills = vec![test_skill(415, 1, 1)];
 
-    assert!(character_can_equip_item_template(1, 1, &cloth, &skills));
-    assert!(!character_can_equip_item_template(1, 1, &leather, &skills));
-    assert!(!character_can_equip_item_template(1, 1, &mail, &skills));
+    assert!(character_can_equip_item_template(
+        1,
+        1,
+        &cloth,
+        &warrior_skills
+    ));
+    assert!(character_can_equip_item_template(
+        1,
+        1,
+        &leather,
+        &warrior_skills
+    ));
+    assert!(character_can_equip_item_template(
+        1,
+        1,
+        &mail,
+        &warrior_skills
+    ));
+    assert!(!character_can_equip_item_template(
+        1,
+        8,
+        &leather,
+        &cloth_only_skills
+    ));
 }
 
 #[test]
@@ -8939,7 +8965,7 @@ fn inventory_equip_validation_rejects_item_with_wrong_allowable_class() {
     let mut cloth = test_item_template(1003, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 1);
     cloth.subclass = 1;
     cloth.allowable_class = 1 << (8 - 1);
-    let skills = vec![test_skill(9078, 1, 1)];
+    let skills = vec![test_skill(415, 1, 1)];
 
     assert!(!character_can_equip_item_template(1, 1, &cloth, &skills));
 }

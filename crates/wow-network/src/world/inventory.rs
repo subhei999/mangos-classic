@@ -916,33 +916,34 @@ fn character_can_equip_item_template(
 }
 
 fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
-    // CMaNGOS reference: src/game/Entities/Item.cpp (Item::GetSkill and required proficiency skills).
+    // CMaNGOS reference: src/game/Entities/Item.cpp Item::GetSkill().
     match template.class {
         ITEM_CLASS_ARMOR => match template.subclass {
-            1 => Some(9078), // Cloth
-            2 => Some(9077), // Leather
-            3 => Some(8737), // Mail
-            4 => Some(750),  // Plate
-            6 => Some(9116), // Shield
+            1 => Some(415), // Cloth
+            2 => Some(414), // Leather
+            3 => Some(413), // Mail
+            4 => Some(293), // Plate Mail
+            6 => Some(433), // Shield
             _ => None,
         },
         ITEM_CLASS_WEAPON => match template.subclass {
-            0 => Some(196),   // 1H Axe
-            1 => Some(197),   // 2H Axe
-            2 => Some(264),   // Bow
-            3 => Some(266),   // Gun
-            4 => Some(198),   // 1H Mace
-            5 => Some(199),   // 2H Mace
-            6 => Some(200),   // Polearm
-            7 => Some(201),   // 1H Sword
-            8 => Some(202),   // 2H Sword
-            10 => Some(227),  // Staff
-            13 => None,       // Fist weapons do not require a proficiency skill.
-            15 => Some(1180), // Dagger
-            16 => Some(2567), // Thrown
-            17 => Some(3386), // Spear
-            18 => Some(5011), // Crossbow
-            19 => Some(5009), // Wand
+            0 => Some(44),  // Axes
+            1 => Some(172), // Two-Handed Axes
+            2 => Some(45),  // Bows
+            3 => Some(46),  // Guns
+            4 => Some(54),  // Maces
+            5 => Some(160), // Two-Handed Maces
+            6 => Some(229), // Polearms
+            7 => Some(43),  // Swords
+            8 => Some(55),  // Two-Handed Swords
+            10 => Some(136), // Staves
+            13 => Some(473), // Fist Weapons
+            15 => Some(173), // Daggers
+            16 => Some(176), // Thrown
+            17 => Some(253), // Spears use CMaNGOS' subclass skill table entry.
+            18 => Some(226), // Crossbows
+            19 => Some(228), // Wands
+            20 => Some(356), // Fishing Poles
             _ => None,
         },
         _ => None,

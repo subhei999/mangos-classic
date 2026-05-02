@@ -269,6 +269,31 @@ ON DUPLICATE KEY UPDATE numchars = VALUES(numchars);
 "@
 Invoke-MariaDb "characters" $realmCharacterCountSql
 
+$backfillStarterSkillsSql = @"
+INSERT IGNORE INTO characters.character_skills (guid, skill, value, max)
+SELECT
+    c.guid,
+    pcs.skill,
+    CASE
+        WHEN pcs.note LIKE 'Language:%' THEN 300
+        ELSE 1
+    END AS value,
+    CASE
+        WHEN pcs.note LIKE 'Language:%' THEN 300
+        WHEN pcs.note LIKE 'Misc: GENERIC%' THEN 1
+        WHEN pcs.note LIKE 'Armor:%' THEN 1
+        WHEN pcs.note LIKE 'Racial:%' THEN 1
+        ELSE 5
+    END AS max
+FROM characters.characters c
+JOIN realmd.account a ON a.id = c.account
+JOIN mangos.playercreateinfo_skills pcs
+  ON (pcs.raceMask = 0 OR (pcs.raceMask & (1 << (c.race - 1))) <> 0)
+ AND (pcs.classMask = 0 OR (pcs.classMask & (1 << (c.class - 1))) <> 0)
+WHERE a.username = 'RUSTAUTH';
+"@
+Invoke-MariaDb "" $backfillStarterSkillsSql
+
 if ($SeedLegacyRustFixtures) {
     $seedCreatureSql = @"
 DROP TEMPORARY TABLE IF EXISTS rust_client_creature_template;
@@ -322,6 +347,12 @@ DELETE FROM mangos.creature_template WHERE Entry = 900010;
 "@
     Invoke-MariaDb "mangos" $removeLegacyCreatureSql
 }
+
+$removeStaleHarnessCreatureSql = @"
+DELETE FROM mangos.creature WHERE guid IN (96001, 910907);
+DELETE FROM mangos.creature_template WHERE Entry = 910007;
+"@
+Invoke-MariaDb "mangos" $removeStaleHarnessCreatureSql
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 Invoke-Checked cargo @("build", "-p", "authserver")

@@ -332,10 +332,10 @@ Current user-directed priority is defined in `docs/session_handoff.md` and
 
 Current next task:
 
-1. Create `codex/c2-northshire-grade` from the latest green
-   `codex/rusty-mangos`.
-2. Add a Northshire playability grading checklist/harness around the current
-   user-observed missing criteria:
+1. Do not add or maintain a Northshire playability grading harness. The user is
+   the Checkpoint 2 grader through real-client playtesting.
+2. Continue implementation work around the current user-observed missing
+   criteria:
    - quest availability restrictions;
    - quest item drops from real loot tables;
    - gameobject quest pickup;
@@ -345,10 +345,10 @@ Current next task:
    - skills and weapon skills;
    - CMaNGOS-like aggro/chase/leash behavior;
    - patrol runtime stability.
-3. After the grading branch lands, split implementation into focused worker
-   branches from `docs/playable_execution_roadmap.md`, keeping write scopes
-   disjoint where possible. Do not split a subsystem so narrowly that an agent
-   preserves the wrong ownership boundary just to keep a patch small; shared
-   map/world ownership fixes should land as complete vertical slices.
+3. Split implementation into focused worker branches from
+   `docs/playable_execution_roadmap.md`, keeping write scopes disjoint where
+   possible. Do not split a subsystem so narrowly that an agent preserves the
+   wrong ownership boundary just to keep a patch small; shared map/world
+   ownership fixes should land as complete vertical slices.
 4. Keep existing G3 movement visibility, shared `MapRuntime`, and
    starter-zone flow tests green while building the missing Northshire systems.

@@ -164,34 +164,8 @@ struct StarterZoneContent {
     wolf_loot_item: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum GradeStatus {
-    Pass,
-    Fail,
-    Todo,
-}
-
-impl GradeStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "PASS",
-            Self::Fail => "FAIL",
-            Self::Todo => "TODO",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct NorthshireGradeRow {
-    criterion: &'static str,
-    parity: GradeStatus,
-    harness: GradeStatus,
-    evidence: &'static str,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let emit_northshire_grade = std::env::args().any(|arg| arg == "--northshire-grade");
     let login_pool = connect(LOGIN_DATABASE_URL).await?;
     let character_pool = connect(CHARACTER_DATABASE_URL).await?;
     let world_pool = connect(WORLD_DATABASE_URL).await?;
@@ -311,95 +285,7 @@ async fn main() -> anyhow::Result<()> {
         "starter-zone {:?} lock passed for account {USERNAME}, character {CHARACTER_NAME}",
         starter_zone.source
     );
-    if emit_northshire_grade {
-        print_northshire_grade_report(starter_zone.source);
-    }
     Ok(())
-}
-
-fn northshire_grade_rows() -> [NorthshireGradeRow; 9] {
-    [
-        NorthshireGradeRow {
-            criterion: "Quest eligibility restrictions",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "No automated level/class/race/chain/prerequisite/repeatability rejection probe yet.",
-        },
-        NorthshireGradeRow {
-            criterion: "Quest item drops from real loot tables",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Pass,
-            evidence:
-                "Harness proves DB-backed creature loot, but does not yet verify active-quest-gated item drops.",
-        },
-        NorthshireGradeRow {
-            criterion: "Gameobject quest pickup",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "Harness validates fixture DB rows only; no CMSG gameobject activation quest probe yet.",
-        },
-        NorthshireGradeRow {
-            criterion: "Warrior level 1-6 / GCD / Heroic Strike parity",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "Harness uses Heroic Strike during combat, but does not grade GCD or queued-next-swing parity.",
-        },
-        NorthshireGradeRow {
-            criterion: "Combat log feedback",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "No explicit combat log packet assertions are emitted in the starter-zone harness yet.",
-        },
-        NorthshireGradeRow {
-            criterion: "Health regeneration and rage degeneration",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "No timed regeneration/degeneration sampling or packet assertions exist in this harness yet.",
-        },
-        NorthshireGradeRow {
-            criterion: "Skills and weapon skills",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "No skill/weapon-skill load, gain, update, or persistence probes are implemented yet.",
-        },
-        NorthshireGradeRow {
-            criterion: "CMaNGOS-like aggro/chase/leash behavior",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Pass,
-            evidence:
-                "Harness covers neutral no-aggro and shared combat observation; leash/evade persistence parity remains ungraded.",
-        },
-        NorthshireGradeRow {
-            criterion: "Patrol runtime stability",
-            parity: GradeStatus::Fail,
-            harness: GradeStatus::Todo,
-            evidence:
-                "No long-duration waypoint/random patrol continuity probe is wired into the starter-zone harness yet.",
-        },
-    ]
-}
-
-fn print_northshire_grade_report(source: StarterZoneSource) {
-    println!();
-    println!("Northshire Playability Grade ({source:?})");
-    println!("| # | Criterion | Parity | Harness | Evidence |");
-    println!("| --- | --- | --- | --- | --- |");
-    for (index, row) in northshire_grade_rows().iter().enumerate() {
-        println!(
-            "| {} | {} | {} | {} | {} |",
-            index + 1,
-            row.criterion,
-            row.parity.as_str(),
-            row.harness.as_str(),
-            row.evidence
-        );
-    }
 }
 
 async fn connect(url: &str) -> anyhow::Result<MySqlPool> {

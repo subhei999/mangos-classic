@@ -141,6 +141,22 @@
         creature_combat_reach(&self.spawn.template)
     }
 
+    fn walk_speed(&self) -> f32 {
+        if self.spawn.template.speed_walk > 0.0 {
+            DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * self.spawn.template.speed_walk
+        } else {
+            DB_CREATURE_WALK_SPEED_YARDS_PER_SEC
+        }
+    }
+
+    fn run_speed(&self) -> f32 {
+        if self.spawn.template.speed_run > 0.0 {
+            DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * self.spawn.template.speed_run
+        } else {
+            DB_CREATURE_RUN_SPEED_YARDS_PER_SEC
+        }
+    }
+
     fn loot_money(&self) -> u32 {
         self.spawn
             .template

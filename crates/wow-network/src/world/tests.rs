@@ -230,6 +230,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         model_combat_reach: PLAYER_COMBAT_REACH_YARDS,
         faction: 35,
         scale: 1.0,
+        speed_walk: 1.0,
+        speed_run: 1.0,
         detection_range: 20,
         call_for_help: 0,
         pursuit: 15_000,
@@ -268,6 +270,10 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         civilian: 0,
         corpse_decay: 0,
         movement_type: DB_MOTION_TYPE_IDLE,
+        equipment_template_id: 0,
+        equip_display_id1: 0,
+        equip_display_id2: 0,
+        equip_display_id3: 0,
         experience_multiplier: 1.0,
     }
 }
@@ -748,6 +754,33 @@ fn db_creature_create_block_defaults_zero_template_scale_to_one() {
     let values = decode_update_values(&block[values_start..]);
 
     assert_eq!(values[4], Some(0.7f32.to_bits()));
+}
+
+#[test]
+fn db_creature_create_block_uses_template_speed_rates_and_equipment_displays() {
+    let mut creature = test_creature_spawn(198);
+    creature.template.speed_walk = 0.9;
+    creature.template.speed_run = 1.14286;
+    creature.template.equip_display_id1 = 1001;
+    creature.template.equip_display_id2 = 1002;
+    creature.template.equip_display_id3 = 1003;
+
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let movement_start = update_flags_offset + 1;
+    let walk_offset = movement_start + 28;
+    let run_offset = movement_start + 32;
+    let walk_speed = f32::from_le_bytes(block[walk_offset..walk_offset + 4].try_into().unwrap());
+    let run_speed = f32::from_le_bytes(block[run_offset..run_offset + 4].try_into().unwrap());
+
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+    assert_eq!(walk_speed, DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * 0.9);
+    assert!((run_speed - (DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * 1.14286)).abs() < 0.0001);
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY], Some(1001));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 1], Some(1002));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 2], Some(1003));
 }
 
 #[test]
@@ -7465,6 +7498,31 @@ fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
     let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert!(runtime.next_random_move_at.is_some());
+}
+
+#[test]
+fn db_creature_random_motion_duration_uses_template_walk_speed() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    spawn.template.speed_walk = 2.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_random_motion(&mut session, creature_guid, now)
+        .expect("random movement creature should start a wander spline");
+    let distance = path_distance_2d(motion.start, &motion.path);
+    let expected_millis = ((distance / (DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * 2.0)) * 1000.0)
+        .ceil()
+        .max(1.0) as u64;
+    assert_eq!(motion.duration, Duration::from_millis(expected_millis));
 }
 
 #[test]

@@ -54,8 +54,14 @@ async fn handle_cast_spell(
     }
 
     let targets = normalize_fixture_spell_targets(packet.targets);
-    if let Some(failure) =
-        starter_spell_melee_cast_failure(shared_world, session, &starter_spell, &targets).await
+    if let Some(failure) = starter_spell_cast_failure(
+        shared_world,
+        session,
+        &starter_spell,
+        &targets,
+        Instant::now(),
+    )
+    .await
     {
         send_packet(
             stream,
@@ -79,6 +85,7 @@ async fn handle_cast_spell(
         )
         .await;
     }
+    let now = Instant::now();
     match starter_spell.power {
         StarterSpellPower::Rage { cost } => {
             session.player_rage = session.player_rage.saturating_sub(cost);
@@ -87,6 +94,7 @@ async fn handle_cast_spell(
             session.player_mana = session.player_mana.saturating_sub(cost);
         }
     }
+    apply_starter_spell_cooldowns(session, &starter_spell, now);
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -115,7 +123,15 @@ async fn handle_cast_spell(
         )
         .await;
     shared_world.sessions.dispatch(observer_packets).await;
-    if targets.unit_target == Some(rust_combat_dummy_guid())
+    if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
+        if let Some(target) = targets.unit_target {
+            session.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
+                spell_id: packet.spell_id,
+                target,
+                bonus_damage: starter_spell.bonus_damage,
+            });
+        }
+    } else if targets.unit_target == Some(rust_combat_dummy_guid())
         && !session.combat_dummy_lootable
         && session.combat_dummy_health > 0
     {
@@ -444,6 +460,48 @@ async fn starter_spell_melee_cast_failure(
     }
 }
 
+async fn starter_spell_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    starter_spell: &SupportedStarterSpell,
+    targets: &SpellCastTargets,
+    now: Instant,
+) -> Option<u8> {
+    if let Some(until) = session
+        .starter_spell_cooldowns_until
+        .get(&starter_spell.spell_id)
+        .copied()
+    {
+        if now < until {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
+    }
+    if starter_spell.triggers_global_cooldown
+        && session
+            .starter_global_cooldown_until
+            .is_some_and(|until| now < until)
+    {
+        return Some(SPELL_FAILED_NOT_READY);
+    }
+    match starter_spell.power {
+        StarterSpellPower::Rage { cost } if session.player_rage < cost => {
+            return Some(SPELL_FAILED_NO_POWER);
+        }
+        StarterSpellPower::Mana { cost } if session.player_mana < cost => {
+            return Some(SPELL_FAILED_NO_POWER);
+        }
+        _ => {}
+    }
+    if starter_spell.kind == StarterSpellKind::NextMeleeSwing
+        && session
+            .queued_next_melee_spell
+            .is_some_and(|queued| queued.spell_id == starter_spell.spell_id)
+    {
+        return Some(SPELL_FAILED_NOT_READY);
+    }
+    starter_spell_melee_cast_failure(shared_world, session, starter_spell, targets).await
+}
+
 fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTargets {
     targets.target_mask =
         (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
@@ -454,9 +512,20 @@ fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTa
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SupportedStarterSpell {
+    spell_id: u32,
+    kind: StarterSpellKind,
+    bonus_damage: u32,
     damage: u32,
     power: StarterSpellPower,
     requires_melee: bool,
+    triggers_global_cooldown: bool,
+    cooldown_millis: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StarterSpellKind {
+    InstantDamage,
+    NextMeleeSwing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,20 +537,47 @@ enum StarterSpellPower {
 fn supported_starter_spell(spell_id: u32) -> Option<SupportedStarterSpell> {
     match spell_id {
         WARRIOR_HEROIC_STRIKE_RANK_1 => Some(SupportedStarterSpell {
-            damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            spell_id,
+            kind: StarterSpellKind::NextMeleeSwing,
+            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            damage: 0,
             power: StarterSpellPower::Rage {
                 cost: HEROIC_STRIKE_RAGE_COST,
             },
             requires_melee: true,
+            triggers_global_cooldown: false,
+            cooldown_millis: 0,
         }),
         HUNTER_RAPTOR_STRIKE_RANK_1 => Some(SupportedStarterSpell {
+            spell_id,
+            kind: StarterSpellKind::NextMeleeSwing,
+            bonus_damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
             damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST,
             },
             requires_melee: true,
+            triggers_global_cooldown: false,
+            cooldown_millis: 0,
         }),
         _ => None,
+    }
+}
+
+fn apply_starter_spell_cooldowns(
+    session: &mut WorldSessionState,
+    starter_spell: &SupportedStarterSpell,
+    now: Instant,
+) {
+    if starter_spell.triggers_global_cooldown {
+        session.starter_global_cooldown_until =
+            Some(now + Duration::from_millis(STARTER_GLOBAL_COOLDOWN_MILLIS));
+    }
+    if starter_spell.cooldown_millis > 0 {
+        session.starter_spell_cooldowns_until.insert(
+            starter_spell.spell_id,
+            now + Duration::from_millis(starter_spell.cooldown_millis),
+        );
     }
 }
 

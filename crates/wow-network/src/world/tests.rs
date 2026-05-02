@@ -8385,24 +8385,179 @@ fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
     assert_eq!(
         supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1),
         Some(SupportedStarterSpell {
-            damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+            kind: StarterSpellKind::NextMeleeSwing,
+            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            damage: 0,
             power: StarterSpellPower::Rage {
                 cost: HEROIC_STRIKE_RAGE_COST
             },
             requires_melee: true,
+            triggers_global_cooldown: false,
+            cooldown_millis: 0,
         })
     );
     assert_eq!(
         supported_starter_spell(HUNTER_RAPTOR_STRIKE_RANK_1),
         Some(SupportedStarterSpell {
+            spell_id: HUNTER_RAPTOR_STRIKE_RANK_1,
+            kind: StarterSpellKind::NextMeleeSwing,
+            bonus_damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
             damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST
             },
             requires_melee: true,
+            triggers_global_cooldown: false,
+            cooldown_millis: 0,
         })
     );
     assert_eq!(supported_starter_spell(1), None);
+}
+
+#[tokio::test]
+async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(character),
+        combat_dummy_health: RUST_COMBAT_DUMMY_HEALTH,
+        queued_next_melee_spell: Some(QueuedNextMeleeSpell {
+            spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+            target: rust_combat_dummy_guid(),
+            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+        }),
+        ..WorldSessionState::default()
+    };
+
+    send_combat_dummy_swing(&mut stream, shared_world, &mut session, &mut header_crypto)
+        .await
+        .unwrap();
+    let first_damage = RUST_COMBAT_DUMMY_HEALTH - session.combat_dummy_health;
+    assert_eq!(
+        first_damage,
+        RUST_COMBAT_DUMMY_HIT_DAMAGE + HEROIC_STRIKE_FIXTURE_DAMAGE
+    );
+    assert!(session.queued_next_melee_spell.is_none());
+
+    send_combat_dummy_swing(&mut stream, shared_world, &mut session, &mut header_crypto)
+        .await
+        .unwrap();
+    let total_damage = RUST_COMBAT_DUMMY_HEALTH - session.combat_dummy_health;
+    assert_eq!(
+        total_damage,
+        RUST_COMBAT_DUMMY_HIT_DAMAGE * 2 + HEROIC_STRIKE_FIXTURE_DAMAGE
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let attacker_packets = packets
+        .iter()
+        .filter(|packet| packet.opcode == SMSG_ATTACKERSTATEUPDATE)
+        .collect::<Vec<_>>();
+    assert!(attacker_packets.len() >= 2);
+    assert!(attacker_packets[0]
+        .body
+        .windows(4)
+        .any(|window| { window == WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes().as_slice() }));
+    assert!(!attacker_packets[1]
+        .body
+        .windows(4)
+        .any(|window| { window == WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes().as_slice() }));
+}
+
+#[tokio::test]
+async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let target = rust_combat_dummy_guid();
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+        gameobject_target: None,
+    };
+
+    let mut session = WorldSessionState::default();
+    let starter = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    assert_eq!(
+        starter_spell_cast_failure(
+            shared_world,
+            &mut session,
+            &starter,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        Some(SPELL_FAILED_NO_POWER)
+    );
+
+    session.player_rage = HEROIC_STRIKE_RAGE_COST;
+    session.starter_global_cooldown_until = Some(Instant::now() + Duration::from_millis(100));
+    let gcd_starter = SupportedStarterSpell {
+        spell_id: 999_001,
+        kind: StarterSpellKind::InstantDamage,
+        bonus_damage: 0,
+        damage: 1,
+        power: StarterSpellPower::Rage { cost: 0 },
+        requires_melee: false,
+        triggers_global_cooldown: true,
+        cooldown_millis: 0,
+    };
+    assert_eq!(
+        starter_spell_cast_failure(
+            shared_world,
+            &mut session,
+            &gcd_starter,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        Some(SPELL_FAILED_NOT_READY)
+    );
+
+    session.starter_global_cooldown_until = None;
+    session.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
+        spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+        target,
+        bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+    });
+    assert_eq!(
+        starter_spell_cast_failure(
+            shared_world,
+            &mut session,
+            &starter,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        Some(SPELL_FAILED_NOT_READY)
+    );
 }
 
 #[test]

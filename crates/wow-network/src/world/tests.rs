@@ -232,6 +232,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         scale: 1.0,
         detection_range: 20,
         call_for_help: 0,
+        pursuit: 15_000,
+        leash: 0,
         family: 0,
         creature_type: 7,
         npc_flags: UNIT_NPC_FLAG_GOSSIP,
@@ -5041,7 +5043,8 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
 #[test]
 fn map_runtime_db_creature_evade_waits_for_combat_timer_before_leash_check() {
     let mut map = MapRuntime::new(0, 0);
-    let attacker_spawn = test_creature_spawn(6);
+    let mut attacker_spawn = test_creature_spawn(6);
+    attacker_spawn.template.pursuit = 12_000;
     let attacker = creature_spawn_guid(&attacker_spawn);
     let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
     let now = Instant::now();
@@ -5053,14 +5056,15 @@ fn map_runtime_db_creature_evade_waits_for_combat_timer_before_leash_check() {
     map.begin_db_creature_combat(attacker, victim, now)
         .expect("combat should start");
 
-    assert!(!map.db_creature_should_evade(attacker, now + Duration::from_secs(14),));
-    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+    assert!(!map.db_creature_should_evade(attacker, now + Duration::from_secs(11),));
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(13),));
 }
 
 #[test]
 fn map_runtime_db_creature_damage_refreshes_leash_timer() {
     let mut map = MapRuntime::new(0, 0);
-    let attacker_spawn = test_creature_spawn(6);
+    let mut attacker_spawn = test_creature_spawn(6);
+    attacker_spawn.template.pursuit = 4_000;
     let attacker = creature_spawn_guid(&attacker_spawn);
     let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
     let now = Instant::now();
@@ -5071,9 +5075,9 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
         .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
     map.begin_db_creature_combat(attacker, victim, now)
         .expect("combat should start");
-    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(5),));
 
-    let refreshed_at = now + Duration::from_secs(16);
+    let refreshed_at = now + Duration::from_secs(5);
     map.apply_db_creature_damage(DbCreatureDamageRequest {
         creature_guid: attacker,
         killer: victim,
@@ -5087,7 +5091,8 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
     .expect("damage apply should succeed")
     .expect("damage event");
 
-    assert!(!map.db_creature_should_evade(attacker, refreshed_at + Duration::from_secs(14),));
+    assert!(!map.db_creature_should_evade(attacker, refreshed_at + Duration::from_secs(3),));
+    assert!(map.db_creature_should_evade(attacker, refreshed_at + Duration::from_secs(5),));
 }
 
 #[test]
@@ -5126,6 +5131,31 @@ fn map_runtime_db_creature_chase_melee_does_not_refresh_leash_timer() {
     .expect("damage event");
 
     assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+}
+
+#[test]
+fn map_runtime_db_creature_uses_template_leash_from_combat_start() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut attacker_spawn = test_creature_spawn(6);
+    attacker_spawn.template.pursuit = 60_000;
+    attacker_spawn.template.leash = 12;
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let victim_position = WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    map.creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("combat should start");
+
+    assert!(!map.db_creature_should_evade(attacker, now + Duration::from_secs(1),));
+    map.creatures
+        .get_mut(&attacker.raw())
+        .expect("creature")
+        .current_position
+        .x = 13.0;
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(1),));
 }
 
 #[test]

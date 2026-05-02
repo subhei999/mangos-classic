@@ -23,6 +23,8 @@ pub struct CreatureTemplateQuery {
     pub scale: f32,
     pub detection_range: u32,
     pub call_for_help: u32,
+    pub pursuit: u32,
+    pub leash: u32,
     pub family: i32,
     pub creature_type: u32,
     pub npc_flags: u32,
@@ -255,7 +257,8 @@ pub async fn get_creature_template_query(
                 COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
                 Faction AS faction, Scale AS scale, Detection AS detection_range, \
-                CallForHelp AS call_for_help, Family AS family, \
+                CallForHelp AS call_for_help, Pursuit AS pursuit, Leash AS leash, \
+                Family AS family, \
                 CreatureType AS creature_type, NpcFlags AS npc_flags, \
                 UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, \
                 UnitClass AS unit_class, Rank AS rank, \
@@ -844,6 +847,8 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
+                creature_template.Pursuit AS template_pursuit, \
+                creature_template.Leash AS template_leash, \
                 creature_template.Family AS template_family, \
                 creature_template.CreatureType AS template_creature_type, \
                 creature_template.NpcFlags AS template_npc_flags, \
@@ -1136,6 +1141,8 @@ pub async fn get_creature_spawns_in_rect(
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
+                creature_template.Pursuit AS template_pursuit, \
+                creature_template.Leash AS template_leash, \
                 creature_template.Family AS template_family, \
                 creature_template.CreatureType AS template_creature_type, \
                 creature_template.NpcFlags AS template_npc_flags, \
@@ -1839,6 +1846,8 @@ struct CreatureSpawnRow {
     template_scale: f32,
     template_detection_range: u32,
     template_call_for_help: u32,
+    template_pursuit: u32,
+    template_leash: u32,
     template_family: i32,
     template_creature_type: u32,
     template_npc_flags: u32,
@@ -1907,6 +1916,8 @@ impl CreatureSpawnRow {
                 scale: self.template_scale,
                 detection_range: self.template_detection_range,
                 call_for_help: self.template_call_for_help,
+                pursuit: self.template_pursuit,
+                leash: self.template_leash,
                 family: self.template_family,
                 creature_type: self.template_creature_type,
                 npc_flags: self.template_npc_flags,

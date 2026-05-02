@@ -87,7 +87,9 @@ struct DbCreaturePlayerDamageEvent {
 #[derive(Debug, Clone, Copy)]
 struct CreatureCombatLeashState {
     refresh_position: WorldPosition,
+    combat_start_position: WorldPosition,
     expires_at: Instant,
+    template_leash_yards: f32,
 }
 
 #[derive(Debug)]

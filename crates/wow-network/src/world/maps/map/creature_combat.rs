@@ -1,5 +1,5 @@
 // Shared DB-creature combat claim and player-damage authority.
-const DB_CREATURE_LEASH_COMBAT_TIMEOUT: Duration = Duration::from_secs(15);
+const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
 
 #[derive(Debug, Clone)]
 struct DbCreaturePlayerMeleeValidation {
@@ -275,11 +275,18 @@ impl MapRuntime {
         let Some(creature) = self.creatures.get(&attacker.raw()) else {
             return;
         };
+        let combat_start_position = self
+            .creature_combat_leash
+            .get(&attacker.raw())
+            .map(|leash| leash.combat_start_position)
+            .unwrap_or(creature.current_position);
         self.creature_combat_leash.insert(
             attacker.raw(),
             CreatureCombatLeashState {
                 refresh_position: creature.current_position,
-                expires_at: now + DB_CREATURE_LEASH_COMBAT_TIMEOUT,
+                combat_start_position,
+                expires_at: now + db_creature_pursuit_duration_millis(creature),
+                template_leash_yards: creature.spawn.template.leash as f32,
             },
         );
     }
@@ -297,6 +304,16 @@ impl MapRuntime {
         let Some(leash) = self.creature_combat_leash.get(&attacker.raw()) else {
             return false;
         };
+        if leash.template_leash_yards > 0.0
+            && distance_2d(
+                creature.current_position.x,
+                creature.current_position.y,
+                leash.combat_start_position.x,
+                leash.combat_start_position.y,
+            ) > leash.template_leash_yards
+        {
+            return true;
+        }
         if now < leash.expires_at {
             return false;
         }
@@ -460,6 +477,15 @@ impl MapRuntime {
         let dy = creature.current_position.y - player.position.y;
         dx * dx + dy * dy <= reach * reach
     }
+}
+
+fn db_creature_pursuit_duration_millis(creature: &DbCreatureRuntime) -> Duration {
+    let pursuit_millis = if creature.spawn.template.pursuit == 0 {
+        DB_CREATURE_DEFAULT_PURSUIT_MILLIS
+    } else {
+        creature.spawn.template.pursuit
+    };
+    Duration::from_millis(pursuit_millis as u64)
 }
 
 fn packets_direct_to_character(

@@ -4171,6 +4171,7 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         level: 1,
         race: 1,
         class: 1,
+        spirit: 20,
         gender: 0,
         health: 20,
         max_health: 20,
@@ -5687,6 +5688,7 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         level: 1,
         race: 1,
         class: 1,
+        spirit: 20,
         gender: 0,
         health: 20,
         max_health: 20,
@@ -6167,6 +6169,79 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
         .contains(&WARRIOR_HEROIC_STRIKE_RANK_1));
     assert_eq!(snapshot.inventory.len(), 1);
     assert_eq!(snapshot.quest_statuses.get(&33).unwrap().mobcount1, 1);
+}
+
+#[test]
+fn map_runtime_player_regen_tick_restores_health_and_mana_from_spirit() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.class = 8; // Mage
+    player.spirit = 40;
+    player.max_health = 80;
+    player.health = 40;
+    player.max_power1 = 100;
+    player.power1 = 10;
+    map.add_player(player).unwrap();
+    let now = Instant::now();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(packets.len(), 2);
+    let runtime = map.players.get(&1).unwrap();
+    assert!(runtime.health > 40);
+    assert!(runtime.power1 > 10);
+}
+
+#[test]
+fn map_runtime_player_regen_tick_degenerates_warrior_rage_out_of_combat() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.class = 1; // Warrior
+    player.power2 = 100;
+    map.add_player(player).unwrap();
+    let now = Instant::now();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert_eq!(map.players.get(&1).unwrap().power2, 75);
+}
+
+#[test]
+fn map_runtime_player_regen_tick_skips_dead_or_ghost_players() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut dead = test_player_runtime(1, SessionId(1), position);
+    dead.health = 0;
+    dead.max_power1 = 100;
+    dead.power1 = 1;
+    dead.power2 = 100;
+    map.add_player(dead).unwrap();
+    let mut ghost = test_player_runtime(2, SessionId(2), position);
+    ghost.flags = PLAYER_FLAGS_GHOST;
+    ghost.health = 1;
+    ghost.max_power1 = 100;
+    ghost.power1 = 1;
+    ghost.power2 = 100;
+    map.add_player(ghost).unwrap();
+    let now = Instant::now();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert!(packets.is_empty());
+    assert_eq!(map.players.get(&1).unwrap().power1, 1);
+    assert_eq!(map.players.get(&2).unwrap().power2, 100);
 }
 
 #[test]

@@ -1,6 +1,99 @@
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
 
 impl MapRuntime {
+    fn advance_player_regen_tick(
+        &mut self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        const PLAYER_REGEN_TICK: Duration = Duration::from_secs(2);
+        let next_tick = self
+            .next_player_regen_tick_at
+            .get_or_insert(now + PLAYER_REGEN_TICK);
+        if now < *next_tick {
+            return Ok(Vec::new());
+        }
+        while *next_tick <= now {
+            *next_tick += PLAYER_REGEN_TICK;
+        }
+
+        let in_combat_victims = self
+            .active_creature_combats
+            .values()
+            .map(|combat| combat.victim)
+            .collect::<HashSet<_>>();
+        let mut packets = Vec::new();
+        for player in self.players.values_mut() {
+            let player_guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
+            let in_combat = player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
+            let is_dead_or_ghost = player.health == 0 || (player.flags & PLAYER_FLAGS_GHOST) != 0;
+            if is_dead_or_ghost {
+                continue;
+            }
+
+            let mut health_changed = false;
+            let mut mana_changed = false;
+            let mut rage_changed = false;
+
+            if !in_combat && player.health < player.max_health {
+                let regen = health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+                let gained = (regen * 2.0).floor() as u32;
+                if gained > 0 {
+                    let new_health = player.health.saturating_add(gained).min(player.max_health);
+                    health_changed = new_health != player.health;
+                    player.health = new_health;
+                }
+            }
+
+            if player.max_power1 > 0 && player.power1 < player.max_power1 {
+                let regen = mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+                let gained = (regen * 2.0).floor() as u32;
+                if gained > 0 {
+                    let new_mana = player.power1.saturating_add(gained).min(player.max_power1);
+                    mana_changed = new_mana != player.power1;
+                    player.power1 = new_mana;
+                }
+            }
+
+            if !in_combat && player.class == 1 && player.power2 > 0 {
+                // CMaNGOS: decay 2.5 rage every 2 seconds out of combat.
+                let loss = 25u32;
+                let new_rage = player.power2.saturating_sub(loss);
+                rage_changed = new_rage != player.power2;
+                player.power2 = new_rage;
+            }
+
+            if health_changed {
+                packets.push((
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_health_update_body(player_guid, player.health)?,
+                    },
+                ));
+            }
+            if mana_changed {
+                packets.push((
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_mana_update_body(player_guid, player.power1)?,
+                    },
+                ));
+            }
+            if rage_changed {
+                packets.push((
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_rage_update_body(player_guid, player.power2)?,
+                    },
+                ));
+            }
+        }
+
+        Ok(packets)
+    }
+
     fn add_player(
         &mut self,
         player: PlayerRuntime,
@@ -564,6 +657,37 @@ impl MapRuntime {
             player.visible_objects.remove(guid);
         }
     }
+}
+
+fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
+    let spirit = spirit as f32;
+    match class {
+        1 => spirit * 1.26 - 22.6, // Warrior
+        2 => spirit * 0.25,        // Paladin
+        3 => spirit * 0.43 - 5.5,  // Hunter
+        4 => spirit * 0.84 - 13.0, // Rogue
+        5 => spirit * 0.15 + 1.4,  // Priest
+        7 => spirit * 0.28 - 3.6,  // Shaman
+        8 => spirit * 0.11 + 1.0,  // Mage
+        9 => spirit * 0.12 + 1.5,  // Warlock
+        11 => spirit * 0.11 + 1.0, // Druid
+        _ => 0.0,
+    }
+}
+
+fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
+    let spirit = spirit as f32;
+    let per_two_seconds = match class {
+        2 => spirit / 5.0 + 15.0,  // Paladin
+        3 => spirit / 5.0 + 15.0,  // Hunter
+        5 => spirit / 4.0 + 12.5,  // Priest
+        7 => spirit / 5.0 + 17.0,  // Shaman
+        8 => spirit / 4.0 + 12.5,  // Mage
+        9 => spirit / 5.0 + 15.0,  // Warlock
+        11 => spirit / 5.0 + 15.0, // Druid
+        _ => 0.0,
+    };
+    per_two_seconds / 2.0
 }
 
 fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: WorldPosition) -> bool {

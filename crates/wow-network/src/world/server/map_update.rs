@@ -25,5 +25,15 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
                 warn!("Map runtime update tick failed: {error}");
             }
         }
+        match runtime_state.maps.advance_all_player_regen_ticks(now).await {
+            Ok(packets) => {
+                if !packets.is_empty() {
+                    runtime_state.sessions.dispatch(packets).await;
+                }
+            }
+            Err(error) => {
+                warn!("Map runtime player regen tick failed: {error}");
+            }
+        }
     }
 }

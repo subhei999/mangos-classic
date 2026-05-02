@@ -22,6 +22,7 @@ struct PlayerRuntime {
     level: u8,
     race: u8,
     class: u8,
+    spirit: u32,
     gender: u8,
     health: u32,
     max_health: u32,
@@ -70,6 +71,7 @@ struct MapRuntime {
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
     next_idle_motion_tick_at: Option<Instant>,
+    next_player_regen_tick_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -187,6 +189,7 @@ impl MapRuntime {
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
             next_idle_motion_tick_at: None,
+            next_player_regen_tick_at: None,
         }
     }
 }

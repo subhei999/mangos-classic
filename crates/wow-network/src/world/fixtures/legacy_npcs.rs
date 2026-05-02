@@ -2,7 +2,14 @@
 // WORLD_ENABLE_LEGACY_FIXTURE_NPCS. Not production world data.
 
 fn legacy_fixture_npcs_enabled() -> bool {
-    std::env::var_os("WORLD_ENABLE_LEGACY_FIXTURE_NPCS").is_some()
+    std::env::var("WORLD_ENABLE_LEGACY_FIXTURE_NPCS")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {

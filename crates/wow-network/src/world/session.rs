@@ -151,6 +151,9 @@ struct WorldSessionState {
     player_health: u32,
     player_rage: u32,
     player_mana: u32,
+    starter_global_cooldown_until: Option<Instant>,
+    starter_spell_cooldowns_until: HashMap<u32, Instant>,
+    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
@@ -162,6 +165,13 @@ struct WorldSessionState {
     #[allow(dead_code)]
     last_player_corpse_visibility_position: Option<WorldPosition>,
     db_creature_navigation: DbCreatureNavigationGuardrail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueuedNextMeleeSpell {
+    spell_id: u32,
+    target: ObjectGuid,
+    bonus_damage: u32,
 }
 
 #[cfg(test)]

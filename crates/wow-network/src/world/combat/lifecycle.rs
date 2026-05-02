@@ -410,11 +410,17 @@ async fn send_db_creature_swing(
             .await;
         return Ok(());
     };
-    let melee_outcome = player_main_hand_melee_outcome_against_db_creature(
+    let mut melee_outcome = player_main_hand_melee_outcome_against_db_creature(
         &combat_stats,
         character_snapshot.level,
         &target_creature,
     );
+    let queued_spell = session
+        .queued_next_melee_spell
+        .filter(|queued| queued.target == target);
+    if let Some(queued) = queued_spell {
+        melee_outcome.total_damage = melee_outcome.total_damage.saturating_add(queued.bonus_damage);
+    }
     let requested_damage = melee_outcome.total_damage;
     let Some(event) = shared_world
         .maps
@@ -425,7 +431,7 @@ async fn send_db_creature_swing(
                 killer: attacker,
                 damage: requested_damage,
                 melee_outcome: Some(melee_outcome),
-                spell_id: None,
+                spell_id: queued_spell.map(|queued| queued.spell_id),
                 now: Instant::now(),
                 now_epoch_secs: current_unix_epoch_secs(),
                 exclude_character_guid: Some(character_snapshot.guid),
@@ -443,6 +449,9 @@ async fn send_db_creature_swing(
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
+    if queued_spell.is_some() {
+        session.queued_next_melee_spell = None;
+    }
     mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if is_dead {
         mirror_session_player_auto_attack(session, None, None);
@@ -936,9 +945,13 @@ async fn send_combat_dummy_swing(
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = rust_combat_dummy_guid();
 
-    let damage = session
-        .combat_dummy_health
-        .min(RUST_COMBAT_DUMMY_HIT_DAMAGE);
+    let queued_spell = session
+        .queued_next_melee_spell
+        .filter(|queued| queued.target == target);
+    let hit_damage = queued_spell
+        .map(|queued| RUST_COMBAT_DUMMY_HIT_DAMAGE.saturating_add(queued.bonus_damage))
+        .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
+    let damage = session.combat_dummy_health.min(hit_damage);
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
     session.player_rage =
         (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
@@ -947,10 +960,16 @@ async fn send_combat_dummy_swing(
         .set_player_power2(map_id, character_guid, session.player_rage)
         .await;
 
+    let attacker_state = if let Some(queued) = queued_spell {
+        session.queued_next_melee_spell = None;
+        build_attacker_state_update_body_with_spell_id(attacker, target, damage, queued.spell_id)?
+    } else {
+        build_attacker_state_update_body(attacker, target, damage)?
+    };
     send_packet(
         stream,
         SMSG_ATTACKERSTATEUPDATE,
-        &build_attacker_state_update_body(attacker, target, damage)?,
+        &attacker_state,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -997,4 +1016,3 @@ async fn send_combat_dummy_swing(
 
     Ok(())
 }
-

@@ -6189,6 +6189,60 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
     assert_eq!(snapshot.quest_statuses.get(&33).unwrap().mobcount1, 1);
 }
 
+#[tokio::test]
+async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 1;
+    player.spirit = 30;
+    player.health = 10;
+    player.max_health = 80;
+    player.power2 = 100;
+    maps.add_player(player).await.unwrap();
+
+    let now = Instant::now();
+    assert!(maps
+        .advance_all_player_regen_ticks(now)
+        .await
+        .unwrap()
+        .is_empty());
+    let packets = maps
+        .advance_all_player_regen_ticks(now + Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(packets.len(), 2);
+
+    let stale_session_health = 10;
+    let stale_session_rage = 100;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: stale_session_health,
+        player_rage: stale_session_rage,
+        ..WorldSessionState::default()
+    };
+
+    refresh_active_player_session_cache(&maps, &mut session).await;
+    assert!(session.player_health > stale_session_health);
+    assert!(session.player_rage < stale_session_rage);
+
+    sync_active_player_gameplay_state(&maps, &session).await;
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.health, session.player_health);
+    assert_eq!(snapshot.power2, session.player_rage);
+}
+
 #[test]
 fn map_runtime_player_regen_tick_restores_health_and_mana_from_spirit() {
     let mut map = MapRuntime::new(0, 0);

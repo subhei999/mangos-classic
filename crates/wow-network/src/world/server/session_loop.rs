@@ -99,6 +99,7 @@ async fn handle_client(
             .await
             {
                 Ok(Ok((opcode, body))) => {
+                    refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
                     if is_movement_opcode(opcode) {
                         debug!(
                             opcode = format_args!("0x{opcode:04X}"),
@@ -739,7 +740,7 @@ async fn handle_client(
                     }
                 }
                 Ok(Err(e)) => {
-                    sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
+                    refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
                     persist_session_character_state(
                         &character_db_pool,
                         account.id,
@@ -759,6 +760,7 @@ async fn handle_client(
                     break Ok(());
                 }
                 Err(_) => {
+                    refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
                     handle_combat_tick(
                         &mut stream,
                         &character_db_pool,
@@ -800,6 +802,7 @@ async fn handle_client(
     }
 
     if session_result.is_err() {
+        refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
         if let Err(cleanup_error) =
             persist_session_character_state(
                 &character_db_pool,
@@ -861,6 +864,30 @@ fn advance_world_tick_deadline(next_world_tick_at: &mut Instant, now: Instant) {
     let tick = Duration::from_millis(WORLD_TICK_MILLIS);
     while *next_world_tick_at <= now {
         *next_world_tick_at += tick;
+    }
+}
+
+async fn refresh_active_player_session_cache(
+    maps: &Arc<MapRuntimeManager>,
+    session: &mut WorldSessionState,
+) {
+    let Some(character) = session.active_character.as_ref() else {
+        return;
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(snapshot) = maps.player_runtime_snapshot(map_id, character_guid).await else {
+        return;
+    };
+
+    session.player_health = snapshot.health;
+    session.player_mana = snapshot.power1;
+    session.player_rage = snapshot.power2;
+    session.active_spells = snapshot.active_spells;
+    session.inventory = snapshot.inventory;
+    session.quest_statuses = snapshot.quest_statuses;
+    if let Some(character) = session.active_character.as_mut() {
+        character.position = snapshot.position;
     }
 }
 

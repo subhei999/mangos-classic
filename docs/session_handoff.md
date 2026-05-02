@@ -7,39 +7,31 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/c2-real-client-closure`, created from local
-  `codex/rusty-mangos` after the user rejected the Northshire grading harness
-  direction.
-- Latest local `HEAD`: `8a9188c88` (`Fix Heroic Strike queued spell packets`).
-- Current uncommitted state: completion-tree/docs cleanup plus removal of the
-  Northshire grading harness surface:
-  - new `docs/wow_completion_tree.md`;
-  - new `docs/wow_completion_tree.toml`;
-  - new `tools/render_wow_tree.py`;
-  - new `scripts/render-wow-tree.cmd`;
-  - generated `docs/generated/wow_completion_tree.html`, now defaulting to a
-    compact vertical SVG node-link explorer with pan/zoom and an outline toggle;
-  - deleted `docs/northshire_playability_grade.md`;
-  - removed the starter-zone grade-report command path;
-  - roadmap/gate docs now treat user real-client playtesting as the Checkpoint
-    2 closure authority.
+- Branch: `codex/c2-real-client-closure`.
+- Purpose: integrate focused Checkpoint 2 real-client parity branches, one at a
+  time, then let the user validate against a live 1.12.1 client.
+- Latest integrated commits before the current fix:
+  - `1de9b747b` (`Merge quest status markers`);
+  - `a41449b76` (`Merge combat resource feel`);
+  - `8627829d1` (`Merge creature template fidelity`).
+- Current uncommitted state: login-disconnect fix in
+  `crates/wow-db/src/world_data.rs` plus this handoff refresh.
 - Re-run `git status --short --branch` before editing.
-- `codex/rusty-mangos` was previously ahead of `origin/codex/rusty-mangos`
-  pending the end-of-day push.
-- Live client stack was rebuilt/restarted after the fix:
-  - authserver PID `41260` on `127.0.0.1:13724`;
-  - worldserver PID `30740` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the login-disconnect fix:
+  - authserver PID `17780` on `127.0.0.1:13724`;
+  - worldserver PID `41328` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
 ## Current Goal
 
-Current milestone: **Northshire Human Warrior playable slice with shared
-multiplayer state**.
+Current milestone: **Checkpoint 2 Northshire Human Warrior playable slice with
+shared multiplayer state**.
 
-Current user direction: **Do not use a Northshire grading harness. Keep useful
-automation as regression proof, but the user will grade Checkpoint 2 through
-real-client playtesting.**
+Current user direction: **Do not use a Northshire grading harness. The user is
+the grader using real-client side-by-side testing. Convert real-client notes
+into generalized systems work and priorities; do not hardcode Northshire-only
+fixes.**
 
 Important scope rule: stay focused on the current goal, but use judgment. Fix
 blockers and safety/data-integrity guardrails when practical. Log useful
@@ -52,126 +44,74 @@ log the follow-up.
 
 ## Recently Landed
 
-- Loot, quest eligibility, gameobject quest interaction, fixture NPC removal,
-  resurrection-at-ghost-position, auto-attack toggle, regen/rage ticks,
-  warrior armor proficiency, CMaNGOS-shaped aggro/leash data, and warrior
-  starter spell/GCD work have all been merged into `codex/rusty-mangos`.
-- Heroic Strike was corrected after real-client smoke showed it queued but did
-  not show as queued on the action bar and appeared as white melee damage.
-  CMaNGOS reference showed next-melee spells are cast from
-  `Unit::AttackerStateUpdate()` and return before the normal melee
-  attacker-state packet.
-- Current Rust behavior for supported next-melee starter spells:
-  - cast/queue sends `SMSG_CAST_RESULT` and `SMSG_SPELL_START`;
-  - `SMSG_SPELL_GO` is delayed until the swing fires;
-  - queued swing impact sends `SMSG_SPELL_GO` plus
-    `SMSG_SPELLNONMELEEDAMAGELOG`;
-  - the queued spell no longer reports as a white
-    `SMSG_ATTACKERSTATEUPDATE` hit with a spell id.
-- This packet-shape fix applies to the shared `StarterSpellKind::NextMeleeSwing`
-  path, with Heroic Strike-specific regression coverage.
-- Current branch adds a whole-game completion tree and static dashboard:
-  - root `WOW`;
-  - top-level systems for auth, protocol, character lifecycle, world/runtime,
-    movement, objects, combat, spells, quests, items/economy, progression,
-    persistence, social, instances, PvP, scripts, data, and tooling;
-  - stable `WOW.<SYSTEM>.<SUBSYSTEM>.<REQUIREMENT>` IDs;
-  - Red/Yellow/Green leaf status semantics;
-  - parent rollup and completion percentage rules;
-  - a CP2 overlay mapping the current missing criteria to specific leaf IDs;
-  - `docs/wow_completion_tree.toml` as the editable status source;
-  - `.\scripts\render-wow-tree.cmd` to regenerate
-    `docs/generated/wow_completion_tree.html`;
-  - tree/outline view toggle, status filters, CP2 filter, search, system cards,
-    SVG branch links, compact top-down tree layout, root-only initial view,
-    click-to-expand nodes, one horizontal band per tree depth, drag-to-pan,
-    wheel zoom, zoom/reset buttons, parent-centered child distribution, and
-    single-path expansion.
+- Quest status markers: unavailable quest givers now surface gray quest status
+  instead of being invisible to the player.
+- Combat resource feel: damage-based rage generation, overkill fields, max-HP
+  regen cap sync, and immediate first-swing scheduling are integrated.
+- Creature template fidelity: DB-backed walk/run speed, model scale, and
+  equipment display fields are integrated for creature create blocks.
+- Login-disconnect fix in progress: creature equipment display projections now
+  cast `COALESCE(item_template.displayid, 0)` to unsigned integers so MariaDB
+  does not return a decimal type that `sqlx` refuses to decode into `u32`.
+
+## Still Unmerged Worker Branches
+
+- `codex/c2-loot-multidrop-fidelity`:
+  `C:\Users\subhe\Documents\mangos-worktrees\c2-loot-multidrop-fidelity`
+- `codex/c2-skills-weapon-progression`:
+  `C:\Users\subhe\Documents\mangos-worktrees\c2-skills-weapon-progression`
+- `codex/c2-npc-trainer-scripts`:
+  `C:\Users\subhe\Documents\mangos-worktrees\c2-npc-trainer-scripts`
+
+Merge these one by one only after inspecting scope, rebuilding, restarting the
+client stack, and giving the user concrete real-client success criteria.
 
 ## Tests Run
 
-- `cargo fmt --check`
-- `cargo test -p wow-network heroic_strike --lib`
-- `cargo test -p wow-network starter_spell --lib`
-- `cargo test -p wow-network map_runtime_db_creature_spell_damage_includes_combat_log_packet --lib`
-- `cargo test -p wow-network --lib`
-- `.\scripts\test-rust.cmd`
-- Current docs-only completion-tree update:
-  - `git diff --check` passed with only the existing CRLF warning for
-    touched Markdown files;
-  - `python -m py_compile tools/render_wow_tree.py` passed;
-  - `.\scripts\render-wow-tree.cmd` passed and rendered
-    `docs/generated/wow_completion_tree.html`;
-  - Playwright/Edge smoke opened the generated file, verified 18 system cards,
-    177 leaves, search for `Heroic Strike`, and CP2 filtering;
-  - After the actual-tree view change, Playwright/Edge smoke verified 259 SVG
-    tree nodes, 258 tree links, 18 system cards, and `Heroic Strike` search
-    preserving a filtered path;
-  - After the vertical pan/zoom change, Playwright/Edge smoke verified 259 SVG
-    tree nodes, 258 tree links, 18 system cards, 3 zoom toolbar buttons, plus
-    transform changes after zoom and drag-pan;
-  - After the compact expand/collapse change, Playwright/Edge smoke verified
-    the initial tree shows one root node, clicking `WOW` reveals 18 system nodes
-    and 18 links, clicking `WOW.COMBAT` expands the next layer, and zoom still
-    changes the SVG transform;
-  - After removing wrapped sibling rows, Playwright/Edge smoke verified `WOW`
-    expansion has exactly two node y-bands (`54`, `158`) and opening Combat has
-    exactly three y-bands (`54`, `158`, `262`), so one visual row now maps to
-    one real tree level.
-  - After the single-path/parent-centered update, Playwright/Edge smoke verified
-    opening Combat gives exactly three y-bands, Combat children are centered on
-    the Combat node, then opening Quests closes the Combat child branch and
-    opens the Quest child branch.
-  - The in-app browser bridge could not be controlled in this session because
-    its Node runtime was older than the browser plugin requires; manually
-    refreshing the open file tab will show the regenerated tree view.
-- Current cleanup after the user rejected the Northshire grade:
-  - removed the static grade report from `starter-zone-flow-test`;
-  - removed the grade-report switch from `test-starter-zone-flow.ps1`;
-  - deleted `docs/northshire_playability_grade.md`;
-  - removed the dedicated grade node from the completion tree source.
-  - `cargo fmt --check` passed;
-  - `cargo check -p starter-zone-flow-test` passed;
-  - `python -m py_compile tools/render_wow_tree.py` passed;
-  - `.\scripts\render-wow-tree.cmd` passed and regenerated
-    `docs/generated/wow_completion_tree.html` with 176 leaves;
-  - `git diff --check` passed with only existing CRLF conversion warnings;
-  - `.\scripts\test-rust.cmd` passed.
-
-Note: one `.\scripts\test-rust.cmd` run initially failed because the live
-`authserver.exe` binary was locked by the running stack. After stopping
-auth/world, the same script passed.
+- Before the login-disconnect fix, after the three selected merges:
+  - `cargo fmt --check`;
+  - `cargo test -p wow-network quest --lib`;
+  - `cargo test -p wow-network rage --lib`;
+  - `cargo test -p wow-network regen --lib`;
+  - `cargo test -p wow-network combat --lib`;
+  - `cargo test -p wow-network creature_create --lib`;
+  - `cargo test -p wow-network db_creature_random_motion --lib`;
+  - `cargo check -p wow-network`;
+  - `.\scripts\test-rust.cmd`.
+- Current login-disconnect fix:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network creature_create --lib`;
+  - `cargo build -p authserver -p worldserver`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`;
+  - live MariaDB equipment-display join returned numeric display IDs with the
+    new cast.
 
 ## Known Follow-Ups
 
-- Real-client smoke still needs to confirm whether `SMSG_SPELL_START` makes the
-  Heroic Strike action bar show the queued state and whether yellow damage
-  appears correctly.
-- GitHub issue #62 tracks a starter-zone wrapper readiness race discovered
-  during the now-removed grade-report invocation. The obsolete flag is gone, but
-  the underlying fixed-sleep startup race can still affect normal starter-zone
-  runs.
-- Useful follow-up: add a CI/check mode for `tools/render_wow_tree.py` that
-  fails if `docs/generated/wow_completion_tree.html` is stale, defaults missing
-  leaf statuses to Red, rejects hand-marked parent statuses, and emits
-  CP2/Gate-specific Markdown tables from the same TOML.
-- Heroic Strike currently uses the starter-spell next-swing framework and fixed
-  rank data already present in the code. Broader warrior spell parity still
-  needs DB/DBC/source-derived spell effects, cooldowns, ranks, and combat log
-  details beyond the C2 starter slice.
+- Real-client smoke still needs to confirm that the latest stack no longer
+  disconnects on character login after the equipment-display SQL cast fix.
+- Continue user-led side-by-side testing and turn observations into generalized
+  system tasks. Current observation list includes NPC work animations, rage
+  formula, creature speed/scale/equipment, gray quest markers, overkill, combo
+  loot, skills/weapon skills, real loot tables, reputation, quest eligibility,
+  first swing timing, creature speech, quest reward items, trainer text/icon,
+  training feedback, copper variance, regen caps, and equipped thug weapons.
 - Full CMaNGOS loot-table rolling remains tracked as issue #58.
-- Keep an eye on C2 smoke regressions around regen/rage ticks, leash feel,
-  equipment proficiency, quest item drops, and gameobject quest pickup.
+- GitHub issue #62 tracks a starter-zone wrapper readiness race from the old
+  grade-report path; the grade surface is removed, but normal starter-zone
+  runs can still benefit from a readiness check instead of fixed sleep.
 
 ## Key Files
 
-- `crates/wow-network/src/world/spells.rs`
+- `crates/wow-db/src/world_data.rs`
+- `crates/wow-network/src/world/server/player_login.rs`
+- `crates/wow-network/src/world/entities/update_data.rs`
 - `crates/wow-network/src/world/combat/lifecycle.rs`
+- `crates/wow-network/src/world/combat/melee.rs`
 - `crates/wow-network/src/world/maps/map.rs`
-- `crates/wow-network/src/world/maps/map/creature_damage.rs`
-- `crates/wow-network/src/world/tests.rs`
-- `docs/wow_completion_tree.md`
-- `docs/wow_completion_tree.toml`
-- `docs/generated/wow_completion_tree.html`
-- `tools/render_wow_tree.py`
-- `scripts/render-wow-tree.cmd`
+- `scripts/run-client-stack-18085.ps1`
+- `docs/playable_execution_roadmap.md`

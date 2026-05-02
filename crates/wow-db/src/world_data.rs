@@ -285,9 +285,9 @@ pub async fn get_creature_template_query(
                 PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
                 CorpseDecay AS corpse_decay, \
                 MovementType AS movement_type, EquipmentTemplateId AS equipment_template_id, \
-                COALESCE(equip_1.displayid, 0) AS equip_display_id1, \
-                COALESCE(equip_2.displayid, 0) AS equip_display_id2, \
-                COALESCE(equip_3.displayid, 0) AS equip_display_id3, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS equip_display_id3, \
                 ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          LEFT JOIN creature_model_info \
@@ -898,9 +898,9 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
                 creature_template.EquipmentTemplateId AS template_equipment_template_id, \
-                COALESCE(equip_1.displayid, 0) AS template_equip_display_id1, \
-                COALESCE(equip_2.displayid, 0) AS template_equip_display_id2, \
-                COALESCE(equip_3.displayid, 0) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
@@ -1201,9 +1201,9 @@ pub async fn get_creature_spawns_in_rect(
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
                 creature_template.EquipmentTemplateId AS template_equipment_template_id, \
-                COALESCE(equip_1.displayid, 0) AS template_equip_display_id1, \
-                COALESCE(equip_2.displayid, 0) AS template_equip_display_id2, \
-                COALESCE(equip_3.displayid, 0) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \

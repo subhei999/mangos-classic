@@ -67,6 +67,7 @@ struct MapRuntime {
     gameobject_loots: HashMap<u64, DbGameObjectLootState>,
     gameobject_looting_by_character: HashMap<u32, u64>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
+    creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
     next_idle_motion_tick_at: Option<Instant>,
@@ -79,6 +80,12 @@ struct DbCreaturePlayerDamageEvent {
     victim_health: u32,
     combat: CreatureCombatState,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CreatureCombatLeashState {
+    refresh_position: WorldPosition,
+    expires_at: Instant,
 }
 
 #[derive(Debug)]
@@ -184,6 +191,7 @@ impl MapRuntime {
             gameobject_loots: HashMap::new(),
             gameobject_looting_by_character: HashMap::new(),
             active_creature_combats: HashMap::new(),
+            creature_combat_leash: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
             next_idle_motion_tick_at: None,

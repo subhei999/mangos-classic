@@ -1059,13 +1059,14 @@ impl MapRuntimeManager {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         damage: u32,
+        now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
         let map = self.get_or_create_map(map_id, 0).await;
         let event = map
             .lock()
             .await
-            .apply_db_creature_player_damage(attacker, victim, damage, next_swing_at);
+            .apply_db_creature_player_damage(attacker, victim, damage, now, next_swing_at);
         event
     }
 
@@ -1075,6 +1076,7 @@ impl MapRuntimeManager {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         outcome: MeleeDamageOutcome,
+        now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
@@ -1085,9 +1087,24 @@ impl MapRuntimeManager {
             attacker,
             victim,
             outcome,
+            now,
             next_swing_at,
         );
         event
+    }
+
+    async fn db_creature_should_evade(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        now: Instant,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return false;
+        };
+        let should_evade = map.lock().await.db_creature_should_evade(attacker, now);
+        should_evade
     }
 
     async fn defer_ready_db_creature_swing_retry(

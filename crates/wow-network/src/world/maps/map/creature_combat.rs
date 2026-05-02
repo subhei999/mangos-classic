@@ -1,4 +1,5 @@
 // Shared DB-creature combat claim and player-damage authority.
+const DB_CREATURE_LEASH_COMBAT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 struct DbCreaturePlayerMeleeValidation {
@@ -108,6 +109,7 @@ impl MapRuntime {
             next_swing_at: now,
         };
         self.active_creature_combats.insert(attacker.raw(), combat);
+        self.refresh_db_creature_combat_leash(attacker, now);
         self.add_db_creature_threat(attacker, victim, 0.0);
         if let Some(position) = self
             .creatures
@@ -121,6 +123,7 @@ impl MapRuntime {
 
     fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
         self.active_creature_combats.remove(&attacker.raw());
+        self.creature_combat_leash.remove(&attacker.raw());
         self.creature_threats.remove(&attacker.raw());
         if let Some(position) = self
             .creatures
@@ -141,14 +144,16 @@ impl MapRuntime {
             .collect::<HashSet<_>>();
         self.active_creature_combats
             .retain(|_, combat| combat.victim != victim);
-        for threats in self.creature_threats.values_mut() {
-            threats.retain(|entry| entry.victim != victim);
-        }
         let active_attackers = self
             .active_creature_combats
             .keys()
             .copied()
             .collect::<HashSet<_>>();
+        self.creature_combat_leash
+            .retain(|attacker, _| active_attackers.contains(attacker));
+        for threats in self.creature_threats.values_mut() {
+            threats.retain(|entry| entry.victim != victim);
+        }
         self.creature_threats
             .retain(|attacker, threats| active_attackers.contains(attacker) || !threats.is_empty());
         for grid in changed_grids {
@@ -176,12 +181,14 @@ impl MapRuntime {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         damage: u32,
+        now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
         self.apply_db_creature_player_melee_outcome(
             attacker,
             victim,
             MeleeDamageOutcome::normal_hit(damage),
+            now,
             next_swing_at,
         )
     }
@@ -191,23 +198,28 @@ impl MapRuntime {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         outcome: MeleeDamageOutcome,
+        now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
-        let Some(combat) = self.active_creature_combats.get_mut(&attacker.raw()) else {
-            return Ok(None);
+        let combat = {
+            let Some(combat) = self.active_creature_combats.get_mut(&attacker.raw()) else {
+                return Ok(None);
+            };
+            if combat.victim != victim {
+                return Ok(None);
+            }
+            combat.next_swing_at = next_swing_at;
+            *combat
         };
-        if combat.victim != victim {
-            return Ok(None);
-        }
         let Some(victim_player) = self.players.get_mut(&victim.counter()) else {
             return Ok(None);
         };
         let damage = outcome.total_damage;
         victim_player.health = victim_player.health.saturating_sub(damage);
-        combat.next_swing_at = next_swing_at;
-        let combat = *combat;
         let victim_health = victim_player.health;
         let victim_position = victim_player.position;
+        let _ = victim_player;
+        self.refresh_db_creature_combat_leash(attacker, now);
         let attacker_state = OutboundWorldPacket {
             opcode: SMSG_ATTACKERSTATEUPDATE,
             body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,
@@ -247,6 +259,46 @@ impl MapRuntime {
             combat.next_swing_at = now + Duration::from_millis(DB_CREATURE_MELEE_RETRY_MILLIS);
         }
         Some(*combat)
+    }
+
+    fn refresh_db_creature_combat_leash(&mut self, attacker: ObjectGuid, now: Instant) {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return;
+        };
+        self.creature_combat_leash.insert(
+            attacker.raw(),
+            CreatureCombatLeashState {
+                refresh_position: creature.current_position,
+                expires_at: now + DB_CREATURE_LEASH_COMBAT_TIMEOUT,
+            },
+        );
+    }
+
+    fn db_creature_should_evade(&self, attacker: ObjectGuid, now: Instant) -> bool {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return false;
+        };
+        if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
+            return false;
+        }
+        let Some(combat) = self.active_creature_combats.get(&attacker.raw()) else {
+            return false;
+        };
+        let Some(leash) = self.creature_combat_leash.get(&attacker.raw()) else {
+            return false;
+        };
+        if now < leash.expires_at {
+            return false;
+        }
+        let Some(victim) = self.players.get(&combat.victim.counter()) else {
+            return false;
+        };
+        distance_2d(
+            victim.position.x,
+            victim.position.y,
+            leash.refresh_position.x,
+            leash.refresh_position.y,
+        ) > DB_CREATURE_LEASH_RADIUS_YARDS
     }
 
     fn add_db_creature_threat(

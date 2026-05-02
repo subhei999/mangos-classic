@@ -36,7 +36,10 @@ impl MapRuntime {
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.active_creature_combats.remove(&creature_guid.raw());
+            self.creature_combat_leash.remove(&creature_guid.raw());
             self.creature_threats.remove(&creature_guid.raw());
+        } else if self.active_creature_combats.contains_key(&creature_guid.raw()) {
+            self.refresh_db_creature_combat_leash(creature_guid, request.now);
         }
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let update_body = if is_dead {

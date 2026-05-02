@@ -241,7 +241,7 @@ async fn send_single_active_db_creature_attack(
     };
     let combat = active.combat;
     mirror_session_db_creature(session, attacker.raw(), active.creature.clone());
-    if db_creature_should_evade_from_map(shared_world, map_id, attacker).await {
+    if db_creature_should_evade_from_map(shared_world, map_id, attacker, now).await {
         send_db_creature_evade_and_return_home(
             stream,
             broadcast,
@@ -304,6 +304,7 @@ async fn send_single_active_db_creature_attack(
             attacker,
             player,
             outcome,
+            now,
             now + next_swing_delay,
         )
         .await?

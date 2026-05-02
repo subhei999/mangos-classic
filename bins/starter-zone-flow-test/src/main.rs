@@ -53,8 +53,6 @@ const BROTHER_PAXTON_ENTRY: u32 = FIXTURE_PREFIX + 3;
 const LLANE_BESHERE_ENTRY: u32 = FIXTURE_PREFIX + 6;
 const YOUNG_WOLF_ENTRY: u32 = FIXTURE_PREFIX + 4;
 const KOBOLD_VERMIN_ENTRY: u32 = FIXTURE_PREFIX + 5;
-const DEATH_TESTER_ENTRY: u32 = FIXTURE_PREFIX + 7;
-const DEATH_TESTER_GUID: u32 = FIXTURE_PREFIX + 907;
 const YOUNG_WOLF_DISPLAY_ID: u32 = 372;
 const KOBOLD_VERMIN_DISPLAY_ID: u32 = 365;
 const NORTHSHIRE_CRATE_ENTRY: u32 = FIXTURE_PREFIX + 101;
@@ -164,8 +162,6 @@ struct StarterZoneContent {
     wolf_health: u32,
     wolf_loot_money: u32,
     wolf_loot_item: Option<u32>,
-    death_creature: ExpectedCreature,
-    death_position: WorldPosition,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -491,7 +487,6 @@ async fn cleanup_starter_zone_creature_respawns(
             .iter()
             .map(|target| target.creature.counter),
     );
-    guids.push(content.death_creature.counter);
     guids.sort_unstable();
     guids.dedup();
 
@@ -507,22 +502,16 @@ async fn cleanup_starter_zone_creature_respawns(
     }
     separated.push_unseparated(")");
     builder.build().execute(character_pool).await?;
-    sqlx::query("DELETE FROM creature_respawn WHERE instance = 0 AND guid = ?")
-        .bind(content.death_creature.counter)
-        .execute(character_pool)
-        .await?;
     Ok(())
 }
 
 async fn prepare_northshire_content(world_pool: &MySqlPool) -> anyhow::Result<StarterZoneContent> {
     cleanup_northshire_fixture(world_pool).await?;
     if let Some(real) = load_real_northshire_content(world_pool).await? {
-        seed_death_test_fixture(world_pool).await?;
         return Ok(real);
     }
 
     seed_northshire_fixture(world_pool).await?;
-    seed_death_test_fixture(world_pool).await?;
     load_fixture_northshire_content(world_pool).await
 }
 
@@ -723,8 +712,6 @@ async fn load_real_northshire_content(
             .max_loot_gold
             .max(wolf_spawn.template.min_loot_gold),
         wolf_loot_item: wolf_loot.map(|loot| loot.item),
-        death_creature: death_test_creature(),
-        death_position: death_test_position(),
     }))
 }
 
@@ -803,8 +790,6 @@ async fn load_fixture_northshire_content(
         wolf_health: 4,
         wolf_loot_money: 3,
         wolf_loot_item: wolf_loot.map(|loot| loot.item),
-        death_creature: death_test_creature(),
-        death_position: death_test_position(),
     })
 }
 
@@ -1061,50 +1046,6 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
-}
-
-async fn seed_death_test_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
-    seed_creature_template(
-        world_pool,
-        DEATH_TESTER_ENTRY,
-        "Rust Death Proof",
-        "Northshire Harness",
-        3,
-        KOBOLD_VERMIN_DISPLAY_ID,
-        14,
-        7,
-        0,
-        50_000,
-        250.0,
-        300.0,
-        0,
-        0,
-        0,
-        0,
-    )
-    .await?;
-    let position = death_test_position();
-    seed_creature_spawn(
-        world_pool,
-        DEATH_TESTER_GUID,
-        DEATH_TESTER_ENTRY,
-        position.x,
-        position.y,
-        position.z,
-        position.orientation,
-    )
-    .await
-}
-
-fn death_test_creature() -> ExpectedCreature {
-    ExpectedCreature {
-        entry: DEATH_TESTER_ENTRY,
-        counter: DEATH_TESTER_GUID,
-    }
-}
-
-fn death_test_position() -> WorldPosition {
-    WorldPosition::new(EASTERN_KINGDOMS_MAP, -9025.0, -132.0, 83.5, 0.0)
 }
 
 async fn cleanup_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
@@ -2659,13 +2600,9 @@ impl WorldClient {
         content: &StarterZoneContent,
     ) -> anyhow::Result<DeathReclaimProof> {
         let player = ObjectGuid::new(HighGuid::Player, 0, self.character_guid);
-        let killer = ObjectGuid::new(
-            HighGuid::Unit,
-            content.death_creature.entry,
-            content.death_creature.counter,
-        );
+        let killer = ObjectGuid::new(HighGuid::Unit, content.kobold.entry, content.kobold.counter);
         let corpse = ObjectGuid::new(HighGuid::Corpse, 0, self.character_guid);
-        let attack_positions = nearby_attack_positions(content.death_position);
+        let attack_positions = nearby_attack_positions(content.kobold_position);
         let corpse_position = attack_positions[0];
 
         write_client_packet(

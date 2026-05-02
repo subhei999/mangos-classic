@@ -5071,6 +5071,47 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
 }
 
 #[test]
+fn map_runtime_db_creature_damage_preserves_attacker_state_overkill_damage() {
+    let mut map = MapRuntime::new(0, 0);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 901;
+    spawn.template.min_level_health = 12;
+    spawn.template.max_level_health = 12;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: player,
+            damage: 30,
+            melee_outcome: None,
+            spell_id: None,
+            suppress_attacker_state: false,
+            now: Instant::now(),
+            now_epoch_secs: 0,
+            exclude_character_guid: Some(1),
+        })
+        .unwrap()
+        .expect("damage event");
+
+    assert_eq!(
+        event.damage, 12,
+        "applied hp damage stays clamped to current hp"
+    );
+    let state = event.attacker_state_body.expect("attacker state");
+    let mut cursor = 0;
+    assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
+    cursor += PackedGuid::packed_size(player) + PackedGuid::packed_size(creature_guid);
+    assert_eq!(
+        read_u32(&state, &mut cursor).unwrap(),
+        30,
+        "attacker packet should preserve pre-clamp overkill damage"
+    );
+}
+
+#[test]
 fn map_runtime_db_creature_evade_waits_for_combat_timer_before_leash_check() {
     let mut map = MapRuntime::new(0, 0);
     let mut attacker_spawn = test_creature_spawn(6);
@@ -6408,6 +6449,54 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
 }
 
 #[test]
+fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 1;
+    player.spirit = 70;
+    player.health = 60;
+    player.max_health = 60;
+    map.add_player(player).unwrap();
+
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 2,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 98,
+        ..WorldSessionState::default()
+    };
+    map.sync_player_gameplay_state(7, &session);
+    assert_eq!(map.players.get(&7).unwrap().max_health, 98);
+    assert_eq!(map.players.get(&7).unwrap().health, 98);
+
+    map.players.get_mut(&7).unwrap().health = 60;
+    let now = Instant::now();
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    map.advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+    assert!(map.players.get(&7).unwrap().health > 60);
+    assert!(map.players.get(&7).unwrap().health <= 98);
+}
+
+#[test]
+fn rage_gain_from_damage_matches_cmangos_reward_rage_formula() {
+    // CMaNGOS: src/game/Entities/Player.cpp Player::RewardRage
+    assert_eq!(rage_gain_from_damage(0, 1, true), 0);
+    assert_eq!(rage_gain_from_damage(100, 1, true), 999);
+    assert_eq!(rage_gain_from_damage(100, 1, false), 333);
+}
+
+#[test]
 fn map_runtime_player_regen_tick_restores_health_and_mana_from_spirit() {
     let mut map = MapRuntime::new(0, 0);
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -6772,6 +6861,7 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     let first_next =
         scheduled_player_auto_attack_next_swing(shared_world, &session, target, now, swing_delay)
             .await;
+    assert_eq!(first_next, now, "first swing should be immediately due");
     maps.set_player_auto_attack(map_id, character_guid, Some(target), Some(first_next))
         .await;
 

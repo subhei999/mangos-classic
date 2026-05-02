@@ -72,8 +72,9 @@ impl MapRuntime {
             None
         } else if let Some(outcome) = request.melee_outcome {
             let mut outcome = outcome;
-            outcome.total_damage = damage;
-            outcome.school_damage = outcome.school_damage.min(damage);
+            // Preserve attacker packet overkill semantics from the original melee outcome.
+            outcome.total_damage = requested_damage;
+            outcome.school_damage = outcome.school_damage.min(requested_damage);
             Some(build_attacker_state_update_body_for_outcome(
                 request.killer,
                 creature_guid,
@@ -84,14 +85,14 @@ impl MapRuntime {
             Some(build_attacker_state_update_body_with_spell_id(
                 request.killer,
                 creature_guid,
-                damage,
+                requested_damage,
                 spell_id,
             )?)
         } else {
             Some(build_attacker_state_update_body(
                 request.killer,
                 creature_guid,
-                damage,
+                requested_damage,
             )?)
         };
         let spell_non_melee_log_body = request
@@ -101,7 +102,7 @@ impl MapRuntime {
                     attacker: request.killer,
                     target: creature_guid,
                     spell_id,
-                    damage,
+                    damage: requested_damage,
                     school: 0,
                     absorb: 0,
                     resist: 0,

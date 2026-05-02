@@ -376,6 +376,8 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
         };
+        player.max_health = player.max_health.max(session.player_health.max(1));
+        player.max_power1 = player.max_power1.max(session.player_mana);
         player.health = session.player_health.min(player.max_health);
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);

@@ -473,8 +473,8 @@ async fn send_db_creature_swing(
             .set_player_next_swing_at(map_id, character_snapshot.guid, Some(next_swing))
             .await;
     }
-    session.player_rage =
-        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    let rage_gain = rage_gain_from_damage(event.damage, character_snapshot.level, true);
+    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
         .maps
         .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
@@ -614,6 +614,22 @@ fn player_melee_retry_at(now: Instant) -> Instant {
 
 fn player_main_hand_next_swing_at(now: Instant, combat_stats: &PlayerCombatStats) -> Instant {
     now + Duration::from_millis(combat_stats.main_attack_time_ms.max(1) as u64)
+}
+
+fn rage_gain_from_damage(damage: u32, level: u8, attacker: bool) -> u32 {
+    // CMaNGOS reference: src/game/Entities/Player.cpp Player::RewardRage
+    if damage == 0 {
+        return 0;
+    }
+    let level = level as f64;
+    let rage_conversion =
+        0.0091107836_f64 * level * level + 3.225598133_f64 * level + 4.2652911_f64;
+    if rage_conversion <= 0.0 {
+        return 0;
+    }
+    let base = if attacker { 7.5_f64 } else { 2.5_f64 };
+    let rage = (damage as f64 / rage_conversion) * base;
+    (rage.max(0.0) * 10.0) as u32
 }
 
 async fn send_player_melee_swing_error_if_changed(
@@ -996,8 +1012,8 @@ async fn send_combat_dummy_swing(
         .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
     let damage = session.combat_dummy_health.min(hit_damage);
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-    session.player_rage =
-        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    let rage_gain = rage_gain_from_damage(damage, character.level, true);
+    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
         .maps
         .set_player_power2(map_id, character_guid, session.player_rage)

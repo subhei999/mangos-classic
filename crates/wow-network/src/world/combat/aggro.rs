@@ -314,6 +314,14 @@ async fn send_single_active_db_creature_attack(
         return Ok(());
     };
     session.player_health = event.victim_health;
+    let rage_gain = rage_gain_from_damage(event.damage, character_snapshot.level, false);
+    if rage_gain > 0 {
+        session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
+        shared_world
+            .maps
+            .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
+            .await;
+    }
     mirror_session_active_creature_combat(session, event.combat);
     shared_world.sessions.dispatch(event.observer_packets).await;
     send_packet(
@@ -330,6 +338,15 @@ async fn send_single_active_db_creature_attack(
         Some(&mut *header_crypto),
     )
     .await?;
+    if rage_gain > 0 {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_rage_update_body(player, session.player_rage)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     if session.player_health == 0 {
         kill_player_from_creature(
             stream,

@@ -2698,6 +2698,24 @@ fn corpse_query_points_ghosts_back_to_their_body() {
 }
 
 #[test]
+fn player_corpse_reclaim_resurrects_at_ghost_position_while_query_points_to_body() {
+    let ghost_position = WorldPosition::new(0, -8901.0, -130.0, 82.0, 0.25);
+    let corpse_position = WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0);
+    assert!(can_reclaim_corpse_at_ghost_position(
+        ghost_position,
+        corpse_position
+    ));
+    assert_eq!(ghost_position.map_id, corpse_position.map_id);
+    assert_ne!(ghost_position.x, corpse_position.x);
+    assert_ne!(ghost_position.y, corpse_position.y);
+
+    let body = build_corpse_query_body(Some(corpse_position));
+    assert_eq!(body[0], 1);
+    assert_eq!(&body[5..9], &corpse_position.x.to_le_bytes());
+    assert_eq!(&body[9..13], &corpse_position.y.to_le_bytes());
+}
+
+#[test]
 fn player_corpse_create_block_uses_cmangos_corpse_fields() {
     let corpse = PlayerCorpseRuntime {
         guid: ObjectGuid::new(HighGuid::Corpse, 0, 7),

@@ -5091,6 +5091,44 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
 }
 
 #[test]
+fn map_runtime_db_creature_chase_melee_does_not_refresh_leash_timer() {
+    let mut map = MapRuntime::new(0, 0);
+    let attacker_spawn = test_creature_spawn(6);
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let victim_position =
+        WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    let mut creature = DbCreatureRuntime::new(attacker_spawn);
+    creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
+        target: victim,
+        start: creature.home_position,
+        destination: victim_position,
+        path: vec![victim_position],
+        started_at: now,
+        duration: Duration::from_secs(1),
+        recheck_at: now + Duration::from_secs(1),
+    });
+    map.creatures.insert(attacker.raw(), creature);
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("combat should start");
+
+    let hit_while_chasing_at = now + Duration::from_secs(10);
+    map.apply_db_creature_player_melee_outcome(
+        attacker,
+        victim,
+        MeleeDamageOutcome::normal_hit(1),
+        hit_while_chasing_at,
+        hit_while_chasing_at + Duration::from_secs(2),
+    )
+    .expect("melee outcome should apply")
+    .expect("damage event");
+
+    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+}
+
+#[test]
 fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);

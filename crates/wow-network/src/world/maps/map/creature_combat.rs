@@ -211,6 +211,10 @@ impl MapRuntime {
             combat.next_swing_at = next_swing_at;
             *combat
         };
+        let creature_motion = self
+            .creatures
+            .get(&attacker.raw())
+            .map(|creature| creature.motion.clone());
         let Some(victim_player) = self.players.get_mut(&victim.counter()) else {
             return Ok(None);
         };
@@ -219,7 +223,13 @@ impl MapRuntime {
         let victim_health = victim_player.health;
         let victim_position = victim_player.position;
         let _ = victim_player;
-        self.refresh_db_creature_combat_leash(attacker, now);
+        if damage > 0
+            && creature_motion
+                .as_ref()
+                .is_some_and(|motion| !matches!(motion, CreatureMotionState::Chase(_)))
+        {
+            self.refresh_db_creature_combat_leash(attacker, now);
+        }
         let attacker_state = OutboundWorldPacket {
             opcode: SMSG_ATTACKERSTATEUPDATE,
             body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,

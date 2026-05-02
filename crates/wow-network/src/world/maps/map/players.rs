@@ -86,6 +86,12 @@ impl MapRuntime {
                 }
             })
             .collect::<HashSet<_>>();
+        let retained_non_player_visible = current_player
+            .visible_objects
+            .iter()
+            .filter(|guid| !guid.is_player())
+            .copied()
+            .collect::<HashSet<_>>();
         let new_visible = self
             .nearby_player_guids(
                 movement.position,
@@ -196,10 +202,11 @@ impl MapRuntime {
             player.client_time = movement.client_time;
             player.fall_time = movement.fall_time;
             player.cell = new_cell;
-            player.visible_objects = new_visible
+            player.visible_objects = retained_non_player_visible;
+            player.visible_objects.extend(new_visible
                 .iter()
                 .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid))
-                .collect();
+            );
         }
 
         Ok(packets)
@@ -270,6 +277,190 @@ impl MapRuntime {
                     .map(|other| (other.session_id, packet.clone()))
             })
             .collect())
+    }
+
+    fn sync_player_gameplay_state(&mut self, character_guid: u32, session: &WorldSessionState) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        player.health = session.player_health.min(player.max_health);
+        player.power1 = session.player_mana.min(player.max_power1);
+        player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
+        player.active_spells = session.active_spells.clone();
+        player.inventory = session.inventory.clone();
+        player.quest_statuses = session.quest_statuses.clone();
+        if let Some(character) = session.active_character.as_ref() {
+            player.position = character.position;
+            player.movement_flags = character.movement_flags;
+            player.client_time = character.client_time;
+            player.fall_time = character.fall_time;
+            let equipment_cache = session
+                .player_visual
+                .as_ref()
+                .and_then(|visual| visual.equipment_cache.as_deref());
+            player.visible_equipment = visible_equipment_for_inventory(
+                equipment_cache,
+                &session.inventory,
+            );
+        }
+    }
+
+    fn player_runtime_snapshot(&self, character_guid: u32) -> Option<PlayerRuntimeSnapshot> {
+        let player = self.players.get(&character_guid)?;
+        Some(PlayerRuntimeSnapshot {
+            position: player.position,
+            health: player.health,
+            power1: player.power1,
+            power2: player.power2,
+            active_spells: player.active_spells.clone(),
+            inventory: player.inventory.clone(),
+            quest_statuses: player.quest_statuses.clone(),
+            combat_stats: player.combat_stats,
+            active_combat_target: player.active_combat_target,
+            active_combat_next_swing_at: player.active_combat_next_swing_at,
+        })
+    }
+
+    fn player_visible_db_creature_guids(&self, character_guid: u32) -> Vec<u64> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Vec::new();
+        };
+        let mut guids = player
+            .visible_objects
+            .iter()
+            .filter(|guid| guid.is_creature())
+            .map(|guid| guid.raw())
+            .collect::<Vec<_>>();
+        guids.sort_unstable();
+        guids
+    }
+
+    fn should_rescan_player_creature_visibility(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return true;
+        };
+        if should_rescan_visibility_from(player.last_creature_visibility_position, position) {
+            player.last_creature_visibility_position = Some(position);
+            return true;
+        }
+        false
+    }
+
+    fn should_rescan_player_gameobject_visibility(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return true;
+        };
+        if should_rescan_visibility_from(player.last_gameobject_visibility_position, position) {
+            player.last_gameobject_visibility_position = Some(position);
+            return true;
+        }
+        false
+    }
+
+    fn should_rescan_player_corpse_visibility(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return true;
+        };
+        if should_rescan_visibility_from(player.last_player_corpse_visibility_position, position) {
+            player.last_player_corpse_visibility_position = Some(position);
+            return true;
+        }
+        false
+    }
+
+    fn reset_player_visibility_scan_positions(&mut self, character_guid: u32) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.last_creature_visibility_position = None;
+            player.last_gameobject_visibility_position = None;
+            player.last_player_corpse_visibility_position = None;
+        }
+    }
+
+    fn update_player_combat_stats(
+        &mut self,
+        character_guid: u32,
+        combat_stats: PlayerCombatStats,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let player = self
+            .players
+            .get_mut(&character_guid)
+            .ok_or_else(|| anyhow::anyhow!("player {character_guid} is not in map runtime"))?;
+        player.combat_stats = combat_stats;
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_combat_stats_update_body(character_guid, &combat_stats)?,
+        };
+        Ok(self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .map(|observer| (observer.session_id, packet.clone()))
+            })
+            .collect())
+    }
+
+    fn player_combat_stats(&self, character_guid: u32) -> Option<PlayerCombatStats> {
+        self.players
+            .get(&character_guid)
+            .map(|player| player.combat_stats)
+    }
+
+    fn set_player_auto_attack(
+        &mut self,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        next_swing_at: Option<Instant>,
+    ) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.active_combat_target = target;
+            player.active_combat_next_swing_at = next_swing_at;
+        }
+    }
+
+    fn player_auto_attack_due(&self, character_guid: u32, now: Instant) -> Option<ObjectGuid> {
+        let player = self.players.get(&character_guid)?;
+        let target = player.active_combat_target?;
+        player
+            .active_combat_next_swing_at
+            .is_none_or(|next_swing_at| now >= next_swing_at)
+            .then_some(target)
+    }
+
+    fn player_auto_attack_target(&self, character_guid: u32) -> Option<ObjectGuid> {
+        self.players
+            .get(&character_guid)
+            .and_then(|player| player.active_combat_target)
+    }
+
+    fn set_player_next_swing_at(&mut self, character_guid: u32, next_swing_at: Option<Instant>) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.active_combat_next_swing_at = next_swing_at;
+        }
+    }
+
+    fn set_player_power2(&mut self, character_guid: u32, power2: u32) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.power2 = power2.min(POWER_RAGE_DEFAULT);
+        }
     }
 
     fn update_player_selection(
@@ -356,6 +547,7 @@ impl MapRuntime {
             .collect()
     }
 
+    #[cfg(test)]
     fn update_player_db_creature_visibility(
         &mut self,
         character_guid: u32,
@@ -372,4 +564,15 @@ impl MapRuntime {
             player.visible_objects.remove(guid);
         }
     }
+}
+
+fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: WorldPosition) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    if previous.map_id != position.map_id {
+        return true;
+    }
+    distance_squared_2d(previous.x, previous.y, position.x, position.y)
+        >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
 }

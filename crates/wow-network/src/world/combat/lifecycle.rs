@@ -30,7 +30,6 @@ async fn handle_combat_tick(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
-    sync_session_db_creatures_from_map(shared_world, session).await;
     advance_db_creature_lifecycle(
         stream,
         character_db_pool,
@@ -41,18 +40,26 @@ async fn handle_combat_tick(
     )
     .await?;
     advance_db_creature_return_home_motions(shared_world, session, now).await;
-    sync_session_db_creature_idle_motions_from_map(shared_world, session).await;
     if session.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
-    if let Some(target) = session.active_combat_target {
-        if session
-            .active_combat_next_swing_at
-            .is_none_or(|next_swing_at| now >= next_swing_at)
+    if let Some(character) = session.active_character.as_ref() {
+        if let Some(target) = shared_world
+            .maps
+            .player_auto_attack_due(character.position.map_id, character.guid, now)
+            .await
         {
             if target == rust_combat_dummy_guid() {
-                session.active_combat_next_swing_at = Some(combat_dummy_next_swing_at(now));
-                send_combat_dummy_swing(stream, session, header_crypto).await?;
+                let next_swing = combat_dummy_next_swing_at(now);
+                shared_world
+                    .maps
+                    .set_player_next_swing_at(
+                        character.position.map_id,
+                        character.guid,
+                        Some(next_swing),
+                    )
+                    .await;
+                send_combat_dummy_swing(stream, shared_world, session, header_crypto).await?;
             } else {
                 send_db_creature_swing(
                     stream,
@@ -81,34 +88,6 @@ async fn handle_combat_tick(
     .await
 }
 
-async fn sync_session_db_creatures_from_map(
-    shared_world: SharedWorldDeps<'_>,
-    session: &mut WorldSessionState,
-) {
-    let Some(character) = session.active_character.as_ref() else {
-        return;
-    };
-    let guids = session.db_creatures.keys().copied().collect::<Vec<_>>();
-    if guids.is_empty() {
-        return;
-    }
-    let snapshots = shared_world
-        .maps
-        .db_creature_snapshots(character.position.map_id, &guids)
-        .await;
-    for shared in snapshots {
-        let guid = shared.guid().raw();
-        let client_visible = session
-            .db_creatures
-            .get(&guid)
-            .map(|creature| creature.client_visible)
-            .unwrap_or(shared.client_visible);
-        let mut shared = shared;
-        shared.client_visible = client_visible && shared.life_state != DbCreatureLifeState::Dead;
-        session.db_creatures.insert(guid, shared);
-    }
-}
-
 async fn advance_db_creature_lifecycle(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
@@ -122,7 +101,10 @@ async fn advance_db_creature_lifecycle(
     };
     let map_id = character.position.map_id;
     let character_guid = character.guid;
-    let creature_guids = session.db_creatures.keys().copied().collect::<Vec<_>>();
+    let creature_guids = shared_world
+        .maps
+        .player_visible_db_creature_guids(map_id, character_guid)
+        .await;
     if creature_guids.is_empty() {
         return Ok(());
     }
@@ -137,11 +119,6 @@ async fn advance_db_creature_lifecycle(
         )
         .await?;
     for event in events {
-        let guid = event.creature.guid().raw();
-        let mut creature = event.creature;
-        creature.client_visible = creature.life_state != DbCreatureLifeState::Dead
-            && is_db_creature_inside_visibility_radius(&creature, character.position);
-        session.db_creatures.insert(guid, creature);
         for packet in event.direct_packets {
             send_packet(
                 stream,
@@ -167,93 +144,99 @@ async fn advance_db_creature_lifecycle(
     Ok(())
 }
 
-async fn advance_db_creature_return_home_motions(
-    shared_world: SharedWorldDeps<'_>,
-    session: &mut WorldSessionState,
-    now: Instant,
-) {
-    let Some(map_id) = session
-        .active_character
-        .as_ref()
-        .map(|character| character.position.map_id)
-    else {
-        return;
-    };
-    let return_home_guids = session
-        .db_creatures
-        .iter()
-        .filter_map(|(guid, creature)| {
-            matches!(creature.motion, CreatureMotionState::ReturnHome(_)).then_some(*guid)
-        })
-        .collect::<Vec<_>>();
-    for guid in return_home_guids {
-        if let Some(creature) = shared_world
-            .maps
-            .advance_db_creature_motion(map_id, ObjectGuid::from_raw(guid), now)
-            .await
-        {
-            session.db_creatures.insert(guid, creature);
-        }
-    }
-}
-
-async fn advance_db_creature_motion_and_share(
-    shared_world: SharedWorldDeps<'_>,
-    map_id: u32,
-    session: &mut WorldSessionState,
-    creature_guid: ObjectGuid,
-    now: Instant,
-) {
-    if let Some(creature) = shared_world
-        .maps
-        .advance_db_creature_motion(map_id, creature_guid, now)
-        .await
-    {
-        session.db_creatures.insert(creature_guid.raw(), creature);
-    }
-}
-
-async fn sync_session_db_creature_idle_motions_from_map(
+#[cfg(test)]
+async fn sync_session_db_creatures_from_map(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
 ) {
     let Some(character) = session.active_character.as_ref() else {
         return;
     };
-    let character_position = character.position;
-    let map_id = character_position.map_id;
-    let moving_guids = shared_world
-        .maps
-        .db_creature_idle_motion_advancement_guids(map_id)
-        .await;
+    let guids = session.db_creatures.keys().copied().collect::<Vec<_>>();
+    if guids.is_empty() {
+        return;
+    }
     let snapshots = shared_world
         .maps
-        .db_creature_snapshots(map_id, &moving_guids)
+        .db_creature_snapshots(character.position.map_id, &guids)
         .await;
-    for creature in snapshots {
-        remember_db_creature_snapshot_if_relevant(session, character_position, creature);
+    for shared in snapshots {
+        let guid = shared.guid().raw();
+        let client_visible = session
+            .db_creatures
+            .get(&guid)
+            .map(|creature| creature.client_visible)
+            .unwrap_or(shared.client_visible);
+        let mut shared = shared;
+        shared.client_visible = client_visible && shared.life_state != DbCreatureLifeState::Dead;
+        mirror_session_db_creature(session, guid, shared);
     }
 }
 
-fn remember_db_creature_snapshot_if_relevant(
+async fn advance_db_creature_return_home_motions(
+    shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
-    character_position: WorldPosition,
-    mut creature: DbCreatureRuntime,
+    now: Instant,
 ) {
-    let guid = creature.guid().raw();
-    let is_visible = is_db_creature_inside_visibility_radius(&creature, character_position);
-    let Some(previously_visible) = session
-        .db_creatures
-        .get(&guid)
-        .map(|existing| existing.client_visible)
-        .or_else(|| (is_visible && creature.life_state != DbCreatureLifeState::Dead).then_some(false))
+    let Some(character) = session
+        .active_character
+        .as_ref()
+        .cloned()
     else {
         return;
     };
-    let direct_visible = is_visible && creature.life_state != DbCreatureLifeState::Dead;
-    let _became_visible = direct_visible && !previously_visible;
-    creature.client_visible = direct_visible;
-    session.db_creatures.insert(guid, creature);
+    let map_id = character.position.map_id;
+    let visible_guids = shared_world
+        .maps
+        .player_visible_db_creature_guids(map_id, character.guid)
+        .await;
+    #[cfg(test)]
+    let visible_guids = if visible_guids.is_empty() {
+        session.db_creatures.keys().copied().collect()
+    } else {
+        visible_guids
+    };
+    let return_home_guids = shared_world
+        .maps
+        .db_creature_snapshots(map_id, &visible_guids)
+        .await
+        .into_iter()
+        .filter_map(|creature| {
+            matches!(creature.motion, CreatureMotionState::ReturnHome(_))
+                .then_some(creature.guid().raw())
+        })
+        .collect::<Vec<_>>();
+    for guid in return_home_guids {
+        let advanced = shared_world
+            .maps
+            .advance_db_creature_motion(map_id, ObjectGuid::from_raw(guid), now)
+            .await;
+        #[cfg(test)]
+        if let Some(creature) = advanced {
+            mirror_session_db_creature(session, guid, creature);
+        }
+        #[cfg(not(test))]
+        let _ = advanced;
+    }
+}
+
+async fn advance_db_creature_motion_and_share(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    _session: &mut WorldSessionState,
+    creature_guid: ObjectGuid,
+    now: Instant,
+) {
+    let advanced = shared_world
+        .maps
+        .advance_db_creature_motion(map_id, creature_guid, now)
+        .await;
+    #[cfg(test)]
+    if let Some(creature) = advanced {
+        mirror_session_db_creature(_session, creature_guid.raw(), creature);
+    }
+    #[cfg(not(test))]
+    let _ = advanced;
 }
 
 #[cfg(test)]
@@ -325,7 +308,7 @@ async fn send_db_creature_swing(
     };
     let character_snapshot = character.clone();
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    match db_creature_player_melee_check(session, target) {
+    match db_creature_player_melee_check_from_map(shared_world, session, target).await {
         PlayerMeleeCheck::Clear => {
             session.last_player_melee_swing_error = None;
         }
@@ -337,8 +320,11 @@ async fn send_db_creature_swing(
                 header_crypto,
             )
             .await?;
-            session.active_combat_target = None;
-            session.active_combat_next_swing_at = None;
+            mirror_session_player_auto_attack(session, None, None);
+            shared_world
+                .maps
+                .set_player_auto_attack(map_id, character_snapshot.guid, None, None)
+                .await;
             return Ok(());
         }
         PlayerMeleeCheck::OutOfRange | PlayerMeleeCheck::NavigationBlocked(_) => {
@@ -349,7 +335,16 @@ async fn send_db_creature_swing(
                 header_crypto,
             )
             .await?;
-            session.active_combat_next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            let next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            mirror_session_player_next_swing_at(session, next_swing_at);
+            shared_world
+                .maps
+                .set_player_next_swing_at(
+                    map_id,
+                    character_snapshot.guid,
+                    next_swing_at,
+                )
+                .await;
             return Ok(());
         }
         PlayerMeleeCheck::BadFacing => {
@@ -360,7 +355,16 @@ async fn send_db_creature_swing(
                 header_crypto,
             )
             .await?;
-            session.active_combat_next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            let next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            mirror_session_player_next_swing_at(session, next_swing_at);
+            shared_world
+                .maps
+                .set_player_next_swing_at(
+                    map_id,
+                    character_snapshot.guid,
+                    next_swing_at,
+                )
+                .await;
             return Ok(());
         }
         PlayerMeleeCheck::NoActiveCharacter => {
@@ -371,27 +375,39 @@ async fn send_db_creature_swing(
                 header_crypto,
             )
             .await?;
-            session.active_combat_next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            let next_swing_at = Some(player_melee_retry_at(Instant::now()));
+            mirror_session_player_next_swing_at(session, next_swing_at);
+            shared_world
+                .maps
+                .set_player_next_swing_at(
+                    map_id,
+                    character_snapshot.guid,
+                    next_swing_at,
+                )
+                .await;
             return Ok(());
         }
     }
-    let world_stats = wow_db::get_player_world_stats(
-        world_db_pool,
-        character_snapshot.race,
-        character_snapshot.class,
-        character_snapshot.level,
-    )
-    .await?;
-    let equipped_templates = load_equipped_item_templates(world_db_pool, &session.inventory).await?;
-    let combat_stats = player_combat_stats_for_values(
-        character_snapshot.class,
-        character_snapshot.level,
-        &world_stats,
-        &equipped_templates,
-    );
-    let Some(target_creature) = session.db_creatures.get(&target.raw()).cloned() else {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+    let combat_stats = shared_world
+        .maps
+        .player_combat_stats(map_id, character_snapshot.guid)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "map-owned player combat stats missing for character {}",
+                character_snapshot.guid
+            )
+        })?;
+    let Some(target_creature) = shared_world
+        .maps
+        .db_creature_snapshot(map_id, target)
+        .await
+    else {
+        mirror_session_player_auto_attack(session, None, None);
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character_snapshot.guid, None, None)
+            .await;
         return Ok(());
     };
     let melee_outcome = player_main_hand_melee_outcome_against_db_creature(
@@ -417,24 +433,38 @@ async fn send_db_creature_swing(
         )
         .await?
     else {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+        mirror_session_player_auto_attack(session, None, None);
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character_snapshot.guid, None, None)
+            .await;
         return Ok(());
     };
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
-    session.db_creatures.insert(target.raw(), event.creature.clone());
+    mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if is_dead {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+        mirror_session_player_auto_attack(session, None, None);
         clear_db_creature_combat_if_attacker(session, target);
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character_snapshot.guid, None, None)
+            .await;
     } else {
-        session.active_combat_next_swing_at =
-            Some(player_main_hand_next_swing_at(Instant::now(), &combat_stats));
+        let next_swing = player_main_hand_next_swing_at(Instant::now(), &combat_stats);
+        mirror_session_player_next_swing_at(session, Some(next_swing));
+        shared_world
+            .maps
+            .set_player_next_swing_at(map_id, character_snapshot.guid, Some(next_swing))
+            .await;
     }
     session.player_rage =
         (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    shared_world
+        .maps
+        .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
+        .await;
     if !is_dead {
         begin_db_creature_retaliation_if_needed(
             stream,
@@ -571,28 +601,53 @@ async fn finalize_db_creature_death(
         )
         .await?;
     }
-    session.active_combat_target = None;
-    session.active_combat_next_swing_at = None;
+    mirror_session_player_auto_attack(session, None, None);
+    if let Some(character) = session.active_character.as_ref() {
+        shared_world
+            .maps
+            .set_player_auto_attack(character.position.map_id, character.guid, None, None)
+            .await;
+    }
     clear_db_creature_combat_if_attacker(session, killed);
     grant_db_creature_kill_credit(
         stream,
         character_db_pool,
+        shared_world.object_mgr,
         world_db_pool,
         session,
         killed,
         header_crypto,
     )
     .await?;
-    grant_db_creature_xp(
-        stream,
-        character_db_pool,
-        world_db_pool,
-        session,
-        killed,
-        header_crypto,
-    )
-    .await?;
-    if session.active_creature_combats.is_empty() {
+    if let Some(character) = session.active_character.as_ref() {
+        if let Some(creature) = shared_world
+            .maps
+            .db_creature_snapshot(character.position.map_id, killed)
+            .await
+        {
+            grant_db_creature_xp(
+                stream,
+                character_db_pool,
+                world_db_pool,
+                session,
+                killed,
+                &creature.spawn.template,
+                header_crypto,
+            )
+            .await?;
+        }
+    }
+    let player_still_has_attackers = if let Some(character) = session.active_character.as_ref() {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+        !shared_world
+            .maps
+            .active_db_creature_combats_for_victim(character.position.map_id, player)
+            .await
+            .is_empty()
+    } else {
+        false
+    };
+    if !player_still_has_attackers {
         send_player_combat_flag_if_changed(stream, session, false, header_crypto).await?;
     }
     shared_world
@@ -630,15 +685,13 @@ async fn grant_db_creature_xp(
     world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     killed: ObjectGuid,
+    creature_template: &CreatureTemplateQuery,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    let Some(creature) = session.db_creatures.get(&killed.raw()) else {
-        return Ok(());
-    };
-    let xp = creature_xp_reward(character.level, &creature.spawn.template);
+    let xp = creature_xp_reward(character.level, creature_template);
     award_character_xp(
         stream,
         character_db_pool,
@@ -871,13 +924,16 @@ fn nearbyint_to_u32(value: f32) -> u32 {
 
 async fn send_combat_dummy_swing(
     stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = rust_combat_dummy_guid();
 
     let damage = session
@@ -886,6 +942,10 @@ async fn send_combat_dummy_swing(
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
     session.player_rage =
         (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    shared_world
+        .maps
+        .set_player_power2(map_id, character_guid, session.player_rage)
+        .await;
 
     send_packet(
         stream,
@@ -928,8 +988,11 @@ async fn send_combat_dummy_swing(
             Some(header_crypto),
         )
         .await?;
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+        mirror_session_player_auto_attack(session, None, None);
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character_guid, None, None)
+            .await;
     }
 
     Ok(())

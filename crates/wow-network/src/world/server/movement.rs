@@ -3,20 +3,40 @@
 async fn persist_active_character_position(
     character_db_pool: &MySqlPool,
     account_id: u32,
+    maps: &Arc<MapRuntimeManager>,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
     let Some(character) = &session.active_character else {
         return Ok(());
     };
+    let snapshot = maps
+        .player_runtime_snapshot(character.position.map_id, character.guid)
+        .await;
+    let position = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.position)
+        .unwrap_or(character.position);
+    let health = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.health)
+        .unwrap_or(session.player_health);
+    let power1 = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.power1)
+        .unwrap_or(session.player_mana);
+    let power2 = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.power2)
+        .unwrap_or(session.player_rage);
 
     let rows = wow_db::update_character_position_and_vitals(
         character_db_pool,
         account_id,
         character.guid,
-        character.position,
-        session.player_health,
-        session.player_mana,
-        session.player_rage,
+        position,
+        health,
+        power1,
+        power2,
     )
     .await?;
 
@@ -31,10 +51,10 @@ async fn persist_active_character_position(
             account_id,
             guid = character.guid,
             name = %character.name,
-            x = character.position.x,
-            y = character.position.y,
-            z = character.position.z,
-            o = character.position.orientation,
+            x = position.x,
+            y = position.y,
+            z = position.z,
+            o = position.orientation,
             "Persisted character position"
         );
     }
@@ -112,7 +132,7 @@ async fn handle_movement(
         stream_nearby_player_corpses(
             stream,
             deps.character_db_pool,
-            deps.player_corpses,
+            deps.maps,
             session,
             header_crypto,
         )
@@ -120,6 +140,7 @@ async fn handle_movement(
         try_start_db_creature_aggro(
             stream,
             SharedWorldDeps {
+                object_mgr: deps.object_mgr,
                 maps: deps.maps,
                 sessions: deps.sessions,
             },
@@ -139,7 +160,7 @@ async fn handle_movement(
 struct MovementDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
-    player_corpses: &'a PlayerCorpses,
+    object_mgr: &'a ObjectMgr,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
 }

@@ -54,7 +54,9 @@ async fn handle_cast_spell(
     }
 
     let targets = normalize_fixture_spell_targets(packet.targets);
-    if let Some(failure) = starter_spell_melee_cast_failure(session, &starter_spell, &targets) {
+    if let Some(failure) =
+        starter_spell_melee_cast_failure(shared_world, session, &starter_spell, &targets).await
+    {
         send_packet(
             stream,
             SMSG_CAST_RESULT,
@@ -124,7 +126,11 @@ async fn handle_cast_spell(
             session.combat_dummy_looting = false;
             session.combat_dummy_loot_money_available = true;
             session.combat_dummy_loot_item_available = true;
-            session.active_combat_target = None;
+            mirror_session_player_auto_attack(session, None, None);
+            shared_world
+                .maps
+                .set_player_auto_attack(map_id, character_guid, None, None)
+                .await;
         }
         send_packet(
             stream,
@@ -172,7 +178,8 @@ async fn handle_cast_spell(
         .await?;
     } else if let Some(target) = targets.unit_target {
         let can_apply_damage = if starter_spell.requires_melee {
-            db_creature_player_melee_check(session, target) == PlayerMeleeCheck::Clear
+            db_creature_player_melee_check_from_map(shared_world, session, target).await
+                == PlayerMeleeCheck::Clear
         } else {
             true
         };
@@ -198,12 +205,13 @@ async fn handle_cast_spell(
                 let death_finalization = event.death_finalization;
                 let target_switch = event.target_switch;
                 let is_dead = death_finalization.is_some();
-                session
-                    .db_creatures
-                    .insert(target.raw(), event.creature.clone());
+                mirror_session_db_creature(session, target.raw(), event.creature.clone());
                 if is_dead {
-                    session.active_combat_target = None;
-                    session.active_combat_next_swing_at = None;
+                    mirror_session_player_auto_attack(session, None, None);
+                    shared_world
+                        .maps
+                        .set_player_auto_attack(map_id, character_guid, None, None)
+                        .await;
                     clear_db_creature_combat_if_attacker(session, target);
                 }
                 if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
@@ -300,7 +308,11 @@ async fn handle_opening_spell(
         warn!("Ignoring Opening spell without gameobject target");
         return Ok(());
     };
-    let Some(gameobject) = session.db_gameobjects.get(&gameobject_guid.raw()).cloned() else {
+    let Some(gameobject) = shared_world
+        .maps
+        .db_gameobject_snapshot(request.map_id, gameobject_guid)
+        .await
+    else {
         warn!(
             target = format_args!("0x{:016X}", gameobject_guid.raw()),
             "Ignoring Opening spell for unknown gameobject"
@@ -323,11 +335,27 @@ async fn handle_opening_spell(
     targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
     targets.gameobject_target = Some(gameobject_guid);
 
-    let loot_item =
-        select_db_gameobject_loot_item_for_character(world_db_pool, session, &gameobject.spawn.template)
-            .await?;
-    session.db_gameobject_looting = Some(gameobject_guid.raw());
-    session.db_gameobject_loot_item = loot_item;
+    let loot_item = select_db_gameobject_loot_item_for_character(
+        shared_world.object_mgr,
+        world_db_pool,
+        session,
+        &gameobject.spawn.template,
+    )
+    .await?;
+    let Some((gameobject, loot_item)) = shared_world
+        .maps
+        .open_db_gameobject_loot(
+            request.map_id,
+            gameobject_guid.raw(),
+            request.character_guid,
+            loot_item,
+        )
+        .await
+    else {
+        warn!("Ignoring Opening spell for unavailable gameobject loot");
+        return Ok(());
+    };
+    let _ = gameobject;
 
     let spell_start_body =
         build_spell_start_body(request.caster, OPENING_SPELL_ID, OPENING_SPELL_CAST_TIME_MS, &targets)?;
@@ -383,8 +411,7 @@ async fn handle_opening_spell(
         .await;
     shared_world.sessions.dispatch(observer_go).await;
 
-    let response =
-        build_gameobject_loot_response_body(gameobject_guid, session.db_gameobject_loot_item.as_ref());
+    let response = build_gameobject_loot_response_body(gameobject_guid, loot_item.as_ref());
     send_packet(
         stream,
         SMSG_LOOT_RESPONSE,
@@ -394,8 +421,9 @@ async fn handle_opening_spell(
     .await
 }
 
-fn starter_spell_melee_cast_failure(
-    session: &WorldSessionState,
+async fn starter_spell_melee_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
     starter_spell: &SupportedStarterSpell,
     targets: &SpellCastTargets,
 ) -> Option<u8> {
@@ -406,7 +434,7 @@ fn starter_spell_melee_cast_failure(
     if target == rust_combat_dummy_guid() {
         return None;
     }
-    match db_creature_player_melee_check(session, target) {
+    match db_creature_player_melee_check_from_map(shared_world, session, target).await {
         PlayerMeleeCheck::Clear => None,
         PlayerMeleeCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
         PlayerMeleeCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {

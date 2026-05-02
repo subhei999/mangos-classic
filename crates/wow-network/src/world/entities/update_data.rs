@@ -61,7 +61,8 @@ async fn load_equipped_item_templates(
 
 fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut blocks = build_self_spawn_update_blocks(update)?;
-    let creature_start = 3;
+    let leading_block_count = 1 + if legacy_fixture_npcs_enabled() { 2 } else { 0 };
+    let creature_start = leading_block_count;
     let item_start = creature_start
         + update.nearby_creatures.len()
         + update.nearby_gameobjects.len()

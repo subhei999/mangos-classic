@@ -121,6 +121,91 @@ impl MapRuntime {
             .collect()
     }
 
+    fn db_creature_snapshot(&self, creature_guid: ObjectGuid) -> Option<DbCreatureRuntime> {
+        self.creatures.get(&creature_guid.raw()).cloned()
+    }
+
+    fn stage_player_db_creature_visibility(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+        nearby_creatures: Vec<DbCreatureRuntime>,
+    ) -> MapDbCreatureVisibilityStage {
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let Some(player) = self.players.get(&character_guid) else {
+            return MapDbCreatureVisibilityStage {
+                nearby_creatures,
+                ..Default::default()
+            };
+        };
+        let previously_visible = player
+            .visible_objects
+            .iter()
+            .filter(|guid| guid.is_creature())
+            .map(|guid| guid.raw())
+            .collect::<HashSet<_>>();
+        let nearby_by_guid = nearby_creatures
+            .iter()
+            .map(|creature| (creature.guid().raw(), creature))
+            .collect::<HashMap<_, _>>();
+        let mut retained_combat_guids = HashSet::new();
+        if let Some(target) = player.active_combat_target {
+            if previously_visible.contains(&target.raw()) {
+                retained_combat_guids.insert(target.raw());
+            }
+        }
+        for combat in self.active_creature_combats.values() {
+            if combat.victim == player_guid && previously_visible.contains(&combat.attacker.raw())
+            {
+                retained_combat_guids.insert(combat.attacker.raw());
+            }
+        }
+
+        let mut destroy_guids = previously_visible
+            .iter()
+            .copied()
+            .filter(|guid| {
+                if retained_combat_guids.contains(guid) {
+                    return false;
+                }
+                if let Some(creature) = nearby_by_guid.get(guid) {
+                    return creature.life_state == DbCreatureLifeState::Dead;
+                }
+                !self
+                    .creatures
+                    .get(guid)
+                    .is_some_and(|creature| is_db_creature_inside_unload_radius(creature, position))
+            })
+            .map(ObjectGuid::from_raw)
+            .collect::<Vec<_>>();
+        destroy_guids.sort_by_key(|guid| guid.raw());
+
+        let mut create_guids = nearby_creatures
+            .iter()
+            .filter(|creature| {
+                creature.life_state != DbCreatureLifeState::Dead
+                    && !previously_visible.contains(&creature.guid().raw())
+            })
+            .map(|creature| creature.guid())
+            .collect::<Vec<_>>();
+        create_guids.sort_by_key(|guid| guid.raw());
+
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            for guid in &destroy_guids {
+                player.visible_objects.remove(guid);
+            }
+            for guid in &create_guids {
+                player.visible_objects.insert(*guid);
+            }
+        }
+
+        MapDbCreatureVisibilityStage {
+            nearby_creatures,
+            create_guids,
+            destroy_guids,
+        }
+    }
+
     #[allow(dead_code)]
     fn update_db_creature_snapshot(&mut self, creature: DbCreatureRuntime) {
         let guid = creature.guid().raw();
@@ -182,7 +267,10 @@ impl MapRuntime {
             GridState::Active
         } else if let Some(blocker) = self.creature_grid_unload_blocker(grid_coord) {
             GridState::UnloadBlocked(blocker)
-        } else if self.loaded_creature_grids.contains(&grid_coord) {
+        } else if self.loaded_creature_grids.contains(&grid_coord)
+            || self.loaded_gameobject_grids.contains(&grid_coord)
+            || self.loaded_player_corpse_grids.contains(&grid_coord)
+        {
             GridState::Idle
         } else {
             GridState::Loaded
@@ -204,6 +292,9 @@ impl MapRuntime {
             .any(|guid| self.active_creature_combats.contains_key(guid))
         {
             return Some(GridUnloadBlocker::Combat);
+        }
+        if grid.cells.values().any(|cell| !cell.corpses.is_empty()) {
+            return Some(GridUnloadBlocker::Corpse);
         }
 
         for guid in creature_guids {

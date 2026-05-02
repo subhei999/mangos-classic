@@ -56,6 +56,8 @@ struct LootAutostoreContext<'a> {
 
     character_db_pool: &'a MySqlPool,
 
+    object_mgr: &'a ObjectMgr,
+
     world_db_pool: &'a MySqlPool,
 
     session: &'a mut WorldSessionState,
@@ -68,7 +70,7 @@ struct LootAutostoreContext<'a> {
 async fn autostore_loot_item(
     context: LootAutostoreContext<'_>,
 
-    creature_guid: u64,
+    _creature_guid: u64,
 
     loot: DbCreatureLootRuntime,
 
@@ -78,6 +80,8 @@ async fn autostore_loot_item(
         stream,
 
         character_db_pool,
+
+        object_mgr,
 
         world_db_pool,
 
@@ -190,10 +194,6 @@ async fn autostore_loot_item(
             wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     }
 
-    if let Some(creature) = session.db_creatures.get_mut(&creature_guid) {
-        creature.loot_item = None;
-    }
-
     send_packet(
         stream,
         SMSG_LOOT_REMOVED,
@@ -209,6 +209,7 @@ async fn autostore_loot_item(
     complete_inventory_item_quests(
         stream,
         character_db_pool,
+        object_mgr,
         world_db_pool,
         session,
         character_guid,

@@ -31,7 +31,8 @@ async fn handle_logout_request(
     )
     .await?;
     send_packet(stream, SMSG_LOGOUT_COMPLETE, &[], Some(header_crypto)).await?;
-    persist_session_character_state(deps.character_db_pool, deps.account_id, session).await?;
+    persist_session_character_state(deps.character_db_pool, deps.account_id, deps.maps, session)
+        .await?;
     unregister_active_character(
         deps.online_characters,
         deps.maps,
@@ -55,10 +56,11 @@ struct LogoutDeps<'a> {
 async fn persist_session_character_state(
     character_db_pool: &MySqlPool,
     account_id: u32,
+    maps: &Arc<MapRuntimeManager>,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
     if session.player_death_state == PlayerDeathState::Alive {
-        persist_active_character_position(character_db_pool, account_id, session).await
+        persist_active_character_position(character_db_pool, account_id, maps, session).await
     } else {
         persist_player_death_state(character_db_pool, account_id, session).await
     }
@@ -82,7 +84,6 @@ async fn unregister_active_character(
     session.active_spells.clear();
     session.player_death_state = PlayerDeathState::Alive;
     session.player_corpse = None;
-    session.visible_player_corpses.clear();
     session.player_visual = None;
     session.player_flags = 0;
 }

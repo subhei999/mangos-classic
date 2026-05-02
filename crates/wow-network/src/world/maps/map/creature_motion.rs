@@ -261,6 +261,20 @@ impl MapRuntime {
         Some((snapshot, stop))
     }
 
+    fn face_db_creature_toward_position(
+        &mut self,
+        creature_guid: ObjectGuid,
+        target_position: WorldPosition,
+    ) -> Option<(DbCreatureRuntime, WorldPosition, u32)> {
+        let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        let dx = target_position.x - creature.current_position.x;
+        let dy = target_position.y - creature.current_position.y;
+        creature.current_position.orientation = normalize_orientation(dy.atan2(dx));
+        let spline_id = creature.next_spline_id;
+        creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+        Some((creature.clone(), creature.current_position, spline_id))
+    }
+
     fn prepare_db_creature_evade(
         &mut self,
         creature_guid: ObjectGuid,

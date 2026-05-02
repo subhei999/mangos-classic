@@ -157,7 +157,6 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     online_characters: &runtime_state.online_characters,
-                                    player_corpses: &runtime_state.player_corpses,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                     session_id,
@@ -211,6 +210,7 @@ async fn handle_client(
                         CMSG_QUEST_QUERY => {
                             handle_quest_query(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &mut header_crypto,
@@ -262,6 +262,7 @@ async fn handle_client(
                                 &character_db_pool,
                                 &world_db_pool,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -278,6 +279,7 @@ async fn handle_client(
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
                                         maps: &runtime_state.maps,
                                         sessions: &runtime_state.sessions,
                                     },
@@ -295,6 +297,7 @@ async fn handle_client(
                         CMSG_SET_SELECTION => {
                             handle_set_selection(
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -333,7 +336,9 @@ async fn handle_client(
                         CMSG_GOSSIP_HELLO => {
                             handle_gossip_hello(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
+                                &runtime_state.maps,
                                 &body,
                                 &session,
                                 &mut header_crypto,
@@ -346,7 +351,6 @@ async fn handle_client(
                                 GossipSelectDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
-                                    player_corpses: &runtime_state.player_corpses,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
@@ -363,6 +367,7 @@ async fn handle_client(
                                 GameObjectUseDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -375,6 +380,7 @@ async fn handle_client(
                         CMSG_QUESTGIVER_STATUS_QUERY => {
                             handle_questgiver_status_query(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &session,
@@ -385,6 +391,7 @@ async fn handle_client(
                         CMSG_QUESTGIVER_HELLO => {
                             handle_questgiver_hello(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &session,
@@ -395,6 +402,7 @@ async fn handle_client(
                         CMSG_QUESTGIVER_QUERY_QUEST => {
                             handle_questgiver_query_quest(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &mut header_crypto,
@@ -405,6 +413,7 @@ async fn handle_client(
                             handle_questgiver_accept_quest(
                                 &mut stream,
                                 &character_db_pool,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &mut session,
@@ -416,6 +425,7 @@ async fn handle_client(
                             handle_questgiver_complete_quest(
                                 &mut stream,
                                 &character_db_pool,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &mut session,
@@ -427,6 +437,7 @@ async fn handle_client(
                             handle_questgiver_choose_reward(
                                 &mut stream,
                                 &character_db_pool,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &body,
                                 &mut session,
@@ -506,6 +517,7 @@ async fn handle_client(
                                 &character_db_pool,
                                 &world_db_pool,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -516,8 +528,17 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_ATTACKSTOP => {
-                            handle_attack_stop(&mut stream, &mut session, &mut header_crypto)
-                                .await?;
+                            handle_attack_stop(
+                                &mut stream,
+                                SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_REPOP_REQUEST => {
                             handle_repop_request(
@@ -525,7 +546,6 @@ async fn handle_client(
                                 PlayerDeathDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
-                                    player_corpses: &runtime_state.player_corpses,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
@@ -541,7 +561,6 @@ async fn handle_client(
                                 PlayerDeathDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
-                                    player_corpses: &runtime_state.player_corpses,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
@@ -558,7 +577,6 @@ async fn handle_client(
                                 PlayerDeathDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
-                                    player_corpses: &runtime_state.player_corpses,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
@@ -575,8 +593,10 @@ async fn handle_client(
                         CMSG_LOOT => {
                             handle_loot(
                                 &mut stream,
+                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -592,6 +612,7 @@ async fn handle_client(
                                 &character_db_pool,
                                 &world_db_pool,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -606,6 +627,7 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -618,6 +640,7 @@ async fn handle_client(
                             handle_loot_release(
                                 &mut stream,
                                 SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -670,7 +693,7 @@ async fn handle_client(
                                 MovementDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
-                                    player_corpses: &runtime_state.player_corpses,
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
@@ -695,12 +718,14 @@ async fn handle_client(
                             );
                         }
                     }
+                    sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
                     if Instant::now() >= next_world_tick_at {
                         handle_combat_tick(
                             &mut stream,
                             &character_db_pool,
                             &world_db_pool,
                             SharedWorldDeps {
+                                object_mgr: runtime_state.object_mgr.as_ref(),
                                 maps: &runtime_state.maps,
                                 sessions: &runtime_state.sessions,
                             },
@@ -709,12 +734,19 @@ async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
                         advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
                     }
                 }
                 Ok(Err(e)) => {
-                    persist_session_character_state(&character_db_pool, account.id, &session)
-                        .await?;
+                    sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
+                    persist_session_character_state(
+                        &character_db_pool,
+                        account.id,
+                        &runtime_state.maps,
+                        &session,
+                    )
+                    .await?;
                     unregister_active_character(
                         &runtime_state.online_characters,
                         &runtime_state.maps,
@@ -732,6 +764,7 @@ async fn handle_client(
                         &character_db_pool,
                         &world_db_pool,
                         SharedWorldDeps {
+                            object_mgr: runtime_state.object_mgr.as_ref(),
                             maps: &runtime_state.maps,
                             sessions: &runtime_state.sessions,
                         },
@@ -740,6 +773,7 @@ async fn handle_client(
                         &mut header_crypto,
                     )
                     .await?;
+                    sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
                     advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
                 }
             }
@@ -767,7 +801,13 @@ async fn handle_client(
 
     if session_result.is_err() {
         if let Err(cleanup_error) =
-            persist_session_character_state(&character_db_pool, account.id, &session).await
+            persist_session_character_state(
+                &character_db_pool,
+                account.id,
+                &runtime_state.maps,
+                &session,
+            )
+            .await
         {
             warn!(
                 "Failed to persist active character state after world session error: {}",
@@ -822,4 +862,15 @@ fn advance_world_tick_deadline(next_world_tick_at: &mut Instant, now: Instant) {
     while *next_world_tick_at <= now {
         *next_world_tick_at += tick;
     }
+}
+
+async fn sync_active_player_gameplay_state(
+    maps: &Arc<MapRuntimeManager>,
+    session: &WorldSessionState,
+) {
+    let Some(character) = session.active_character.as_ref() else {
+        return;
+    };
+    maps.sync_player_gameplay_state(character.position.map_id, character.guid, session)
+        .await;
 }

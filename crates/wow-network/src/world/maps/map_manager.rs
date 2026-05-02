@@ -100,6 +100,195 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn sync_player_gameplay_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        session: &WorldSessionState,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .sync_player_gameplay_state(character_guid, session);
+    }
+
+    async fn player_runtime_snapshot(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<PlayerRuntimeSnapshot> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let snapshot = map.lock().await.player_runtime_snapshot(character_guid);
+        snapshot
+    }
+
+    async fn player_visible_db_creature_guids(&self, map_id: u32, character_guid: u32) -> Vec<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let guids = map
+            .lock()
+            .await
+            .player_visible_db_creature_guids(character_guid);
+        guids
+    }
+
+    async fn should_rescan_player_creature_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return true;
+        };
+        let should_rescan = map
+            .lock()
+            .await
+            .should_rescan_player_creature_visibility(character_guid, position);
+        should_rescan
+    }
+
+    async fn should_rescan_player_gameobject_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return true;
+        };
+        let should_rescan = map
+            .lock()
+            .await
+            .should_rescan_player_gameobject_visibility(character_guid, position);
+        should_rescan
+    }
+
+    async fn should_rescan_player_corpse_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return true;
+        };
+        let should_rescan = map
+            .lock()
+            .await
+            .should_rescan_player_corpse_visibility(character_guid, position);
+        should_rescan
+    }
+
+    async fn reset_player_visibility_scan_positions(&self, map_id: u32, character_guid: u32) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .reset_player_visibility_scan_positions(character_guid);
+    }
+
+    async fn update_player_combat_stats(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        combat_stats: PlayerCombatStats,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .update_player_combat_stats(character_guid, combat_stats);
+        packets
+    }
+
+    async fn player_combat_stats(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<PlayerCombatStats> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let combat_stats = map.lock().await.player_combat_stats(character_guid);
+        combat_stats
+    }
+
+    async fn set_player_auto_attack(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        next_swing_at: Option<Instant>,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .set_player_auto_attack(character_guid, target, next_swing_at);
+    }
+
+    async fn player_auto_attack_due(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> Option<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let target = map.lock().await.player_auto_attack_due(character_guid, now);
+        target
+    }
+
+    async fn player_auto_attack_target(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let target = map.lock().await.player_auto_attack_target(character_guid);
+        target
+    }
+
+    async fn set_player_next_swing_at(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        next_swing_at: Option<Instant>,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .set_player_next_swing_at(character_guid, next_swing_at);
+    }
+
+    async fn set_player_power2(&self, map_id: u32, character_guid: u32, power2: u32) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock().await.set_player_power2(character_guid, power2);
+    }
+
     async fn update_player_selection(
         &self,
         map_id: u32,
@@ -117,6 +306,7 @@ impl MapRuntimeManager {
         packets
     }
 
+    #[cfg(test)]
     async fn update_player_db_creature_visibility(
         &self,
         map_id: u32,
@@ -299,6 +489,55 @@ impl MapRuntimeManager {
         snapshots
     }
 
+    async fn stage_player_db_creature_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+        nearby_creatures: Vec<DbCreatureRuntime>,
+    ) -> MapDbCreatureVisibilityStage {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return MapDbCreatureVisibilityStage {
+                nearby_creatures,
+                ..Default::default()
+            };
+        };
+        let stage = map.lock().await.stage_player_db_creature_visibility(
+            character_guid,
+            position,
+            nearby_creatures,
+        );
+        stage
+    }
+
+    async fn stage_player_db_gameobject_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+        nearby_gameobjects: Vec<DbGameObjectRuntime>,
+        now: Instant,
+    ) -> MapDbGameObjectVisibilityStage {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return MapDbGameObjectVisibilityStage {
+                nearby_gameobjects,
+                ..Default::default()
+            };
+        };
+        let stage = map
+            .lock()
+            .await
+            .stage_player_db_gameobject_visibility(
+                character_guid,
+                position,
+                nearby_gameobjects,
+                now,
+            );
+        stage
+    }
+
     async fn ensure_db_gameobject_grids_loaded(
         &self,
         world_db_pool: &MySqlPool,
@@ -381,6 +620,92 @@ impl MapRuntimeManager {
         snapshots
     }
 
+    async fn ensure_player_corpse_grids_loaded(
+        &self,
+        character_db_pool: &MySqlPool,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) -> anyhow::Result<()> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_player_corpse_grids_for_area(position, radius)
+        };
+        for grid in grids {
+            let (center_x, center_y) = grid_world_center(grid);
+            let corpses = wow_db::get_nearby_player_corpses(
+                character_db_pool,
+                map_id,
+                center_x,
+                center_y,
+                player_corpse_grid_query_radius(),
+                u32::MAX,
+            )
+            .await?
+            .into_iter()
+            .map(player_corpse_runtime_from_query)
+            .collect::<Vec<_>>();
+            map.lock()
+                .await
+                .insert_loaded_player_corpse_grid(grid, corpses);
+            let corpse_count = map.lock().await.corpses.len();
+            debug!(
+                map_id,
+                grid_x = grid.x,
+                grid_y = grid.y,
+                corpse_count,
+                "Loaded player corpse grid into MapRuntime"
+            );
+        }
+        Ok(())
+    }
+
+    async fn nearby_player_corpse_snapshots(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+        limit: u32,
+    ) -> Vec<PlayerCorpseRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let snapshots = map
+            .lock()
+            .await
+            .nearby_player_corpse_snapshots(position, radius, limit);
+        snapshots
+    }
+
+    async fn stage_player_corpse_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+        nearby_corpses: Vec<PlayerCorpseRuntime>,
+    ) -> MapPlayerCorpseVisibilityStage {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return MapPlayerCorpseVisibilityStage {
+                nearby_corpses,
+                ..Default::default()
+            };
+        };
+        let stage = map
+            .lock()
+            .await
+            .stage_player_corpse_visibility(character_guid, position, nearby_corpses);
+        stage
+    }
+
+    async fn upsert_player_corpse(&self, map_id: u32, corpse: PlayerCorpseRuntime) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        map.lock().await.upsert_player_corpse(corpse);
+    }
+
     async fn db_gameobject_snapshot(
         &self,
         map_id: u32,
@@ -408,6 +733,81 @@ impl MapRuntimeManager {
         consumed
     }
 
+    async fn open_db_gameobject_loot(
+        &self,
+        map_id: u32,
+        gameobject_guid: u64,
+        character_guid: u32,
+        loot_item: Option<DbCreatureLootRuntime>,
+    ) -> Option<(DbGameObjectRuntime, Option<DbCreatureLootRuntime>)> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let opened = map.lock().await.open_db_gameobject_loot(
+            gameobject_guid,
+            character_guid,
+            loot_item,
+        );
+        opened
+    }
+
+    async fn db_gameobject_loot_guid_for_character(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let gameobject_guid = map
+            .lock()
+            .await
+            .db_gameobject_loot_guid_for_character(character_guid);
+        gameobject_guid
+    }
+
+    async fn take_db_gameobject_loot_item(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<(u64, DbCreatureLootRuntime)> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let loot = map
+            .lock()
+            .await
+            .take_db_gameobject_loot_item(character_guid);
+        loot
+    }
+
+    async fn restore_db_gameobject_loot_item(
+        &self,
+        map_id: u32,
+        gameobject_guid: u64,
+        loot: DbCreatureLootRuntime,
+    ) -> Option<DbCreatureLootRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let restored = map
+            .lock()
+            .await
+            .restore_db_gameobject_loot_item(gameobject_guid, loot);
+        restored
+    }
+
+    async fn release_db_gameobject_loot(
+        &self,
+        map_id: u32,
+        gameobject_guid: u64,
+        character_guid: u32,
+    ) -> Option<()> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let released = map
+            .lock()
+            .await
+            .release_db_gameobject_loot(gameobject_guid, character_guid);
+        released
+    }
+
     async fn db_creature_snapshots(
         &self,
         map_id: u32,
@@ -416,6 +816,48 @@ impl MapRuntimeManager {
         let map = self.get_or_create_map(map_id, 0).await;
         let snapshots = map.lock().await.db_creature_snapshots(creature_guids);
         snapshots
+    }
+
+    async fn db_creature_snapshot(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+    ) -> Option<DbCreatureRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let snapshot = map.lock().await.db_creature_snapshot(creature_guid);
+        snapshot
+    }
+
+    async fn db_creature_combat_snapshot(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+    ) -> Option<DbCreatureRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let creature = map.lock().await.db_creature_combat_snapshot(creature_guid);
+        creature
+    }
+
+    async fn validate_player_melee_against_db_creature(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+    ) -> DbCreaturePlayerMeleeValidation {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::MissingTarget,
+            };
+        };
+        let validation = map
+            .lock()
+            .await
+            .validate_player_melee_against_db_creature(character_guid, target, navigation);
+        validation
     }
 
     #[allow(dead_code)]
@@ -475,33 +917,55 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         creature_guid: u64,
+        character_guid: u32,
         loot_item: Option<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .open_db_creature_loot(creature_guid, loot_item);
+            .open_db_creature_loot(creature_guid, character_guid, loot_item);
         creature
+    }
+
+    async fn db_creature_loot_guid_for_character(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let creature_guid = map
+            .lock()
+            .await
+            .db_creature_loot_guid_for_character(character_guid);
+        creature_guid
+    }
+
+    async fn db_creature_needs_loot_item(&self, map_id: u32, creature_guid: u64) -> Option<bool> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let needs_loot_item = map.lock().await.db_creature_needs_loot_item(creature_guid);
+        needs_loot_item
     }
 
     async fn take_db_creature_loot_money(
         &self,
         map_id: u32,
-        creature_guid: u64,
+        character_guid: u32,
     ) -> Option<(u32, DbCreatureRuntime)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let loot = map.lock().await.take_db_creature_loot_money(creature_guid);
+        let loot = map.lock().await.take_db_creature_loot_money(character_guid);
         loot
     }
 
     async fn take_db_creature_loot_item(
         &self,
         map_id: u32,
-        creature_guid: u64,
-    ) -> Option<(DbCreatureLootRuntime, DbCreatureRuntime)> {
+        character_guid: u32,
+    ) -> Option<(u64, DbCreatureLootRuntime, DbCreatureRuntime)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let loot = map.lock().await.take_db_creature_loot_item(creature_guid);
+        let loot = map.lock().await.take_db_creature_loot_item(character_guid);
         loot
     }
 
@@ -540,13 +1004,12 @@ impl MapRuntimeManager {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         now: Instant,
-    ) -> Option<CreatureCombatState> {
+    ) -> Option<(CreatureCombatState, DbCreatureRuntime)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let combat = map
-            .lock()
-            .await
-            .begin_db_creature_combat(attacker, victim, now);
-        combat
+        let mut map = map.lock().await;
+        let creature = map.db_creature_combat_snapshot(attacker)?;
+        let combat = map.begin_db_creature_combat(attacker, victim, now)?;
+        Some((combat, creature))
     }
 
     async fn clear_db_creature_combat(&self, map_id: u32, attacker: ObjectGuid) {
@@ -572,6 +1035,21 @@ impl MapRuntimeManager {
             .await
             .active_db_creature_combats_for_victim(victim);
         combats
+    }
+
+    async fn active_db_creature_combat_snapshot(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+    ) -> Option<ActiveDbCreatureCombatSnapshot> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let snapshot = map
+            .lock()
+            .await
+            .active_db_creature_combat_snapshot(attacker, victim);
+        snapshot
     }
 
     #[allow(dead_code)]
@@ -764,6 +1242,20 @@ impl MapRuntimeManager {
         motion
     }
 
+    async fn face_db_creature_toward_position(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        target_position: WorldPosition,
+    ) -> Option<(DbCreatureRuntime, WorldPosition, u32)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let result = map
+            .lock()
+            .await
+            .face_db_creature_toward_position(creature_guid, target_position);
+        result
+    }
+
     async fn prepare_db_creature_evade(
         &self,
         map_id: u32,
@@ -811,4 +1303,13 @@ impl MapRuntimeManager {
             .or_insert_with(|| Arc::new(Mutex::new(MapRuntime::new(map_key.0, map_key.1))))
             .clone()
     }
+}
+
+fn grid_world_center(grid: GridCoord) -> (f32, f32) {
+    let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
+    ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+}
+
+fn player_corpse_grid_query_radius() -> f32 {
+    GRID_SIZE_YARDS * std::f32::consts::SQRT_2 * 0.5
 }

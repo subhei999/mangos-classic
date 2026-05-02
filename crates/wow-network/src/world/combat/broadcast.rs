@@ -7,12 +7,17 @@ struct CreatureCombatBroadcast<'a> {
 
 async fn broadcast_db_creature_packet(
     broadcast: CreatureCombatBroadcast<'_>,
-    session: &WorldSessionState,
+    _session: &WorldSessionState,
     creature_guid: ObjectGuid,
     opcode: u16,
     body: Vec<u8>,
 ) {
-    let Some(creature) = session.db_creatures.get(&creature_guid.raw()).cloned() else {
+    let Some(creature) = broadcast
+        .shared_world
+        .maps
+        .db_creature_snapshot(broadcast.map_id, creature_guid)
+        .await
+    else {
         return;
     };
     let packets = broadcast

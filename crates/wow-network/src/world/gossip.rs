@@ -2,7 +2,6 @@
 struct GossipSelectDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
-    player_corpses: &'a PlayerCorpses,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
     account_id: u32,
@@ -10,7 +9,9 @@ struct GossipSelectDeps<'a> {
 
 async fn handle_gossip_hello(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -35,12 +36,18 @@ async fn handle_gossip_hello(
     }
 
     if guid.is_creature() {
-        if session.player_death_state == PlayerDeathState::Ghost
-            && session
-                .db_creatures
-                .get(&guid.raw())
-                .is_some_and(is_spirit_healer_creature)
-        {
+        let is_spirit_healer = if session.player_death_state == PlayerDeathState::Ghost {
+            if let Some(character) = session.active_character.as_ref() {
+                maps.db_creature_snapshot(character.position.map_id, guid)
+                    .await
+                    .is_some_and(|creature| is_spirit_healer_creature(&creature))
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if is_spirit_healer {
             let text_update =
                 build_npc_text_update(SPIRIT_HEALER_GOSSIP_TEXT_ID, SPIRIT_HEALER_GOSSIP_TEXT);
             send_packet(
@@ -58,7 +65,9 @@ async fn handle_gossip_hello(
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }
 
-        if let Some(quest) = questgiver_completed_turnin_quest(world_db_pool, guid, session).await? {
+        if let Some(quest) =
+            questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
+        {
             let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
             let response = build_quest_offer_reward_body(guid, &quest, &displays);
             return send_packet(
@@ -70,7 +79,7 @@ async fn handle_gossip_hello(
             .await;
         }
 
-        let quests = questgiver_visible_quests(world_db_pool, guid, session).await?;
+        let quests = questgiver_visible_quests(object_mgr, world_db_pool, guid, session).await?;
         if !quests.is_empty() {
             let response = build_questgiver_quest_list_body(guid, &quests);
             return send_packet(
@@ -156,12 +165,19 @@ async fn handle_gossip_select_option(
             );
             return Ok(());
         }
-        if session.player_death_state == PlayerDeathState::Ghost
-            && session
-                .db_creatures
-                .get(&selection.guid.raw())
-                .is_some_and(is_spirit_healer_creature)
-        {
+        let is_spirit_healer = if session.player_death_state == PlayerDeathState::Ghost {
+            if let Some(character) = session.active_character.as_ref() {
+                deps.maps
+                    .db_creature_snapshot(character.position.map_id, selection.guid)
+                    .await
+                    .is_some_and(|creature| is_spirit_healer_creature(&creature))
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if is_spirit_healer {
             send_packet(
                 stream,
                 SMSG_GOSSIP_COMPLETE,
@@ -174,7 +190,6 @@ async fn handle_gossip_select_option(
                 PlayerDeathDeps {
                     character_db_pool: deps.character_db_pool,
                     world_db_pool: deps.world_db_pool,
-                    player_corpses: deps.player_corpses,
                     maps: deps.maps,
                     sessions: deps.sessions,
                     account_id: deps.account_id,

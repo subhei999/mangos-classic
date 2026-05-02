@@ -1,6 +1,7 @@
 ﻿
 async fn handle_attack_stop(
     stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -8,10 +9,16 @@ async fn handle_attack_stop(
         return Ok(());
     };
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let victim = session.active_combat_target.unwrap_or_else(rust_combat_dummy_guid);
-    session.active_combat_target = None;
-    session.active_combat_next_swing_at = None;
+    let victim = shared_world
+        .maps
+        .player_auto_attack_target(character.position.map_id, character.guid)
+        .await
+        .unwrap_or_else(rust_combat_dummy_guid);
     session.last_player_melee_swing_error = None;
+    shared_world
+        .maps
+        .set_player_auto_attack(character.position.map_id, character.guid, None, None)
+        .await;
     send_packet(
         stream,
         SMSG_ATTACKSTOP,

@@ -1,10 +1,10 @@
 // CMaNGOS reference: src/game/Server/WorldSession.cpp login/bootstrap packet path.
 struct EnterWorldBootstrap<'a> {
     character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
     world_stats: &'a PlayerWorldStats,
+    equipped_templates: &'a [EquippedItemTemplate],
     spells: &'a [CharacterSpell],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     tutorial_flags: &'a [u32; 8],
@@ -40,8 +40,6 @@ async fn send_enter_world_bootstrap(
     send_initial_reputations(stream, &reputations, header_crypto.as_deref_mut()).await?;
     let skills =
         wow_db::get_character_skills(bootstrap.character_db_pool, bootstrap.character.guid).await?;
-    let equipped_templates =
-        load_equipped_item_templates(bootstrap.world_db_pool, bootstrap.inventory).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
@@ -55,7 +53,7 @@ async fn send_enter_world_bootstrap(
             world_stats: bootstrap.world_stats,
             skills: &skills,
             quest_statuses: bootstrap.quest_statuses,
-            equipped_templates: &equipped_templates,
+            equipped_templates: bootstrap.equipped_templates,
             nearby_creatures: bootstrap.nearby_creatures,
             nearby_gameobjects: bootstrap.nearby_gameobjects,
             nearby_player_corpses: bootstrap.nearby_player_corpses,

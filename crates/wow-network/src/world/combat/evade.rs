@@ -1,4 +1,24 @@
-﻿fn db_creature_should_evade(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
+async fn db_creature_should_evade_from_map(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    attacker: ObjectGuid,
+) -> bool {
+    let Some(creature) = shared_world.maps.db_creature_snapshot(map_id, attacker).await else {
+        return false;
+    };
+    if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
+        return false;
+    }
+    distance_2d(
+        creature.current_position.x,
+        creature.current_position.y,
+        creature.home_position.x,
+        creature.home_position.y,
+    ) > DB_CREATURE_LEASH_RADIUS_YARDS
+}
+
+#[cfg(test)]
+fn db_creature_should_evade(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
     let Some(creature) = session.db_creatures.get(&attacker.raw()) else {
         return false;
     };
@@ -29,10 +49,22 @@ async fn send_db_creature_evade_and_return_home(
     else {
         return Ok(());
     };
-    session.db_creatures.insert(attacker.raw(), creature.clone());
-    if session.active_combat_target == Some(attacker) {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+    mirror_session_db_creature(session, attacker.raw(), creature.clone());
+    if let Some(character) = session.active_character.as_ref().cloned() {
+        if broadcast
+            .shared_world
+            .maps
+            .player_auto_attack_target(character.position.map_id, character.guid)
+            .await
+            == Some(attacker)
+        {
+            mirror_session_player_auto_attack(session, None, None);
+            broadcast
+                .shared_world
+                .maps
+                .set_player_auto_attack(character.position.map_id, character.guid, None, None)
+                .await;
+        }
     }
     clear_db_creature_combat_if_attacker(session, attacker);
 
@@ -51,7 +83,13 @@ async fn send_db_creature_evade_and_return_home(
         attack_stop_body,
     )
     .await;
-    if session.active_creature_combats.is_empty() {
+    let player_still_has_attackers = !broadcast
+        .shared_world
+        .maps
+        .active_db_creature_combats_for_victim(broadcast.map_id, broadcast.player)
+        .await
+        .is_empty();
+    if !player_still_has_attackers {
         send_player_combat_flag_if_changed(stream, session, false, header_crypto).await?;
     }
     let creature_flags_body =
@@ -97,7 +135,7 @@ async fn send_db_creature_evade_and_return_home(
         )
         .await
     {
-        session.db_creatures.insert(attacker.raw(), creature.clone());
+        mirror_session_db_creature(session, attacker.raw(), creature.clone());
         let body = build_monster_move_path_body_inner(
             attacker,
             motion.start,
@@ -107,20 +145,8 @@ async fn send_db_creature_evade_and_return_home(
             None,
             true,
         )?;
-        send_packet(
-            stream,
-            SMSG_MONSTER_MOVE,
-            &body,
-            Some(header_crypto),
-        )
-        .await?;
-        broadcast_db_creature_snapshot_packet(
-            broadcast,
-            creature,
-            SMSG_MONSTER_MOVE,
-            body,
-        )
-        .await;
+        send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
+        broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;
     }
     Ok(())
 }
@@ -153,10 +179,19 @@ async fn send_db_creature_chase_if_needed(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if db_creature_can_reach_player(session, attacker) {
-        if session
-            .db_creatures
-            .get(&attacker.raw())
+    if db_creature_can_reach_player_from_map(
+        broadcast.shared_world,
+        session,
+        broadcast.map_id,
+        attacker,
+    )
+    .await
+    {
+        if broadcast
+            .shared_world
+            .maps
+            .db_creature_snapshot(broadcast.map_id, attacker)
+            .await
             .is_some_and(|creature| matches!(creature.motion, CreatureMotionState::Chase(_)))
         {
             send_db_creature_motion_stop(stream, broadcast, session, attacker, header_crypto)
@@ -186,7 +221,7 @@ async fn send_db_creature_chase_if_needed(
     else {
         return Ok(());
     };
-    session.db_creatures.insert(attacker.raw(), creature.clone());
+    mirror_session_db_creature(session, attacker.raw(), creature.clone());
     let body = build_monster_move_facing_target_path_body(
         attacker,
         motion.start,
@@ -195,20 +230,7 @@ async fn send_db_creature_chase_if_needed(
         motion.duration.as_millis().max(1) as u32,
         broadcast.player,
     )?;
-    send_packet(
-        stream,
-        SMSG_MONSTER_MOVE,
-        &body,
-        Some(header_crypto),
-    )
-    .await?;
-    broadcast_db_creature_snapshot_packet(
-        broadcast,
-        creature,
-        SMSG_MONSTER_MOVE,
-        body,
-    )
-    .await;
+    send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
+    broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;
     Ok(())
 }
-

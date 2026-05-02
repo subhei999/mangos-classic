@@ -1,12 +1,13 @@
 async fn handle_quest_query(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let mut cursor = 0;
     let quest_id = read_u32(body, &mut cursor)?;
-    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, quest_id).await? else {
+    let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
         warn!(quest_id, "Ignoring query for unknown quest");
         return Ok(());
     };
@@ -22,13 +23,14 @@ async fn handle_quest_query(
 
 async fn handle_questgiver_status_query(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let guid = read_packet_guid(body, "CMSG_QUESTGIVER_STATUS_QUERY")?;
-    let status = questgiver_dialog_status(world_db_pool, guid, session).await?;
+    let status = questgiver_dialog_status(object_mgr, world_db_pool, guid, session).await?;
     send_packet(
         stream,
         SMSG_QUESTGIVER_STATUS,
@@ -40,13 +42,16 @@ async fn handle_questgiver_status_query(
 
 async fn handle_questgiver_hello(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let guid = read_packet_guid(body, "CMSG_QUESTGIVER_HELLO")?;
-    if let Some(quest) = questgiver_completed_turnin_quest(world_db_pool, guid, session).await? {
+    if let Some(quest) =
+        questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
+    {
         let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
         let response = build_quest_offer_reward_body(guid, &quest, &displays);
         return send_packet(
@@ -58,7 +63,7 @@ async fn handle_questgiver_hello(
         .await;
     }
 
-    let quests = questgiver_visible_quests(world_db_pool, guid, session).await?;
+    let quests = questgiver_visible_quests(object_mgr, world_db_pool, guid, session).await?;
     if quests.is_empty() {
         warn!(
             guid = format_args!("0x{:016X}", guid.raw()),
@@ -78,18 +83,19 @@ async fn handle_questgiver_hello(
 
 async fn handle_questgiver_query_quest(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_QUERY_QUEST")?;
-    if !questgiver_starts_quest(world_db_pool, request.guid, request.quest).await?
-        && !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await?
+    if !questgiver_starts_quest(object_mgr, world_db_pool, request.guid, request.quest).await?
+        && !questgiver_completes_quest(object_mgr, world_db_pool, request.guid, request.quest).await?
     {
         warn!(quest = request.quest, "Ignoring quest details request for invalid giver");
         return Ok(());
     }
-    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
+    let Some(quest) = object_mgr.quest_template(world_db_pool, request.quest).await? else {
         return Ok(());
     };
     let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
@@ -106,6 +112,7 @@ async fn handle_questgiver_query_quest(
 async fn handle_questgiver_accept_quest(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -116,14 +123,14 @@ async fn handle_questgiver_accept_quest(
         return Ok(());
     };
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_ACCEPT_QUEST")?;
-    if !questgiver_starts_quest(world_db_pool, request.guid, request.quest).await? {
+    if !questgiver_starts_quest(object_mgr, world_db_pool, request.guid, request.quest).await? {
         warn!(quest = request.quest, "Ignoring quest accept for invalid giver");
         return Ok(());
     }
-    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
+    let Some(quest) = object_mgr.quest_template(world_db_pool, request.quest).await? else {
         return Ok(());
     };
-    if !can_take_start_quest(world_db_pool, &quest, session).await? {
+    if !can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
         warn!(
             quest = request.quest,
             "Ignoring quest accept that does not satisfy CMaNGOS-style eligibility"
@@ -194,6 +201,7 @@ async fn handle_questgiver_accept_quest(
 async fn handle_questgiver_complete_quest(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -204,13 +212,13 @@ async fn handle_questgiver_complete_quest(
         return Ok(());
     };
     let request = QuestgiverQuestRequest::read(body, "CMSG_QUESTGIVER_COMPLETE_QUEST")?;
-    if !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await? {
+    if !questgiver_completes_quest(object_mgr, world_db_pool, request.guid, request.quest).await? {
         return Ok(());
     }
     let Some(status) = session.quest_statuses.get(&request.quest) else {
         return Ok(());
     };
-    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
+    let Some(quest) = object_mgr.quest_template(world_db_pool, request.quest).await? else {
         return Ok(());
     };
     let reward_ready = if quest_status_can_reward_from_inventory(status, &quest, &session.inventory) {
@@ -265,6 +273,7 @@ async fn handle_questgiver_complete_quest(
 async fn handle_questgiver_choose_reward(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     body: &[u8],
     session: &mut WorldSessionState,
@@ -281,11 +290,11 @@ async fn handle_questgiver_choose_reward(
         warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward choice");
         return Ok(());
     }
-    if !questgiver_completes_quest(world_db_pool, request.guid, request.quest).await? {
+    if !questgiver_completes_quest(object_mgr, world_db_pool, request.guid, request.quest).await? {
         warn!(quest = request.quest, "Ignoring reward request for invalid giver");
         return Ok(());
     }
-    let Some(quest) = wow_db::get_quest_template_query(world_db_pool, request.quest).await? else {
+    let Some(quest) = object_mgr.quest_template(world_db_pool, request.quest).await? else {
         return Ok(());
     };
     let reward_money = quest.rew_or_req_money.max(0) as u32;
@@ -482,6 +491,7 @@ impl QuestRewardRequest {
 }
 
 async fn questgiver_dialog_status(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     session: &WorldSessionState,
@@ -491,7 +501,7 @@ async fn questgiver_dialog_status(
     }
 
     let mut dialog_status = DIALOG_STATUS_NONE;
-    for quest in questgiver_complete_quests(world_db_pool, guid).await? {
+    for quest in questgiver_complete_quests(object_mgr, world_db_pool, guid).await? {
         let Some(status) = session.quest_statuses.get(&quest.entry) else {
             continue;
         };
@@ -504,18 +514,17 @@ async fn questgiver_dialog_status(
             dialog_status = dialog_status.max(DIALOG_STATUS_INCOMPLETE);
         }
     }
-    for quest in questgiver_start_quests(world_db_pool, guid).await? {
-        if can_take_start_quest(world_db_pool, &quest, session).await? {
+    for quest in questgiver_start_quests(object_mgr, world_db_pool, guid).await? {
+        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
             dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
         }
     }
 
     for status in session.quest_statuses.values() {
         if status.rewarded == 0
-            && questgiver_completes_quest(world_db_pool, guid, status.quest).await?
+            && questgiver_completes_quest(object_mgr, world_db_pool, guid, status.quest).await?
         {
-            if let Some(quest) = wow_db::get_quest_template_query(world_db_pool, status.quest).await?
-            {
+            if let Some(quest) = object_mgr.quest_template(world_db_pool, status.quest).await? {
                 if quest_status_can_reward_from_inventory(status, &quest, &session.inventory) {
                     dialog_status = dialog_status.max(DIALOG_STATUS_REWARD2);
                 }
@@ -526,6 +535,7 @@ async fn questgiver_dialog_status(
 }
 
 async fn questgiver_visible_quests(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     session: &WorldSessionState,
@@ -535,7 +545,7 @@ async fn questgiver_visible_quests(
     }
     let mut visible = Vec::new();
     let mut seen = HashSet::new();
-    for quest in questgiver_complete_quests(world_db_pool, guid).await? {
+    for quest in questgiver_complete_quests(object_mgr, world_db_pool, guid).await? {
         let Some(status) = session.quest_statuses.get(&quest.entry) else {
             continue;
         };
@@ -552,12 +562,12 @@ async fn questgiver_visible_quests(
         seen.insert(quest.entry);
         visible.push(QuestListItem { quest, dialog_status });
     }
-    let quests = questgiver_start_quests(world_db_pool, guid).await?;
+    let quests = questgiver_start_quests(object_mgr, world_db_pool, guid).await?;
     for quest in quests {
         if seen.contains(&quest.entry) {
             continue;
         }
-        if can_take_start_quest(world_db_pool, &quest, session).await? {
+        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
             visible.push(QuestListItem {
                 quest,
                 dialog_status: DIALOG_STATUS_AVAILABLE,
@@ -568,6 +578,7 @@ async fn questgiver_visible_quests(
 }
 
 async fn questgiver_completed_turnin_quest(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     session: &WorldSessionState,
@@ -577,9 +588,8 @@ async fn questgiver_completed_turnin_quest(
     }
 
     for status in active_quest_statuses_sorted(&session.quest_statuses) {
-        if questgiver_completes_quest(world_db_pool, guid, status.quest).await? {
-            let Some(quest) = wow_db::get_quest_template_query(world_db_pool, status.quest).await?
-            else {
+        if questgiver_completes_quest(object_mgr, world_db_pool, guid, status.quest).await? {
+            let Some(quest) = object_mgr.quest_template(world_db_pool, status.quest).await? else {
                 continue;
             };
             if quest_status_can_reward_from_inventory(status, &quest, &session.inventory) {
@@ -592,54 +602,74 @@ async fn questgiver_completed_turnin_quest(
 }
 
 async fn questgiver_start_quests(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
 ) -> anyhow::Result<Vec<QuestTemplateQuery>> {
     if guid.is_creature() {
-        Ok(wow_db::get_creature_start_quests(world_db_pool, guid.entry()).await?)
+        object_mgr
+            .creature_start_quests(world_db_pool, guid.entry())
+            .await
     } else if guid.is_game_object() {
-        Ok(wow_db::get_gameobject_start_quests(world_db_pool, guid.entry()).await?)
+        object_mgr
+            .gameobject_start_quests(world_db_pool, guid.entry())
+            .await
     } else {
         Ok(Vec::new())
     }
 }
 
 async fn questgiver_complete_quests(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
 ) -> anyhow::Result<Vec<QuestTemplateQuery>> {
     if guid.is_creature() {
-        Ok(wow_db::get_creature_complete_quests(world_db_pool, guid.entry()).await?)
+        object_mgr
+            .creature_complete_quests(world_db_pool, guid.entry())
+            .await
     } else if guid.is_game_object() {
-        Ok(wow_db::get_gameobject_complete_quests(world_db_pool, guid.entry()).await?)
+        object_mgr
+            .gameobject_complete_quests(world_db_pool, guid.entry())
+            .await
     } else {
         Ok(Vec::new())
     }
 }
 
 async fn questgiver_starts_quest(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     quest: u32,
 ) -> anyhow::Result<bool> {
     if guid.is_creature() {
-        Ok(wow_db::creature_starts_quest(world_db_pool, guid.entry(), quest).await?)
+        object_mgr
+            .creature_starts_quest(world_db_pool, guid.entry(), quest)
+            .await
     } else if guid.is_game_object() {
-        Ok(wow_db::gameobject_starts_quest(world_db_pool, guid.entry(), quest).await?)
+        object_mgr
+            .gameobject_starts_quest(world_db_pool, guid.entry(), quest)
+            .await
     } else {
         Ok(false)
     }
 }
 
 async fn questgiver_completes_quest(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     guid: ObjectGuid,
     quest: u32,
 ) -> anyhow::Result<bool> {
     if guid.is_creature() {
-        Ok(wow_db::creature_completes_quest(world_db_pool, guid.entry(), quest).await?)
+        object_mgr
+            .creature_completes_quest(world_db_pool, guid.entry(), quest)
+            .await
     } else if guid.is_game_object() {
-        Ok(wow_db::gameobject_completes_quest(world_db_pool, guid.entry(), quest).await?)
+        object_mgr
+            .gameobject_completes_quest(world_db_pool, guid.entry(), quest)
+            .await
     } else {
         Ok(false)
     }
@@ -1022,6 +1052,7 @@ fn quest_status_can_reward_from_inventory(
 async fn complete_inventory_item_quests(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     character_guid: u32,
@@ -1035,7 +1066,7 @@ async fn complete_inventory_item_quests(
         .collect();
 
     for quest_id in active_quests {
-        let Some(quest) = wow_db::get_quest_template_query(world_db_pool, quest_id).await? else {
+        let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
             continue;
         };
         if !quest_can_complete_from_inventory(&quest, &session.inventory) {
@@ -1148,6 +1179,7 @@ fn satisfies_exclusive_group(
 }
 
 async fn can_take_start_quest(
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     quest: &QuestTemplateQuery,
     session: &WorldSessionState,
@@ -1162,7 +1194,7 @@ async fn can_take_start_quest(
         return Ok(false);
     }
 
-    let prev_quests = wow_db::get_quest_prev_quests(world_db_pool, quest.entry).await?;
+    let prev_quests = object_mgr.quest_prev_quests(world_db_pool, quest.entry).await?;
     if !prev_quests
         .into_iter()
         .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
@@ -1170,7 +1202,9 @@ async fn can_take_start_quest(
         return Ok(false);
     }
 
-    let prev_chain_quests = wow_db::get_quest_prev_chain_quests(world_db_pool, quest.entry).await?;
+    let prev_chain_quests = object_mgr
+        .quest_prev_chain_quests(world_db_pool, quest.entry)
+        .await?;
     if prev_chain_quests
         .into_iter()
         .any(|prev_chain| quest_is_current(&session.quest_statuses, prev_chain))
@@ -1183,8 +1217,9 @@ async fn can_take_start_quest(
         return Ok(false);
     }
 
-    let exclusive_group_quests =
-        wow_db::get_exclusive_group_quests(world_db_pool, quest.exclusive_group).await?;
+    let exclusive_group_quests = object_mgr
+        .exclusive_group_quests(world_db_pool, quest.exclusive_group)
+        .await?;
     if !satisfies_exclusive_group(quest, &exclusive_group_quests, &session.quest_statuses) {
         return Ok(false);
     }
@@ -1202,6 +1237,7 @@ fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<u
 async fn grant_db_creature_kill_credit(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     killed_guid: ObjectGuid,
@@ -1210,10 +1246,7 @@ async fn grant_db_creature_kill_credit(
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    let Some(creature) = session.db_creatures.get(&killed_guid.raw()) else {
-        return Ok(());
-    };
-    let killed_entry = creature.spawn.entry;
+    let killed_entry = killed_guid.entry();
     let active_quests: Vec<u32> = session
         .quest_statuses
         .values()
@@ -1221,7 +1254,7 @@ async fn grant_db_creature_kill_credit(
         .map(|status| status.quest)
         .collect();
     for quest_id in active_quests {
-        let Some(quest) = wow_db::get_quest_template_query(world_db_pool, quest_id).await? else {
+        let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
             continue;
         };
         let Some(index) = quest.required_creature_index(killed_entry) else {

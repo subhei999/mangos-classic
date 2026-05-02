@@ -1,6 +1,91 @@
 // Shared DB-creature combat claim and player-damage authority.
 
+#[derive(Debug, Clone)]
+struct DbCreaturePlayerMeleeValidation {
+    check: PlayerMeleeCheck,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveDbCreatureCombatSnapshot {
+    combat: CreatureCombatState,
+    creature: DbCreatureRuntime,
+}
+
 impl MapRuntime {
+    fn db_creature_combat_snapshot(&self, creature_guid: ObjectGuid) -> Option<DbCreatureRuntime> {
+        self.creatures
+            .get(&creature_guid.raw())
+            .filter(|creature| creature.is_alive() && !creature.is_evading_home())
+            .cloned()
+    }
+
+    fn validate_player_melee_against_db_creature(
+        &self,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+    ) -> DbCreaturePlayerMeleeValidation {
+        let Some(player) = self.players.get(&character_guid) else {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::NoActiveCharacter,
+            };
+        };
+        let Some(creature) = self.creatures.get(&target.raw()).cloned() else {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::MissingTarget,
+            };
+        };
+        if !creature.is_alive() || creature.is_evading_home() {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::TargetNotAlive,
+            };
+        }
+        let navigation_check =
+            db_creature_navigation_check(navigation, player.position, creature.current_position);
+        if !navigation_check.is_clear() {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::NavigationBlocked(navigation_check),
+            };
+        }
+        let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, creature.combat_reach());
+        let dx = player.position.x - creature.current_position.x;
+        let dy = player.position.y - creature.current_position.y;
+        let dz = player.position.z - creature.current_position.z;
+        if dx * dx + dy * dy + dz * dz > reach * reach {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::OutOfRange,
+            };
+        }
+        if !has_in_arc(
+            player.position,
+            creature.current_position,
+            PLAYER_MELEE_ARC_RADIANS,
+        ) {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::BadFacing,
+            };
+        }
+        DbCreaturePlayerMeleeValidation {
+            check: PlayerMeleeCheck::Clear,
+        }
+    }
+
+    fn active_db_creature_combat_snapshot(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+    ) -> Option<ActiveDbCreatureCombatSnapshot> {
+        let combat = self.active_creature_combats.get(&attacker.raw()).copied()?;
+        if combat.victim != victim {
+            return None;
+        }
+        let Some(creature) = self.db_creature_combat_snapshot(attacker) else {
+            self.clear_db_creature_combat(attacker);
+            return None;
+        };
+        Some(ActiveDbCreatureCombatSnapshot { combat, creature })
+    }
+
     fn begin_db_creature_combat(
         &mut self,
         attacker: ObjectGuid,

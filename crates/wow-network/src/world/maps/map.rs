@@ -5,12 +5,17 @@ struct PlayerRuntime {
     account_id: u32,
     session_id: SessionId,
     selected_target: Option<ObjectGuid>,
+    active_combat_target: Option<ObjectGuid>,
+    active_combat_next_swing_at: Option<Instant>,
     position: WorldPosition,
     movement_flags: u32,
     client_time: u32,
     fall_time: u32,
     cell: CellCoord,
     visible_objects: HashSet<ObjectGuid>,
+    last_creature_visibility_position: Option<WorldPosition>,
+    last_gameobject_visibility_position: Option<WorldPosition>,
+    last_player_corpse_visibility_position: Option<WorldPosition>,
     visual: PlayerVisualState,
     visible_equipment: [u32; ENUM_EQUIPMENT_SLOTS],
     flags: u32,
@@ -25,6 +30,25 @@ struct PlayerRuntime {
     power2: u32,
     player_bytes: u32,
     player_bytes2: u32,
+    active_spells: HashSet<u32>,
+    inventory: Vec<CharacterInventoryItem>,
+    quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    combat_stats: PlayerCombatStats,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PlayerRuntimeSnapshot {
+    position: WorldPosition,
+    health: u32,
+    power1: u32,
+    power2: u32,
+    active_spells: HashSet<u32>,
+    inventory: Vec<CharacterInventoryItem>,
+    quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    combat_stats: PlayerCombatStats,
+    active_combat_target: Option<ObjectGuid>,
+    active_combat_next_swing_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -35,9 +59,13 @@ struct MapRuntime {
     grids: HashMap<GridCoord, GridRuntime>,
     loaded_creature_grids: HashSet<GridCoord>,
     loaded_gameobject_grids: HashSet<GridCoord>,
+    loaded_player_corpse_grids: HashSet<GridCoord>,
     players: HashMap<u32, PlayerRuntime>,
     creatures: HashMap<u64, DbCreatureRuntime>,
+    creature_looting_by_character: HashMap<u32, u64>,
     gameobjects: HashMap<u64, DbGameObjectRuntime>,
+    gameobject_loots: HashMap<u64, DbGameObjectLootState>,
+    gameobject_looting_by_character: HashMap<u32, u64>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
@@ -99,6 +127,7 @@ struct DbCreatureThreatTargetSwitchEvent {
 
 #[derive(Debug)]
 struct DbCreatureLifecycleEvent {
+    #[allow(dead_code)]
     creature: DbCreatureRuntime,
     direct_packets: Vec<OutboundWorldPacket>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
@@ -112,6 +141,33 @@ struct DbCreatureLootReleaseEvent {
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug, Default)]
+struct MapDbCreatureVisibilityStage {
+    nearby_creatures: Vec<DbCreatureRuntime>,
+    create_guids: Vec<ObjectGuid>,
+    destroy_guids: Vec<ObjectGuid>,
+}
+
+#[derive(Debug, Default)]
+struct MapDbGameObjectVisibilityStage {
+    nearby_gameobjects: Vec<DbGameObjectRuntime>,
+    create_guids: Vec<ObjectGuid>,
+    destroy_guids: Vec<ObjectGuid>,
+}
+
+#[derive(Debug, Default)]
+struct MapPlayerCorpseVisibilityStage {
+    nearby_corpses: Vec<PlayerCorpseRuntime>,
+    create_guids: Vec<ObjectGuid>,
+    destroy_guids: Vec<ObjectGuid>,
+}
+
+#[derive(Debug, Default)]
+struct DbGameObjectLootState {
+    open_characters: HashSet<u32>,
+    loot_item: Option<DbCreatureLootRuntime>,
+}
+
 impl MapRuntime {
     fn new(map_id: u32, instance_id: u32) -> Self {
         Self {
@@ -120,9 +176,13 @@ impl MapRuntime {
             grids: HashMap::new(),
             loaded_creature_grids: HashSet::new(),
             loaded_gameobject_grids: HashSet::new(),
+            loaded_player_corpse_grids: HashSet::new(),
             players: HashMap::new(),
             creatures: HashMap::new(),
+            creature_looting_by_character: HashMap::new(),
             gameobjects: HashMap::new(),
+            gameobject_loots: HashMap::new(),
+            gameobject_looting_by_character: HashMap::new(),
             active_creature_combats: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
@@ -132,11 +192,13 @@ impl MapRuntime {
 }
 
 include!("map/players.rs");
+include!("map/player_corpses.rs");
 include!("map/creature_snapshots.rs");
 include!("map/gameobject_snapshots.rs");
 include!("map/creature_damage.rs");
 include!("map/creature_lifecycle.rs");
 include!("map/creature_loot.rs");
+include!("map/gameobject_loot.rs");
 include!("map/creature_combat.rs");
 include!("map/creature_motion.rs");
 include!("map/spatial.rs");

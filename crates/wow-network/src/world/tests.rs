@@ -865,6 +865,34 @@ fn gameobject_query_response_matches_cmangos_shape() {
 }
 
 #[test]
+fn self_spawn_update_chunks_without_legacy_fixture_blocks() {
+    let character = test_character(1, 1);
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 21],
+        next_level_xp: 400,
+    };
+    let gameobject = DbGameObjectRuntime::new(test_gameobject_spawn(55, GO_TYPE_CHEST));
+    let quest_statuses = HashMap::new();
+    let update = SelfSpawnUpdate {
+        character: &character,
+        inventory: &[],
+        world_stats: &world_stats,
+        skills: &[],
+        quest_statuses: &quest_statuses,
+        equipped_templates: &[],
+        nearby_creatures: &[],
+        nearby_gameobjects: &[gameobject],
+        nearby_player_corpses: &[],
+    };
+
+    let bodies = build_self_spawn_update_bodies(&update).unwrap();
+
+    assert!(!bodies.is_empty());
+}
+
+#[test]
 fn gameobject_visibility_stages_destroy_for_out_of_range_objects() {
     let nearby = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
     let out_of_range = wow_db::GameObjectSpawnQuery {
@@ -2167,6 +2195,99 @@ fn prev_quest_requirements_follow_positive_and_negative_rules() {
     assert!(satisfies_prev_quest_requirement(&statuses, -99));
 }
 
+#[tokio::test]
+async fn object_mgr_reuses_cached_questgiver_relations_and_templates() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let quest = test_quest_template(7);
+
+    object_mgr
+        .prime_creature_start_quest_ids_for_test(197, vec![7])
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(7, Some(quest.clone()))
+        .await;
+
+    let before = object_mgr.cache_stats_snapshot();
+    let first = object_mgr
+        .creature_start_quests(&pool, 197)
+        .await
+        .expect("cached relation should load");
+    let second = object_mgr
+        .creature_start_quests(&pool, 197)
+        .await
+        .expect("cached relation should load again");
+
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].entry, 7);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].entry, 7);
+    assert!(object_mgr
+        .creature_starts_quest(&pool, 197, 7)
+        .await
+        .expect("cached membership should load"));
+    assert_eq!(object_mgr.cache_stats_snapshot(), before);
+}
+
+#[tokio::test]
+async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_loads() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(33);
+    quest.req_item_id[0] = 777;
+    quest.req_item_count[0] = 1;
+    object_mgr
+        .prime_quest_template_for_test(33, Some(quest))
+        .await;
+    object_mgr
+        .prime_creature_loot_template_for_test(
+            38,
+            vec![
+                CreatureLootQuery {
+                    item: 25,
+                    min_count: 1,
+                    max_count: 1,
+                    display_id: 25,
+                    chance_or_quest_chance: 100.0,
+                },
+                CreatureLootQuery {
+                    item: 777,
+                    min_count: 1,
+                    max_count: 1,
+                    display_id: 777,
+                    chance_or_quest_chance: -100.0,
+                },
+            ],
+        )
+        .await;
+    let mut session = WorldSessionState::default();
+    session.quest_statuses.insert(
+        33,
+        CharacterQuestStatus {
+            quest: 33,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    let before = object_mgr.cache_stats_snapshot();
+    let selected = select_db_creature_loot_item_for_character(&object_mgr, &pool, &session, 38)
+        .await
+        .expect("cached loot selection should load")
+        .expect("quest item should be selected");
+
+    assert_eq!(selected.item, 777);
+    assert_eq!(selected.count, 1);
+    assert_eq!(selected.display_id, 777);
+    assert_eq!(object_mgr.cache_stats_snapshot(), before);
+}
+
 #[test]
 fn exclusive_group_rejects_other_active_quests_in_group() {
     let mut quest = test_quest_template(10);
@@ -2656,6 +2777,68 @@ fn player_bones_update_sets_cmangos_bones_flag() {
 }
 
 #[test]
+fn map_runtime_player_corpse_grid_load_caches_db_snapshots() {
+    let position = WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0);
+    let corpse = test_player_corpse_runtime(7, position);
+    let mut map = MapRuntime::new(0, 0);
+    let unloaded = map.unloaded_player_corpse_grids_for_area(position, 1.0);
+    assert_eq!(unloaded.len(), 1);
+
+    let loaded = map.insert_loaded_player_corpse_grid(unloaded[0], vec![corpse.clone()]);
+
+    assert_eq!(loaded, vec![corpse.clone()]);
+    assert!(map
+        .unloaded_player_corpse_grids_for_area(position, 1.0)
+        .is_empty());
+    assert_eq!(
+        map.nearby_player_corpse_snapshots(position, 20.0, PLAYER_CORPSE_VISIBILITY_LIMIT),
+        vec![corpse]
+    );
+}
+
+#[test]
+fn map_runtime_player_corpse_snapshots_follow_map_owned_updates() {
+    let first_position = WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0);
+    let second_position = WorldPosition::new(0, -8835.25, -42.5, 83.0, 1.0);
+    let mut corpse = test_player_corpse_runtime(7, first_position);
+    let mut map = MapRuntime::new(0, 0);
+
+    map.upsert_player_corpse(corpse.clone());
+    assert_eq!(
+        map.nearby_player_corpse_snapshots(first_position, 20.0, PLAYER_CORPSE_VISIBILITY_LIMIT),
+        vec![corpse.clone()]
+    );
+
+    corpse.position = second_position;
+    map.upsert_player_corpse(corpse.clone());
+
+    assert!(map
+        .nearby_player_corpse_snapshots(first_position, 20.0, PLAYER_CORPSE_VISIBILITY_LIMIT)
+        .is_empty());
+    assert_eq!(
+        map.nearby_player_corpse_snapshots(second_position, 20.0, PLAYER_CORPSE_VISIBILITY_LIMIT),
+        vec![corpse]
+    );
+}
+
+fn test_player_corpse_runtime(counter: u32, position: WorldPosition) -> PlayerCorpseRuntime {
+    PlayerCorpseRuntime {
+        guid: ObjectGuid::new(HighGuid::Corpse, 0, counter),
+        owner: ObjectGuid::new(HighGuid::Player, 0, counter),
+        position,
+        corpse_type: PLAYER_CORPSE_TYPE_RESURRECTABLE_PVE,
+        race: 1,
+        class: 1,
+        gender: 0,
+        player_bytes: 0,
+        player_bytes2: 0,
+        equipment_cache: None,
+        guildid: None,
+        player_flags: 0,
+    }
+}
+
+#[test]
 fn spirit_healer_detection_accepts_template_flag_or_classic_entry() {
     let mut flagged = test_creature_spawn(197);
     flagged.template.npc_flags = UNIT_NPC_FLAG_SPIRITHEALER;
@@ -3006,6 +3189,7 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
     kobold.template.model_combat_reach = 3.0;
     kobold.template.scale = 1.0;
     let target = creature_spawn_guid(&kobold);
+    let character_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
@@ -3013,7 +3197,7 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
         class: 1,
         level: 1,
         xp: 0,
-        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        position: character_position,
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
@@ -3140,8 +3324,8 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
     );
 }
 
-#[test]
-fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
+#[tokio::test]
+async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     let mut kobold = test_creature_spawn(6);
     kobold.guid = 45;
     kobold.position_x = 8.0;
@@ -3155,6 +3339,7 @@ fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         unit_target: Some(target),
         gameobject_target: None,
     };
+    let character_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
     let character = ActiveCharacter {
         guid: 7,
         name: "Ada".to_string(),
@@ -3162,7 +3347,7 @@ fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         class: 1,
         level: 1,
         xp: 0,
-        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        position: character_position,
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
@@ -3172,27 +3357,42 @@ fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    let maps = Arc::new(MapRuntimeManager::default());
+    maps.add_player(test_player_runtime(7, SessionId(7), character_position))
+        .await
+        .unwrap();
+    maps.share_db_creature_snapshots(0, vec![runtime]).await;
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
 
     assert_eq!(
-        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        starter_spell_melee_cast_failure(shared_world, &mut session, &starter_spell, &targets)
+            .await,
         Some(SPELL_FAILED_OUT_OF_RANGE)
     );
 
-    session
-        .db_creatures
-        .get_mut(&target.raw())
-        .unwrap()
-        .current_position
-        .x = 4.0;
+    let mut closer = maps
+        .db_creature_snapshots(0, &[target.raw()])
+        .await
+        .pop()
+        .unwrap();
+    closer.current_position.x = 4.0;
+    maps.update_db_creature_snapshot(0, closer).await;
     session
         .active_character
         .as_mut()
         .unwrap()
         .position
         .orientation = std::f32::consts::PI;
+    maps.sync_player_gameplay_state(0, 7, &session).await;
     assert_eq!(
-        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        starter_spell_melee_cast_failure(shared_world, &mut session, &starter_spell, &targets)
+            .await,
         Some(SPELL_FAILED_UNIT_NOT_INFRONT)
     );
 
@@ -3202,8 +3402,10 @@ fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         .unwrap()
         .position
         .orientation = 0.0;
+    maps.sync_player_gameplay_state(0, 7, &session).await;
     assert_eq!(
-        starter_spell_melee_cast_failure(&session, &starter_spell, &targets),
+        starter_spell_melee_cast_failure(shared_world, &mut session, &starter_spell, &targets)
+            .await,
         None
     );
 }
@@ -3418,7 +3620,9 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let now = Instant::now();
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
     let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };
@@ -3437,10 +3641,12 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
         }),
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(
-        attacker.raw(),
-        DbCreatureRuntime::new(test_creature_spawn(299)),
-    );
+    let attacker_runtime = DbCreatureRuntime::new(test_creature_spawn(299));
+    maps.share_db_creature_snapshots(0, vec![attacker_runtime.clone()])
+        .await;
+    session
+        .db_creatures
+        .insert(attacker.raw(), attacker_runtime);
 
     assert!(begin_shared_db_creature_combat(shared_world, &mut session, attacker, now).await);
 
@@ -3491,12 +3697,122 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
 }
 
 #[tokio::test]
+async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_session_cache() {
+    let mut attacker_spawn = test_creature_spawn(299);
+    attacker_spawn.guid = 333;
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_death_state: PlayerDeathState::Alive,
+        ..WorldSessionState::default()
+    };
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(attacker_spawn)])
+        .await;
+
+    assert!(
+        begin_shared_db_creature_combat(shared_world, &mut session, attacker, Instant::now()).await,
+        "shared combat should start from MapRuntime even when the session viewer cache is empty"
+    );
+    assert!(session.db_creatures.contains_key(&attacker.raw()));
+    assert!(session
+        .active_creature_combats
+        .contains_key(&attacker.raw()));
+}
+
+#[tokio::test]
+async fn player_melee_validation_refreshes_stale_session_cache_from_mapruntime() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 334;
+    spawn.position_x = 4.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn.clone())])
+        .await;
+
+    let mut stale_spawn = spawn;
+    stale_spawn.position_x = 30.0;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        db_creatures: HashMap::from([(target.raw(), DbCreatureRuntime::new(stale_spawn))]),
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        db_creature_player_melee_check_from_map(shared_world, &mut session, target).await,
+        PlayerMeleeCheck::Clear
+    );
+    assert_eq!(
+        session
+            .db_creatures
+            .get(&target.raw())
+            .unwrap()
+            .current_position
+            .x,
+        4.0,
+        "the session cache should be refreshed from the authoritative map snapshot"
+    );
+
+    session.db_creatures.clear();
+    assert_eq!(
+        db_creature_player_melee_check_from_map(shared_world, &mut session, target).await,
+        PlayerMeleeCheck::Clear,
+        "a visible map-owned creature should still validate when absent from the session cache"
+    );
+}
+
+#[tokio::test]
 async fn player_hit_announces_db_creature_retaliation_start() {
     let attacker_spawn = test_creature_spawn(299);
     let attacker = creature_spawn_guid(&attacker_spawn);
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
     let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };
@@ -3517,9 +3833,12 @@ async fn player_hit_announces_db_creature_retaliation_start() {
         player_death_state: PlayerDeathState::Alive,
         ..WorldSessionState::default()
     };
+    let attacker_runtime = DbCreatureRuntime::new(attacker_spawn);
+    maps.share_db_creature_snapshots(0, vec![attacker_runtime.clone()])
+        .await;
     session
         .db_creatures
-        .insert(attacker.raw(), DbCreatureRuntime::new(attacker_spawn));
+        .insert(attacker.raw(), attacker_runtime);
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
     let mut sink = WorldPacketSink::new(outbound_tx);
@@ -3829,12 +4148,17 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         account_id: 1,
         session_id: observer_session,
         selected_target: None,
+        active_combat_target: None,
+        active_combat_next_swing_at: None,
         position: center,
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
         cell: cell_coord_for_position(center),
         visible_objects: HashSet::new(),
+        last_creature_visibility_position: None,
+        last_gameobject_visibility_position: None,
+        last_player_corpse_visibility_position: None,
         visual: PlayerVisualState {
             gender: 0,
             player_bytes: 0,
@@ -3855,6 +4179,10 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         power2: 0,
         player_bytes: 0,
         player_bytes2: 0,
+        active_spells: HashSet::new(),
+        inventory: Vec::new(),
+        quest_statuses: HashMap::new(),
+        combat_stats: test_player_combat_stats(),
     })
     .await
     .unwrap();
@@ -3879,6 +4207,88 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         .await;
     assert_eq!(snapshots.len(), 1);
     assert!(snapshots[0].consumed_until.is_some());
+}
+
+#[test]
+fn map_runtime_db_gameobject_loot_item_is_shared_between_characters() {
+    let mut map = MapRuntime::new(0, 0);
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_CHEST);
+    let guid = gameobject_spawn_guid(&spawn).raw();
+    map.insert_loaded_gameobject_grid(
+        grid_coord_for_position(gameobject_spawn_position(&spawn)),
+        vec![DbGameObjectRuntime::new(spawn)],
+    );
+    let first_loot = DbCreatureLootRuntime {
+        item: 117,
+        count: 1,
+        display_id: 117,
+    };
+    let second_loot = DbCreatureLootRuntime {
+        item: 118,
+        count: 1,
+        display_id: 118,
+    };
+
+    let first_open = map.open_db_gameobject_loot(guid, 1, Some(first_loot));
+    let second_open = map.open_db_gameobject_loot(guid, 2, Some(second_loot));
+
+    assert_eq!(
+        first_open
+            .as_ref()
+            .and_then(|(_, loot)| loot.as_ref())
+            .map(|loot| loot.item),
+        Some(117)
+    );
+    assert_eq!(
+        second_open
+            .as_ref()
+            .and_then(|(_, loot)| loot.as_ref())
+            .map(|loot| loot.item),
+        Some(117)
+    );
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1)
+            .map(|(_, loot)| loot.item),
+        Some(117)
+    );
+    assert!(map.take_db_gameobject_loot_item(2).is_none());
+
+    map.release_db_gameobject_loot(guid, 1).unwrap();
+    assert_eq!(map.db_gameobject_loot_guid_for_character(1), None);
+    assert_eq!(map.db_gameobject_loot_guid_for_character(2), Some(guid));
+}
+
+#[test]
+fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
+    let mut map = MapRuntime::new(0, 0);
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_CHEST);
+    let guid = gameobject_spawn_guid(&spawn).raw();
+    map.insert_loaded_gameobject_grid(
+        grid_coord_for_position(gameobject_spawn_position(&spawn)),
+        vec![DbGameObjectRuntime::new(spawn)],
+    );
+    let loot = DbCreatureLootRuntime {
+        item: 117,
+        count: 1,
+        display_id: 117,
+    };
+    map.open_db_gameobject_loot(guid, 1, Some(loot.clone()))
+        .expect("gameobject loot should open");
+    let taken = map
+        .take_db_gameobject_loot_item(1)
+        .expect("first shared claim should take the item");
+    assert_eq!(taken.1.item, 117);
+    assert!(map.take_db_gameobject_loot_item(1).is_none());
+
+    let restored = map
+        .restore_db_gameobject_loot_item(guid, loot)
+        .expect("failed autostore should restore shared item");
+    assert_eq!(restored.item, 117);
+
+    map.open_db_gameobject_loot(guid, 2, None)
+        .expect("second character should open restored shared loot");
+    let reclaimed = map.take_db_gameobject_loot_item(2);
+    assert_eq!(reclaimed.map(|(_, loot)| loot.item), Some(117));
 }
 
 #[test]
@@ -4238,10 +4648,10 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
     creature.begin_corpse(Instant::now(), 1_000);
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
-    assert!(map.open_db_creature_loot(guid, None).is_some());
+    assert!(map.open_db_creature_loot(guid, 1, None).is_some());
 
-    let first = map.take_db_creature_loot_money(guid);
-    let second = map.take_db_creature_loot_money(guid);
+    let first = map.take_db_creature_loot_money(1);
+    let second = map.take_db_creature_loot_money(1);
 
     assert_eq!(first.map(|(money, _)| money), Some(7));
     assert!(second.is_none());
@@ -4266,18 +4676,54 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     assert!(map
-        .open_db_creature_loot(guid, Some(loot.clone()))
+        .open_db_creature_loot(guid, 1, Some(loot.clone()))
         .is_some());
 
-    let first = map.take_db_creature_loot_item(guid);
-    let second = map.take_db_creature_loot_item(guid);
-    assert_eq!(first.as_ref().map(|(loot, _)| loot.item), Some(117));
+    let first = map.take_db_creature_loot_item(1);
+    let second = map.take_db_creature_loot_item(1);
+    assert_eq!(first.as_ref().map(|(_, loot, _)| loot.item), Some(117));
     assert!(second.is_none());
 
     let restored = map.restore_db_creature_loot_item(guid, loot).unwrap();
     assert_eq!(restored.loot_item.as_ref().map(|loot| loot.item), Some(117));
-    let reclaimed = map.take_db_creature_loot_item(guid);
-    assert_eq!(reclaimed.map(|(loot, _)| loot.item), Some(117));
+    let reclaimed = map.take_db_creature_loot_item(1);
+    assert_eq!(reclaimed.map(|(_, loot, _)| loot.item), Some(117));
+}
+
+#[test]
+fn map_runtime_db_creature_loot_item_is_generated_once() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    let first_loot = DbCreatureLootRuntime {
+        item: 117,
+        count: 1,
+        display_id: 117,
+    };
+    let second_loot = DbCreatureLootRuntime {
+        item: 159,
+        count: 1,
+        display_id: 159,
+    };
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+
+    assert_eq!(map.db_creature_needs_loot_item(guid), Some(true));
+    let opened = map
+        .open_db_creature_loot(guid, 1, Some(first_loot.clone()))
+        .unwrap();
+    assert_eq!(opened.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    assert_eq!(map.db_creature_needs_loot_item(guid), Some(false));
+
+    let reopened = map
+        .open_db_creature_loot(guid, 1, Some(second_loot))
+        .unwrap();
+    assert_eq!(reopened.loot_item.as_ref().map(|loot| loot.item), Some(117));
 }
 
 #[test]
@@ -4476,6 +4922,38 @@ fn map_runtime_db_creature_combats_clear_by_victim() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn active_db_creature_combat_snapshot_uses_mapruntime_without_session_cache() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 335;
+    spawn.position_x = 1.0;
+    spawn.position_y = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let (combat, _) = maps
+        .begin_db_creature_combat(0, attacker, victim, now)
+        .await
+        .expect("map-owned live creature should begin combat");
+
+    let active = maps
+        .active_db_creature_combat_snapshot(0, attacker, victim)
+        .await
+        .expect("active creature attack should validate from MapRuntime");
+
+    assert_eq!(active.combat.attacker, combat.attacker);
+    assert_eq!(active.combat.victim, victim);
+    assert_eq!(active.creature.guid(), attacker);
 }
 
 #[test]
@@ -4814,10 +5292,10 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
         .is_none());
 
     assert!(map
-        .open_db_creature_loot(creature_guid.raw(), None)
+        .open_db_creature_loot(creature_guid.raw(), 1, None)
         .is_some());
-    let first_money = map.take_db_creature_loot_money(creature_guid.raw());
-    let second_money = map.take_db_creature_loot_money(creature_guid.raw());
+    let first_money = map.take_db_creature_loot_money(1);
+    let second_money = map.take_db_creature_loot_money(1);
     assert_eq!(first_money.map(|(money, _)| money), Some(7));
     assert!(second_money.is_none());
     let release = map
@@ -5186,12 +5664,17 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         account_id: guid,
         session_id,
         selected_target: None,
+        active_combat_target: None,
+        active_combat_next_swing_at: None,
         position,
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
         cell: cell_coord_for_position(position),
         visible_objects: HashSet::new(),
+        last_creature_visibility_position: None,
+        last_gameobject_visibility_position: None,
+        last_player_corpse_visibility_position: None,
         visual: PlayerVisualState {
             gender: 0,
             player_bytes: 0,
@@ -5212,7 +5695,21 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         power2: 0,
         player_bytes: 0,
         player_bytes2: 0,
+        active_spells: HashSet::new(),
+        inventory: Vec::new(),
+        quest_statuses: HashMap::new(),
+        combat_stats: test_player_combat_stats(),
     }
+}
+
+fn test_player_combat_stats() -> PlayerCombatStats {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    player_combat_stats_for_values(1, 1, &world_stats, &[])
 }
 
 fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
@@ -5543,6 +6040,136 @@ fn map_runtime_player_health_update_refreshes_shared_state_and_observers() {
 }
 
 #[test]
+fn map_runtime_player_movement_preserves_db_creature_visibility_set() {
+    let mut map = MapRuntime::new(0, 0);
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), start))
+        .unwrap();
+    let creature_guid = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    map.update_player_db_creature_visibility(1, &[creature_guid], &[]);
+
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1,
+        position: WorldPosition::new(0, -8949.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+    };
+    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &movement)
+        .unwrap();
+
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&creature_guid));
+}
+
+#[test]
+fn map_runtime_stages_db_creature_visibility_from_player_visible_set() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 77;
+    spawn.position_x = player_position.x + 5.0;
+    spawn.position_y = player_position.y;
+    let runtime = DbCreatureRuntime::new(spawn);
+    let creature_guid = runtime.guid();
+    map.share_db_creature_snapshots(vec![runtime.clone()]);
+
+    let first = map.stage_player_db_creature_visibility(1, player_position, vec![runtime.clone()]);
+
+    assert_eq!(first.create_guids, vec![creature_guid]);
+    assert!(first.destroy_guids.is_empty());
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&creature_guid));
+
+    let far_position = WorldPosition::new(
+        0,
+        player_position.x + CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS + 10.0,
+        player_position.y,
+        player_position.z,
+        player_position.orientation,
+    );
+    let second = map.stage_player_db_creature_visibility(1, far_position, Vec::new());
+
+    assert!(second.create_guids.is_empty());
+    assert_eq!(second.destroy_guids, vec![creature_guid]);
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&creature_guid));
+}
+
+#[test]
+fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.max_power1 = 20;
+    map.add_player(player).unwrap();
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 15,
+        player_mana: 7,
+        player_rage: 11,
+        ..WorldSessionState::default()
+    };
+    session.active_spells.insert(WARRIOR_HEROIC_STRIKE_RANK_1);
+    session.inventory.push(CharacterInventoryItem {
+        bag: 0,
+        slot: 23,
+        item: 100,
+        item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+        count: 1,
+        durability: 0,
+    });
+    session.quest_statuses.insert(
+        33,
+        CharacterQuestStatus {
+            quest: 33,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 1,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    map.sync_player_gameplay_state(1, &session);
+
+    let snapshot = map.player_runtime_snapshot(1).unwrap();
+    assert_eq!(snapshot.health, 15);
+    assert_eq!(snapshot.power1, 7);
+    assert_eq!(snapshot.power2, 11);
+    assert!(snapshot
+        .active_spells
+        .contains(&WARRIOR_HEROIC_STRIKE_RANK_1));
+    assert_eq!(snapshot.inventory.len(), 1);
+    assert_eq!(snapshot.quest_statuses.get(&33).unwrap().mobcount1, 1);
+}
+
+#[test]
 fn player_selection_update_body_sets_unit_target_guid() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let selected = ObjectGuid::new(HighGuid::Unit, 0, 99);
@@ -5599,7 +6226,9 @@ fn map_runtime_player_selection_update_refreshes_shared_state_and_observers() {
 async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
     let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };
@@ -5694,7 +6323,9 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
 async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
     let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };
@@ -6210,7 +6841,9 @@ async fn db_creature_return_home_motion_advances_without_active_combat() {
     runtime.current_position.x = 7.0;
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
     let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };

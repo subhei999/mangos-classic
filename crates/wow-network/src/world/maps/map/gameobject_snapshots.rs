@@ -89,6 +89,75 @@ impl MapRuntime {
         self.gameobjects.get(&gameobject_guid.raw()).cloned()
     }
 
+    fn stage_player_db_gameobject_visibility(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+        nearby_gameobjects: Vec<DbGameObjectRuntime>,
+        now: Instant,
+    ) -> MapDbGameObjectVisibilityStage {
+        let Some(player) = self.players.get(&character_guid) else {
+            return MapDbGameObjectVisibilityStage {
+                nearby_gameobjects,
+                ..Default::default()
+            };
+        };
+        let previously_visible = player
+            .visible_objects
+            .iter()
+            .filter(|guid| guid.is_game_object())
+            .map(|guid| guid.raw())
+            .collect::<HashSet<_>>();
+        let nearby_by_guid = nearby_gameobjects
+            .iter()
+            .map(|gameobject| (gameobject.guid().raw(), gameobject))
+            .collect::<HashMap<_, _>>();
+
+        let mut destroy_guids = previously_visible
+            .iter()
+            .copied()
+            .filter(|guid| {
+                if let Some(gameobject) = nearby_by_guid.get(guid) {
+                    return gameobject.is_consumed(now);
+                }
+                !self.gameobjects.get(guid).is_some_and(|gameobject| {
+                    is_position_inside_radius(
+                        gameobject.position(),
+                        position,
+                        CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS,
+                    )
+                })
+            })
+            .map(ObjectGuid::from_raw)
+            .collect::<Vec<_>>();
+        destroy_guids.sort_by_key(|guid| guid.raw());
+
+        let mut create_guids = nearby_gameobjects
+            .iter()
+            .filter(|gameobject| {
+                !gameobject.is_consumed(now)
+                    && !previously_visible.contains(&gameobject.guid().raw())
+            })
+            .map(|gameobject| gameobject.guid())
+            .collect::<Vec<_>>();
+        create_guids.sort_by_key(|guid| guid.raw());
+
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            for guid in &destroy_guids {
+                player.visible_objects.remove(guid);
+            }
+            for guid in &create_guids {
+                player.visible_objects.insert(*guid);
+            }
+        }
+
+        MapDbGameObjectVisibilityStage {
+            nearby_gameobjects,
+            create_guids,
+            destroy_guids,
+        }
+    }
+
     fn consume_db_gameobject(
         &mut self,
         gameobject_guid: ObjectGuid,
@@ -98,6 +167,7 @@ impl MapRuntime {
         let gameobject = self.gameobjects.get_mut(&gameobject_guid.raw())?;
         gameobject.mark_consumed(now);
         let snapshot = gameobject.clone();
+        self.clear_db_gameobject_loot(gameobject_guid.raw());
         let destroy_packet = OutboundWorldPacket {
             opcode: SMSG_DESTROY_OBJECT,
             body: gameobject_guid.raw().to_le_bytes().to_vec(),

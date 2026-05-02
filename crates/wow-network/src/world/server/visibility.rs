@@ -11,13 +11,15 @@ async fn stream_newly_visible_db_creatures(
     let Some(character) = &session.active_character else {
         return Ok(());
     };
-    if !should_rescan_db_creature_visibility(session, character.position) {
-        return Ok(());
-    }
     let guid = character.guid;
     let name = character.name.clone();
     let position = character.position;
-    session.last_creature_visibility_position = Some(position);
+    if !maps
+        .should_rescan_player_creature_visibility(position.map_id, guid, position)
+        .await
+    {
+        return Ok(());
+    }
 
     maps.ensure_db_creature_grids_loaded(
         character_db_pool,
@@ -35,15 +37,16 @@ async fn stream_newly_visible_db_creatures(
             CREATURE_SPAWN_LIMIT,
         )
         .await;
+    let visibility_stage = maps
+        .stage_player_db_creature_visibility(
+            position.map_id,
+            guid,
+            position,
+            nearby_creature_runtimes,
+        )
+        .await;
     let visibility_updates =
-        stage_db_creature_visibility_updates(session, position, nearby_creature_runtimes)?;
-    maps.update_player_db_creature_visibility(
-        position.map_id,
-        guid,
-        &visibility_updates.create_guids,
-        &visibility_updates.destroy_guids,
-    )
-    .await;
+        mirror_db_creature_visibility_stage(session, visibility_stage)?;
     if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
         return Ok(());
     }
@@ -80,82 +83,56 @@ async fn stream_newly_visible_db_creatures(
 async fn stream_nearby_player_corpses(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
-    player_corpses: &PlayerCorpses,
+    maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(character) = session.active_character.as_ref() else {
         return Ok(());
     };
+    let character_guid = character.guid;
     let position = character.position;
-    if !should_rescan_player_corpse_visibility(session, position) {
+    if !maps
+        .should_rescan_player_corpse_visibility(position.map_id, character_guid, position)
+        .await
+    {
         return Ok(());
     }
-    session.last_player_corpse_visibility_position = Some(position);
-    let nearby_db_corpses = wow_db::get_nearby_player_corpses(
+    maps.ensure_player_corpse_grids_loaded(
         character_db_pool,
         position.map_id,
-        position.x,
-        position.y,
+        position,
         CREATURE_SPAWN_RADIUS_YARDS,
-        PLAYER_CORPSE_VISIBILITY_LIMIT,
     )
-    .await?
-    .into_iter()
-    .map(player_corpse_runtime_from_query)
-    .collect::<Vec<_>>();
-    let nearby_corpses = merge_player_corpse_visibility(
-        nearby_db_corpses,
-        nearby_runtime_player_corpses(
-            player_corpses,
+    .await?;
+    let nearby_corpses = maps
+        .nearby_player_corpse_snapshots(
+            position.map_id,
             position,
             CREATURE_SPAWN_RADIUS_YARDS,
             PLAYER_CORPSE_VISIBILITY_LIMIT,
         )
-        .await,
-    );
-    let nearby_guids = nearby_corpses
+        .await;
+    let stage = maps
+        .stage_player_corpse_visibility(position.map_id, character_guid, position, nearby_corpses)
+        .await;
+    let create_guids = stage
+        .create_guids
         .iter()
-        .map(|corpse| corpse.guid.raw())
+        .map(|guid| guid.raw())
         .collect::<HashSet<_>>();
-    let mut destroy_guids = Vec::new();
-    for (guid, corpse) in &session.visible_player_corpses {
-        if !nearby_guids.contains(guid)
-            && !is_position_inside_radius(
-                corpse.position,
-                position,
-                CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS,
-            )
-        {
-            destroy_guids.push(*guid);
-        }
-    }
-    for guid in &destroy_guids {
-        session.visible_player_corpses.remove(guid);
-    }
-    let new_corpses = nearby_corpses
-        .into_iter()
-        .filter(|corpse| {
-            !session
-                .visible_player_corpses
-                .contains_key(&corpse.guid.raw())
-        })
-        .collect::<Vec<_>>();
-    let create_blocks = new_corpses
+    let create_blocks = stage
+        .nearby_corpses
         .iter()
+        .filter(|corpse| create_guids.contains(&corpse.guid.raw()))
         .map(build_player_corpse_create_block)
         .collect::<anyhow::Result<Vec<_>>>()?;
-    for corpse in new_corpses {
-        session
-            .visible_player_corpses
-            .insert(corpse.guid.raw(), corpse);
-    }
 
-    for guid in destroy_guids {
+    for guid in stage.destroy_guids {
         send_packet(
             stream,
             SMSG_DESTROY_OBJECT,
-            &build_destroy_guid_body(ObjectGuid::from_raw(guid)),
+            &build_destroy_guid_body(guid),
             Some(&mut *header_crypto),
         )
         .await?;
@@ -172,52 +149,8 @@ async fn stream_nearby_player_corpses(
     Ok(())
 }
 
-async fn nearby_runtime_player_corpses(
-    player_corpses: &PlayerCorpses,
-    position: WorldPosition,
-    radius: f32,
-    limit: u32,
-) -> Vec<PlayerCorpseRuntime> {
-    let radius_squared = radius * radius;
-    let mut corpses = player_corpses
-        .lock()
-        .await
-        .values()
-        .filter(|corpse| {
-            corpse.position.map_id == position.map_id
-                && distance_squared_2d(corpse.position.x, corpse.position.y, position.x, position.y)
-                    <= radius_squared
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    corpses.sort_by(|left, right| {
-        distance_squared_2d(left.position.x, left.position.y, position.x, position.y)
-            .partial_cmp(&distance_squared_2d(
-                right.position.x,
-                right.position.y,
-                position.x,
-                position.y,
-            ))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    corpses.truncate(limit as usize);
-    corpses
-}
-
-fn merge_player_corpse_visibility(
-    db_corpses: Vec<PlayerCorpseRuntime>,
-    runtime_corpses: Vec<PlayerCorpseRuntime>,
-) -> Vec<PlayerCorpseRuntime> {
-    let mut merged = db_corpses
-        .into_iter()
-        .map(|corpse| (corpse.guid.raw(), corpse))
-        .collect::<HashMap<_, _>>();
-    for corpse in runtime_corpses {
-        merged.insert(corpse.guid.raw(), corpse);
-    }
-    merged.into_values().collect()
-}
-
+#[cfg(test)]
+#[allow(dead_code)]
 fn should_rescan_player_corpse_visibility(
     session: &WorldSessionState,
     position: WorldPosition,
@@ -232,6 +165,7 @@ fn should_rescan_player_corpse_visibility(
         >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
 }
 
+#[cfg(test)]
 fn should_rescan_db_creature_visibility(
     session: &WorldSessionState,
     position: WorldPosition,
@@ -251,7 +185,6 @@ fn should_rescan_db_creature_visibility(
 #[derive(Debug, Default)]
 struct DbCreatureVisibilityUpdates {
     create_bodies: Vec<Vec<u8>>,
-    create_guids: Vec<ObjectGuid>,
     destroy_guids: Vec<ObjectGuid>,
     create_count: usize,
     tracked_creature_count: usize,
@@ -260,6 +193,7 @@ struct DbCreatureVisibilityUpdates {
     dead_count: usize,
 }
 
+#[cfg(test)]
 fn stage_db_creature_visibility_updates(
     session: &mut WorldSessionState,
     position: WorldPosition,
@@ -374,7 +308,6 @@ fn stage_db_creature_visibility_updates(
             .chunks(CREATURE_UPDATE_CHUNK_SIZE)
             .map(build_update_object_body)
             .collect(),
-        create_guids,
         destroy_guids: destroy_guids
             .into_iter()
             .map(ObjectGuid::from_raw)
@@ -430,4 +363,49 @@ fn distance_squared_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> 
 
 fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {
     guid.raw().to_le_bytes().to_vec()
+}
+
+fn mirror_db_creature_visibility_stage(
+    _session: &mut WorldSessionState,
+    stage: MapDbCreatureVisibilityStage,
+) -> anyhow::Result<DbCreatureVisibilityUpdates> {
+    let create_guids = stage.create_guids.iter().map(|guid| guid.raw()).collect::<HashSet<_>>();
+
+    let mut create_blocks = Vec::new();
+    for runtime in &stage.nearby_creatures {
+        let guid = runtime.guid().raw();
+        if create_guids.contains(&guid) {
+            create_blocks.push(build_db_creature_runtime_create_block(runtime)?);
+        }
+    }
+
+    let create_count = create_blocks.len();
+    let tracked_creature_count = stage.nearby_creatures.len();
+    let alive_count = stage
+        .nearby_creatures
+        .iter()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Alive)
+        .count();
+    let corpse_count = stage
+        .nearby_creatures
+        .iter()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Corpse)
+        .count();
+    let dead_count = stage
+        .nearby_creatures
+        .iter()
+        .filter(|creature| creature.life_state == DbCreatureLifeState::Dead)
+        .count();
+    Ok(DbCreatureVisibilityUpdates {
+        create_bodies: create_blocks
+            .chunks(CREATURE_UPDATE_CHUNK_SIZE)
+            .map(build_update_object_body)
+            .collect(),
+        destroy_guids: stage.destroy_guids,
+        create_count,
+        tracked_creature_count,
+        alive_count,
+        corpse_count,
+        dead_count,
+    })
 }

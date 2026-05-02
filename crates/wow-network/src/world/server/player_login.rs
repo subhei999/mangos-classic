@@ -113,10 +113,7 @@ async fn handle_player_login(
         None
     };
     if let Some(corpse) = &session.player_corpse {
-        deps.player_corpses
-            .lock()
-            .await
-            .insert(character.guid, corpse.clone());
+        deps.maps.upsert_player_corpse(corpse.position.map_id, corpse.clone()).await;
     }
     session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
     session.combat_dummy_lootable = false;
@@ -168,45 +165,30 @@ async fn handle_player_login(
         .await;
     let visible_nearby_gameobjects =
         visible_db_gameobject_runtimes(&nearby_gameobject_runtimes, Instant::now());
-    let nearby_db_player_corpses = wow_db::get_nearby_player_corpses(
-        deps.character_db_pool,
-        character.map,
-        character.position_x,
-        character.position_y,
-        CREATURE_SPAWN_RADIUS_YARDS,
-        PLAYER_CORPSE_VISIBILITY_LIMIT,
-    )
-    .await?
-    .into_iter()
-    .map(player_corpse_runtime_from_query)
-    .collect::<Vec<_>>();
-    let nearby_player_corpses = merge_player_corpse_visibility(
-        nearby_db_player_corpses,
-        nearby_runtime_player_corpses(
-            deps.player_corpses,
+    deps.maps
+        .ensure_player_corpse_grids_loaded(
+            deps.character_db_pool,
+            character.map,
+            login_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+        )
+        .await?;
+    let nearby_player_corpses = deps
+        .maps
+        .nearby_player_corpse_snapshots(
+            character.map,
             login_position,
             CREATURE_SPAWN_RADIUS_YARDS,
             PLAYER_CORPSE_VISIBILITY_LIMIT,
         )
-        .await,
-    );
-    session.visible_player_corpses = nearby_player_corpses
-        .iter()
-        .cloned()
-        .map(|corpse| (corpse.guid.raw(), corpse))
-        .collect();
-    session.db_creatures = nearby_creature_runtimes
-        .into_iter()
-        .map(|creature| (creature.guid().raw(), creature))
-        .collect();
-    session.db_gameobjects = nearby_gameobject_runtimes
-        .iter()
-        .cloned()
-        .map(|gameobject| (gameobject.guid().raw(), gameobject))
-        .collect();
-    session.last_creature_visibility_position = Some(login_position);
-    session.last_gameobject_visibility_position = session.last_creature_visibility_position;
-    session.last_player_corpse_visibility_position = session.last_creature_visibility_position;
+        .await;
+    #[cfg(test)]
+    {
+        session.db_creatures = nearby_creature_runtimes
+            .iter()
+            .map(|creature| (creature.guid().raw(), creature.clone()))
+            .collect();
+    }
     session.player_health = character.health;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
@@ -231,6 +213,13 @@ async fn handle_player_login(
     if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
         session.player_health = world_stats.max_health().max(1);
     }
+    let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+    let combat_stats = player_combat_stats_for_values(
+        character.class,
+        character.level,
+        &world_stats,
+        &equipped_templates,
+    );
     let mut bootstrap_character = character.clone();
     bootstrap_character.health = session.player_health;
     bootstrap_character.power1 = session.player_mana;
@@ -267,10 +256,10 @@ async fn handle_player_login(
         stream,
         EnterWorldBootstrap {
             character_db_pool: deps.character_db_pool,
-            world_db_pool: deps.world_db_pool,
             character: &bootstrap_character,
             inventory: &session.inventory,
             world_stats: &world_stats,
+            equipped_templates: &equipped_templates,
             spells: &spells,
             quest_statuses: &session.quest_statuses,
             tutorial_flags: &tutorial_flags,
@@ -285,17 +274,35 @@ async fn handle_player_login(
     deps.sessions
         .set_character_guid(deps.session_id, Some(character.guid))
         .await;
+    let mut visible_objects = HashSet::new();
+    visible_objects.extend(
+        visible_nearby_creatures
+            .iter()
+            .map(DbCreatureRuntime::guid),
+    );
+    visible_objects.extend(
+        visible_nearby_gameobjects
+            .iter()
+            .map(DbGameObjectRuntime::guid),
+    );
+    visible_objects.extend(nearby_player_corpses.iter().map(|corpse| corpse.guid));
+
     let player_runtime = PlayerRuntime {
         guid: character.guid,
         account_id,
         session_id: deps.session_id,
         selected_target: session.selected_target,
+        active_combat_target: None,
+        active_combat_next_swing_at: None,
         position: login_position,
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
         cell: cell_coord_for_position(login_position),
-        visible_objects: HashSet::new(),
+        visible_objects,
+        last_creature_visibility_position: Some(login_position),
+        last_gameobject_visibility_position: Some(login_position),
+        last_player_corpse_visibility_position: Some(login_position),
         visual: session
             .player_visual
             .clone()
@@ -316,6 +323,10 @@ async fn handle_player_login(
         power2: session.player_rage,
         player_bytes: character.player_bytes,
         player_bytes2: character.player_bytes2,
+        active_spells: session.active_spells.clone(),
+        inventory: session.inventory.clone(),
+        quest_statuses: session.quest_statuses.clone(),
+        combat_stats,
     };
     let packets = deps.maps.add_player(player_runtime).await?;
     deps.sessions.dispatch(packets).await;
@@ -327,7 +338,6 @@ struct PlayerLoginDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     online_characters: &'a OnlineCharacters,
-    player_corpses: &'a PlayerCorpses,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
     session_id: SessionId,

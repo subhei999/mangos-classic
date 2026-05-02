@@ -12,72 +12,45 @@ belongs in `docs/playable_execution_roadmap.md`; detailed G12 design belongs in
 ## Current Branch And Worktree
 
 - Branch: `codex/rusty-mangos`.
-- Latest pushed commit: `b994ed02e` (`[g12] Track MapRuntime grid load state`),
-  pushed to `origin/codex/rusty-mangos`.
-- Latest local unpushed commit: current `HEAD` after this task
-  (`[c2] Fix gameobject login decode`).
-- Current uncommitted investigation edit: high-volume authenticated packet and
-  DB-creature visibility movement logs were demoted from `info` to `debug`
-  after Defias smoke showed the worldserver spending measurable CPU in a
-  packet/status/visibility churn state.
-- Current uncommitted combat fix: DB creatures now immediately announce
-  retaliation (`SMSG_ATTACKSTART`, combat flags, and chase if needed) when a
-  player hit starts shared creature combat, including the 1 HP player case.
-- Current uncommitted stall fix: hostile sight-aggro now checks cheap
-  detection distance before VMAP/MMAP navigation, avoiding native LOS/path
-  calls for every visible out-of-range Defias during camp entry. Spell-cancel
-  fixture spam is also debug-only.
-- Current uncommitted map-runtime aggro performance fix: production sight
-  aggro now asks shared `MapRuntime` for cell-bucketed nearby hostile
-  candidates, applies CMaNGOS-shaped detection range before native navigation,
-  and keeps VMAP/MMAP checks outside the map mutex. This avoids returning to a
-  session-owned full visible-creature scan.
-- Current uncommitted creature-ownership fix: idle random/waypoint motion
-  candidate selection now comes from shared `MapRuntime` creature state in
-  `Active` or `UnloadBlocked` grids instead of `session.db_creatures`. Session
-  caches now only remember moved/started creatures when they were already
-  tracked locally or are still inside the viewer's visibility radius. This is
-  the first deliberate CMaNGOS-close step away from session-owned creature
-  runtime ticking and directly targets the Northshire-to-Defias patrol freeze.
-- Current uncommitted patrol-start fix: map-owned idle/waypoint start candidates
-  now use nearby cell buckets plus an exact player visibility-radius check
-  instead of admitting every ready creature in a coarse player-interest grid.
-  This prevents far same-grid zero-wait movers from starving visible patrols
-  under the per-tick start budget.
-- Current uncommitted map-owned patrol tick fix: worldserver startup now spawns
-  a background map runtime update loop. Idle/waypoint patrol advancement/start
-  runs from that map loop through `MapRuntime`, not from per-session ticks. The
-  shared world/map tick interval is now `100ms`, matching CMaNGOS'
-  `MapUpdateInterval` default.
-  `MapRuntime` also tracks DB-creature visibility in player `visible_objects`
-  so the map-owned tick can send create-before-move when needed and plain
-  movement when the player already knows the creature. Session ticks only sync
-  their local viewer cache from map-owned creature snapshots.
-- Current uncommitted map-runtime gameobject ownership fix: DB gameobjects now
-  load into shared `MapRuntime` grid/cell buckets, login and movement stream
-  snapshots from the map, and `CMSG_GAMEOBJ_USE` prefers the shared snapshot
-  before session cache. Consumable quest objects such as Milly's Harvest now
-  update a shared consumed timer and broadcast `SMSG_DESTROY_OBJECT` to nearby
-  observers. Follow-up visibility fix: DB gameobject create blocks now use the
-  positioned `CREATE_OBJECT2` / `UPDATEFLAG_HAS_POSITION` shape so the client
-  places Milly's Harvest objects in the field instead of receiving only update
-  fields. Follow-up interaction fix: quest chest gameobjects now send
-  CMaNGOS-style activation/sparkle dynamic flags and `gameobject_loot_template`
-  quest loot can be opened/autostored through the normal loot window path.
-  Follow-up Opening spell fix: gameobject clicks now accept the client `Opening`
-  spell (`6478`), send `SMSG_SPELL_START` with a cast timer, then send
-  `SMSG_SPELL_GO` and the gameobject loot response. Follow-up cast-bar fix:
-  outgoing Opening spell targets now force `TARGET_FLAG_GAMEOBJECT` alongside
-  `TARGET_FLAG_LOCKED`, matching the resolved CMaNGOS gameobject target mask.
-  Follow-up CMaNGOS lifecycle fix: removed the hidden failure cleanup guess and
-  changed Opening ordering to CMaNGOS' real sequence: `SMSG_SPELL_START` at
-  cast start, then after the timer `SMSG_CAST_RESULT` OK, `SMSG_SPELL_GO`, and
-  finally the loot response.
+- Latest pushed/local `HEAD`: `4f5ceaf23` (`[g12] Move patrol tick to map
+  loop`).
+- Current uncommitted ownership/performance migration: production gameplay
+  ownership is now moved to shared `MapRuntime`/`PlayerRuntime`/`ObjectMgr`
+  surfaces rather than `WorldSessionState`:
+  - DB-creature runtime, combat claims/timers, threat, damage, evade/chase,
+    facing, death, loot, and lifecycle reads/writes are map-owned;
+  - player auto-attack target/timer and mutable player gameplay snapshots are
+    map-owned `PlayerRuntime` state;
+  - patrol/lifecycle motion already runs from the 100ms map tick, and this
+    pass preserves DB-creature `visible_objects` during player movement so
+    map-owned patrol moves can send the correct create-before-move or movement
+    update;
+  - DB gameobject loot claim/open/autostore/release state is now owned by
+    `MapRuntime`, and the old session gameobject-loot fields were removed;
+  - player mutable gameplay state is mirrored into `PlayerRuntime` after
+    opcodes/ticks and read back from the map snapshot for logout/movement
+    persistence;
+  - quest templates, questgiver relations, quest-chain checks, and loot
+    templates are cached in shared `ObjectMgr` instead of queried per session;
+  - player corpse visibility loads DB corpse grids into `MapRuntime` once and
+    movement/login stream from map snapshots;
+  - DB creature corpse loot generation is guarded by map-owned corpse state so
+    the first opener generates from real loot data and later opens reuse the
+    map-owned loot;
+  - player combat stats/equipment-derived damage are cached in `PlayerRuntime`
+    and refreshed on equipment changes instead of reloading templates during
+    combat swings;
+  - DB-creature visibility create/destroy staging now mutates the map-owned
+    player visible-object set;
+  - the old `WorldSessionState` creature/combat mirrors
+    (`db_creatures`, `active_creature_combats`, `active_combat_target`,
+    `active_combat_next_swing_at`) are `#[cfg(test)]` compatibility shims only.
 - Local branch is intentionally ahead while C2 workstream merges are being
   real-client smoked.
-- Live client stack was restarted after the 100ms map tick change:
-  authserver PID `15860` on `127.0.0.1:13724`, worldserver PID `28740` on
-  `127.0.0.1:18085`, logs `auth-client-13724.log` and
+- Live client stack was rebuilt/restarted after the final session-eradication
+  patch and the login-load-screen fix: authserver PID `38596` on
+  `127.0.0.1:13724`, worldserver PID `20568`
+  on `127.0.0.1:18085`, logs `auth-client-13724.log` and
   `world-client-18085.log`. Auto-restart is disabled for this run.
 - Always re-run `git status --short --branch` before editing; this handoff may
   lag behind the live worktree.
@@ -201,6 +174,26 @@ and log the follow-up.
 - Follow-up login kick fix: gameobject visibility SQL now explicitly casts
   `gameobject_addon.state` / `animprogress` COALESCE expressions so MySQL
   does not decode the fallback as `DECIMAL` during character login.
+- Session-to-map ownership correction completed locally for production code:
+  - combat decisions now query map-owned DB-creature state for liveness,
+    melee range/LOS/facing validation, and active attacker snapshots;
+  - gameobject loot windows and available quest-loot items are shared
+    map-owned state, so two sessions cannot independently own the same chest
+    loot item;
+  - player corpse visibility now loads DB-derived corpse rows into shared
+    `MapRuntime` grid snapshots, so login/movement visibility reads the map
+    cache instead of querying nearby corpses from the character DB on each
+    movement rescan; death/reclaim updates the same map corpse snapshot when a
+    corpse is created or converted to bones;
+  - player health/power/spells/inventory/quest status are copied into
+    `PlayerRuntime` after session mutations, and movement/logout persistence
+    prefers the map snapshot;
+  - `MapRuntime::update_player_position` now preserves non-player
+    `visible_objects`, fixing a real patrol visibility hole where map-owned
+    creature movement could lose the knowledge needed to send movement instead
+    of a fresh create;
+  - production `WorldSessionState` no longer owns creature runtime/combat maps;
+    the remaining same-named fields are test-only shims for legacy unit tests.
 
 ## Recently Landed G8/G9 Context
 
@@ -228,6 +221,12 @@ and log the follow-up.
 
 ## Roadmap Update From This Session
 
+- Completed the six user-requested map/shared ownership performance fixes:
+  quest/template relation reads through shared `ObjectMgr`, player corpse
+  visibility through map-owned corpse grids, DB creature corpse loot generated
+  once from map-owned corpse state, player combat stats cached in
+  `PlayerRuntime`, player auto-attack timing checked through map-owned runtime,
+  and DB-creature visibility diffs staged from map-owned player visibility.
 - Retargeted `docs/playable_execution_roadmap.md` around the user's nine
   Northshire playability gaps.
 - Replaced broad branch buckets with narrower low-overlap branches for quest
@@ -375,6 +374,66 @@ and log the follow-up.
   `cargo test -p wow-network world_tick --lib`, and `.\scripts\test-rust.cmd`
   with `CARGO_TARGET_DIR=target\codex-100ms-map-tick-test` passed after changing
   `WORLD_TICK_MILLIS` from `250` to the CMaNGOS-default `100`.
+- `cargo check -p wow-network --lib` passed after the session-to-map ownership
+  migration.
+- `cargo fmt --check` passed after the session-to-map ownership migration.
+- Focused ownership tests passed:
+  `map_runtime_player_gameplay_sync_owns_session_mutable_state`,
+  `map_runtime_db_gameobject_loot_item_is_shared_between_characters`,
+  `map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore`,
+  `begin_shared_db_creature_combat_uses_mapruntime_liveness_without_session_cache`,
+  `player_melee_validation_refreshes_stale_session_cache_from_mapruntime`,
+  `active_db_creature_combat_snapshot_uses_mapruntime_without_session_cache`,
+  `starter_melee_spell_failure_uses_melee_validity_before_damage`, and
+  `map_runtime_player_movement_preserves_db_creature_visibility_set`.
+- `cargo test -p wow-network db_creature_ --lib` passed (`82` tests).
+- `cargo test -p wow-network gameobject --lib` passed (`11` tests).
+- `cargo test -p wow-network spell --lib` passed (`14` tests).
+- `cargo test -p wow-network combat --lib` passed (`26` tests).
+- `cargo test -p wow-network --lib` passed (`285` tests).
+- `cargo clippy -p wow-network --all-targets -- -D warnings` passed.
+- `.\scripts\test-rust.cmd` with
+  `CARGO_TARGET_DIR=target\codex-session-ownership-test` passed.
+- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` rebuilt and restarted
+  auth/world after stopping the stale locked binaries.
+- `cargo check -p wow-network --lib`, `cargo test -p wow-network player_corpse
+  --lib`, and `cargo clippy -p wow-network --all-targets -- -D warnings`
+  passed after moving player corpse visibility to shared `MapRuntime`
+  snapshots.
+- Six-path ownership verification:
+  - `cargo fmt --check`
+  - `cargo test -p wow-network object_mgr --lib`
+  - `cargo test -p wow-network map_runtime_player_corpse --lib`
+  - `cargo test -p wow-network map_runtime_db_creature_loot_item_is_generated_once --lib`
+  - `cargo test -p wow-network map_runtime_stages_db_creature_visibility_from_player_visible_set --lib`
+  - `cargo test -p wow-network combat --lib` (`26` tests)
+  - `cargo test -p wow-network --lib` (`291` tests)
+  - `cargo clippy -p wow-network --all-targets -- -D warnings`
+  - `.\scripts\test-rust.cmd` with
+    `CARGO_TARGET_DIR=target\codex-six-map-owned-test` passed.
+- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` rebuilt and restarted
+  auth/world after the six-path migration; listeners verified on
+  `127.0.0.1:13724` and `127.0.0.1:18085`.
+- Final session-eradication verification:
+  - `cargo check -p wow-network --lib`
+  - `cargo fmt --check`
+  - `cargo clippy -p wow-network --all-targets -- -D warnings`
+  - `cargo test -p wow-network --lib` (`291` tests)
+  - `.\scripts\test-rust.cmd` with
+    `CARGO_TARGET_DIR=target\codex-total-mapruntime-test` passed.
+- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` rebuilt/restarted
+  auth/world after stopping the stale supervising wrapper that was locking
+  `target\debug\authserver.exe`; listeners verified on `127.0.0.1:13724` and
+  `127.0.0.1:18085`.
+- Login-load-screen fix verification:
+  - `cargo fmt --check`
+  - `cargo test -p wow-network self_spawn_update_chunks_without_legacy_fixture_blocks --lib`
+  - `cargo test -p wow-network gameobject --lib` (`11` tests)
+  - `cargo clippy -p wow-network --all-targets -- -D warnings`
+  - `cargo test -p wow-network --lib` (`292` tests)
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` rebuilt/restarted
+    auth/world; listeners verified on `127.0.0.1:13724` and
+    `127.0.0.1:18085`.
 
 Baseline runs can fail if a live auto-restarting client stack holds
 `target\debug\authserver.exe`; stop the wrapper/children or use a separate
@@ -395,30 +454,24 @@ Baseline runs can fail if a live auto-restarting client stack holds
   eligibility, dedicated two-client logout/relog torture coverage, and more
   real-client confirmation. The unload blockers now have an explicit state
   shape, but no eviction loop has been implemented yet.
-- Session-local creature runtime still exists in important readers:
-  `active_combat_target` / melee checks, retaliation/chase/evade helpers,
-  movement visibility retention, and parts of combat packet production still
-  consult `session.db_creatures` after the new shared idle/patrol start
-  selection. The current correction removes session ownership from the idle
-  random/waypoint candidate list and the once-per-tick patrol start/advance
-  scheduler; that scheduler is now invoked by the background map runtime update
-  loop.
+- The production session-owned creature/combat mirror is gone. Remaining
+  `session.db_creatures` / active-combat references are `#[cfg(test)]` legacy
+  unit-test helpers and should be converted to map-runtime test harnesses as
+  cleanup, not treated as runtime ownership.
 - G10/G11 remain broader red/yellow areas: NPC interaction fidelity and
   persistence/relog sanity across every major starter-zone action.
 - GitHub issue #58 tracks full CMaNGOS creature loot-table rolling beyond the
   current active quest item-drop bridge.
 - GitHub issue #59 tracks moving DB gameobject consumed/respawn state from
   per-session storage into shared `MapRuntime`/world state for multiplayer
-  consistency.
+  consistency; this is fixed locally for consumed state and gameobject loot
+  ownership, pending commit/push.
 - GitHub issue #60 tracks a real-client combat/visibility desync where the
   client attacked visible Defias Thug GUID `0xF130000026013939` but the session
   treated it as unknown or not alive.
-- GitHub issue #61 tracks the DB-heavy questgiver status-query path amplified
-  by gameobject visibility; repeated `CMSG_QUESTGIVER_STATUS_QUERY` traffic may
-  be contributing to sluggish gameplay feel. Live Defias smoke showed
-  worldserver CPU around 31% of one core over a 10s sample while recent logs
-  contained heavy `0x0182` status-query bursts plus creature visibility
-  create/destroy churn in the 40-50 tracked-creature range.
+- GitHub issue #61 tracked the DB-heavy questgiver status-query path amplified
+  by gameobject visibility; the repeated production quest/template/relation
+  reads now go through shared `ObjectMgr` locally, pending commit/push.
 - Real-client Defias smoke found player attacks could damage a hostile DB
   creature without the creature visibly engaging. The immediate fix now sends
   the same creature-side combat-start/chase path used by proximity aggro when
@@ -430,24 +483,24 @@ Baseline runs can fail if a live auto-restarting client stack holds
   path was doing native navigation before cheap distance filtering, which could
   block the single session loop for many visible but out-of-range hostiles.
   The immediate mitigation is merged locally; remaining follow-up is to add
-  tick-lag/native-call instrumentation and make visible-target attack recovery
-  refresh from shared `MapRuntime` when the client attacks a visible DB GUID
-  missing from `session.db_creatures`.
-- Patrol-start starvation from far same-grid movers is fixed in unit coverage,
-  but still needs a restarted real-client Northshire/Defias smoke to verify the
-  visible patrol packet stream and long-run stability.
+  tick-lag/native-call instrumentation.
+- Patrol-start starvation from far same-grid movers is fixed in unit coverage
+  and the stack has been rebuilt/restarted; it still needs a real-client
+  Northshire/Defias smoke to verify visible patrol packets over time.
 
 ## Recommended Next Task
 
-Continue the CMaNGOS-close creature ownership correction before the next
-feature merge:
+Real-client smoke the rebuilt stack in the Northshire start area plus the run
+to Defias:
 
-1. move the remaining chase/evade/combat readers off `session.db_creatures`
-   where practical, starting with melee range/facing checks and visible-target
-   recovery;
-2. keep session creature state as a viewer cache only, not the source of truth;
-3. then restart and real-client smoke the Northshire start area plus the run to
-   Defias to confirm patrols keep moving after leaving the initial zone.
+1. confirm patrols keep moving after leaving the initial zone and returning;
+2. confirm player-vs-creature melee still starts creature retaliation/chase;
+3. confirm Milly-style gameobject loot opens, autostores once, and releases
+   cleanly;
+4. confirm repeated questgiver/status-query traffic stays responsive with the
+   shared `ObjectMgr` cache;
+5. if smoke passes, commit this ownership migration before taking the next C2
+   feature branch.
 
 ## Key Files
 

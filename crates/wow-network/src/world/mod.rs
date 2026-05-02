@@ -24,6 +24,7 @@ use wow_db::{
 };
 
 include!("opcodes.rs");
+include!("globals/object_mgr.rs");
 include!("session.rs");
 include!("fixtures/legacy_npcs.rs");
 include!("server/world_session.rs");
@@ -85,11 +86,11 @@ impl WorldServer {
             world_db_pool,
             runtime_state: WorldRuntimeState {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
-                player_corpses: Arc::new(Mutex::new(HashMap::new())),
                 delete_options,
                 world_data_files,
                 sessions: Arc::new(SessionRegistry::default()),
                 maps: Arc::new(MapRuntimeManager::default()),
+                object_mgr: Arc::new(ObjectMgr::default()),
             },
         }
     }

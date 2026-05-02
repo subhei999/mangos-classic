@@ -11,7 +11,6 @@ include!("maps/map.rs");
 include!("maps/map_manager.rs");
 
 type OnlineCharacters = Arc<Mutex<HashSet<u32>>>;
-type PlayerCorpses = Arc<Mutex<HashMap<u32, PlayerCorpseRuntime>>>;
 
 type ActiveCharacter = Player;
 type DbCreatureRuntime = Creature;
@@ -110,15 +109,16 @@ impl SessionRegistry {
 #[derive(Clone)]
 struct WorldRuntimeState {
     online_characters: OnlineCharacters,
-    player_corpses: PlayerCorpses,
     delete_options: CharacterDeleteOptions,
     world_data_files: Arc<WorldDataFiles>,
     sessions: Arc<SessionRegistry>,
     maps: Arc<MapRuntimeManager>,
+    object_mgr: Arc<ObjectMgr>,
 }
 
 #[derive(Clone, Copy)]
 struct SharedWorldDeps<'a> {
+    object_mgr: &'a ObjectMgr,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
 }
@@ -128,32 +128,143 @@ struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
     selected_target: Option<ObjectGuid>,
     combat_dummy_health: u32,
+    #[cfg(test)]
     active_combat_target: Option<ObjectGuid>,
+    #[cfg(test)]
     active_combat_next_swing_at: Option<Instant>,
     last_player_melee_swing_error: Option<PlayerMeleeSwingError>,
+    #[cfg(test)]
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     player_in_combat: bool,
     player_death_state: PlayerDeathState,
     player_corpse: Option<PlayerCorpseRuntime>,
-    visible_player_corpses: HashMap<u64, PlayerCorpseRuntime>,
     player_visual: Option<PlayerVisualState>,
     player_flags: u32,
     combat_dummy_lootable: bool,
     combat_dummy_looting: bool,
     combat_dummy_loot_money_available: bool,
     combat_dummy_loot_item_available: bool,
+    #[cfg(test)]
     db_creatures: HashMap<u64, DbCreatureRuntime>,
+    #[cfg(test)]
     db_gameobjects: HashMap<u64, DbGameObjectRuntime>,
-    db_gameobject_looting: Option<u64>,
-    db_gameobject_loot_item: Option<DbCreatureLootRuntime>,
     player_health: u32,
     player_rage: u32,
     player_mana: u32,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,
+    #[cfg(test)]
     last_gameobject_visibility_position: Option<WorldPosition>,
+    #[cfg(test)]
+    #[allow(dead_code)]
     last_player_corpse_visibility_position: Option<WorldPosition>,
     db_creature_navigation: DbCreatureNavigationGuardrail,
+}
+
+#[cfg(test)]
+fn mirror_session_player_auto_attack(
+    session: &mut WorldSessionState,
+    target: Option<ObjectGuid>,
+    next_swing_at: Option<Instant>,
+) {
+    session.active_combat_target = target;
+    session.active_combat_next_swing_at = next_swing_at;
+}
+
+#[cfg(not(test))]
+fn mirror_session_player_auto_attack(
+    _session: &mut WorldSessionState,
+    _target: Option<ObjectGuid>,
+    _next_swing_at: Option<Instant>,
+) {
+}
+
+#[cfg(test)]
+fn mirror_session_player_next_swing_at(
+    session: &mut WorldSessionState,
+    next_swing_at: Option<Instant>,
+) {
+    session.active_combat_next_swing_at = next_swing_at;
+}
+
+#[cfg(not(test))]
+fn mirror_session_player_next_swing_at(
+    _session: &mut WorldSessionState,
+    _next_swing_at: Option<Instant>,
+) {
+}
+
+#[cfg(test)]
+fn clear_session_active_creature_combats(session: &mut WorldSessionState) {
+    session.active_creature_combats.clear();
+}
+
+#[cfg(not(test))]
+fn clear_session_active_creature_combats(_session: &mut WorldSessionState) {}
+
+#[cfg(test)]
+fn mirror_session_active_creature_combats(
+    session: &mut WorldSessionState,
+    combats: &[CreatureCombatState],
+) {
+    session.active_creature_combats = combats
+        .iter()
+        .map(|combat| (combat.attacker.raw(), *combat))
+        .collect();
+}
+
+#[cfg(not(test))]
+fn mirror_session_active_creature_combats(
+    _session: &mut WorldSessionState,
+    _combats: &[CreatureCombatState],
+) {
+}
+
+#[cfg(test)]
+fn mirror_session_active_creature_combat(
+    session: &mut WorldSessionState,
+    combat: CreatureCombatState,
+) {
+    session
+        .active_creature_combats
+        .insert(combat.attacker.raw(), combat);
+}
+
+#[cfg(not(test))]
+fn mirror_session_active_creature_combat(
+    _session: &mut WorldSessionState,
+    _combat: CreatureCombatState,
+) {
+}
+
+#[cfg(test)]
+fn remove_session_active_creature_combat(session: &mut WorldSessionState, attacker: ObjectGuid) {
+    session.active_creature_combats.remove(&attacker.raw());
+}
+
+#[cfg(not(test))]
+fn remove_session_active_creature_combat(
+    _session: &mut WorldSessionState,
+    _attacker: ObjectGuid,
+) {
+}
+
+#[cfg(test)]
+fn mirror_session_db_creature(
+    session: &mut WorldSessionState,
+    guid: u64,
+    creature: DbCreatureRuntime,
+) {
+    session.db_creatures.insert(guid, creature);
+}
+
+#[cfg(not(test))]
+fn mirror_session_db_creature(
+    _session: &mut WorldSessionState,
+    _guid: u64,
+    _creature: DbCreatureRuntime,
+) {
 }

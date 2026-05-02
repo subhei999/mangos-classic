@@ -174,6 +174,12 @@ async fn handle_inventory_swap(
             );
             combat_stats_update_body =
                 Some(build_player_combat_stats_update_body(character_guid, &combat_stats)?);
+            let packets = deps
+                .shared_world
+                .maps
+                .update_player_combat_stats(character.position.map_id, character_guid, combat_stats)
+                .await?;
+            deps.shared_world.sessions.dispatch(packets).await;
 
             let visible_equipment = visible_equipment_for_inventory(
                 session

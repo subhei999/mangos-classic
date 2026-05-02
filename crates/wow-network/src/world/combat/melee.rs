@@ -35,6 +35,7 @@ impl PlayerMeleeSwingError {
     }
 }
 
+#[cfg(test)]
 fn db_creature_player_melee_check(
     session: &WorldSessionState,
     target: ObjectGuid,
@@ -69,6 +70,37 @@ fn db_creature_player_melee_check(
     PlayerMeleeCheck::Clear
 }
 
+async fn db_creature_player_melee_check_from_map(
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    target: ObjectGuid,
+) -> PlayerMeleeCheck {
+    let Some(character) = session.active_character.as_ref() else {
+        return PlayerMeleeCheck::NoActiveCharacter;
+    };
+    let character_guid = character.guid;
+    let character_position = character.position;
+    let validation = shared_world
+        .maps
+        .validate_player_melee_against_db_creature(
+            character_position.map_id,
+            character_guid,
+            target,
+            &session.db_creature_navigation,
+        )
+        .await;
+    #[cfg(test)]
+    if let Some(creature) = shared_world
+        .maps
+        .db_creature_combat_snapshot(character_position.map_id, target)
+        .await
+    {
+        let guid = creature.guid().raw();
+        session.db_creatures.insert(guid, creature);
+    }
+    validation.check
+}
+
 fn db_creature_attack_distance(player_level: u8, creature_level: u8, detection_range: u32) -> f32 {
     if detection_range == 0 {
         return 0.0;
@@ -80,6 +112,7 @@ fn db_creature_attack_distance(player_level: u8, creature_level: u8, detection_r
     (detection_range as f32 - level_diff as f32).max(5.0)
 }
 
+#[cfg(test)]
 fn player_can_reach_with_melee_attack(
     character: &ActiveCharacter,
     target: &DbCreatureRuntime,
@@ -137,6 +170,7 @@ fn normalize_orientation(angle: f32) -> f32 {
     angle.rem_euclid(2.0 * std::f32::consts::PI)
 }
 
+#[cfg(test)]
 fn db_creature_can_reach_player(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
     let Some(character) = &session.active_character else {
         return false;
@@ -161,11 +195,68 @@ fn db_creature_can_reach_player(session: &WorldSessionState, attacker: ObjectGui
         })
 }
 
+async fn db_creature_can_reach_player_from_map(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    map_id: u32,
+    attacker: ObjectGuid,
+) -> bool {
+    let Some(character) = &session.active_character else {
+        return false;
+    };
+    let Some(creature) = shared_world
+        .maps
+        .db_creature_snapshot(map_id, attacker)
+        .await
+    else {
+        return false;
+    };
+    if !db_creature_navigation_check(
+        &session.db_creature_navigation,
+        creature.current_position,
+        character.position,
+    )
+    .is_clear()
+    {
+        return false;
+    }
+    creature
+        .distance_to_player_squared(character)
+        .is_some_and(|distance_sq| {
+            let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+            distance_sq <= reach * reach
+        })
+}
+
+#[cfg(test)]
 fn db_creature_has_player_in_arc(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
     let Some(character) = &session.active_character else {
         return false;
     };
     let Some(creature) = session.db_creatures.get(&attacker.raw()) else {
+        return false;
+    };
+    has_in_arc(
+        creature.current_position,
+        character.position,
+        PLAYER_MELEE_ARC_RADIANS,
+    )
+}
+
+async fn db_creature_has_player_in_arc_from_map(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    map_id: u32,
+    attacker: ObjectGuid,
+) -> bool {
+    let Some(character) = &session.active_character else {
+        return false;
+    };
+    let Some(creature) = shared_world
+        .maps
+        .db_creature_snapshot(map_id, attacker)
+        .await
+    else {
         return false;
     };
     has_in_arc(
@@ -182,7 +273,9 @@ async fn send_db_creature_face_target(
     attacker: ObjectGuid,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some((position, spline_id)) = face_db_creature_toward_player(session, attacker) else {
+    let Some((position, spline_id)) =
+        face_db_creature_toward_player_from_map(broadcast.shared_world, session, attacker).await
+    else {
         return Ok(());
     };
     let body = build_monster_move_facing_target_body(
@@ -226,9 +319,7 @@ async fn send_db_creature_motion_stop(
     else {
         return Ok(());
     };
-    session
-        .db_creatures
-        .insert(creature_guid.raw(), creature.clone());
+    mirror_session_db_creature(session, creature_guid.raw(), creature.clone());
     let body = build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?;
     send_packet(
         stream,
@@ -266,6 +357,7 @@ fn build_db_creature_motion_stop_body(
     )?))
 }
 
+#[cfg(test)]
 fn face_db_creature_toward_player(
     session: &mut WorldSessionState,
     attacker: ObjectGuid,
@@ -281,6 +373,22 @@ fn face_db_creature_toward_player(
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     Some((creature.current_position, spline_id))
+}
+
+async fn face_db_creature_toward_player_from_map(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    attacker: ObjectGuid,
+) -> Option<(WorldPosition, u32)> {
+    let character_position = session
+        .active_character
+        .as_ref()
+        .map(|character| character.position)?;
+    shared_world
+        .maps
+        .face_db_creature_toward_position(character_position.map_id, attacker, character_position)
+        .await
+        .map(|(_, position, spline_id)| (position, spline_id))
 }
 
 

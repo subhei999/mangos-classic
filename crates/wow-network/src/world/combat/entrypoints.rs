@@ -13,16 +13,19 @@
         warn!("Ignoring attack swing before character login");
         return Ok(());
     };
-    sync_session_db_creatures_from_map(shared_world, session).await;
-
     if target == rust_combat_dummy_guid() {
         if session.combat_dummy_lootable || session.combat_dummy_health == 0 {
             warn!("Ignoring attack swing against dead combat dummy");
             return Ok(());
         }
 
-        session.active_combat_target = Some(target);
-        session.active_combat_next_swing_at = Some(combat_dummy_next_swing_at(Instant::now()));
+        let next_swing = combat_dummy_next_swing_at(Instant::now());
+        if let Some(character) = session.active_character.as_ref() {
+            shared_world
+                .maps
+                .set_player_auto_attack(character.position.map_id, character.guid, Some(target), Some(next_swing))
+                .await;
+        }
         let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         send_packet(
             stream,
@@ -32,13 +35,17 @@
         )
         .await?;
         broadcast_player_attack_start(shared_world, session, attacker, target).await;
-        return send_combat_dummy_swing(stream, session, header_crypto).await;
+        return send_combat_dummy_swing(stream, shared_world, session, header_crypto).await;
     }
 
-    if !session
-        .db_creatures
-        .get(&target.raw())
-        .is_some_and(DbCreatureRuntime::is_alive)
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    if shared_world
+        .maps
+        .db_creature_combat_snapshot(character.position.map_id, target)
+        .await
+        .is_none()
     {
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -47,9 +54,13 @@
         return Ok(());
     }
 
-    session.active_combat_target = Some(target);
     let now = Instant::now();
-    session.active_combat_next_swing_at = Some(now);
+    if let Some(character) = session.active_character.as_ref() {
+        shared_world
+            .maps
+            .set_player_auto_attack(character.position.map_id, character.guid, Some(target), Some(now))
+            .await;
+    }
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_packet(
         stream,

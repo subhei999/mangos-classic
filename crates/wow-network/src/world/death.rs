@@ -2,7 +2,6 @@
 struct PlayerDeathDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
-    player_corpses: &'a PlayerCorpses,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
     account_id: u32,
@@ -21,28 +20,40 @@ async fn handle_repop_request(
         return Ok(());
     }
 
-    let corpse =
-        create_or_get_player_corpse(deps.character_db_pool, deps.player_corpses, session).await?;
+    let corpse = create_or_get_player_corpse(
+        deps.character_db_pool,
+        deps.maps,
+        session,
+    )
+    .await?;
     let corpse_position = corpse.position;
     let graveyard_position =
         select_repop_graveyard_position(deps.world_db_pool, corpse_position).await?;
 
+    let character_guid = session.active_character.as_ref().map(|c| c.guid).unwrap_or_default();
+    let old_map_id = session
+        .active_character
+        .as_ref()
+        .map(|character| character.position.map_id)
+        .unwrap_or(corpse_position.map_id);
     session.player_death_state = PlayerDeathState::Ghost;
     session.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
     session.player_flags |= PLAYER_FLAGS_GHOST;
     session.player_in_combat = false;
-    session.active_combat_target = None;
-    session.active_combat_next_swing_at = None;
-    session.active_creature_combats.clear();
+    mirror_session_player_auto_attack(session, None, None);
+    clear_session_active_creature_combats(session);
+    deps.maps
+        .set_player_auto_attack(old_map_id, character_guid, None, None)
+        .await;
     if let Some(character) = &mut session.active_character {
         character.position = graveyard_position;
         character.movement_flags = 0;
         character.fall_time = 0;
     }
-    session.last_creature_visibility_position = None;
-    session.last_player_corpse_visibility_position = None;
+    deps.maps
+        .reset_player_visibility_scan_positions(old_map_id, character_guid)
+        .await;
 
-    let character_guid = session.active_character.as_ref().map(|c| c.guid).unwrap_or_default();
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_packet(
         stream,
@@ -223,14 +234,18 @@ async fn handle_spirit_healer_activate(
         return Ok(());
     };
     let character_position = character.position;
-    let Some(healer) = session.db_creatures.get(&healer_guid.raw()) else {
+    let Some(healer) = deps
+        .maps
+        .db_creature_snapshot(character_position.map_id, healer_guid)
+        .await
+    else {
         warn!(
             guid = format_args!("0x{:016X}", healer_guid.raw()),
             "Ignoring spirit healer activation for unloaded creature"
         );
         return Ok(());
     };
-    if !is_spirit_healer_creature(healer) {
+    if !is_spirit_healer_creature(&healer) {
         warn!(
             guid = format_args!("0x{:016X}", healer_guid.raw()),
             entry = healer.spawn.entry,
@@ -316,13 +331,9 @@ async fn resurrect_player_at_position(
     if let Some(corpse) = corpse_to_bones {
         wow_db::delete_player_corpse(deps.character_db_pool, character.guid).await?;
         let bones = player_bones_runtime_from_corpse(corpse);
-        deps.player_corpses
-            .lock()
-            .await
-            .insert(character.guid, bones.clone());
-        session
-            .visible_player_corpses
-            .insert(bones.guid.raw(), bones.clone());
+        deps.maps
+            .upsert_player_corpse(bones.position.map_id, bones.clone())
+            .await;
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
@@ -344,6 +355,7 @@ async fn resurrect_player_at_position(
 async fn kill_player_from_creature(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
     account_id: u32,
     session: &mut WorldSessionState,
     player: ObjectGuid,
@@ -359,9 +371,12 @@ async fn kill_player_from_creature(
     session.player_corpse = None;
     session.player_health = 0;
     session.player_in_combat = false;
-    session.active_combat_target = None;
-    session.active_combat_next_swing_at = None;
-    session.active_creature_combats.clear();
+    mirror_session_player_auto_attack(session, None, None);
+    clear_session_active_creature_combats(session);
+    if let Some(character) = session.active_character.as_ref() {
+        maps.set_player_auto_attack(character.position.map_id, character.guid, None, None)
+            .await;
+    }
 
     send_packet(
         stream,
@@ -381,10 +396,12 @@ async fn kill_player_from_creature(
 
 async fn create_or_get_player_corpse(
     character_db_pool: &MySqlPool,
-    player_corpses: &PlayerCorpses,
+    maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<PlayerCorpseRuntime> {
     if let Some(corpse) = &session.player_corpse {
+        maps.upsert_player_corpse(corpse.position.map_id, corpse.clone())
+            .await;
         return Ok(corpse.clone());
     }
     let Some(character) = session.active_character.as_ref() else {
@@ -403,13 +420,8 @@ async fn create_or_get_player_corpse(
         },
     )
     .await?;
-    player_corpses
-        .lock()
-        .await
-        .insert(character.guid, corpse.clone());
-    session
-        .visible_player_corpses
-        .insert(corpse.guid.raw(), corpse.clone());
+    maps.upsert_player_corpse(corpse.position.map_id, corpse.clone())
+        .await;
     session.player_corpse = Some(corpse.clone());
     Ok(corpse)
 }

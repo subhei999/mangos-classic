@@ -8693,6 +8693,31 @@ fn parses_equipment_inventory_move_packets() {
 }
 
 #[test]
+fn inventory_warrior_armor_proficiency_controls_cloth_leather_mail_equips() {
+    let mut cloth = test_item_template(1000, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 1);
+    cloth.subclass = 1;
+    let mut leather = test_item_template(1001, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 2);
+    leather.subclass = 2;
+    let mut mail = test_item_template(1002, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 3);
+    mail.subclass = 3;
+    let skills = vec![test_skill(9078, 1, 1)];
+
+    assert!(character_can_equip_item_template(1, 1, &cloth, &skills));
+    assert!(!character_can_equip_item_template(1, 1, &leather, &skills));
+    assert!(!character_can_equip_item_template(1, 1, &mail, &skills));
+}
+
+#[test]
+fn inventory_equip_validation_rejects_item_with_wrong_allowable_class() {
+    let mut cloth = test_item_template(1003, ITEM_CLASS_ARMOR, 4, 0.0, 0.0, 1);
+    cloth.subclass = 1;
+    cloth.allowable_class = 1 << (8 - 1);
+    let skills = vec![test_skill(9078, 1, 1)];
+
+    assert!(!character_can_equip_item_template(1, 1, &cloth, &skills));
+}
+
+#[test]
 fn parses_bag_container_inventory_move_packets() {
     let into_bag =
         InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[19, 0, CLIENT_INVENTORY_SLOT_BAG_0, 24])

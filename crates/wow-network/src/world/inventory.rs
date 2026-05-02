@@ -89,6 +89,28 @@ async fn handle_inventory_swap(
             );
             return Ok(());
         }
+        if move_request.dst_slot < EQUIPMENT_SLOT_END {
+            let skills = wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
+            let can_equip = character_can_equip_item_template(
+                character.race,
+                character.class,
+                &template,
+                &skills,
+            );
+            if !can_equip {
+                info!(
+                    opcode = inventory_opcode_name(opcode),
+                    guid = character_guid,
+                    item_template = src_item.item_template,
+                    class = character.class,
+                    race = character.race,
+                    item_class = template.class,
+                    item_subclass = template.subclass,
+                    "Rejected inventory move due to class/race/proficiency requirements"
+                );
+                return Ok(());
+            }
+        }
     }
 
     if move_request.src_bag == INVENTORY_SLOT_BAG_0
@@ -855,6 +877,75 @@ fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
         15 => matches!(inventory_type, 13 | 17 | 21),
         16 => inventory_type == 14,
         _ => false,
+    }
+}
+
+fn character_can_equip_item_template(
+    race: u8,
+    class: u8,
+    template: &ItemTemplateQuery,
+    skills: &[CharacterSkill],
+) -> bool {
+    if template.allowable_class != -1 {
+        let class_mask = quest_race_or_class_mask(class);
+        if class_mask == 0 || (template.allowable_class as u32 & class_mask) == 0 {
+            return false;
+        }
+    }
+    if template.allowable_race != -1 {
+        let race_mask = quest_race_or_class_mask(race);
+        if race_mask == 0 || (template.allowable_race as u32 & race_mask) == 0 {
+            return false;
+        }
+    }
+    if template.required_skill != 0
+        && !skills
+            .iter()
+            .any(|skill| u32::from(skill.skill) == template.required_skill
+                && u32::from(skill.value) >= template.required_skill_rank)
+    {
+        return false;
+    }
+
+    let Some(proficiency_skill) = item_proficiency_skill(template) else {
+        return true;
+    };
+    skills
+        .iter()
+        .any(|skill| u32::from(skill.skill) == proficiency_skill && skill.value > 0)
+}
+
+fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
+    // CMaNGOS reference: src/game/Entities/Item.cpp (Item::GetSkill and required proficiency skills).
+    match template.class {
+        ITEM_CLASS_ARMOR => match template.subclass {
+            1 => Some(9078), // Cloth
+            2 => Some(9077), // Leather
+            3 => Some(8737), // Mail
+            4 => Some(750),  // Plate
+            6 => Some(9116), // Shield
+            _ => None,
+        },
+        ITEM_CLASS_WEAPON => match template.subclass {
+            0 => Some(196),   // 1H Axe
+            1 => Some(197),   // 2H Axe
+            2 => Some(264),   // Bow
+            3 => Some(266),   // Gun
+            4 => Some(198),   // 1H Mace
+            5 => Some(199),   // 2H Mace
+            6 => Some(200),   // Polearm
+            7 => Some(201),   // 1H Sword
+            8 => Some(202),   // 2H Sword
+            10 => Some(227),  // Staff
+            13 => None,       // Fist weapons do not require a proficiency skill.
+            15 => Some(1180), // Dagger
+            16 => Some(2567), // Thrown
+            17 => Some(3386), // Spear
+            18 => Some(5011), // Crossbow
+            19 => Some(5009), // Wand
+            _ => None,
+        },
+        _ => None,
     }
 }
 

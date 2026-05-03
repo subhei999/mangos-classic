@@ -6,6 +6,8 @@ Classic behavior. Use it with:
 
 - `docs/session_handoff.md` for current state;
 - `docs/playable_gate_board.md` for gate health;
+- `docs/wow_completion_tree.md` for the whole-game Red/Yellow/Green
+  requirement tree and parent rollup rules;
 - `docs/rust_migration_plan.md` for durable milestone history;
 - focused briefs such as `docs/g12_shared_mapruntime_plan.md` and
   `docs/briefs/combat.md` for subsystem detail.
@@ -109,27 +111,27 @@ cross-talk while still landing meaningful vertical slices.
 
 ## Phase Plan
 
-### Phase A: Pin The Northshire Grade
+### Phase A: Real-Client Closure Compass
 
-Goal: turn the user-observed missing criteria into a repeatable harness and
-real-client checklist.
+Goal: keep the user-observed missing criteria visible while treating the user's
+real-client playthrough as the authority for Checkpoint 2 closure.
 
 Primary gates: all Checkpoint 2 gates.
 
 Deliverables:
 
-- a `Northshire Playability Grade` checklist in docs or harness output;
-- focused harness scenarios for quest visibility, quest drops, gameobjects,
-  warrior spells, combat log packet emission, regen/rage decay, skill state,
-  aggro/leash, and patrol continuity;
-- no gameplay implementation beyond test helpers unless the fix is tiny and
-  local.
+- a short real-client CP2 closure route in the session handoff when the current
+  implementation streams converge;
+- focused automated probes only where they protect behavior that is hard to
+  judge manually, such as DB writes, packet shapes, shared-state invariants, and
+  relog persistence;
+- no separate Northshire grading harness or pass/fail report.
 
 Merge proof:
 
-- focused harness/unit tests for newly added checks;
 - `.\scripts\test-rust.cmd`;
-- written manual real-client checklist for anything not automatable yet.
+- focused harness/unit tests for changed behavior;
+- user real-client playthrough feedback before calling CP2 closed.
 
 ### Phase B: Quest And Objective Fidelity
 
@@ -244,7 +246,6 @@ unless the parent integrator explicitly coordinates it.
 
 | Stream | Suggested Branch | Primary Owner Scope | Good Worker Task | Merge Dependency |
 | --- | --- | --- | --- | --- |
-| Northshire grading harness | `codex/c2-northshire-grade` | `bins/starter-zone-flow-test/`, `scripts/test-starter-zone-flow.*`, docs checklist | Add explicit pass/fail checks for the nine user-observed missing criteria | Can start immediately; should avoid gameplay code |
 | Quest availability | `codex/c2-quest-eligibility` | `crates/wow-network/src/world/quests.rs`, quest DB reads, quest packet tests | Filter quest markers/status/list by level, class, race, prerequisites, chains, repeatability, and current status | Can start immediately; avoid loot and gameobject logic |
 | Quest loot drops | `codex/c2-quest-loot-drops` | `crates/wow-network/src/world/loot.rs`, world loot DB helpers, inventory insertion tests | Use real loot tables and enable quest item drops only for eligible active quests | Needs stable quest-status read API; otherwise can run beside eligibility with a narrow interface |
 | Gameobject quest objectives | `codex/c2-gameobject-quests` | new/focused `world/gameobjects` module, gameobject DB helpers, object update/query tests | Spawn/query/use quest gameobjects and grant pickup objective/items with respawn rules | Can run beside quest loot; depends on quest-status API before final merge |
@@ -272,21 +273,20 @@ Recommended branch rules:
 
 Suggested merge order:
 
-1. `codex/c2-northshire-grade`, because it gives every branch a target.
-2. `codex/c2-combat-log`, if it is limited to packet builders/helpers.
-3. `codex/c2-quest-eligibility`, because quest status is the dependency for
+1. `codex/c2-combat-log`, if it is limited to packet builders/helpers.
+2. `codex/c2-quest-eligibility`, because quest status is the dependency for
    quest drops and gameobjects.
-4. `codex/c2-quest-loot-drops` and `codex/c2-gameobject-quests`, rebased onto
+3. `codex/c2-quest-loot-drops` and `codex/c2-gameobject-quests`, rebased onto
    quest eligibility when needed.
-5. `codex/c2-regen-rage-ticks`, then `codex/c2-warrior-spells-gcd`, because
+4. `codex/c2-regen-rage-ticks`, then `codex/c2-warrior-spells-gcd`, because
    warrior spell behavior needs resource timing to be real.
-6. `codex/c2-skills-weapon-skill`, before deeper combat math depends on skill
+5. `codex/c2-skills-weapon-skill`, before deeper combat math depends on skill
    values.
-7. `codex/c2-aggro-leash-parity`.
-8. `codex/c2-patrol-stability`, after aggro/leash if both touch creature
+6. `codex/c2-aggro-leash-parity`.
+7. `codex/c2-patrol-stability`, after aggro/leash if both touch creature
    motion.
-9. `codex/c2-npc-relog-polish`, once quest/spell/progression state exists.
-10. mechanical split branches between feature merges when the tree is green.
+8. `codex/c2-npc-relog-polish`, once quest/spell/progression state exists.
+9. mechanical split branches between feature merges when the tree is green.
 
 Conflict hot spots:
 
@@ -347,9 +347,10 @@ When the streams above converge, run one explicit closure pass:
 3. run one fresh Human Warrior through the full Northshire route;
 4. run two clients through player visibility, movement, chat, shared combat,
    loot, logout, relog, death/corpse, and respawn;
-5. update `docs/session_handoff.md` with the grading table, test results,
-   fixed P0/P1 issues, and logged P2/P3/P4 follow-ups.
+5. update `docs/session_handoff.md` with the user real-client result, test
+   results, fixed P0/P1 issues, and logged P2/P3/P4 follow-ups.
 
-Checkpoint 2 should not close until the final real-client table has no `FAIL`
-rows and every `PARTIAL` or `DEFERRED` row has a linked issue and a clear reason
-it does not block the milestone.
+Checkpoint 2 should not close until the user confirms the fresh real-client
+Northshire route feels playable enough for the milestone, and every known
+deferred parity gap has a linked issue and a clear reason it does not block the
+milestone.

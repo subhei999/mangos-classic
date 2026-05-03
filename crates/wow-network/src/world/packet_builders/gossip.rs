@@ -5,7 +5,7 @@ fn build_rust_guide_gossip_message() -> Vec<u8> {
     build_gossip_message(
         rust_guide_guid(),
         RUST_GUIDE_GOSSIP_TEXT_ID,
-        &[(0, RUST_GUIDE_GOSSIP_OPTION)],
+        &[(0, GOSSIP_ICON_CHAT, RUST_GUIDE_GOSSIP_OPTION)],
     )
 }
 
@@ -14,8 +14,8 @@ fn build_rust_guide_npc_text_update(text_id: u32) -> Vec<u8> {
     build_npc_text_update(text_id, RUST_GUIDE_GOSSIP_TEXT)
 }
 
-fn build_gossip_message(guid: ObjectGuid, text_id: u32, options: &[(u32, &str)]) -> Vec<u8> {
-    let option_text_len: usize = options.iter().map(|(_, text)| text.len() + 1).sum();
+fn build_gossip_message(guid: ObjectGuid, text_id: u32, options: &[(u32, u8, &str)]) -> Vec<u8> {
+    let option_text_len: usize = options.iter().map(|(_, _, text)| text.len() + 1).sum();
 
     let mut body = Vec::with_capacity(16 + options.len() * 6 + option_text_len);
 
@@ -25,10 +25,10 @@ fn build_gossip_message(guid: ObjectGuid, text_id: u32, options: &[(u32, &str)])
 
     body.extend_from_slice(&(options.len() as u32).to_le_bytes());
 
-    for (option_index, option_text) in options {
+    for (option_index, option_icon, option_text) in options {
         body.extend_from_slice(&option_index.to_le_bytes());
 
-        body.push(0); // icon
+        body.push(*option_icon);
 
         body.push(0); // coded
 

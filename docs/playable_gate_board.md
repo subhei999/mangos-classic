@@ -22,21 +22,19 @@ Execution roadmap: `docs/playable_execution_roadmap.md`
 
 ## Current Priority Order
 
-1. Northshire playability grading harness for the current user-observed missing
-   criteria.
-2. Quest availability restrictions: level, class, race, prerequisites, chains,
+1. Quest availability restrictions: level, class, race, prerequisites, chains,
    repeatability, and current quest state.
-3. Real loot tables plus quest item drop eligibility.
-4. Gameobject quest objectives and pickup flow.
-5. Warrior level 1-6 playability: global cooldown, real warrior spells,
+2. Real loot tables plus quest item drop eligibility.
+3. Gameobject quest objectives and pickup flow.
+4. Warrior level 1-6 playability: global cooldown, real warrior spells,
    Heroic Strike next-swing behavior, combat log, health regen, rage decay, and
    skills/weapon skills.
-6. G8 aggro, chase, and leash parity.
-7. G9 patrol/runtime stability for random and waypoint creatures.
-8. G12 shared runtime hardening: idle-grid unload/eviction, logout/relog
+5. G8 aggro, chase, and leash parity.
+6. G9 patrol/runtime stability for random and waypoint creatures.
+7. G12 shared runtime hardening: idle-grid unload/eviction, logout/relog
    torture coverage, and real-client confirmation of shared moving-mob
    death/loot.
-9. G10/G11 NPC services and relog polish after the state systems above exist.
+8. G10/G11 NPC services and relog polish after the state systems above exist.
 
 Current user-directed milestone: **Northshire Human Warrior playable slice with
 shared multiplayer state**. Current active planning target is the user-observed

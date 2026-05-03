@@ -376,12 +376,17 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
         };
+        player.max_health = player.max_health.max(session.player_health.max(1));
+        player.max_power1 = player.max_power1.max(session.player_mana);
         player.health = session.player_health.min(player.max_health);
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
         player.active_spells = session.active_spells.clone();
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
+        player.active_auras = session.active_auras.clone();
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
         if let Some(character) = session.active_character.as_ref() {
             player.position = character.position;
             player.movement_flags = character.movement_flags;
@@ -408,6 +413,8 @@ impl MapRuntime {
             active_spells: player.active_spells.clone(),
             inventory: player.inventory.clone(),
             quest_statuses: player.quest_statuses.clone(),
+            active_auras: player.active_auras.clone(),
+            base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
             active_combat_target: player.active_combat_target,
             active_combat_next_swing_at: player.active_combat_next_swing_at,
@@ -490,11 +497,13 @@ impl MapRuntime {
             .players
             .get_mut(&character_guid)
             .ok_or_else(|| anyhow::anyhow!("player {character_guid} is not in map runtime"))?;
-        player.combat_stats = combat_stats;
+        player.base_combat_stats = combat_stats;
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
         let position = player.position;
         let packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
-            body: build_player_combat_stats_update_body(character_guid, &combat_stats)?,
+            body: build_player_combat_stats_update_body(character_guid, &player.combat_stats)?,
         };
         Ok(self
             .nearby_player_guids(
@@ -515,6 +524,100 @@ impl MapRuntime {
         self.players
             .get(&character_guid)
             .map(|player| player.combat_stats)
+    }
+
+    fn apply_player_aura(
+        &mut self,
+        character_guid: u32,
+        aura: ActiveAura,
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
+        apply_active_aura(&mut player.active_auras, aura);
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+        self.build_player_aura_update_event(character_guid, Instant::now())
+            .map(Some)
+    }
+
+    fn advance_player_aura_expirations(
+        &mut self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let mut packets = Vec::new();
+        let character_guids = self.players.keys().copied().collect::<Vec<_>>();
+        for character_guid in character_guids {
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                continue;
+            };
+            let before = player.active_auras.len();
+            player
+                .active_auras
+                .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+            if player.active_auras.len() == before {
+                continue;
+            }
+            player.combat_stats =
+                combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+            let event = self.build_player_aura_update_event(character_guid, now)?;
+            let Some(player) = self.players.get(&character_guid) else {
+                continue;
+            };
+            packets.extend(
+                event
+                    .direct_packets
+                    .into_iter()
+                    .map(|packet| (player.session_id, packet)),
+            );
+            packets.extend(event.observer_packets);
+        }
+        Ok(packets)
+    }
+
+    fn build_player_aura_update_event(
+        &self,
+        character_guid: u32,
+        now: Instant,
+    ) -> anyhow::Result<PlayerAuraUpdateEvent> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Ok(PlayerAuraUpdateEvent {
+                direct_packets: Vec::new(),
+                observer_packets: Vec::new(),
+            });
+        };
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let aura_packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_aura_update_body(player_guid, &player.active_auras)?,
+        };
+        let combat_stats_packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_combat_stats_update_body(character_guid, &player.combat_stats)?,
+        };
+        let mut observer_packets = Vec::new();
+        for observer_guid in self.nearby_player_guids(
+            player.position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(character_guid),
+        ) {
+            let Some(observer) = self.players.get(&observer_guid) else {
+                continue;
+            };
+            observer_packets.push((observer.session_id, aura_packet.clone()));
+            observer_packets.push((observer.session_id, combat_stats_packet.clone()));
+        }
+
+        let mut direct_packets = vec![aura_packet, combat_stats_packet];
+        direct_packets.extend(build_player_aura_duration_update_packets(
+            &player.active_auras,
+            now,
+        ));
+
+        Ok(PlayerAuraUpdateEvent {
+            direct_packets,
+            observer_packets,
+        })
     }
 
     fn set_player_auto_attack(

@@ -18,9 +18,10 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterSkill, CharacterSpell,
-    CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter,
-    NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats, QuestTemplateQuery,
+    CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterReputationChange,
+    CharacterSkill, CharacterSpell, CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery,
+    ItemTemplateQuery, NewCharacter, NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats,
+    QuestTemplateQuery,
 };
 
 include!("opcodes.rs");
@@ -57,10 +58,12 @@ impl WorldServer {
         data_dir: impl Into<std::path::PathBuf>,
     ) -> Self {
         let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
+        let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data_files));
         info!(
             data_dir = %world_data_files.data_dir.display(),
             maps = world_data_files.maps_available,
             vmaps = world_data_files.vmaps_available,
+            creature_display_scales = world_data_files.creature_display_scales.len(),
             mmap_maps = world_data_files.mmap_headers.len(),
             mmap_tiles = world_data_files.mmap_tiles.len(),
             vmap_maps = world_data_files.vmap_trees.len(),
@@ -89,7 +92,7 @@ impl WorldServer {
                 delete_options,
                 world_data_files,
                 sessions: Arc::new(SessionRegistry::default()),
-                maps: Arc::new(MapRuntimeManager::default()),
+                maps,
                 object_mgr: Arc::new(ObjectMgr::default()),
             },
         }

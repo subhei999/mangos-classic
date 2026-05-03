@@ -6,6 +6,7 @@ struct EnterWorldBootstrap<'a> {
     world_stats: &'a PlayerWorldStats,
     equipped_templates: &'a [EquippedItemTemplate],
     spells: &'a [CharacterSpell],
+    skills: &'a [CharacterSkill],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
@@ -38,8 +39,6 @@ async fn send_enter_world_bootstrap(
         wow_db::get_character_reputations(bootstrap.character_db_pool, bootstrap.character.guid)
             .await?;
     send_initial_reputations(stream, &reputations, header_crypto.as_deref_mut()).await?;
-    let skills =
-        wow_db::get_character_skills(bootstrap.character_db_pool, bootstrap.character.guid).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
@@ -51,7 +50,7 @@ async fn send_enter_world_bootstrap(
             character: bootstrap.character,
             inventory: bootstrap.inventory,
             world_stats: bootstrap.world_stats,
-            skills: &skills,
+            skills: bootstrap.skills,
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: bootstrap.equipped_templates,
             nearby_creatures: bootstrap.nearby_creatures,
@@ -265,14 +264,6 @@ fn build_initial_reputations_body(reputations: &[CharacterReputation]) -> Vec<u8
         body.extend_from_slice(&standing.to_le_bytes());
     }
     body
-}
-
-fn reputation_list_slot_for_faction(_faction: u32) -> Option<usize> {
-    // Faction.dbc IDs are not the same as the client's 0..63 reputationListID
-    // slots. Keep saved reputation rows quiet until the DBC-backed mapping is
-    // ported; otherwise the client displays unrelated factions such as
-    // Bloodsail Buccaneers for starter city reputations.
-    None
 }
 
 async fn send_trigger_cinematic(

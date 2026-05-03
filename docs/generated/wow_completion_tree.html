@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WoW Completion Tree</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #111312;
+  --panel: #191d1b;
+  --panel-2: #202521;
+  --line: #343c35;
+  --text: #edf2ee;
+  --muted: #a9b6ad;
+  --red: #d94d47;
+  --yellow: #d7b84a;
+  --green: #54b86a;
+  --red-bg: rgba(217, 77, 71, .14);
+  --yellow-bg: rgba(215, 184, 74, .14);
+  --green-bg: rgba(84, 184, 106, .14);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(17, 19, 18, .94);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+.wrap { max-width: 1440px; margin: 0 auto; padding: 20px; }
+.topline { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: 0; }
+.subtle { color: var(--muted); font-size: 14px; }
+.controls { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto auto; gap: 10px; margin-top: 16px; }
+input, select, button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-height: 40px;
+  padding: 8px 10px;
+  font: inherit;
+}
+button { cursor: pointer; }
+button.active { border-color: var(--text); background: var(--panel-2); }
+main.wrap { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; align-items: start; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+.summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.metric { background: var(--panel-2); border-radius: 6px; padding: 12px; }
+.metric strong { display: block; font-size: 24px; }
+.bar { height: 8px; background: #0d0f0e; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.bar > span { display: block; height: 100%; width: var(--pct); background: linear-gradient(90deg, var(--red), var(--yellow), var(--green)); }
+.system-list { display: grid; gap: 8px; margin-top: 12px; }
+.system-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--panel-2);
+}
+.system-card h3 { margin: 0; font-size: 14px; }
+.system-card .counts { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.view-toggle { display: inline-flex; gap: 6px; }
+.tree-stage {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 720px;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+}
+.tree-stage.dragging { cursor: grabbing; }
+.tree-svg { display: block; width: 100%; height: 720px; }
+.tree-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: rgba(17, 19, 18, .82);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px;
+}
+.tree-toolbar button { min-height: 32px; padding: 4px 9px; }
+.tree-help {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  background: rgba(17, 19, 18, .82);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+  pointer-events: none;
+}
+.tree-link {
+  fill: none;
+  stroke: #485247;
+  stroke-width: 1.4;
+}
+.tree-node-card {
+  fill: var(--panel-2);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.tree-node-card.red { stroke: rgba(217, 77, 71, .85); }
+.tree-node-card.yellow { stroke: rgba(215, 184, 74, .85); }
+.tree-node-card.green { stroke: rgba(84, 184, 106, .85); }
+.tree-node-dot.red { fill: var(--red); }
+.tree-node-dot.yellow { fill: var(--yellow); }
+.tree-node-dot.green { fill: var(--green); }
+.tree-node-label {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.tree-node-meta {
+  fill: var(--muted);
+  font-size: 8px;
+}
+.tree-node {
+  cursor: pointer;
+}
+.tree-node.disabled {
+  cursor: grab;
+}
+.tree-node-label {
+  font-size: 10px;
+}
+.tree-node-toggle {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+}
+.tree-level-line {
+  stroke: rgba(169, 182, 173, .14);
+  stroke-width: 1;
+}
+.tree-level-label {
+  fill: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+.tree-empty { padding: 24px; color: var(--muted); }
+.outline-tree { display: grid; gap: 8px; }
+details.node {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+details.node[open] > summary { border-bottom: 1px solid var(--line); }
+summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+}
+summary::-webkit-details-marker { display: none; }
+.row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.chevron { color: var(--muted); font-size: 12px; width: 14px; }
+details[open] > summary .chevron { transform: rotate(90deg); }
+.node-title { min-width: 0; }
+.node-title b { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.node-title code { color: var(--muted); font-size: 11px; }
+.pill {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 62px;
+  text-align: center;
+}
+.pill.red { color: #ffd9d7; background: var(--red-bg); border: 1px solid rgba(217,77,71,.45); }
+.pill.yellow { color: #fff1bf; background: var(--yellow-bg); border: 1px solid rgba(215,184,74,.45); }
+.pill.green { color: #d9ffe1; background: var(--green-bg); border: 1px solid rgba(84,184,106,.45); }
+.node-body { padding: 10px 12px 12px 32px; }
+.requirement { margin: 0 0 8px; color: var(--text); }
+.proof { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.tag { border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; color: var(--muted); font-size: 12px; }
+.children { display: grid; gap: 8px; margin-top: 8px; }
+.hidden { display: none !important; }
+@media (max-width: 980px) {
+  main.wrap { grid-template-columns: 1fr; }
+  .controls { grid-template-columns: 1fr; }
+  .topline { display: block; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="topline">
+      <div>
+        <h1>WoW Completion Tree</h1>
+        <div class="subtle">Source: docs/wow_completion_tree.toml. Parent status is computed from leaf requirements.</div>
+      </div>
+      <div class="subtle" id="updated"></div>
+    </div>
+    <div class="controls">
+      <input id="search" type="search" placeholder="Search quests, Heroic Strike, loot, relog...">
+      <select id="tagFilter">
+        <option value="all">All milestone tags</option>
+        <option value="CP2">CP2 Northshire</option>
+      </select>
+      <div>
+        <button data-status="all" class="active">All</button>
+        <button data-status="red">Red</button>
+        <button data-status="yellow">Yellow</button>
+        <button data-status="green">Green</button>
+      </div>
+      <div class="view-toggle">
+        <button data-view="tree" class="active">Tree</button>
+        <button data-view="outline">Outline</button>
+      </div>
+    </div>
+  </div>
+</header>
+<main class="wrap">
+  <aside class="panel">
+    <div class="summary-grid" id="summary"></div>
+    <div class="system-list" id="systems"></div>
+  </aside>
+  <section class="tree-stage" id="tree"></section>
+</main>
+<script>
+const tree = {"id": "WOW", "label": "WoW Classic", "requirement": "WoW 1.12.1 Classic server parity root.", "proof": "Rolls up all required leaf requirements below. Current project proof is strongest for auth, character lifecycle, Northshire world entry, movement visibility, shared MapRuntime, starter combat, death, loot, and selected quest/trainer paths.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 176, "redCount": 70, "yellowCount": 57, "greenCount": 49, "completion": 0.4403409090909091, "children": [{"id": "WOW.AUTH", "label": "Account, Auth, And Realm", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 7, "redCount": 1, "yellowCount": 1, "greenCount": 5, "completion": 0.7857142857142857, "children": [{"id": "WOW.AUTH.DB_SCHEMA_REALMD", "label": "DB Schema Realmd", "requirement": "Auth behavior stays compatible with sql/base/realmd.sql.", "proof": "DB integration tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.AUTH.ERRORS", "label": "Errors", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.AUTH.ERRORS.INVALID_LOGIN", "label": "Invalid Login", "requirement": "Invalid password, locked, banned, incompatible build, and bad proof fail with CMaNGOS-like codes.", "proof": "Needs focused negative auth matrix.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.AUTH.REALMLIST", "label": "Realmlist", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.AUTH.REALMLIST.BUILD_5875", "label": "Build 5875", "requirement": "Build 5875 client receives a usable realm list and can select the Rust realm.", "proof": "CP1 real-client proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.AUTH.REALMLIST_CHARACTER_COUNTS", "label": "Realmlist Character Counts", "requirement": "Realm character counts refresh after create/delete.", "proof": "test-world-flow.cmd; character screen proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.AUTH.SESSION_RECONNECT", "label": "Session Reconnect", "requirement": "Reconnect, duplicate login, and stale session handling are CMaNGOS-like.", "proof": "Needs real-client reconnect proof.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.AUTH.SRP", "label": "SRP", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 0, "greenCount": 2, "completion": 1.0, "children": [{"id": "WOW.AUTH.SRP.LOGON_CHALLENGE", "label": "Logon Challenge", "requirement": "Client can complete 1.12.1 SRP logon challenge against realmd.account.", "proof": "test-auth-flow.cmd; CP1 real-client proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.AUTH.SRP.LOGON_PROOF", "label": "Logon Proof", "requirement": "Client proof is validated and a session key is stored for world login.", "proof": "test-auth-flow.cmd; auth DB assertions.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}]}, {"id": "WOW.CHARACTER", "label": "Character Lifecycle", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 10, "redCount": 1, "yellowCount": 3, "greenCount": 6, "completion": 0.75, "children": [{"id": "WOW.CHARACTER.CREATE", "label": "Create", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 0, "yellowCount": 2, "greenCount": 1, "completion": 0.6666666666666666, "children": [{"id": "WOW.CHARACTER.CREATE.INVALID_NAMES", "label": "Invalid Names", "requirement": "Invalid, duplicate, reserved, and malformed names fail with correct client result.", "proof": "Some create failures covered; full name policy needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.CHARACTER.CREATE.RACE_CLASS_GENDER_DISPLAY", "label": "Race Class Gender Display", "requirement": "Race, class, gender, and appearance choices map to correct display IDs and restrictions.", "proof": "CP1 partial race/gender proof; full matrix needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.CHARACTER.CREATE.VALID_HUMAN_WARRIOR", "label": "Valid Human Warrior", "requirement": "Fresh Human Warrior can be created with DB-backed starter state.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.CUSTOMIZATION", "label": "Customization", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.CHARACTER.CUSTOMIZATION.ALL_RACES", "label": "All Races", "requirement": "All Classic race/class/gender appearance options are validated and persisted.", "proof": "Needs matrix harness.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.CHARACTER.DELETE", "label": "Delete", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.CHARACTER.DELETE.NON_LOADED", "label": "Non Loaded", "requirement": "Non-loaded characters can be deleted and counts update.", "proof": "CP1 flow proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.ENUM", "label": "Enum", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.CHARACTER.ENUM.LIST", "label": "List", "requirement": "Character screen enumerates existing characters with correct core fields.", "proof": "test-world-flow.cmd; real-client CP1.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.LOGIN", "label": "Login", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.CHARACTER.LOGIN.ENTER_WORLD", "label": "Enter World", "requirement": "Fresh character enters world without loading-screen hang.", "proof": "test-world-flow.cmd; starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.LOGOUT", "label": "Logout", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.CHARACTER.LOGOUT.SELECT_SCREEN", "label": "Select Screen", "requirement": "Logout returns safely to character screen with persisted basics.", "proof": "CP1 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.RELOG", "label": "Relog", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.CHARACTER.RELOG.BASIC_STATE", "label": "Basic State", "requirement": "Position and basic state survive relog.", "proof": "test-world-flow.cmd.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.CHARACTER.TUTORIAL_CINEMATIC", "label": "Tutorial Cinematic", "requirement": "Cinematic/tutorial flags are sane for starter characters.", "proof": "Starter state proof exists; parity audit needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.COMBAT", "label": "Combat", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 18, "redCount": 4, "yellowCount": 9, "greenCount": 5, "completion": 0.5277777777777778, "children": [{"id": "WOW.COMBAT.AGGRO", "label": "Aggro", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 1, "greenCount": 1, "completion": 0.75, "children": [{"id": "WOW.COMBAT.AGGRO.ASSIST", "label": "Assist", "requirement": "Same-faction nearby assists are called with CMaNGOS-like radius.", "proof": "Unit coverage; broader faction/AI proof pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.COMBAT.AGGRO.ON_SIGHT", "label": "On Sight", "requirement": "Hostile starter creatures aggro from movement proximity with DB detection range.", "proof": "G8 proof.", "status": "green", "rawStatus": "green", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.COMBAT.CHASE", "label": "Chase", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.COMBAT.CHASE.MOVE_INTO_RANGE", "label": "Move Into Range", "requirement": "Aggroed melee creatures chase and stop near melee reach.", "proof": "G8 proof; motion polish pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.COMBAT.DAMAGE", "label": "Damage", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 2, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.COMBAT.DAMAGE.CREATURE_FORMULA", "label": "Creature Formula", "requirement": "Creature melee damage uses DB min/max, armor mitigation, and block outcome.", "proof": "First slice exists; broader stats pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.COMBAT.DAMAGE.PLAYER_FORMULA", "label": "Player Formula", "requirement": "Player auto-attack damage uses equipped weapon and class/stat attack power.", "proof": "First slice exists; full combat math pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.COMBAT.DEATH", "label": "Death", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 0, "greenCount": 2, "completion": 1.0, "children": [{"id": "WOW.COMBAT.DEATH.CREATURE", "label": "Creature", "requirement": "Creature death broadcasts state, stops motion, opens loot, and later respawns.", "proof": "G5/G12 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.COMBAT.DEATH.PLAYER", "label": "Player", "requirement": "Player can die, release, become ghost, reclaim, and resurrect.", "proof": "G7 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.COMBAT.LEASH", "label": "Leash", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.COMBAT.LEASH.EVADE_HOME", "label": "Evade Home", "requirement": "Creatures leash, clear combat, reset health, and return home.", "proof": "First slice exists; hit-reactivation and persistence parity pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.COMBAT.LOG", "label": "Log", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 2, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.COMBAT.LOG.MELEE", "label": "Melee", "requirement": "Client combat log receives melee hit, miss, dodge, parry, block, crit, and damage feedback.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.COMBAT.LOG.SPELL", "label": "Spell", "requirement": "Client combat log receives spell cast, damage, miss, resist, and resource feedback.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.COMBAT.MELEE", "label": "Melee", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 4, "redCount": 1, "yellowCount": 3, "greenCount": 0, "completion": 0.375, "children": [{"id": "WOW.COMBAT.MELEE.CREATURE_OUTCOME_TABLE", "label": "Creature Outcome Table", "requirement": "Creature melee rolls miss/dodge/parry/block/glancing/crit/crushing and serializes attacker-state updates.", "proof": "First outcome path exists; live stats pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.COMBAT.MELEE.PLAYER_OUTCOME_TABLE", "label": "Player Outcome Table", "requirement": "Player offensive outcome rolls use weapon skill, defense, target level, and positional rules.", "proof": "Current G8 follow-up.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.COMBAT.MELEE.RANGE_FACING", "label": "Range Facing", "requirement": "Player and creature melee require valid range and facing guardrails.", "proof": "Tests exist; exact reach/model modifiers pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.COMBAT.MELEE.SWING_TIMERS", "label": "Swing Timers", "requirement": "Player and creature melee use independent timers from weapon/base attack time.", "proof": "Starter coverage; broad weapon/aura modifiers pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.COMBAT.PVP_DUEL", "label": "PvP Duel", "requirement": "Player-vs-player duels and hostile player combat are implemented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.COMBAT.START_STOP", "label": "Start Stop", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 0, "greenCount": 2, "completion": 1.0, "children": [{"id": "WOW.COMBAT.START_STOP.CREATURE_ATTACK", "label": "Creature Attack", "requirement": "DB creatures can aggro, claim victims, and stop on invalid targets/death.", "proof": "G8/G12 tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.COMBAT.START_STOP.PLAYER_ATTACK", "label": "Player Attack", "requirement": "Player can start and stop attacking DB creatures safely.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.COMBAT.THREAT", "label": "Threat", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.COMBAT.THREAT.BASIC_VICTIM", "label": "Basic Victim", "requirement": "Creature victim and attacker state are map-owned and cleaned up on death/logout.", "proof": "Shared tests; full threat table pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}]}, {"id": "WOW.DATA", "label": "Data Fidelity And Content Loading", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 9, "redCount": 2, "yellowCount": 5, "greenCount": 2, "completion": 0.5, "children": [{"id": "WOW.DATA.CHARACTERS_SCHEMA", "label": "Characters Schema", "requirement": "Character DB reads/writes remain compatible with CMaNGOS character schema for implemented systems.", "proof": "Tests by subsystem; full schema audit pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.DATA.DBC", "label": "DBC", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 2, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.DATA.DBC.CLASSES_RACES_STATS", "label": "Classes Races Stats", "requirement": "Race/class stats, skills, display data, and level progression derive from DBC/source.", "proof": "Needed before broad character parity.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.DATA.DBC.SPELLS", "label": "Spells", "requirement": "Spell effects, ranges, schools, costs, cooldowns, aura data, and ranks derive from DBC/source.", "proof": "Needed for real spell parity.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.DATA.MAPS_VMAPS_MMAPS", "label": "Maps Vmaps Mmaps", "requirement": "Map/vmap/mmap paths are detected and available to movement/combat systems.", "proof": "Startup/navigation checks; full LOS/pathing pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.DATA.REALMD_SCHEMA", "label": "Realmd Schema", "requirement": "Auth schema remains compatible with Classic realmd.", "proof": "Auth DB tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.DATA.WORLD_DB_CREATURES", "label": "World DB Creatures", "requirement": "Creature templates/spawns for starter zones load from real world DB when present.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.DATA.WORLD_DB_GAMEOBJECTS", "label": "World DB Gameobjects", "requirement": "Gameobject rows are recognized for fixture/startup checks.", "proof": "Activation/objective behavior pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.DATA.WORLD_DB_LOOT", "label": "World DB Loot", "requirement": "DB-backed loot basics exist.", "proof": "Harness partial; real loot-table rolling pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.DATA.WORLD_DB_QUESTS", "label": "World DB Quests", "requirement": "Quest templates and starter quest rows load enough for supported flows.", "proof": "Quest loop proof; eligibility fields pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.INSTANCES", "label": "Dungeons, Instances, Raids, And Encounters", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 5, "redCount": 5, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.INSTANCES.BIND_RESET", "label": "Bind Reset", "requirement": "Bind, soft reset, hard reset, lockout, and corpse entrance behavior work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.INSTANCES.BOSS_AI", "label": "Boss AI", "requirement": "Boss combat, threat, scripts, spells, loot locks, and reset behavior are CMaNGOS-like.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.INSTANCES.DUNGEON_PORTALS", "label": "Dungeon Portals", "requirement": "Dungeon portals, meeting stones, entrance requirements, and teleport handling work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.INSTANCES.MAP_CREATION", "label": "Map Creation", "requirement": "Instance maps create isolated runtime state per group/reset.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.INSTANCES.RAID_GROUPS", "label": "Raid Groups", "requirement": "Raid groups, conversions, markers, assist, loot rules, and lockouts work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.ITEMS", "label": "Loot, Inventory, Items, And Economy", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 14, "redCount": 6, "yellowCount": 3, "greenCount": 5, "completion": 0.4642857142857143, "children": [{"id": "WOW.ITEMS.AUCTION_HOUSE", "label": "Auction House", "requirement": "Auction house listing, bidding, buyout, deposits, and mail delivery work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.ITEMS.BANK_BAGS", "label": "Bank Bags", "requirement": "Bank, bags, slots, and bag-specific constraints are Classic-like.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.ITEMS.DURABILITY_REPAIR", "label": "Durability Repair", "requirement": "Durability loss, repair, and death durability rules work.", "proof": "G7 follow-up/deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.ITEMS.EQUIPMENT", "label": "Equipment", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.ITEMS.EQUIPMENT.VISIBLE_FIELDS", "label": "Visible Fields", "requirement": "Nearby players see equipment visual updates for implemented equip/unequip paths.", "proof": "G12 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.ITEMS.INVENTORY", "label": "Inventory", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 1, "greenCount": 1, "completion": 0.75, "children": [{"id": "WOW.ITEMS.INVENTORY.MOVE_EQUIP_DESTROY", "label": "Move Equip Destroy", "requirement": "Move, equip, unequip, destroy, split, stack merge, and equipped-bag movement work and persist.", "proof": "CP1 proof; broader item edge cases pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.ITEMS.INVENTORY.STARTER_ITEMS", "label": "Starter Items", "requirement": "Fresh character receives starter inventory/equipment state.", "proof": "CP1/starter proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.ITEMS.ITEM_QUERY", "label": "Item Query", "requirement": "Client item queries return correct DB-backed item data for implemented items.", "proof": "Existing item query builders; broader matrix pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.ITEMS.LOOT", "label": "Loot", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 5, "redCount": 1, "yellowCount": 1, "greenCount": 3, "completion": 0.7, "children": [{"id": "WOW.ITEMS.LOOT.CORPSE_RELEASE", "label": "Corpse Release", "requirement": "Loot release updates corpse flags for observers and respawn lifecycle.", "proof": "G12 harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.ITEMS.LOOT.MONEY", "label": "Money", "requirement": "Creature money loot can be claimed once and persists.", "proof": "Starter-zone shared wolf proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.ITEMS.LOOT.MULTICLIENT_EXCLUSIVE", "label": "Multiclient Exclusive", "requirement": "Two clients cannot duplicate the same creature loot claim.", "proof": "G12 harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.ITEMS.LOOT.NORMAL_ITEMS", "label": "Normal Items", "requirement": "Normal item loot opens, autostores, handles inventory, and persists.", "proof": "Harness partial; full CMaNGOS loot table issue remains.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.ITEMS.LOOT.QUEST_ITEMS", "label": "Quest Items", "requirement": "Quest item loot rolls from real tables and respects quest eligibility.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.ITEMS.MAIL", "label": "Mail", "requirement": "Mail attachments, money, COD, expiry, and mailbox UI work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.ITEMS.VENDOR", "label": "Vendor", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.ITEMS.VENDOR.BUY_SELL", "label": "Buy Sell", "requirement": "Vendor buy/sell, inventory availability, money checks, refund-like edge cases, and persistence work.", "proof": "CP2 pending.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}]}, {"id": "WOW.MOVEMENT", "label": "Movement, Navigation, And Physics", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 10, "redCount": 4, "yellowCount": 5, "greenCount": 1, "completion": 0.35, "children": [{"id": "WOW.MOVEMENT.COLLISION", "label": "Collision", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.MOVEMENT.COLLISION.WATER_LIQUID", "label": "Water Liquid", "requirement": "Water, swimming, fatigue, liquid status, and collision state are Classic-like.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.MOVEMENT.CREATURE", "label": "Creature", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 4, "redCount": 1, "yellowCount": 3, "greenCount": 0, "completion": 0.375, "children": [{"id": "WOW.MOVEMENT.CREATURE.PATROL_LONG_RUNNING", "label": "Patrol Long Running", "requirement": "Patrols stay alive over time, combat, death, respawn, grid activity, and observer churn.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.MOVEMENT.CREATURE.RANDOM", "label": "Random", "requirement": "DB MovementType random movement uses CMaNGOS-like timing and safe positions.", "proof": "Tests exist; true pathfinder random points remain.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.MOVEMENT.CREATURE.SPLINES", "label": "Splines", "requirement": "Creature movement publishes timed SMSG_MONSTER_MOVE splines visible to clients.", "proof": "G8/G9 tests; real-client feel still under tuning.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.MOVEMENT.CREATURE.WAYPOINT", "label": "Waypoint", "requirement": "DB waypoint/path movement runs with waits and linear back-and-forth behavior.", "proof": "Tests exist; script hooks and long stability pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.MOVEMENT.PATHFINDING", "label": "Pathfinding", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 1, "yellowCount": 1, "greenCount": 0, "completion": 0.25, "children": [{"id": "WOW.MOVEMENT.PATHFINDING.MMAP", "label": "MMap", "requirement": "Generated mmap tiles are detected and Detour paths can be used where present.", "proof": "Navigation tests; smoothing and flags pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.MOVEMENT.PATHFINDING.VMAP_LOS", "label": "VMap LOS", "requirement": "LOS and terrain checks gate aggro, spell, and ranged interactions.", "proof": "Interface exists; full parity pending.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.MOVEMENT.PLAYER", "label": "Player", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 1, "yellowCount": 1, "greenCount": 1, "completion": 0.5, "children": [{"id": "WOW.MOVEMENT.PLAYER.JUMP_FALL", "label": "Jump Fall", "requirement": "Jump/fall packets are accepted and persistence remains sane.", "proof": "Needs focused real-client fall proof.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.MOVEMENT.PLAYER.SPEED_MODIFIERS", "label": "Speed Modifiers", "requirement": "Walk, run, swim, mount, slow, root, and speed aura changes are authoritative.", "proof": "Needs spell/aura integration.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.MOVEMENT.PLAYER.WALK_RUN_TURN", "label": "Walk Run Turn", "requirement": "Player walking, running, turning, and position persistence work without disconnect.", "proof": "CP1/G3 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}]}, {"id": "WOW.OBJECTS", "label": "Creatures, NPCs, And Gameobjects", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 14, "redCount": 4, "yellowCount": 4, "greenCount": 6, "completion": 0.5714285714285714, "children": [{"id": "WOW.OBJECTS.CORPSE", "label": "Corpse", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.OBJECTS.CORPSE.PLAYER_CREATE", "label": "Player Create", "requirement": "Player corpse objects stream, query, reclaim, and become bones.", "proof": "G7 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.OBJECTS.CREATURE", "label": "Creature", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 5, "redCount": 0, "yellowCount": 0, "greenCount": 5, "completion": 1.0, "children": [{"id": "WOW.OBJECTS.CREATURE.DB_SPAWNS", "label": "DB Spawns", "requirement": "Starter creatures load from real DB spawn/template rows when available.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.OBJECTS.CREATURE.FACTION_REACTION", "label": "Faction Reaction", "requirement": "Hostile, neutral, and friendly starter reactions use faction-template bridge instead of entry allowlists.", "proof": "G8 tests and real-client observation.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.OBJECTS.CREATURE.LIFECYCLE", "label": "Lifecycle", "requirement": "DB creatures can be alive, corpse, dead, despawned, and respawned with DB/template timers.", "proof": "G5/G9 tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.OBJECTS.CREATURE.QUERY_DETAILS", "label": "Query Details", "requirement": "Client can query creature name/display data for implemented DB creatures.", "proof": "CP1/G2 proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.OBJECTS.CREATURE.RESPAWN_PERSISTENCE", "label": "Respawn Persistence", "requirement": "Creature respawn state persists in characters.creature_respawn where CMaNGOS expects it.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.OBJECTS.DYNAMIC_OBJECTS", "label": "Dynamic Objects", "requirement": "Dynamic objects, area triggers, and spell visuals are represented.", "proof": "Spell/aura future work.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.OBJECTS.GAMEOBJECT", "label": "Gameobject", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 1, "yellowCount": 1, "greenCount": 0, "completion": 0.25, "children": [{"id": "WOW.OBJECTS.GAMEOBJECT.QUEST_USE", "label": "Quest Use", "requirement": "Gameobject quest pickup/activation grants objective or quest item with respawn/availability rules.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.OBJECTS.GAMEOBJECT.SPAWN_QUERY", "label": "Spawn Query", "requirement": "Gameobject DB rows can exist and be queried for starter fixtures.", "proof": "Fixture validation only.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.OBJECTS.NPC", "label": "NPC", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 5, "redCount": 2, "yellowCount": 3, "greenCount": 0, "completion": 0.3, "children": [{"id": "WOW.OBJECTS.NPC.FLAGS_AND_CURSORS", "label": "Flags And Cursors", "requirement": "NPC flags, cursor affordances, wrong-class trainer behavior, and non-interactive NPC behavior match CMaNGOS.", "proof": "G10 pending.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.OBJECTS.NPC.GOSSIP", "label": "Gossip", "requirement": "Gossip hello and menu flows are correct for implemented starter NPCs.", "proof": "Harness coverage partial.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.OBJECTS.NPC.QUEST_GIVER_STATUS", "label": "Quest Giver Status", "requirement": "Quest givers expose correct available/reward/unavailable status icons.", "proof": "Basic quest loop works; eligibility filters pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.OBJECTS.NPC.TRAINER", "label": "Trainer", "requirement": "Trainer list, buy, learned spell packet, and persistence work for selected starter warrior spell.", "proof": "Starter-zone harness; full trainer states pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.OBJECTS.NPC.VENDOR", "label": "Vendor", "requirement": "Vendor buy/sell, price, inventory, stack, money, and persistence are Classic-like.", "proof": "CP2 required later.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}]}, {"id": "WOW.PERSISTENCE", "label": "Persistence And Relog Durability", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 9, "redCount": 1, "yellowCount": 5, "greenCount": 3, "completion": 0.6111111111111112, "children": [{"id": "WOW.PERSISTENCE.CRASH_RECOVERY", "label": "Crash Recovery", "requirement": "Server restart restores durable character, creature, quest, corpse, and mail state correctly.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PERSISTENCE.CREATURE_RESPAWN", "label": "Creature Respawn", "requirement": "Creature respawn persistence works for DB creatures.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.PERSISTENCE.DEATH_CORPSE", "label": "Death Corpse", "requirement": "Dead, ghost, corpse, reclaim, bones, and corpse row deletion remain sane.", "proof": "G7 harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.PERSISTENCE.HEALTH_POWER", "label": "Health Power", "requirement": "Health and power persist/reset according to Classic rules across relog/death.", "proof": "Death proof exists; regen/resource rules pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PERSISTENCE.INVENTORY_MONEY", "label": "Inventory Money", "requirement": "Inventory and money persist after loot, move, buy/sell, and relog.", "proof": "Loot proof partial; vendor pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PERSISTENCE.MULTICLIENT_CONSISTENCY", "label": "Multiclient Consistency", "requirement": "Logout/relog during combat, corpse, loot, and grid-load states cannot fork shared state.", "proof": "Shared state proof exists; dedicated torture coverage pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PERSISTENCE.POSITION", "label": "Position", "requirement": "Position persists across logout/relog and movement.", "proof": "CP1/G11 partial proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.PERSISTENCE.QUEST_STATE", "label": "Quest State", "requirement": "Quest accepted/progress/rewarded state persists after relog.", "proof": "One starter quest proof; broader matrix pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PERSISTENCE.SPELLS_SKILLS", "label": "Spells Skills", "requirement": "Learned spells and skill state persist.", "proof": "Learned spell proof; skills pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.PROGRESSION", "label": "Progression, Stats, Skills, And Reputation", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 11, "redCount": 5, "yellowCount": 6, "greenCount": 0, "completion": 0.2727272727272727, "children": [{"id": "WOW.PROGRESSION.LEVEL_UP", "label": "Level Up", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.PROGRESSION.LEVEL_UP.PACKETS", "label": "Packets", "requirement": "Level-up packets, stat refresh, health/power refresh, and persistence are correct.", "proof": "Trainer/level gate partial.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.PROGRESSION.REPUTATION", "label": "Reputation", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 1, "yellowCount": 1, "greenCount": 0, "completion": 0.25, "children": [{"id": "WOW.PROGRESSION.REPUTATION.FACTION_STANDING", "label": "Faction Standing", "requirement": "Reputation manager supports faction standing enough for hostile/friendly reactions.", "proof": "Combat reaction bridge exists; full rep UI/rewards pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PROGRESSION.REPUTATION.GAINS", "label": "Gains", "requirement": "Reputation gains, spillover, ranks, and UI updates work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.PROGRESSION.SKILLS", "label": "Skills", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 3, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.PROGRESSION.SKILLS.LOAD_SHOW", "label": "Load Show", "requirement": "Skills and weapon skills load and display in the client.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PROGRESSION.SKILLS.TRADE_LANGUAGE_DEFENSE", "label": "Trade Language Defense", "requirement": "Defense, languages, professions, class skills, and trade skills are represented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PROGRESSION.SKILLS.WEAPON_ADVANCE", "label": "Weapon Advance", "requirement": "Weapon skills advance from real actions and persist.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.PROGRESSION.STATS", "label": "Stats", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 2, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.PROGRESSION.STATS.BASE_CLASS_RACE", "label": "Base Class Race", "requirement": "Base stats derive from source/DBC/DB rather than invented constants.", "proof": "Starter state sane; full derivation audit pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PROGRESSION.STATS.DERIVED_COMBAT", "label": "Derived Combat", "requirement": "Attack power, armor, defense, block, crit, and damage derive from stats/equipment.", "proof": "First combat slice; full parity pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.PROGRESSION.TALENTS", "label": "Talents", "requirement": "Talent points, learn/unlearn, prerequisites, and reset costs work.", "proof": "Deferred beyond level 6.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PROGRESSION.XP", "label": "XP", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 2, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.PROGRESSION.XP.CREATURE", "label": "Creature", "requirement": "Creature XP grants render and persist.", "proof": "Starter proof exists; formula parity pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PROGRESSION.XP.QUEST", "label": "Quest", "requirement": "Quest XP grants render and persist.", "proof": "Partial CP2 proof needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}]}, {"id": "WOW.PROTOCOL", "label": "World Session And Protocol", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 6, "redCount": 1, "yellowCount": 3, "greenCount": 2, "completion": 0.5833333333333334, "children": [{"id": "WOW.PROTOCOL.AUTH_SESSION", "label": "Auth Session", "requirement": "Worldserver validates CMSG_AUTH_SESSION and sends accepted auth response.", "proof": "test-world-flow.cmd; starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.PROTOCOL.CRYPTO_HEADER", "label": "Crypto Header", "requirement": "World packet header crypto works after auth handoff.", "proof": "Auth/world flow tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.PROTOCOL.OPCODE_TABLE", "label": "Opcode Table", "requirement": "Supported opcode table routes known client startup/gameplay opcodes without desync.", "proof": "Harness coverage exists; unsupported opcode audit remains.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PROTOCOL.PACKET_SERIALIZATION", "label": "Packet Serialization", "requirement": "Packet builders serialize Classic 1.12.1 shapes for implemented systems.", "proof": "Unit tests and real-client smoke by subsystem.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.PROTOCOL.SESSION_LOOP_BACKPRESSURE", "label": "Session Loop Backpressure", "requirement": "Slow clients, packet bursts, disconnects, and socket errors do not corrupt world state.", "proof": "Needs stress harness.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PROTOCOL.UNKNOWN_OPCODE_HANDLING", "label": "Unknown Opcode Handling", "requirement": "Unsupported opcodes are logged, ignored, or rejected safely without disconnect loops.", "proof": "CP1 quietness proof; broader audit needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.PVP", "label": "PvP, Honor, Battlegrounds, And World PvP", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 5, "redCount": 5, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.PVP.BATTLEGROUNDS", "label": "Battlegrounds", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 2, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.PVP.BATTLEGROUNDS.QUEUE", "label": "Queue", "requirement": "Battleground queue, invite, join, leave, deserter, and scoreboard work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PVP.BATTLEGROUNDS.WSG_AB_AV", "label": "Wsg Ab Av", "requirement": "Warsong Gulch, Arathi Basin, and Alterac Valley objectives and rewards work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.PVP.DUELS", "label": "Duels", "requirement": "Duel request, boundary, victory, cancel, and class combat integration work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PVP.FLAGS", "label": "Flags", "requirement": "PvP flags, sanctuary/contested zones, faction attackability, and timers work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.PVP.HONOR_KILLS", "label": "Honor Kills", "requirement": "Honorable kills, dishonorable kills, contribution points, ranks, and decay work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.QUESTS", "label": "Quests And Objectives", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 13, "redCount": 8, "yellowCount": 3, "greenCount": 2, "completion": 0.2692307692307692, "children": [{"id": "WOW.QUESTS.ACCEPT", "label": "Accept", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.QUESTS.ACCEPT.BASIC", "label": "Basic", "requirement": "Client can accept supported starter quests.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.QUESTS.COMPLETE", "label": "Complete", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.QUESTS.COMPLETE.REWARD", "label": "Reward", "requirement": "Supported starter quest can be completed/rewarded in client.", "proof": "Harness green; real-client final proof still useful.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.QUESTS.ELIGIBILITY", "label": "Eligibility", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 4, "redCount": 4, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.QUESTS.ELIGIBILITY.LEVEL", "label": "Level", "requirement": "Quest availability filters by level.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.ELIGIBILITY.PREREQUISITE_CHAIN", "label": "Prerequisite Chain", "requirement": "Quest availability filters by prerequisite, chain, exclusive group, and previous completion.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.ELIGIBILITY.RACE_CLASS", "label": "Race Class", "requirement": "Quest availability filters by race and class.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.ELIGIBILITY.REPEATABLE_DAILY", "label": "Repeatable Daily", "requirement": "Repeatability and completed-state availability follow CMaNGOS.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.QUESTS.LOG_LIMITS", "label": "Log Limits", "requirement": "Quest log capacity, failure result codes, abandon, and share restrictions are Classic-like.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.OBJECTIVES", "label": "Objectives", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 3, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.QUESTS.OBJECTIVES.EXPLORE_SPELL_EMOTE", "label": "Explore Spell Emote", "requirement": "Explore, spellcast, escort, reputation, and script objectives are represented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.OBJECTIVES.GAMEOBJECT", "label": "Gameobject", "requirement": "Gameobject objectives and pickup quests work with DB-backed gameobjects.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.QUESTS.OBJECTIVES.ITEM_DROPS", "label": "Item Drops", "requirement": "Quest item objectives drop only from real loot tables and only for eligible active quests.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.QUESTS.PROGRESS", "label": "Progress", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.QUESTS.PROGRESS.KILL_COUNT", "label": "Kill Count", "requirement": "Kill-count quest progress updates and completes.", "proof": "Kobold Camp Cleanup proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.QUESTS.RELOG_PERSISTENCE", "label": "Relog Persistence", "requirement": "Accepted/progress/completed quest state persists after relog.", "proof": "Starter proof for one quest; broader matrix pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.QUESTS.REWARDS", "label": "Rewards", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.QUESTS.REWARDS.XP_MONEY_ITEMS", "label": "XP Money Items", "requirement": "Quest rewards grant XP, money, items, spell/faction where applicable.", "proof": "Partial; CP2 closure needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}]}, {"id": "WOW.SCRIPTS", "label": "AI, Scripts, Events, And World Logic", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 6, "redCount": 5, "yellowCount": 1, "greenCount": 0, "completion": 0.08333333333333333, "children": [{"id": "WOW.SCRIPTS.CREATURE_AI", "label": "Creature AI", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 1, "yellowCount": 1, "greenCount": 0, "completion": 0.25, "children": [{"id": "WOW.SCRIPTS.CREATURE_AI.BASIC_AGGRO", "label": "Basic Aggro", "requirement": "Creature AI can aggro, chase, melee, assist, evade, and return home for starter mobs.", "proof": "G8 partial.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.SCRIPTS.CREATURE_AI.SPELL_CASTING", "label": "Spell Casting", "requirement": "Creature spell casting, cooldowns, target selection, and interrupt behavior work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SCRIPTS.ESCORTS", "label": "Escorts", "requirement": "Escort quests and waypoint script hooks are implemented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.SCRIPTS.EVENTS", "label": "Events", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SCRIPTS.EVENTS.DB_SCRIPTS", "label": "DB Scripts", "requirement": "DB script commands for quests, gossip, gameobjects, movement, and events are executed.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SCRIPTS.GAME_EVENTS", "label": "Game Events", "requirement": "Holiday/world events spawn, despawn, and change NPC/gameobject behavior.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.SCRIPTS.SMARTAI_EQUIVALENT", "label": "Smartai Equivalent", "requirement": "CMaNGOS creature/gameobject AI scripts used by Classic content are represented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SOCIAL", "label": "Social, Group, Guild, And Communication", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 6, "redCount": 5, "yellowCount": 0, "greenCount": 1, "completion": 0.16666666666666666, "children": [{"id": "WOW.SOCIAL.CHAT", "label": "Chat", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 1, "yellowCount": 0, "greenCount": 1, "completion": 0.5, "children": [{"id": "WOW.SOCIAL.CHAT.SAY", "label": "Say", "requirement": "Local say works for nearby players.", "proof": "G12 harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.SOCIAL.CHAT.YELL_WHISPER_PARTY_GUILD", "label": "Yell Whisper Party Guild", "requirement": "Yell, whisper, party, guild, officer, raid, and channel chat work with errors.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SOCIAL.FRIEND_IGNORE", "label": "Friend Ignore", "requirement": "Friend, ignore, who, played, and online notifications work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.SOCIAL.GUILD", "label": "Guild", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SOCIAL.GUILD.BASIC", "label": "Basic", "requirement": "Guild create, roster, ranks, permissions, MOTD, and chat work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SOCIAL.PARTY", "label": "Party", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SOCIAL.PARTY.BASIC", "label": "Basic", "requirement": "Invite, accept, leave, leader, loot method, XP/quest sharing, and minimap member state work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SOCIAL.TRADE", "label": "Trade", "requirement": "Player trade, money/items, cancel, confirmation, and anti-dupe safeguards work.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS", "label": "Spells, Auras, Classes, And Resources", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 13, "redCount": 8, "yellowCount": 5, "greenCount": 0, "completion": 0.19230769230769232, "children": [{"id": "WOW.SPELLS.AURAS", "label": "Auras", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SPELLS.AURAS.APPLY_REMOVE", "label": "Apply Remove", "requirement": "Aura apply/remove, durations, stacking, periodic ticks, and stat modifiers are generic.", "proof": "Future spell foundation.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS.CAST", "label": "Cast", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.SPELLS.CAST.START_GO_RESULT", "label": "Start Go Result", "requirement": "Implemented casts send correct cast result/start/go packet shapes.", "proof": "Heroic Strike/Battle Shout coverage; broad matrix pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.SPELLS.COOLDOWN", "label": "Cooldown", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SPELLS.COOLDOWN.PER_SPELL", "label": "Per Spell", "requirement": "Per-spell cooldowns, categories, and failure packets are Classic-like.", "proof": "Needed for warrior level 1-6.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS.GCD", "label": "GCD", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SPELLS.GCD.GLOBAL", "label": "Global", "requirement": "Global cooldown starts, blocks, expires, and is visible to the client.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS.POWER", "label": "Power", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.SPELLS.POWER.COSTS", "label": "Costs", "requirement": "Supported starter spells spend/validate power correctly.", "proof": "Partial starter spell tests.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.SPELLS.RESOURCES", "label": "Resources", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 3, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SPELLS.RESOURCES.HEALTH_REGEN", "label": "Health Regen", "requirement": "Health regeneration ticks with CMaNGOS-like timing/rates and packet updates.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.SPELLS.RESOURCES.MANA_ENERGY", "label": "Mana Energy", "requirement": "Mana, energy, focus, and other power regeneration rules are implemented.", "proof": "Deferred beyond warrior slice.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.SPELLS.RESOURCES.RAGE_DECAY", "label": "Rage Decay", "requirement": "Warrior rage degenerates out of combat with Classic timing and packet updates.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS.SPELLBOOK", "label": "Spellbook", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": [{"id": "WOW.SPELLS.SPELLBOOK.PERSISTENCE", "label": "Persistence", "requirement": "Learned spells load, display, and persist.", "proof": "Starter trainer proof; full class/race matrix pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}]}, {"id": "WOW.SPELLS.TARGETING", "label": "Targeting", "requirement": "", "proof": "", "status": "red", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": [{"id": "WOW.SPELLS.TARGETING.RANGE_FACING_LOS", "label": "Range Facing LOS", "requirement": "Spell target validation uses range, facing, LOS, target type, and failure packets.", "proof": "Needed before broad spell parity.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}, {"id": "WOW.SPELLS.WARRIOR", "label": "Warrior", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 1, "yellowCount": 2, "greenCount": 0, "completion": 0.3333333333333333, "children": [{"id": "WOW.SPELLS.WARRIOR.BATTLE_SHOUT", "label": "Battle Shout", "requirement": "Battle Shout can be learned and appears in the spellbook.", "proof": "Trainer persistence proof; aura/effect parity pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.SPELLS.WARRIOR.HEROIC_STRIKE", "label": "Heroic Strike", "requirement": "Heroic Strike queues as next melee, delays spell-go until swing, and reports yellow damage.", "proof": "Packet-shape tests; real-client queued-state smoke pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.SPELLS.WARRIOR.LEVEL_1_6", "label": "Level 1 6", "requirement": "All Human Warrior level 1-6 actions needed for Northshire use real spell data/effects.", "proof": "Current Northshire missing criterion.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}]}, {"id": "WOW.TOOLING", "label": "Operations, Tooling, And Test Harnesses", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 7, "redCount": 1, "yellowCount": 3, "greenCount": 3, "completion": 0.6428571428571429, "children": [{"id": "WOW.TOOLING.PACKET_CAPTURE_DIFF", "label": "Packet Capture Diff", "requirement": "Packet captures can be compared against CMaNGOS for high-risk protocol parity.", "proof": "Future useful tooling.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.TOOLING.PERF_COUNTERS", "label": "Perf Counters", "requirement": "Query counts, grid loads, and runtime counters expose performance-sensitive world behavior.", "proof": "G12 grid counters; broader counters pending.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.TOOLING.REAL_CLIENT_SMOKE", "label": "Real Client Smoke", "requirement": "Manual real-client checklists are kept for player-visible behavior that harnesses cannot yet prove.", "proof": "Needs final CP2 closure table.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.TOOLING.STARTER_ZONE_FLOW", "label": "Starter Zone Flow", "requirement": ".\\scripts\\test-starter-zone-flow.cmd proves Northshire starter flows.", "proof": "Strong CP2 coverage; user real-client proof remains the closure authority.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.TOOLING.TEST_AUTH_FLOW", "label": "Test Auth Flow", "requirement": ".\\scripts\\test-auth-flow.cmd verifies auth protocol behavior.", "proof": "Auth foundation gate.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.TOOLING.TEST_DB", "label": "Test DB", "requirement": ".\\scripts\\test-rust-db.cmd verifies auth DB/TCP startup paths.", "proof": "Auth foundation gate.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.TOOLING.TEST_RUST", "label": "Test Rust", "requirement": ".\\scripts\\test-rust.cmd verifies the Rust workspace baseline.", "proof": "Current standard gate.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD", "label": "World Runtime, Maps, And Visibility", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 13, "redCount": 4, "yellowCount": 1, "greenCount": 8, "completion": 0.6538461538461539, "children": [{"id": "WOW.WORLD.CHAT", "label": "Chat", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.WORLD.CHAT.SAY_LOCAL", "label": "Say Local", "requirement": "Nearby /say broadcasts only to nearby players.", "proof": "Two-client harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD.CREATURE_VISIBILITY", "label": "Creature Visibility", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 0, "greenCount": 2, "completion": 1.0, "children": [{"id": "WOW.WORLD.CREATURE_VISIBILITY.LOGIN", "label": "Login", "requirement": "Login streams nearby DB-backed creatures from map state.", "proof": "Starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.WORLD.CREATURE_VISIBILITY.MOVEMENT", "label": "Movement", "requirement": "Movement streams new nearby creatures and destroys out-of-range ones.", "proof": "G3 harness and real-client proof.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD.GRID", "label": "Grid", "requirement": "", "proof": "", "status": "yellow", "rawStatus": null, "requiredFor": [], "leafCount": 3, "redCount": 1, "yellowCount": 0, "greenCount": 2, "completion": 0.6666666666666666, "children": [{"id": "WOW.WORLD.GRID.IDLE_UNLOAD", "label": "Idle Unload", "requirement": "Idle grids unload/evict safely while preserving combat, corpse, loot, and respawn invariants.", "proof": "Current G12 next action.", "status": "red", "rawStatus": "red", "requiredFor": ["CP2"], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.WORLD.GRID.LOAD_RECTANGLE", "label": "Load Rectangle", "requirement": "DB creatures lazy-load by CMaNGOS-shaped grid rectangle into runtime cells.", "proof": "map_runtime_ tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.WORLD.GRID.REUSE_LOADED", "label": "Reuse Loaded", "requirement": "Nearby players reuse loaded grids instead of repeating DB radius scans.", "proof": "Query-count tests.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD.INSTANCE_MAPS", "label": "Instance Maps", "requirement": "Instance map ownership, reset, bind, and group visibility are implemented.", "proof": "Deferred beyond Northshire.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.WORLD.MAPRUNTIME", "label": "Mapruntime", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": [{"id": "WOW.WORLD.MAPRUNTIME.SHARED_OWNER", "label": "Shared Owner", "requirement": "Live player and creature state belongs to shared MapRuntime, not per-session mini-worlds.", "proof": "G12 unit/harness coverage.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD.OBJECT_CREATE_FIELDS", "label": "Object Create Fields", "requirement": "Player, creature, corpse, item, and gameobject create blocks include correct Classic update fields.", "proof": "Strong starter coverage; full object matrix needed.", "status": "yellow", "rawStatus": "yellow", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 1, "greenCount": 0, "completion": 0.5, "children": []}, {"id": "WOW.WORLD.PLAYER_VISIBILITY", "label": "Player Visibility", "requirement": "", "proof": "", "status": "green", "rawStatus": null, "requiredFor": [], "leafCount": 2, "redCount": 0, "yellowCount": 0, "greenCount": 2, "completion": 1.0, "children": [{"id": "WOW.WORLD.PLAYER_VISIBILITY.MOVEMENT", "label": "Movement", "requirement": "Nearby players receive movement and out-of-range destroy/create updates.", "proof": "G12 harness; real-client smoke.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}, {"id": "WOW.WORLD.PLAYER_VISIBILITY.SPAWN", "label": "Spawn", "requirement": "Nearby players receive create blocks on login.", "proof": "Two-client starter-zone harness.", "status": "green", "rawStatus": "green", "requiredFor": [], "leafCount": 1, "redCount": 0, "yellowCount": 0, "greenCount": 1, "completion": 1.0, "children": []}]}, {"id": "WOW.WORLD.TRANSPORTS", "label": "Transports", "requirement": "Boats, zeppelins, elevators, and moving transports are implemented.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}, {"id": "WOW.WORLD.WEATHER_ZONE_STATE", "label": "Weather Zone State", "requirement": "Weather and zone environmental state are sent and updated.", "proof": "Deferred.", "status": "red", "rawStatus": "red", "requiredFor": [], "leafCount": 1, "redCount": 1, "yellowCount": 0, "greenCount": 0, "completion": 0.0, "children": []}]}]};
+let statusFilter = "all";
+let viewMode = "tree";
+let treeZoom = 0.86;
+let treePan = { x: 40, y: 34 };
+let treePointer = null;
+let treeDragged = false;
+let treeNeedsReset = true;
+let currentTreeFocusId = "WOW";
+let currentTreeFocus = { x: 0, y: 0, cardWidth: 132, y: 54 };
+const expandedNodeIds = new Set();
+const search = document.getElementById("search");
+const tagFilter = document.getElementById("tagFilter");
+document.getElementById("updated").textContent = "Generated " + new Date().toLocaleString();
+
+function pct(node) { return Math.round(node.completion * 100); }
+function counts(node) { return `${node.greenCount} green, ${node.yellowCount} yellow, ${node.redCount} red`; }
+function hasActiveFilter() {
+  return search.value.trim() || tagFilter.value !== "all" || statusFilter !== "all";
+}
+function selfMatches(node) {
+  const query = search.value.trim().toLowerCase();
+  const tag = tagFilter.value;
+  const text = [node.id, node.label, node.requirement, node.proof, ...(node.requiredFor || [])].join(" ").toLowerCase();
+  const queryOk = !query || text.includes(query);
+  const statusOk = statusFilter === "all" || node.status === statusFilter;
+  const tagOk = tag === "all" || (node.requiredFor || []).includes(tag);
+  return queryOk && statusOk && tagOk;
+}
+function filteredTree(node) {
+  const children = node.children.map(filteredTree).filter(Boolean);
+  if (selfMatches(node) || children.length) {
+    return { ...node, actualChildCount: node.children.length, children };
+  }
+  return null;
+}
+function nodeHtml(node, depth = 0) {
+  const visible = filteredTree(node);
+  if (!visible) return "";
+  node = visible;
+  const open = depth < 2 || search.value || tagFilter.value !== "all" || statusFilter !== "all";
+  const childHtml = node.children.map(child => nodeHtml(child, depth + 1)).filter(Boolean).join("");
+  const tags = (node.requiredFor || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
+  return `<details class="node" ${open ? "open" : ""}>
+    <summary>
+      <div class="row">
+        <span class="chevron">${node.children.length ? ">" : ""}</span>
+        <span class="node-title"><b>${escapeHtml(node.label)}</b><code>${escapeHtml(node.id)}</code></span>
+        <span class="pill ${node.status}">${capitalize(node.status)} ${pct(node)}%</span>
+      </div>
+      <div class="bar" style="--pct:${pct(node)}%"><span></span></div>
+    </summary>
+    <div class="node-body">
+      ${tags ? `<div class="tags">${tags}</div>` : ""}
+      ${node.requirement ? `<p class="requirement">${escapeHtml(node.requirement)}</p>` : ""}
+      ${node.proof ? `<p class="proof">${escapeHtml(node.proof)}</p>` : ""}
+      <div class="subtle">${node.leafCount} leaves: ${counts(node)}</div>
+      ${childHtml ? `<div class="children">${childHtml}</div>` : ""}
+    </div>
+  </details>`;
+}
+function visibleTreeData() {
+  if (hasActiveFilter()) return filteredTree(tree);
+  function compactNode(node) {
+    const isExpanded = expandedNodeIds.has(node.id);
+    return {
+      ...node,
+      actualChildCount: node.children.length,
+      children: isExpanded ? node.children.map(compactNode) : [],
+    };
+  }
+  return compactNode(tree);
+}
+function findNodePath(node, targetId, path = []) {
+  const nextPath = [...path, node.id];
+  if (node.id === targetId) return nextPath;
+  for (const child of node.children) {
+    const result = findNodePath(child, targetId, nextPath);
+    if (result) return result;
+  }
+  return null;
+}
+function setExpandedPathTo(nodeId, collapseIfAlreadyExpanded = false) {
+  const path = findNodePath(tree, nodeId);
+  if (!path) return;
+  const shouldCollapse = collapseIfAlreadyExpanded && expandedNodeIds.has(nodeId);
+  expandedNodeIds.clear();
+  const nextPath = shouldCollapse ? path.slice(0, -1) : path;
+  nextPath.forEach(id => expandedNodeIds.add(id));
+}
+function collectTreeLayout(root) {
+  const nodes = [];
+  const links = [];
+  function build(node, depth, parent, centerX) {
+    const layoutNode = {
+      ...node,
+      depth,
+      parent,
+      x: centerX - (depth === 0 ? 132 : 138) / 2,
+      y: 54 + depth * 104,
+      cardWidth: depth === 0 ? 132 : 138,
+      cardHeight: 30,
+      children: [],
+    };
+    nodes.push(layoutNode);
+    if (parent) {
+      links.push({ source: parent, target: layoutNode });
+    }
+    const childGap = 152;
+    const firstChildCenter = centerX - ((node.children.length - 1) * childGap) / 2;
+    layoutNode.children = node.children.map((child, index) =>
+      build(child, depth + 1, layoutNode, firstChildCenter + index * childGap)
+    );
+    return layoutNode;
+  }
+  build(root, 0, null, 700);
+  return { nodes, links };
+}
+function renderSvgTree() {
+  const root = visibleTreeData();
+  if (!root) {
+    return '<div class="tree-empty">No nodes match the current filters.</div>';
+  }
+  const layout = collectTreeLayout(root);
+  currentTreeFocus = layout.nodes.find(node => node.id === currentTreeFocusId) || layout.nodes[0];
+  const maxDepth = Math.max(...layout.nodes.map(node => node.depth));
+  const minX = Math.min(...layout.nodes.map(node => node.x));
+  const maxX = Math.max(...layout.nodes.map(node => node.x + node.cardWidth));
+  const bandWidth = Math.max(1400, maxX - minX + 160);
+  const bandStart = Math.min(-40, minX - 80);
+  const levelBands = Array.from({ length: maxDepth + 1 }, (_, depth) => {
+    const y = 54 + depth * 104;
+    return `<line class="tree-level-line" x1="${bandStart}" y1="${y - 15}" x2="${bandStart + bandWidth}" y2="${y - 15}"></line>
+      <text class="tree-level-label" x="${bandStart + 8}" y="${y - 22}">Level ${depth}</text>`;
+  }).join("");
+  const links = layout.links.map(link => {
+    const x1 = link.source.x + link.source.cardWidth / 2;
+    const y1 = link.source.y + link.source.cardHeight;
+    const x2 = link.target.x + link.target.cardWidth / 2;
+    const y2 = link.target.y;
+    const mid = Math.max(30, (y2 - y1) / 2);
+    return `<path class="tree-link" d="M ${x1} ${y1} C ${x1} ${y1 + mid}, ${x2} ${y2 - mid}, ${x2} ${y2}"></path>`;
+  }).join("");
+  const nodes = layout.nodes.map(node => {
+    const label = truncate(node.label, node.depth === 0 ? 17 : 18);
+    const meta = `${capitalize(node.status)} ${pct(node)}% - ${node.leafCount}`;
+    const tags = (node.requiredFor || []).join(", ");
+    const title = escapeHtml(`${node.id}\n${node.requirement || node.label}\n${counts(node)}${tags ? "\n" + tags : ""}`);
+    const canExpand = (node.actualChildCount || 0) > 0 && !hasActiveFilter();
+    const toggle = canExpand ? (expandedNodeIds.has(node.id) ? "-" : "+") : "";
+    const nodeClass = canExpand ? "tree-node" : "tree-node disabled";
+    const clickAttr = canExpand ? ` onclick="event.stopPropagation(); toggleTreeNode('${node.id}')"` : "";
+    return `<g class="${nodeClass}" data-node-id="${escapeHtml(node.id)}" data-can-expand="${canExpand ? "true" : "false"}" transform="translate(${node.x}, ${node.y})"${clickAttr}>
+      <title>${title}</title>
+      <rect class="tree-node-card ${node.status}" width="${node.cardWidth}" height="${node.cardHeight}" rx="7"></rect>
+      <circle class="tree-node-dot ${node.status}" cx="12" cy="12" r="4.5"></circle>
+      <text class="tree-node-label" x="22" y="13">${escapeHtml(label)}</text>
+      <text class="tree-node-meta" x="22" y="24">${escapeHtml(meta)}</text>
+      ${toggle ? `<text class="tree-node-toggle" x="${node.cardWidth - 14}" y="19">${toggle}</text>` : ""}
+    </g>`;
+  }).join("");
+  return `<div class="tree-toolbar">
+      <button data-tree-action="zoom-out" title="Zoom out">-</button>
+      <button data-tree-action="reset" title="Reset view">Reset</button>
+      <button data-tree-action="zoom-in" title="Zoom in">+</button>
+    </div>
+    <svg class="tree-svg" viewBox="0 0 1400 900" role="img" aria-label="WoW completion tree node-link diagram">
+      <g id="treeViewport">${levelBands}${links}${nodes}</g>
+    </svg>
+    <div class="tree-help">Each horizontal band is one tree level. Click nodes to expand. Drag to pan. Mouse wheel or +/- to zoom.</div>`;
+}
+function truncate(value, limit) {
+  value = String(value);
+  return value.length > limit ? value.slice(0, limit - 3) + "..." : value;
+}
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+function svgUnitScale(svg) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  return {
+    x: viewBox.width / Math.max(1, rect.width),
+    y: viewBox.height / Math.max(1, rect.height),
+  };
+}
+function updateTreeTransform() {
+  const viewport = document.getElementById("treeViewport");
+  if (!viewport) return;
+  viewport.setAttribute("transform", `translate(${treePan.x} ${treePan.y}) scale(${treeZoom})`);
+}
+function resetTreeView() {
+  treeZoom = 0.86;
+  treePan = {
+    x: 700 - (currentTreeFocus.x + currentTreeFocus.cardWidth / 2) * treeZoom,
+    y: 188 - currentTreeFocus.y * treeZoom,
+  };
+  treeNeedsReset = false;
+  updateTreeTransform();
+}
+function toggleTreeNode(nodeId) {
+  if (treeDragged) {
+    treeDragged = false;
+    return;
+  }
+  if (hasActiveFilter()) return;
+  setExpandedPathTo(nodeId, true);
+  currentTreeFocusId = nodeId;
+  treeNeedsReset = true;
+  renderTree();
+}
+function zoomTree(factor, centerClientX = null, centerClientY = null) {
+  const svg = document.querySelector(".tree-svg");
+  if (!svg) return;
+  const rect = svg.getBoundingClientRect();
+  const scale = svgUnitScale(svg);
+  const centerX = centerClientX === null ? rect.left + rect.width / 2 : centerClientX;
+  const centerY = centerClientY === null ? rect.top + rect.height / 2 : centerClientY;
+  const svgX = (centerX - rect.left) * scale.x;
+  const svgY = (centerY - rect.top) * scale.y;
+  const oldZoom = treeZoom;
+  const newZoom = clamp(treeZoom * factor, 0.18, 2.4);
+  const contentX = (svgX - treePan.x) / oldZoom;
+  const contentY = (svgY - treePan.y) / oldZoom;
+  treeZoom = newZoom;
+  treePan.x = svgX - contentX * newZoom;
+  treePan.y = svgY - contentY * newZoom;
+  updateTreeTransform();
+}
+function attachTreePanZoom() {
+  const stage = document.getElementById("tree");
+  const svg = document.querySelector(".tree-svg");
+  if (!stage || !svg) return;
+  if (treeNeedsReset) resetTreeView();
+  updateTreeTransform();
+  stage.querySelectorAll("button[data-tree-action]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      const action = button.dataset.treeAction;
+      if (action === "zoom-in") zoomTree(1.22);
+      if (action === "zoom-out") zoomTree(1 / 1.22);
+      if (action === "reset") resetTreeView();
+    });
+  });
+  svg.addEventListener("wheel", event => {
+    event.preventDefault();
+    zoomTree(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
+  }, { passive: false });
+  svg.addEventListener("click", event => {
+    const node = event.target.closest("g.tree-node[data-can-expand='true']");
+    if (!node || treeDragged) {
+      treeDragged = false;
+      return;
+    }
+    event.stopPropagation();
+  });
+  svg.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    if (event.target.closest("g.tree-node[data-can-expand='true']")) return;
+    stage.classList.add("dragging");
+    svg.setPointerCapture(event.pointerId);
+    treePointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    treeDragged = false;
+  });
+  svg.addEventListener("pointermove", event => {
+    if (!treePointer || treePointer.id !== event.pointerId) return;
+    const scale = svgUnitScale(svg);
+    const dx = event.clientX - treePointer.x;
+    const dy = event.clientY - treePointer.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) treeDragged = true;
+    treePan.x += dx * scale.x;
+    treePan.y += dy * scale.y;
+    treePointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    updateTreeTransform();
+  });
+  function stopDrag(event) {
+    if (treePointer && treePointer.id === event.pointerId) {
+      treePointer = null;
+      stage.classList.remove("dragging");
+    }
+  }
+  svg.addEventListener("pointerup", stopDrag);
+  svg.addEventListener("pointercancel", stopDrag);
+}
+function renderSummary() {
+  document.getElementById("summary").innerHTML = `
+    <div class="metric"><span class="subtle">Completion</span><strong>${pct(tree)}%</strong><div class="bar" style="--pct:${pct(tree)}%"><span></span></div></div>
+    <div class="metric"><span class="subtle">Leaves</span><strong>${tree.leafCount}</strong><div class="subtle">${counts(tree)}</div></div>
+    <div class="metric"><span class="subtle">Green</span><strong>${tree.greenCount}</strong></div>
+    <div class="metric"><span class="subtle">Open Risk</span><strong>${tree.redCount + tree.yellowCount}</strong></div>`;
+  const systems = tree.children.map(system => `
+    <button class="system-card" type="button" onclick="focusSystem('${system.id}')">
+      <h3>${escapeHtml(system.label)}</h3>
+      <div class="bar" style="--pct:${pct(system)}%"><span></span></div>
+      <div class="counts">${pct(system)}% - ${counts(system)}</div>
+    </button>`).join("");
+  document.getElementById("systems").innerHTML = systems;
+}
+function renderTree() {
+  document.getElementById("tree").innerHTML = viewMode === "tree" ? renderSvgTree() : `<div class="outline-tree">${nodeHtml(tree)}</div>`;
+  if (viewMode === "tree") attachTreePanZoom();
+}
+function focusSystem(id) {
+  search.value = "";
+  viewMode = "tree";
+  setExpandedPathTo(id, false);
+  currentTreeFocusId = id;
+  treeNeedsReset = true;
+  document.querySelectorAll("button[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === viewMode));
+  renderTree();
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+}
+function capitalize(value) { return value.charAt(0).toUpperCase() + value.slice(1); }
+document.querySelectorAll("button[data-status]").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("button[data-status]").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    statusFilter = button.dataset.status;
+    currentTreeFocusId = "WOW";
+    treeNeedsReset = true;
+    renderTree();
+  });
+});
+document.querySelectorAll("button[data-view]").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("button[data-view]").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    viewMode = button.dataset.view;
+    currentTreeFocusId = "WOW";
+    treeNeedsReset = true;
+    renderTree();
+  });
+});
+search.addEventListener("input", () => {
+  currentTreeFocusId = "WOW";
+  treeNeedsReset = true;
+  renderTree();
+});
+tagFilter.addEventListener("change", () => {
+  currentTreeFocusId = "WOW";
+  treeNeedsReset = true;
+  renderTree();
+});
+renderSummary();
+renderTree();
+</script>
+</body>
+</html>

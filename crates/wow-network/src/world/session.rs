@@ -154,8 +154,10 @@ struct WorldSessionState {
     starter_global_cooldown_until: Option<Instant>,
     starter_spell_cooldowns_until: HashMap<u32, Instant>,
     queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
+    active_auras: Vec<ActiveAura>,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
+    character_skills: Vec<CharacterSkill>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,
@@ -167,11 +169,36 @@ struct WorldSessionState {
     db_creature_navigation: DbCreatureNavigationGuardrail,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveAura {
+    spell_id: u32,
+    caster: ObjectGuid,
+    level: u8,
+    positive: bool,
+    duration_millis: Option<u32>,
+    expires_at: Option<Instant>,
+    stat_modifiers: Vec<AuraStatModifier>,
+}
+
+impl ActiveAura {
+    fn remaining_duration_millis(&self, now: Instant) -> Option<u32> {
+        self.expires_at
+            .map(|expires_at| expires_at.saturating_duration_since(now).as_millis() as u32)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuraStatModifier {
+    AttackPower { amount: i32 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QueuedNextMeleeSpell {
     spell_id: u32,
     target: ObjectGuid,
     bonus_damage: u32,
+    rage_cost: u32,
+    mana_cost: u32,
 }
 
 #[cfg(test)]

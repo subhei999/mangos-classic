@@ -369,6 +369,28 @@ pub async fn get_character_skills(
     Ok(rows)
 }
 
+pub async fn upsert_character_skill(
+    pool: &MySqlPool,
+    guid: u32,
+    skill: u16,
+    value: u16,
+    max: u16,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO character_skills (guid, skill, value, max) \
+         VALUES (?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE value = VALUES(value), max = VALUES(max)",
+    )
+    .bind(guid)
+    .bind(skill)
+    .bind(value)
+    .bind(max)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn get_character_quest_statuses(
     pool: &MySqlPool,
     guid: u32,
@@ -518,7 +540,12 @@ pub async fn reward_character_quest(
     guid: u32,
     quest: u32,
     money: u32,
-) -> Result<Option<u32>, DbError> {
+    reputation_rewards: &[(u32, i32)],
+) -> Result<Option<CharacterQuestRewardResult>, DbError> {
+    const FACTION_FLAG_VISIBLE: i32 = 0x01;
+    const REPUTATION_CAP: i32 = 42_999;
+    const REPUTATION_BOTTOM: i32 = -42_000;
+
     let mut tx = pool.begin().await?;
     let changed = sqlx::query(
         "UPDATE character_queststatus \
@@ -546,9 +573,55 @@ pub async fn reward_character_quest(
         .bind(guid)
         .execute(&mut *tx)
         .await?;
+
+    let mut reputations = Vec::new();
+    for (faction, delta) in reputation_rewards {
+        if *faction == 0 || *delta == 0 {
+            continue;
+        }
+        let existing = sqlx::query_as::<_, CharacterReputation>(
+            "SELECT faction, standing, flags FROM character_reputation \
+             WHERE guid = ? AND faction = ?",
+        )
+        .bind(guid)
+        .bind(*faction)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (current_standing, current_flags) = existing
+            .as_ref()
+            .map(|row| (row.standing, row.flags))
+            .unwrap_or((0, 0));
+        let standing = current_standing
+            .saturating_add(*delta)
+            .clamp(REPUTATION_BOTTOM, REPUTATION_CAP);
+        let flags = current_flags | FACTION_FLAG_VISIBLE;
+        let applied_delta = standing.saturating_sub(current_standing);
+        sqlx::query(
+            "INSERT INTO character_reputation (guid, faction, standing, flags) \
+             VALUES (?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE standing = VALUES(standing), flags = VALUES(flags)",
+        )
+        .bind(guid)
+        .bind(*faction)
+        .bind(standing)
+        .bind(flags)
+        .execute(&mut *tx)
+        .await?;
+        reputations.push(CharacterReputationChange {
+            reputation: CharacterReputation {
+                faction: *faction,
+                standing,
+                flags,
+            },
+            delta: applied_delta,
+        });
+    }
     tx.commit().await?;
 
-    Ok(Some(new_money))
+    Ok(Some(CharacterQuestRewardResult {
+        money: new_money,
+        reputations,
+    }))
 }
 
 pub async fn get_character_reputations(

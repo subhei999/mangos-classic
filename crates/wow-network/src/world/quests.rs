@@ -109,15 +109,29 @@ async fn handle_questgiver_query_quest(
     .await
 }
 
+#[derive(Clone, Copy)]
+struct QuestMutationDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    object_mgr: &'a ObjectMgr,
+    world_db_pool: &'a MySqlPool,
+    shared_world: SharedWorldDeps<'a>,
+}
+
+struct QuestSourceItemGrant {
+    item: CharacterInventoryItem,
+    count: u32,
+}
+
 async fn handle_questgiver_accept_quest(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    object_mgr: &ObjectMgr,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let object_mgr = deps.object_mgr;
+    let world_db_pool = deps.world_db_pool;
     let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid) else {
         warn!("Ignoring quest accept before character login");
         return Ok(());
@@ -164,7 +178,8 @@ async fn handle_questgiver_accept_quest(
         Some(&mut *header_crypto),
     )
     .await?;
-    if let Some(item) = source_item {
+    if let Some(grant) = source_item {
+        let item = &grant.item;
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         let container_slots =
             if let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await? {
@@ -172,16 +187,27 @@ async fn handle_questgiver_accept_quest(
             } else {
                 None
             };
-        let create_body = build_update_object_body(&[build_item_create_update_block(
+        let create_block = build_item_create_update_block(
             owner_guid,
             owner_guid,
-            &item,
+            item,
             container_slots,
-        )?]);
+        )?;
+        let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[item.slot])?;
+        let create_body = build_update_object_body(&[create_block, slot_block]);
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
             &create_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let push_body =
+            build_item_push_result_body(character_guid, item, grant.count, true, false, true);
+        send_packet(
+            stream,
+            SMSG_ITEM_PUSH_RESULT,
+            &push_body,
             Some(&mut *header_crypto),
         )
         .await?;
@@ -191,10 +217,20 @@ async fn handle_questgiver_accept_quest(
             stream,
             SMSG_QUESTUPDATE_COMPLETE,
             &request.quest.to_le_bytes(),
-            Some(header_crypto),
+            Some(&mut *header_crypto),
         )
         .await?;
     }
+    send_visible_questgiver_status_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        deps.shared_world,
+        session,
+        &[request.guid],
+        header_crypto,
+    )
+    .await?;
     Ok(())
 }
 
@@ -272,13 +308,14 @@ async fn handle_questgiver_complete_quest(
 
 async fn handle_questgiver_choose_reward(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    object_mgr: &ObjectMgr,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let object_mgr = deps.object_mgr;
+    let world_db_pool = deps.world_db_pool;
     let Some(character) = &session.active_character else {
         warn!("Ignoring quest reward before character login");
         return Ok(());
@@ -299,6 +336,7 @@ async fn handle_questgiver_choose_reward(
     };
     let reward_money = quest.rew_or_req_money.max(0) as u32;
     let reward_xp = quest_xp_reward(character_level, &quest);
+    let reputation_rewards = quest_reputation_rewards(character_level, &quest);
     let slot = quest_log_slot_for_quest(session, request.quest);
     let Some(reward_items) = selected_quest_reward_items(&quest, request.reward) else {
         warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward item choice");
@@ -349,9 +387,15 @@ async fn handle_questgiver_choose_reward(
         session,
     )
     .await?;
-    let Some(new_money) =
-        wow_db::reward_character_quest(character_db_pool, character_guid, request.quest, reward_money)
-            .await?
+    let Some(reward_result) =
+        wow_db::reward_character_quest(
+            character_db_pool,
+            character_guid,
+            request.quest,
+            reward_money,
+            &reputation_rewards,
+        )
+        .await?
     else {
         return Ok(());
     };
@@ -369,10 +413,11 @@ async fn handle_questgiver_choose_reward(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_player_money_update_body(character_guid, new_money)?,
+        &build_player_money_update_body(character_guid, reward_result.money)?,
         Some(&mut *header_crypto),
     )
     .await?;
+    send_quest_reputation_updates(stream, &reward_result.reputations, header_crypto).await?;
     if !reward_update_blocks.is_empty() {
         let body = build_update_object_body(&reward_update_blocks);
         send_packet(
@@ -397,9 +442,68 @@ async fn handle_questgiver_choose_reward(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_player_quest_log_clear_body(character_guid, slot.unwrap_or(0))?,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_visible_questgiver_status_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        deps.shared_world,
+        session,
+        &[request.guid],
+        header_crypto,
     )
     .await
+}
+
+async fn send_quest_reputation_updates(
+    stream: &mut WorldPacketSink,
+    reputations: &[CharacterReputationChange],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let changed_reputations = reputations
+        .iter()
+        .map(|change| change.reputation.clone())
+        .collect::<Vec<_>>();
+    for reputation in &changed_reputations {
+        if (reputation.flags & FACTION_FLAG_VISIBLE) == 0 {
+            continue;
+        }
+        if let Some(body) = build_set_faction_visible_body(reputation.faction) {
+            send_packet(
+                stream,
+                SMSG_SET_FACTION_VISIBLE,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+
+    let body = build_set_faction_standing_body(&changed_reputations);
+    if body.len() > 4 {
+        send_packet(
+            stream,
+            SMSG_SET_FACTION_STANDING,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    for change in reputations {
+        if let Some(message) = reputation_gain_system_message(change) {
+            let body = build_system_message_chat_body(&message);
+            send_packet(
+                stream,
+                SMSG_MESSAGECHAT,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn handle_questlog_remove_quest(
@@ -515,8 +619,10 @@ async fn questgiver_dialog_status(
         }
     }
     for quest in questgiver_start_quests(object_mgr, world_db_pool, guid).await? {
-        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
-            dialog_status = dialog_status.max(DIALOG_STATUS_AVAILABLE);
+        if let Some(start_status) =
+            quest_start_dialog_status(object_mgr, world_db_pool, &quest, session).await?
+        {
+            dialog_status = dialog_status.max(start_status);
         }
     }
 
@@ -532,6 +638,77 @@ async fn questgiver_dialog_status(
         }
     }
     Ok(dialog_status)
+}
+
+async fn send_visible_questgiver_status_updates(
+    stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    extra_guids: &[ObjectGuid],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+
+    let mut seen = HashSet::new();
+    let mut guids = Vec::new();
+    for guid in extra_guids {
+        if !guid.is_creature() && !guid.is_game_object() {
+            continue;
+        }
+        if seen.insert(guid.raw()) {
+            guids.push(*guid);
+        }
+    }
+
+    let visible_creature_guids = shared_world
+        .maps
+        .player_visible_db_creature_guids(character.position.map_id, character.guid)
+        .await;
+    let visible_creatures = shared_world
+        .maps
+        .db_creature_snapshots(character.position.map_id, &visible_creature_guids)
+        .await;
+    for creature in visible_creatures {
+        let guid = creature.guid();
+        if seen.insert(guid.raw()) {
+            guids.push(guid);
+        }
+    }
+
+    for guid in guids {
+        if !questgiver_has_quest_relation(object_mgr, world_db_pool, guid).await? {
+            continue;
+        }
+        let status = questgiver_dialog_status(object_mgr, world_db_pool, guid, session).await?;
+        send_packet(
+            stream,
+            SMSG_QUESTGIVER_STATUS,
+            &build_questgiver_status_body(guid, status),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn questgiver_has_quest_relation(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+) -> anyhow::Result<bool> {
+    if !guid.is_creature() && !guid.is_game_object() {
+        return Ok(false);
+    }
+    Ok(!questgiver_start_quests(object_mgr, world_db_pool, guid)
+        .await?
+        .is_empty()
+        || !questgiver_complete_quests(object_mgr, world_db_pool, guid)
+            .await?
+            .is_empty())
 }
 
 async fn questgiver_visible_quests(
@@ -567,10 +744,12 @@ async fn questgiver_visible_quests(
         if seen.contains(&quest.entry) {
             continue;
         }
-        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
+        if let Some(start_status) =
+            quest_start_dialog_status(object_mgr, world_db_pool, &quest, session).await?
+        {
             visible.push(QuestListItem {
                 quest,
-                dialog_status: DIALOG_STATUS_AVAILABLE,
+                dialog_status: start_status,
             });
         }
     }
@@ -692,7 +871,7 @@ async fn grant_quest_source_item_if_needed(
     character_guid: u32,
     quest: &QuestTemplateQuery,
     session: &mut WorldSessionState,
-) -> anyhow::Result<Option<CharacterInventoryItem>> {
+) -> anyhow::Result<Option<QuestSourceItemGrant>> {
     if quest.src_item_id == 0 {
         return Ok(None);
     }
@@ -723,19 +902,20 @@ async fn grant_quest_source_item_if_needed(
         );
         return Ok(None);
     };
+    let count = required_count - current_count;
     let item = wow_db::add_character_inventory_item(
         character_db_pool,
         character_guid,
         INVENTORY_SLOT_BAG_0 as u32,
         slot,
         quest.src_item_id,
-        required_count - current_count,
+        count,
         template.max_durability,
     )
     .await?;
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
         .await?;
-    Ok(Some(item))
+    Ok(Some(QuestSourceItemGrant { item, count }))
 }
 
 fn quest_can_complete_from_inventory(
@@ -1141,6 +1321,20 @@ fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveChar
     true
 }
 
+fn satisfies_race_class(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
+    let class_mask = quest_race_or_class_mask(character.class);
+    if quest.required_classes != 0 && (quest.required_classes & class_mask) == 0 {
+        return false;
+    }
+
+    let race_mask = quest_race_or_class_mask(character.race);
+    if quest.required_races != 0 && (quest.required_races & race_mask) == 0 {
+        return false;
+    }
+
+    true
+}
+
 fn satisfies_prev_quest_requirement(
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     prev_quest_id: i32,
@@ -1225,6 +1419,80 @@ async fn can_take_start_quest(
     }
 
     Ok(true)
+}
+
+async fn can_see_start_quest(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(false);
+    };
+    if !satisfies_race_class(quest, character) {
+        return Ok(false);
+    }
+    if !can_quest_be_started_from_status(quest, session.quest_statuses.get(&quest.entry)) {
+        return Ok(false);
+    }
+
+    let prev_quests = object_mgr.quest_prev_quests(world_db_pool, quest.entry).await?;
+    if !prev_quests
+        .into_iter()
+        .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
+    {
+        return Ok(false);
+    }
+
+    let prev_chain_quests = object_mgr
+        .quest_prev_chain_quests(world_db_pool, quest.entry)
+        .await?;
+    if prev_chain_quests
+        .into_iter()
+        .any(|prev_chain| quest_is_current(&session.quest_statuses, prev_chain))
+    {
+        return Ok(false);
+    }
+
+    if quest.next_quest_in_chain != 0 && quest_is_current(&session.quest_statuses, quest.next_quest_in_chain)
+    {
+        return Ok(false);
+    }
+
+    let exclusive_group_quests = object_mgr
+        .exclusive_group_quests(world_db_pool, quest.exclusive_group)
+        .await?;
+    if !satisfies_exclusive_group(quest, &exclusive_group_quests, &session.quest_statuses) {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+async fn quest_start_dialog_status(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+) -> anyhow::Result<Option<u32>> {
+    let can_take = can_take_start_quest(object_mgr, world_db_pool, quest, session).await?;
+    let can_see = if can_take {
+        true
+    } else {
+        can_see_start_quest(object_mgr, world_db_pool, quest, session).await?
+    };
+    Ok(start_quest_dialog_status(can_take, can_see))
+}
+
+fn start_quest_dialog_status(can_take: bool, can_see: bool) -> Option<u32> {
+    if can_take {
+        Some(DIALOG_STATUS_AVAILABLE)
+    } else if can_see {
+        Some(DIALOG_STATUS_UNAVAILABLE)
+    } else {
+        None
+    }
 }
 
 fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<usize> {

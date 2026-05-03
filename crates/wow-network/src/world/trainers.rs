@@ -68,7 +68,10 @@ async fn send_trainer_list(
         guid,
         template.trainer_type.max(0) as u32,
         &list_spells,
-        DB_TRAINER_GREETING,
+        &wow_db::get_trainer_greeting(world_db_pool, guid.entry())
+            .await?
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| DB_TRAINER_GREETING.to_string()),
     );
     send_packet(stream, SMSG_TRAINER_LIST, &body, Some(header_crypto)).await
 }
@@ -123,6 +126,20 @@ async fn handle_trainer_buy_spell(
         .await;
     };
     session.active_spells.insert(list_spell.learned_spell);
+    send_packet(
+        stream,
+        SMSG_PLAY_SPELL_VISUAL,
+        &build_play_spell_visual_body(request.trainer_guid, 0xB3),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_PLAY_SPELL_IMPACT,
+        &build_play_spell_impact_body(character.guid, 0x016A),
+        Some(&mut *header_crypto),
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_TRAINER_BUY_SUCCEEDED,
@@ -282,6 +299,20 @@ fn build_trainer_buy_failed_body(trainer: ObjectGuid, spell: u32, reason: u32) -
 
 fn build_learned_spell_body(spell: u32) -> Vec<u8> {
     spell.to_le_bytes().to_vec()
+}
+
+fn build_play_spell_visual_body(guid: ObjectGuid, spell_visual_kit: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&guid.raw().to_le_bytes());
+    body.extend_from_slice(&spell_visual_kit.to_le_bytes());
+    body
+}
+
+fn build_play_spell_impact_body(guid: u32, spell_visual_kit: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, REALM_ID, guid).raw().to_le_bytes());
+    body.extend_from_slice(&spell_visual_kit.to_le_bytes());
+    body
 }
 
 const TRAINER_SPELL_GREEN: u8 = 0;

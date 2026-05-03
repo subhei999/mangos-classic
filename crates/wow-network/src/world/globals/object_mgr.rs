@@ -18,6 +18,8 @@ struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     gameobject_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
+    spell_templates:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellTemplateQuery>>>,
     stats: ObjectMgrCacheStats,
 }
 
@@ -27,6 +29,7 @@ struct ObjectMgrCacheStats {
     quest_relation_db_loads: std::sync::atomic::AtomicU64,
     quest_chain_db_loads: std::sync::atomic::AtomicU64,
     loot_template_db_loads: std::sync::atomic::AtomicU64,
+    spell_template_db_loads: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(test)]
@@ -36,6 +39,7 @@ struct ObjectMgrCacheSnapshot {
     quest_relation_db_loads: u64,
     quest_chain_db_loads: u64,
     loot_template_db_loads: u64,
+    spell_template_db_loads: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -279,6 +283,24 @@ impl ObjectMgr {
         Ok(rows)
     }
 
+    async fn spell_template(
+        &self,
+        world_db_pool: &MySqlPool,
+        spell: u32,
+    ) -> anyhow::Result<Option<wow_db::SpellTemplateQuery>> {
+        let mut cache = self.spell_templates.lock().await;
+        if let Some(template) = cache.get(&spell) {
+            return Ok(template.clone());
+        }
+
+        let template = wow_db::get_spell_template_query(world_db_pool, spell).await?;
+        self.stats
+            .spell_template_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cache.insert(spell, template.clone());
+        Ok(template)
+    }
+
     async fn quest_relation_ids(
         &self,
         world_db_pool: &MySqlPool,
@@ -353,6 +375,42 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    async fn prime_creature_complete_quest_ids_for_test(
+        &self,
+        creature_entry: u32,
+        quests: Vec<u32>,
+    ) {
+        self.creature_complete_quest_ids
+            .lock()
+            .await
+            .insert(creature_entry, quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_quest_prev_quests_for_test(&self, quest: u32, prev_quests: Vec<i32>) {
+        self.quest_prev_quests
+            .lock()
+            .await
+            .insert(quest, prev_quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_quest_prev_chain_quests_for_test(&self, quest: u32, prev_chain_quests: Vec<u32>) {
+        self.quest_prev_chain_quests
+            .lock()
+            .await
+            .insert(quest, prev_chain_quests);
+    }
+
+    #[cfg(test)]
+    async fn prime_exclusive_group_quests_for_test(&self, exclusive_group: i32, quests: Vec<u32>) {
+        self.exclusive_group_quests
+            .lock()
+            .await
+            .insert(exclusive_group, quests);
+    }
+
+    #[cfg(test)]
     async fn prime_creature_loot_template_for_test(
         &self,
         creature_entry: u32,
@@ -362,6 +420,15 @@ impl ObjectMgr {
             .lock()
             .await
             .insert(creature_entry, rows);
+    }
+
+    #[cfg(test)]
+    async fn prime_spell_template_for_test(
+        &self,
+        spell: u32,
+        template: Option<wow_db::SpellTemplateQuery>,
+    ) {
+        self.spell_templates.lock().await.insert(spell, template);
     }
 
     #[cfg(test)]
@@ -382,6 +449,10 @@ impl ObjectMgr {
             loot_template_db_loads: self
                 .stats
                 .loot_template_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            spell_template_db_loads: self
+                .stats
+                .spell_template_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
         }
     }

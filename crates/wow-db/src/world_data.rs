@@ -21,6 +21,8 @@ pub struct CreatureTemplateQuery {
     pub model_combat_reach: f32,
     pub faction: u32,
     pub scale: f32,
+    pub speed_walk: f32,
+    pub speed_run: f32,
     pub detection_range: u32,
     pub call_for_help: u32,
     pub pursuit: u32,
@@ -59,6 +61,25 @@ pub struct CreatureTemplateQuery {
     pub civilian: u8,
     pub corpse_decay: u32,
     pub movement_type: u8,
+    pub equipment_template_id: u32,
+    pub equip_display_id1: u32,
+    pub equip_display_id2: u32,
+    pub equip_display_id3: u32,
+    pub equip_class1: u32,
+    pub equip_class2: u32,
+    pub equip_class3: u32,
+    pub equip_subclass1: u32,
+    pub equip_subclass2: u32,
+    pub equip_subclass3: u32,
+    pub equip_material1: i32,
+    pub equip_material2: i32,
+    pub equip_material3: i32,
+    pub equip_inventory_type1: u32,
+    pub equip_inventory_type2: u32,
+    pub equip_inventory_type3: u32,
+    pub equip_sheath1: u32,
+    pub equip_sheath2: u32,
+    pub equip_sheath3: u32,
     pub experience_multiplier: f32,
 }
 
@@ -117,6 +138,7 @@ pub struct VendorItemQuery {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CreatureLootQuery {
     pub item: u32,
+    pub group_id: u8,
     pub min_count: u32,
     pub max_count: u32,
     pub display_id: u32,
@@ -175,6 +197,39 @@ pub struct TrainerSpellQuery {
     pub req_ability3: Option<u32>,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct SpellTemplateQuery {
+    pub id: u32,
+    pub spell_name: String,
+    pub rank: Option<String>,
+    pub attributes: u32,
+    pub attributes_ex: u32,
+    pub attributes_ex2: u32,
+    pub attributes_ex3: u32,
+    pub recovery_time: u32,
+    pub category_recovery_time: u32,
+    pub start_recovery_category: u32,
+    pub start_recovery_time: u32,
+    pub power_type: u32,
+    pub mana_cost: u32,
+    pub duration_index: u32,
+    pub effect1: u32,
+    pub effect2: u32,
+    pub effect3: u32,
+    pub effect_base_points1: i32,
+    pub effect_base_points2: i32,
+    pub effect_base_points3: i32,
+    pub effect_apply_aura_name1: u32,
+    pub effect_apply_aura_name2: u32,
+    pub effect_apply_aura_name3: u32,
+    pub effect_implicit_target_a1: u32,
+    pub effect_implicit_target_a2: u32,
+    pub effect_implicit_target_a3: u32,
+    pub spell_family_name: u32,
+    pub spell_family_flags: u64,
+    pub dmg_class: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestTemplateQuery {
     pub entry: u32,
@@ -214,6 +269,8 @@ pub struct QuestTemplateQuery {
     pub rew_choice_item_count: [u32; 6],
     pub rew_item_id: [u32; 4],
     pub rew_item_count: [u32; 4],
+    pub rew_rep_faction: [u32; 5],
+    pub rew_rep_value: [i32; 5],
     pub point_map_id: u32,
     pub point_x: f32,
     pub point_y: f32,
@@ -250,40 +307,64 @@ pub async fn get_creature_template_query(
     entry: u32,
 ) -> Result<Option<CreatureTemplateQuery>, DbError> {
     let row = sqlx::query_as::<_, CreatureTemplateQuery>(
-        "SELECT Entry AS entry, Name AS name, SubName AS subname, \
-                MinLevel AS min_level, MaxLevel AS max_level, \
-                DisplayId1 AS display_id1, DisplayId2 AS display_id2, \
-                DisplayId3 AS display_id3, DisplayId4 AS display_id4, \
+        "SELECT creature_template.Entry AS entry, creature_template.Name AS name, creature_template.SubName AS subname, \
+                creature_template.MinLevel AS min_level, creature_template.MaxLevel AS max_level, \
+                creature_template.DisplayId1 AS display_id1, creature_template.DisplayId2 AS display_id2, \
+                creature_template.DisplayId3 AS display_id3, creature_template.DisplayId4 AS display_id4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
-                Faction AS faction, Scale AS scale, Detection AS detection_range, \
-                CallForHelp AS call_for_help, Pursuit AS pursuit, Leash AS leash, \
-                Family AS family, \
-                CreatureType AS creature_type, NpcFlags AS npc_flags, \
-                UnitFlags AS unit_flags, DynamicFlags AS dynamic_flags, \
-                UnitClass AS unit_class, Rank AS rank, \
-                HealthMultiplier AS health_multiplier, PowerMultiplier AS power_multiplier, \
-                DamageMultiplier AS damage_multiplier, DamageVariance AS damage_variance, \
-                ArmorMultiplier AS armor_multiplier, \
-                MinLevelHealth AS min_level_health, MaxLevelHealth AS max_level_health, \
-                MinLevelMana AS min_level_mana, MaxLevelMana AS max_level_mana, \
-                MinMeleeDmg AS min_melee_dmg, MaxMeleeDmg AS max_melee_dmg, \
-                MinRangedDmg AS min_ranged_dmg, MaxRangedDmg AS max_ranged_dmg, \
-                Armor AS armor, MeleeAttackPower AS melee_attack_power, \
-                RangedAttackPower AS ranged_attack_power, \
-                MinLootGold AS min_loot_gold, MaxLootGold AS max_loot_gold, \
-                MeleeBaseAttackTime AS melee_base_attack_time, \
-                RangedBaseAttackTime AS ranged_base_attack_time, \
-                DamageSchool AS damage_school, \
-                TrainerType AS trainer_type, TrainerClass AS trainer_class, \
-                PetSpellDataId AS pet_spell_data_id, Civilian AS civilian, \
-                CorpseDecay AS corpse_decay, \
-                MovementType AS movement_type, \
-                ExperienceMultiplier AS experience_multiplier \
+                creature_template.Faction AS faction, creature_template.Scale AS scale, \
+                creature_template.SpeedWalk AS speed_walk, creature_template.SpeedRun AS speed_run, \
+                creature_template.Detection AS detection_range, \
+                creature_template.CallForHelp AS call_for_help, creature_template.Pursuit AS pursuit, creature_template.Leash AS leash, \
+                creature_template.Family AS family, \
+                creature_template.CreatureType AS creature_type, creature_template.NpcFlags AS npc_flags, \
+                creature_template.UnitFlags AS unit_flags, creature_template.DynamicFlags AS dynamic_flags, \
+                creature_template.UnitClass AS unit_class, creature_template.Rank AS rank, \
+                creature_template.HealthMultiplier AS health_multiplier, creature_template.PowerMultiplier AS power_multiplier, \
+                creature_template.DamageMultiplier AS damage_multiplier, creature_template.DamageVariance AS damage_variance, \
+                creature_template.ArmorMultiplier AS armor_multiplier, \
+                creature_template.MinLevelHealth AS min_level_health, creature_template.MaxLevelHealth AS max_level_health, \
+                creature_template.MinLevelMana AS min_level_mana, creature_template.MaxLevelMana AS max_level_mana, \
+                creature_template.MinMeleeDmg AS min_melee_dmg, creature_template.MaxMeleeDmg AS max_melee_dmg, \
+                creature_template.MinRangedDmg AS min_ranged_dmg, creature_template.MaxRangedDmg AS max_ranged_dmg, \
+                creature_template.Armor AS armor, creature_template.MeleeAttackPower AS melee_attack_power, \
+                creature_template.RangedAttackPower AS ranged_attack_power, \
+                creature_template.MinLootGold AS min_loot_gold, creature_template.MaxLootGold AS max_loot_gold, \
+                creature_template.MeleeBaseAttackTime AS melee_base_attack_time, \
+                creature_template.RangedBaseAttackTime AS ranged_base_attack_time, \
+                creature_template.DamageSchool AS damage_school, \
+                creature_template.TrainerType AS trainer_type, creature_template.TrainerClass AS trainer_class, \
+                creature_template.PetSpellDataId AS pet_spell_data_id, creature_template.Civilian AS civilian, \
+                creature_template.CorpseDecay AS corpse_decay, \
+                creature_template.MovementType AS movement_type, creature_template.EquipmentTemplateId AS equipment_template_id, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS equip_sheath3, \
+                creature_template.ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
          LEFT JOIN creature_model_info \
-           ON creature_model_info.modelid = COALESCE(NULLIF(DisplayId1, 0), NULLIF(DisplayId2, 0), NULLIF(DisplayId3, 0), NULLIF(DisplayId4, 0), 0) \
-         WHERE Entry = ?",
+           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
+         WHERE creature_template.Entry = ?",
     )
     .bind(entry)
     .fetch_optional(pool)
@@ -292,12 +373,43 @@ pub async fn get_creature_template_query(
     Ok(row)
 }
 
+pub async fn get_spell_template_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<SpellTemplateQuery>, DbError> {
+    sqlx::query_as::<_, SpellTemplateQuery>(
+        "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, \
+                Attributes AS attributes, AttributesEx AS attributes_ex, \
+                AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
+                RecoveryTime AS recovery_time, CategoryRecoveryTime AS category_recovery_time, \
+                StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
+                PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
+                Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
+                EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
+                EffectBasePoints3 AS effect_base_points3, \
+                EffectApplyAuraName1 AS effect_apply_aura_name1, \
+                EffectApplyAuraName2 AS effect_apply_aura_name2, \
+                EffectApplyAuraName3 AS effect_apply_aura_name3, \
+                EffectImplicitTargetA1 AS effect_implicit_target_a1, \
+                EffectImplicitTargetA2 AS effect_implicit_target_a2, \
+                EffectImplicitTargetA3 AS effect_implicit_target_a3, \
+                SpellFamilyName AS spell_family_name, SpellFamilyFlags AS spell_family_flags, \
+                DmgClass AS dmg_class \
+         FROM spell_template WHERE Id = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 pub async fn get_creature_loot_items(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT creature_loot_template.item, \
+                creature_loot_template.groupid AS group_id, \
                 CAST(GREATEST(creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
                 CAST(GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
                 item_template.displayid AS display_id, \
@@ -306,10 +418,8 @@ pub async fn get_creature_loot_items(
          JOIN item_template ON creature_loot_template.item = item_template.entry \
          WHERE creature_loot_template.entry = ? \
            AND creature_loot_template.condition_id = 0 \
-           AND creature_loot_template.ChanceOrQuestChance <> 0 \
-           AND creature_loot_template.groupid = 0 \
            AND creature_loot_template.mincountOrRef > 0 \
-         ORDER BY creature_loot_template.item",
+         ORDER BY creature_loot_template.groupid, creature_loot_template.item",
     )
     .bind(creature_entry)
     .fetch_all(pool)
@@ -324,6 +434,7 @@ pub async fn get_gameobject_loot_items(
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT gameobject_loot_template.item, \
+                gameobject_loot_template.groupid AS group_id, \
                 CAST(GREATEST(gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
                 CAST(GREATEST(gameobject_loot_template.maxcount, gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
                 item_template.displayid AS display_id, \
@@ -332,10 +443,8 @@ pub async fn get_gameobject_loot_items(
          JOIN item_template ON gameobject_loot_template.item = item_template.entry \
          WHERE gameobject_loot_template.entry = ? \
            AND gameobject_loot_template.condition_id = 0 \
-           AND gameobject_loot_template.ChanceOrQuestChance <> 0 \
-           AND gameobject_loot_template.groupid = 0 \
            AND gameobject_loot_template.mincountOrRef > 0 \
-         ORDER BY gameobject_loot_template.item",
+         ORDER BY gameobject_loot_template.groupid, gameobject_loot_template.item",
     )
     .bind(loot_entry)
     .fetch_all(pool)
@@ -439,6 +548,11 @@ pub async fn get_quest_template_query(
                 CAST(RewItemId3 AS UNSIGNED) AS rew_item_id3, CAST(RewItemId4 AS UNSIGNED) AS rew_item_id4, \
                 CAST(RewItemCount1 AS UNSIGNED) AS rew_item_count1, CAST(RewItemCount2 AS UNSIGNED) AS rew_item_count2, \
                 CAST(RewItemCount3 AS UNSIGNED) AS rew_item_count3, CAST(RewItemCount4 AS UNSIGNED) AS rew_item_count4, \
+                CAST(RewRepFaction1 AS UNSIGNED) AS rew_rep_faction1, CAST(RewRepFaction2 AS UNSIGNED) AS rew_rep_faction2, \
+                CAST(RewRepFaction3 AS UNSIGNED) AS rew_rep_faction3, CAST(RewRepFaction4 AS UNSIGNED) AS rew_rep_faction4, \
+                CAST(RewRepFaction5 AS UNSIGNED) AS rew_rep_faction5, RewRepValue1 AS rew_rep_value1, \
+                RewRepValue2 AS rew_rep_value2, RewRepValue3 AS rew_rep_value3, RewRepValue4 AS rew_rep_value4, \
+                RewRepValue5 AS rew_rep_value5, \
                 CAST(PointMapId AS UNSIGNED) AS point_map_id, PointX AS point_x, PointY AS point_y, \
                 CAST(PointOpt AS UNSIGNED) AS point_opt, CAST(DetailsEmote1 AS UNSIGNED) AS details_emote1, \
                 CAST(DetailsEmote2 AS UNSIGNED) AS details_emote2, CAST(DetailsEmote3 AS UNSIGNED) AS details_emote3, \
@@ -814,6 +928,17 @@ pub async fn get_trainer_spells(
     Ok(rows)
 }
 
+pub async fn get_trainer_greeting(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Option<String>, DbError> {
+    sqlx::query_scalar("SELECT Text FROM trainer_greeting WHERE Entry = ?")
+        .bind(creature_entry)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_nearby_creature_spawns(
     pool: &MySqlPool,
     map: u32,
@@ -845,6 +970,7 @@ pub async fn get_nearby_creature_spawns(
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
                 creature_template.Pursuit AS template_pursuit, \
@@ -883,11 +1009,34 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
+                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
          LEFT JOIN spawn_group_spawn \
            ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
          LEFT JOIN spawn_group_formation \
@@ -1139,6 +1288,7 @@ pub async fn get_creature_spawns_in_rect(
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \
                 creature_template.CallForHelp AS template_call_for_help, \
                 creature_template.Pursuit AS template_pursuit, \
@@ -1177,11 +1327,34 @@ pub async fn get_creature_spawns_in_rect(
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
+                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
          LEFT JOIN spawn_group_spawn \
            ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
          LEFT JOIN spawn_group_formation \
@@ -1401,6 +1574,7 @@ struct VendorItemRow {
 #[derive(Debug, Clone, FromRow)]
 struct CreatureLootRow {
     item: u32,
+    group_id: u8,
     min_count: u32,
     max_count: u32,
     display_id: u32,
@@ -1474,6 +1648,16 @@ struct QuestTemplateRow {
     rew_item_count2: u32,
     rew_item_count3: u32,
     rew_item_count4: u32,
+    rew_rep_faction1: u32,
+    rew_rep_faction2: u32,
+    rew_rep_faction3: u32,
+    rew_rep_faction4: u32,
+    rew_rep_faction5: u32,
+    rew_rep_value1: i32,
+    rew_rep_value2: i32,
+    rew_rep_value3: i32,
+    rew_rep_value4: i32,
+    rew_rep_value5: i32,
     point_map_id: u32,
     point_x: f32,
     point_y: f32,
@@ -1588,6 +1772,20 @@ impl QuestTemplateRow {
                 self.rew_item_count3,
                 self.rew_item_count4,
             ],
+            rew_rep_faction: [
+                self.rew_rep_faction1,
+                self.rew_rep_faction2,
+                self.rew_rep_faction3,
+                self.rew_rep_faction4,
+                self.rew_rep_faction5,
+            ],
+            rew_rep_value: [
+                self.rew_rep_value1,
+                self.rew_rep_value2,
+                self.rew_rep_value3,
+                self.rew_rep_value4,
+                self.rew_rep_value5,
+            ],
             point_map_id: self.point_map_id,
             point_x: self.point_x,
             point_y: self.point_y,
@@ -1634,6 +1832,7 @@ impl CreatureLootRow {
     fn into_query(self) -> CreatureLootQuery {
         CreatureLootQuery {
             item: self.item,
+            group_id: self.group_id,
             min_count: self.min_count,
             max_count: self.max_count,
             display_id: self.display_id,
@@ -1844,6 +2043,8 @@ struct CreatureSpawnRow {
     template_model_combat_reach: f32,
     template_faction: u32,
     template_scale: f32,
+    template_speed_walk: f32,
+    template_speed_run: f32,
     template_detection_range: u32,
     template_call_for_help: u32,
     template_pursuit: u32,
@@ -1882,6 +2083,25 @@ struct CreatureSpawnRow {
     template_civilian: u8,
     template_corpse_decay: u32,
     template_movement_type: u8,
+    template_equipment_template_id: u32,
+    template_equip_display_id1: u32,
+    template_equip_display_id2: u32,
+    template_equip_display_id3: u32,
+    template_equip_class1: u32,
+    template_equip_class2: u32,
+    template_equip_class3: u32,
+    template_equip_subclass1: u32,
+    template_equip_subclass2: u32,
+    template_equip_subclass3: u32,
+    template_equip_material1: i32,
+    template_equip_material2: i32,
+    template_equip_material3: i32,
+    template_equip_inventory_type1: u32,
+    template_equip_inventory_type2: u32,
+    template_equip_inventory_type3: u32,
+    template_equip_sheath1: u32,
+    template_equip_sheath2: u32,
+    template_equip_sheath3: u32,
     template_experience_multiplier: f32,
 }
 
@@ -1914,6 +2134,8 @@ impl CreatureSpawnRow {
                 model_combat_reach: self.template_model_combat_reach,
                 faction: self.template_faction,
                 scale: self.template_scale,
+                speed_walk: self.template_speed_walk,
+                speed_run: self.template_speed_run,
                 detection_range: self.template_detection_range,
                 call_for_help: self.template_call_for_help,
                 pursuit: self.template_pursuit,
@@ -1952,6 +2174,25 @@ impl CreatureSpawnRow {
                 civilian: self.template_civilian,
                 corpse_decay: self.template_corpse_decay,
                 movement_type: self.template_movement_type,
+                equipment_template_id: self.template_equipment_template_id,
+                equip_display_id1: self.template_equip_display_id1,
+                equip_display_id2: self.template_equip_display_id2,
+                equip_display_id3: self.template_equip_display_id3,
+                equip_class1: self.template_equip_class1,
+                equip_class2: self.template_equip_class2,
+                equip_class3: self.template_equip_class3,
+                equip_subclass1: self.template_equip_subclass1,
+                equip_subclass2: self.template_equip_subclass2,
+                equip_subclass3: self.template_equip_subclass3,
+                equip_material1: self.template_equip_material1,
+                equip_material2: self.template_equip_material2,
+                equip_material3: self.template_equip_material3,
+                equip_inventory_type1: self.template_equip_inventory_type1,
+                equip_inventory_type2: self.template_equip_inventory_type2,
+                equip_inventory_type3: self.template_equip_inventory_type3,
+                equip_sheath1: self.template_equip_sheath1,
+                equip_sheath2: self.template_equip_sheath2,
+                equip_sheath3: self.template_equip_sheath3,
                 experience_multiplier: self.template_experience_multiplier,
             },
             waypoint_path: Vec::new(),

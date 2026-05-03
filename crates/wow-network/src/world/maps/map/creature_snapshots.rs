@@ -301,7 +301,11 @@ impl MapRuntime {
             let Some(creature) = self.creatures.get(&guid) else {
                 continue;
             };
-            if creature.looting || creature.lootable || creature.loot_money_available || creature.loot_item.is_some() {
+            if creature.looting
+                || creature.lootable
+                || creature.loot_money_available
+                || !creature.loot_items.is_empty()
+            {
                 return Some(GridUnloadBlocker::Loot);
             }
             if creature.life_state == DbCreatureLifeState::Corpse {

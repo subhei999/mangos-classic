@@ -34,6 +34,8 @@ struct PlayerRuntime {
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    active_auras: Vec<ActiveAura>,
+    base_combat_stats: PlayerCombatStats,
     combat_stats: PlayerCombatStats,
 }
 
@@ -47,6 +49,8 @@ struct PlayerRuntimeSnapshot {
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    active_auras: Vec<ActiveAura>,
+    base_combat_stats: PlayerCombatStats,
     combat_stats: PlayerCombatStats,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,
@@ -154,6 +158,12 @@ struct DbCreatureLootReleaseEvent {
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug)]
+struct PlayerAuraUpdateEvent {
+    direct_packets: Vec<OutboundWorldPacket>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
 #[derive(Debug, Default)]
 struct MapDbCreatureVisibilityStage {
     nearby_creatures: Vec<DbCreatureRuntime>,
@@ -178,7 +188,7 @@ struct MapPlayerCorpseVisibilityStage {
 #[derive(Debug, Default)]
 struct DbGameObjectLootState {
     open_characters: HashSet<u32>,
-    loot_item: Option<DbCreatureLootRuntime>,
+    loot_items: Vec<DbCreatureLootRuntime>,
 }
 
 impl MapRuntime {

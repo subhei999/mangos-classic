@@ -1,6 +1,8 @@
 #[derive(Debug, Default)]
 struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
+    creature_display_scales: HashMap<u32, f32>,
+    spell_durations: HashMap<u32, SpellDurationEntry>,
     creature_grid_load_ensure_calls: AtomicU64,
     creature_grid_load_cache_hits: AtomicU64,
     creature_grid_load_db_queries: AtomicU64,
@@ -18,7 +20,42 @@ struct CreatureGridLoadStats {
     rows_loaded: u64,
 }
 
+fn apply_creature_display_scale_fallbacks(
+    spawns: &mut [CreatureSpawnQuery],
+    display_scales: &HashMap<u32, f32>,
+) {
+    for spawn in spawns {
+        if spawn.template.scale > 0.0 {
+            continue;
+        }
+        let Some(scale) = [
+            spawn.template.display_id1,
+            spawn.template.display_id2,
+            spawn.template.display_id3,
+            spawn.template.display_id4,
+        ]
+        .into_iter()
+        .find_map(|display_id| display_scales.get(&display_id).copied().filter(|scale| *scale > 0.0))
+        else {
+            continue;
+        };
+        spawn.template.scale = scale;
+    }
+}
+
 impl MapRuntimeManager {
+    fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
+        Self {
+            creature_display_scales: world_data_files.creature_display_scales.clone(),
+            spell_durations: world_data_files.spell_durations.clone(),
+            ..Self::default()
+        }
+    }
+
+    fn spell_duration(&self, duration_index: u32) -> Option<SpellDurationEntry> {
+        self.spell_durations.get(&duration_index).copied()
+    }
+
     async fn add_player(
         &self,
         player: PlayerRuntime,
@@ -396,6 +433,8 @@ impl MapRuntimeManager {
                 max_y,
             )
             .await?;
+            let mut spawns = spawns;
+            apply_creature_display_scale_fallbacks(&mut spawns, &self.creature_display_scales);
             let spawn_count = spawns.len() as u64;
             let db_queries = self
                 .creature_grid_load_db_queries
@@ -422,6 +461,20 @@ impl MapRuntimeManager {
             );
         }
         Ok(())
+    }
+
+    async fn apply_player_aura(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        aura: ActiveAura,
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.apply_player_aura(character_guid, aura);
+        event
     }
 
     #[cfg(test)]
@@ -738,14 +791,14 @@ impl MapRuntimeManager {
         map_id: u32,
         gameobject_guid: u64,
         character_guid: u32,
-        loot_item: Option<DbCreatureLootRuntime>,
-    ) -> Option<(DbGameObjectRuntime, Option<DbCreatureLootRuntime>)> {
+        loot_items: Vec<DbCreatureLootRuntime>,
+    ) -> Option<(DbGameObjectRuntime, Vec<DbCreatureLootRuntime>)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let opened = map.lock().await.open_db_gameobject_loot(
             gameobject_guid,
             character_guid,
-            loot_item,
+            loot_items,
         );
         opened
     }
@@ -768,13 +821,14 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         character_guid: u32,
-    ) -> Option<(u64, DbCreatureLootRuntime)> {
+        loot_slot: u8,
+    ) -> Option<(u64, u8, DbCreatureLootRuntime)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let loot = map
             .lock()
             .await
-            .take_db_gameobject_loot_item(character_guid);
+            .take_db_gameobject_loot_item(character_guid, loot_slot);
         loot
     }
 
@@ -782,14 +836,15 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         gameobject_guid: u64,
+        loot_slot: u8,
         loot: DbCreatureLootRuntime,
-    ) -> Option<DbCreatureLootRuntime> {
+    ) -> Option<Vec<DbCreatureLootRuntime>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let restored = map
             .lock()
             .await
-            .restore_db_gameobject_loot_item(gameobject_guid, loot);
+            .restore_db_gameobject_loot_item(gameobject_guid, loot_slot, loot);
         restored
     }
 
@@ -918,13 +973,13 @@ impl MapRuntimeManager {
         map_id: u32,
         creature_guid: u64,
         character_guid: u32,
-        loot_item: Option<DbCreatureLootRuntime>,
+        loot_items: Vec<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .open_db_creature_loot(creature_guid, character_guid, loot_item);
+            .open_db_creature_loot(creature_guid, character_guid, loot_items);
         creature
     }
 
@@ -963,9 +1018,13 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         character_guid: u32,
-    ) -> Option<(u64, DbCreatureLootRuntime, DbCreatureRuntime)> {
+        loot_slot: u8,
+    ) -> Option<(u64, u8, DbCreatureLootRuntime, DbCreatureRuntime)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let loot = map.lock().await.take_db_creature_loot_item(character_guid);
+        let loot = map
+            .lock()
+            .await
+            .take_db_creature_loot_item(character_guid, loot_slot);
         loot
     }
 
@@ -973,13 +1032,14 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         creature_guid: u64,
+        loot_slot: u8,
         loot: DbCreatureLootRuntime,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .restore_db_creature_loot_item(creature_guid, loot);
+            .restore_db_creature_loot_item(creature_guid, loot_slot, loot);
         creature
     }
 
@@ -1192,6 +1252,25 @@ impl MapRuntimeManager {
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_regen_tick(now)?);
+        }
+        Ok(packets)
+    }
+
+    async fn advance_all_player_aura_expirations(
+        &self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_player_aura_expirations(now)?);
         }
         Ok(packets)
     }

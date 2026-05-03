@@ -410,9 +410,14 @@ async fn send_db_creature_swing(
             .await;
         return Ok(());
     };
+    let weapon_skill_id = main_hand_weapon_skill_id(world_db_pool, &session.inventory).await?;
+    let attacker_skill = weapon_skill_id
+        .map(|skill_id| current_skill_value(&session.character_skills, skill_id))
+        .unwrap_or(0);
     let mut melee_outcome = player_main_hand_melee_outcome_against_db_creature(
         &combat_stats,
         character_snapshot.level,
+        attacker_skill,
         &target_creature,
     );
     let queued_spell = session
@@ -454,8 +459,30 @@ async fn send_db_creature_swing(
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
-    if queued_spell.is_some() {
+    if let Some(queued) = queued_spell {
         session.queued_next_melee_spell = None;
+        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
+        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
+    }
+    let mut advanced_skill = None;
+    if let Some(skill_id) = weapon_skill_id {
+        advanced_skill = try_advance_combat_skill_value(
+            character_snapshot.level,
+            skill_id,
+            combat_stats.intellect,
+            true,
+            &mut session.character_skills,
+        );
+        if let Some(updated) = advanced_skill {
+            wow_db::upsert_character_skill(
+                character_db_pool,
+                character_snapshot.guid,
+                updated.skill,
+                updated.value,
+                updated.max,
+            )
+            .await?;
+        }
     }
     mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if is_dead {
@@ -473,8 +500,12 @@ async fn send_db_creature_swing(
             .set_player_next_swing_at(map_id, character_snapshot.guid, Some(next_swing))
             .await;
     }
-    session.player_rage =
-        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    let rage_gain = if queued_spell.is_some() {
+        0
+    } else {
+        rage_gain_from_damage(event.damage, character_snapshot.level, true)
+    };
+    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
         .maps
         .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
@@ -563,6 +594,15 @@ async fn send_db_creature_swing(
         Some(&mut *header_crypto),
     )
     .await?;
+    if let Some(updated) = advanced_skill {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_skill_update_body(character_snapshot.guid, updated)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
 
     if is_dead {
         finalize_db_creature_death(
@@ -578,6 +618,218 @@ async fn send_db_creature_swing(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SkillProgressionUpdate {
+    slot: usize,
+    skill: u16,
+    value: u16,
+    max: u16,
+}
+
+fn try_advance_combat_skill_value(
+    character_level: u8,
+    skill_id: u16,
+    intellect: u32,
+    weapon: bool,
+    character_skills: &mut [CharacterSkill],
+) -> Option<SkillProgressionUpdate> {
+    let mut chance_rng = rand::thread_rng();
+    let mut skill_rng = rand::thread_rng();
+    try_advance_combat_skill_value_with_rolls(
+        character_level,
+        skill_id,
+        intellect,
+        weapon,
+        character_skills,
+        || chance_rng.gen_range(0.0f32..100.0f32),
+        || skill_rng.gen_range(0..=512),
+    )
+}
+
+fn try_advance_combat_skill_value_with_rolls(
+    character_level: u8,
+    skill_id: u16,
+    intellect: u32,
+    weapon: bool,
+    character_skills: &mut [CharacterSkill],
+    mut chance_roll: impl FnMut() -> f32,
+    mut update_skill_roll: impl FnMut() -> u32,
+) -> Option<SkillProgressionUpdate> {
+    let slot = character_skills
+        .iter()
+        .position(|skill| skill.skill == skill_id)?;
+    let skill = &mut character_skills[slot];
+    let level_cap = u16::from(character_level.max(1)).saturating_mul(5);
+    if level_cap == 0 {
+        return None;
+    }
+
+    let effective_max = skill.max.max(level_cap);
+    let max_changed = skill.max != effective_max;
+    skill.max = effective_max;
+    if skill.value == 0 || skill.value >= effective_max {
+        return max_changed.then_some(SkillProgressionUpdate {
+            slot,
+            skill: skill.skill,
+            value: skill.value,
+            max: skill.max,
+        });
+    }
+
+    let room = effective_max.saturating_sub(skill.value);
+    let mut chance = (f32::from(room / 5).max(1.0) / (f32::from(effective_max) / 5.0)) * 100.0;
+    if weapon {
+        chance += (chance * 0.02) * intellect as f32;
+    }
+    if chance_roll() >= chance {
+        return max_changed.then_some(SkillProgressionUpdate {
+            slot,
+            skill: skill.skill,
+            value: skill.value,
+            max: skill.max,
+        });
+    }
+
+    if u32::from(skill.value) * 512 >= u32::from(effective_max) * update_skill_roll() {
+        return max_changed.then_some(SkillProgressionUpdate {
+            slot,
+            skill: skill.skill,
+            value: skill.value,
+            max: skill.max,
+        });
+    }
+
+    skill.value = skill.value.saturating_add(1).min(effective_max);
+    Some(SkillProgressionUpdate {
+        slot,
+        skill: skill.skill,
+        value: skill.value,
+        max: skill.max,
+    })
+}
+
+fn advance_level_capped_combat_skill_maxes(
+    character_level: u8,
+    character_skills: &mut [CharacterSkill],
+) -> Vec<SkillProgressionUpdate> {
+    let level_cap = u16::from(character_level.max(1)).saturating_mul(5);
+    character_skills
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(slot, skill)| {
+            if !is_level_capped_combat_skill(skill.skill) || skill.max >= level_cap {
+                return None;
+            }
+            skill.max = level_cap;
+            Some(SkillProgressionUpdate {
+                slot,
+                skill: skill.skill,
+                value: skill.value,
+                max: skill.max,
+            })
+        })
+        .collect()
+}
+
+fn is_level_capped_combat_skill(skill_id: u16) -> bool {
+    matches!(
+        skill_id,
+        SKILL_DEFENSE
+            | SKILL_SWORDS
+            | SKILL_AXES
+            | SKILL_BOWS
+            | SKILL_GUNS
+            | SKILL_MACES
+            | SKILL_TWO_HANDED_SWORDS
+            | SKILL_STAVES
+            | SKILL_TWO_HANDED_MACES
+            | SKILL_UNARMED
+            | SKILL_TWO_HANDED_AXES
+            | SKILL_DAGGERS
+            | SKILL_THROWN
+            | SKILL_CROSSBOWS
+            | SKILL_WANDS
+            | SKILL_POLEARMS
+            | SKILL_SPEARS
+            | SKILL_FISHING
+            | SKILL_FIST_WEAPONS
+    )
+}
+
+async fn main_hand_weapon_skill_id(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Option<u16>> {
+    let main_hand = inventory.iter().find(|item| {
+        item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == EQUIPMENT_SLOT_MAINHAND
+    });
+    let Some(main_hand) = main_hand else {
+        return Ok(Some(SKILL_UNARMED));
+    };
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, main_hand.item_template).await?
+    else {
+        return Ok(None);
+    };
+    Ok(item_weapon_skill_from_template(&template))
+}
+
+fn item_weapon_skill_from_template(template: &ItemTemplateQuery) -> Option<u16> {
+    if template.class != ITEM_CLASS_WEAPON {
+        return None;
+    }
+    match template.subclass {
+        0 => Some(SKILL_AXES),
+        1 => Some(SKILL_TWO_HANDED_AXES),
+        2 => Some(SKILL_BOWS),
+        3 => Some(SKILL_GUNS),
+        4 => Some(SKILL_MACES),
+        5 => Some(SKILL_TWO_HANDED_MACES),
+        6 => Some(SKILL_POLEARMS),
+        7 => Some(SKILL_SWORDS),
+        8 => Some(SKILL_TWO_HANDED_SWORDS),
+        10 => Some(SKILL_STAVES),
+        13 => Some(SKILL_FIST_WEAPONS),
+        15 => Some(SKILL_DAGGERS),
+        16 => Some(SKILL_THROWN),
+        17 => Some(SKILL_SPEARS),
+        18 => Some(SKILL_CROSSBOWS),
+        19 => Some(SKILL_WANDS),
+        20 => Some(SKILL_FISHING),
+        _ => None,
+    }
+}
+
+fn build_player_skill_update_body(
+    character_guid: u32,
+    updated: SkillProgressionUpdate,
+) -> anyhow::Result<Vec<u8>> {
+    build_player_skill_updates_body(character_guid, &[updated])
+}
+
+fn build_player_skill_updates_body(
+    character_guid: u32,
+    updates: &[SkillProgressionUpdate],
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    for updated in updates {
+        let field = PLAYER_SKILL_INFO_1_1 + updated.slot * 3;
+        set_update_value(&mut values, field, make_pair32(updated.skill, 0))?;
+        set_update_value(
+            &mut values,
+            field + 1,
+            make_pair32(updated.value, updated.max),
+        )?;
+        set_update_value(&mut values, field + 2, 0)?;
+    }
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
 }
 
 async fn begin_db_creature_retaliation_if_needed(
@@ -614,6 +866,22 @@ fn player_melee_retry_at(now: Instant) -> Instant {
 
 fn player_main_hand_next_swing_at(now: Instant, combat_stats: &PlayerCombatStats) -> Instant {
     now + Duration::from_millis(combat_stats.main_attack_time_ms.max(1) as u64)
+}
+
+fn rage_gain_from_damage(damage: u32, level: u8, attacker: bool) -> u32 {
+    // CMaNGOS reference: src/game/Entities/Player.cpp Player::RewardRage
+    if damage == 0 {
+        return 0;
+    }
+    let level = level as f64;
+    let rage_conversion =
+        0.0091107836_f64 * level * level + 3.225598133_f64 * level + 4.2652911_f64;
+    if rage_conversion <= 0.0 {
+        return 0;
+    }
+    let base = if attacker { 7.5_f64 } else { 2.5_f64 };
+    let rage = (damage as f64 / rage_conversion) * base;
+    (rage.max(0.0) * 10.0) as u32
 }
 
 async fn send_player_melee_swing_error_if_changed(
@@ -835,6 +1103,21 @@ async fn award_character_xp(
     session.player_health = health;
     session.player_mana = power1;
     session.player_rage = power2;
+    let skill_cap_updates = if leveled {
+        advance_level_capped_combat_skill_maxes(new_level, &mut session.character_skills)
+    } else {
+        Vec::new()
+    };
+    for updated in &skill_cap_updates {
+        wow_db::upsert_character_skill(
+            character_db_pool,
+            guid,
+            updated.skill,
+            updated.value,
+            updated.max,
+        )
+        .await?;
+    }
 
     send_packet(
         stream,
@@ -869,7 +1152,18 @@ async fn award_character_xp(
         })?,
         Some(header_crypto),
     )
-    .await
+    .await?;
+    if !skill_cap_updates.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_skill_updates_body(guid, &skill_cap_updates)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 fn creature_xp_reward(player_level: u8, template: &CreatureTemplateQuery) -> u32 {
@@ -996,8 +1290,16 @@ async fn send_combat_dummy_swing(
         .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
     let damage = session.combat_dummy_health.min(hit_damage);
     session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-    session.player_rage =
-        (session.player_rage + RUST_COMBAT_DUMMY_RAGE_GAIN).min(POWER_RAGE_DEFAULT);
+    let rage_gain = if queued_spell.is_some() {
+        0
+    } else {
+        rage_gain_from_damage(damage, character.level, true)
+    };
+    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
+    if let Some(queued) = queued_spell {
+        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
+        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
+    }
     shared_world
         .maps
         .set_player_power2(map_id, character_guid, session.player_rage)

@@ -2,8 +2,7 @@ param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
     [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
-    [switch]$ResetWorldDatabase,
-    [switch]$NorthshireGrade
+    [switch]$ResetWorldDatabase
 )
 
 $ErrorActionPreference = "Stop"
@@ -176,9 +175,6 @@ try {
     }
 
     $starterZoneArgs = @("run", "-p", "starter-zone-flow-test")
-    if ($NorthshireGrade) {
-        $starterZoneArgs += @("--", "--northshire-grade")
-    }
     Invoke-Checked cargo $starterZoneArgs
 }
 finally {

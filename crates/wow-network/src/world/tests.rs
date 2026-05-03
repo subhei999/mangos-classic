@@ -230,6 +230,8 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         model_combat_reach: PLAYER_COMBAT_REACH_YARDS,
         faction: 35,
         scale: 1.0,
+        speed_walk: 1.0,
+        speed_run: 1.0,
         detection_range: 20,
         call_for_help: 0,
         pursuit: 15_000,
@@ -268,6 +270,25 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         civilian: 0,
         corpse_decay: 0,
         movement_type: DB_MOTION_TYPE_IDLE,
+        equipment_template_id: 0,
+        equip_display_id1: 0,
+        equip_display_id2: 0,
+        equip_display_id3: 0,
+        equip_class1: 0,
+        equip_class2: 0,
+        equip_class3: 0,
+        equip_subclass1: 0,
+        equip_subclass2: 0,
+        equip_subclass3: 0,
+        equip_material1: 0,
+        equip_material2: 0,
+        equip_material3: 0,
+        equip_inventory_type1: 0,
+        equip_inventory_type2: 0,
+        equip_inventory_type3: 0,
+        equip_sheath1: 0,
+        equip_sheath2: 0,
+        equip_sheath3: 0,
         experience_multiplier: 1.0,
     }
 }
@@ -377,6 +398,8 @@ fn test_quest_template(entry: u32) -> QuestTemplateQuery {
         rew_choice_item_count: [0; 6],
         rew_item_id: [0; 4],
         rew_item_count: [0; 4],
+        rew_rep_faction: [0; 5],
+        rew_rep_value: [0; 5],
         point_map_id: 0,
         point_x: 0.0,
         point_y: 0.0,
@@ -550,16 +573,34 @@ fn db_vendor_gossip_message_points_at_db_creature() {
     let body = build_gossip_message(
         guid,
         DB_VENDOR_GOSSIP_TEXT_ID,
-        &[(0, DB_VENDOR_GOSSIP_OPTION)],
+        &[(0, GOSSIP_ICON_VENDOR, DB_VENDOR_GOSSIP_OPTION)],
     );
     assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
     assert_eq!(&body[8..12], &DB_VENDOR_GOSSIP_TEXT_ID.to_le_bytes());
     assert_eq!(&body[12..16], &1u32.to_le_bytes());
     assert_eq!(&body[16..20], &0u32.to_le_bytes());
-    assert_eq!(body[20], 0);
+    assert_eq!(body[20], GOSSIP_ICON_VENDOR);
     assert_eq!(body[21], 0);
     assert_eq!(&body[22..36], b"Browse goods.\0");
     assert_eq!(&body[36..40], &0u32.to_le_bytes());
+}
+
+#[test]
+fn db_trainer_gossip_message_uses_trainer_book_icon() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_002);
+    let body = build_gossip_message(
+        guid,
+        DB_TRAINER_GOSSIP_TEXT_ID,
+        &[(0, GOSSIP_ICON_TRAINER, DB_TRAINER_GOSSIP_OPTION)],
+    );
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &DB_TRAINER_GOSSIP_TEXT_ID.to_le_bytes());
+    assert_eq!(&body[12..16], &1u32.to_le_bytes());
+    assert_eq!(&body[16..20], &0u32.to_le_bytes());
+    assert_eq!(body[20], GOSSIP_ICON_TRAINER);
+    assert_eq!(body[21], 0);
+    assert_eq!(&body[22..39], b"I seek training.\0");
+    assert_eq!(&body[39..43], &0u32.to_le_bytes());
 }
 
 #[test]
@@ -748,6 +789,129 @@ fn db_creature_create_block_defaults_zero_template_scale_to_one() {
     let values = decode_update_values(&block[values_start..]);
 
     assert_eq!(values[4], Some(0.7f32.to_bits()));
+}
+
+#[test]
+fn creature_display_info_dbc_parser_reads_display_scale_field() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&12u32.to_le_bytes());
+    bytes.extend_from_slice(&48u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    let mut first = [0u8; 48];
+    first[0..4].copy_from_slice(&604u32.to_le_bytes());
+    first[16..20].copy_from_slice(&0.7f32.to_le_bytes());
+    bytes.extend_from_slice(&first);
+    let mut second = [0u8; 48];
+    second[0..4].copy_from_slice(&447u32.to_le_bytes());
+    second[16..20].copy_from_slice(&0.45f32.to_le_bytes());
+    bytes.extend_from_slice(&second);
+    bytes.push(0);
+
+    let scales = parse_creature_display_info_scales(&bytes);
+
+    assert_eq!(scales.get(&604).copied(), Some(0.7));
+    assert_eq!(scales.get(&447).copied(), Some(0.45));
+}
+
+#[test]
+fn spell_duration_dbc_parser_reads_cmangos_duration_fields() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&120_000i32.to_le_bytes());
+    bytes.extend_from_slice(&0i32.to_le_bytes());
+    bytes.extend_from_slice(&120_000i32.to_le_bytes());
+    bytes.extend_from_slice(&99u32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0i32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.push(0);
+
+    let durations = parse_spell_durations(&bytes);
+
+    assert_eq!(
+        durations.get(&4).copied(),
+        Some(SpellDurationEntry {
+            duration_millis: 120_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 120_000,
+        })
+    );
+    assert_eq!(
+        durations.get(&99).copied(),
+        Some(SpellDurationEntry {
+            duration_millis: -1,
+            duration_per_level_millis: 0,
+            max_duration_millis: -1,
+        })
+    );
+}
+
+#[test]
+fn creature_template_zero_scale_falls_back_to_first_display_dbc_scale() {
+    let mut spawns = vec![test_creature_spawn(299)];
+    spawns[0].template.scale = 0.0;
+    spawns[0].template.display_id1 = 0;
+    spawns[0].template.display_id2 = 447;
+    let display_scales = HashMap::from([(447, 0.45), (604, 0.7)]);
+
+    apply_creature_display_scale_fallbacks(&mut spawns, &display_scales);
+
+    assert_eq!(spawns[0].template.scale, 0.45);
+
+    spawns[0].template.scale = 1.25;
+    apply_creature_display_scale_fallbacks(&mut spawns, &display_scales);
+    assert_eq!(spawns[0].template.scale, 1.25);
+}
+
+#[test]
+fn db_creature_create_block_uses_template_speed_rates_and_equipment_displays() {
+    let mut creature = test_creature_spawn(198);
+    creature.template.speed_walk = 0.9;
+    creature.template.speed_run = 1.14286;
+    creature.template.equip_display_id1 = 1001;
+    creature.template.equip_display_id2 = 1002;
+    creature.template.equip_display_id3 = 1003;
+    creature.template.equip_class1 = 2;
+    creature.template.equip_subclass1 = 7;
+    creature.template.equip_material1 = 1;
+    creature.template.equip_inventory_type1 = 21;
+    creature.template.equip_sheath1 = 3;
+    creature.template.equip_class2 = 4;
+    creature.template.equip_subclass2 = 6;
+    creature.template.equip_material2 = -1;
+    creature.template.equip_inventory_type2 = 14;
+    creature.template.equip_sheath2 = 1;
+
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let movement_start = update_flags_offset + 1;
+    let walk_offset = movement_start + 28;
+    let run_offset = movement_start + 32;
+    let walk_speed = f32::from_le_bytes(block[walk_offset..walk_offset + 4].try_into().unwrap());
+    let run_speed = f32::from_le_bytes(block[run_offset..run_offset + 4].try_into().unwrap());
+
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+    assert_eq!(walk_speed, DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * 0.9);
+    assert!((run_speed - (DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * 1.14286)).abs() < 0.0001);
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY], Some(1001));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 1], Some(1002));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 2], Some(1003));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO], Some(0x1501_0702));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 1], Some(3));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 2], Some(0x0EFF_0604));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 3], Some(1));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 4], Some(0));
+    assert_eq!(values[UNIT_VIRTUAL_ITEM_INFO + 5], Some(0));
+    assert_eq!(values[UNIT_FIELD_BYTES_2], Some(creature_unit_bytes_2()));
 }
 
 #[test]
@@ -1485,7 +1649,8 @@ fn melee_damage_outcome_serializes_miss_and_block_like_attacker_state_update() {
     let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
     let input = MeleeDamageInput {
         attacker_level: 1,
-        victim_level: 1,
+        attacker_skill: 5,
+        victim_defense: 5,
         min_damage: 10.0,
         max_damage: 10.0,
         victim_armor: 0,
@@ -1527,6 +1692,155 @@ fn armor_reduced_damage_matches_cmangos_cap_shape() {
     let reduced = armor_reduced_damage(1, 100, 10.0);
     assert!(reduced < 10);
     assert_eq!(armor_reduced_damage(60, 999_999, 100.0), 25);
+}
+
+#[test]
+fn player_miss_chance_uses_weapon_skill_against_creature_defense() {
+    let even = player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 5, 1);
+    let under_skilled =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 1, 5, 1);
+    let heavily_under_skilled =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 20, 4);
+
+    assert_eq!(even.miss, 5.0);
+    assert!(under_skilled.miss > even.miss);
+    assert_eq!(heavily_under_skilled.miss, 9.0);
+}
+
+#[test]
+fn combat_skill_progression_uses_intellect_for_weapon_skills_only() {
+    let mut without_intellect = vec![CharacterSkill {
+        skill: SKILL_SWORDS,
+        value: 250,
+        max: 300,
+    }];
+    let missed = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_SWORDS,
+        0,
+        true,
+        &mut without_intellect,
+        || 20.0,
+        || 512,
+    );
+    assert!(missed.is_none());
+    assert_eq!(without_intellect[0].value, 250);
+
+    let mut with_intellect = vec![CharacterSkill {
+        skill: SKILL_SWORDS,
+        value: 250,
+        max: 300,
+    }];
+    let advanced = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_SWORDS,
+        20,
+        true,
+        &mut with_intellect,
+        || 20.0,
+        || 512,
+    )
+    .expect("intellect should raise the weapon skill-up chance enough to pass");
+    assert_eq!(advanced.value, 251);
+    assert_eq!(with_intellect[0].value, 251);
+
+    let mut defense = vec![CharacterSkill {
+        skill: SKILL_DEFENSE,
+        value: 250,
+        max: 300,
+    }];
+    let defense_missed = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_DEFENSE,
+        999,
+        false,
+        &mut defense,
+        || 20.0,
+        || 512,
+    );
+    assert!(defense_missed.is_none());
+    assert_eq!(defense[0].value, 250);
+}
+
+#[test]
+fn combat_skill_progression_updates_level_cap_and_value() {
+    let mut skills = vec![test_skill(SKILL_UNARMED, 1, 5)];
+    let updated = try_advance_combat_skill_value_with_rolls(
+        2,
+        SKILL_UNARMED,
+        0,
+        true,
+        &mut skills,
+        || 0.0,
+        || 512,
+    )
+    .expect("expected unarmed skill progression update");
+
+    assert_eq!(updated.slot, 0);
+    assert_eq!(updated.skill, SKILL_UNARMED);
+    assert_eq!(updated.value, 2);
+    assert_eq!(updated.max, 10);
+    assert_eq!(skills[0].value, 2);
+    assert_eq!(skills[0].max, 10);
+}
+
+#[test]
+fn level_up_updates_combat_skill_maxes_without_waiting_for_skill_gain() {
+    let mut skills = vec![
+        test_skill(SKILL_DEFENSE, 4, 5),
+        test_skill(98, 300, 300),
+        test_skill(SKILL_SWORDS, 3, 5),
+        test_skill(SKILL_UNARMED, 5, 5),
+    ];
+
+    let updates = advance_level_capped_combat_skill_maxes(2, &mut skills);
+
+    assert_eq!(updates.len(), 3);
+    assert_eq!(skills[0].max, 10);
+    assert_eq!(skills[1].max, 300);
+    assert_eq!(skills[2].max, 10);
+    assert_eq!(skills[3].max, 10);
+    assert_eq!(skills[0].value, 4);
+    assert_eq!(skills[2].value, 3);
+    assert_eq!(skills[3].value, 5);
+
+    let body = build_player_skill_updates_body(7, &updates).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1],
+        Some(make_pair32(SKILL_DEFENSE, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 1], Some(make_pair32(4, 10)));
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1 + 6],
+        Some(make_pair32(SKILL_SWORDS, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 7], Some(make_pair32(3, 10)));
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1 + 9],
+        Some(make_pair32(SKILL_UNARMED, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 10], Some(make_pair32(5, 10)));
+}
+
+#[test]
+fn item_weapon_skill_mapping_matches_cmangos_known_ids() {
+    let mut sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    sword.subclass = 7;
+    let mut fist = test_item_template(26, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    fist.subclass = 13;
+    let mut unknown = test_item_template(27, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    unknown.subclass = 9;
+
+    assert_eq!(item_weapon_skill_from_template(&sword), Some(SKILL_SWORDS));
+    assert_eq!(
+        item_weapon_skill_from_template(&fist),
+        Some(SKILL_FIST_WEAPONS)
+    );
+    assert_eq!(item_weapon_skill_from_template(&unknown), None);
 }
 
 #[test]
@@ -1611,7 +1925,7 @@ fn player_main_hand_outcome_uses_db_creature_template_armor() {
     let creature = DbCreatureRuntime::new(spawn);
 
     let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
-        &stats, 1, &creature, 1, 10_000,
+        &stats, 1, 5, &creature, 1, 10_000,
     );
 
     assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
@@ -1649,6 +1963,7 @@ fn creature_melee_outcome_uses_player_armor_from_defense_input() {
     let creature = DbCreatureRuntime::new(spawn);
     let defense = PlayerMeleeDefenseInput {
         level: 1,
+        defense_skill: 5,
         armor: 100,
         block_value: 0,
         dodge_percent: 0.0,
@@ -1676,6 +1991,7 @@ fn creature_block_outcome_uses_supplied_player_shield_block_value() {
     let creature = DbCreatureRuntime::new(spawn);
     let defense = PlayerMeleeDefenseInput {
         level: 1,
+        defense_skill: 5,
         armor: 0,
         block_value: 7,
         dodge_percent: 0.0,
@@ -2248,6 +2564,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
             vec![
                 CreatureLootQuery {
                     item: 25,
+                    group_id: 0,
                     min_count: 1,
                     max_count: 1,
                     display_id: 25,
@@ -2255,6 +2572,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
                 },
                 CreatureLootQuery {
                     item: 777,
+                    group_id: 0,
                     min_count: 1,
                     max_count: 1,
                     display_id: 777,
@@ -2280,7 +2598,10 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
     let before = object_mgr.cache_stats_snapshot();
     let selected = select_db_creature_loot_item_for_character(&object_mgr, &pool, &session, 38)
         .await
-        .expect("cached loot selection should load")
+        .expect("cached loot selection should load");
+    let selected = selected
+        .iter()
+        .find(|loot| loot.item == 777)
         .expect("quest item should be selected");
 
     assert_eq!(selected.item, 777);
@@ -2333,6 +2654,8 @@ fn questgiver_list_uses_current_quest_dialog_status() {
     incomplete.title = "Incomplete".to_string();
     let mut reward = test_quest_template(9);
     reward.title = "Reward".to_string();
+    let mut unavailable = test_quest_template(10);
+    unavailable.title = "Unavailable".to_string();
 
     let body = build_questgiver_quest_list_body(
         guid,
@@ -2349,6 +2672,10 @@ fn questgiver_list_uses_current_quest_dialog_status() {
                 quest: reward,
                 dialog_status: DIALOG_STATUS_REWARD2,
             },
+            QuestListItem {
+                quest: unavailable,
+                dialog_status: DIALOG_STATUS_UNAVAILABLE,
+            },
         ],
     );
 
@@ -2358,7 +2685,7 @@ fn questgiver_list_uses_current_quest_dialog_status() {
     }
     cursor += 1;
     cursor += 8;
-    assert_eq!(body[cursor], 3);
+    assert_eq!(body[cursor], 4);
     cursor += 1;
 
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 7);
@@ -2385,6 +2712,104 @@ fn questgiver_list_uses_current_quest_dialog_status() {
 
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 9);
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), DIALOG_STATUS_REWARD2);
+    cursor += 4;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 10);
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        DIALOG_STATUS_UNAVAILABLE
+    );
+}
+
+#[test]
+fn start_quest_dialog_status_distinguishes_available_gray_and_hidden() {
+    assert_eq!(
+        start_quest_dialog_status(true, true),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+    assert_eq!(
+        start_quest_dialog_status(false, true),
+        Some(DIALOG_STATUS_UNAVAILABLE)
+    );
+    assert_eq!(start_quest_dialog_status(false, false), None);
+}
+
+#[tokio::test]
+async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiver() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.min_level = 2;
+    quest.exclusive_group = 0;
+    let giver = ObjectGuid::new(HighGuid::Unit, 823, 55);
+    object_mgr
+        .prime_creature_start_quest_ids_for_test(823, vec![18])
+        .await;
+    object_mgr
+        .prime_creature_complete_quest_ids_for_test(823, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(18, Some(quest))
+        .await;
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        ..WorldSessionState::default()
+    };
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    send_visible_questgiver_status_updates(
+        &mut sink,
+        &object_mgr,
+        &pool,
+        shared_world,
+        &session,
+        &[giver],
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, SMSG_QUESTGIVER_STATUS);
+    assert_eq!(
+        packet.body,
+        build_questgiver_status_body(giver, DIALOG_STATUS_UNAVAILABLE)
+    );
+    assert!(outbound_rx.try_recv().is_err());
 }
 
 #[test]
@@ -2444,6 +2869,81 @@ fn selected_quest_rewards_include_choice_and_fixed_items() {
 }
 
 #[test]
+fn quest_reputation_reward_uses_cmangos_low_level_quest_formula() {
+    let mut quest = test_quest_template(783);
+    quest.quest_level = 1;
+    quest.rew_rep_faction[0] = 72;
+    quest.rew_rep_value[0] = 250;
+
+    assert_eq!(quest_reputation_rewards(1, &quest), vec![(72, 250)]);
+    assert_eq!(quest_reputation_rewards(7, &quest), vec![(72, 200)]);
+    assert_eq!(quest_reputation_rewards(10, &quest), vec![(72, 50)]);
+}
+
+#[test]
+fn faction_standing_packet_uses_dbc_reputation_list_slots() {
+    let body = build_set_faction_standing_body(&[
+        CharacterReputation {
+            faction: 72,
+            standing: 250,
+            flags: 1,
+        },
+        CharacterReputation {
+            faction: 999_999,
+            standing: 42,
+            flags: 1,
+        },
+    ]);
+    let mut cursor = 0;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 19);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 250);
+    assert_eq!(cursor, body.len());
+}
+
+#[test]
+fn reputation_gain_message_uses_dbc_faction_name_bridge() {
+    let change = CharacterReputationChange {
+        reputation: CharacterReputation {
+            faction: 72,
+            standing: 250,
+            flags: 1,
+        },
+        delta: 75,
+    };
+
+    assert_eq!(
+        reputation_gain_system_message(&change).as_deref(),
+        Some("Reputation with Stormwind increased by 75.")
+    );
+}
+
+#[test]
+fn system_chat_packet_uses_vanilla_message_shape() {
+    let message = "Reputation with Stormwind increased by 75.";
+    let body = build_system_message_chat_body(message);
+    let mut cursor = 0;
+
+    assert_eq!(body[cursor], CHAT_MSG_SYSTEM as u8);
+    cursor += 1;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), LANG_UNIVERSAL);
+    assert_eq!(&body[cursor..cursor + 8], &0u64.to_le_bytes());
+    cursor += 8;
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        (message.len() + 1) as u32
+    );
+    assert_eq!(&body[cursor..cursor + message.len()], message.as_bytes());
+    cursor += message.len();
+    assert_eq!(body[cursor], 0);
+    cursor += 1;
+    assert_eq!(body[cursor], CHAT_TAG_NONE);
+    cursor += 1;
+    assert_eq!(cursor, body.len());
+}
+
+#[test]
 fn active_quest_log_slots_skip_abandoned_status_rows() {
     let mut statuses = HashMap::new();
     statuses.insert(
@@ -2496,6 +2996,40 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
 
     let empty_inventory = [];
     assert!(!quest_can_complete_from_inventory(&quest, &empty_inventory));
+}
+
+#[test]
+fn quest_source_item_push_result_matches_cmangos_shape() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 9542,
+        count: 1,
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, true, false, true);
+    let mut cursor = 0;
+
+    assert_eq!(
+        &body[cursor..cursor + 8],
+        &ObjectGuid::new(HighGuid::Player, 0, 11).raw().to_le_bytes()
+    );
+    cursor += 8;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(body[cursor], CLIENT_INVENTORY_SLOT_BAG_0);
+    cursor += 1;
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        INVENTORY_SLOT_ITEM_START as u32
+    );
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 9542);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(cursor, body.len());
 }
 
 #[test]
@@ -3352,7 +3886,7 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     kobold.position_z = 0.0;
     kobold.template.npc_flags = 0;
     let target = creature_spawn_guid(&kobold);
-    let starter_spell = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    let starter_spell = supported_starter_spell(&heroic_strike_spell_template()).unwrap();
     let targets = SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target),
@@ -3640,6 +4174,12 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -3723,6 +4263,12 @@ async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_sessio
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -4202,6 +4748,8 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
     })
     .await
@@ -4249,29 +4797,29 @@ fn map_runtime_db_gameobject_loot_item_is_shared_between_characters() {
         display_id: 118,
     };
 
-    let first_open = map.open_db_gameobject_loot(guid, 1, Some(first_loot));
-    let second_open = map.open_db_gameobject_loot(guid, 2, Some(second_loot));
+    let first_open = map.open_db_gameobject_loot(guid, 1, vec![first_loot]);
+    let second_open = map.open_db_gameobject_loot(guid, 2, vec![second_loot]);
 
     assert_eq!(
         first_open
             .as_ref()
-            .and_then(|(_, loot)| loot.as_ref())
+            .and_then(|(_, loot)| loot.first())
             .map(|loot| loot.item),
         Some(117)
     );
     assert_eq!(
         second_open
             .as_ref()
-            .and_then(|(_, loot)| loot.as_ref())
+            .and_then(|(_, loot)| loot.first())
             .map(|loot| loot.item),
         Some(117)
     );
     assert_eq!(
-        map.take_db_gameobject_loot_item(1)
-            .map(|(_, loot)| loot.item),
+        map.take_db_gameobject_loot_item(1, 0)
+            .map(|(_, _, loot)| loot.item),
         Some(117)
     );
-    assert!(map.take_db_gameobject_loot_item(2).is_none());
+    assert!(map.take_db_gameobject_loot_item(2, 0).is_none());
 
     map.release_db_gameobject_loot(guid, 1).unwrap();
     assert_eq!(map.db_gameobject_loot_guid_for_character(1), None);
@@ -4292,23 +4840,23 @@ fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
         count: 1,
         display_id: 117,
     };
-    map.open_db_gameobject_loot(guid, 1, Some(loot.clone()))
+    map.open_db_gameobject_loot(guid, 1, vec![loot.clone()])
         .expect("gameobject loot should open");
     let taken = map
-        .take_db_gameobject_loot_item(1)
+        .take_db_gameobject_loot_item(1, 0)
         .expect("first shared claim should take the item");
-    assert_eq!(taken.1.item, 117);
-    assert!(map.take_db_gameobject_loot_item(1).is_none());
+    assert_eq!(taken.2.item, 117);
+    assert!(map.take_db_gameobject_loot_item(1, 0).is_none());
 
     let restored = map
-        .restore_db_gameobject_loot_item(guid, loot)
+        .restore_db_gameobject_loot_item(guid, 0, loot)
         .expect("failed autostore should restore shared item");
-    assert_eq!(restored.item, 117);
+    assert_eq!(restored.first().map(|loot| loot.item), Some(117));
 
-    map.open_db_gameobject_loot(guid, 2, None)
+    map.open_db_gameobject_loot(guid, 2, Vec::new())
         .expect("second character should open restored shared loot");
-    let reclaimed = map.take_db_gameobject_loot_item(2);
-    assert_eq!(reclaimed.map(|(_, loot)| loot.item), Some(117));
+    let reclaimed = map.take_db_gameobject_loot_item(2, 0);
+    assert_eq!(reclaimed.map(|(_, _, loot)| loot.item), Some(117));
 }
 
 #[test]
@@ -4668,7 +5216,7 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
     creature.begin_corpse(Instant::now(), 1_000);
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
-    assert!(map.open_db_creature_loot(guid, 1, None).is_some());
+    assert!(map.open_db_creature_loot(guid, 1, Vec::new()).is_some());
 
     let first = map.take_db_creature_loot_money(1);
     let second = map.take_db_creature_loot_money(1);
@@ -4696,18 +5244,18 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     assert!(map
-        .open_db_creature_loot(guid, 1, Some(loot.clone()))
+        .open_db_creature_loot(guid, 1, vec![loot.clone()])
         .is_some());
 
-    let first = map.take_db_creature_loot_item(1);
-    let second = map.take_db_creature_loot_item(1);
-    assert_eq!(first.as_ref().map(|(_, loot, _)| loot.item), Some(117));
+    let first = map.take_db_creature_loot_item(1, 0);
+    let second = map.take_db_creature_loot_item(1, 0);
+    assert_eq!(first.as_ref().map(|(_, _, loot, _)| loot.item), Some(117));
     assert!(second.is_none());
 
-    let restored = map.restore_db_creature_loot_item(guid, loot).unwrap();
-    assert_eq!(restored.loot_item.as_ref().map(|loot| loot.item), Some(117));
-    let reclaimed = map.take_db_creature_loot_item(1);
-    assert_eq!(reclaimed.map(|(_, loot, _)| loot.item), Some(117));
+    let restored = map.restore_db_creature_loot_item(guid, 0, loot).unwrap();
+    assert_eq!(restored.loot_items.first().map(|loot| loot.item), Some(117));
+    let reclaimed = map.take_db_creature_loot_item(1, 0);
+    assert_eq!(reclaimed.map(|(_, _, loot, _)| loot.item), Some(117));
 }
 
 #[test]
@@ -4735,15 +5283,15 @@ fn map_runtime_db_creature_loot_item_is_generated_once() {
 
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(true));
     let opened = map
-        .open_db_creature_loot(guid, 1, Some(first_loot.clone()))
+        .open_db_creature_loot(guid, 1, vec![first_loot.clone()])
         .unwrap();
-    assert_eq!(opened.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    assert_eq!(opened.loot_items.first().map(|loot| loot.item), Some(117));
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(false));
 
     let reopened = map
-        .open_db_creature_loot(guid, 1, Some(second_loot))
+        .open_db_creature_loot(guid, 1, vec![second_loot])
         .unwrap();
-    assert_eq!(reopened.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    assert_eq!(reopened.loot_items.first().map(|loot| loot.item), Some(117));
 }
 
 #[test]
@@ -4757,7 +5305,7 @@ fn map_runtime_db_creature_loot_release_broadcasts_cleared_flags() {
     creature.begin_corpse(Instant::now(), 1_000);
     creature.looting = true;
     creature.loot_money_available = false;
-    creature.loot_item = None;
+    creature.loot_items.clear();
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
@@ -5038,6 +5586,47 @@ fn map_runtime_db_creature_damage_updates_shared_player_and_observers() {
         .observer_packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_damage_preserves_attacker_state_overkill_damage() {
+    let mut map = MapRuntime::new(0, 0);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 901;
+    spawn.template.min_level_health = 12;
+    spawn.template.max_level_health = 12;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: player,
+            damage: 30,
+            melee_outcome: None,
+            spell_id: None,
+            suppress_attacker_state: false,
+            now: Instant::now(),
+            now_epoch_secs: 0,
+            exclude_character_guid: Some(1),
+        })
+        .unwrap()
+        .expect("damage event");
+
+    assert_eq!(
+        event.damage, 12,
+        "applied hp damage stays clamped to current hp"
+    );
+    let state = event.attacker_state_body.expect("attacker state");
+    let mut cursor = 0;
+    assert_eq!(read_u32(&state, &mut cursor).unwrap(), HITINFO_NORMALSWING2);
+    cursor += PackedGuid::packed_size(player) + PackedGuid::packed_size(creature_guid);
+    assert_eq!(
+        read_u32(&state, &mut cursor).unwrap(),
+        30,
+        "attacker packet should preserve pre-clamp overkill damage"
+    );
 }
 
 #[test]
@@ -5439,7 +6028,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
         .is_none());
 
     assert!(map
-        .open_db_creature_loot(creature_guid.raw(), 1, None)
+        .open_db_creature_loot(creature_guid.raw(), 1, Vec::new())
         .is_some());
     let first_money = map.take_db_creature_loot_money(1);
     let second_money = map.take_db_creature_loot_money(1);
@@ -5852,6 +6441,8 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
     }
 }
@@ -5864,6 +6455,57 @@ fn test_player_combat_stats() -> PlayerCombatStats {
         next_level_xp: 400,
     };
     player_combat_stats_for_values(1, 1, &world_stats, &[])
+}
+
+#[test]
+fn map_owned_player_aura_applies_attack_power_mod_and_expires() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+    let base_attack_power = map
+        .players
+        .get(&7)
+        .unwrap()
+        .base_combat_stats
+        .melee_attack_power;
+    let now = Instant::now();
+    let aura = ActiveAura {
+        spell_id: 6673,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 3,
+        positive: true,
+        duration_millis: Some(2_000),
+        expires_at: Some(now + Duration::from_secs(2)),
+        stat_modifiers: vec![AuraStatModifier::AttackPower { amount: 15 }],
+    };
+
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(event.direct_packets.len(), 3);
+    let duration_packet = event
+        .direct_packets
+        .iter()
+        .find(|packet| packet.opcode == SMSG_UPDATE_AURA_DURATION)
+        .expect("timed aura apply should send owner duration update");
+    assert_eq!(duration_packet.body[0], 0);
+    assert!(u32::from_le_bytes(duration_packet.body[1..5].try_into().unwrap()) <= 2_000);
+    assert_eq!(player.active_auras.len(), 1);
+    assert_eq!(player.combat_stats.melee_attack_power, base_attack_power);
+    assert_eq!(player.combat_stats.melee_attack_power_mod_positive, 15);
+
+    assert!(map
+        .advance_player_aura_expirations(now + Duration::from_secs(1))
+        .unwrap()
+        .is_empty());
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_secs(2))
+        .unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(packets.len(), 2);
+    assert!(player.active_auras.is_empty());
+    assert_eq!(player.combat_stats.melee_attack_power, base_attack_power);
+    assert_eq!(player.combat_stats.melee_attack_power_mod_positive, 0);
 }
 
 fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
@@ -6378,6 +7020,54 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
 }
 
 #[test]
+fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 1;
+    player.spirit = 70;
+    player.health = 60;
+    player.max_health = 60;
+    map.add_player(player).unwrap();
+
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 2,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_health: 98,
+        ..WorldSessionState::default()
+    };
+    map.sync_player_gameplay_state(7, &session);
+    assert_eq!(map.players.get(&7).unwrap().max_health, 98);
+    assert_eq!(map.players.get(&7).unwrap().health, 98);
+
+    map.players.get_mut(&7).unwrap().health = 60;
+    let now = Instant::now();
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    map.advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+    assert!(map.players.get(&7).unwrap().health > 60);
+    assert!(map.players.get(&7).unwrap().health <= 98);
+}
+
+#[test]
+fn rage_gain_from_damage_matches_cmangos_reward_rage_formula() {
+    // CMaNGOS: src/game/Entities/Player.cpp Player::RewardRage
+    assert_eq!(rage_gain_from_damage(0, 1, true), 0);
+    assert_eq!(rage_gain_from_damage(100, 1, true), 999);
+    assert_eq!(rage_gain_from_damage(100, 1, false), 333);
+}
+
+#[test]
 fn map_runtime_player_regen_tick_restores_health_and_mana_from_spirit() {
     let mut map = MapRuntime::new(0, 0);
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -6742,6 +7432,7 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     let first_next =
         scheduled_player_auto_attack_next_swing(shared_world, &session, target, now, swing_delay)
             .await;
+    assert_eq!(first_next, now, "first swing should be immediately due");
     maps.set_player_auto_attack(map_id, character_guid, Some(target), Some(first_next))
         .await;
 
@@ -6774,6 +7465,28 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
         Some(target)
     );
 
+    let future_next = now + swing_delay;
+    maps.set_player_auto_attack(map_id, character_guid, None, Some(future_next))
+        .await;
+    let restarted_next = scheduled_player_auto_attack_next_swing(
+        shared_world,
+        &session,
+        target,
+        now + Duration::from_millis(250),
+        swing_delay,
+    )
+    .await;
+    assert_eq!(
+        restarted_next, future_next,
+        "manual attack stop/start must preserve the existing swing cooldown"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, future_next)
+            .await,
+        None,
+        "a preserved cooldown without an active target must not swing by itself"
+    );
+
     session.active_character = None;
 }
 
@@ -6785,6 +7498,8 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             data_dir_for_native: None,
             maps_available: true,
             vmaps_available: true,
+            creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -6939,6 +7654,8 @@ fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
             data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data").ok(),
             maps_available: true,
             vmaps_available: false,
+            creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -7071,7 +7788,7 @@ fn db_creature_loot_release_does_not_respawn_before_corpse_and_spawn_timers() {
 
     runtime.begin_corpse(now, 2_000);
     runtime.loot_money_available = false;
-    runtime.loot_item = None;
+    runtime.loot_items.clear();
     runtime.looting = true;
     runtime.reduce_corpse_decay_after_loot(now);
     assert_eq!(runtime.life_state, DbCreatureLifeState::Corpse);
@@ -7345,6 +8062,31 @@ fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
     let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert!(runtime.next_random_move_at.is_some());
+}
+
+#[test]
+fn db_creature_random_motion_duration_uses_template_walk_speed() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    spawn.template.speed_walk = 2.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_random_motion(&mut session, creature_guid, now)
+        .expect("random movement creature should start a wander spline");
+    let distance = path_distance_2d(motion.start, &motion.path);
+    let expected_millis = ((distance / (DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * 2.0)) * 1000.0)
+        .ceil()
+        .max(1.0) as u64;
+    assert_eq!(motion.duration, Duration::from_millis(expected_millis));
 }
 
 #[test]
@@ -7772,6 +8514,8 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             data_dir_for_native: None,
             maps_available: true,
             vmaps_available: true,
+            creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::from([0]),
@@ -7963,6 +8707,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -7970,6 +8715,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         },
         CreatureLootQuery {
             item: 777,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -7999,9 +8745,8 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         &[],
         || 0.0,
         |min_count, _max_count| min_count,
-    )
-    .expect("quest item should be selected for active quest");
-    assert_eq!(selected.item, 777);
+    );
+    assert!(selected.iter().any(|loot| loot.item == 777));
 }
 
 #[test]
@@ -8009,6 +8754,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -8016,6 +8762,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         },
         CreatureLootQuery {
             item: 777,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -8053,9 +8800,9 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         &inventory,
         || 0.0,
         |min_count, _max_count| min_count,
-    )
-    .expect("normal loot should be selected when quest item is already satisfied");
-    assert_eq!(selected.item, 159);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].item, 159);
 }
 
 #[test]
@@ -8063,6 +8810,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -8070,6 +8818,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
         },
         CreatureLootQuery {
             item: 160,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -8083,15 +8832,92 @@ fn creature_loot_roll_respects_chance_thresholds() {
         &[],
         || 49.95,
         |min_count, _max_count| min_count,
-    )
-    .expect("second loot row should pass chance roll");
-    assert_eq!(selected.item, 160);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].item, 160);
+}
+
+#[test]
+fn creature_loot_roll_can_return_multiple_independent_rows() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 100.0,
+        },
+        CreatureLootQuery {
+            item: 160,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: 100.0,
+        },
+    ];
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 0.0,
+        |min_count, _max_count| min_count,
+    );
+
+    let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
+    assert_eq!(items, vec![159, 160]);
+}
+
+#[test]
+fn creature_loot_roll_picks_one_row_per_group() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            group_id: 1,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 20.0,
+        },
+        CreatureLootQuery {
+            item: 160,
+            group_id: 1,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: 80.0,
+        },
+        CreatureLootQuery {
+            item: 161,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 3,
+            chance_or_quest_chance: 100.0,
+        },
+    ];
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 25.0,
+        |min_count, _max_count| min_count,
+    );
+
+    let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
+    assert_eq!(items, vec![161, 160]);
 }
 
 #[test]
 fn creature_loot_roll_uses_randomized_count_range() {
     let loot_rows = vec![CreatureLootQuery {
         item: 118,
+        group_id: 0,
         min_count: 2,
         max_count: 5,
         display_id: 9,
@@ -8104,10 +8930,10 @@ fn creature_loot_roll_uses_randomized_count_range() {
         &[],
         || 0.0,
         |_min_count, _max_count| 4,
-    )
-    .expect("loot should be selected");
-    assert_eq!(selected.min_count, 4);
-    assert_eq!(selected.max_count, 4);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].min_count, 4);
+    assert_eq!(selected[0].max_count, 4);
 }
 
 #[test]
@@ -8344,6 +9170,21 @@ fn trainer_buy_packets_match_vanilla_shapes() {
     let learned = build_learned_spell_body(6673);
     assert_eq!(learned.len(), 4);
     assert_eq!(&learned, &6673u32.to_le_bytes());
+
+    let visual = build_play_spell_visual_body(guid, 0xB3);
+    assert_eq!(visual.len(), 12);
+    assert_eq!(&visual[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&visual[8..12], &0xB3u32.to_le_bytes());
+
+    let impact = build_play_spell_impact_body(123, 0x016A);
+    assert_eq!(impact.len(), 12);
+    assert_eq!(
+        &impact[0..8],
+        &ObjectGuid::new(HighGuid::Player, REALM_ID, 123)
+            .raw()
+            .to_le_bytes()
+    );
+    assert_eq!(&impact[8..12], &0x016Au32.to_le_bytes());
 }
 
 #[test]
@@ -8394,10 +9235,99 @@ fn combat_session_tracks_active_dummy_target_and_loot_state() {
     assert_eq!(session.player_rage, 0);
 }
 
+fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
+    wow_db::SpellTemplateQuery {
+        id: spell_id,
+        spell_name: format!("Spell {spell_id}"),
+        rank: None,
+        attributes: 0,
+        attributes_ex: 0,
+        attributes_ex2: 0,
+        attributes_ex3: 0,
+        recovery_time: 0,
+        category_recovery_time: 0,
+        start_recovery_category: 0,
+        start_recovery_time: 0,
+        power_type: 0,
+        mana_cost: 0,
+        duration_index: 0,
+        effect1: 0,
+        effect2: 0,
+        effect3: 0,
+        effect_base_points1: 0,
+        effect_base_points2: 0,
+        effect_base_points3: 0,
+        effect_apply_aura_name1: 0,
+        effect_apply_aura_name2: 0,
+        effect_apply_aura_name3: 0,
+        effect_implicit_target_a1: 0,
+        effect_implicit_target_a2: 0,
+        effect_implicit_target_a3: 0,
+        spell_family_name: 0,
+        spell_family_flags: 0,
+        dmg_class: 0,
+    }
+}
+
+fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(WARRIOR_HEROIC_STRIKE_RANK_1);
+    template.spell_name = "Heroic Strike".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 327700;
+    template.attributes_ex = 134217728;
+    template.attributes_ex3 = 1024;
+    template.power_type = 1;
+    template.mana_cost = 150;
+    template.effect1 = 17;
+    template.effect_base_points1 = 10;
+    template.spell_family_name = 4;
+    template.spell_family_flags = 64;
+    template.dmg_class = 2;
+    template
+}
+
+fn raptor_strike_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(HUNTER_RAPTOR_STRIKE_RANK_1);
+    template.spell_name = "Raptor Strike".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 328708;
+    template.attributes_ex3 = 1024;
+    template.category_recovery_time = 6000;
+    template.power_type = 0;
+    template.mana_cost = 15;
+    template.effect1 = 58;
+    template.effect_base_points1 = 4;
+    template.spell_family_name = 9;
+    template.spell_family_flags = 2;
+    template.dmg_class = 2;
+    template
+}
+
+fn battle_shout_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(6673);
+    template.spell_name = "Battle Shout".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 327696;
+    template.attributes_ex2 = 4;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1500;
+    template.power_type = 1;
+    template.mana_cost = 100;
+    template.duration_index = 4;
+    template.effect1 = 6;
+    template.effect_base_points1 = 14;
+    template.effect_apply_aura_name1 = 99;
+    template.effect_implicit_target_a1 = 20;
+    template.spell_family_name = 4;
+    template.spell_family_flags = 65536;
+    template.dmg_class = 1;
+    template
+}
+
 #[test]
-fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
+fn starter_spell_support_is_derived_from_cmangos_spell_template_fields() {
     assert_eq!(
-        supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1),
+        supported_starter_spell(&heroic_strike_spell_template()),
         Some(SupportedStarterSpell {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             kind: StarterSpellKind::NextMeleeSwing,
@@ -8408,25 +9338,41 @@ fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
             },
             requires_melee: true,
             triggers_global_cooldown: false,
+            global_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
     assert_eq!(
-        supported_starter_spell(HUNTER_RAPTOR_STRIKE_RANK_1),
+        supported_starter_spell(&raptor_strike_spell_template()),
         Some(SupportedStarterSpell {
             spell_id: HUNTER_RAPTOR_STRIKE_RANK_1,
             kind: StarterSpellKind::NextMeleeSwing,
-            bonus_damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
-            damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
+            bonus_damage: 5,
+            damage: 0,
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST
             },
             requires_melee: true,
             triggers_global_cooldown: false,
+            global_cooldown_millis: 0,
+            cooldown_millis: 6000,
+        })
+    );
+    assert_eq!(
+        supported_starter_spell(&battle_shout_spell_template()),
+        Some(SupportedStarterSpell {
+            spell_id: 6673,
+            kind: StarterSpellKind::AuraApplication,
+            bonus_damage: 0,
+            damage: 0,
+            power: StarterSpellPower::Rage { cost: 100 },
+            requires_melee: false,
+            triggers_global_cooldown: true,
+            global_cooldown_millis: 1500,
             cooldown_millis: 0,
         })
     );
-    assert_eq!(supported_starter_spell(1), None);
+    assert_eq!(supported_starter_spell(&test_spell_template(1)), None);
 }
 
 #[tokio::test]
@@ -8462,7 +9408,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             target: rust_combat_dummy_guid(),
             bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            rage_cost: HEROIC_STRIKE_RAGE_COST,
+            mana_cost: 0,
         }),
+        player_rage: HEROIC_STRIKE_RAGE_COST,
         ..WorldSessionState::default()
     };
 
@@ -8475,6 +9424,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
         RUST_COMBAT_DUMMY_HIT_DAMAGE + HEROIC_STRIKE_FIXTURE_DAMAGE
     );
     assert!(session.queued_next_melee_spell.is_none());
+    assert_eq!(
+        session.player_rage, 0,
+        "Heroic Strike replaces the white swing and must not award attack rage"
+    );
 
     send_combat_dummy_swing(&mut stream, shared_world, &mut session, &mut header_crypto)
         .await
@@ -8483,6 +9436,10 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
     assert_eq!(
         total_damage,
         RUST_COMBAT_DUMMY_HIT_DAMAGE * 2 + HEROIC_STRIKE_FIXTURE_DAMAGE
+    );
+    assert!(
+        session.player_rage > 0,
+        "the following normal white swing should still award rage"
     );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
@@ -8521,6 +9478,12 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -8569,7 +9532,13 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             target,
             bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            rage_cost: HEROIC_STRIKE_RAGE_COST,
+            mana_cost: 0,
         })
+    );
+    assert_eq!(
+        session.player_rage, POWER_RAGE_DEFAULT,
+        "next-melee rage is spent when the queued swing fires, not when it is queued"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(packets
@@ -8579,6 +9548,120 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
         .iter()
         .any(|packet| packet.opcode == SMSG_SPELL_START));
     assert!(!packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
+    assert!(!packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[tokio::test]
+async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: HashMap::from([(
+            4,
+            SpellDurationEntry {
+                duration_millis: 120_000,
+                duration_per_level_millis: 0,
+                max_duration_millis: 120_000,
+            },
+        )]),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(6673, Some(battle_shout_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&6673u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(6673);
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 3,
+            xp: 0,
+            position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_rage: 250,
+        active_spells,
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        &character_db_pool,
+        &world_db_pool,
+        shared_world,
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.player_rage, 150);
+    assert!(session
+        .starter_global_cooldown_until
+        .is_some_and(|until| until > Instant::now()));
+    assert_eq!(session.active_auras.len(), 1);
+    let active_aura = &session.active_auras[0];
+    assert_eq!(active_aura.spell_id, 6673);
+    assert_eq!(active_aura.caster, ObjectGuid::new(HighGuid::Player, 0, 7));
+    assert_eq!(active_aura.level, 3);
+    assert!(active_aura.positive);
+    assert_eq!(active_aura.duration_millis, Some(120_000));
+    assert!(active_aura
+        .expires_at
+        .is_some_and(|expires_at| expires_at > Instant::now()));
+    assert_eq!(
+        active_aura.stat_modifiers,
+        vec![AuraStatModifier::AttackPower { amount: 15 }]
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
+    let aura_update = packets
+        .iter()
+        .find(|packet| {
+            packet.opcode == SMSG_UPDATE_OBJECT
+                && packet
+                    .body
+                    .windows(4)
+                    .any(|window| window == 6673u32.to_le_bytes().as_slice())
+        })
+        .expect("Battle Shout should update the player's visible aura slot");
+    let (values, trailing) = decode_values_update_block(
+        &aura_update.body[5..],
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+    );
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_AURA], Some(6673));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(POSITIVE_AURA_FLAGS));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(3));
+    let duration_packet = packets
+        .iter()
+        .find(|packet| packet.opcode == SMSG_UPDATE_AURA_DURATION)
+        .expect("Battle Shout should send the owner aura duration timer");
+    assert_eq!(duration_packet.body[0], 0);
+    let remaining = u32::from_le_bytes(duration_packet.body[1..5].try_into().unwrap());
+    assert!(remaining > 0 && remaining <= 120_000);
 }
 
 #[tokio::test]
@@ -8599,7 +9682,7 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
     };
 
     let mut session = WorldSessionState::default();
-    let starter = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    let starter = supported_starter_spell(&heroic_strike_spell_template()).unwrap();
     assert_eq!(
         starter_spell_cast_failure(
             shared_world,
@@ -8622,6 +9705,7 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
         power: StarterSpellPower::Rage { cost: 0 },
         requires_melee: false,
         triggers_global_cooldown: true,
+        global_cooldown_millis: 1500,
         cooldown_millis: 0,
     };
     assert_eq!(
@@ -8641,6 +9725,8 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
         spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
         target,
         bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+        rage_cost: HEROIC_STRIKE_RAGE_COST,
+        mana_cost: 0,
     });
     assert_eq!(
         starter_spell_cast_failure(
@@ -9108,11 +10194,11 @@ fn initial_reputations_packet_matches_cmangos_empty_shape() {
 }
 
 #[test]
-fn initial_reputations_packet_ignores_rows_without_dbc_slot_mapping() {
+fn initial_reputations_packet_maps_dbc_reputation_list_slots() {
     let body = build_initial_reputations_body(&[
         CharacterReputation {
             faction: 72,
-            standing: 0,
+            standing: 250,
             flags: 1,
         },
         CharacterReputation {
@@ -9127,7 +10213,28 @@ fn initial_reputations_packet_ignores_rows_without_dbc_slot_mapping() {
         },
     ]);
 
-    assert!(body[4..].iter().all(|byte| *byte == 0));
+    let stormwind_offset = 4 + 19 * 5;
+    assert_eq!(body[stormwind_offset], 1);
+    assert_eq!(
+        &body[stormwind_offset + 1..stormwind_offset + 5],
+        &250i32.to_le_bytes()
+    );
+    let ironforge_offset = 4 + 20 * 5;
+    assert_eq!(body[ironforge_offset], 1);
+    assert_eq!(
+        &body[ironforge_offset + 1..ironforge_offset + 5],
+        &500i32.to_le_bytes()
+    );
+    assert_eq!(
+        body[4..]
+            .chunks_exact(5)
+            .enumerate()
+            .filter(|(slot, chunk)| *slot != 19
+                && *slot != 20
+                && chunk.iter().any(|byte| *byte != 0))
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -10431,11 +11538,16 @@ fn opening_spell_packets_include_gameobject_target_mask() {
 fn raptor_strike_starter_spell_packets_match_success_shapes() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
     let target = rust_combat_dummy_guid();
-    let targets = normalize_fixture_spell_targets(SpellCastTargets {
-        target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
-        unit_target: Some(target),
-        gameobject_target: None,
-    });
+    let starter_spell = supported_starter_spell(&raptor_strike_spell_template()).unwrap();
+    let targets = normalize_starter_spell_targets(
+        SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+            unit_target: Some(target),
+            gameobject_target: None,
+        },
+        &starter_spell,
+        caster,
+    );
 
     let result = build_cast_result_ok_body(HUNTER_RAPTOR_STRIKE_RANK_1);
     assert_eq!(&result[0..4], &HUNTER_RAPTOR_STRIKE_RANK_1.to_le_bytes());

@@ -31,8 +31,9 @@ struct Creature {
     client_visible: bool,
     lootable: bool,
     looting: bool,
+    loot_money: u32,
     loot_money_available: bool,
-    loot_item: Option<CreatureLoot>,
+    loot_items: Vec<CreatureLoot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +107,9 @@ fn build_db_creature_create_block_inner(
     block.extend_from_slice(&position.z.to_le_bytes());
     block.extend_from_slice(&position.orientation.to_le_bytes());
     block.extend_from_slice(&0u32.to_le_bytes());
-    block.extend_from_slice(&2.5f32.to_le_bytes());
-    block.extend_from_slice(&7.0f32.to_le_bytes());
+    let speeds = creature_movement_speeds(&creature.template);
+    block.extend_from_slice(&speeds.walk.to_le_bytes());
+    block.extend_from_slice(&speeds.run.to_le_bytes());
     block.extend_from_slice(&4.5f32.to_le_bytes());
     block.extend_from_slice(&4.722222f32.to_le_bytes());
     block.extend_from_slice(&2.5f32.to_le_bytes());
@@ -177,13 +179,91 @@ fn write_db_creature_update_values(
     )?;
     set_update_value(&mut values, UNIT_FIELD_DISPLAYID, display_id)?;
     set_update_value(&mut values, UNIT_FIELD_NATIVEDISPLAYID, display_id)?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_SLOT_DISPLAY,
+        template.equip_display_id1,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 1,
+        template.equip_display_id2,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + 2,
+        template.equip_display_id3,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO,
+        packed_virtual_item_info0(
+            template.equip_class1,
+            template.equip_subclass1,
+            template.equip_material1,
+            template.equip_inventory_type1,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 1,
+        packed_virtual_item_info1(template.equip_sheath1),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 2,
+        packed_virtual_item_info0(
+            template.equip_class2,
+            template.equip_subclass2,
+            template.equip_material2,
+            template.equip_inventory_type2,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 3,
+        packed_virtual_item_info1(template.equip_sheath2),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 4,
+        packed_virtual_item_info0(
+            template.equip_class3,
+            template.equip_subclass3,
+            template.equip_material3,
+            template.equip_inventory_type3,
+        ),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_VIRTUAL_ITEM_INFO + 5,
+        packed_virtual_item_info1(template.equip_sheath3),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, template.min_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, template.max_melee_dmg.to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_update_value(&mut values, UNIT_NPC_FLAGS, npc_flags)?;
     write_update_values(body, &values)
+}
+
+fn packed_virtual_item_info0(class: u32, subclass: u32, material: i32, inventory_type: u32) -> u32 {
+    (class & 0xFF)
+        | ((subclass & 0xFF) << 8)
+        | (((material as u32) & 0xFF) << 16)
+        | ((inventory_type & 0xFF) << 24)
+}
+
+fn packed_virtual_item_info1(sheath: u32) -> u32 {
+    sheath & 0xFF
+}
+
+fn creature_unit_bytes_2() -> u32 {
+    const SHEATH_STATE_MELEE: u32 = 1;
+    const UNIT_BYTE2_FLAG_AURAS: u32 = 0x10;
+    SHEATH_STATE_MELEE | (UNIT_BYTE2_FLAG_AURAS << 8)
 }
 
 fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
@@ -222,5 +302,28 @@ fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
         template.scale
     } else {
         1.0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CreatureMovementSpeeds {
+    walk: f32,
+    run: f32,
+}
+
+fn creature_movement_speeds(template: &CreatureTemplateQuery) -> CreatureMovementSpeeds {
+    let walk_rate = if template.speed_walk > 0.0 {
+        template.speed_walk
+    } else {
+        1.0
+    };
+    let run_rate = if template.speed_run > 0.0 {
+        template.speed_run
+    } else {
+        1.0
+    };
+    CreatureMovementSpeeds {
+        walk: DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * walk_rate,
+        run: DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * run_rate,
     }
 }

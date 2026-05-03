@@ -194,6 +194,8 @@ async fn handle_player_login(
     session.player_mana = character.power1;
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
+    session.character_skills =
+        wow_db::get_character_skills(deps.character_db_pool, character.guid).await?;
     session.quest_statuses =
         wow_db::get_character_quest_statuses(deps.character_db_pool, character.guid)
             .await?
@@ -261,6 +263,7 @@ async fn handle_player_login(
             world_stats: &world_stats,
             equipped_templates: &equipped_templates,
             spells: &spells,
+            skills: &session.character_skills,
             quest_statuses: &session.quest_statuses,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
@@ -327,6 +330,8 @@ async fn handle_player_login(
         active_spells: session.active_spells.clone(),
         inventory: session.inventory.clone(),
         quest_statuses: session.quest_statuses.clone(),
+        active_auras: session.active_auras.clone(),
+        base_combat_stats: combat_stats,
         combat_stats,
     };
     let packets = deps.maps.add_player(player_runtime).await?;

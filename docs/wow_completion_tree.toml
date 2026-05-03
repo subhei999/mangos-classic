@@ -1,0 +1,1418 @@
+# WoW completion tree source of truth.
+# Edit leaf node statuses here; parent colors are derived by tools/render_wow_tree.py.
+
+[[node]]
+id = "WOW"
+label = "WoW Classic"
+status = "yellow"
+requirement = "WoW 1.12.1 Classic server parity root."
+proof = "Rolls up all required leaf requirements below. Current project proof is strongest for auth, character lifecycle, Northshire world entry, movement visibility, shared MapRuntime, starter combat, death, loot, and selected quest/trainer paths."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.SRP.LOGON_CHALLENGE"
+label = "Logon Challenge"
+status = "green"
+requirement = "Client can complete 1.12.1 SRP logon challenge against realmd.account."
+proof = "test-auth-flow.cmd; CP1 real-client proof."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.SRP.LOGON_PROOF"
+label = "Logon Proof"
+status = "green"
+requirement = "Client proof is validated and a session key is stored for world login."
+proof = "test-auth-flow.cmd; auth DB assertions."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.REALMLIST.BUILD_5875"
+label = "Build 5875"
+status = "green"
+requirement = "Build 5875 client receives a usable realm list and can select the Rust realm."
+proof = "CP1 real-client proof."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.REALMLIST_CHARACTER_COUNTS"
+label = "Realmlist Character Counts"
+status = "green"
+requirement = "Realm character counts refresh after create/delete."
+proof = "test-world-flow.cmd; character screen proof."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.DB_SCHEMA_REALMD"
+label = "DB Schema Realmd"
+status = "green"
+requirement = "Auth behavior stays compatible with sql/base/realmd.sql."
+proof = "DB integration tests."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.ERRORS.INVALID_LOGIN"
+label = "Invalid Login"
+status = "yellow"
+requirement = "Invalid password, locked, banned, incompatible build, and bad proof fail with CMaNGOS-like codes."
+proof = "Needs focused negative auth matrix."
+required_for = []
+
+[[node]]
+id = "WOW.AUTH.SESSION_RECONNECT"
+label = "Session Reconnect"
+status = "red"
+requirement = "Reconnect, duplicate login, and stale session handling are CMaNGOS-like."
+proof = "Needs real-client reconnect proof."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.AUTH_SESSION"
+label = "Auth Session"
+status = "green"
+requirement = "Worldserver validates CMSG_AUTH_SESSION and sends accepted auth response."
+proof = "test-world-flow.cmd; starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.OPCODE_TABLE"
+label = "Opcode Table"
+status = "yellow"
+requirement = "Supported opcode table routes known client startup/gameplay opcodes without desync."
+proof = "Harness coverage exists; unsupported opcode audit remains."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.PACKET_SERIALIZATION"
+label = "Packet Serialization"
+status = "yellow"
+requirement = "Packet builders serialize Classic 1.12.1 shapes for implemented systems."
+proof = "Unit tests and real-client smoke by subsystem."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.UNKNOWN_OPCODE_HANDLING"
+label = "Unknown Opcode Handling"
+status = "yellow"
+requirement = "Unsupported opcodes are logged, ignored, or rejected safely without disconnect loops."
+proof = "CP1 quietness proof; broader audit needed."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.SESSION_LOOP_BACKPRESSURE"
+label = "Session Loop Backpressure"
+status = "red"
+requirement = "Slow clients, packet bursts, disconnects, and socket errors do not corrupt world state."
+proof = "Needs stress harness."
+required_for = []
+
+[[node]]
+id = "WOW.PROTOCOL.CRYPTO_HEADER"
+label = "Crypto Header"
+status = "green"
+requirement = "World packet header crypto works after auth handoff."
+proof = "Auth/world flow tests."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.ENUM.LIST"
+label = "List"
+status = "green"
+requirement = "Character screen enumerates existing characters with correct core fields."
+proof = "test-world-flow.cmd; real-client CP1."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.CREATE.VALID_HUMAN_WARRIOR"
+label = "Valid Human Warrior"
+status = "green"
+requirement = "Fresh Human Warrior can be created with DB-backed starter state."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.CREATE.RACE_CLASS_GENDER_DISPLAY"
+label = "Race Class Gender Display"
+status = "yellow"
+requirement = "Race, class, gender, and appearance choices map to correct display IDs and restrictions."
+proof = "CP1 partial race/gender proof; full matrix needed."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.CREATE.INVALID_NAMES"
+label = "Invalid Names"
+status = "yellow"
+requirement = "Invalid, duplicate, reserved, and malformed names fail with correct client result."
+proof = "Some create failures covered; full name policy needed."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.DELETE.NON_LOADED"
+label = "Non Loaded"
+status = "green"
+requirement = "Non-loaded characters can be deleted and counts update."
+proof = "CP1 flow proof."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.LOGIN.ENTER_WORLD"
+label = "Enter World"
+status = "green"
+requirement = "Fresh character enters world without loading-screen hang."
+proof = "test-world-flow.cmd; starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.LOGOUT.SELECT_SCREEN"
+label = "Select Screen"
+status = "green"
+requirement = "Logout returns safely to character screen with persisted basics."
+proof = "CP1 proof."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.RELOG.BASIC_STATE"
+label = "Basic State"
+status = "green"
+requirement = "Position and basic state survive relog."
+proof = "test-world-flow.cmd."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.CUSTOMIZATION.ALL_RACES"
+label = "All Races"
+status = "red"
+requirement = "All Classic race/class/gender appearance options are validated and persisted."
+proof = "Needs matrix harness."
+required_for = []
+
+[[node]]
+id = "WOW.CHARACTER.TUTORIAL_CINEMATIC"
+label = "Tutorial Cinematic"
+status = "yellow"
+requirement = "Cinematic/tutorial flags are sane for starter characters."
+proof = "Starter state proof exists; parity audit needed."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.MAPRUNTIME.SHARED_OWNER"
+label = "Shared Owner"
+status = "green"
+requirement = "Live player and creature state belongs to shared MapRuntime, not per-session mini-worlds."
+proof = "G12 unit/harness coverage."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.PLAYER_VISIBILITY.SPAWN"
+label = "Spawn"
+status = "green"
+requirement = "Nearby players receive create blocks on login."
+proof = "Two-client starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.PLAYER_VISIBILITY.MOVEMENT"
+label = "Movement"
+status = "green"
+requirement = "Nearby players receive movement and out-of-range destroy/create updates."
+proof = "G12 harness; real-client smoke."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.CHAT.SAY_LOCAL"
+label = "Say Local"
+status = "green"
+requirement = "Nearby /say broadcasts only to nearby players."
+proof = "Two-client harness."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.CREATURE_VISIBILITY.LOGIN"
+label = "Login"
+status = "green"
+requirement = "Login streams nearby DB-backed creatures from map state."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.CREATURE_VISIBILITY.MOVEMENT"
+label = "Movement"
+status = "green"
+requirement = "Movement streams new nearby creatures and destroys out-of-range ones."
+proof = "G3 harness and real-client proof."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.GRID.LOAD_RECTANGLE"
+label = "Load Rectangle"
+status = "green"
+requirement = "DB creatures lazy-load by CMaNGOS-shaped grid rectangle into runtime cells."
+proof = "map_runtime_ tests."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.GRID.REUSE_LOADED"
+label = "Reuse Loaded"
+status = "green"
+requirement = "Nearby players reuse loaded grids instead of repeating DB radius scans."
+proof = "Query-count tests."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.GRID.IDLE_UNLOAD"
+label = "Idle Unload"
+status = "red"
+requirement = "Idle grids unload/evict safely while preserving combat, corpse, loot, and respawn invariants."
+proof = "Current G12 next action."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.WORLD.OBJECT_CREATE_FIELDS"
+label = "Object Create Fields"
+status = "yellow"
+requirement = "Player, creature, corpse, item, and gameobject create blocks include correct Classic update fields."
+proof = "Strong starter coverage; full object matrix needed."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.INSTANCE_MAPS"
+label = "Instance Maps"
+status = "red"
+requirement = "Instance map ownership, reset, bind, and group visibility are implemented."
+proof = "Deferred beyond Northshire."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.TRANSPORTS"
+label = "Transports"
+status = "red"
+requirement = "Boats, zeppelins, elevators, and moving transports are implemented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.WORLD.WEATHER_ZONE_STATE"
+label = "Weather Zone State"
+status = "red"
+requirement = "Weather and zone environmental state are sent and updated."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.PLAYER.WALK_RUN_TURN"
+label = "Walk Run Turn"
+status = "green"
+requirement = "Player walking, running, turning, and position persistence work without disconnect."
+proof = "CP1/G3 proof."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.PLAYER.JUMP_FALL"
+label = "Jump Fall"
+status = "yellow"
+requirement = "Jump/fall packets are accepted and persistence remains sane."
+proof = "Needs focused real-client fall proof."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.PLAYER.SPEED_MODIFIERS"
+label = "Speed Modifiers"
+status = "red"
+requirement = "Walk, run, swim, mount, slow, root, and speed aura changes are authoritative."
+proof = "Needs spell/aura integration."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.CREATURE.SPLINES"
+label = "Splines"
+status = "yellow"
+requirement = "Creature movement publishes timed SMSG_MONSTER_MOVE splines visible to clients."
+proof = "G8/G9 tests; real-client feel still under tuning."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.CREATURE.RANDOM"
+label = "Random"
+status = "yellow"
+requirement = "DB MovementType random movement uses CMaNGOS-like timing and safe positions."
+proof = "Tests exist; true pathfinder random points remain."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.MOVEMENT.CREATURE.WAYPOINT"
+label = "Waypoint"
+status = "yellow"
+requirement = "DB waypoint/path movement runs with waits and linear back-and-forth behavior."
+proof = "Tests exist; script hooks and long stability pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.MOVEMENT.CREATURE.PATROL_LONG_RUNNING"
+label = "Patrol Long Running"
+status = "red"
+requirement = "Patrols stay alive over time, combat, death, respawn, grid activity, and observer churn."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.MOVEMENT.PATHFINDING.MMAP"
+label = "MMap"
+status = "yellow"
+requirement = "Generated mmap tiles are detected and Detour paths can be used where present."
+proof = "Navigation tests; smoothing and flags pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.MOVEMENT.PATHFINDING.VMAP_LOS"
+label = "VMap LOS"
+status = "red"
+requirement = "LOS and terrain checks gate aggro, spell, and ranged interactions."
+proof = "Interface exists; full parity pending."
+required_for = []
+
+[[node]]
+id = "WOW.MOVEMENT.COLLISION.WATER_LIQUID"
+label = "Water Liquid"
+status = "red"
+requirement = "Water, swimming, fatigue, liquid status, and collision state are Classic-like."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.CREATURE.DB_SPAWNS"
+label = "DB Spawns"
+status = "green"
+requirement = "Starter creatures load from real DB spawn/template rows when available."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.CREATURE.QUERY_DETAILS"
+label = "Query Details"
+status = "green"
+requirement = "Client can query creature name/display data for implemented DB creatures."
+proof = "CP1/G2 proof."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.CREATURE.FACTION_REACTION"
+label = "Faction Reaction"
+status = "green"
+requirement = "Hostile, neutral, and friendly starter reactions use faction-template bridge instead of entry allowlists."
+proof = "G8 tests and real-client observation."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.CREATURE.LIFECYCLE"
+label = "Lifecycle"
+status = "green"
+requirement = "DB creatures can be alive, corpse, dead, despawned, and respawned with DB/template timers."
+proof = "G5/G9 tests."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.CREATURE.RESPAWN_PERSISTENCE"
+label = "Respawn Persistence"
+status = "green"
+requirement = "Creature respawn state persists in characters.creature_respawn where CMaNGOS expects it."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.NPC.QUEST_GIVER_STATUS"
+label = "Quest Giver Status"
+status = "yellow"
+requirement = "Quest givers expose correct available/reward/unavailable status icons."
+proof = "Basic quest loop works; eligibility filters pending."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.NPC.GOSSIP"
+label = "Gossip"
+status = "yellow"
+requirement = "Gossip hello and menu flows are correct for implemented starter NPCs."
+proof = "Harness coverage partial."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.NPC.TRAINER"
+label = "Trainer"
+status = "yellow"
+requirement = "Trainer list, buy, learned spell packet, and persistence work for selected starter warrior spell."
+proof = "Starter-zone harness; full trainer states pending."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.NPC.VENDOR"
+label = "Vendor"
+status = "red"
+requirement = "Vendor buy/sell, price, inventory, stack, money, and persistence are Classic-like."
+proof = "CP2 required later."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.NPC.FLAGS_AND_CURSORS"
+label = "Flags And Cursors"
+status = "red"
+requirement = "NPC flags, cursor affordances, wrong-class trainer behavior, and non-interactive NPC behavior match CMaNGOS."
+proof = "G10 pending."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.GAMEOBJECT.SPAWN_QUERY"
+label = "Spawn Query"
+status = "yellow"
+requirement = "Gameobject DB rows can exist and be queried for starter fixtures."
+proof = "Fixture validation only."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.GAMEOBJECT.QUEST_USE"
+label = "Quest Use"
+status = "red"
+requirement = "Gameobject quest pickup/activation grants objective or quest item with respawn/availability rules."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.OBJECTS.CORPSE.PLAYER_CREATE"
+label = "Player Create"
+status = "green"
+requirement = "Player corpse objects stream, query, reclaim, and become bones."
+proof = "G7 proof."
+required_for = []
+
+[[node]]
+id = "WOW.OBJECTS.DYNAMIC_OBJECTS"
+label = "Dynamic Objects"
+status = "red"
+requirement = "Dynamic objects, area triggers, and spell visuals are represented."
+proof = "Spell/aura future work."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.START_STOP.PLAYER_ATTACK"
+label = "Player Attack"
+status = "green"
+requirement = "Player can start and stop attacking DB creatures safely."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.START_STOP.CREATURE_ATTACK"
+label = "Creature Attack"
+status = "green"
+requirement = "DB creatures can aggro, claim victims, and stop on invalid targets/death."
+proof = "G8/G12 tests."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.THREAT.BASIC_VICTIM"
+label = "Basic Victim"
+status = "yellow"
+requirement = "Creature victim and attacker state are map-owned and cleaned up on death/logout."
+proof = "Shared tests; full threat table pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.AGGRO.ON_SIGHT"
+label = "On Sight"
+status = "green"
+requirement = "Hostile starter creatures aggro from movement proximity with DB detection range."
+proof = "G8 proof."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.AGGRO.ASSIST"
+label = "Assist"
+status = "yellow"
+requirement = "Same-faction nearby assists are called with CMaNGOS-like radius."
+proof = "Unit coverage; broader faction/AI proof pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.CHASE.MOVE_INTO_RANGE"
+label = "Move Into Range"
+status = "yellow"
+requirement = "Aggroed melee creatures chase and stop near melee reach."
+proof = "G8 proof; motion polish pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.LEASH.EVADE_HOME"
+label = "Evade Home"
+status = "yellow"
+requirement = "Creatures leash, clear combat, reset health, and return home."
+proof = "First slice exists; hit-reactivation and persistence parity pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.MELEE.RANGE_FACING"
+label = "Range Facing"
+status = "yellow"
+requirement = "Player and creature melee require valid range and facing guardrails."
+proof = "Tests exist; exact reach/model modifiers pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.MELEE.SWING_TIMERS"
+label = "Swing Timers"
+status = "yellow"
+requirement = "Player and creature melee use independent timers from weapon/base attack time."
+proof = "Starter coverage; broad weapon/aura modifiers pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.MELEE.CREATURE_OUTCOME_TABLE"
+label = "Creature Outcome Table"
+status = "yellow"
+requirement = "Creature melee rolls miss/dodge/parry/block/glancing/crit/crushing and serializes attacker-state updates."
+proof = "First outcome path exists; live stats pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.MELEE.PLAYER_OUTCOME_TABLE"
+label = "Player Outcome Table"
+status = "red"
+requirement = "Player offensive outcome rolls use weapon skill, defense, target level, and positional rules."
+proof = "Current G8 follow-up."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.DAMAGE.CREATURE_FORMULA"
+label = "Creature Formula"
+status = "yellow"
+requirement = "Creature melee damage uses DB min/max, armor mitigation, and block outcome."
+proof = "First slice exists; broader stats pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.DAMAGE.PLAYER_FORMULA"
+label = "Player Formula"
+status = "yellow"
+requirement = "Player auto-attack damage uses equipped weapon and class/stat attack power."
+proof = "First slice exists; full combat math pending."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.LOG.MELEE"
+label = "Melee"
+status = "red"
+requirement = "Client combat log receives melee hit, miss, dodge, parry, block, crit, and damage feedback."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.LOG.SPELL"
+label = "Spell"
+status = "red"
+requirement = "Client combat log receives spell cast, damage, miss, resist, and resource feedback."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.COMBAT.DEATH.CREATURE"
+label = "Creature"
+status = "green"
+requirement = "Creature death broadcasts state, stops motion, opens loot, and later respawns."
+proof = "G5/G12 proof."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.DEATH.PLAYER"
+label = "Player"
+status = "green"
+requirement = "Player can die, release, become ghost, reclaim, and resurrect."
+proof = "G7 proof."
+required_for = []
+
+[[node]]
+id = "WOW.COMBAT.PVP_DUEL"
+label = "PvP Duel"
+status = "red"
+requirement = "Player-vs-player duels and hostile player combat are implemented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.CAST.START_GO_RESULT"
+label = "Start Go Result"
+status = "yellow"
+requirement = "Implemented casts send correct cast result/start/go packet shapes."
+proof = "Heroic Strike/Battle Shout coverage; broad matrix pending."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.GCD.GLOBAL"
+label = "Global"
+status = "red"
+requirement = "Global cooldown starts, blocks, expires, and is visible to the client."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.COOLDOWN.PER_SPELL"
+label = "Per Spell"
+status = "red"
+requirement = "Per-spell cooldowns, categories, and failure packets are Classic-like."
+proof = "Needed for warrior level 1-6."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.POWER.COSTS"
+label = "Costs"
+status = "yellow"
+requirement = "Supported starter spells spend/validate power correctly."
+proof = "Partial starter spell tests."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.WARRIOR.HEROIC_STRIKE"
+label = "Heroic Strike"
+status = "yellow"
+requirement = "Heroic Strike queues as next melee, delays spell-go until swing, and reports yellow damage."
+proof = "Packet-shape tests; real-client queued-state smoke pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.WARRIOR.BATTLE_SHOUT"
+label = "Battle Shout"
+status = "yellow"
+requirement = "Battle Shout can be learned and appears in the spellbook."
+proof = "Trainer persistence proof; aura/effect parity pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.WARRIOR.LEVEL_1_6"
+label = "Level 1 6"
+status = "red"
+requirement = "All Human Warrior level 1-6 actions needed for Northshire use real spell data/effects."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.AURAS.APPLY_REMOVE"
+label = "Apply Remove"
+status = "red"
+requirement = "Aura apply/remove, durations, stacking, periodic ticks, and stat modifiers are generic."
+proof = "Future spell foundation."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.RESOURCES.HEALTH_REGEN"
+label = "Health Regen"
+status = "red"
+requirement = "Health regeneration ticks with CMaNGOS-like timing/rates and packet updates."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.RESOURCES.RAGE_DECAY"
+label = "Rage Decay"
+status = "red"
+requirement = "Warrior rage degenerates out of combat with Classic timing and packet updates."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.SPELLS.RESOURCES.MANA_ENERGY"
+label = "Mana Energy"
+status = "red"
+requirement = "Mana, energy, focus, and other power regeneration rules are implemented."
+proof = "Deferred beyond warrior slice."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.TARGETING.RANGE_FACING_LOS"
+label = "Range Facing LOS"
+status = "red"
+requirement = "Spell target validation uses range, facing, LOS, target type, and failure packets."
+proof = "Needed before broad spell parity."
+required_for = []
+
+[[node]]
+id = "WOW.SPELLS.SPELLBOOK.PERSISTENCE"
+label = "Persistence"
+status = "yellow"
+requirement = "Learned spells load, display, and persist."
+proof = "Starter trainer proof; full class/race matrix pending."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.ACCEPT.BASIC"
+label = "Basic"
+status = "green"
+requirement = "Client can accept supported starter quests."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.PROGRESS.KILL_COUNT"
+label = "Kill Count"
+status = "green"
+requirement = "Kill-count quest progress updates and completes."
+proof = "Kobold Camp Cleanup proof."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.COMPLETE.REWARD"
+label = "Reward"
+status = "yellow"
+requirement = "Supported starter quest can be completed/rewarded in client."
+proof = "Harness green; real-client final proof still useful."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.ELIGIBILITY.LEVEL"
+label = "Level"
+status = "red"
+requirement = "Quest availability filters by level."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.ELIGIBILITY.RACE_CLASS"
+label = "Race Class"
+status = "red"
+requirement = "Quest availability filters by race and class."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.ELIGIBILITY.PREREQUISITE_CHAIN"
+label = "Prerequisite Chain"
+status = "red"
+requirement = "Quest availability filters by prerequisite, chain, exclusive group, and previous completion."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.ELIGIBILITY.REPEATABLE_DAILY"
+label = "Repeatable Daily"
+status = "red"
+requirement = "Repeatability and completed-state availability follow CMaNGOS."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.OBJECTIVES.ITEM_DROPS"
+label = "Item Drops"
+status = "red"
+requirement = "Quest item objectives drop only from real loot tables and only for eligible active quests."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.OBJECTIVES.GAMEOBJECT"
+label = "Gameobject"
+status = "red"
+requirement = "Gameobject objectives and pickup quests work with DB-backed gameobjects."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.QUESTS.OBJECTIVES.EXPLORE_SPELL_EMOTE"
+label = "Explore Spell Emote"
+status = "red"
+requirement = "Explore, spellcast, escort, reputation, and script objectives are represented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.LOG_LIMITS"
+label = "Log Limits"
+status = "red"
+requirement = "Quest log capacity, failure result codes, abandon, and share restrictions are Classic-like."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.RELOG_PERSISTENCE"
+label = "Relog Persistence"
+status = "yellow"
+requirement = "Accepted/progress/completed quest state persists after relog."
+proof = "Starter proof for one quest; broader matrix pending."
+required_for = []
+
+[[node]]
+id = "WOW.QUESTS.REWARDS.XP_MONEY_ITEMS"
+label = "XP Money Items"
+status = "yellow"
+requirement = "Quest rewards grant XP, money, items, spell/faction where applicable."
+proof = "Partial; CP2 closure needed."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.INVENTORY.STARTER_ITEMS"
+label = "Starter Items"
+status = "green"
+requirement = "Fresh character receives starter inventory/equipment state."
+proof = "CP1/starter proof."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.INVENTORY.MOVE_EQUIP_DESTROY"
+label = "Move Equip Destroy"
+status = "yellow"
+requirement = "Move, equip, unequip, destroy, split, stack merge, and equipped-bag movement work and persist."
+proof = "CP1 proof; broader item edge cases pending."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.EQUIPMENT.VISIBLE_FIELDS"
+label = "Visible Fields"
+status = "green"
+requirement = "Nearby players see equipment visual updates for implemented equip/unequip paths."
+proof = "G12 proof."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.LOOT.MONEY"
+label = "Money"
+status = "green"
+requirement = "Creature money loot can be claimed once and persists."
+proof = "Starter-zone shared wolf proof."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.LOOT.NORMAL_ITEMS"
+label = "Normal Items"
+status = "yellow"
+requirement = "Normal item loot opens, autostores, handles inventory, and persists."
+proof = "Harness partial; full CMaNGOS loot table issue remains."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.LOOT.QUEST_ITEMS"
+label = "Quest Items"
+status = "red"
+requirement = "Quest item loot rolls from real tables and respects quest eligibility."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.ITEMS.LOOT.MULTICLIENT_EXCLUSIVE"
+label = "Multiclient Exclusive"
+status = "green"
+requirement = "Two clients cannot duplicate the same creature loot claim."
+proof = "G12 harness."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.LOOT.CORPSE_RELEASE"
+label = "Corpse Release"
+status = "green"
+requirement = "Loot release updates corpse flags for observers and respawn lifecycle."
+proof = "G12 harness."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.ITEM_QUERY"
+label = "Item Query"
+status = "yellow"
+requirement = "Client item queries return correct DB-backed item data for implemented items."
+proof = "Existing item query builders; broader matrix pending."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.VENDOR.BUY_SELL"
+label = "Buy Sell"
+status = "red"
+requirement = "Vendor buy/sell, inventory availability, money checks, refund-like edge cases, and persistence work."
+proof = "CP2 pending."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.MAIL"
+label = "Mail"
+status = "red"
+requirement = "Mail attachments, money, COD, expiry, and mailbox UI work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.AUCTION_HOUSE"
+label = "Auction House"
+status = "red"
+requirement = "Auction house listing, bidding, buyout, deposits, and mail delivery work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.BANK_BAGS"
+label = "Bank Bags"
+status = "red"
+requirement = "Bank, bags, slots, and bag-specific constraints are Classic-like."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.ITEMS.DURABILITY_REPAIR"
+label = "Durability Repair"
+status = "red"
+requirement = "Durability loss, repair, and death durability rules work."
+proof = "G7 follow-up/deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.XP.CREATURE"
+label = "Creature"
+status = "yellow"
+requirement = "Creature XP grants render and persist."
+proof = "Starter proof exists; formula parity pending."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.XP.QUEST"
+label = "Quest"
+status = "yellow"
+requirement = "Quest XP grants render and persist."
+proof = "Partial CP2 proof needed."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.LEVEL_UP.PACKETS"
+label = "Packets"
+status = "yellow"
+requirement = "Level-up packets, stat refresh, health/power refresh, and persistence are correct."
+proof = "Trainer/level gate partial."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.STATS.BASE_CLASS_RACE"
+label = "Base Class Race"
+status = "yellow"
+requirement = "Base stats derive from source/DBC/DB rather than invented constants."
+proof = "Starter state sane; full derivation audit pending."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.STATS.DERIVED_COMBAT"
+label = "Derived Combat"
+status = "yellow"
+requirement = "Attack power, armor, defense, block, crit, and damage derive from stats/equipment."
+proof = "First combat slice; full parity pending."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.SKILLS.LOAD_SHOW"
+label = "Load Show"
+status = "red"
+requirement = "Skills and weapon skills load and display in the client."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.PROGRESSION.SKILLS.WEAPON_ADVANCE"
+label = "Weapon Advance"
+status = "red"
+requirement = "Weapon skills advance from real actions and persist."
+proof = "Current Northshire missing criterion."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.PROGRESSION.SKILLS.TRADE_LANGUAGE_DEFENSE"
+label = "Trade Language Defense"
+status = "red"
+requirement = "Defense, languages, professions, class skills, and trade skills are represented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.REPUTATION.FACTION_STANDING"
+label = "Faction Standing"
+status = "yellow"
+requirement = "Reputation manager supports faction standing enough for hostile/friendly reactions."
+proof = "Combat reaction bridge exists; full rep UI/rewards pending."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.REPUTATION.GAINS"
+label = "Gains"
+status = "red"
+requirement = "Reputation gains, spillover, ranks, and UI updates work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PROGRESSION.TALENTS"
+label = "Talents"
+status = "red"
+requirement = "Talent points, learn/unlearn, prerequisites, and reset costs work."
+proof = "Deferred beyond level 6."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.POSITION"
+label = "Position"
+status = "green"
+requirement = "Position persists across logout/relog and movement."
+proof = "CP1/G11 partial proof."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.HEALTH_POWER"
+label = "Health Power"
+status = "yellow"
+requirement = "Health and power persist/reset according to Classic rules across relog/death."
+proof = "Death proof exists; regen/resource rules pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.PERSISTENCE.INVENTORY_MONEY"
+label = "Inventory Money"
+status = "yellow"
+requirement = "Inventory and money persist after loot, move, buy/sell, and relog."
+proof = "Loot proof partial; vendor pending."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.QUEST_STATE"
+label = "Quest State"
+status = "yellow"
+requirement = "Quest accepted/progress/rewarded state persists after relog."
+proof = "One starter quest proof; broader matrix pending."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.SPELLS_SKILLS"
+label = "Spells Skills"
+status = "yellow"
+requirement = "Learned spells and skill state persist."
+proof = "Learned spell proof; skills pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.PERSISTENCE.DEATH_CORPSE"
+label = "Death Corpse"
+status = "green"
+requirement = "Dead, ghost, corpse, reclaim, bones, and corpse row deletion remain sane."
+proof = "G7 harness."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.CREATURE_RESPAWN"
+label = "Creature Respawn"
+status = "green"
+requirement = "Creature respawn persistence works for DB creatures."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.MULTICLIENT_CONSISTENCY"
+label = "Multiclient Consistency"
+status = "yellow"
+requirement = "Logout/relog during combat, corpse, loot, and grid-load states cannot fork shared state."
+proof = "Shared state proof exists; dedicated torture coverage pending."
+required_for = []
+
+[[node]]
+id = "WOW.PERSISTENCE.CRASH_RECOVERY"
+label = "Crash Recovery"
+status = "red"
+requirement = "Server restart restores durable character, creature, quest, corpse, and mail state correctly."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.CHAT.SAY"
+label = "Say"
+status = "green"
+requirement = "Local say works for nearby players."
+proof = "G12 harness."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.CHAT.YELL_WHISPER_PARTY_GUILD"
+label = "Yell Whisper Party Guild"
+status = "red"
+requirement = "Yell, whisper, party, guild, officer, raid, and channel chat work with errors."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.FRIEND_IGNORE"
+label = "Friend Ignore"
+status = "red"
+requirement = "Friend, ignore, who, played, and online notifications work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.PARTY.BASIC"
+label = "Basic"
+status = "red"
+requirement = "Invite, accept, leave, leader, loot method, XP/quest sharing, and minimap member state work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.GUILD.BASIC"
+label = "Basic"
+status = "red"
+requirement = "Guild create, roster, ranks, permissions, MOTD, and chat work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SOCIAL.TRADE"
+label = "Trade"
+status = "red"
+requirement = "Player trade, money/items, cancel, confirmation, and anti-dupe safeguards work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.INSTANCES.MAP_CREATION"
+label = "Map Creation"
+status = "red"
+requirement = "Instance maps create isolated runtime state per group/reset."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.INSTANCES.BIND_RESET"
+label = "Bind Reset"
+status = "red"
+requirement = "Bind, soft reset, hard reset, lockout, and corpse entrance behavior work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.INSTANCES.BOSS_AI"
+label = "Boss AI"
+status = "red"
+requirement = "Boss combat, threat, scripts, spells, loot locks, and reset behavior are CMaNGOS-like."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.INSTANCES.DUNGEON_PORTALS"
+label = "Dungeon Portals"
+status = "red"
+requirement = "Dungeon portals, meeting stones, entrance requirements, and teleport handling work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.INSTANCES.RAID_GROUPS"
+label = "Raid Groups"
+status = "red"
+requirement = "Raid groups, conversions, markers, assist, loot rules, and lockouts work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PVP.FLAGS"
+label = "Flags"
+status = "red"
+requirement = "PvP flags, sanctuary/contested zones, faction attackability, and timers work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PVP.HONOR_KILLS"
+label = "Honor Kills"
+status = "red"
+requirement = "Honorable kills, dishonorable kills, contribution points, ranks, and decay work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PVP.BATTLEGROUNDS.QUEUE"
+label = "Queue"
+status = "red"
+requirement = "Battleground queue, invite, join, leave, deserter, and scoreboard work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PVP.BATTLEGROUNDS.WSG_AB_AV"
+label = "Wsg Ab Av"
+status = "red"
+requirement = "Warsong Gulch, Arathi Basin, and Alterac Valley objectives and rewards work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.PVP.DUELS"
+label = "Duels"
+status = "red"
+requirement = "Duel request, boundary, victory, cancel, and class combat integration work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.CREATURE_AI.BASIC_AGGRO"
+label = "Basic Aggro"
+status = "yellow"
+requirement = "Creature AI can aggro, chase, melee, assist, evade, and return home for starter mobs."
+proof = "G8 partial."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.CREATURE_AI.SPELL_CASTING"
+label = "Spell Casting"
+status = "red"
+requirement = "Creature spell casting, cooldowns, target selection, and interrupt behavior work."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.EVENTS.DB_SCRIPTS"
+label = "DB Scripts"
+status = "red"
+requirement = "DB script commands for quests, gossip, gameobjects, movement, and events are executed."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.ESCORTS"
+label = "Escorts"
+status = "red"
+requirement = "Escort quests and waypoint script hooks are implemented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.GAME_EVENTS"
+label = "Game Events"
+status = "red"
+requirement = "Holiday/world events spawn, despawn, and change NPC/gameobject behavior."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.SCRIPTS.SMARTAI_EQUIVALENT"
+label = "Smartai Equivalent"
+status = "red"
+requirement = "CMaNGOS creature/gameobject AI scripts used by Classic content are represented."
+proof = "Deferred."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.REALMD_SCHEMA"
+label = "Realmd Schema"
+status = "green"
+requirement = "Auth schema remains compatible with Classic realmd."
+proof = "Auth DB tests."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.CHARACTERS_SCHEMA"
+label = "Characters Schema"
+status = "yellow"
+requirement = "Character DB reads/writes remain compatible with CMaNGOS character schema for implemented systems."
+proof = "Tests by subsystem; full schema audit pending."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.WORLD_DB_CREATURES"
+label = "World DB Creatures"
+status = "green"
+requirement = "Creature templates/spawns for starter zones load from real world DB when present."
+proof = "Starter-zone harness."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.WORLD_DB_QUESTS"
+label = "World DB Quests"
+status = "yellow"
+requirement = "Quest templates and starter quest rows load enough for supported flows."
+proof = "Quest loop proof; eligibility fields pending."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.WORLD_DB_LOOT"
+label = "World DB Loot"
+status = "yellow"
+requirement = "DB-backed loot basics exist."
+proof = "Harness partial; real loot-table rolling pending."
+required_for = ["CP2"]
+
+[[node]]
+id = "WOW.DATA.WORLD_DB_GAMEOBJECTS"
+label = "World DB Gameobjects"
+status = "yellow"
+requirement = "Gameobject rows are recognized for fixture/startup checks."
+proof = "Activation/objective behavior pending."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.DBC.SPELLS"
+label = "Spells"
+status = "red"
+requirement = "Spell effects, ranges, schools, costs, cooldowns, aura data, and ranks derive from DBC/source."
+proof = "Needed for real spell parity."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.DBC.CLASSES_RACES_STATS"
+label = "Classes Races Stats"
+status = "red"
+requirement = "Race/class stats, skills, display data, and level progression derive from DBC/source."
+proof = "Needed before broad character parity."
+required_for = []
+
+[[node]]
+id = "WOW.DATA.MAPS_VMAPS_MMAPS"
+label = "Maps Vmaps Mmaps"
+status = "yellow"
+requirement = "Map/vmap/mmap paths are detected and available to movement/combat systems."
+proof = "Startup/navigation checks; full LOS/pathing pending."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.TEST_RUST"
+label = "Test Rust"
+status = "green"
+requirement = ".\\scripts\\test-rust.cmd verifies the Rust workspace baseline."
+proof = "Current standard gate."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.TEST_DB"
+label = "Test DB"
+status = "green"
+requirement = ".\\scripts\\test-rust-db.cmd verifies auth DB/TCP startup paths."
+proof = "Auth foundation gate."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.TEST_AUTH_FLOW"
+label = "Test Auth Flow"
+status = "green"
+requirement = ".\\scripts\\test-auth-flow.cmd verifies auth protocol behavior."
+proof = "Auth foundation gate."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.STARTER_ZONE_FLOW"
+label = "Starter Zone Flow"
+status = "yellow"
+requirement = ".\\scripts\\test-starter-zone-flow.cmd proves Northshire starter flows."
+proof = "Strong CP2 coverage; user real-client proof remains the closure authority."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.REAL_CLIENT_SMOKE"
+label = "Real Client Smoke"
+status = "yellow"
+requirement = "Manual real-client checklists are kept for player-visible behavior that harnesses cannot yet prove."
+proof = "Needs final CP2 closure table."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.PACKET_CAPTURE_DIFF"
+label = "Packet Capture Diff"
+status = "red"
+requirement = "Packet captures can be compared against CMaNGOS for high-risk protocol parity."
+proof = "Future useful tooling."
+required_for = []
+
+[[node]]
+id = "WOW.TOOLING.PERF_COUNTERS"
+label = "Perf Counters"
+status = "yellow"
+requirement = "Query counts, grid loads, and runtime counters expose performance-sensitive world behavior."
+proof = "G12 grid counters; broader counters pending."
+required_for = []

@@ -19,9 +19,9 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
     slot-aware autostore, quest-drop gating, and randomized corpse copper;
   - CMaNGOS-like PvE combat skill progression and skill-vs-defense melee math.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the combat skill patch:
-  - authserver PID `38244` on `127.0.0.1:13724`;
-  - worldserver PID `42116` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the level-up skill-cap UI fix:
+  - authserver PID `38020` on `127.0.0.1:13724`;
+  - worldserver PID `35096` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -76,6 +76,13 @@ log the follow-up.
     skills only;
   - skill value/max updates are persisted and sent to the real client with a
     targeted `SMSG_UPDATE_OBJECT` skill field update.
+- Level-up skill-cap UI fix:
+  - when a character levels up, known level-capped combat skills now have their
+    max value raised to `level * 5`, persisted, and sent immediately to the
+    client as skill field updates;
+  - fixed-cap skills such as languages/generic entries are left unchanged;
+  - the Skills UI should no longer wait for the next skill-up before showing the
+    new weapon/defense max.
 
 ## Still Unmerged Worker Branches
 
@@ -111,12 +118,25 @@ merged directly.
   - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
   - `Test-NetConnection` passed for `127.0.0.1:13724` and
     `127.0.0.1:18085`.
+- Current level-up skill-cap UI fix:
+  - `cargo fmt`;
+  - `cargo fmt --check`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network level_up_updates_combat_skill_maxes_without_waiting_for_skill_gain --lib`;
+  - `cargo test -p wow-network progression --lib`;
+  - `cargo test -p wow-network skill --lib`;
+  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`.
 
 ## Real-Client Success Criteria For Current Smoke
 
 - Fight starter mobs with the starting weapon:
   - weapon skill can increase during melee and updates in the Skills UI;
   - defense skill can increase when the player is hit;
+  - after leveling, weapon/defense max values should update in the Skills UI
+    immediately, before gaining another skill point;
   - skill changes persist through relog;
   - miss behavior should improve as weapon skill rises because the hit table now
     uses actual weapon skill vs creature defense.

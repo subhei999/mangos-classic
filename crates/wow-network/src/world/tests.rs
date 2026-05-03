@@ -1727,6 +1727,48 @@ fn combat_skill_progression_updates_level_cap_and_value() {
 }
 
 #[test]
+fn level_up_updates_combat_skill_maxes_without_waiting_for_skill_gain() {
+    let mut skills = vec![
+        test_skill(SKILL_DEFENSE, 4, 5),
+        test_skill(98, 300, 300),
+        test_skill(SKILL_SWORDS, 3, 5),
+        test_skill(SKILL_UNARMED, 5, 5),
+    ];
+
+    let updates = advance_level_capped_combat_skill_maxes(2, &mut skills);
+
+    assert_eq!(updates.len(), 3);
+    assert_eq!(skills[0].max, 10);
+    assert_eq!(skills[1].max, 300);
+    assert_eq!(skills[2].max, 10);
+    assert_eq!(skills[3].max, 10);
+    assert_eq!(skills[0].value, 4);
+    assert_eq!(skills[2].value, 3);
+    assert_eq!(skills[3].value, 5);
+
+    let body = build_player_skill_updates_body(7, &updates).unwrap();
+    let packed_guid_mask = body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1],
+        Some(make_pair32(SKILL_DEFENSE, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 1], Some(make_pair32(4, 10)));
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1 + 6],
+        Some(make_pair32(SKILL_SWORDS, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 7], Some(make_pair32(3, 10)));
+    assert_eq!(
+        values[PLAYER_SKILL_INFO_1_1 + 9],
+        Some(make_pair32(SKILL_UNARMED, 0))
+    );
+    assert_eq!(values[PLAYER_SKILL_INFO_1_1 + 10], Some(make_pair32(5, 10)));
+}
+
+#[test]
 fn item_weapon_skill_mapping_matches_cmangos_known_ids() {
     let mut sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
     sword.subclass = 7;

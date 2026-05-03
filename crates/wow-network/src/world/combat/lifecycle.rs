@@ -710,6 +710,54 @@ fn try_advance_combat_skill_value_with_rolls(
     })
 }
 
+fn advance_level_capped_combat_skill_maxes(
+    character_level: u8,
+    character_skills: &mut [CharacterSkill],
+) -> Vec<SkillProgressionUpdate> {
+    let level_cap = u16::from(character_level.max(1)).saturating_mul(5);
+    character_skills
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(slot, skill)| {
+            if !is_level_capped_combat_skill(skill.skill) || skill.max >= level_cap {
+                return None;
+            }
+            skill.max = level_cap;
+            Some(SkillProgressionUpdate {
+                slot,
+                skill: skill.skill,
+                value: skill.value,
+                max: skill.max,
+            })
+        })
+        .collect()
+}
+
+fn is_level_capped_combat_skill(skill_id: u16) -> bool {
+    matches!(
+        skill_id,
+        SKILL_DEFENSE
+            | SKILL_SWORDS
+            | SKILL_AXES
+            | SKILL_BOWS
+            | SKILL_GUNS
+            | SKILL_MACES
+            | SKILL_TWO_HANDED_SWORDS
+            | SKILL_STAVES
+            | SKILL_TWO_HANDED_MACES
+            | SKILL_UNARMED
+            | SKILL_TWO_HANDED_AXES
+            | SKILL_DAGGERS
+            | SKILL_THROWN
+            | SKILL_CROSSBOWS
+            | SKILL_WANDS
+            | SKILL_POLEARMS
+            | SKILL_SPEARS
+            | SKILL_FISHING
+            | SKILL_FIST_WEAPONS
+    )
+}
+
 async fn main_hand_weapon_skill_id(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
@@ -757,16 +805,29 @@ fn build_player_skill_update_body(
     character_guid: u32,
     updated: SkillProgressionUpdate,
 ) -> anyhow::Result<Vec<u8>> {
+    build_player_skill_updates_body(character_guid, &[updated])
+}
+
+fn build_player_skill_updates_body(
+    character_guid: u32,
+    updates: &[SkillProgressionUpdate],
+) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player_guid)?;
 
     let mut values = vec![None; PLAYER_END_FIELDS];
-    let field = PLAYER_SKILL_INFO_1_1 + updated.slot * 3;
-    set_update_value(&mut values, field, make_pair32(updated.skill, 0))?;
-    set_update_value(&mut values, field + 1, make_pair32(updated.value, updated.max))?;
-    set_update_value(&mut values, field + 2, 0)?;
+    for updated in updates {
+        let field = PLAYER_SKILL_INFO_1_1 + updated.slot * 3;
+        set_update_value(&mut values, field, make_pair32(updated.skill, 0))?;
+        set_update_value(
+            &mut values,
+            field + 1,
+            make_pair32(updated.value, updated.max),
+        )?;
+        set_update_value(&mut values, field + 2, 0)?;
+    }
     write_update_values(&mut block, &values)?;
     Ok(build_update_object_body(&[block]))
 }
@@ -1042,6 +1103,21 @@ async fn award_character_xp(
     session.player_health = health;
     session.player_mana = power1;
     session.player_rage = power2;
+    let skill_cap_updates = if leveled {
+        advance_level_capped_combat_skill_maxes(new_level, &mut session.character_skills)
+    } else {
+        Vec::new()
+    };
+    for updated in &skill_cap_updates {
+        wow_db::upsert_character_skill(
+            character_db_pool,
+            guid,
+            updated.skill,
+            updated.value,
+            updated.max,
+        )
+        .await?;
+    }
 
     send_packet(
         stream,
@@ -1076,7 +1152,18 @@ async fn award_character_xp(
         })?,
         Some(header_crypto),
     )
-    .await
+    .await?;
+    if !skill_cap_updates.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_skill_updates_body(guid, &skill_cap_updates)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 fn creature_xp_reward(player_level: u8, template: &CreatureTemplateQuery) -> u32 {

@@ -4,6 +4,7 @@ pub async fn update_character_position(
     guid: u32,
     position: WorldPosition,
 ) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_position_save");
     let result = sqlx::query(
         "UPDATE characters \
          SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ? \
@@ -31,6 +32,8 @@ pub async fn update_character_position_and_vitals(
     power1: u32,
     power2: u32,
 ) -> Result<u64, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("character_position_vitals_save");
     let result = sqlx::query(
         "UPDATE characters \
          SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ?, \
@@ -58,6 +61,7 @@ pub async fn mark_character_first_login_seen(
     account_id: u32,
     guid: u32,
 ) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_first_login_update");
     let result = sqlx::query(
         "UPDATE characters SET cinematic = 1, at_login = at_login & ? \
          WHERE guid = ? AND account = ?",
@@ -72,6 +76,7 @@ pub async fn mark_character_first_login_seen(
 }
 
 pub async fn get_tutorial_flags(pool: &MySqlPool, account_id: u32) -> Result<[u32; 8], DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_tutorial_load");
     let Some(row) = sqlx::query(
         "SELECT tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7 \
          FROM character_tutorial WHERE account = ?",
@@ -100,6 +105,7 @@ pub async fn save_tutorial_flags(
     account_id: u32,
     tutorials: [u32; 8],
 ) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_tutorial_save");
     sqlx::query(
         "INSERT INTO character_tutorial \
          (account, tut0, tut1, tut2, tut3, tut4, tut5, tut6, tut7) \
@@ -128,6 +134,7 @@ pub async fn get_character_spells(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Vec<CharacterSpell>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_spells_load");
     let rows = sqlx::query_as::<_, CharacterSpell>(
         "SELECT spell, active, disabled FROM character_spell WHERE guid = ? ORDER BY spell",
     )
@@ -146,6 +153,7 @@ pub async fn update_character_death_state(
     health: u32,
     player_flags: u32,
 ) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_death_state_save");
     let result = sqlx::query(
         "UPDATE characters \
          SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ?, \
@@ -168,6 +176,7 @@ pub async fn update_character_death_state(
 }
 
 pub async fn save_player_corpse(pool: &MySqlPool, corpse: &NewPlayerCorpse) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("corpse_save");
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM corpse WHERE player = ? AND corpse_type <> 0")
         .bind(corpse.player)
@@ -196,6 +205,7 @@ pub async fn save_player_corpse(pool: &MySqlPool, corpse: &NewPlayerCorpse) -> R
 }
 
 pub async fn delete_player_corpse(pool: &MySqlPool, player: u32) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("corpse_delete");
     let result = sqlx::query("DELETE FROM corpse WHERE player = ? AND corpse_type <> 0")
         .bind(player)
         .execute(pool)
@@ -208,6 +218,7 @@ pub async fn get_player_corpse(
     pool: &MySqlPool,
     player: u32,
 ) -> Result<Option<PlayerCorpseQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("corpse_load");
     let row = sqlx::query_as::<_, PlayerCorpseQuery>(
         "SELECT corpse.guid, corpse.player, corpse.position_x, corpse.position_y, corpse.position_z, \
                 corpse.orientation, corpse.map, corpse.time, corpse.corpse_type, corpse.instance, \
@@ -234,6 +245,7 @@ pub async fn get_nearby_player_corpses(
     radius: f32,
     limit: u32,
 ) -> Result<Vec<PlayerCorpseQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("corpse_nearby_load");
     let rows = sqlx::query_as::<_, PlayerCorpseQuery>(
         "SELECT corpse.guid, corpse.player, corpse.position_x, corpse.position_y, corpse.position_z, \
                 corpse.orientation, corpse.map, corpse.time, corpse.corpse_type, corpse.instance, \
@@ -266,6 +278,7 @@ pub async fn learn_character_spell(
     spell: u32,
     cost: u32,
 ) -> Result<Option<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_spell_learn");
     let mut tx = pool.begin().await?;
     let known: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM character_spell WHERE guid = ? AND spell = ?")
@@ -309,6 +322,7 @@ pub async fn get_character_actions(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Vec<CharacterAction>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_actions_load");
     let rows = sqlx::query_as::<_, CharacterAction>(
         "SELECT button, action, type FROM character_action WHERE guid = ? ORDER BY button",
     )
@@ -326,6 +340,7 @@ pub async fn upsert_character_action(
     action: u32,
     action_type: u8,
 ) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_action_save");
     sqlx::query(
         "INSERT INTO character_action (guid, button, action, type) \
          VALUES (?, ?, ?, ?) \
@@ -346,6 +361,7 @@ pub async fn delete_character_action(
     guid: u32,
     button: u8,
 ) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_action_delete");
     sqlx::query("DELETE FROM character_action WHERE guid = ? AND button = ?")
         .bind(guid)
         .bind(button)
@@ -359,6 +375,7 @@ pub async fn get_character_skills(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Vec<CharacterSkill>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_skills_load");
     let rows = sqlx::query_as::<_, CharacterSkill>(
         "SELECT skill, value, max FROM character_skills WHERE guid = ? ORDER BY skill",
     )
@@ -376,6 +393,7 @@ pub async fn upsert_character_skill(
     value: u16,
     max: u16,
 ) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_skill_save");
     sqlx::query(
         "INSERT INTO character_skills (guid, skill, value, max) \
          VALUES (?, ?, ?, ?) \
@@ -395,6 +413,7 @@ pub async fn get_character_quest_statuses(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Vec<CharacterQuestStatus>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quests_load");
     let rows = sqlx::query_as::<_, CharacterQuestStatus>(
         "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
          FROM character_queststatus \
@@ -413,6 +432,7 @@ pub async fn get_character_quest_status(
     guid: u32,
     quest: u32,
 ) -> Result<Option<CharacterQuestStatus>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_load");
     let row = sqlx::query_as::<_, CharacterQuestStatus>(
         "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
          FROM character_queststatus \
@@ -431,6 +451,7 @@ pub async fn accept_character_quest(
     guid: u32,
     quest: u32,
 ) -> Result<CharacterQuestStatus, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_accept");
     sqlx::query(
         "INSERT INTO character_queststatus \
          (guid, quest, status, rewarded, explored, timer, mobcount1, mobcount2, mobcount3, mobcount4, \
@@ -467,6 +488,7 @@ pub async fn update_character_quest_mob_count(
     count: u32,
     complete: bool,
 ) -> Result<CharacterQuestStatus, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_update");
     let status = if complete { 1 } else { 3 };
     let column = match objective_index {
         0 => "mobcount1",
@@ -496,6 +518,7 @@ pub async fn complete_character_quest(
     guid: u32,
     quest: u32,
 ) -> Result<CharacterQuestStatus, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_complete");
     sqlx::query(
         "UPDATE character_queststatus \
          SET status = 1 \
@@ -516,6 +539,7 @@ pub async fn abandon_character_quest(
     guid: u32,
     quest: u32,
 ) -> Result<Option<CharacterQuestStatus>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_abandon");
     let changed = sqlx::query(
         "UPDATE character_queststatus \
          SET status = 0, rewarded = 0, mobcount1 = 0, mobcount2 = 0, mobcount3 = 0, mobcount4 = 0, \
@@ -542,6 +566,7 @@ pub async fn reward_character_quest(
     money: u32,
     reputation_rewards: &[(u32, i32)],
 ) -> Result<Option<CharacterQuestRewardResult>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_reward");
     const FACTION_FLAG_VISIBLE: i32 = 0x01;
     const REPUTATION_CAP: i32 = 42_999;
     const REPUTATION_BOTTOM: i32 = -42_000;
@@ -628,6 +653,7 @@ pub async fn get_character_reputations(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Vec<CharacterReputation>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_reputation_load");
     let rows = sqlx::query_as::<_, CharacterReputation>(
         "SELECT faction, standing, flags FROM character_reputation WHERE guid = ? ORDER BY faction",
     )

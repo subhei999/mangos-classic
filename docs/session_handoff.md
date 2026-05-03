@@ -7,34 +7,27 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/c2-spell-aura-system`.
-- Current state: uncommitted spell/aura foundation changes are present.
-- Purpose: Checkpoint 2 warrior spell slice that moves starter spell execution
-  away from spell-id fixtures and toward the CMaNGOS `Spell.dbc` /
-  `spell_template` model.
-- Base intent: this branch is stacked on the current C2 closure/testing state
-  rather than the stale old `codex/c2-warrior-spells-gcd` branch.
+- Branch: `codex/server-observability-foundation`.
+- Current state: uncommitted observability foundation changes are present.
+- Purpose: add a local server performance monitoring surface that CMaNGOS did
+  not have, starting with Prometheus-compatible `/metrics` output for
+  worldserver loop, session, packet, map population, and DB query pressure.
+- Base branch: `codex/rusty-mangos`.
 - Re-run `git status --short --branch` before editing.
 - Live client stack was rebuilt/restarted after this slice:
-  - authserver PID `44896` on `127.0.0.1:13724`;
-  - worldserver PID `26968` on `127.0.0.1:18085`;
-  - logs: `auth-client-13724.log`, `world-client-18085.log`;
+  - current live stack is running release binaries for performance comparison;
+  - authserver PID `47144` on `127.0.0.1:13724`;
+  - worldserver PID `51528` on `127.0.0.1:18085`;
+  - metrics endpoint: `http://127.0.0.1:9091/metrics`;
+  - logs: `auth-client-13724-release.log`, `world-client-18085-release.log`;
   - auto-restart is disabled.
 
 ## Current Goal
 
-Current milestone: **Checkpoint 2 Northshire Human Warrior playable slice with
-shared multiplayer state**.
-
-Current user direction: **Do not use a Northshire grading harness. The user is
-the grader using real-client side-by-side testing. Convert real-client notes
-into generalized systems work and priorities; do not hardcode Northshire-only
-fixes. Anything less than CMaNGOS/source-backed gameplay math is considered
-fake.**
-
-Immediate focus: continue warrior level 1-6 spell parity using a real
-CMaNGOS-style spell/aura pipeline, not one-off Heroic Strike or Battle Shout
-patches.
+Current milestone remains **Checkpoint 2 Northshire Human Warrior playable
+slice with shared multiplayer state**, but the active user-directed side quest
+is now **server observability**: build performance monitoring alongside the
+server without adding or maintaining a Northshire grading harness.
 
 Important scope rule: stay focused on the current goal, but use judgment. Fix
 blockers and safety/data-integrity guardrails when practical. Log useful
@@ -45,122 +38,155 @@ Use DB data, DBC/source-derived values, or CMaNGOS formulas. If the real data
 source is not wired yet, leave behavior unimplemented or narrowly guarded and
 log the follow-up.
 
-## Recently Landed Or Confirmed
+## Recently Changed
 
-- Quest status markers, quest source items, quest reputation rewards, and
-  gameobject quest pickups are working in the real client.
-- Combat resource feel has improved: damage-based rage generation, overkill
-  fields, max-HP regen cap sync, immediate first-swing scheduling, no
-  attack-rage from Heroic-Strike-style rage-spending swings, delayed Heroic
-  Strike rage spend, and map-owned swing timers that cannot be accelerated by
-  toggling autoattack.
-- Creature fidelity: DB-backed walk/run speed, CMaNGOS-style DBC display scale
-  fallback, and virtual item/equipment bytes for weapon visuals are integrated.
-- Loot fidelity: DB-backed multi-drop creature/gameobject loot and variable
-  copper are integrated.
-- Combat skill math: character skills load on login, PvE weapon/defense
-  skill-ups follow CMaNGOS two-roll logic with Intellect bonus for weapon
-  skills, melee hit tables use skill vs defense, and level-up skill caps now
-  update the client immediately.
-- Trainer/gossip parity: trainer gossip uses the book icon and
-  `I seek training.`, trainer list greetings come from DB/fallback text, and
-  buying a trainer spell sends source-backed visual/impact packets before
-  `SMSG_TRAINER_BUY_SUCCEEDED`.
-
-## Current Slice Details
-
-- `wow-db` now exposes `SpellTemplateQuery` over the local
-  `spell_template` table exported from `Spell.dbc`.
-- `ObjectMgr` now caches spell templates, matching the existing quest/loot
-  immutable world-data cache shape.
-- Starter spell execution now derives from CMaNGOS fields:
-  - on-next-swing from `SPELL_ATTR_ON_NEXT_SWING*`;
-  - power type and cost from `PowerType` / `ManaCost`;
-  - GCD from `StartRecoveryCategory` / `StartRecoveryTime`;
-  - spell cooldown from `max(RecoveryTime, CategoryRecoveryTime)`;
-  - simple damage/bonus values from DBC effect base points.
-- Heroic Strike remains next-swing queued and spends rage when the swing fires,
-  but its queue shape now comes from the spell template instead of a spell-id
-  fixture.
-- Battle Shout now proves the first aura vertical slice: source-backed 10 rage
-  cost, 1.5s GCD, `SMSG_SPELL_GO`, visible positive aura slot update,
-  `SpellDuration.dbc` duration lookup, map-owned aura expiration, and the
-  CMaNGOS `SPELL_AURA_MOD_ATTACK_POWER` stat modifier path. Timed auras also
-  send CMaNGOS-shaped `SMSG_UPDATE_AURA_DURATION` (`slot`, remaining
-  milliseconds), fixing the real-client `0 sec remaining` display.
-- `WorldDataFiles` now parses `dbc/SpellDuration.dbc` with CMaNGOS `niii`
-  layout. `MapRuntime` owns active player aura state, keeps base combat stats
-  separate from aura-modified combat stats, and expires auras from the map
-  update loop so expiration packets can be sent without waiting for client
-  input.
+- Added `ObservabilityConfig` to `wow-config`.
+- `worldserver` starts a localhost-only observability endpoint when enabled.
+- `config/worldserver.local.toml` explicitly enables:
+  - `127.0.0.1:9091`;
+  - `/metrics` for Prometheus-compatible text;
+  - `/healthz` for a simple liveness probe.
+- Added `wow-network::observability`, a dependency-light in-process metrics
+  registry and local HTTP endpoint.
+- Map runtime update loop now records:
+  - `wow_map_ticks_total`;
+  - `wow_map_tick_duration_seconds`;
+  - `wow_map_tick_duration_average_milliseconds`;
+  - `wow_map_tick_duration_latest_milliseconds`;
+  - `wow_map_tick_duration_max_milliseconds`;
+  - `wow_map_tick_lag_seconds`;
+  - `wow_map_tick_lag_average_milliseconds`;
+  - `wow_map_tick_lag_latest_milliseconds`;
+  - `wow_map_tick_lag_max_milliseconds`;
+  - `wow_map_tick_over_budget_total`;
+  - `wow_map_tick_errors_total`.
+- Map update phase timing now records bounded phase gauges:
+  - `wow_map_phase_duration_average_milliseconds{phase="idle_motion"}`;
+  - `wow_map_phase_duration_latest_milliseconds{phase="idle_motion"}`;
+  - `wow_map_phase_duration_max_milliseconds{phase="idle_motion"}`;
+  - same metric families for `idle_motion_dispatch`, `player_regen`,
+    `player_regen_dispatch`, `aura_expiration`, and
+    `aura_expiration_dispatch`.
+- World session/socket paths now record:
+  - connected/authenticated world sessions;
+  - total registered/unregistered sessions;
+  - packets in/out by opcode;
+  - unhandled authenticated opcodes by opcode.
+- `MapRuntime` now exposes a read-only observability snapshot sampled by
+  `MapRuntimeManager` once per world tick. `/metrics` includes per-map,
+  per-instance gauges for:
+  - `wow_map_active_players`;
+  - `wow_map_active_creatures`;
+  - `wow_map_active_gameobjects`;
+  - `wow_map_loaded_grids`;
+  - `wow_map_loaded_creature_grids`;
+  - `wow_map_loaded_gameobject_grids`;
+  - `wow_map_loaded_player_corpse_grids`;
+  - `wow_map_active_creature_combats`;
+  - `wow_map_corpses`.
+- Added `wow-db::observability` with scoped DB query timers. `/metrics` now
+  appends:
+  - `wow_db_query_total{family="..."}`;
+  - `wow_db_query_duration_average_milliseconds{family="..."}`;
+  - `wow_db_query_duration_latest_milliseconds{family="..."}`;
+  - `wow_db_query_duration_max_milliseconds{family="..."}`.
+- Initial DB timing families cover auth account checks, character list/login
+  state, tutorial/spell/action/skill/quest/reputation/corpse helpers, world
+  template/quest/vendor/trainer/loot helpers, grid spawn loads, respawn loads,
+  and waypoint path loads. Labels are bounded static family names, not SQL or
+  object IDs.
 
 ## Tests Run
 
+- Baseline before edits: `.\scripts\test-rust.cmd` passed.
 - `cargo fmt`
-- `cargo test -p wow-network starter`
-- `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot`
-- `cargo test -p wow-network spell_duration_dbc_parser_reads_cmangos_duration_fields`
-- `cargo test -p wow-network map_owned_player_aura_applies_attack_power_mod_and_expires`
-- `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing`
-- `cargo test -p wow-network` passed with 334 lib tests.
-- First `.\scripts\test-rust.cmd` reached tests/checks but failed the final
-  `authserver` build because the old running server locked
+- `cargo test -p wow-config observability` passed.
+- `cargo test -p wow-network observability` passed.
+- `cargo test -p worldserver` passed.
+- First post-change `.\scripts\test-rust.cmd` reached checks/tests but failed
+  the final `authserver` build because an old running authserver process locked
   `target\debug\authserver.exe` on Windows.
-- Stopped the old auth/world server processes, then reran
+- Stopped old authserver/worldserver processes, then reran
   `.\scripts\test-rust.cmd`; it passed.
 - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` restarted the client
-  stack successfully after the aura duration/stat-mod slice and again after
-  adding `SMSG_UPDATE_AURA_DURATION`.
-
-## Real-Client Success Criteria For Current Smoke
-
-- Log in through `set realmlist 127.0.0.1:13724`.
-- Warrior with Heroic Strike:
-  - queuing Heroic Strike should send the cast/start feedback immediately;
-  - rage should not be consumed until the next melee swing lands;
-  - toggling autoattack must not accelerate swing timers.
-- Warrior with Battle Shout after training:
-  - cast should require enough rage and spend 10 rage;
-  - cast should trigger GCD;
-  - client should receive spell visual/GO and show the positive aura icon;
-  - Attack Power should gain the Battle Shout positive modifier while the aura
-    is active;
-  - the aura tooltip should show a real countdown rather than `0 sec remaining`;
-  - when the DBC duration expires, the aura icon and AP modifier should clear
-    without needing another client action.
-- Re-check prior parity while in the same session: gray unavailable quest `!`,
-  no trainer disconnect on `Train me`, correct creature scale/equipment
-  animation, variable copper, combo loot, skill cap UI updates, Simple Letter on
-  accept, and quest reputation feedback.
+  stack successfully.
+- `Invoke-WebRequest http://127.0.0.1:9091/metrics` confirmed live metrics:
+  map tick counters/histograms were increasing and over-budget/error counters
+  were zero before a real client connected.
+- Added direct average millisecond gauges for the browser-readable map tick
+  duration and map tick lag values.
+- `cargo fmt` and `cargo test -p wow-network observability` passed for the
+  average millisecond gauge update.
+- Restarted the local client stack again after the average gauge update and
+  confirmed `/metrics` shows `wow_map_tick_duration_average_milliseconds` and
+  `wow_map_tick_lag_average_milliseconds`.
+- Added direct latest/max millisecond gauges for map tick duration and lag.
+- `cargo fmt`, `cargo test -p wow-network observability`, and
+  `.\scripts\test-rust.cmd` passed for the latest/max gauge update.
+- Restarted the local client stack after the latest/max gauge update and
+  confirmed `/metrics` shows `wow_map_tick_duration_latest_milliseconds`,
+  `wow_map_tick_duration_max_milliseconds`,
+  `wow_map_tick_lag_latest_milliseconds`, and
+  `wow_map_tick_lag_max_milliseconds`.
+- Built release binaries with `cargo build --release -p authserver -p
+  worldserver`, stopped the debug stack, and started `target\release`
+  authserver/worldserver manually on the same local ports.
+- Idle dev-vs-release comparison from `/metrics`:
+  - debug idle tick duration average was about `0.020ms`, max about `0.093ms`;
+  - release idle tick duration average was about `0.004ms`, max about `0.013ms`;
+  - lag average stayed around `9ms` in both builds, suggesting the lag metric is
+    mostly OS/runtime wake scheduling at idle rather than game-loop work.
+- Added map update phase duration metrics so future whole-tick spikes can be
+  attributed to idle motion, player regen, aura expiration, or packet dispatch.
+- `cargo fmt`, `cargo test -p wow-network observability`, and
+  `.\scripts\test-rust.cmd` passed for the phase timing update.
+- Rebuilt release binaries, restarted `target\release` authserver/worldserver,
+  and confirmed `/metrics` shows `wow_map_phase_duration_*_milliseconds`
+  families.
+- Added per-map runtime gauges and DB query-family timing.
+- `cargo fmt`
+- `cargo test -p wow-db observability` passed.
+- `cargo test -p wow-network observability` passed.
+- Stopped the release stack, then `.\scripts\test-rust.cmd` passed.
+- `cargo build --release -p authserver -p worldserver` passed.
+- Restarted release `authserver`/`worldserver` manually and confirmed
+  `/metrics` includes:
+  - `wow_map_active_players` / `wow_map_active_creatures`;
+  - `wow_db_query_total`;
+  - `wow_db_query_duration_average_milliseconds`.
+- After a small respawn-timer cleanup, reran `cargo fmt`,
+  `cargo test -p wow-db observability`, rebuilt release binaries, and restarted
+  the release stack.
 
 ## Known Follow-Ups
 
-- Battle Shout now covers duration, expiration, and flat AP stat modification.
-  Aura persistence across logout/relog, other aura modifier families, dispel
-  rules, charges/stacks, periodic ticks, and aura save/load remain future spell
-  system slices.
-- The spell pipeline should next cover level 1-6 warrior abilities from
-  `spell_template`: Rend, Charge, Thunder Clap, stances, Overpower availability,
-  and any trainer-learned spell edge cases.
-- GitHub issue #63 tracks replacing the static reputation-list bridge with a
-  real `Faction.dbc` loader.
-- Full trainer spell-cast animation is still incomplete: CMaNGOS starts the
-  trainer spell after buy success, while the current Rust slice sends the
-  source-backed visual/impact packets and direct learned-spell updates.
-- PvP skill max behavior, offhand/ranged skill progression, flat hit bonuses,
-  weapon-specific auras, and gear hit modifiers remain later combat slices.
-- Weapon-skill training from NPCs is separate from combat progression and still
-  belongs with trainer/script parity.
-- CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
-- GitHub issue #62 tracks a starter-zone wrapper readiness race from the old
-  grade-report path; the grade surface is removed, but normal starter-zone runs
-  can still benefit from a readiness check instead of fixed sleep.
+- Add combat/spell/loot/quest counters after the metric naming conventions
+  settle.
+- Add a lightweight Grafana/Prometheus setup later; this slice intentionally
+  only makes the server emit trustworthy measurements.
+- Consider a bounded metric reset/test hook if future tests need stronger
+  assertions than checking rendered metric families.
+- Consider a simple browser dashboard on top of `/metrics`; raw Prometheus text
+  is useful but not friendly once the metric list grows.
+- Existing playable follow-ups still apply: quest eligibility, quest item
+  drops, gameobject quest pickup, broader warrior spells, combat log feedback,
+  regen/rage, skill/weapon-skill polish, aggro/chase/leash parity, and patrol
+  stability.
 
 ## Key Files
 
+- `crates/wow-network/src/observability.rs`
+- `crates/wow-db/src/observability.rs`
+- `crates/wow-db/src/account.rs`
+- `crates/wow-db/src/character/queries.rs`
+- `crates/wow-db/src/character/state.rs`
 - `crates/wow-db/src/world_data.rs`
-- `crates/wow-network/src/world/globals/object_mgr.rs`
+- `bins/worldserver/src/main.rs`
+- `crates/wow-config/src/lib.rs`
+- `config/worldserver.local.toml`
+- `crates/wow-network/src/world/server/map_update.rs`
+- `crates/wow-network/src/world/maps/map.rs`
+- `crates/wow-network/src/world/maps/map_manager.rs`
 - `crates/wow-network/src/world/session.rs`
-- `crates/wow-network/src/world/spells.rs`
-- `crates/wow-network/src/world/tests.rs`
-- `docs/playable_execution_roadmap.md`
+- `crates/wow-network/src/world/wire.rs`
+- `crates/wow-network/src/world/server/session_loop.rs`

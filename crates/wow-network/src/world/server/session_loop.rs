@@ -727,6 +727,7 @@ async fn handle_client(
                             );
                         }
                         _ => {
+                            crate::observability::record_world_unknown_opcode(opcode);
                             warn!(
                                 opcode = format_args!("0x{opcode:04X}"),
                                 "Unhandled authenticated world opcode"

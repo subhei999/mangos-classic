@@ -74,11 +74,28 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         bind = %bind_addr,
+        observability_enabled = config.observability.enabled,
+        observability_bind = %format!("{}:{}", config.observability.bind_address, config.observability.bind_port),
         login_database = %config.login_database.database,
         character_database = %config.character_database.database,
         world_database = %config.world_database.database,
         "Configuration loaded",
     );
+
+    if config.observability.enabled {
+        let metrics_bind: std::net::SocketAddr = format!(
+            "{}:{}",
+            config.observability.bind_address, config.observability.bind_port
+        )
+        .parse()
+        .context("Invalid observability bind address")?;
+        tokio::spawn(async move {
+            if let Err(error) = wow_network::observability::run_metrics_endpoint(metrics_bind).await
+            {
+                tracing::error!(%metrics_bind, "Observability metrics endpoint stopped: {error}");
+            }
+        });
+    }
 
     let login_url = database_url(&config.login_database);
     let login_pool = create_pool(&login_url, 10)

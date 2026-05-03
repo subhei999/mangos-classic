@@ -5,6 +5,7 @@
 
 #[path = "auth/mod.rs"]
 pub mod auth;
+pub mod observability;
 #[path = "world/mod.rs"]
 pub mod world;
 

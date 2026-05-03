@@ -73,11 +73,19 @@ impl SessionRegistry {
         session_id: SessionId,
         handle: SessionHandle,
     ) -> Option<SessionHandle> {
-        self.sessions.lock().await.insert(session_id, handle)
+        let previous = self.sessions.lock().await.insert(session_id, handle);
+        if previous.is_none() {
+            crate::observability::record_world_session_registered();
+        }
+        previous
     }
 
     async fn unregister(&self, session_id: SessionId) -> Option<SessionHandle> {
-        self.sessions.lock().await.remove(&session_id)
+        let removed = self.sessions.lock().await.remove(&session_id);
+        if removed.is_some() {
+            crate::observability::record_world_session_unregistered();
+        }
+        removed
     }
 
     async fn set_character_guid(&self, session_id: SessionId, character_guid: Option<u32>) {

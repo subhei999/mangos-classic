@@ -214,6 +214,22 @@ impl MapRuntime {
             next_player_regen_tick_at: None,
         }
     }
+
+    fn observability_snapshot(&self) -> crate::observability::MapRuntimeSnapshot {
+        crate::observability::MapRuntimeSnapshot {
+            map_id: self.map_id,
+            instance_id: self.instance_id,
+            active_players: self.players.len() as u64,
+            active_creatures: self.creatures.len() as u64,
+            active_gameobjects: self.gameobjects.len() as u64,
+            loaded_grids: self.grids.len() as u64,
+            loaded_creature_grids: self.loaded_creature_grids.len() as u64,
+            loaded_gameobject_grids: self.loaded_gameobject_grids.len() as u64,
+            loaded_player_corpse_grids: self.loaded_player_corpse_grids.len() as u64,
+            active_creature_combats: self.active_creature_combats.len() as u64,
+            corpses: self.corpses.len() as u64,
+        }
+    }
 }
 
 include!("map/players.rs");

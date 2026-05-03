@@ -28,3 +28,8 @@ database = "characters"
 [world]
 char_delete_method = 0
 char_delete_min_level = 0
+
+[observability]
+enabled = true
+bind_address = "127.0.0.1"
+bind_port = 9091

@@ -60,6 +60,7 @@ pub async fn get_account_by_username(
     pool: &MySqlPool,
     username: &str,
 ) -> Result<Option<Account>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_lookup");
     let username = normalize_username(username);
     let account = sqlx::query_as::<_, Account>(
         "SELECT id, username, gmlevel, sessionkey, v, s, \
@@ -82,6 +83,7 @@ pub async fn update_session_key(
     v: &str,
     s: &str,
 ) -> DbResult<()> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_session_update");
     sqlx::query("UPDATE account SET sessionkey = ?, v = ?, s = ? WHERE id = ?")
         .bind(session_key)
         .bind(v)
@@ -99,6 +101,7 @@ pub async fn get_account_banned(
     pool: &MySqlPool,
     account_id: u32,
 ) -> Result<Option<AccountBanned>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_ban_check");
     let row = sqlx::query_as::<_, AccountBanned>(
         "SELECT id, account_id, banned_at, expires_at, banned_by, reason, active \
          FROM account_banned \
@@ -114,6 +117,7 @@ pub async fn get_account_banned(
 
 /// Check whether an IP address is currently banned.
 pub async fn get_ip_banned(pool: &MySqlPool, ip: &str) -> Result<Option<IpBanned>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("ip_ban_check");
     let row = sqlx::query_as::<_, IpBanned>(
         "SELECT ip, banned_at, expires_at, banned_by, reason \
          FROM ip_banned \

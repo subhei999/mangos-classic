@@ -54,6 +54,40 @@ pub struct WorldConfig {
     pub char_delete_min_level: u8,
 }
 
+// ---------------------------------------------------------------------------
+// ObservabilityConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObservabilityConfig {
+    #[serde(default = "default_observability_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_observability_bind_address")]
+    pub bind_address: String,
+    #[serde(default = "default_observability_port")]
+    pub bind_port: u16,
+}
+
+fn default_observability_enabled() -> bool {
+    true
+}
+fn default_observability_bind_address() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_observability_port() -> u16 {
+    9091
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_observability_enabled(),
+            bind_address: default_observability_bind_address(),
+            bind_port: default_observability_port(),
+        }
+    }
+}
+
 fn default_update_interval_ms() -> u32 {
     50
 }
@@ -113,6 +147,8 @@ pub struct WorldServerConfig {
     pub login_database: DatabaseConfig,
     #[serde(default)]
     pub world: WorldConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 fn default_world_port() -> u16 {
@@ -202,5 +238,13 @@ database = "realmd"
         assert_eq!(wc.motd, "Welcome to CMaNGOS Rust!");
         assert_eq!(wc.char_delete_method, 0);
         assert_eq!(wc.char_delete_min_level, 0);
+    }
+
+    #[test]
+    fn observability_config_defaults_to_local_metrics_endpoint() {
+        let config = ObservabilityConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.bind_address, "127.0.0.1");
+        assert_eq!(config.bind_port, 9091);
     }
 }

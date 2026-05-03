@@ -1275,6 +1275,22 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
+    async fn record_observability_snapshots(&self) {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut snapshots = Vec::with_capacity(maps.len());
+        for map in maps {
+            snapshots.push(map.lock().await.observability_snapshot());
+        }
+        crate::observability::record_map_runtime_snapshots(snapshots);
+    }
+
     #[allow(dead_code)]
     async fn db_creature_idle_motion_advancement_guids(
         &self,

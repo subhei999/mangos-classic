@@ -2,6 +2,7 @@ pub async fn get_character_enum_entries(
     pool: &MySqlPool,
     account_id: u32,
 ) -> Result<Vec<CharacterEnumEntry>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_enum");
     let rows = sqlx::query_as::<_, CharacterEnumEntry>(
         "SELECT characters.guid, characters.name, characters.race, characters.class, \
                 characters.gender, characters.playerBytes, characters.playerBytes2, \
@@ -32,6 +33,7 @@ pub async fn get_character_name_query(
     pool: &MySqlPool,
     guid: u32,
 ) -> Result<Option<CharacterNameQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_name");
     let row = sqlx::query_as::<_, CharacterNameQuery>(
         "SELECT guid, name, race, gender, class FROM characters WHERE guid = ?",
     )
@@ -43,6 +45,7 @@ pub async fn get_character_name_query(
 }
 
 pub async fn character_name_exists(pool: &MySqlPool, name: &str) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_name_exists");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM characters WHERE name = ?")
         .bind(name)
         .fetch_one(pool)
@@ -52,6 +55,7 @@ pub async fn character_name_exists(pool: &MySqlPool, name: &str) -> Result<bool,
 }
 
 pub async fn character_count_for_account(pool: &MySqlPool, account_id: u32) -> Result<u8, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_count");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM characters WHERE account = ?")
         .bind(account_id)
         .fetch_one(pool)
@@ -61,6 +65,7 @@ pub async fn character_count_for_account(pool: &MySqlPool, account_id: u32) -> R
 }
 
 pub async fn is_guild_leader(pool: &MySqlPool, guid: u32) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("guild_leader_check");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild WHERE leaderguid = ?")
         .bind(guid)
         .fetch_one(pool)

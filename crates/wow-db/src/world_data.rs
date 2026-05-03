@@ -306,6 +306,7 @@ pub async fn get_creature_template_query(
     pool: &MySqlPool,
     entry: u32,
 ) -> Result<Option<CreatureTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_template_load");
     let row = sqlx::query_as::<_, CreatureTemplateQuery>(
         "SELECT creature_template.Entry AS entry, creature_template.Name AS name, creature_template.SubName AS subname, \
                 creature_template.MinLevel AS min_level, creature_template.MaxLevel AS max_level, \
@@ -377,6 +378,7 @@ pub async fn get_spell_template_query(
     pool: &MySqlPool,
     spell: u32,
 ) -> Result<Option<SpellTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_template_load");
     sqlx::query_as::<_, SpellTemplateQuery>(
         "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, \
                 Attributes AS attributes, AttributesEx AS attributes_ex, \
@@ -407,6 +409,7 @@ pub async fn get_creature_loot_items(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_loot_load");
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT creature_loot_template.item, \
                 creature_loot_template.groupid AS group_id, \
@@ -432,6 +435,7 @@ pub async fn get_gameobject_loot_items(
     pool: &MySqlPool,
     loot_entry: u32,
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_loot_load");
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT gameobject_loot_template.item, \
                 gameobject_loot_template.groupid AS group_id, \
@@ -457,6 +461,7 @@ pub async fn get_gameobject_template_query(
     pool: &MySqlPool,
     entry: u32,
 ) -> Result<Option<GameObjectTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_template_load");
     let row = sqlx::query_as::<_, GameObjectTemplateRow>(
         "SELECT entry, \
                 type AS object_type, \
@@ -504,6 +509,7 @@ pub async fn get_quest_template_query(
     pool: &MySqlPool,
     quest: u32,
 ) -> Result<Option<QuestTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("quest_template_load");
     let row = sqlx::query_as::<_, QuestTemplateRow>(
         "SELECT CAST(entry AS UNSIGNED) AS entry, CAST(Method AS UNSIGNED) AS method, \
                 ZoneOrSort AS zone_or_sort, \
@@ -587,6 +593,7 @@ pub async fn get_closest_graveyard(
     z: f32,
     faction: u32,
 ) -> Result<Option<GraveyardQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("graveyard_load");
     let row = sqlx::query_as::<_, GraveyardQuery>(
         "SELECT world_safe_locs.id AS id, world_safe_locs.map AS map, \
                 CAST(world_safe_locs.x AS DOUBLE) AS x, \
@@ -626,6 +633,7 @@ pub async fn get_closest_spirit_healer(
     y: f32,
     z: f32,
 ) -> Result<Option<GraveyardQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spirit_healer_load");
     let row = sqlx::query_as::<_, GraveyardQuery>(
         "SELECT creature.guid AS id, creature.map AS map, \
                 CAST(creature.position_x AS DOUBLE) AS x, \
@@ -659,6 +667,7 @@ pub async fn get_creature_start_quests(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_start_quests_load");
     let quest_ids: Vec<u32> =
         sqlx::query_scalar("SELECT quest FROM creature_questrelation WHERE id = ? ORDER BY quest")
             .bind(creature_entry)
@@ -677,6 +686,7 @@ pub async fn get_creature_complete_quests(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_complete_quests_load");
     let quest_ids: Vec<u32> = sqlx::query_scalar(
         "SELECT quest FROM creature_involvedrelation WHERE id = ? ORDER BY quest",
     )
@@ -696,6 +706,7 @@ pub async fn get_gameobject_start_quests(
     pool: &MySqlPool,
     gameobject_entry: u32,
 ) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_start_quests_load");
     let quest_ids: Vec<u32> = sqlx::query_scalar(
         "SELECT quest FROM gameobject_questrelation WHERE id = ? ORDER BY quest",
     )
@@ -715,6 +726,7 @@ pub async fn get_gameobject_complete_quests(
     pool: &MySqlPool,
     gameobject_entry: u32,
 ) -> Result<Vec<QuestTemplateQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_complete_quests_load");
     let quest_ids: Vec<u32> = sqlx::query_scalar(
         "SELECT quest FROM gameobject_involvedrelation WHERE id = ? ORDER BY quest",
     )
@@ -735,6 +747,7 @@ pub async fn creature_starts_quest(
     creature_entry: u32,
     quest: u32,
 ) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_starts_quest_check");
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM creature_questrelation WHERE id = ? AND quest = ?",
     )
@@ -750,6 +763,7 @@ pub async fn creature_completes_quest(
     creature_entry: u32,
     quest: u32,
 ) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_completes_quest_check");
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM creature_involvedrelation WHERE id = ? AND quest = ?",
     )
@@ -761,6 +775,7 @@ pub async fn creature_completes_quest(
 }
 
 pub async fn get_quest_prev_quests(pool: &MySqlPool, quest: u32) -> Result<Vec<i32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("quest_prev_quests_load");
     let mut quests: Vec<i32> = Vec::new();
 
     if let Some(prev_quest_id) =
@@ -797,6 +812,7 @@ pub async fn get_quest_prev_chain_quests(
     pool: &MySqlPool,
     quest: u32,
 ) -> Result<Vec<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("quest_prev_chain_load");
     sqlx::query_scalar(
         "SELECT CAST(entry AS UNSIGNED) AS entry \
          FROM quest_template \
@@ -813,6 +829,7 @@ pub async fn get_exclusive_group_quests(
     pool: &MySqlPool,
     exclusive_group: i32,
 ) -> Result<Vec<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("quest_exclusive_group_load");
     sqlx::query_scalar(
         "SELECT CAST(entry AS UNSIGNED) AS entry \
          FROM quest_template \
@@ -830,6 +847,7 @@ pub async fn gameobject_starts_quest(
     gameobject_entry: u32,
     quest: u32,
 ) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_starts_quest_check");
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM gameobject_questrelation WHERE id = ? AND quest = ?",
     )
@@ -845,6 +863,8 @@ pub async fn gameobject_completes_quest(
     gameobject_entry: u32,
     quest: u32,
 ) -> Result<bool, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("gameobject_completes_quest_check");
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM gameobject_involvedrelation WHERE id = ? AND quest = ?",
     )
@@ -856,6 +876,7 @@ pub async fn gameobject_completes_quest(
 }
 
 pub async fn get_item_display_id(pool: &MySqlPool, item: u32) -> Result<Option<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("item_display_load");
     sqlx::query_scalar("SELECT displayid FROM item_template WHERE entry = ?")
         .bind(item)
         .fetch_optional(pool)
@@ -867,6 +888,7 @@ pub async fn get_vendor_items(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<VendorItemQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("vendor_items_load");
     let rows = sqlx::query_as::<_, VendorItemRow>(
         "SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.slot, \
                 item_template.displayid AS display_id, item_template.BuyPrice AS buy_price, \
@@ -893,6 +915,7 @@ pub async fn get_trainer_spells(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Vec<TrainerSpellQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("trainer_spells_load");
     let rows = sqlx::query_as::<_, TrainerSpellQuery>(
         "SELECT npc_trainer.spell, \
                 CAST(COALESCE( \
@@ -932,6 +955,7 @@ pub async fn get_trainer_greeting(
     pool: &MySqlPool,
     creature_entry: u32,
 ) -> Result<Option<String>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("trainer_greeting_load");
     sqlx::query_scalar("SELECT Text FROM trainer_greeting WHERE Entry = ?")
         .bind(creature_entry)
         .fetch_optional(pool)
@@ -947,6 +971,7 @@ pub async fn get_nearby_creature_spawns(
     radius: f32,
     limit: u32,
 ) -> Result<Vec<CreatureSpawnQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_nearby_load");
     let rows = sqlx::query_as::<_, CreatureSpawnRow>(
         "SELECT creature.guid, creature.id AS entry, creature.map, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
@@ -1098,6 +1123,7 @@ pub async fn get_nearby_gameobject_spawns(
     radius: f32,
     limit: u32,
 ) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_nearby_load");
     let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
         "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
@@ -1189,6 +1215,7 @@ pub async fn get_gameobject_spawns_in_rect(
     min_y: f32,
     max_y: f32,
 ) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("gameobject_grid_load");
     let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
         "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
@@ -1265,6 +1292,7 @@ pub async fn get_creature_spawns_in_rect(
     min_y: f32,
     max_y: f32,
 ) -> Result<Vec<CreatureSpawnQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_grid_load");
     let rows = sqlx::query_as::<_, CreatureSpawnRow>(
         "SELECT creature.guid, creature.id AS entry, creature.map, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
@@ -1402,6 +1430,7 @@ pub async fn get_creature_respawn_times(
     if guids.is_empty() {
         return Ok(HashMap::new());
     }
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_respawn_load");
 
     sqlx::query("DELETE FROM creature_respawn WHERE instance = ? AND respawntime <= ?")
         .bind(instance)
@@ -1437,6 +1466,7 @@ pub async fn save_creature_respawn_time(
     instance: u32,
     now_epoch_secs: u64,
 ) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_respawn_save");
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM creature_respawn WHERE guid = ? AND instance = ?")
         .bind(guid)
@@ -1461,6 +1491,7 @@ pub async fn get_creature_default_waypoint_path(
     guid: u32,
     formation_path_id: Option<u32>,
 ) -> Result<Vec<CreatureWaypointQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_waypoint_path_load");
     if let Some(path_id) = formation_path_id.filter(|path_id| *path_id != 0) {
         let formation_path = get_waypoint_path(pool, path_id).await?;
         if !formation_path.is_empty() {

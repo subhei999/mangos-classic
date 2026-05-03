@@ -573,6 +573,7 @@ where
     packet.extend_from_slice(&header);
     packet.extend_from_slice(body);
     stream.write_all(&packet).await?;
+    crate::observability::record_world_packet_out(opcode);
     Ok(())
 }
 
@@ -602,6 +603,7 @@ where
         stream.read_exact(&mut body).await?;
     }
 
+    crate::observability::record_world_packet_in(opcode);
     Ok((opcode, body))
 }
 

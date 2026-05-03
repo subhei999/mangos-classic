@@ -18,6 +18,7 @@ fn build_near_teleport_ack_body(
         character.client_time,
         character.position,
         character.fall_time,
+        &character.jump,
     );
 
     Ok(body)

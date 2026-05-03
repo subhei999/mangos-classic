@@ -92,6 +92,7 @@ async fn handle_player_login(
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     });
     session.player_visual = Some(PlayerVisualState {
         gender: character.gender,
@@ -100,6 +101,7 @@ async fn handle_player_login(
         equipment_cache: character.equipment_cache.clone(),
         guildid: character.guildid,
     });
+    session.movement_client_time_delay = None;
     session.player_flags = character.player_flags;
     session.player_death_state = if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
         PlayerDeathState::Ghost
@@ -300,7 +302,9 @@ async fn handle_player_login(
         position: login_position,
         movement_flags: 0,
         client_time: 0,
+        server_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
         cell: cell_coord_for_position(login_position),
         visible_objects,
         last_creature_visibility_position: Some(login_position),

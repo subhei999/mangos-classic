@@ -149,6 +149,7 @@ impl MapRuntime {
             .players
             .insert(player_guid);
         self.players.insert(player_guid, player);
+        self.invalidate_idle_motion_start_schedule();
 
         Ok(packets)
     }
@@ -158,6 +159,7 @@ impl MapRuntime {
         character_guid: u32,
         opcode: u16,
         movement: &MovementInfo,
+        server_time: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let Some(current_player) = self.players.get(&character_guid).cloned() else {
             return Ok(Vec::new());
@@ -228,6 +230,11 @@ impl MapRuntime {
         let moving_player_create = {
             let mut moved_player = current_player.clone();
             moved_player.position = movement.position;
+            moved_player.movement_flags = movement.flags;
+            moved_player.client_time = movement.client_time;
+            moved_player.server_time = server_time;
+            moved_player.fall_time = movement.fall_time;
+            moved_player.jump = movement.jump.clone();
             moved_player.cell = new_cell;
             build_other_player_create_block(&moved_player)?
         };
@@ -259,7 +266,7 @@ impl MapRuntime {
 
         let movement_packet = OutboundWorldPacket {
             opcode,
-            body: build_player_movement_broadcast_body(character_guid, movement)?,
+            body: build_player_movement_broadcast_body(character_guid, movement, server_time)?,
         };
         for other_guid in &new_visible {
             let Some(other) = self.players.get(other_guid) else {
@@ -287,13 +294,16 @@ impl MapRuntime {
                 self.refresh_grid_state(old_grid);
             }
             self.refresh_grid_state(new_grid);
+            self.invalidate_idle_motion_start_schedule();
         }
 
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.position = movement.position;
             player.movement_flags = movement.flags;
             player.client_time = movement.client_time;
+            player.server_time = server_time;
             player.fall_time = movement.fall_time;
+            player.jump = movement.jump.clone();
             player.cell = new_cell;
             player.visible_objects = retained_non_player_visible;
             player.visible_objects.extend(new_visible
@@ -301,6 +311,7 @@ impl MapRuntime {
                 .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid))
             );
         }
+        self.invalidate_idle_motion_start_schedule();
 
         Ok(packets)
     }
@@ -392,6 +403,7 @@ impl MapRuntime {
             player.movement_flags = character.movement_flags;
             player.client_time = character.client_time;
             player.fall_time = character.fall_time;
+            player.jump = character.jump.clone();
             let equipment_cache = session
                 .player_visual
                 .as_ref()

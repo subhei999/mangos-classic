@@ -211,11 +211,31 @@ fn channel_join_flags(channel_name: &str) -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct JumpInfo {
+    z_speed: f32,
+    cos_angle: f32,
+    sin_angle: f32,
+    xy_speed: f32,
+}
+
+impl Default for JumpInfo {
+    fn default() -> Self {
+        Self {
+            z_speed: 0.0,
+            cos_angle: 0.0,
+            sin_angle: 0.0,
+            xy_speed: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct MovementInfo {
     flags: u32,
     client_time: u32,
     position: WorldPosition,
     fall_time: u32,
+    jump: JumpInfo,
 }
 
 impl MovementInfo {
@@ -241,12 +261,16 @@ impl MovementInfo {
 
         let fall_time = read_u32(body, &mut cursor)?;
 
-        if flags & MOVEFLAG_JUMPING != 0 {
-            let _jump_z_speed = read_f32(body, &mut cursor)?;
-            let _jump_cos_angle = read_f32(body, &mut cursor)?;
-            let _jump_sin_angle = read_f32(body, &mut cursor)?;
-            let _jump_xy_speed = read_f32(body, &mut cursor)?;
-        }
+        let jump = if flags & MOVEFLAG_JUMPING != 0 {
+            JumpInfo {
+                z_speed: read_f32(body, &mut cursor)?,
+                cos_angle: read_f32(body, &mut cursor)?,
+                sin_angle: read_f32(body, &mut cursor)?,
+                xy_speed: read_f32(body, &mut cursor)?,
+            }
+        } else {
+            JumpInfo::default()
+        };
 
         if flags & MOVEFLAG_SPLINE_ELEVATION != 0 {
             let _spline_elevation = read_f32(body, &mut cursor)?;
@@ -257,6 +281,7 @@ impl MovementInfo {
             client_time,
             position: WorldPosition::new(0, x, y, z, orientation),
             fall_time,
+            jump,
         })
     }
 }
@@ -267,6 +292,7 @@ fn write_movement_info(
     client_time: u32,
     position: WorldPosition,
     fall_time: u32,
+    jump: &JumpInfo,
 ) {
     body.extend_from_slice(&flags.to_le_bytes());
     body.extend_from_slice(&client_time.to_le_bytes());
@@ -275,20 +301,28 @@ fn write_movement_info(
     body.extend_from_slice(&position.z.to_le_bytes());
     body.extend_from_slice(&position.orientation.to_le_bytes());
     body.extend_from_slice(&fall_time.to_le_bytes());
+    if flags & MOVEFLAG_JUMPING != 0 {
+        body.extend_from_slice(&jump.z_speed.to_le_bytes());
+        body.extend_from_slice(&jump.cos_angle.to_le_bytes());
+        body.extend_from_slice(&jump.sin_angle.to_le_bytes());
+        body.extend_from_slice(&jump.xy_speed.to_le_bytes());
+    }
 }
 
 fn build_player_movement_broadcast_body(
     player_guid: u32,
     movement: &MovementInfo,
+    server_time: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(9 + 28);
     PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, player_guid))?;
     write_movement_info(
         &mut body,
         movement.flags,
-        movement.client_time,
+        server_time,
         movement.position,
         movement.fall_time,
+        &movement.jump,
     );
     Ok(body)
 }

@@ -10,7 +10,9 @@ struct PlayerRuntime {
     position: WorldPosition,
     movement_flags: u32,
     client_time: u32,
+    server_time: u32,
     fall_time: u32,
+    jump: JumpInfo,
     cell: CellCoord,
     visible_objects: HashSet<ObjectGuid>,
     last_creature_visibility_position: Option<WorldPosition>,
@@ -76,6 +78,7 @@ struct MapRuntime {
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
     next_idle_motion_tick_at: Option<Instant>,
+    next_idle_motion_start_check_at: Option<Instant>,
     next_player_regen_tick_at: Option<Instant>,
 }
 
@@ -211,6 +214,7 @@ impl MapRuntime {
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
             next_idle_motion_tick_at: None,
+            next_idle_motion_start_check_at: None,
             next_player_regen_tick_at: None,
         }
     }

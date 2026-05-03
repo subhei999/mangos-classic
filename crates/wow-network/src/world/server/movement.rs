@@ -1,5 +1,23 @@
 // CMaNGOS reference: src/game/Handlers/MovementHandler.cpp movement flow.
 
+fn current_movement_server_time_millis() -> u32 {
+    static MOVEMENT_SERVER_TIME_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    MOVEMENT_SERVER_TIME_START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis() as u32
+}
+
+fn synchronize_movement_server_time(
+    session: &mut WorldSessionState,
+    client_time: u32,
+) -> u32 {
+    let delay = *session
+        .movement_client_time_delay
+        .get_or_insert_with(|| current_movement_server_time_millis().wrapping_sub(client_time));
+    client_time.wrapping_add(delay)
+}
+
 async fn persist_active_character_position(
     character_db_pool: &MySqlPool,
     account_id: u32,
@@ -78,6 +96,7 @@ async fn handle_movement(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
+    let server_time = synchronize_movement_server_time(session, movement.client_time);
     if let Some(character) = &mut session.active_character {
         character.position.x = movement.position.x;
         character.position.y = movement.position.y;
@@ -86,6 +105,7 @@ async fn handle_movement(
         character.movement_flags = movement.flags;
         character.client_time = movement.client_time;
         character.fall_time = movement.fall_time;
+        character.jump = movement.jump.clone();
         debug!(
             opcode = movement_opcode_name(opcode),
             guid = character.guid,
@@ -108,6 +128,7 @@ async fn handle_movement(
                     character.guid,
                     server_opcode,
                     &broadcast_movement,
+                    server_time,
                 )
                 .await?;
             deps.sessions.dispatch(packets).await;

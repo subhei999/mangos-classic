@@ -1490,14 +1490,27 @@ fn world_tick_timeout_is_due_when_deadline_passed() {
 fn world_tick_deadline_advances_past_now() {
     let now = Instant::now();
     let mut next = now;
+    let tick = Duration::from_millis(WORLD_TICK_MILLIS);
 
     advance_world_tick_deadline(
         &mut next,
         now + Duration::from_millis(WORLD_TICK_MILLIS * 2 + 1),
+        tick,
     );
 
     assert!(next > now + Duration::from_millis(WORLD_TICK_MILLIS * 2 + 1));
     assert_eq!(next, now + Duration::from_millis(WORLD_TICK_MILLIS * 3));
+}
+
+#[test]
+fn world_tick_deadline_uses_configured_interval() {
+    let now = Instant::now();
+    let mut next = now;
+    let tick = Duration::from_millis(250);
+
+    advance_world_tick_deadline(&mut next, now + Duration::from_millis(501), tick);
+
+    assert_eq!(next, now + Duration::from_millis(750));
 }
 
 #[test]
@@ -2434,6 +2447,7 @@ fn quest_visibility_enforces_level_class_and_race_masks() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut quest = test_quest_template(7);
     quest.min_level = 2;
@@ -2784,6 +2798,7 @@ async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiv
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -3436,6 +3451,7 @@ fn near_teleport_ack_body_uses_player_guid_counter_and_movement_info() {
         movement_flags: 0,
         client_time: 123,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let body = build_near_teleport_ack_body(&character, 9).unwrap();
     let mut packed = Vec::new();
@@ -3476,6 +3492,7 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut far_hostile = test_creature_spawn(6);
     far_hostile.guid = 45;
@@ -3529,6 +3546,7 @@ fn db_creature_aggro_ignores_ghost_players() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut defias = test_creature_spawn(38);
     defias.guid = 45;
@@ -3567,6 +3585,7 @@ fn db_creature_combat_can_track_multiple_attackers() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let first = creature_spawn_guid(&test_creature_spawn(6));
     let mut second_spawn = test_creature_spawn(38);
@@ -3609,6 +3628,7 @@ fn db_creature_aggro_uses_template_detection_range() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut kobold = test_creature_spawn(6);
     kobold.guid = 45;
@@ -3657,6 +3677,7 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
         active_character: Some(character),
@@ -3754,6 +3775,7 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
         active_character: Some(character),
@@ -3858,6 +3880,7 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
         active_character: Some(character),
@@ -3904,6 +3927,7 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
         active_character: Some(character),
@@ -3976,6 +4000,7 @@ fn db_creature_aggro_ignores_friendly_critter_lootable_and_out_of_range_units() 
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut friendly = test_creature_spawn(197);
     friendly.guid = 45;
@@ -4030,6 +4055,7 @@ fn db_creature_aggro_ignores_unknown_faction_templates() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut guard = test_creature_spawn(197);
     guard.guid = 45;
@@ -4060,6 +4086,7 @@ fn db_creature_aggro_ignores_neutral_young_wolves() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut wolf = test_creature_spawn(299);
     wolf.guid = 45;
@@ -4091,6 +4118,7 @@ fn db_creature_aggro_ignores_neutral_kobold_vermin() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut kobold = test_creature_spawn(6);
     kobold.guid = 45;
@@ -4122,6 +4150,7 @@ fn db_creature_aggro_includes_real_defias_thugs() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut defias = test_creature_spawn(38);
     defias.guid = 45;
@@ -4197,6 +4226,7 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -4286,6 +4316,7 @@ async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_sessio
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_death_state: PlayerDeathState::Alive,
         ..WorldSessionState::default()
@@ -4341,6 +4372,7 @@ async fn player_melee_validation_refreshes_stale_session_cache_from_mapruntime()
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         db_creatures: HashMap::from([(target.raw(), DbCreatureRuntime::new(stale_spawn))]),
         ..WorldSessionState::default()
@@ -4393,6 +4425,7 @@ async fn player_hit_announces_db_creature_retaliation_start() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 1,
         player_death_state: PlayerDeathState::Alive,
@@ -4458,6 +4491,7 @@ fn db_creature_melee_reach_is_position_gated() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -4513,6 +4547,7 @@ fn db_creature_navigation_guardrail_blocks_aggro_and_melee_but_not_chase_pathing
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         db_creature_navigation: DbCreatureNavigationGuardrail {
             line_of_sight_clear: false,
@@ -4829,7 +4864,9 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         position: center,
         movement_flags: 0,
         client_time: 0,
+        server_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
         cell: cell_coord_for_position(center),
         visible_objects: HashSet::new(),
         last_creature_visibility_position: None,
@@ -4984,6 +5021,7 @@ fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let grid = grid_coord_for_position(character.position);
 
@@ -5167,6 +5205,98 @@ fn map_runtime_grid_states_prepare_idle_and_unload_blockers() {
         map.grids.get(&grid).unwrap().state,
         GridState::UnloadBlocked(GridUnloadBlocker::Combat)
     );
+}
+
+#[test]
+fn map_runtime_idle_motion_timers_do_not_lock_grid_unload() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 305;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(Instant::now() + Duration::from_secs(5));
+
+    map.insert_loaded_creature_grid(grid, vec![runtime]);
+
+    assert_eq!(
+        map.grids.get(&grid).unwrap().state,
+        GridState::Idle,
+        "future random-walk timers should not permanently unload-lock inactive grids"
+    );
+}
+
+#[test]
+fn map_runtime_expired_idle_grid_unloads_creatures_and_grid_index() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 306;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let guid = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(Instant::now() + Duration::from_secs(5));
+
+    map.insert_loaded_creature_grid(grid, vec![runtime]);
+    let touched = map.grids.get(&grid).unwrap().last_touched;
+    assert!(map
+        .unload_expired_idle_grids(touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS - 1))
+        .is_empty());
+
+    let unloaded =
+        map.unload_expired_idle_grids(touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS));
+
+    assert_eq!(unloaded, vec![grid]);
+    assert!(!map.loaded_creature_grids.contains(&grid));
+    assert!(!map.grids.contains_key(&grid));
+    assert!(!map.creatures.contains_key(&guid.raw()));
+}
+
+#[test]
+fn map_runtime_player_interest_prevents_idle_grid_unload() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 307;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    let guid = creature_spawn_guid(&spawn);
+    map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(spawn)]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+    map.remove_player(8);
+    map.add_player(test_player_runtime(
+        9,
+        SessionId(9),
+        WorldPosition::new(
+            0,
+            center.x + CREATURE_SPAWN_RADIUS_YARDS - 5.0,
+            center.y,
+            center.z,
+            0.0,
+        ),
+    ))
+    .unwrap();
+
+    let touched = map.grids.get(&grid).unwrap().last_touched;
+    let unloaded =
+        map.unload_expired_idle_grids(touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS));
+
+    assert!(unloaded.is_empty());
+    assert!(map.loaded_creature_grids.contains(&grid));
+    assert!(map.creatures.contains_key(&guid.raw()));
 }
 
 #[test]
@@ -6298,6 +6428,7 @@ fn map_runtime_db_creature_assistance_call_is_shared_once() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut caller_spawn = test_creature_spawn(6);
     caller_spawn.guid = 190;
@@ -6522,7 +6653,9 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         position,
         movement_flags: 0,
         client_time: 0,
+        server_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
         cell: cell_coord_for_position(position),
         visible_objects: HashSet::new(),
         last_creature_visibility_position: None,
@@ -6628,7 +6761,14 @@ fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Opti
         block[flags_offset],
         UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION
     );
-    let values_start = flags_offset + 1 + 56;
+    let movement_start = type_id_offset + 2;
+    let movement = MovementInfo::read(&block[movement_start..]).unwrap();
+    let movement_len = if movement.flags & MOVEFLAG_JUMPING != 0 {
+        44
+    } else {
+        28
+    };
+    let values_start = flags_offset + 1 + movement_len + 28;
     decode_update_values(&block[values_start..])
 }
 
@@ -6639,6 +6779,7 @@ fn other_player_create_block_includes_equipment_and_movement_state() {
     let mut player = test_player_runtime(7, SessionId(7), position);
     player.movement_flags = 0x21;
     player.client_time = 1234;
+    player.server_time = 5678;
     player.fall_time = 456;
     player.visible_equipment[EQUIPMENT_SLOT_MAINHAND as usize] = 25;
     let block = build_other_player_create_block(&player).unwrap();
@@ -6650,7 +6791,7 @@ fn other_player_create_block_includes_equipment_and_movement_state() {
     );
     assert_eq!(
         &block[movement_start + 4..movement_start + 8],
-        &1234u32.to_le_bytes()
+        &5678u32.to_le_bytes()
     );
     assert_eq!(
         &block[movement_start + 24..movement_start + 28],
@@ -6661,6 +6802,67 @@ fn other_player_create_block_includes_equipment_and_movement_state() {
     assert_eq!(
         values[0x104 + EQUIPMENT_SLOT_MAINHAND as usize * 12],
         Some(25)
+    );
+}
+
+#[test]
+fn other_player_create_block_preserves_jump_launch_state() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.25);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.movement_flags = MOVEFLAG_JUMPING;
+    player.server_time = 5678;
+    player.fall_time = 456;
+    player.jump = JumpInfo {
+        z_speed: 7.0,
+        cos_angle: 0.25,
+        sin_angle: 0.75,
+        xy_speed: 4.5,
+    };
+
+    let block = build_other_player_create_block(&player).unwrap();
+    let movement_start = 1 + PackedGuid::packed_size(guid) + 2;
+    let movement = MovementInfo::read(&block[movement_start..]).unwrap();
+
+    assert_eq!(movement.flags, MOVEFLAG_JUMPING);
+    assert_eq!(movement.client_time, 5678);
+    assert_eq!(movement.fall_time, 456);
+    assert_eq!(movement.jump, player.jump);
+}
+
+#[test]
+fn player_movement_broadcast_body_preserves_jump_launch_state() {
+    let movement = MovementInfo {
+        flags: MOVEFLAG_JUMPING,
+        client_time: 1234,
+        position: WorldPosition::new(0, 1.25, 2.5, 3.75, 1.0),
+        fall_time: 456,
+        jump: JumpInfo {
+            z_speed: 7.0,
+            cos_angle: 0.25,
+            sin_angle: 0.75,
+            xy_speed: 4.5,
+        },
+    };
+    let body = build_player_movement_broadcast_body(7, &movement, 5678).unwrap();
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let movement = MovementInfo::read(&body[PackedGuid::packed_size(guid)..]).unwrap();
+
+    assert_eq!(movement.flags, MOVEFLAG_JUMPING);
+    assert_eq!(movement.client_time, 5678);
+    assert_eq!(movement.position.x, 1.25);
+    assert_eq!(movement.position.y, 2.5);
+    assert_eq!(movement.position.z, 3.75);
+    assert_eq!(movement.position.orientation, 1.0);
+    assert_eq!(movement.fall_time, 456);
+    assert_eq!(
+        movement.jump,
+        JumpInfo {
+            z_speed: 7.0,
+            cos_angle: 0.25,
+            sin_angle: 0.75,
+            xy_speed: 4.5,
+        }
     );
 }
 
@@ -6722,10 +6924,7 @@ fn map_runtime_idle_motion_start_guids_require_player_interest() {
         .unwrap();
     let packets = map.remove_player(8);
     assert!(packets.is_empty());
-    assert_eq!(
-        map.grids.get(&grid).unwrap().state,
-        GridState::UnloadBlocked(GridUnloadBlocker::Timer)
-    );
+    assert_eq!(map.grids.get(&grid).unwrap().state, GridState::Idle);
 
     assert_eq!(
         map.db_creature_idle_motion_start_guids(now),
@@ -6753,7 +6952,8 @@ fn map_runtime_idle_motion_start_guids_ignore_far_same_grid_creatures() {
     let grid = grid_coord_for_position(center);
     let now = Instant::now();
     let mut runtimes = Vec::new();
-    for guid in 300..(300 + DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK as u32) {
+    let far_ready_count = 8;
+    for guid in 300..(300 + far_ready_count) {
         let mut spawn = test_creature_spawn(6);
         spawn.guid = guid;
         spawn.position_x = far_same_grid.x;
@@ -6795,7 +6995,8 @@ fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
     let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let now = Instant::now();
     let mut runtimes = Vec::new();
-    for guid in 300..(300 + DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK as u32 + 1) {
+    let ready_creatures = 5;
+    for guid in 300..(300 + ready_creatures) {
         let mut spawn = test_creature_spawn(6);
         spawn.guid = guid;
         spawn.position_x = center.x;
@@ -6820,7 +7021,7 @@ fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
             .iter()
             .filter(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE)
             .count(),
-        DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK
+        ready_creatures as usize
     );
 
     let duplicate = map
@@ -6838,6 +7039,134 @@ fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
             now + Duration::from_millis(WORLD_TICK_MILLIS),
         )
         .unwrap();
+    assert!(next.packets.is_empty());
+}
+
+#[test]
+fn map_runtime_idle_motion_tick_uses_configured_world_tick_interval() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let tick = Duration::from_millis(250);
+
+    map.advance_active_db_creature_idle_motions_with_interval(
+        &DbCreatureNavigationGuardrail::default(),
+        now,
+        tick,
+    )
+    .unwrap();
+
+    assert_eq!(map.next_idle_motion_tick_at, Some(now + tick));
+}
+
+#[test]
+fn map_runtime_idle_motion_zero_distance_waypoint_does_not_block_other_starts() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let now = Instant::now();
+    let mut runtimes = Vec::new();
+
+    let mut blocked_spawn = test_creature_spawn(6);
+    blocked_spawn.guid = 200;
+    blocked_spawn.position_x = center.x;
+    blocked_spawn.position_y = center.y;
+    blocked_spawn.position_z = center.z;
+    blocked_spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    blocked_spawn.waypoint_path = vec![
+        test_waypoint(1, center.x, center.y, 60_000),
+        test_waypoint(2, center.x + 10.0, center.y, 0),
+    ];
+    let blocked_guid = creature_spawn_guid(&blocked_spawn);
+    let mut blocked_runtime = DbCreatureRuntime::new(blocked_spawn);
+    blocked_runtime.next_waypoint_move_at = Some(now);
+    runtimes.push(blocked_runtime);
+
+    let ready_creatures = 4;
+    for guid in 300..(300 + ready_creatures) {
+        let mut spawn = test_creature_spawn(6);
+        spawn.guid = guid;
+        spawn.position_x = center.x;
+        spawn.position_y = center.y;
+        spawn.position_z = center.z;
+        spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+        spawn.waypoint_path = vec![test_waypoint(1, center.x + 5.0, center.y, 0)];
+        let mut runtime = DbCreatureRuntime::new(spawn);
+        runtime.next_waypoint_move_at = Some(now);
+        runtimes.push(runtime);
+    }
+    map.insert_loaded_creature_grid(grid_coord_for_position(center), runtimes);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    let first = map
+        .advance_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(
+        first
+            .packets
+            .iter()
+            .filter(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE)
+            .count(),
+        ready_creatures as usize
+    );
+    let blocked = map.creatures.get(&blocked_guid.raw()).unwrap();
+    assert_eq!(blocked.waypoint_next_index, 1);
+    assert_eq!(
+        blocked.next_waypoint_move_at,
+        Some(now + Duration::from_millis(60_000))
+    );
+
+    let next = map
+        .advance_active_db_creature_idle_motions(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(WORLD_TICK_MILLIS),
+        )
+        .unwrap();
+    assert!(next.packets.is_empty());
+}
+
+#[test]
+fn map_runtime_idle_motion_newly_loaded_due_creature_wakes_start_schedule() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let now = Instant::now();
+
+    let mut future_spawn = test_creature_spawn(6);
+    future_spawn.guid = 200;
+    future_spawn.position_x = center.x;
+    future_spawn.position_y = center.y;
+    future_spawn.position_z = center.z;
+    future_spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    future_spawn.waypoint_path = vec![test_waypoint(1, center.x + 5.0, center.y, 0)];
+    let mut future_runtime = DbCreatureRuntime::new(future_spawn);
+    future_runtime.next_waypoint_move_at = Some(now + Duration::from_secs(5));
+    map.insert_loaded_creature_grid(grid_coord_for_position(center), vec![future_runtime]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    let first = map
+        .advance_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert!(first.packets.is_empty());
+
+    let due_position = WorldPosition::new(0, center.x + 10.0, center.y, center.z, 0.0);
+    let mut due_spawn = test_creature_spawn(6);
+    due_spawn.guid = 201;
+    due_spawn.position_x = due_position.x;
+    due_spawn.position_y = due_position.y;
+    due_spawn.position_z = due_position.z;
+    due_spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    due_spawn.waypoint_path = vec![test_waypoint(1, due_position.x + 5.0, due_position.y, 0)];
+    let due_guid = creature_spawn_guid(&due_spawn);
+    let mut due_runtime = DbCreatureRuntime::new(due_spawn);
+    due_runtime.next_waypoint_move_at = Some(now);
+    map.insert_loaded_creature_grid(grid_coord_for_position(due_position), vec![due_runtime]);
+
+    let next = map
+        .advance_active_db_creature_idle_motions(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(WORLD_TICK_MILLIS),
+        )
+        .unwrap();
     assert_eq!(
         next.packets
             .iter()
@@ -6845,6 +7174,8 @@ fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
             .count(),
         1
     );
+    let due = map.creatures.get(&due_guid.raw()).unwrap();
+    assert!(matches!(due.motion, CreatureMotionState::Waypoint(_)));
 }
 
 #[tokio::test]
@@ -6960,8 +7291,9 @@ fn map_runtime_player_movement_preserves_db_creature_visibility_set() {
         client_time: 1,
         position: WorldPosition::new(0, -8949.0, -130.0, 83.5, 0.0),
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
-    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &movement)
+    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &movement, 2)
         .unwrap();
 
     assert!(map
@@ -7035,6 +7367,7 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 15,
         player_mana: 7,
@@ -7114,6 +7447,7 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: stale_session_health,
         player_rage: stale_session_rage,
@@ -7153,6 +7487,7 @@ fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 98,
         ..WorldSessionState::default()
@@ -7363,6 +7698,7 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 20,
         player_death_state: PlayerDeathState::Alive,
@@ -7402,6 +7738,85 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
 }
 
 #[tokio::test]
+async fn player_attack_stop_broadcasts_to_nearby_observer() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    let player_session_id = SessionId(1);
+    let observer_session_id = SessionId(2);
+    let (player_tx, mut player_rx) = mpsc::unbounded_channel();
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(player_tx);
+    sessions
+        .register(
+            observer_session_id,
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+    maps.add_player(test_player_runtime(1, player_session_id, player_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(
+        2,
+        observer_session_id,
+        observer_position,
+    ))
+    .await
+    .unwrap();
+
+    let target = ObjectGuid::new(HighGuid::Unit, 0, 77);
+    maps.set_player_auto_attack(0, 1, Some(target), Some(Instant::now()))
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_attack_stop(&mut sink, shared_world, &mut session, &mut header_crypto)
+        .await
+        .unwrap();
+
+    let player_packets = std::iter::from_fn(|| player_rx.try_recv().ok()).collect::<Vec<_>>();
+    let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
+
+    assert!(player_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTOP));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTOP));
+    assert_eq!(
+        maps.player_auto_attack_target(0, 1).await,
+        None,
+        "shared map runtime should clear the player's auto-attack target"
+    );
+}
+
+#[tokio::test]
 async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
@@ -7433,6 +7848,7 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 20,
         player_death_state: PlayerDeathState::Alive,
@@ -7488,6 +7904,7 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_health: 20,
         player_death_state: PlayerDeathState::Alive,
@@ -7536,6 +7953,7 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -7944,6 +8362,7 @@ fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         active_combat_target: Some(attacker),
         active_combat_next_swing_at: Some(now),
@@ -8044,6 +8463,7 @@ async fn db_creature_return_home_motion_advances_without_active_combat() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8121,6 +8541,7 @@ fn db_creature_returning_home_does_not_reaggro_or_take_damage() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8226,10 +8647,11 @@ fn db_creature_random_motion_ignores_idle_or_zero_spawndist_creatures() {
 }
 
 #[test]
-fn db_creature_idle_motion_start_guids_are_paced_per_tick() {
+fn db_creature_idle_motion_start_guids_return_all_ready_creatures() {
     let now = Instant::now();
     let mut session = WorldSessionState::default();
-    for index in 0..(DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK + 3) {
+    let ready_creatures = 7;
+    for index in 0..ready_creatures {
         let mut spawn = test_creature_spawn(6);
         spawn.guid = 1_000 + index as u32;
         spawn.movement_type = DB_MOTION_TYPE_RANDOM;
@@ -8242,8 +8664,29 @@ fn db_creature_idle_motion_start_guids_are_paced_per_tick() {
 
     let start_guids = db_creature_idle_motion_start_guids(&session, now);
 
-    assert_eq!(start_guids.len(), DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK);
+    assert_eq!(start_guids.len(), ready_creatures);
     assert!(start_guids.windows(2).all(|window| window[0] < window[1]));
+}
+
+#[test]
+fn db_creature_random_motion_failed_path_defers_retry() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.map_id = 1;
+    runtime.next_random_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    assert!(start_db_creature_random_motion(&mut session, creature_guid, now).is_none());
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert_eq!(
+        runtime.next_random_move_at,
+        Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS))
+    );
 }
 
 #[tokio::test]
@@ -8394,6 +8837,49 @@ fn db_creature_waypoint_motion_uses_db_path_and_wait_time() {
 }
 
 #[test]
+fn db_creature_waypoint_motion_advances_zero_distance_node_with_wait() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    spawn.waypoint_path = vec![
+        test_waypoint(1, 0.0, 0.0, 60_000),
+        test_waypoint(2, 5.0, 0.0, 1),
+    ];
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    let mut session = WorldSessionState::default();
+    session.db_creatures.insert(creature_guid.raw(), runtime);
+
+    assert!(start_db_creature_waypoint_motion(&mut session, creature_guid, now).is_none());
+    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+    assert_eq!(runtime.current_position.x, 0.0);
+    assert_eq!(runtime.waypoint_next_index, 1);
+    assert_eq!(
+        runtime.next_waypoint_move_at,
+        Some(now + Duration::from_millis(60_000))
+    );
+
+    assert!(start_db_creature_waypoint_motion(
+        &mut session,
+        creature_guid,
+        now + Duration::from_millis(59_999),
+    )
+    .is_none());
+    let motion = start_db_creature_waypoint_motion(
+        &mut session,
+        creature_guid,
+        now + Duration::from_millis(60_000),
+    )
+    .expect("creature should move to the next waypoint after the node wait");
+    assert_eq!(motion.path.last().unwrap().x, 5.0);
+}
+
+#[test]
 fn db_creature_waypoint_motion_buffers_short_zero_wait_paths() {
     let mut spawn = test_creature_spawn(6);
     spawn.position_x = 0.0;
@@ -8435,6 +8921,7 @@ fn db_creature_assistance_calls_nearby_same_faction_hostiles_once() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let mut caller_spawn = test_creature_spawn(6);
     caller_spawn.position_x = 0.0;
@@ -8499,6 +8986,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8576,6 +9064,7 @@ fn db_creature_chase_motion_stop_distance_uses_combined_reach() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8665,6 +9154,7 @@ fn db_creature_chase_motion_waits_for_recheck_before_repathing() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8714,6 +9204,7 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -8777,6 +9268,7 @@ fn db_creature_chase_motion_ignores_tiny_destination_shift_after_recheck() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -9202,6 +9694,7 @@ fn trainer_spell_state_marks_known_level_and_requirement_gates() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let known = [wow_db::CharacterSpell {
         spell: 78,
@@ -9510,6 +10003,7 @@ async fn heroic_strike_queue_consumes_on_next_swing_only_once() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let initial_dummy_health = RUST_COMBAT_DUMMY_HEALTH + RUST_COMBAT_DUMMY_HIT_DAMAGE;
     let mut session = WorldSessionState {
@@ -9619,6 +10113,7 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_rage: POWER_RAGE_DEFAULT,
         active_spells,
@@ -9709,6 +10204,7 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         player_rage: 250,
         active_spells,
@@ -11283,6 +11779,15 @@ fn parses_jump_movement_info() {
     assert_eq!(movement.flags, MOVEFLAG_JUMPING);
     assert_eq!(movement.fall_time, 456);
     assert_eq!(movement.position.z, 3.75);
+    assert_eq!(
+        movement.jump,
+        JumpInfo {
+            z_speed: 7.0,
+            cos_angle: 0.0,
+            sin_angle: 1.0,
+            xy_speed: 4.5,
+        }
+    );
 }
 
 #[test]
@@ -11314,6 +11819,7 @@ fn active_mover_accepts_matching_player_guid() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -11340,6 +11846,7 @@ fn active_mover_mismatch_is_non_fatal() {
             movement_flags: 0,
             client_time: 0,
             fall_time: 0,
+            jump: JumpInfo::default(),
         }),
         ..WorldSessionState::default()
     };
@@ -11391,6 +11898,7 @@ fn message_chat_body_matches_cmangos_say_shape() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let body = build_message_chat_body(CHAT_MSG_SAY, 7, "hello", &character);
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
@@ -11704,6 +12212,7 @@ fn text_emote_body_matches_cmangos_empty_target_shape() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let body = build_text_emote_body(&character, 12, 33);
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
@@ -11748,6 +12257,7 @@ fn emote_animation_body_matches_cmangos_command_shape() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let body = build_emote_body(&character, EMOTE_ONESHOT_WAVE);
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
@@ -11769,6 +12279,7 @@ fn emote_state_update_sets_unit_emote_state() {
         movement_flags: 0,
         client_time: 0,
         fall_time: 0,
+        jump: JumpInfo::default(),
     };
     let body = build_emote_state_update_body(&character, EMOTE_STATE_DANCE).unwrap();
     let packed_guid_mask = body[6];

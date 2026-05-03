@@ -27,12 +27,27 @@ async fn handle_attack_stop(
         .maps
         .set_player_auto_attack(map_id, character_guid, None, next_swing_at)
         .await;
+    let attack_stop_body = build_attack_stop_body(attacker, victim, false)?;
     send_packet(
         stream,
         SMSG_ATTACKSTOP,
-        &build_attack_stop_body(attacker, victim, false)?,
+        &attack_stop_body,
         Some(header_crypto),
     )
-    .await
+    .await?;
+    let packets = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_ATTACKSTOP,
+                body: attack_stop_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(packets).await;
+    Ok(())
 }
 

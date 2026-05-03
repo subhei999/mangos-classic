@@ -111,6 +111,7 @@ impl MapRuntimeManager {
         character_guid: u32,
         opcode: u16,
         movement: &MovementInfo,
+        server_time: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -119,7 +120,7 @@ impl MapRuntimeManager {
         let packets = map
             .lock()
             .await
-            .update_player_position(character_guid, opcode, movement);
+            .update_player_position(character_guid, opcode, movement, server_time);
         packets
     }
 
@@ -1321,10 +1322,25 @@ impl MapRuntimeManager {
         tick
     }
 
+    #[allow(dead_code)]
     async fn advance_all_active_db_creature_idle_motions(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
+    ) -> anyhow::Result<DbCreatureIdleMotionTick> {
+        self.advance_all_active_db_creature_idle_motions_with_interval(
+            navigation,
+            now,
+            Duration::from_millis(WORLD_TICK_MILLIS),
+        )
+        .await
+    }
+
+    async fn advance_all_active_db_creature_idle_motions_with_interval(
+        &self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+        world_tick_interval: Duration,
     ) -> anyhow::Result<DbCreatureIdleMotionTick> {
         let maps = {
             self.maps
@@ -1340,7 +1356,11 @@ impl MapRuntimeManager {
             let tick = map
                 .lock()
                 .await
-                .advance_active_db_creature_idle_motions(navigation, now)?;
+                .advance_active_db_creature_idle_motions_with_interval(
+                    navigation,
+                    now,
+                    world_tick_interval,
+                )?;
             creatures.extend(tick.creatures);
             packets.extend(tick.packets);
         }

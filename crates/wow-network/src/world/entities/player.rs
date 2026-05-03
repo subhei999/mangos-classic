@@ -10,6 +10,7 @@ struct Player {
     movement_flags: u32,
     client_time: u32,
     fall_time: u32,
+    jump: JumpInfo,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,12 +40,18 @@ fn build_other_player_create_block(player: &PlayerRuntime) -> anyhow::Result<Vec
 
     block.push(UPDATEFLAG_ALL | UPDATEFLAG_LIVING | UPDATEFLAG_HAS_POSITION);
     block.extend_from_slice(&player.movement_flags.to_le_bytes());
-    block.extend_from_slice(&player.client_time.to_le_bytes());
+    block.extend_from_slice(&player.server_time.to_le_bytes());
     block.extend_from_slice(&player.position.x.to_le_bytes());
     block.extend_from_slice(&player.position.y.to_le_bytes());
     block.extend_from_slice(&player.position.z.to_le_bytes());
     block.extend_from_slice(&player.position.orientation.to_le_bytes());
     block.extend_from_slice(&player.fall_time.to_le_bytes());
+    if player.movement_flags & MOVEFLAG_JUMPING != 0 {
+        block.extend_from_slice(&player.jump.z_speed.to_le_bytes());
+        block.extend_from_slice(&player.jump.cos_angle.to_le_bytes());
+        block.extend_from_slice(&player.jump.sin_angle.to_le_bytes());
+        block.extend_from_slice(&player.jump.xy_speed.to_le_bytes());
+    }
     block.extend_from_slice(&2.5f32.to_le_bytes());
     block.extend_from_slice(&7.0f32.to_le_bytes());
     block.extend_from_slice(&4.5f32.to_le_bytes());

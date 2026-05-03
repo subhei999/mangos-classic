@@ -1,6 +1,7 @@
 #[derive(Debug, Default)]
 struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
+    creature_display_scales: HashMap<u32, f32>,
     creature_grid_load_ensure_calls: AtomicU64,
     creature_grid_load_cache_hits: AtomicU64,
     creature_grid_load_db_queries: AtomicU64,
@@ -18,7 +19,37 @@ struct CreatureGridLoadStats {
     rows_loaded: u64,
 }
 
+fn apply_creature_display_scale_fallbacks(
+    spawns: &mut [CreatureSpawnQuery],
+    display_scales: &HashMap<u32, f32>,
+) {
+    for spawn in spawns {
+        if spawn.template.scale > 0.0 {
+            continue;
+        }
+        let Some(scale) = [
+            spawn.template.display_id1,
+            spawn.template.display_id2,
+            spawn.template.display_id3,
+            spawn.template.display_id4,
+        ]
+        .into_iter()
+        .find_map(|display_id| display_scales.get(&display_id).copied().filter(|scale| *scale > 0.0))
+        else {
+            continue;
+        };
+        spawn.template.scale = scale;
+    }
+}
+
 impl MapRuntimeManager {
+    fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
+        Self {
+            creature_display_scales: world_data_files.creature_display_scales.clone(),
+            ..Self::default()
+        }
+    }
+
     async fn add_player(
         &self,
         player: PlayerRuntime,
@@ -396,6 +427,8 @@ impl MapRuntimeManager {
                 max_y,
             )
             .await?;
+            let mut spawns = spawns;
+            apply_creature_display_scale_fallbacks(&mut spawns, &self.creature_display_scales);
             let spawn_count = spawns.len() as u64;
             let db_queries = self
                 .creature_grid_load_db_queries

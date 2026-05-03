@@ -14,12 +14,12 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   - `1de9b747b` (`Merge quest status markers`);
   - `a41449b76` (`Merge combat resource feel`);
   - `8627829d1` (`Merge creature template fidelity`).
-- Current uncommitted state: creature visual fidelity plus proactive questgiver
-  status refresh for real-client side-by-side testing.
+- Current uncommitted state: DBC-backed creature scale fallback for real-client
+  side-by-side testing.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the creature/status refresh:
-  - authserver PID `47208` on `127.0.0.1:13724`;
-  - worldserver PID `16448` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the DBC scale fallback:
+  - authserver PID `45072` on `127.0.0.1:13724`;
+  - worldserver PID `51180` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -77,6 +77,13 @@ log the follow-up.
   - quest accept/reward handlers now proactively resend visible questgiver
     status packets after quest state changes, including gray unavailable
     status for level-locked visible quests.
+- Current scale patch:
+  - world startup parses `dbc/CreatureDisplayInfo.dbc` display scales;
+  - DB creature grid loading now follows CMaNGOS scale fallback: positive
+    `creature_template.Scale` wins, otherwise the first display model's DBC
+    scale fills the template before create blocks are built;
+  - this should address broadly wrong mob scale in Northshire, Teldrassil, and
+    other zones where DB scale is zero.
 
 ## Still Unmerged Worker Branches
 
@@ -138,6 +145,16 @@ client stack, and giving the user concrete real-client success criteria.
   - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
   - `Test-NetConnection` passed for `127.0.0.1:13724` and
     `127.0.0.1:18085`.
+- Current scale patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network creature_display_info --lib`;
+  - `cargo test -p wow-network creature_template_zero_scale --lib`;
+  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`;
+  - worldserver startup log reported `creature_display_scales=10531`.
 
 ## Known Follow-Ups
 
@@ -145,6 +162,9 @@ client stack, and giving the user concrete real-client success criteria.
   queued, consumes rage when the swing lands, does not generate rage from that
   swing, and that prior fixes remain stable: trainer `Train me` no disconnect,
   autoattack stop/start no acceleration.
+- Current real-client smoke should confirm creature size in multiple zones
+  after relog/restart, especially Northshire wolves/Defias and Teldrassil
+  starter mobs whose DB scale is zero and should now use DBC display scale.
 - Current real-client smoke should also confirm that after turning in/accepting
   early Deputy Willem quests, newly visible but level-locked quests show a gray
   `!`, and that armed NPCs such as Defias Thugs swing with weapon animations
@@ -153,10 +173,10 @@ client stack, and giving the user concrete real-client success criteria.
   creature speed feels fixed; overkill packet damage is improved but combat log
   still needs explicit `(overkill)` display parity; wolf/drop items and other
   previously fixed items should remain under smoke watch.
-- Still observed before the latest patch: gray unavailable quest marker was not
-  visible; creature visual scale still did not match; NPCs with weapons could
-  look like they punched while holding a sword. Re-test these on the restarted
-  stack. CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
+- Still observed before latest patches: gray unavailable quest marker was not
+  visible; creature visual scale did not match; NPCs with weapons could look
+  like they punched while holding a sword. Re-test these on the restarted stack.
+  CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
 - Continue user-led side-by-side testing and turn observations into generalized
   system tasks. Current observation list includes NPC work animations, rage
   formula, creature speed/scale/equipment, gray quest markers, overkill, combo
@@ -174,6 +194,8 @@ client stack, and giving the user concrete real-client success criteria.
 - `crates/wow-network/src/world/server/player_login.rs`
 - `crates/wow-network/src/world/entities/update_data.rs`
 - `crates/wow-network/src/world/entities/creature.rs`
+- `crates/wow-network/src/world/maps/world_data.rs`
+- `crates/wow-network/src/world/maps/map_manager.rs`
 - `crates/wow-network/src/world/quests.rs`
 - `crates/wow-network/src/world/combat/lifecycle.rs`
 - `crates/wow-network/src/world/combat/melee.rs`

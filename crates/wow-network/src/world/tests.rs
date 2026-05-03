@@ -772,6 +772,47 @@ fn db_creature_create_block_defaults_zero_template_scale_to_one() {
 }
 
 #[test]
+fn creature_display_info_dbc_parser_reads_display_scale_field() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&12u32.to_le_bytes());
+    bytes.extend_from_slice(&48u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    let mut first = [0u8; 48];
+    first[0..4].copy_from_slice(&604u32.to_le_bytes());
+    first[16..20].copy_from_slice(&0.7f32.to_le_bytes());
+    bytes.extend_from_slice(&first);
+    let mut second = [0u8; 48];
+    second[0..4].copy_from_slice(&447u32.to_le_bytes());
+    second[16..20].copy_from_slice(&0.45f32.to_le_bytes());
+    bytes.extend_from_slice(&second);
+    bytes.push(0);
+
+    let scales = parse_creature_display_info_scales(&bytes);
+
+    assert_eq!(scales.get(&604).copied(), Some(0.7));
+    assert_eq!(scales.get(&447).copied(), Some(0.45));
+}
+
+#[test]
+fn creature_template_zero_scale_falls_back_to_first_display_dbc_scale() {
+    let mut spawns = vec![test_creature_spawn(299)];
+    spawns[0].template.scale = 0.0;
+    spawns[0].template.display_id1 = 0;
+    spawns[0].template.display_id2 = 447;
+    let display_scales = HashMap::from([(447, 0.45), (604, 0.7)]);
+
+    apply_creature_display_scale_fallbacks(&mut spawns, &display_scales);
+
+    assert_eq!(spawns[0].template.scale, 0.45);
+
+    spawns[0].template.scale = 1.25;
+    apply_creature_display_scale_fallbacks(&mut spawns, &display_scales);
+    assert_eq!(spawns[0].template.scale, 1.25);
+}
+
+#[test]
 fn db_creature_create_block_uses_template_speed_rates_and_equipment_displays() {
     let mut creature = test_creature_spawn(198);
     creature.template.speed_walk = 0.9;
@@ -7066,6 +7107,7 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             data_dir_for_native: None,
             maps_available: true,
             vmaps_available: true,
+            creature_display_scales: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -7220,6 +7262,7 @@ fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
             data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data").ok(),
             maps_available: true,
             vmaps_available: false,
+            creature_display_scales: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -8078,6 +8121,7 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             data_dir_for_native: None,
             maps_available: true,
             vmaps_available: true,
+            creature_display_scales: HashMap::new(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::from([0]),

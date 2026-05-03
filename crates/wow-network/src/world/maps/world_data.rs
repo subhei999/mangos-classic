@@ -4,6 +4,7 @@ struct WorldDataFiles {
     data_dir_for_native: Option<std::ffi::CString>,
     maps_available: bool,
     vmaps_available: bool,
+    creature_display_scales: HashMap<u32, f32>,
     mmap_headers: HashSet<u32>,
     mmap_tiles: HashSet<(u32, u32, u32)>,
     vmap_trees: HashSet<u32>,
@@ -17,6 +18,7 @@ impl WorldDataFiles {
             data_dir_for_native: None,
             maps_available: false,
             vmaps_available: false,
+            creature_display_scales: HashMap::new(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::new(),
@@ -28,6 +30,8 @@ impl WorldDataFiles {
         let data_dir = data_dir.into();
         let maps_available = data_dir.join("maps").is_dir();
         let vmaps_available = data_dir.join("vmaps").is_dir();
+        let creature_display_scales =
+            load_creature_display_info_scales(&data_dir.join("dbc").join("CreatureDisplayInfo.dbc"));
         let mut mmap_headers = HashSet::new();
         let mut mmap_tiles = HashSet::new();
         let mut vmap_trees = HashSet::new();
@@ -76,6 +80,7 @@ impl WorldDataFiles {
             data_dir,
             maps_available,
             vmaps_available,
+            creature_display_scales,
             mmap_headers,
             mmap_tiles,
             vmap_trees,
@@ -98,6 +103,44 @@ impl WorldDataFiles {
     fn has_vmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
         self.vmap_tiles.contains(&(map_id, tile_x, tile_y))
     }
+}
+
+fn load_creature_display_info_scales(path: &std::path::Path) -> HashMap<u32, f32> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_creature_display_info_scales(&bytes)
+}
+
+fn parse_creature_display_info_scales(bytes: &[u8]) -> HashMap<u32, f32> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const CREATURE_DISPLAY_INFO_SCALE_FIELD: usize = 4;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count <= CREATURE_DISPLAY_INFO_SCALE_FIELD || record_size < field_count * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut scales = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let display_id =
+            u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let scale_offset = record_offset + CREATURE_DISPLAY_INFO_SCALE_FIELD * 4;
+        let scale = f32::from_le_bytes(bytes[scale_offset..scale_offset + 4].try_into().unwrap());
+        if display_id != 0 && scale > 0.0 {
+            scales.insert(display_id, scale);
+        }
+    }
+    scales
 }
 
 fn parse_mmap_header_file_name(file_name: &str) -> Option<u32> {

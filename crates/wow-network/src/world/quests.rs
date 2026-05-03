@@ -117,6 +117,11 @@ struct QuestMutationDeps<'a> {
     shared_world: SharedWorldDeps<'a>,
 }
 
+struct QuestSourceItemGrant {
+    item: CharacterInventoryItem,
+    count: u32,
+}
+
 async fn handle_questgiver_accept_quest(
     stream: &mut WorldPacketSink,
     deps: QuestMutationDeps<'_>,
@@ -173,7 +178,8 @@ async fn handle_questgiver_accept_quest(
         Some(&mut *header_crypto),
     )
     .await?;
-    if let Some(item) = source_item {
+    if let Some(grant) = source_item {
+        let item = &grant.item;
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         let container_slots =
             if let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await? {
@@ -181,16 +187,27 @@ async fn handle_questgiver_accept_quest(
             } else {
                 None
             };
-        let create_body = build_update_object_body(&[build_item_create_update_block(
+        let create_block = build_item_create_update_block(
             owner_guid,
             owner_guid,
-            &item,
+            item,
             container_slots,
-        )?]);
+        )?;
+        let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[item.slot])?;
+        let create_body = build_update_object_body(&[create_block, slot_block]);
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
             &create_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let push_body =
+            build_item_push_result_body(character_guid, item, grant.count, true, false, true);
+        send_packet(
+            stream,
+            SMSG_ITEM_PUSH_RESULT,
+            &push_body,
             Some(&mut *header_crypto),
         )
         .await?;
@@ -442,10 +459,14 @@ async fn handle_questgiver_choose_reward(
 
 async fn send_quest_reputation_updates(
     stream: &mut WorldPacketSink,
-    reputations: &[CharacterReputation],
+    reputations: &[CharacterReputationChange],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    for reputation in reputations {
+    let changed_reputations = reputations
+        .iter()
+        .map(|change| change.reputation.clone())
+        .collect::<Vec<_>>();
+    for reputation in &changed_reputations {
         if (reputation.flags & FACTION_FLAG_VISIBLE) == 0 {
             continue;
         }
@@ -460,7 +481,7 @@ async fn send_quest_reputation_updates(
         }
     }
 
-    let body = build_set_faction_standing_body(reputations);
+    let body = build_set_faction_standing_body(&changed_reputations);
     if body.len() > 4 {
         send_packet(
             stream,
@@ -469,6 +490,18 @@ async fn send_quest_reputation_updates(
             Some(header_crypto),
         )
         .await?;
+    }
+    for change in reputations {
+        if let Some(message) = reputation_gain_system_message(change) {
+            let body = build_system_message_chat_body(&message);
+            send_packet(
+                stream,
+                SMSG_MESSAGECHAT,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -838,7 +871,7 @@ async fn grant_quest_source_item_if_needed(
     character_guid: u32,
     quest: &QuestTemplateQuery,
     session: &mut WorldSessionState,
-) -> anyhow::Result<Option<CharacterInventoryItem>> {
+) -> anyhow::Result<Option<QuestSourceItemGrant>> {
     if quest.src_item_id == 0 {
         return Ok(None);
     }
@@ -869,19 +902,20 @@ async fn grant_quest_source_item_if_needed(
         );
         return Ok(None);
     };
+    let count = required_count - current_count;
     let item = wow_db::add_character_inventory_item(
         character_db_pool,
         character_guid,
         INVENTORY_SLOT_BAG_0 as u32,
         slot,
         quest.src_item_id,
-        required_count - current_count,
+        count,
         template.max_durability,
     )
     .await?;
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
         .await?;
-    Ok(Some(item))
+    Ok(Some(QuestSourceItemGrant { item, count }))
 }
 
 fn quest_can_complete_from_inventory(

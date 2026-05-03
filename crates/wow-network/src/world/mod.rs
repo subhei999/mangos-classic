@@ -18,9 +18,10 @@ use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
     CharacterAction, CharacterDeleteOptions, CharacterEnumEntry, CharacterInventoryItem,
-    CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterSkill, CharacterSpell,
-    CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery, ItemTemplateQuery, NewCharacter,
-    NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats, QuestTemplateQuery,
+    CharacterNameQuery, CharacterQuestStatus, CharacterReputation, CharacterReputationChange,
+    CharacterSkill, CharacterSpell, CreatureLootQuery, CreatureSpawnQuery, CreatureTemplateQuery,
+    ItemTemplateQuery, NewCharacter, NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats,
+    QuestTemplateQuery,
 };
 
 include!("opcodes.rs");

@@ -30,6 +30,28 @@ fn reputation_list_slot_for_faction(faction: u32) -> Option<usize> {
     }
 }
 
+fn reputation_faction_name(faction: u32) -> Option<&'static str> {
+    match faction {
+        59 => Some("Thorium Brotherhood"),
+        76 => Some("Orgrimmar"),
+        54 => Some("Gnomeregan Exiles"),
+        72 => Some("Stormwind"),
+        47 => Some("Ironforge"),
+        69 => Some("Darnassus"),
+        609 => Some("Cenarion Circle"),
+        730 => Some("Stormpike Guard"),
+        729 => Some("Frostwolf Clan"),
+        849 => Some("Silverwing Sentinels"),
+        889 => Some("Warsong Outriders"),
+        909 => Some("Darkmoon Faire"),
+        270 => Some("Zandalar Tribe"),
+        510 => Some("The Defilers"),
+        509 => Some("The League of Arathor"),
+        910 => Some("Brood of Nozdormu"),
+        _ => None,
+    }
+}
+
 fn quest_reputation_rewards(
     player_level: u8,
     quest: &QuestTemplateQuery,
@@ -90,4 +112,19 @@ fn build_set_faction_standing_body(reputations: &[CharacterReputation]) -> Vec<u
         body.extend_from_slice(&standing.to_le_bytes());
     }
     body
+}
+
+fn reputation_gain_system_message(change: &CharacterReputationChange) -> Option<String> {
+    let name = reputation_faction_name(change.reputation.faction)?;
+    match change.delta.cmp(&0) {
+        std::cmp::Ordering::Greater => Some(format!(
+            "Reputation with {name} increased by {}.",
+            change.delta
+        )),
+        std::cmp::Ordering::Less => Some(format!(
+            "Reputation with {name} decreased by {}.",
+            change.delta.abs()
+        )),
+        std::cmp::Ordering::Equal => None,
+    }
 }

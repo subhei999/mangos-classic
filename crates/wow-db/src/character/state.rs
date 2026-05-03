@@ -595,6 +595,7 @@ pub async fn reward_character_quest(
             .saturating_add(*delta)
             .clamp(REPUTATION_BOTTOM, REPUTATION_CAP);
         let flags = current_flags | FACTION_FLAG_VISIBLE;
+        let applied_delta = standing.saturating_sub(current_standing);
         sqlx::query(
             "INSERT INTO character_reputation (guid, faction, standing, flags) \
              VALUES (?, ?, ?, ?) \
@@ -606,10 +607,13 @@ pub async fn reward_character_quest(
         .bind(flags)
         .execute(&mut *tx)
         .await?;
-        reputations.push(CharacterReputation {
-            faction: *faction,
-            standing,
-            flags,
+        reputations.push(CharacterReputationChange {
+            reputation: CharacterReputation {
+                faction: *faction,
+                standing,
+                flags,
+            },
+            delta: applied_delta,
         });
     }
     tx.commit().await?;

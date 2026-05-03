@@ -14,7 +14,10 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 - Base intent: branch from the latest integration state, prove the slice with
   focused tests plus the full Rust suite, then merge/rebase into
   `codex/rusty-mangos` or the current Checkpoint 2 integration branch.
-- Current uncommitted code changes:
+- Latest branch commits:
+  - `34291459d` adds quest reward reputation transactions and immediate
+    reputation standing packets.
+- Current branch changes now include:
   - quest templates now load `RewRepFaction1..5` and `RewRepValue1..5`;
   - quest reward completion persists money and quest reputation changes in the
     same DB transaction;
@@ -22,11 +25,17 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
     receive immediate visible/standing packets;
   - reputation packet helpers send CMaNGOS-shaped
     `SMSG_SET_FACTION_VISIBLE` / `SMSG_SET_FACTION_STANDING`;
+  - quest source items now update the player backpack slot and send
+    `SMSG_ITEM_PUSH_RESULT`, matching the CMaNGOS `GiveQuestSourceItemIfNeed`
+    / `SendNewItem` shape;
+  - reputation reward changes also send a 1.12 `CHAT_MSG_SYSTEM` line using the
+    current DBC-derived faction bridge, until full default `Faction.dbc`
+    reputation initialization lets the client generate this feedback natively;
   - Northshire Stormwind quest reward rows were verified in the local world DB.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after this slice:
-  - authserver PID `47804` on `127.0.0.1:13724`;
-  - worldserver PID `27128` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the source-item/chat follow-up:
+  - authserver PID `36452` on `127.0.0.1:13724`;
+  - worldserver PID `48168` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -87,8 +96,16 @@ log the follow-up.
   - quest completion computes CMaNGOS-like quest reputation gains from quest
     level and player level;
   - mapped factions send visible and standing packets immediately after reward;
+  - changed standings send a system chat line such as
+    `Reputation with Stormwind increased by 75.`;
   - login initial reputation packets use the same faction-to-reputation-list
     bridge.
+- Quest source item delivery:
+  - accepting a quest with `SrcItemId` stores the source item in the first empty
+    backpack slot;
+  - the server sends both the item create block and the player inventory-slot
+    update, then sends `SMSG_ITEM_PUSH_RESULT` so the real client displays the
+    received item.
 - Local DB evidence:
   - quest `3100` Simple Letter uses `SrcItemId=9542`, `SrcItemCount=1`, and
     Stormwind reputation `72 => 75`;
@@ -107,7 +124,10 @@ log the follow-up.
 - `cargo test -p wow-network reputation --lib`
 - `cargo test -p wow-network quest_reward --lib`
 - `cargo test -p wow-network initial_reputations --lib`
-- `.\scripts\test-rust.cmd` passed with `wow_network` at 328 lib tests.
+- `cargo test -p wow-network source_item --lib`
+- `cargo test -p wow-network item_push --lib`
+- `cargo test -p wow-network system_chat --lib`
+- `.\scripts\test-rust.cmd` passed with `wow_network` at 331 lib tests.
 - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`
 - `Test-NetConnection` passed for `127.0.0.1:13724` and `127.0.0.1:18085`.
 
@@ -117,12 +137,12 @@ log the follow-up.
   `Wolves Across the Border`, and `Eagan Peltskinner`.
 - Confirm Stormwind reputation gain appears immediately in the real client and
   the reputation pane standing increases.
+- Confirm the chat frame receives a reputation line after quest turn-in.
 - Relog after gaining reputation; standing should persist and initialize
   correctly.
 - Accept quest `Simple Letter` (`3100`) and confirm item `Simple Letter`
-  (`9542`) appears in the backpack on accept. If not, the next target is the
-  source-item create/update packet or inventory slot sync path, because the DB
-  source item fields and accept-grant path are present.
+  (`9542`) appears in the backpack on accept and produces an item-received chat
+  notification.
 - Confirm prior parity fixes still hold: gray unavailable quest `!`, no trainer
   disconnect on `Train me`, no autoattack toggle acceleration, correct creature
   scale/equipment animation, variable copper, combo loot, and skill cap UI
@@ -131,7 +151,9 @@ log the follow-up.
 ## Known Follow-Ups
 
 - GitHub issue #63 tracks replacing the static reputation-list bridge with a
-  real `Faction.dbc` loader.
+  real `Faction.dbc` loader. That should also replace the current explicit
+  reputation system-chat fallback once default faction visibility/standing is
+  client-native.
 - Full trainer spell-cast animation is still incomplete: CMaNGOS starts the
   trainer spell after buy success, while the current Rust slice sends the
   source-backed visual/impact packets and direct learned-spell updates.

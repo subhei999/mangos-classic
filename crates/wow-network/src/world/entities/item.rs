@@ -142,6 +142,40 @@ fn build_inventory_slots_update_block(
     Ok(block)
 }
 
+fn build_item_push_result_body(
+    character_guid: u32,
+    item: &CharacterInventoryItem,
+    count: u32,
+    received: bool,
+    created: bool,
+    show_in_chat: bool,
+) -> Vec<u8> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let bag_slot = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+        CLIENT_INVENTORY_SLOT_BAG_0
+    } else {
+        item.bag as u8
+    };
+    let slot = if item.count == count {
+        item.slot as u32
+    } else {
+        u32::MAX
+    };
+
+    let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 4);
+    body.extend_from_slice(&player_guid.raw().to_le_bytes());
+    body.extend_from_slice(&(received as u32).to_le_bytes());
+    body.extend_from_slice(&(created as u32).to_le_bytes());
+    body.extend_from_slice(&(show_in_chat as u32).to_le_bytes());
+    body.push(bag_slot);
+    body.extend_from_slice(&slot.to_le_bytes());
+    body.extend_from_slice(&item.item_template.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&0i32.to_le_bytes());
+    body.extend_from_slice(&count.to_le_bytes());
+    body
+}
+
 fn build_item_stack_count_update_body(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
     build_item_stack_counts_update_body(&[(item_guid, count)])
 }

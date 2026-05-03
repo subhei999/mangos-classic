@@ -121,9 +121,15 @@ pub struct CharacterReputation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CharacterReputationChange {
+    pub reputation: CharacterReputation,
+    pub delta: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterQuestRewardResult {
     pub money: u32,
-    pub reputations: Vec<CharacterReputation>,
+    pub reputations: Vec<CharacterReputationChange>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

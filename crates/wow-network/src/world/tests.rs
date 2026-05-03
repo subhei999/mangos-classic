@@ -2865,6 +2865,47 @@ fn faction_standing_packet_uses_dbc_reputation_list_slots() {
 }
 
 #[test]
+fn reputation_gain_message_uses_dbc_faction_name_bridge() {
+    let change = CharacterReputationChange {
+        reputation: CharacterReputation {
+            faction: 72,
+            standing: 250,
+            flags: 1,
+        },
+        delta: 75,
+    };
+
+    assert_eq!(
+        reputation_gain_system_message(&change).as_deref(),
+        Some("Reputation with Stormwind increased by 75.")
+    );
+}
+
+#[test]
+fn system_chat_packet_uses_vanilla_message_shape() {
+    let message = "Reputation with Stormwind increased by 75.";
+    let body = build_system_message_chat_body(message);
+    let mut cursor = 0;
+
+    assert_eq!(body[cursor], CHAT_MSG_SYSTEM as u8);
+    cursor += 1;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), LANG_UNIVERSAL);
+    assert_eq!(&body[cursor..cursor + 8], &0u64.to_le_bytes());
+    cursor += 8;
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        (message.len() + 1) as u32
+    );
+    assert_eq!(&body[cursor..cursor + message.len()], message.as_bytes());
+    cursor += message.len();
+    assert_eq!(body[cursor], 0);
+    cursor += 1;
+    assert_eq!(body[cursor], CHAT_TAG_NONE);
+    cursor += 1;
+    assert_eq!(cursor, body.len());
+}
+
+#[test]
 fn active_quest_log_slots_skip_abandoned_status_rows() {
     let mut statuses = HashMap::new();
     statuses.insert(
@@ -2917,6 +2958,40 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
 
     let empty_inventory = [];
     assert!(!quest_can_complete_from_inventory(&quest, &empty_inventory));
+}
+
+#[test]
+fn quest_source_item_push_result_matches_cmangos_shape() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 9542,
+        count: 1,
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, true, false, true);
+    let mut cursor = 0;
+
+    assert_eq!(
+        &body[cursor..cursor + 8],
+        &ObjectGuid::new(HighGuid::Player, 0, 11).raw().to_le_bytes()
+    );
+    cursor += 8;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(body[cursor], CLIENT_INVENTORY_SLOT_BAG_0);
+    cursor += 1;
+    assert_eq!(
+        read_u32(&body, &mut cursor).unwrap(),
+        INVENTORY_SLOT_ITEM_START as u32
+    );
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 9542);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(cursor, body.len());
 }
 
 #[test]

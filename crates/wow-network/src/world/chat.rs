@@ -169,6 +169,17 @@ fn build_message_chat_body(
     body
 }
 
+fn build_system_message_chat_body(message: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(1 + 4 + 8 + 4 + message.len() + 2);
+    body.push(CHAT_MSG_SYSTEM as u8);
+    body.extend_from_slice(&LANG_UNIVERSAL.to_le_bytes());
+    body.extend_from_slice(&0u64.to_le_bytes());
+    body.extend_from_slice(&((message.len() + 1) as u32).to_le_bytes());
+    write_c_string(&mut body, message);
+    body.push(CHAT_TAG_NONE);
+    body
+}
+
 fn chat_radius_yards(chat_type: u32) -> f32 {
     match chat_type {
         CHAT_MSG_SAY => CHAT_SAY_RADIUS_YARDS,

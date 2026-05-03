@@ -411,7 +411,10 @@ fn build_player_quest_log_clear_body(character_guid: u32, slot: usize) -> anyhow
 }
 
 fn quest_log_count_state(status: &CharacterQuestStatus) -> u32 {
-    let count = status.mobcount1 & 0x3F;
+    let count = (status.mobcount1 & 0x3F)
+        | ((status.mobcount2 & 0x3F) << 6)
+        | ((status.mobcount3 & 0x3F) << 12)
+        | ((status.mobcount4 & 0x3F) << 18);
 
     let complete = if status.status == QUEST_STATUS_COMPLETE {
         QUEST_STATE_COMPLETE << 24

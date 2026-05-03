@@ -3697,6 +3697,34 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
 }
 
 #[test]
+fn quest_log_count_state_packs_all_objective_counters() {
+    let incomplete = CharacterQuestStatus {
+        quest: 456,
+        status: QUEST_STATUS_INCOMPLETE,
+        rewarded: 0,
+        mobcount1: 2,
+        mobcount2: 3,
+        mobcount3: 4,
+        mobcount4: 5,
+    };
+
+    assert_eq!(
+        quest_log_count_state(&incomplete),
+        2 | (3 << 6) | (4 << 12) | (5 << 18)
+    );
+
+    let complete = CharacterQuestStatus {
+        status: QUEST_STATUS_COMPLETE,
+        ..incomplete
+    };
+
+    assert_eq!(
+        quest_log_count_state(&complete),
+        (2 | (3 << 6) | (4 << 12) | (5 << 18)) | (QUEST_STATE_COMPLETE << 24)
+    );
+}
+
+#[test]
 fn quest_source_item_storage_rejects_full_backpack_without_stack_room() {
     let mut quest = test_quest_template(3101);
     quest.src_item_id = 9542;

@@ -370,8 +370,15 @@ fn test_quest_template(entry: u32) -> QuestTemplateQuery {
         quest_type: 0,
         required_classes: 0,
         required_races: 0,
+        required_skill: 0,
+        required_skill_value: 0,
+        required_condition: 0,
         rep_objective_faction: 0,
         rep_objective_value: 0,
+        required_min_rep_faction: 0,
+        required_min_rep_value: 0,
+        required_max_rep_faction: 0,
+        required_max_rep_value: 0,
         special_flags: 0,
         prev_quest_id: 0,
         next_quest_id: 0,
@@ -394,6 +401,8 @@ fn test_quest_template(entry: u32) -> QuestTemplateQuery {
         req_creature_or_go_count: [0; 4],
         req_item_id: [0; 4],
         req_item_count: [0; 4],
+        req_source_id: [0; 4],
+        req_source_count: [0; 4],
         rew_choice_item_id: [0; 6],
         rew_choice_item_count: [0; 6],
         rew_item_id: [0; 4],
@@ -2468,6 +2477,115 @@ fn quest_visibility_enforces_level_class_and_race_masks() {
 }
 
 #[test]
+fn quest_marker_visibility_uses_cmangos_high_level_hide_diff() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let mut quest = test_quest_template(7);
+
+    quest.min_level = character.level + QUEST_HIGH_LEVEL_HIDE_DIFF;
+    assert!(satisfies_quest_visibility_level(&quest, &character));
+    assert!(!satisfies_race_class_level(&quest, &character));
+
+    quest.min_level = character.level + QUEST_HIGH_LEVEL_HIDE_DIFF + 1;
+    assert!(!satisfies_quest_visibility_level(&quest, &character));
+
+    quest.min_level = 1;
+    quest.max_level = 1;
+    assert!(satisfies_quest_visibility_level(&quest, &character));
+
+    quest.max_level = 0;
+    assert!(!satisfies_quest_visibility_level(&quest, &character));
+}
+
+#[test]
+fn quest_required_skill_uses_cmangos_value_check() {
+    let mut quest = test_quest_template(7);
+    assert!(satisfies_required_skill(&quest, &[]));
+
+    quest.required_skill = 164;
+    quest.required_skill_value = 75;
+
+    assert!(!satisfies_required_skill(&quest, &[]));
+    assert!(!satisfies_required_skill(
+        &quest,
+        &[test_skill(164, 74, 75)]
+    ));
+    assert!(satisfies_required_skill(&quest, &[test_skill(164, 75, 75)]));
+    assert!(satisfies_required_skill(
+        &quest,
+        &[test_skill(164, 100, 150)]
+    ));
+    assert!(!satisfies_required_skill(
+        &quest,
+        &[test_skill(165, 100, 150)]
+    ));
+
+    quest.required_skill_value = 0;
+    assert!(satisfies_required_skill(&quest, &[]));
+}
+
+#[test]
+fn quest_required_reputation_uses_cmangos_min_max_thresholds() {
+    let mut quest = test_quest_template(7);
+    assert!(satisfies_required_reputation(&quest, &[]));
+
+    quest.required_min_rep_faction = 72;
+    quest.required_min_rep_value = 500;
+
+    assert!(!satisfies_required_reputation(&quest, &[]));
+    assert!(!satisfies_required_reputation(
+        &quest,
+        &[CharacterReputation {
+            faction: 72,
+            standing: 499,
+            flags: 0,
+        }]
+    ));
+    assert!(satisfies_required_reputation(
+        &quest,
+        &[CharacterReputation {
+            faction: 72,
+            standing: 500,
+            flags: 0,
+        }]
+    ));
+
+    quest.required_min_rep_faction = 0;
+    quest.required_min_rep_value = 0;
+    quest.required_max_rep_faction = 72;
+    quest.required_max_rep_value = 500;
+
+    assert!(satisfies_required_reputation(&quest, &[]));
+    assert!(satisfies_required_reputation(
+        &quest,
+        &[CharacterReputation {
+            faction: 72,
+            standing: 499,
+            flags: 0,
+        }]
+    ));
+    assert!(!satisfies_required_reputation(
+        &quest,
+        &[CharacterReputation {
+            faction: 72,
+            standing: 500,
+            flags: 0,
+        }]
+    ));
+}
+
+#[test]
 fn repeatable_quest_status_can_be_started_again_after_reward() {
     let mut repeatable = test_quest_template(7);
     repeatable.special_flags = 1;
@@ -2490,6 +2608,58 @@ fn repeatable_quest_status_can_be_started_again_after_reward() {
         &non_repeatable,
         Some(&complete_rewarded)
     ));
+}
+
+#[test]
+fn quest_accept_requires_free_quest_log_slot() {
+    let mut session = WorldSessionState::default();
+    for quest in 1..=MAX_QUEST_LOG_SIZE as u32 {
+        session.quest_statuses.insert(
+            quest,
+            CharacterQuestStatus {
+                quest,
+                status: QUEST_STATUS_INCOMPLETE,
+                rewarded: 0,
+                mobcount1: 0,
+                mobcount2: 0,
+                mobcount3: 0,
+                mobcount4: 0,
+            },
+        );
+    }
+
+    assert!(!quest_log_has_free_slot(&session));
+    assert_eq!(quest_log_slot_for_quest(&session, 1), Some(0));
+    assert_eq!(
+        quest_log_slot_for_quest(&session, MAX_QUEST_LOG_SIZE as u32),
+        Some(MAX_QUEST_LOG_SIZE - 1)
+    );
+    assert_eq!(
+        quest_log_slot_for_quest(&session, MAX_QUEST_LOG_SIZE as u32 + 1),
+        None
+    );
+}
+
+#[test]
+fn rewarded_historical_quests_do_not_consume_quest_log_slots() {
+    let mut session = WorldSessionState::default();
+    for quest in 1..=MAX_QUEST_LOG_SIZE as u32 {
+        session.quest_statuses.insert(
+            quest,
+            CharacterQuestStatus {
+                quest,
+                status: QUEST_STATUS_COMPLETE,
+                rewarded: 1,
+                mobcount1: 0,
+                mobcount2: 0,
+                mobcount3: 0,
+                mobcount4: 0,
+            },
+        );
+    }
+
+    assert!(quest_log_has_free_slot(&session));
+    assert_eq!(quest_log_slot_for_quest(&session, 1), None);
 }
 
 #[test]
@@ -2524,6 +2694,191 @@ fn prev_quest_requirements_follow_positive_and_negative_rules() {
     );
     assert!(!satisfies_prev_quest_requirement(&statuses, 99));
     assert!(satisfies_prev_quest_requirement(&statuses, -99));
+}
+
+#[tokio::test]
+async fn prev_quest_requirements_follow_cmangos_any_satisfied_rule() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    for quest_id in [99, 100, 101] {
+        object_mgr
+            .prime_quest_template_for_test(quest_id, Some(test_quest_template(quest_id)))
+            .await;
+    }
+    let quest = test_quest_template(18);
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        99,
+        CharacterQuestStatus {
+            quest: 99,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[99, 100])
+            .await
+            .unwrap()
+    );
+    assert!(
+        !satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[100, -99])
+            .await
+            .unwrap()
+    );
+
+    statuses.insert(
+        100,
+        CharacterQuestStatus {
+            quest: 100,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[101, -100])
+            .await
+            .unwrap()
+    );
+    assert!(
+        satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[])
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn prev_quest_requirements_require_all_rewarded_in_negative_exclusive_group() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.prev_quest_id = 10;
+    let mut first_prev = test_quest_template(10);
+    first_prev.exclusive_group = -7;
+    first_prev.next_quest_id = 10;
+    let mut second_prev = test_quest_template(11);
+    second_prev.exclusive_group = -7;
+    object_mgr
+        .prime_quest_template_for_test(10, Some(first_prev))
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(11, Some(second_prev))
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(-7, vec![10, 11])
+        .await;
+
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        10,
+        CharacterQuestStatus {
+            quest: 10,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        !satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[10])
+            .await
+            .unwrap()
+    );
+
+    statuses.insert(
+        11,
+        CharacterQuestStatus {
+            quest: 11,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[10])
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn prev_quest_requirements_require_all_active_in_negative_active_exclusive_group() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.prev_quest_id = -10;
+    let mut first_prev = test_quest_template(10);
+    first_prev.exclusive_group = -7;
+    first_prev.next_quest_id = 10;
+    let mut second_prev = test_quest_template(11);
+    second_prev.exclusive_group = -7;
+    object_mgr
+        .prime_quest_template_for_test(10, Some(first_prev))
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(11, Some(second_prev))
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(-7, vec![10, 11])
+        .await;
+
+    let mut statuses = HashMap::new();
+    statuses.insert(
+        10,
+        CharacterQuestStatus {
+            quest: 10,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        !satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[-10])
+            .await
+            .unwrap()
+    );
+
+    statuses.insert(
+        11,
+        CharacterQuestStatus {
+            quest: 11,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert!(
+        satisfies_prev_quest_requirements(&object_mgr, &pool, &quest, &statuses, &[-10])
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -2827,6 +3182,334 @@ async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiv
     assert!(outbound_rx.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn quest_state_refresh_updates_visible_gameobject_dynamic_flags() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut spawn = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.flags = GO_FLAG_INTERACT_COND;
+    spawn.template.raw_data[1] = 18;
+    let guid = gameobject_spawn_guid(&spawn);
+    let grid = grid_coord_for_position(gameobject_spawn_position(&spawn));
+    let maps = Arc::new(MapRuntimeManager::default());
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+    maps.ensure_db_gameobject_grids_loaded_for_test(
+        0,
+        player_position,
+        CREATURE_SPAWN_RADIUS_YARDS,
+        |candidate| {
+            if candidate == grid {
+                vec![DbGameObjectRuntime::new(spawn.clone())]
+            } else {
+                Vec::new()
+            }
+        },
+    )
+    .await;
+    let nearby = maps
+        .nearby_db_gameobject_snapshots(
+            0,
+            player_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            CREATURE_SPAWN_LIMIT,
+        )
+        .await;
+    maps.stage_player_db_gameobject_visibility(0, 7, player_position, nearby, Instant::now())
+        .await;
+
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    session.quest_statuses.insert(
+        18,
+        CharacterQuestStatus {
+            quest: 18,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    send_visible_questgiver_status_updates(
+        &mut sink,
+        &object_mgr,
+        &pool,
+        shared_world,
+        &session,
+        &[],
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(&packet.body[0..4], &1u32.to_le_bytes());
+    assert_eq!(packet.body[4], 0);
+    let (values, trailing) = decode_values_update_block(&packet.body[5..], guid);
+    assert!(trailing.is_empty());
+    assert_eq!(values[GAMEOBJECT_DYN_FLAGS], Some(GO_DYNFLAG_LO_ACTIVATE));
+    assert!(outbound_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn quest_dialog_status_allows_any_satisfied_previous_quest() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let quest = test_quest_template(18);
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, vec![10, 11])
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(10, Some(test_quest_template(10)))
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(11, Some(test_quest_template(11)))
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    session.quest_statuses.insert(
+        10,
+        CharacterQuestStatus {
+            quest: 10,
+            status: QUEST_STATUS_COMPLETE,
+            rewarded: 1,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+}
+
+#[tokio::test]
+async fn quest_dialog_status_requires_db_required_skill() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.required_skill = 164;
+    quest.required_skill_value = 75;
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        None
+    );
+
+    session.character_skills.push(test_skill(164, 75, 75));
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+}
+
+#[tokio::test]
+async fn quest_dialog_status_hides_unwired_required_condition() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.required_condition = 42;
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        None
+    );
+
+    quest.required_condition = 0;
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+}
+
+#[tokio::test]
+async fn quest_dialog_status_requires_db_reputation_bounds() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let mut quest = test_quest_template(18);
+    quest.required_min_rep_faction = 72;
+    quest.required_min_rep_value = 500;
+    object_mgr
+        .prime_quest_prev_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(18, Vec::new())
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        None
+    );
+
+    session.character_reputations.push(CharacterReputation {
+        faction: 72,
+        standing: 500,
+        flags: 0,
+    });
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        Some(DIALOG_STATUS_AVAILABLE)
+    );
+
+    quest.required_min_rep_faction = 0;
+    quest.required_min_rep_value = 0;
+    quest.required_max_rep_faction = 72;
+    quest.required_max_rep_value = 500;
+
+    assert_eq!(
+        quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 #[test]
 fn quest_reward_packets_use_item_display_ids() {
     let guid = ObjectGuid::new(HighGuid::Unit, 197, 1);
@@ -3011,6 +3694,128 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
 
     let empty_inventory = [];
     assert!(!quest_can_complete_from_inventory(&quest, &empty_inventory));
+}
+
+#[test]
+fn quest_source_item_storage_rejects_full_backpack_without_stack_room() {
+    let mut quest = test_quest_template(3101);
+    quest.src_item_id = 9542;
+    quest.src_item_count = 1;
+    let inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .enumerate()
+        .map(|(index, slot)| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1000 + index as u32,
+            item_template: 8000 + index as u32,
+            count: 1,
+            durability: 0,
+        })
+        .collect();
+
+    assert_eq!(
+        plan_quest_source_item_storage(
+            &quest,
+            &inventory,
+            QuestSourceItemTemplate {
+                max_durability: 0,
+                max_stack: 1,
+                container_slots: None,
+            },
+        ),
+        QuestSourceItemStorage::NoSpace
+    );
+}
+
+#[test]
+fn quest_source_item_storage_uses_existing_stack_when_backpack_is_full() {
+    let mut quest = test_quest_template(3102);
+    quest.src_item_id = 9542;
+    quest.src_item_count = 3;
+    let inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .enumerate()
+        .map(|(index, slot)| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1000 + index as u32,
+            item_template: if index == 0 {
+                9542
+            } else {
+                8000 + index as u32
+            },
+            count: 1,
+            durability: 0,
+        })
+        .collect();
+
+    assert_eq!(
+        plan_quest_source_item_storage(
+            &quest,
+            &inventory,
+            QuestSourceItemTemplate {
+                max_durability: 0,
+                max_stack: 5,
+                container_slots: None,
+            },
+        ),
+        QuestSourceItemStorage::Grant(QuestSourceItemStoragePlan {
+            item_id: 9542,
+            max_durability: 0,
+            container_slots: None,
+            destinations: vec![QuestSourceItemDestination::ExistingStack {
+                item_guid: 1000,
+                new_count: 3,
+                grant_count: 2,
+            }],
+        })
+    );
+}
+
+#[test]
+fn quest_source_item_storage_splits_large_grants_across_empty_slots() {
+    let mut quest = test_quest_template(3103);
+    quest.src_item_id = 9542;
+    quest.src_item_count = 5;
+    let inventory = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 9542,
+        count: 1,
+        durability: 0,
+    }];
+
+    assert_eq!(
+        plan_quest_source_item_storage(
+            &quest,
+            &inventory,
+            QuestSourceItemTemplate {
+                max_durability: 0,
+                max_stack: 2,
+                container_slots: None,
+            },
+        ),
+        QuestSourceItemStorage::Grant(QuestSourceItemStoragePlan {
+            item_id: 9542,
+            max_durability: 0,
+            container_slots: None,
+            destinations: vec![
+                QuestSourceItemDestination::ExistingStack {
+                    item_guid: 77,
+                    new_count: 2,
+                    grant_count: 1,
+                },
+                QuestSourceItemDestination::NewStack {
+                    slot: INVENTORY_SLOT_ITEM_START + 1,
+                    count: 2,
+                },
+                QuestSourceItemDestination::NewStack {
+                    slot: INVENTORY_SLOT_ITEM_START + 2,
+                    count: 1,
+                },
+            ],
+        })
+    );
 }
 
 #[test]
@@ -7539,6 +8344,57 @@ fn map_runtime_player_regen_tick_restores_health_and_mana_from_spirit() {
 }
 
 #[test]
+fn map_runtime_player_regen_tick_broadcasts_visible_player_updates() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.class = 8; // Mage
+    player.spirit = 40;
+    player.max_health = 80;
+    player.health = 40;
+    player.max_power1 = 100;
+    player.power1 = 10;
+    map.add_player(player).unwrap();
+    map.add_player(test_player_runtime(
+        2,
+        SessionId(2),
+        WorldPosition::new(0, position.x + 4.0, position.y, position.z, 0.0),
+    ))
+    .unwrap();
+    let now = Instant::now();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|(session_id, _)| *session_id == SessionId(1))
+            .count(),
+        2
+    );
+    let observer_packets = packets
+        .iter()
+        .filter(|(session_id, _)| *session_id == SessionId(2))
+        .map(|(_, packet)| packet)
+        .collect::<Vec<_>>();
+    assert_eq!(observer_packets.len(), 2);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let observer_values = observer_packets
+        .iter()
+        .map(|packet| decode_values_update_block(&packet.body[5..], player_guid).0)
+        .collect::<Vec<_>>();
+    assert!(observer_values
+        .iter()
+        .any(|values| values[UNIT_FIELD_HEALTH].is_some()));
+    assert!(observer_values
+        .iter()
+        .any(|values| values[UNIT_FIELD_POWER1].is_some()));
+}
+
+#[test]
 fn map_runtime_player_regen_tick_degenerates_warrior_rage_out_of_combat() {
     let mut map = MapRuntime::new(0, 0);
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -9305,6 +10161,17 @@ fn quest_template_with_required_item(
     quest
 }
 
+fn quest_template_with_required_source_item(
+    quest_id: u32,
+    item_id: u32,
+    item_count: u32,
+) -> QuestTemplateQuery {
+    let mut quest = test_quest_template(quest_id);
+    quest.req_source_id[0] = item_id;
+    quest.req_source_count[0] = item_count;
+    quest
+}
+
 #[test]
 fn quest_loot_selection_prefers_active_required_quest_item() {
     let loot_rows = vec![
@@ -9346,6 +10213,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         &active_quests,
         &quest_statuses,
         &[],
+        &HashMap::new(),
         || 0.0,
         |min_count, _max_count| min_count,
     );
@@ -9401,11 +10269,122 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         &active_quests,
         &quest_statuses,
         &inventory,
+        &HashMap::new(),
         || 0.0,
         |min_count, _max_count| min_count,
     );
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].item, 159);
+}
+
+#[test]
+fn quest_loot_selection_includes_active_required_source_item() {
+    let loot_rows = vec![CreatureLootQuery {
+        item: 888,
+        group_id: 0,
+        min_count: 1,
+        max_count: 1,
+        display_id: 2,
+        chance_or_quest_chance: -100.0,
+    }];
+    let mut active_quests = HashMap::new();
+    active_quests.insert(47, quest_template_with_required_source_item(47, 888, 3));
+    let mut quest_statuses = HashMap::new();
+    quest_statuses.insert(
+        47,
+        CharacterQuestStatus {
+            quest: 47,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    let inventory = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: 23,
+        item: 901,
+        item_template: 888,
+        count: 2,
+        durability: 0,
+    }];
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &active_quests,
+        &quest_statuses,
+        &inventory,
+        &HashMap::new(),
+        || 0.0,
+        |min_count, _max_count| min_count,
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].item, 888);
+}
+
+#[test]
+fn quest_loot_selection_uses_source_item_template_limit_when_count_is_zero() {
+    let loot_rows = vec![CreatureLootQuery {
+        item: 889,
+        group_id: 0,
+        min_count: 1,
+        max_count: 1,
+        display_id: 2,
+        chance_or_quest_chance: -100.0,
+    }];
+    let mut active_quests = HashMap::new();
+    active_quests.insert(48, quest_template_with_required_source_item(48, 889, 0));
+    let mut quest_statuses = HashMap::new();
+    quest_statuses.insert(
+        48,
+        CharacterQuestStatus {
+            quest: 48,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    let inventory = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: 23,
+        item: 901,
+        item_template: 889,
+        count: 4,
+        durability: 0,
+    }];
+    let mut source_item_default_counts = HashMap::new();
+    source_item_default_counts.insert(889, 5);
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &active_quests,
+        &quest_statuses,
+        &inventory,
+        &source_item_default_counts,
+        || 0.0,
+        |min_count, _max_count| min_count,
+    );
+    assert_eq!(selected.len(), 1);
+
+    let full_inventory = vec![CharacterInventoryItem {
+        count: 5,
+        ..inventory[0].clone()
+    }];
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &active_quests,
+        &quest_statuses,
+        &full_inventory,
+        &source_item_default_counts,
+        || 0.0,
+        |min_count, _max_count| min_count,
+    );
+    assert!(selected.is_empty());
 }
 
 #[test]
@@ -9433,6 +10412,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
         &HashMap::new(),
         &HashMap::new(),
         &[],
+        &HashMap::new(),
         || 49.95,
         |min_count, _max_count| min_count,
     );
@@ -9466,6 +10446,7 @@ fn creature_loot_roll_can_return_multiple_independent_rows() {
         &HashMap::new(),
         &HashMap::new(),
         &[],
+        &HashMap::new(),
         || 0.0,
         |min_count, _max_count| min_count,
     );
@@ -9508,6 +10489,7 @@ fn creature_loot_roll_picks_one_row_per_group() {
         &HashMap::new(),
         &HashMap::new(),
         &[],
+        &HashMap::new(),
         || 25.0,
         |min_count, _max_count| min_count,
     );
@@ -9531,6 +10513,7 @@ fn creature_loot_roll_uses_randomized_count_range() {
         &HashMap::new(),
         &HashMap::new(),
         &[],
+        &HashMap::new(),
         || 0.0,
         |_min_count, _max_count| 4,
     );

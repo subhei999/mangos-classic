@@ -134,12 +134,15 @@ async fn select_db_creature_loot_item_for_character(
             active_quests.insert(quest_id, quest);
         }
     }
+    let source_item_default_counts =
+        load_quest_source_item_default_counts(world_db_pool, &active_quests).await?;
 
     Ok(select_creature_loot_for_active_quests(
         &loot_rows,
         &active_quests,
         &session.quest_statuses,
         &session.inventory,
+        &source_item_default_counts,
     )
     .into_iter()
     .map(DbCreatureLootRuntime::from)
@@ -174,12 +177,15 @@ async fn select_db_gameobject_loot_item_for_character(
             active_quests.insert(quest_id, quest);
         }
     }
+    let source_item_default_counts =
+        load_quest_source_item_default_counts(world_db_pool, &active_quests).await?;
 
     Ok(select_creature_loot_for_active_quests(
         &loot_rows,
         &active_quests,
         &session.quest_statuses,
         &session.inventory,
+        &source_item_default_counts,
     )
     .into_iter()
     .filter(|loot| loot.is_quest_drop())
@@ -192,6 +198,7 @@ fn select_creature_loot_for_active_quests(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
 ) -> Vec<CreatureLootQuery> {
     let mut chance_rng = rand::thread_rng();
     let mut count_rng = rand::thread_rng();
@@ -200,6 +207,7 @@ fn select_creature_loot_for_active_quests(
         active_quests,
         quest_statuses,
         inventory,
+        source_item_default_counts,
         || rand::Rng::gen_range(&mut chance_rng, 0.0f32..100.0f32),
         |min_count, max_count| rand::Rng::gen_range(&mut count_rng, min_count..=max_count),
     )
@@ -210,6 +218,7 @@ fn select_creature_loot_for_active_quests_with_rolls(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
 ) -> Vec<CreatureLootQuery> {
@@ -226,6 +235,7 @@ fn select_creature_loot_for_active_quests_with_rolls(
             active_quests,
             quest_statuses,
             inventory,
+            source_item_default_counts,
             &mut chance_roll,
             &mut count_roll,
         ) {
@@ -244,6 +254,7 @@ fn select_creature_loot_for_active_quests_with_rolls(
             active_quests,
             quest_statuses,
             inventory,
+            source_item_default_counts,
             &mut chance_roll,
             &mut count_roll,
         ) {
@@ -259,6 +270,7 @@ fn roll_loot_group(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
 ) -> Option<CreatureLootQuery> {
@@ -266,7 +278,13 @@ fn roll_loot_group(
     let mut equal_chance = Vec::new();
     for loot in rows {
         if loot.is_quest_drop()
-            && !player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory)
+            && !player_needs_quest_loot_item(
+                loot.item,
+                active_quests,
+                quest_statuses,
+                inventory,
+                source_item_default_counts,
+            )
         {
             continue;
         }
@@ -302,6 +320,7 @@ fn roll_loot_group(
         active_quests,
         quest_statuses,
         inventory,
+        source_item_default_counts,
         || 0.0,
         count_roll,
     )
@@ -312,12 +331,19 @@ fn roll_loot_row(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
 ) -> Option<CreatureLootQuery> {
     let is_quest_drop = loot.is_quest_drop();
     if is_quest_drop
-        && !player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory)
+        && !player_needs_quest_loot_item(
+            loot.item,
+            active_quests,
+            quest_statuses,
+            inventory,
+            source_item_default_counts,
+        )
     {
         return None;
     }
@@ -345,6 +371,7 @@ fn player_needs_quest_loot_item(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
 ) -> bool {
     let owned_count: u32 = inventory
         .iter()
@@ -365,7 +392,48 @@ fn player_needs_quest_loot_item(
                 .any(|(req_item_id, req_count)| {
                     *req_item_id == item_id && owned_count < *req_count && *req_count > 0
                 })
+                || quest
+                    .req_source_id
+                    .iter()
+                    .zip(quest.req_source_count.iter())
+                    .any(|(req_source_id, req_source_count)| {
+                        if *req_source_id != item_id {
+                            return false;
+                        }
+                        let required_count = if *req_source_count > 0 {
+                            *req_source_count
+                        } else {
+                            source_item_default_counts.get(&item_id).copied().unwrap_or(0)
+                        };
+                        required_count > 0 && owned_count < required_count
+                    })
         })
+}
+
+async fn load_quest_source_item_default_counts(
+    world_db_pool: &MySqlPool,
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+) -> anyhow::Result<HashMap<u32, u32>> {
+    let mut counts = HashMap::new();
+    for quest in active_quests.values() {
+        for source_item in quest.req_source_id.iter().copied().filter(|item| *item != 0) {
+            if counts.contains_key(&source_item) {
+                continue;
+            }
+            let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item).await?
+            else {
+                continue;
+            };
+            let default_count = if template.max_count > 0 {
+                template.max_count
+            } else {
+                template.stackable.max(1)
+            };
+            counts.insert(source_item, default_count);
+        }
+    }
+
+    Ok(counts)
 }
 
 async fn handle_autostore_loot_item(

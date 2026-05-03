@@ -198,6 +198,8 @@ async fn handle_player_login(
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     session.character_skills =
         wow_db::get_character_skills(deps.character_db_pool, character.guid).await?;
+    session.character_reputations =
+        wow_db::get_character_reputations(deps.character_db_pool, character.guid).await?;
     session.quest_statuses =
         wow_db::get_character_quest_statuses(deps.character_db_pool, character.guid)
             .await?
@@ -266,6 +268,7 @@ async fn handle_player_login(
             equipped_templates: &equipped_templates,
             spells: &spells,
             skills: &session.character_skills,
+            reputations: &session.character_reputations,
             quest_statuses: &session.quest_statuses,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,

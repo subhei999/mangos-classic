@@ -169,6 +169,7 @@ struct WorldSessionState {
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     character_skills: Vec<CharacterSkill>,
+    character_reputations: Vec<CharacterReputation>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,

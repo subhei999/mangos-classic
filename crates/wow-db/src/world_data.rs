@@ -385,8 +385,15 @@ pub struct QuestTemplateQuery {
     pub quest_type: u32,
     pub required_classes: u32,
     pub required_races: u32,
+    pub required_skill: u32,
+    pub required_skill_value: u32,
+    pub required_condition: u32,
     pub rep_objective_faction: u32,
     pub rep_objective_value: i32,
+    pub required_min_rep_faction: u32,
+    pub required_min_rep_value: i32,
+    pub required_max_rep_faction: u32,
+    pub required_max_rep_value: i32,
     pub special_flags: u32,
     pub prev_quest_id: i32,
     pub next_quest_id: i32,
@@ -409,6 +416,8 @@ pub struct QuestTemplateQuery {
     pub req_creature_or_go_count: [u32; 4],
     pub req_item_id: [u32; 4],
     pub req_item_count: [u32; 4],
+    pub req_source_id: [u32; 4],
+    pub req_source_count: [u32; 4],
     pub rew_choice_item_id: [u32; 6],
     pub rew_choice_item_count: [u32; 6],
     pub rew_item_id: [u32; 4],
@@ -661,8 +670,15 @@ pub async fn get_quest_template_query(
                 CAST(QuestLevel AS UNSIGNED) AS quest_level, CAST(Type AS UNSIGNED) AS quest_type, \
                 CAST(RequiredClasses AS UNSIGNED) AS required_classes, \
                 CAST(RequiredRaces AS UNSIGNED) AS required_races, \
+                CAST(RequiredSkill AS UNSIGNED) AS required_skill, \
+                CAST(RequiredSkillValue AS UNSIGNED) AS required_skill_value, \
+                CAST(RequiredCondition AS UNSIGNED) AS required_condition, \
                 CAST(RepObjectiveFaction AS UNSIGNED) AS rep_objective_faction, \
                 RepObjectiveValue AS rep_objective_value, \
+                CAST(RequiredMinRepFaction AS UNSIGNED) AS required_min_rep_faction, \
+                RequiredMinRepValue AS required_min_rep_value, \
+                CAST(RequiredMaxRepFaction AS UNSIGNED) AS required_max_rep_faction, \
+                RequiredMaxRepValue AS required_max_rep_value, \
                 CAST(SpecialFlags AS UNSIGNED) AS special_flags, \
                 PrevQuestId AS prev_quest_id, NextQuestId AS next_quest_id, \
                 ExclusiveGroup AS exclusive_group, \
@@ -688,6 +704,10 @@ pub async fn get_quest_template_query(
                 CAST(ReqItemId3 AS UNSIGNED) AS req_item_id3, CAST(ReqItemId4 AS UNSIGNED) AS req_item_id4, \
                 CAST(ReqItemCount1 AS UNSIGNED) AS req_item_count1, CAST(ReqItemCount2 AS UNSIGNED) AS req_item_count2, \
                 CAST(ReqItemCount3 AS UNSIGNED) AS req_item_count3, CAST(ReqItemCount4 AS UNSIGNED) AS req_item_count4, \
+                CAST(ReqSourceId1 AS UNSIGNED) AS req_source_id1, CAST(ReqSourceId2 AS UNSIGNED) AS req_source_id2, \
+                CAST(ReqSourceId3 AS UNSIGNED) AS req_source_id3, CAST(ReqSourceId4 AS UNSIGNED) AS req_source_id4, \
+                CAST(ReqSourceCount1 AS UNSIGNED) AS req_source_count1, CAST(ReqSourceCount2 AS UNSIGNED) AS req_source_count2, \
+                CAST(ReqSourceCount3 AS UNSIGNED) AS req_source_count3, CAST(ReqSourceCount4 AS UNSIGNED) AS req_source_count4, \
                 CAST(RewChoiceItemId1 AS UNSIGNED) AS rew_choice_item_id1, CAST(RewChoiceItemId2 AS UNSIGNED) AS rew_choice_item_id2, \
                 CAST(RewChoiceItemId3 AS UNSIGNED) AS rew_choice_item_id3, CAST(RewChoiceItemId4 AS UNSIGNED) AS rew_choice_item_id4, \
                 CAST(RewChoiceItemId5 AS UNSIGNED) AS rew_choice_item_id5, CAST(RewChoiceItemId6 AS UNSIGNED) AS rew_choice_item_id6, \
@@ -2073,8 +2093,15 @@ struct QuestTemplateRow {
     quest_type: u32,
     required_classes: u32,
     required_races: u32,
+    required_skill: u32,
+    required_skill_value: u32,
+    required_condition: u32,
     rep_objective_faction: u32,
     rep_objective_value: i32,
+    required_min_rep_faction: u32,
+    required_min_rep_value: i32,
+    required_max_rep_faction: u32,
+    required_max_rep_value: i32,
     special_flags: u32,
     prev_quest_id: i32,
     next_quest_id: i32,
@@ -2109,6 +2136,14 @@ struct QuestTemplateRow {
     req_item_count2: u32,
     req_item_count3: u32,
     req_item_count4: u32,
+    req_source_id1: u32,
+    req_source_id2: u32,
+    req_source_id3: u32,
+    req_source_id4: u32,
+    req_source_count1: u32,
+    req_source_count2: u32,
+    req_source_count3: u32,
+    req_source_count4: u32,
     rew_choice_item_id1: u32,
     rew_choice_item_id2: u32,
     rew_choice_item_id3: u32,
@@ -2181,8 +2216,15 @@ impl QuestTemplateRow {
             quest_type: self.quest_type,
             required_classes: self.required_classes,
             required_races: self.required_races,
+            required_skill: self.required_skill,
+            required_skill_value: self.required_skill_value,
+            required_condition: self.required_condition,
             rep_objective_faction: self.rep_objective_faction,
             rep_objective_value: self.rep_objective_value,
+            required_min_rep_faction: self.required_min_rep_faction,
+            required_min_rep_value: self.required_min_rep_value,
+            required_max_rep_faction: self.required_max_rep_faction,
+            required_max_rep_value: self.required_max_rep_value,
             special_flags: self.special_flags,
             prev_quest_id: self.prev_quest_id,
             next_quest_id: self.next_quest_id,
@@ -2224,6 +2266,18 @@ impl QuestTemplateRow {
                 self.req_item_count2,
                 self.req_item_count3,
                 self.req_item_count4,
+            ],
+            req_source_id: [
+                self.req_source_id1,
+                self.req_source_id2,
+                self.req_source_id3,
+                self.req_source_id4,
+            ],
+            req_source_count: [
+                self.req_source_count1,
+                self.req_source_count2,
+                self.req_source_count3,
+                self.req_source_count4,
             ],
             rew_choice_item_id: [
                 self.rew_choice_item_id1,

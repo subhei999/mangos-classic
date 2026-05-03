@@ -120,6 +120,43 @@ struct QuestMutationDeps<'a> {
 struct QuestSourceItemGrant {
     item: CharacterInventoryItem,
     count: u32,
+    created: bool,
+    container_slots: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuestSourceItemTemplate {
+    max_durability: u32,
+    max_stack: u32,
+    container_slots: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuestSourceItemDestination {
+    ExistingStack {
+        item_guid: u32,
+        new_count: u32,
+        grant_count: u32,
+    },
+    NewStack {
+        slot: u8,
+        count: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuestSourceItemStoragePlan {
+    item_id: u32,
+    max_durability: u32,
+    container_slots: Option<u32>,
+    destinations: Vec<QuestSourceItemDestination>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuestSourceItemStorage {
+    NoGrantNeeded,
+    NoSpace,
+    Grant(QuestSourceItemStoragePlan),
 }
 
 async fn handle_questgiver_accept_quest(
@@ -151,14 +188,36 @@ async fn handle_questgiver_accept_quest(
         );
         return Ok(());
     }
+    if !quest_log_has_free_slot(session) {
+        send_packet(
+            stream,
+            SMSG_QUESTLOG_FULL,
+            &[],
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        return Ok(());
+    }
+    let source_item_storage =
+        quest_source_item_storage_plan(world_db_pool, &quest, &session.inventory).await?;
+    if matches!(source_item_storage, QuestSourceItemStorage::NoSpace) {
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
     let mut status = wow_db::accept_character_quest(character_db_pool, character_guid, request.quest)
         .await?;
     session.quest_statuses.insert(request.quest, status.clone());
     let source_item = grant_quest_source_item_if_needed(
         character_db_pool,
-        world_db_pool,
         character_guid,
-        &quest,
+        source_item_storage,
         session,
     )
     .await?;
@@ -178,23 +237,34 @@ async fn handle_questgiver_accept_quest(
         Some(&mut *header_crypto),
     )
     .await?;
-    if let Some(grant) = source_item {
-        let item = &grant.item;
+    if !source_item.is_empty() {
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        let container_slots =
-            if let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await? {
-                (template.container_slots > 0).then_some(template.container_slots)
+        let mut update_blocks = Vec::new();
+        let mut created_slots = Vec::new();
+        for grant in &source_item {
+            if grant.created {
+                update_blocks.push(build_item_create_update_block(
+                    owner_guid,
+                    owner_guid,
+                    &grant.item,
+                    grant.container_slots,
+                )?);
+                created_slots.push(grant.item.slot);
             } else {
-                None
-            };
-        let create_block = build_item_create_update_block(
-            owner_guid,
-            owner_guid,
-            item,
-            container_slots,
-        )?;
-        let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[item.slot])?;
-        let create_body = build_update_object_body(&[create_block, slot_block]);
+                update_blocks.push(build_item_stack_count_update_block(
+                    grant.item.item,
+                    grant.item.count,
+                )?);
+            }
+        }
+        if !created_slots.is_empty() {
+            update_blocks.push(build_inventory_slots_update_block(
+                character_guid,
+                &session.inventory,
+                &created_slots,
+            )?);
+        }
+        let create_body = build_update_object_body(&update_blocks);
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
@@ -202,15 +272,17 @@ async fn handle_questgiver_accept_quest(
             Some(&mut *header_crypto),
         )
         .await?;
-        let push_body =
-            build_item_push_result_body(character_guid, item, grant.count, true, false, true);
-        send_packet(
-            stream,
-            SMSG_ITEM_PUSH_RESULT,
-            &push_body,
-            Some(&mut *header_crypto),
-        )
-        .await?;
+        for grant in &source_item {
+            let push_body =
+                build_item_push_result_body(character_guid, &grant.item, grant.count, true, false, true);
+            send_packet(
+                stream,
+                SMSG_ITEM_PUSH_RESULT,
+                &push_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
     }
     if status.status == QUEST_STATUS_COMPLETE {
         send_packet(
@@ -402,6 +474,17 @@ async fn handle_questgiver_choose_reward(
     if let Some(status) = session.quest_statuses.get_mut(&request.quest) {
         status.status = QUEST_STATUS_COMPLETE;
         status.rewarded = 1;
+    }
+    for change in &reward_result.reputations {
+        if let Some(existing) = session
+            .character_reputations
+            .iter_mut()
+            .find(|reputation| reputation.faction == change.reputation.faction)
+        {
+            *existing = change.reputation.clone();
+        } else {
+            session.character_reputations.push(change.reputation.clone());
+        }
     }
     send_packet(
         stream,
@@ -692,7 +775,83 @@ async fn send_visible_questgiver_status_updates(
         )
         .await?;
     }
+    send_visible_quest_gameobject_dynamic_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        shared_world.maps,
+        session,
+        header_crypto,
+    )
+    .await?;
     Ok(())
+}
+
+async fn send_visible_quest_gameobject_dynamic_updates(
+    stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let visible_gameobject_guids = maps
+        .player_visible_db_gameobject_guids(character.position.map_id, character.guid)
+        .await;
+    if visible_gameobject_guids.is_empty() {
+        return Ok(());
+    }
+
+    let visible_gameobjects = maps
+        .db_gameobject_snapshots(character.position.map_id, &visible_gameobject_guids)
+        .await;
+    let mut update_blocks = Vec::new();
+    for gameobject in visible_gameobjects {
+        if !quest_gameobject_needs_dynamic_refresh(object_mgr, world_db_pool, &gameobject).await? {
+            continue;
+        }
+        update_blocks.push(build_db_gameobject_dynamic_flags_update_block(
+            &gameobject,
+            &session.quest_statuses,
+        )?);
+    }
+
+    if update_blocks.is_empty() {
+        return Ok(());
+    }
+    for chunk in update_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_update_object_body(chunk),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn quest_gameobject_needs_dynamic_refresh(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    gameobject: &DbGameObjectRuntime,
+) -> anyhow::Result<bool> {
+    let template = &gameobject.spawn.template;
+    if gameobject_required_active_quest(template).is_some() || gameobject_chest_has_loot_id(template)
+    {
+        return Ok(true);
+    }
+    if template.object_type == GO_TYPE_QUESTGIVER {
+        return questgiver_has_quest_relation(object_mgr, world_db_pool, gameobject.guid()).await;
+    }
+    Ok(template.flags & GO_FLAG_INTERACT_COND != 0
+        && matches!(
+            template.object_type,
+            GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER
+        ))
 }
 
 async fn questgiver_has_quest_relation(
@@ -867,31 +1026,88 @@ fn active_quest_statuses_sorted(
 
 async fn grant_quest_source_item_if_needed(
     character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
     character_guid: u32,
-    quest: &QuestTemplateQuery,
+    storage: QuestSourceItemStorage,
     session: &mut WorldSessionState,
-) -> anyhow::Result<Option<QuestSourceItemGrant>> {
+) -> anyhow::Result<Vec<QuestSourceItemGrant>> {
+    let QuestSourceItemStorage::Grant(plan) = storage else {
+        return Ok(Vec::new());
+    };
+    let mut granted = Vec::new();
+    for destination in plan.destinations {
+        match destination {
+            QuestSourceItemDestination::ExistingStack {
+                item_guid,
+                new_count,
+                grant_count,
+            } => {
+                if !wow_db::update_character_inventory_item_count(
+                    character_db_pool,
+                    character_guid,
+                    item_guid,
+                    new_count,
+                )
+                .await?
+                {
+                    warn!(
+                        item = item_guid,
+                        "Cannot grant quest source item into missing existing stack"
+                    );
+                    continue;
+                }
+                granted.push((item_guid, grant_count, false));
+            }
+            QuestSourceItemDestination::NewStack { slot, count } => {
+                let item = wow_db::add_character_inventory_item(
+                    character_db_pool,
+                    character_guid,
+                    INVENTORY_SLOT_BAG_0 as u32,
+                    slot,
+                    plan.item_id,
+                    count,
+                    plan.max_durability,
+                )
+                .await?;
+                granted.push((item.item, count, true));
+            }
+        }
+    }
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
+        .await?;
+    Ok(granted
+        .into_iter()
+        .filter_map(|(item_guid, count, created)| {
+            session
+                .inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .cloned()
+                .map(|item| QuestSourceItemGrant {
+                    item,
+                    count,
+                    created,
+                    container_slots: created.then_some(plan.container_slots).flatten(),
+                })
+        })
+        .collect())
+}
+
+async fn quest_source_item_storage_plan(
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<QuestSourceItemStorage> {
     if quest.src_item_id == 0 {
-        return Ok(None);
+        return Ok(QuestSourceItemStorage::NoGrantNeeded);
     }
     let required_count = quest.src_item_count.max(1);
-    let current_count = session
-        .inventory
+    let current_count = inventory
         .iter()
         .filter(|item| item.item_template == quest.src_item_id)
         .map(|item| item.count)
         .sum::<u32>();
     if current_count >= required_count {
-        return Ok(None);
-    }
-    let Some(slot) = first_empty_backpack_slot(&session.inventory) else {
-        warn!(
-            quest = quest.entry,
-            item = quest.src_item_id,
-            "Cannot grant quest source item because backpack is full"
-        );
-        return Ok(None);
+        return Ok(QuestSourceItemStorage::NoGrantNeeded);
     };
     let Some(template) = wow_db::get_item_template_query(world_db_pool, quest.src_item_id).await?
     else {
@@ -900,22 +1116,85 @@ async fn grant_quest_source_item_if_needed(
             item = quest.src_item_id,
             "Cannot grant missing quest source item template"
         );
-        return Ok(None);
+        return Ok(QuestSourceItemStorage::NoGrantNeeded);
     };
-    let count = required_count - current_count;
-    let item = wow_db::add_character_inventory_item(
-        character_db_pool,
-        character_guid,
-        INVENTORY_SLOT_BAG_0 as u32,
-        slot,
-        quest.src_item_id,
-        count,
-        template.max_durability,
-    )
-    .await?;
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
-        .await?;
-    Ok(Some(QuestSourceItemGrant { item, count }))
+    let item_template = QuestSourceItemTemplate {
+        max_durability: template.max_durability,
+        max_stack: template.stackable.max(1),
+        container_slots: (template.container_slots > 0).then_some(template.container_slots),
+    };
+    Ok(plan_quest_source_item_storage(
+        quest,
+        inventory,
+        item_template,
+    ))
+}
+
+fn plan_quest_source_item_storage(
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+    item_template: QuestSourceItemTemplate,
+) -> QuestSourceItemStorage {
+    if quest.src_item_id == 0 {
+        return QuestSourceItemStorage::NoGrantNeeded;
+    }
+    let required_count = quest.src_item_count.max(1);
+    let current_count = inventory
+        .iter()
+        .filter(|item| item.item_template == quest.src_item_id)
+        .map(|item| item.count)
+        .sum::<u32>();
+    if current_count >= required_count {
+        return QuestSourceItemStorage::NoGrantNeeded;
+    }
+
+    let mut remaining = required_count - current_count;
+    let max_stack = item_template.max_stack.max(1);
+    let mut destinations = Vec::new();
+    let mut stacks: Vec<_> = inventory
+        .iter()
+        .filter(|item| item.item_template == quest.src_item_id && item.count < max_stack)
+        .collect();
+    stacks.sort_by_key(|item| {
+        let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+            0
+        } else {
+            1
+        };
+        (bag_order, item.bag, item.slot)
+    });
+    for stack in stacks {
+        if remaining == 0 {
+            break;
+        }
+        let grant_count = remaining.min(max_stack - stack.count);
+        remaining -= grant_count;
+        destinations.push(QuestSourceItemDestination::ExistingStack {
+            item_guid: stack.item,
+            new_count: stack.count + grant_count,
+            grant_count,
+        });
+    }
+
+    for slot in empty_backpack_slots(inventory) {
+        if remaining == 0 {
+            break;
+        }
+        let count = remaining.min(max_stack);
+        remaining -= count;
+        destinations.push(QuestSourceItemDestination::NewStack { slot, count });
+    }
+
+    if remaining != 0 {
+        return QuestSourceItemStorage::NoSpace;
+    }
+
+    QuestSourceItemStorage::Grant(QuestSourceItemStoragePlan {
+        item_id: quest.src_item_id,
+        max_durability: item_template.max_durability,
+        container_slots: item_template.container_slots,
+        destinations,
+    })
 }
 
 fn quest_can_complete_from_inventory(
@@ -1303,6 +1582,8 @@ fn quest_race_or_class_mask(id: u8) -> u32 {
     1u32.checked_shl(u32::from(id - 1)).unwrap_or(0)
 }
 
+const QUEST_HIGH_LEVEL_HIDE_DIFF: u8 = 7;
+
 fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
     if character.level < quest.min_level || character.level > quest.max_level {
         return false;
@@ -1321,6 +1602,14 @@ fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveChar
     true
 }
 
+fn satisfies_quest_visibility_level(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
+    if character.level > quest.max_level {
+        return false;
+    }
+
+    u16::from(character.level) + u16::from(QUEST_HIGH_LEVEL_HIDE_DIFF) >= u16::from(quest.min_level)
+}
+
 fn satisfies_race_class(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
     let class_mask = quest_race_or_class_mask(character.class);
     if quest.required_classes != 0 && (quest.required_classes & class_mask) == 0 {
@@ -1335,6 +1624,53 @@ fn satisfies_race_class(quest: &QuestTemplateQuery, character: &ActiveCharacter)
     true
 }
 
+fn satisfies_required_skill(quest: &QuestTemplateQuery, character_skills: &[CharacterSkill]) -> bool {
+    if quest.required_skill == 0 {
+        return true;
+    }
+
+    let skill_value = character_skills
+        .iter()
+        .find(|skill| u32::from(skill.skill) == quest.required_skill)
+        .map_or(0, |skill| u32::from(skill.value));
+    skill_value >= quest.required_skill_value
+}
+
+fn satisfies_required_condition(quest: &QuestTemplateQuery) -> bool {
+    // CMaNGOS gates RequiredCondition through ObjectMgr::IsConditionSatisfied.
+    // Rust does not have condition evaluation yet, so do not expose gated
+    // quests as available until the real condition system exists.
+    quest.required_condition == 0
+}
+
+fn satisfies_required_reputation(
+    quest: &QuestTemplateQuery,
+    character_reputations: &[CharacterReputation],
+) -> bool {
+    if quest.required_min_rep_faction != 0 {
+        let reputation = character_reputations
+            .iter()
+            .find(|reputation| reputation.faction == quest.required_min_rep_faction)
+            .map_or(0, |reputation| reputation.standing);
+        if reputation < quest.required_min_rep_value {
+            return false;
+        }
+    }
+
+    if quest.required_max_rep_faction != 0 {
+        let reputation = character_reputations
+            .iter()
+            .find(|reputation| reputation.faction == quest.required_max_rep_faction)
+            .map_or(0, |reputation| reputation.standing);
+        if reputation >= quest.required_max_rep_value {
+            return false;
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
 fn satisfies_prev_quest_requirement(
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     prev_quest_id: i32,
@@ -1349,6 +1685,78 @@ fn satisfies_prev_quest_requirement(
         return quest_is_current(quest_statuses, prev_quest);
     }
     true
+}
+
+async fn satisfies_prev_quest_requirements(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    prev_quest_ids: &[i32],
+) -> anyhow::Result<bool> {
+    if prev_quest_ids.is_empty() {
+        return Ok(true);
+    }
+
+    for prev_quest_id in prev_quest_ids {
+        let prev_quest = prev_quest_id.unsigned_abs();
+        let Some(prev_status) = quest_statuses.get(&prev_quest) else {
+            continue;
+        };
+        let Some(prev_info) = object_mgr.quest_template(world_db_pool, prev_quest).await? else {
+            continue;
+        };
+
+        if *prev_quest_id > 0 && prev_status.rewarded != 0 {
+            if prev_info.exclusive_group >= 0 {
+                return Ok(true);
+            }
+            if quest.prev_quest_id != 0 && prev_info.next_quest_id != quest.prev_quest_id {
+                return Ok(true);
+            }
+            let exclusive_group_quests = object_mgr
+                .exclusive_group_quests(world_db_pool, prev_info.exclusive_group)
+                .await?;
+            for exclusive_quest in exclusive_group_quests {
+                if exclusive_quest == prev_quest {
+                    continue;
+                }
+                if quest_statuses
+                    .get(&exclusive_quest)
+                    .is_none_or(|status| status.rewarded == 0)
+                {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+
+        if *prev_quest_id < 0 && quest_status_is_current(prev_status) {
+            if prev_info.exclusive_group >= 0 {
+                return Ok(true);
+            }
+            if quest.prev_quest_id != 0
+                && prev_info.next_quest_id
+                    != i32::try_from(quest.prev_quest_id.unsigned_abs()).unwrap_or(i32::MAX)
+            {
+                return Ok(true);
+            }
+            let exclusive_group_quests = object_mgr
+                .exclusive_group_quests(world_db_pool, prev_info.exclusive_group)
+                .await?;
+            for exclusive_quest in exclusive_group_quests {
+                if exclusive_quest == prev_quest {
+                    continue;
+                }
+                if !quest_is_current(quest_statuses, exclusive_quest) {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn satisfies_exclusive_group(
@@ -1384,14 +1792,28 @@ async fn can_take_start_quest(
     if !satisfies_race_class_level(quest, character) {
         return Ok(false);
     }
+    if !satisfies_required_skill(quest, &session.character_skills) {
+        return Ok(false);
+    }
+    if !satisfies_required_condition(quest) {
+        return Ok(false);
+    }
+    if !satisfies_required_reputation(quest, &session.character_reputations) {
+        return Ok(false);
+    }
     if !can_quest_be_started_from_status(quest, session.quest_statuses.get(&quest.entry)) {
         return Ok(false);
     }
 
     let prev_quests = object_mgr.quest_prev_quests(world_db_pool, quest.entry).await?;
-    if !prev_quests
-        .into_iter()
-        .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
+    if !satisfies_prev_quest_requirements(
+        object_mgr,
+        world_db_pool,
+        quest,
+        &session.quest_statuses,
+        &prev_quests,
+    )
+    .await?
     {
         return Ok(false);
     }
@@ -1433,14 +1855,31 @@ async fn can_see_start_quest(
     if !satisfies_race_class(quest, character) {
         return Ok(false);
     }
+    if !satisfies_quest_visibility_level(quest, character) {
+        return Ok(false);
+    }
+    if !satisfies_required_skill(quest, &session.character_skills) {
+        return Ok(false);
+    }
+    if !satisfies_required_condition(quest) {
+        return Ok(false);
+    }
+    if !satisfies_required_reputation(quest, &session.character_reputations) {
+        return Ok(false);
+    }
     if !can_quest_be_started_from_status(quest, session.quest_statuses.get(&quest.entry)) {
         return Ok(false);
     }
 
     let prev_quests = object_mgr.quest_prev_quests(world_db_pool, quest.entry).await?;
-    if !prev_quests
-        .into_iter()
-        .all(|prev| satisfies_prev_quest_requirement(&session.quest_statuses, prev))
+    if !satisfies_prev_quest_requirements(
+        object_mgr,
+        world_db_pool,
+        quest,
+        &session.quest_statuses,
+        &prev_quests,
+    )
+    .await?
     {
         return Ok(false);
     }
@@ -1500,6 +1939,10 @@ fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<u
         .into_iter()
         .take(MAX_QUEST_LOG_SIZE)
         .position(|status| status.quest == quest)
+}
+
+fn quest_log_has_free_slot(session: &WorldSessionState) -> bool {
+    active_quest_statuses_sorted(&session.quest_statuses).len() < MAX_QUEST_LOG_SIZE
 }
 
 async fn grant_db_creature_kill_credit(

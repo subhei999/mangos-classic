@@ -21,9 +21,10 @@ impl MapRuntime {
             .values()
             .map(|combat| combat.victim)
             .collect::<HashSet<_>>();
-        let mut packets = Vec::new();
+        let mut update_packets = Vec::new();
         for player in self.players.values_mut() {
-            let player_guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
+            let character_guid = player.guid;
+            let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
             let in_combat = player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
             let is_dead_or_ghost = player.health == 0 || (player.flags & PLAYER_FLAGS_GHOST) != 0;
             if is_dead_or_ghost {
@@ -63,7 +64,9 @@ impl MapRuntime {
             }
 
             if health_changed {
-                packets.push((
+                update_packets.push((
+                    character_guid,
+                    player.position,
                     player.session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
@@ -72,7 +75,9 @@ impl MapRuntime {
                 ));
             }
             if mana_changed {
-                packets.push((
+                update_packets.push((
+                    character_guid,
+                    player.position,
                     player.session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
@@ -81,7 +86,9 @@ impl MapRuntime {
                 ));
             }
             if rage_changed {
-                packets.push((
+                update_packets.push((
+                    character_guid,
+                    player.position,
                     player.session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
@@ -89,6 +96,22 @@ impl MapRuntime {
                     },
                 ));
             }
+        }
+
+        let mut packets = Vec::new();
+        for (character_guid, position, direct_session_id, packet) in update_packets {
+            packets.push((direct_session_id, packet.clone()));
+            packets.extend(self.nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .map(|observer| (observer.session_id, packet.clone()))
+            }));
         }
 
         Ok(packets)
@@ -441,6 +464,20 @@ impl MapRuntime {
             .visible_objects
             .iter()
             .filter(|guid| guid.is_creature())
+            .map(|guid| guid.raw())
+            .collect::<Vec<_>>();
+        guids.sort_unstable();
+        guids
+    }
+
+    fn player_visible_db_gameobject_guids(&self, character_guid: u32) -> Vec<u64> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Vec::new();
+        };
+        let mut guids = player
+            .visible_objects
+            .iter()
+            .filter(|guid| guid.is_game_object())
             .map(|guid| guid.raw())
             .collect::<Vec<_>>();
         guids.sort_unstable();

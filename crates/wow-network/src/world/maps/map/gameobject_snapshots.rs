@@ -91,6 +91,13 @@ impl MapRuntime {
         self.gameobjects.get(&gameobject_guid.raw()).cloned()
     }
 
+    fn db_gameobject_snapshots(&self, gameobject_guids: &[u64]) -> Vec<DbGameObjectRuntime> {
+        gameobject_guids
+            .iter()
+            .filter_map(|guid| self.gameobjects.get(guid).cloned())
+            .collect()
+    }
+
     fn stage_player_db_gameobject_visibility(
         &mut self,
         character_guid: u32,

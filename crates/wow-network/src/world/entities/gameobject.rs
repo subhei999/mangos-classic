@@ -62,6 +62,25 @@ fn build_db_gameobject_runtime_create_block_for_quest_statuses(
     )
 }
 
+fn build_db_gameobject_dynamic_flags_update_block(
+    gameobject: &DbGameObjectRuntime,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> anyhow::Result<Vec<u8>> {
+    let guid = gameobject.guid();
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, guid)?;
+
+    let mut values = vec![None; GAMEOBJECT_END_FIELDS];
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_DYN_FLAGS,
+        gameobject_dynamic_flags_for_quest_statuses(gameobject, quest_statuses),
+    )?;
+    write_update_values(&mut block, &values)?;
+    Ok(block)
+}
+
 fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
     gameobject: &DbGameObjectRuntime,
     dynamic_flags: u32,

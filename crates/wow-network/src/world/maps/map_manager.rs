@@ -197,6 +197,22 @@ impl MapRuntimeManager {
         guids
     }
 
+    async fn player_visible_db_gameobject_guids(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Vec<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let guids = map
+            .lock()
+            .await
+            .player_visible_db_gameobject_guids(character_guid);
+        guids
+    }
+
     async fn should_rescan_player_creature_visibility(
         &self,
         map_id: u32,
@@ -981,6 +997,16 @@ impl MapRuntimeManager {
     ) -> Vec<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let snapshots = map.lock().await.db_creature_snapshots(creature_guids);
+        snapshots
+    }
+
+    async fn db_gameobject_snapshots(
+        &self,
+        map_id: u32,
+        gameobject_guids: &[u64],
+    ) -> Vec<DbGameObjectRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let snapshots = map.lock().await.db_gameobject_snapshots(gameobject_guids);
         snapshots
     }
 

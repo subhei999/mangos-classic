@@ -383,20 +383,20 @@ async fn handle_opening_spell(
     targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
     targets.gameobject_target = Some(gameobject_guid);
 
-    let loot_item = select_db_gameobject_loot_item_for_character(
+    let loot_items = select_db_gameobject_loot_item_for_character(
         shared_world.object_mgr,
         world_db_pool,
         session,
         &gameobject.spawn.template,
     )
     .await?;
-    let Some((gameobject, loot_item)) = shared_world
+    let Some((gameobject, loot_items)) = shared_world
         .maps
         .open_db_gameobject_loot(
             request.map_id,
             gameobject_guid.raw(),
             request.character_guid,
-            loot_item,
+            loot_items,
         )
         .await
     else {
@@ -459,7 +459,7 @@ async fn handle_opening_spell(
         .await;
     shared_world.sessions.dispatch(observer_go).await;
 
-    let response = build_gameobject_loot_response_body(gameobject_guid, loot_item.as_ref());
+    let response = build_gameobject_loot_response_body(gameobject_guid, &loot_items);
     send_packet(
         stream,
         SMSG_LOOT_RESPONSE,

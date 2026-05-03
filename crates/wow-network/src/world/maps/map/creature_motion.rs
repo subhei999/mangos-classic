@@ -287,8 +287,9 @@ impl MapRuntime {
         creature.respawn_epoch_secs = None;
         creature.lootable = false;
         creature.looting = false;
+        creature.loot_money = 0;
         creature.loot_money_available = false;
-        creature.loot_item = None;
+        creature.loot_items.clear();
         self.clear_db_creature_combat(creature_guid);
         self.creatures.get(&creature_guid.raw()).cloned()
     }

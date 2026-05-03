@@ -41,20 +41,20 @@ async fn handle_loot(
             warn!("Ignoring gameobject loot request outside interaction range");
             return Ok(());
         }
-        let loot_item = select_db_gameobject_loot_item_for_character(
+        let loot_items = select_db_gameobject_loot_item_for_character(
             object_mgr,
             world_db_pool,
             session,
             &gameobject.spawn.template,
         )
         .await?;
-        let Some((gameobject, loot_item)) = shared_world
+        let Some((gameobject, loot_items)) = shared_world
             .maps
             .open_db_gameobject_loot(
                 character.position.map_id,
                 target.raw(),
                 character.guid,
-                loot_item,
+                loot_items,
             )
             .await
         else {
@@ -62,7 +62,7 @@ async fn handle_loot(
             return Ok(());
         };
         let _ = gameobject;
-        let response = build_gameobject_loot_response_body(target, loot_item.as_ref());
+        let response = build_gameobject_loot_response_body(target, &loot_items);
         return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
     }
     let Some(creature) = shared_world
@@ -84,13 +84,13 @@ async fn handle_loot(
         .maps
         .db_creature_needs_loot_item(character.position.map_id, target.raw())
         .await
-        .unwrap_or(creature.loot_item.is_none());
+        .unwrap_or(creature.loot_items.is_empty());
     let entry = creature.spawn.entry;
-    let loot_item = if needs_loot_item {
+    let loot_items = if needs_loot_item {
         select_db_creature_loot_item_for_character(object_mgr, world_db_pool, session, entry)
             .await?
     } else {
-        None
+        Vec::new()
     };
     let Some(creature) = shared_world
         .maps
@@ -98,7 +98,7 @@ async fn handle_loot(
             character.position.map_id,
             target.raw(),
             character.guid,
-            loot_item,
+            loot_items,
         )
         .await
     else {
@@ -114,12 +114,12 @@ async fn select_db_creature_loot_item_for_character(
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     creature_entry: u32,
-) -> anyhow::Result<Option<DbCreatureLootRuntime>> {
+) -> anyhow::Result<Vec<DbCreatureLootRuntime>> {
     let loot_rows = object_mgr
         .creature_loot_items(world_db_pool, creature_entry)
         .await?;
     if loot_rows.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let active_quest_ids: Vec<u32> = session
@@ -141,7 +141,9 @@ async fn select_db_creature_loot_item_for_character(
         &session.quest_statuses,
         &session.inventory,
     )
-    .map(DbCreatureLootRuntime::from))
+    .into_iter()
+    .map(DbCreatureLootRuntime::from)
+    .collect())
 }
 
 async fn select_db_gameobject_loot_item_for_character(
@@ -149,15 +151,15 @@ async fn select_db_gameobject_loot_item_for_character(
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     template: &wow_db::GameObjectTemplateQuery,
-) -> anyhow::Result<Option<DbCreatureLootRuntime>> {
+) -> anyhow::Result<Vec<DbCreatureLootRuntime>> {
     let Some(loot_id) = gameobject_chest_loot_id(template) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let loot_rows = object_mgr
         .gameobject_loot_items(world_db_pool, loot_id)
         .await?;
     if loot_rows.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let active_quest_ids: Vec<u32> = session
@@ -179,8 +181,10 @@ async fn select_db_gameobject_loot_item_for_character(
         &session.quest_statuses,
         &session.inventory,
     )
+    .into_iter()
     .filter(|loot| loot.is_quest_drop())
-    .map(DbCreatureLootRuntime::from))
+    .map(DbCreatureLootRuntime::from)
+    .collect())
 }
 
 fn select_creature_loot_for_active_quests(
@@ -188,7 +192,7 @@ fn select_creature_loot_for_active_quests(
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
-) -> Option<CreatureLootQuery> {
+) -> Vec<CreatureLootQuery> {
     let mut chance_rng = rand::thread_rng();
     let mut count_rng = rand::thread_rng();
     select_creature_loot_for_active_quests_with_rolls(
@@ -208,41 +212,132 @@ fn select_creature_loot_for_active_quests_with_rolls(
     inventory: &[CharacterInventoryItem],
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
-) -> Option<CreatureLootQuery> {
-    let mut first_normal = None;
-    let mut first_quest = None;
+) -> Vec<CreatureLootQuery> {
+    let mut rolled = Vec::new();
+    let mut grouped: HashMap<u8, Vec<CreatureLootQuery>> = HashMap::new();
     for loot in loot_rows {
-        let is_quest_drop = loot.is_quest_drop();
-        if is_quest_drop
+        if loot.group_id > 0 {
+            grouped.entry(loot.group_id).or_default().push(loot.clone());
+            continue;
+        }
+
+        if let Some(loot) = roll_loot_row(
+            loot,
+            active_quests,
+            quest_statuses,
+            inventory,
+            &mut chance_roll,
+            &mut count_roll,
+        ) {
+            rolled.push(loot);
+        }
+    }
+
+    let mut group_ids = grouped.keys().copied().collect::<Vec<_>>();
+    group_ids.sort_unstable();
+    for group_id in group_ids {
+        let Some(rows) = grouped.remove(&group_id) else {
+            continue;
+        };
+        if let Some(loot) = roll_loot_group(
+            rows,
+            active_quests,
+            quest_statuses,
+            inventory,
+            &mut chance_roll,
+            &mut count_roll,
+        ) {
+            rolled.push(loot);
+        }
+    }
+
+    rolled
+}
+
+fn roll_loot_group(
+    rows: Vec<CreatureLootQuery>,
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+    mut chance_roll: impl FnMut() -> f32,
+    mut count_roll: impl FnMut(u32, u32) -> u32,
+) -> Option<CreatureLootQuery> {
+    let mut explicit_chance = Vec::new();
+    let mut equal_chance = Vec::new();
+    for loot in rows {
+        if loot.is_quest_drop()
             && !player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory)
         {
             continue;
         }
-        let chance = if is_quest_drop {
-            -loot.chance_or_quest_chance
+        let chance = loot.chance_or_quest_chance.abs().clamp(0.0, 100.0);
+        if chance > 0.0 {
+            explicit_chance.push((loot, chance));
         } else {
-            loot.chance_or_quest_chance
-        }
-        .clamp(0.0, 100.0);
-        if chance <= 0.0 || chance_roll() >= chance {
-            continue;
-        }
-
-        let min_count = loot.min_count.max(1);
-        let max_count = loot.max_count.max(min_count);
-        let rolled_count = count_roll(min_count, max_count).clamp(min_count, max_count);
-        let mut rolled_loot = loot.clone();
-        rolled_loot.min_count = rolled_count;
-        rolled_loot.max_count = rolled_count;
-        if is_quest_drop {
-            first_quest = Some(rolled_loot);
-            break;
-        }
-        if first_normal.is_none() {
-            first_normal = Some(rolled_loot);
+            equal_chance.push(loot);
         }
     }
-    first_quest.or(first_normal)
+
+    let selected = if !explicit_chance.is_empty() {
+        let mut remaining = chance_roll();
+        let mut selected = None;
+        for (loot, chance) in explicit_chance {
+            remaining -= chance;
+            if remaining < 0.0 || chance >= 100.0 {
+                selected = Some(loot);
+                break;
+            }
+        }
+        selected
+    } else if equal_chance.is_empty() {
+        None
+    } else {
+        let index =
+            count_roll(0, (equal_chance.len() - 1) as u32).min((equal_chance.len() - 1) as u32);
+        equal_chance.get(index as usize).cloned()
+    }?;
+
+    roll_loot_row(
+        &selected,
+        active_quests,
+        quest_statuses,
+        inventory,
+        || 0.0,
+        count_roll,
+    )
+}
+
+fn roll_loot_row(
+    loot: &CreatureLootQuery,
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+    mut chance_roll: impl FnMut() -> f32,
+    mut count_roll: impl FnMut(u32, u32) -> u32,
+) -> Option<CreatureLootQuery> {
+    let is_quest_drop = loot.is_quest_drop();
+    if is_quest_drop
+        && !player_needs_quest_loot_item(loot.item, active_quests, quest_statuses, inventory)
+    {
+        return None;
+    }
+    let chance = if is_quest_drop {
+        -loot.chance_or_quest_chance
+    } else {
+        loot.chance_or_quest_chance
+    }
+    .clamp(0.0, 100.0);
+    if chance <= 0.0 || chance_roll() >= chance {
+        return None;
+    }
+
+    let min_count = loot.min_count.max(1);
+    let max_count = loot.max_count.max(min_count);
+    let rolled_count = count_roll(min_count, max_count).clamp(min_count, max_count);
+    let mut rolled_loot = loot.clone();
+    rolled_loot.min_count = rolled_count;
+    rolled_loot.max_count = rolled_count;
+    Some(rolled_loot)
 }
 
 fn player_needs_quest_loot_item(
@@ -298,13 +393,9 @@ async fn handle_autostore_loot_item(
         .await
         .is_some()
     {
-        if loot_slot != 0 {
-            warn!(loot_slot, "Ignoring unsupported DB creature loot slot");
-            return Ok(());
-        }
-        let Some((creature_guid, loot, _creature)) = shared_world
+        let Some((creature_guid, loot_slot, loot, _creature)) = shared_world
             .maps
-            .take_db_creature_loot_item(character_map_id, character_guid)
+            .take_db_creature_loot_item(character_map_id, character_guid, loot_slot)
             .await
         else {
             warn!("Ignoring DB creature loot item request after shared loot was claimed");
@@ -328,7 +419,7 @@ async fn handle_autostore_loot_item(
         if !stored {
             shared_world
                 .maps
-                .restore_db_creature_loot_item(character_map_id, creature_guid, loot)
+                .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot)
                 .await;
         }
         return Ok(());
@@ -340,13 +431,9 @@ async fn handle_autostore_loot_item(
         .await
         .is_some()
     {
-        if loot_slot != 0 {
-            warn!(loot_slot, "Ignoring unsupported DB gameobject loot slot");
-            return Ok(());
-        }
-        let Some((gameobject_guid, loot)) = shared_world
+        let Some((gameobject_guid, loot_slot, loot)) = shared_world
             .maps
-            .take_db_gameobject_loot_item(character_map_id, character_guid)
+            .take_db_gameobject_loot_item(character_map_id, character_guid, loot_slot)
             .await
         else {
             return Ok(());
@@ -369,7 +456,7 @@ async fn handle_autostore_loot_item(
         if !stored {
             shared_world
                 .maps
-                .restore_db_gameobject_loot_item(character_map_id, gameobject_guid, loot)
+                .restore_db_gameobject_loot_item(character_map_id, gameobject_guid, loot_slot, loot)
                 .await;
         } else {
             let guid = ObjectGuid::from_raw(gameobject_guid);

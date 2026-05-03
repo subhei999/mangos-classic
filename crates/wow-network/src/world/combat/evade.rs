@@ -154,8 +154,9 @@ fn prepare_db_creature_evade(session: &mut WorldSessionState, attacker: ObjectGu
         creature.respawn_epoch_secs = None;
         creature.lootable = false;
         creature.looting = false;
+        creature.loot_money = 0;
         creature.loot_money_available = false;
-        creature.loot_item = None;
+        creature.loot_items.clear();
     }
     if session.active_combat_target == Some(attacker) {
         session.active_combat_target = None;

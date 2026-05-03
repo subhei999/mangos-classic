@@ -31,8 +31,9 @@ struct Creature {
     client_visible: bool,
     lootable: bool,
     looting: bool,
+    loot_money: u32,
     loot_money_available: bool,
-    loot_item: Option<CreatureLoot>,
+    loot_items: Vec<CreatureLoot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

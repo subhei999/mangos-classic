@@ -138,6 +138,7 @@ pub struct VendorItemQuery {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CreatureLootQuery {
     pub item: u32,
+    pub group_id: u8,
     pub min_count: u32,
     pub max_count: u32,
     pub display_id: u32,
@@ -343,6 +344,7 @@ pub async fn get_creature_loot_items(
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT creature_loot_template.item, \
+                creature_loot_template.groupid AS group_id, \
                 CAST(GREATEST(creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
                 CAST(GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
                 item_template.displayid AS display_id, \
@@ -351,10 +353,8 @@ pub async fn get_creature_loot_items(
          JOIN item_template ON creature_loot_template.item = item_template.entry \
          WHERE creature_loot_template.entry = ? \
            AND creature_loot_template.condition_id = 0 \
-           AND creature_loot_template.ChanceOrQuestChance <> 0 \
-           AND creature_loot_template.groupid = 0 \
            AND creature_loot_template.mincountOrRef > 0 \
-         ORDER BY creature_loot_template.item",
+         ORDER BY creature_loot_template.groupid, creature_loot_template.item",
     )
     .bind(creature_entry)
     .fetch_all(pool)
@@ -369,6 +369,7 @@ pub async fn get_gameobject_loot_items(
 ) -> Result<Vec<CreatureLootQuery>, DbError> {
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT gameobject_loot_template.item, \
+                gameobject_loot_template.groupid AS group_id, \
                 CAST(GREATEST(gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
                 CAST(GREATEST(gameobject_loot_template.maxcount, gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
                 item_template.displayid AS display_id, \
@@ -377,10 +378,8 @@ pub async fn get_gameobject_loot_items(
          JOIN item_template ON gameobject_loot_template.item = item_template.entry \
          WHERE gameobject_loot_template.entry = ? \
            AND gameobject_loot_template.condition_id = 0 \
-           AND gameobject_loot_template.ChanceOrQuestChance <> 0 \
-           AND gameobject_loot_template.groupid = 0 \
            AND gameobject_loot_template.mincountOrRef > 0 \
-         ORDER BY gameobject_loot_template.item",
+         ORDER BY gameobject_loot_template.groupid, gameobject_loot_template.item",
     )
     .bind(loot_entry)
     .fetch_all(pool)
@@ -1494,6 +1493,7 @@ struct VendorItemRow {
 #[derive(Debug, Clone, FromRow)]
 struct CreatureLootRow {
     item: u32,
+    group_id: u8,
     min_count: u32,
     max_count: u32,
     display_id: u32,
@@ -1727,6 +1727,7 @@ impl CreatureLootRow {
     fn into_query(self) -> CreatureLootQuery {
         CreatureLootQuery {
             item: self.item,
+            group_id: self.group_id,
             min_count: self.min_count,
             max_count: self.max_count,
             display_id: self.display_id,

@@ -13,13 +13,16 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 - Latest integrated commits before the current fix:
   - `1de9b747b` (`Merge quest status markers`);
   - `a41449b76` (`Merge combat resource feel`);
-  - `8627829d1` (`Merge creature template fidelity`).
-- Current uncommitted state: DBC-backed creature scale fallback for real-client
-  side-by-side testing.
+  - `8627829d1` (`Merge creature template fidelity`);
+  - `60e5a60b9` (`Fix creature visuals and questgiver status refresh`);
+  - `b2ac5617f` (`Use DBC creature display scale fallback`).
+- Current uncommitted state: DB loot fidelity port for multi-item creature and
+  gameobject loot, grouped loot rows, slot-aware autostore, and randomized
+  corpse copper from template min/max values.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the DBC scale fallback:
-  - authserver PID `45072` on `127.0.0.1:13724`;
-  - worldserver PID `51180` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the loot fidelity patch:
+  - authserver PID `24404` on `127.0.0.1:13724`;
+  - worldserver PID `39540` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -84,18 +87,30 @@ log the follow-up.
     scale fills the template before create blocks are built;
   - this should address broadly wrong mob scale in Northshire, Teldrassil, and
     other zones where DB scale is zero.
+- Current loot fidelity patch:
+  - creature and gameobject loot rows now carry DB `groupid` and no longer
+    discard grouped/equal-chance loot templates at query time;
+  - loot selection can return multiple independent rows for combo loot while
+    picking at most one row from each loot group;
+  - quest drops still require an active incomplete quest item objective and stop
+    rolling once the player already has enough of the required item;
+  - map-owned creature and gameobject loot state now stores item lists and
+    supports slot-aware `CMSG_AUTOSTORE_LOOT_ITEM`, including restore on failed
+    inventory autostore;
+  - corpse copper is rolled once at death from DB min/max gold instead of always
+    using the max value.
 
 ## Still Unmerged Worker Branches
 
-- `codex/c2-loot-multidrop-fidelity`:
-  `C:\Users\subhe\Documents\mangos-worktrees\c2-loot-multidrop-fidelity`
 - `codex/c2-skills-weapon-progression`:
   `C:\Users\subhe\Documents\mangos-worktrees\c2-skills-weapon-progression`
 - `codex/c2-npc-trainer-scripts`:
   `C:\Users\subhe\Documents\mangos-worktrees\c2-npc-trainer-scripts`
 
-Merge these one by one only after inspecting scope, rebuilding, restarting the
-client stack, and giving the user concrete real-client success criteria.
+The loot worker branch was stale and was manually ported into the integration
+branch instead of merged directly. Merge remaining worker branches one by one
+only after inspecting scope, rebuilding, restarting the client stack, and giving
+the user concrete real-client success criteria.
 
 ## Tests Run
 
@@ -155,6 +170,18 @@ client stack, and giving the user concrete real-client success criteria.
   - `Test-NetConnection` passed for `127.0.0.1:13724` and
     `127.0.0.1:18085`;
   - worldserver startup log reported `creature_display_scales=10531`.
+- Current loot fidelity patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network creature_loot --lib`;
+  - `cargo test -p wow-network quest_loot --lib`;
+  - `cargo test -p wow-network gameobject_loot --lib`;
+  - `cargo test -p wow-network loot_packets --lib`;
+  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`.
 
 ## Known Follow-Ups
 
@@ -165,6 +192,11 @@ client stack, and giving the user concrete real-client success criteria.
 - Current real-client smoke should confirm creature size in multiple zones
   after relog/restart, especially Northshire wolves/Defias and Teldrassil
   starter mobs whose DB scale is zero and should now use DBC display scale.
+- Current real-client smoke should confirm combo loot: killing wolves/kobolds/
+  thugs can show quest item plus junk or multiple junk rows when DB rolls allow
+  it; taking one slot leaves other slots available; completed quest item
+  requirements stop quest drops; Defias copper should vary when DB min/max
+  values differ.
 - Current real-client smoke should also confirm that after turning in/accepting
   early Deputy Willem quests, newly visible but level-locked quests show a gray
   `!`, and that armed NPCs such as Defias Thugs swing with weapon animations

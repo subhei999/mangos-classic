@@ -2354,6 +2354,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
             vec![
                 CreatureLootQuery {
                     item: 25,
+                    group_id: 0,
                     min_count: 1,
                     max_count: 1,
                     display_id: 25,
@@ -2361,6 +2362,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
                 },
                 CreatureLootQuery {
                     item: 777,
+                    group_id: 0,
                     min_count: 1,
                     max_count: 1,
                     display_id: 777,
@@ -2386,7 +2388,10 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
     let before = object_mgr.cache_stats_snapshot();
     let selected = select_db_creature_loot_item_for_character(&object_mgr, &pool, &session, 38)
         .await
-        .expect("cached loot selection should load")
+        .expect("cached loot selection should load");
+    let selected = selected
+        .iter()
+        .find(|loot| loot.item == 777)
         .expect("quest item should be selected");
 
     assert_eq!(selected.item, 777);
@@ -4459,29 +4464,29 @@ fn map_runtime_db_gameobject_loot_item_is_shared_between_characters() {
         display_id: 118,
     };
 
-    let first_open = map.open_db_gameobject_loot(guid, 1, Some(first_loot));
-    let second_open = map.open_db_gameobject_loot(guid, 2, Some(second_loot));
+    let first_open = map.open_db_gameobject_loot(guid, 1, vec![first_loot]);
+    let second_open = map.open_db_gameobject_loot(guid, 2, vec![second_loot]);
 
     assert_eq!(
         first_open
             .as_ref()
-            .and_then(|(_, loot)| loot.as_ref())
+            .and_then(|(_, loot)| loot.first())
             .map(|loot| loot.item),
         Some(117)
     );
     assert_eq!(
         second_open
             .as_ref()
-            .and_then(|(_, loot)| loot.as_ref())
+            .and_then(|(_, loot)| loot.first())
             .map(|loot| loot.item),
         Some(117)
     );
     assert_eq!(
-        map.take_db_gameobject_loot_item(1)
-            .map(|(_, loot)| loot.item),
+        map.take_db_gameobject_loot_item(1, 0)
+            .map(|(_, _, loot)| loot.item),
         Some(117)
     );
-    assert!(map.take_db_gameobject_loot_item(2).is_none());
+    assert!(map.take_db_gameobject_loot_item(2, 0).is_none());
 
     map.release_db_gameobject_loot(guid, 1).unwrap();
     assert_eq!(map.db_gameobject_loot_guid_for_character(1), None);
@@ -4502,23 +4507,23 @@ fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
         count: 1,
         display_id: 117,
     };
-    map.open_db_gameobject_loot(guid, 1, Some(loot.clone()))
+    map.open_db_gameobject_loot(guid, 1, vec![loot.clone()])
         .expect("gameobject loot should open");
     let taken = map
-        .take_db_gameobject_loot_item(1)
+        .take_db_gameobject_loot_item(1, 0)
         .expect("first shared claim should take the item");
-    assert_eq!(taken.1.item, 117);
-    assert!(map.take_db_gameobject_loot_item(1).is_none());
+    assert_eq!(taken.2.item, 117);
+    assert!(map.take_db_gameobject_loot_item(1, 0).is_none());
 
     let restored = map
-        .restore_db_gameobject_loot_item(guid, loot)
+        .restore_db_gameobject_loot_item(guid, 0, loot)
         .expect("failed autostore should restore shared item");
-    assert_eq!(restored.item, 117);
+    assert_eq!(restored.first().map(|loot| loot.item), Some(117));
 
-    map.open_db_gameobject_loot(guid, 2, None)
+    map.open_db_gameobject_loot(guid, 2, Vec::new())
         .expect("second character should open restored shared loot");
-    let reclaimed = map.take_db_gameobject_loot_item(2);
-    assert_eq!(reclaimed.map(|(_, loot)| loot.item), Some(117));
+    let reclaimed = map.take_db_gameobject_loot_item(2, 0);
+    assert_eq!(reclaimed.map(|(_, _, loot)| loot.item), Some(117));
 }
 
 #[test]
@@ -4878,7 +4883,7 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
     creature.begin_corpse(Instant::now(), 1_000);
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
-    assert!(map.open_db_creature_loot(guid, 1, None).is_some());
+    assert!(map.open_db_creature_loot(guid, 1, Vec::new()).is_some());
 
     let first = map.take_db_creature_loot_money(1);
     let second = map.take_db_creature_loot_money(1);
@@ -4906,18 +4911,18 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     assert!(map
-        .open_db_creature_loot(guid, 1, Some(loot.clone()))
+        .open_db_creature_loot(guid, 1, vec![loot.clone()])
         .is_some());
 
-    let first = map.take_db_creature_loot_item(1);
-    let second = map.take_db_creature_loot_item(1);
-    assert_eq!(first.as_ref().map(|(_, loot, _)| loot.item), Some(117));
+    let first = map.take_db_creature_loot_item(1, 0);
+    let second = map.take_db_creature_loot_item(1, 0);
+    assert_eq!(first.as_ref().map(|(_, _, loot, _)| loot.item), Some(117));
     assert!(second.is_none());
 
-    let restored = map.restore_db_creature_loot_item(guid, loot).unwrap();
-    assert_eq!(restored.loot_item.as_ref().map(|loot| loot.item), Some(117));
-    let reclaimed = map.take_db_creature_loot_item(1);
-    assert_eq!(reclaimed.map(|(_, loot, _)| loot.item), Some(117));
+    let restored = map.restore_db_creature_loot_item(guid, 0, loot).unwrap();
+    assert_eq!(restored.loot_items.first().map(|loot| loot.item), Some(117));
+    let reclaimed = map.take_db_creature_loot_item(1, 0);
+    assert_eq!(reclaimed.map(|(_, _, loot, _)| loot.item), Some(117));
 }
 
 #[test]
@@ -4945,15 +4950,15 @@ fn map_runtime_db_creature_loot_item_is_generated_once() {
 
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(true));
     let opened = map
-        .open_db_creature_loot(guid, 1, Some(first_loot.clone()))
+        .open_db_creature_loot(guid, 1, vec![first_loot.clone()])
         .unwrap();
-    assert_eq!(opened.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    assert_eq!(opened.loot_items.first().map(|loot| loot.item), Some(117));
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(false));
 
     let reopened = map
-        .open_db_creature_loot(guid, 1, Some(second_loot))
+        .open_db_creature_loot(guid, 1, vec![second_loot])
         .unwrap();
-    assert_eq!(reopened.loot_item.as_ref().map(|loot| loot.item), Some(117));
+    assert_eq!(reopened.loot_items.first().map(|loot| loot.item), Some(117));
 }
 
 #[test]
@@ -4967,7 +4972,7 @@ fn map_runtime_db_creature_loot_release_broadcasts_cleared_flags() {
     creature.begin_corpse(Instant::now(), 1_000);
     creature.looting = true;
     creature.loot_money_available = false;
-    creature.loot_item = None;
+    creature.loot_items.clear();
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
@@ -5690,7 +5695,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
         .is_none());
 
     assert!(map
-        .open_db_creature_loot(creature_guid.raw(), 1, None)
+        .open_db_creature_loot(creature_guid.raw(), 1, Vec::new())
         .is_some());
     let first_money = map.take_db_creature_loot_money(1);
     let second_money = map.take_db_creature_loot_money(1);
@@ -7395,7 +7400,7 @@ fn db_creature_loot_release_does_not_respawn_before_corpse_and_spawn_timers() {
 
     runtime.begin_corpse(now, 2_000);
     runtime.loot_money_available = false;
-    runtime.loot_item = None;
+    runtime.loot_items.clear();
     runtime.looting = true;
     runtime.reduce_corpse_decay_after_loot(now);
     assert_eq!(runtime.life_state, DbCreatureLifeState::Corpse);
@@ -8313,6 +8318,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -8320,6 +8326,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         },
         CreatureLootQuery {
             item: 777,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -8349,9 +8356,8 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
         &[],
         || 0.0,
         |min_count, _max_count| min_count,
-    )
-    .expect("quest item should be selected for active quest");
-    assert_eq!(selected.item, 777);
+    );
+    assert!(selected.iter().any(|loot| loot.item == 777));
 }
 
 #[test]
@@ -8359,6 +8365,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -8366,6 +8373,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         },
         CreatureLootQuery {
             item: 777,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -8403,9 +8411,9 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         &inventory,
         || 0.0,
         |min_count, _max_count| min_count,
-    )
-    .expect("normal loot should be selected when quest item is already satisfied");
-    assert_eq!(selected.item, 159);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].item, 159);
 }
 
 #[test]
@@ -8413,6 +8421,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
     let loot_rows = vec![
         CreatureLootQuery {
             item: 159,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 1,
@@ -8420,6 +8429,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
         },
         CreatureLootQuery {
             item: 160,
+            group_id: 0,
             min_count: 1,
             max_count: 1,
             display_id: 2,
@@ -8433,15 +8443,92 @@ fn creature_loot_roll_respects_chance_thresholds() {
         &[],
         || 49.95,
         |min_count, _max_count| min_count,
-    )
-    .expect("second loot row should pass chance roll");
-    assert_eq!(selected.item, 160);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].item, 160);
+}
+
+#[test]
+fn creature_loot_roll_can_return_multiple_independent_rows() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 100.0,
+        },
+        CreatureLootQuery {
+            item: 160,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: 100.0,
+        },
+    ];
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 0.0,
+        |min_count, _max_count| min_count,
+    );
+
+    let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
+    assert_eq!(items, vec![159, 160]);
+}
+
+#[test]
+fn creature_loot_roll_picks_one_row_per_group() {
+    let loot_rows = vec![
+        CreatureLootQuery {
+            item: 159,
+            group_id: 1,
+            min_count: 1,
+            max_count: 1,
+            display_id: 1,
+            chance_or_quest_chance: 20.0,
+        },
+        CreatureLootQuery {
+            item: 160,
+            group_id: 1,
+            min_count: 1,
+            max_count: 1,
+            display_id: 2,
+            chance_or_quest_chance: 80.0,
+        },
+        CreatureLootQuery {
+            item: 161,
+            group_id: 0,
+            min_count: 1,
+            max_count: 1,
+            display_id: 3,
+            chance_or_quest_chance: 100.0,
+        },
+    ];
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        || 25.0,
+        |min_count, _max_count| min_count,
+    );
+
+    let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
+    assert_eq!(items, vec![161, 160]);
 }
 
 #[test]
 fn creature_loot_roll_uses_randomized_count_range() {
     let loot_rows = vec![CreatureLootQuery {
         item: 118,
+        group_id: 0,
         min_count: 2,
         max_count: 5,
         display_id: 9,
@@ -8454,10 +8541,10 @@ fn creature_loot_roll_uses_randomized_count_range() {
         &[],
         || 0.0,
         |_min_count, _max_count| 4,
-    )
-    .expect("loot should be selected");
-    assert_eq!(selected.min_count, 4);
-    assert_eq!(selected.max_count, 4);
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].min_count, 4);
+    assert_eq!(selected[0].max_count, 4);
 }
 
 #[test]

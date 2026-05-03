@@ -178,7 +178,7 @@ struct MapPlayerCorpseVisibilityStage {
 #[derive(Debug, Default)]
 struct DbGameObjectLootState {
     open_characters: HashSet<u32>,
-    loot_item: Option<DbCreatureLootRuntime>,
+    loot_items: Vec<DbCreatureLootRuntime>,
 }
 
 impl MapRuntime {

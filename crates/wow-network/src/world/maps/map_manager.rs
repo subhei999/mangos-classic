@@ -771,14 +771,14 @@ impl MapRuntimeManager {
         map_id: u32,
         gameobject_guid: u64,
         character_guid: u32,
-        loot_item: Option<DbCreatureLootRuntime>,
-    ) -> Option<(DbGameObjectRuntime, Option<DbCreatureLootRuntime>)> {
+        loot_items: Vec<DbCreatureLootRuntime>,
+    ) -> Option<(DbGameObjectRuntime, Vec<DbCreatureLootRuntime>)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let opened = map.lock().await.open_db_gameobject_loot(
             gameobject_guid,
             character_guid,
-            loot_item,
+            loot_items,
         );
         opened
     }
@@ -801,13 +801,14 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         character_guid: u32,
-    ) -> Option<(u64, DbCreatureLootRuntime)> {
+        loot_slot: u8,
+    ) -> Option<(u64, u8, DbCreatureLootRuntime)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let loot = map
             .lock()
             .await
-            .take_db_gameobject_loot_item(character_guid);
+            .take_db_gameobject_loot_item(character_guid, loot_slot);
         loot
     }
 
@@ -815,14 +816,15 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         gameobject_guid: u64,
+        loot_slot: u8,
         loot: DbCreatureLootRuntime,
-    ) -> Option<DbCreatureLootRuntime> {
+    ) -> Option<Vec<DbCreatureLootRuntime>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let restored = map
             .lock()
             .await
-            .restore_db_gameobject_loot_item(gameobject_guid, loot);
+            .restore_db_gameobject_loot_item(gameobject_guid, loot_slot, loot);
         restored
     }
 
@@ -951,13 +953,13 @@ impl MapRuntimeManager {
         map_id: u32,
         creature_guid: u64,
         character_guid: u32,
-        loot_item: Option<DbCreatureLootRuntime>,
+        loot_items: Vec<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .open_db_creature_loot(creature_guid, character_guid, loot_item);
+            .open_db_creature_loot(creature_guid, character_guid, loot_items);
         creature
     }
 
@@ -996,9 +998,13 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         character_guid: u32,
-    ) -> Option<(u64, DbCreatureLootRuntime, DbCreatureRuntime)> {
+        loot_slot: u8,
+    ) -> Option<(u64, u8, DbCreatureLootRuntime, DbCreatureRuntime)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let loot = map.lock().await.take_db_creature_loot_item(character_guid);
+        let loot = map
+            .lock()
+            .await
+            .take_db_creature_loot_item(character_guid, loot_slot);
         loot
     }
 
@@ -1006,13 +1012,14 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         creature_guid: u64,
+        loot_slot: u8,
         loot: DbCreatureLootRuntime,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .restore_db_creature_loot_item(creature_guid, loot);
+            .restore_db_creature_loot_item(creature_guid, loot_slot, loot);
         creature
     }
 

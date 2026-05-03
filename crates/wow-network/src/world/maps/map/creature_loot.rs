@@ -3,21 +3,21 @@
 impl MapRuntime {
     fn db_creature_needs_loot_item(&self, creature_guid: u64) -> Option<bool> {
         let creature = self.creatures.get(&creature_guid)?;
-        creature.lootable.then_some(creature.loot_item.is_none())
+        creature.lootable.then_some(creature.loot_items.is_empty())
     }
 
     fn open_db_creature_loot(
         &mut self,
         creature_guid: u64,
         character_guid: u32,
-        loot_item: Option<DbCreatureLootRuntime>,
+        loot_items: Vec<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid)?;
         if !creature.lootable {
             return None;
         }
-        if creature.loot_item.is_none() {
-            creature.loot_item = loot_item;
+        if creature.loot_items.is_empty() {
+            creature.loot_items = loot_items;
         }
         creature.looting = true;
         self.creature_looting_by_character
@@ -52,27 +52,30 @@ impl MapRuntime {
     fn take_db_creature_loot_item(
         &mut self,
         character_guid: u32,
-    ) -> Option<(u64, DbCreatureLootRuntime, DbCreatureRuntime)> {
+        loot_slot: u8,
+    ) -> Option<(u64, u8, DbCreatureLootRuntime, DbCreatureRuntime)> {
         let creature_guid = self.db_creature_loot_guid_for_character(character_guid)?;
         let creature = self.creatures.get_mut(&creature_guid)?;
         if !creature.looting {
             return None;
         }
-        let loot = creature.loot_item.take()?;
+        let slot = usize::from(loot_slot);
+        let loot = creature.loot_items.get(slot).cloned()?;
+        creature.loot_items.remove(slot);
         let creature = creature.clone();
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
-        Some((creature_guid, loot, creature))
+        Some((creature_guid, loot_slot, loot, creature))
     }
 
     fn restore_db_creature_loot_item(
         &mut self,
         creature_guid: u64,
+        loot_slot: u8,
         loot: DbCreatureLootRuntime,
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid)?;
-        if creature.loot_item.is_none() {
-            creature.loot_item = Some(loot);
-        }
+        let slot = usize::from(loot_slot).min(creature.loot_items.len());
+        creature.loot_items.insert(slot, loot);
         let creature = creature.clone();
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         Some(creature)

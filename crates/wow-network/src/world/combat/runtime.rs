@@ -23,8 +23,9 @@
             client_visible: true,
             lootable: false,
             looting: false,
+            loot_money: 0,
             loot_money_available: false,
-            loot_item: None,
+            loot_items: Vec::new(),
         }
     }
 
@@ -66,8 +67,9 @@
                 creature.client_visible = false;
                 creature.lootable = false;
                 creature.looting = false;
+                creature.loot_money = 0;
                 creature.loot_money_available = false;
-                creature.loot_item = None;
+                creature.loot_items.clear();
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_waypoint_move_at = None;
@@ -158,10 +160,17 @@
     }
 
     fn loot_money(&self) -> u32 {
-        self.spawn
-            .template
-            .max_loot_gold
-            .max(self.spawn.template.min_loot_gold)
+        self.loot_money
+    }
+
+    fn roll_loot_money(&self) -> u32 {
+        let min = self.spawn.template.min_loot_gold;
+        let max = self.spawn.template.max_loot_gold.max(min);
+        if min == max {
+            min
+        } else {
+            rand::thread_rng().gen_range(min..=max)
+        }
     }
 
     fn dynamic_flags(&self) -> u32 {
@@ -182,8 +191,9 @@
         self.client_visible = true;
         self.lootable = true;
         self.looting = false;
-        self.loot_money_available = self.loot_money() > 0;
-        self.loot_item = None;
+        self.loot_money = self.roll_loot_money();
+        self.loot_money_available = self.loot_money > 0;
+        self.loot_items.clear();
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
         self.next_waypoint_move_at = None;
@@ -194,7 +204,7 @@
         if self.life_state != DbCreatureLifeState::Corpse {
             return;
         }
-        if self.loot_money_available || self.loot_item.is_some() {
+        if self.loot_money_available || !self.loot_items.is_empty() {
             return;
         }
         self.lootable = false;
@@ -220,7 +230,8 @@
         self.lootable = false;
         self.looting = false;
         self.loot_money_available = false;
-        self.loot_item = None;
+        self.loot_money = 0;
+        self.loot_items.clear();
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
@@ -245,7 +256,8 @@
         self.lootable = false;
         self.looting = false;
         self.loot_money_available = false;
-        self.loot_item = None;
+        self.loot_money = 0;
+        self.loot_items.clear();
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = Self::initial_random_move_at(&self.spawn);

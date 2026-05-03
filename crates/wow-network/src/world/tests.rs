@@ -816,6 +816,44 @@ fn creature_display_info_dbc_parser_reads_display_scale_field() {
 }
 
 #[test]
+fn spell_duration_dbc_parser_reads_cmangos_duration_fields() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&120_000i32.to_le_bytes());
+    bytes.extend_from_slice(&0i32.to_le_bytes());
+    bytes.extend_from_slice(&120_000i32.to_le_bytes());
+    bytes.extend_from_slice(&99u32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0i32.to_le_bytes());
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.push(0);
+
+    let durations = parse_spell_durations(&bytes);
+
+    assert_eq!(
+        durations.get(&4).copied(),
+        Some(SpellDurationEntry {
+            duration_millis: 120_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 120_000,
+        })
+    );
+    assert_eq!(
+        durations.get(&99).copied(),
+        Some(SpellDurationEntry {
+            duration_millis: -1,
+            duration_per_level_millis: 0,
+            max_duration_millis: -1,
+        })
+    );
+}
+
+#[test]
 fn creature_template_zero_scale_falls_back_to_first_display_dbc_scale() {
     let mut spawns = vec![test_creature_spawn(299)];
     spawns[0].template.scale = 0.0;
@@ -3848,7 +3886,7 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     kobold.position_z = 0.0;
     kobold.template.npc_flags = 0;
     let target = creature_spawn_guid(&kobold);
-    let starter_spell = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    let starter_spell = supported_starter_spell(&heroic_strike_spell_template()).unwrap();
     let targets = SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target),
@@ -4136,6 +4174,12 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -4219,6 +4263,12 @@ async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_sessio
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -4698,6 +4748,8 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
     })
     .await
@@ -6389,6 +6441,8 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
     }
 }
@@ -6401,6 +6455,57 @@ fn test_player_combat_stats() -> PlayerCombatStats {
         next_level_xp: 400,
     };
     player_combat_stats_for_values(1, 1, &world_stats, &[])
+}
+
+#[test]
+fn map_owned_player_aura_applies_attack_power_mod_and_expires() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+    let base_attack_power = map
+        .players
+        .get(&7)
+        .unwrap()
+        .base_combat_stats
+        .melee_attack_power;
+    let now = Instant::now();
+    let aura = ActiveAura {
+        spell_id: 6673,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 3,
+        positive: true,
+        duration_millis: Some(2_000),
+        expires_at: Some(now + Duration::from_secs(2)),
+        stat_modifiers: vec![AuraStatModifier::AttackPower { amount: 15 }],
+    };
+
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(event.direct_packets.len(), 3);
+    let duration_packet = event
+        .direct_packets
+        .iter()
+        .find(|packet| packet.opcode == SMSG_UPDATE_AURA_DURATION)
+        .expect("timed aura apply should send owner duration update");
+    assert_eq!(duration_packet.body[0], 0);
+    assert!(u32::from_le_bytes(duration_packet.body[1..5].try_into().unwrap()) <= 2_000);
+    assert_eq!(player.active_auras.len(), 1);
+    assert_eq!(player.combat_stats.melee_attack_power, base_attack_power);
+    assert_eq!(player.combat_stats.melee_attack_power_mod_positive, 15);
+
+    assert!(map
+        .advance_player_aura_expirations(now + Duration::from_secs(1))
+        .unwrap()
+        .is_empty());
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_secs(2))
+        .unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(packets.len(), 2);
+    assert!(player.active_auras.is_empty());
+    assert_eq!(player.combat_stats.melee_attack_power, base_attack_power);
+    assert_eq!(player.combat_stats.melee_attack_power_mod_positive, 0);
 }
 
 fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
@@ -7394,6 +7499,7 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             maps_available: true,
             vmaps_available: true,
             creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -7549,6 +7655,7 @@ fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
             maps_available: true,
             vmaps_available: false,
             creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -8408,6 +8515,7 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             maps_available: true,
             vmaps_available: true,
             creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::from([0]),
@@ -9127,10 +9235,99 @@ fn combat_session_tracks_active_dummy_target_and_loot_state() {
     assert_eq!(session.player_rage, 0);
 }
 
+fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
+    wow_db::SpellTemplateQuery {
+        id: spell_id,
+        spell_name: format!("Spell {spell_id}"),
+        rank: None,
+        attributes: 0,
+        attributes_ex: 0,
+        attributes_ex2: 0,
+        attributes_ex3: 0,
+        recovery_time: 0,
+        category_recovery_time: 0,
+        start_recovery_category: 0,
+        start_recovery_time: 0,
+        power_type: 0,
+        mana_cost: 0,
+        duration_index: 0,
+        effect1: 0,
+        effect2: 0,
+        effect3: 0,
+        effect_base_points1: 0,
+        effect_base_points2: 0,
+        effect_base_points3: 0,
+        effect_apply_aura_name1: 0,
+        effect_apply_aura_name2: 0,
+        effect_apply_aura_name3: 0,
+        effect_implicit_target_a1: 0,
+        effect_implicit_target_a2: 0,
+        effect_implicit_target_a3: 0,
+        spell_family_name: 0,
+        spell_family_flags: 0,
+        dmg_class: 0,
+    }
+}
+
+fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(WARRIOR_HEROIC_STRIKE_RANK_1);
+    template.spell_name = "Heroic Strike".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 327700;
+    template.attributes_ex = 134217728;
+    template.attributes_ex3 = 1024;
+    template.power_type = 1;
+    template.mana_cost = 150;
+    template.effect1 = 17;
+    template.effect_base_points1 = 10;
+    template.spell_family_name = 4;
+    template.spell_family_flags = 64;
+    template.dmg_class = 2;
+    template
+}
+
+fn raptor_strike_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(HUNTER_RAPTOR_STRIKE_RANK_1);
+    template.spell_name = "Raptor Strike".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 328708;
+    template.attributes_ex3 = 1024;
+    template.category_recovery_time = 6000;
+    template.power_type = 0;
+    template.mana_cost = 15;
+    template.effect1 = 58;
+    template.effect_base_points1 = 4;
+    template.spell_family_name = 9;
+    template.spell_family_flags = 2;
+    template.dmg_class = 2;
+    template
+}
+
+fn battle_shout_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(6673);
+    template.spell_name = "Battle Shout".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 327696;
+    template.attributes_ex2 = 4;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1500;
+    template.power_type = 1;
+    template.mana_cost = 100;
+    template.duration_index = 4;
+    template.effect1 = 6;
+    template.effect_base_points1 = 14;
+    template.effect_apply_aura_name1 = 99;
+    template.effect_implicit_target_a1 = 20;
+    template.spell_family_name = 4;
+    template.spell_family_flags = 65536;
+    template.dmg_class = 1;
+    template
+}
+
 #[test]
-fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
+fn starter_spell_support_is_derived_from_cmangos_spell_template_fields() {
     assert_eq!(
-        supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1),
+        supported_starter_spell(&heroic_strike_spell_template()),
         Some(SupportedStarterSpell {
             spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
             kind: StarterSpellKind::NextMeleeSwing,
@@ -9141,25 +9338,41 @@ fn starter_spell_support_covers_warrior_and_hunter_active_spells() {
             },
             requires_melee: true,
             triggers_global_cooldown: false,
+            global_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
     assert_eq!(
-        supported_starter_spell(HUNTER_RAPTOR_STRIKE_RANK_1),
+        supported_starter_spell(&raptor_strike_spell_template()),
         Some(SupportedStarterSpell {
             spell_id: HUNTER_RAPTOR_STRIKE_RANK_1,
             kind: StarterSpellKind::NextMeleeSwing,
-            bonus_damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
-            damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
+            bonus_damage: 5,
+            damage: 0,
             power: StarterSpellPower::Mana {
                 cost: RAPTOR_STRIKE_MANA_COST
             },
             requires_melee: true,
             triggers_global_cooldown: false,
+            global_cooldown_millis: 0,
+            cooldown_millis: 6000,
+        })
+    );
+    assert_eq!(
+        supported_starter_spell(&battle_shout_spell_template()),
+        Some(SupportedStarterSpell {
+            spell_id: 6673,
+            kind: StarterSpellKind::AuraApplication,
+            bonus_damage: 0,
+            damage: 0,
+            power: StarterSpellPower::Rage { cost: 100 },
+            requires_melee: false,
+            triggers_global_cooldown: true,
+            global_cooldown_millis: 1500,
             cooldown_millis: 0,
         })
     );
-    assert_eq!(supported_starter_spell(1), None);
+    assert_eq!(supported_starter_spell(&test_spell_template(1)), None);
 }
 
 #[tokio::test]
@@ -9265,6 +9478,12 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(
+            WARRIOR_HEROIC_STRIKE_RANK_1,
+            Some(heroic_strike_spell_template()),
+        )
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -9335,6 +9554,117 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
 }
 
 #[tokio::test]
+async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: HashMap::from([(
+            4,
+            SpellDurationEntry {
+                duration_millis: 120_000,
+                duration_per_level_millis: 0,
+                max_duration_millis: 120_000,
+            },
+        )]),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(6673, Some(battle_shout_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&6673u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(6673);
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 3,
+            xp: 0,
+            position: WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+        }),
+        player_rage: 250,
+        active_spells,
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        &character_db_pool,
+        &world_db_pool,
+        shared_world,
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.player_rage, 150);
+    assert!(session
+        .starter_global_cooldown_until
+        .is_some_and(|until| until > Instant::now()));
+    assert_eq!(session.active_auras.len(), 1);
+    let active_aura = &session.active_auras[0];
+    assert_eq!(active_aura.spell_id, 6673);
+    assert_eq!(active_aura.caster, ObjectGuid::new(HighGuid::Player, 0, 7));
+    assert_eq!(active_aura.level, 3);
+    assert!(active_aura.positive);
+    assert_eq!(active_aura.duration_millis, Some(120_000));
+    assert!(active_aura
+        .expires_at
+        .is_some_and(|expires_at| expires_at > Instant::now()));
+    assert_eq!(
+        active_aura.stat_modifiers,
+        vec![AuraStatModifier::AttackPower { amount: 15 }]
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
+    let aura_update = packets
+        .iter()
+        .find(|packet| {
+            packet.opcode == SMSG_UPDATE_OBJECT
+                && packet
+                    .body
+                    .windows(4)
+                    .any(|window| window == 6673u32.to_le_bytes().as_slice())
+        })
+        .expect("Battle Shout should update the player's visible aura slot");
+    let (values, trailing) = decode_values_update_block(
+        &aura_update.body[5..],
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+    );
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_AURA], Some(6673));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(POSITIVE_AURA_FLAGS));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(3));
+    let duration_packet = packets
+        .iter()
+        .find(|packet| packet.opcode == SMSG_UPDATE_AURA_DURATION)
+        .expect("Battle Shout should send the owner aura duration timer");
+    assert_eq!(duration_packet.body[0], 0);
+    let remaining = u32::from_le_bytes(duration_packet.body[1..5].try_into().unwrap());
+    assert!(remaining > 0 && remaining <= 120_000);
+}
+
+#[tokio::test]
 async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
@@ -9352,7 +9682,7 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
     };
 
     let mut session = WorldSessionState::default();
-    let starter = supported_starter_spell(WARRIOR_HEROIC_STRIKE_RANK_1).unwrap();
+    let starter = supported_starter_spell(&heroic_strike_spell_template()).unwrap();
     assert_eq!(
         starter_spell_cast_failure(
             shared_world,
@@ -9375,6 +9705,7 @@ async fn starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queu
         power: StarterSpellPower::Rage { cost: 0 },
         requires_melee: false,
         triggers_global_cooldown: true,
+        global_cooldown_millis: 1500,
         cooldown_millis: 0,
     };
     assert_eq!(
@@ -11207,11 +11538,16 @@ fn opening_spell_packets_include_gameobject_target_mask() {
 fn raptor_strike_starter_spell_packets_match_success_shapes() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
     let target = rust_combat_dummy_guid();
-    let targets = normalize_fixture_spell_targets(SpellCastTargets {
-        target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
-        unit_target: Some(target),
-        gameobject_target: None,
-    });
+    let starter_spell = supported_starter_spell(&raptor_strike_spell_template()).unwrap();
+    let targets = normalize_starter_spell_targets(
+        SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+            unit_target: Some(target),
+            gameobject_target: None,
+        },
+        &starter_spell,
+        caster,
+    );
 
     let result = build_cast_result_ok_body(HUNTER_RAPTOR_STRIKE_RANK_1);
     assert_eq!(&result[0..4], &HUNTER_RAPTOR_STRIKE_RANK_1.to_le_bytes());

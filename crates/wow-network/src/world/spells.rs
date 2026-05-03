@@ -8,6 +8,7 @@ async fn handle_cast_spell(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let packet = CastSpellPacket::read(body)?;
+    expire_session_auras(session, Instant::now());
     let Some(character) = &session.active_character else {
         warn!(
             spell_id = packet.spell_id,
@@ -16,6 +17,7 @@ async fn handle_cast_spell(
         return Ok(());
     };
     let character_guid = character.guid;
+    let character_level = character.level;
     let map_id = character.position.map_id;
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
@@ -37,23 +39,35 @@ async fn handle_cast_spell(
         .await;
     }
 
-    let Some(starter_spell) = supported_starter_spell(packet.spell_id) else {
-        warn!(
-            spell_id = packet.spell_id,
-            "Ignoring unsupported spell cast in starter spell fixture slice"
-        );
-        return Ok(());
-    };
     if !session.active_spells.contains(&packet.spell_id) {
         warn!(
             spell_id = packet.spell_id,
             character_guid,
-            "Ignoring starter spell cast for spell not active on character"
+            "Ignoring spell cast for spell not active on character"
         );
         return Ok(());
     }
+    let Some(spell_template) = shared_world
+        .object_mgr
+        .spell_template(world_db_pool, packet.spell_id)
+        .await?
+    else {
+        warn!(
+            spell_id = packet.spell_id,
+            "Ignoring spell cast with no spell_template row"
+        );
+        return Ok(());
+    };
+    let Some(starter_spell) = supported_starter_spell(&spell_template) else {
+        warn!(
+            spell_id = packet.spell_id,
+            spell_name = spell_template.spell_name.as_str(),
+            "Ignoring unsupported spell effect shape in starter spell slice"
+        );
+        return Ok(());
+    };
 
-    let targets = normalize_fixture_spell_targets(packet.targets);
+    let targets = normalize_starter_spell_targets(packet.targets, &starter_spell, caster);
     if let Some(failure) = starter_spell_cast_failure(
         shared_world,
         session,
@@ -161,169 +175,219 @@ async fn handle_cast_spell(
             )
             .await;
         shared_world.sessions.dispatch(observer_packets).await;
-        if targets.unit_target == Some(rust_combat_dummy_guid())
-        && !session.combat_dummy_lootable
-        && session.combat_dummy_health > 0
-    {
-        let damage = session.combat_dummy_health.min(starter_spell.damage);
-        session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-        if session.combat_dummy_health == 0 {
-            session.combat_dummy_lootable = true;
-            session.combat_dummy_looting = false;
-            session.combat_dummy_loot_money_available = true;
-            session.combat_dummy_loot_item_available = true;
-            mirror_session_player_auto_attack(session, None, None);
-            shared_world
-                .maps
-                .set_player_auto_attack(map_id, character_guid, None, None)
-                .await;
-        }
-        send_packet(
-            stream,
-            SMSG_SPELLNONMELEEDAMAGELOG,
-            &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
-                attacker: caster,
-                target: rust_combat_dummy_guid(),
-                spell_id: packet.spell_id,
-                damage,
-                school: 0,
-                absorb: 0,
-                resist: 0,
-                periodic: false,
-                blocked: 0,
-                hit_info: 0,
-            })?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            SMSG_ATTACKERSTATEUPDATE,
-            &build_attacker_state_update_body_with_spell_id(
-                caster,
-                rust_combat_dummy_guid(),
-                damage,
-                packet.spell_id,
-            )?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            SMSG_UPDATE_OBJECT,
-            &build_combat_dummy_state_update_body(
-                session.combat_dummy_health,
-                if session.combat_dummy_health == 0 {
-                    UNIT_DYNFLAG_LOOTABLE
-                } else {
-                    0
-                },
-            )?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        } else if let Some(target) = targets.unit_target {
-        let can_apply_damage = if starter_spell.requires_melee {
-            db_creature_player_melee_check_from_map(shared_world, session, target).await
-                == PlayerMeleeCheck::Clear
-        } else {
-            true
-        };
-        if can_apply_damage {
-            if let Some(event) = shared_world
-                .maps
-                .apply_db_creature_damage(
-                    map_id,
-                    DbCreatureDamageRequest {
-                        creature_guid: target,
-                        killer: caster,
-                        damage: starter_spell.damage,
-                        melee_outcome: None,
-                        spell_id: Some(packet.spell_id),
-                        suppress_attacker_state: false,
-                        now: Instant::now(),
-                        now_epoch_secs: current_unix_epoch_secs(),
-                        exclude_character_guid: Some(character_guid),
+        if starter_spell.kind == StarterSpellKind::InstantDamage
+            && targets.unit_target == Some(rust_combat_dummy_guid())
+            && !session.combat_dummy_lootable
+            && session.combat_dummy_health > 0
+        {
+            let damage = session.combat_dummy_health.min(starter_spell.damage);
+            session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
+            if session.combat_dummy_health == 0 {
+                session.combat_dummy_lootable = true;
+                session.combat_dummy_looting = false;
+                session.combat_dummy_loot_money_available = true;
+                session.combat_dummy_loot_item_available = true;
+                mirror_session_player_auto_attack(session, None, None);
+                shared_world
+                    .maps
+                    .set_player_auto_attack(map_id, character_guid, None, None)
+                    .await;
+            }
+            send_packet(
+                stream,
+                SMSG_SPELLNONMELEEDAMAGELOG,
+                &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                    attacker: caster,
+                    target: rust_combat_dummy_guid(),
+                    spell_id: packet.spell_id,
+                    damage,
+                    school: 0,
+                    absorb: 0,
+                    resist: 0,
+                    periodic: false,
+                    blocked: 0,
+                    hit_info: 0,
+                })?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_ATTACKERSTATEUPDATE,
+                &build_attacker_state_update_body_with_spell_id(
+                    caster,
+                    rust_combat_dummy_guid(),
+                    damage,
+                    packet.spell_id,
+                )?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_combat_dummy_state_update_body(
+                    session.combat_dummy_health,
+                    if session.combat_dummy_health == 0 {
+                        UNIT_DYNFLAG_LOOTABLE
+                    } else {
+                        0
                     },
-                )
-                .await?
-            {
-                let death_finalization = event.death_finalization;
-                let target_switch = event.target_switch;
-                let is_dead = death_finalization.is_some();
-                mirror_session_db_creature(session, target.raw(), event.creature.clone());
-                if is_dead {
-                    mirror_session_player_auto_attack(session, None, None);
-                    shared_world
-                        .maps
-                        .set_player_auto_attack(map_id, character_guid, None, None)
-                        .await;
-                    clear_db_creature_combat_if_attacker(session, target);
-                }
-                if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
-                    send_packet(
-                        stream,
-                        SMSG_SPELLNONMELEEDAMAGELOG,
-                        spell_non_melee_log_body,
-                        Some(&mut *header_crypto),
-                    )
-                    .await?;
-                }
-                if let Some(attacker_state_body) = &event.attacker_state_body {
-                    send_packet(
-                        stream,
-                        SMSG_ATTACKERSTATEUPDATE,
-                        attacker_state_body,
-                        Some(&mut *header_crypto),
-                    )
-                    .await?;
-                }
-                let creature_update_body = event.update_body.clone();
-                send_packet(
-                    stream,
-                    SMSG_UPDATE_OBJECT,
-                    &creature_update_body,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
-                let broadcast = CreatureCombatBroadcast {
-                    shared_world,
-                    map_id,
-                    player: caster,
-                };
-                shared_world.sessions.dispatch(event.observer_packets).await;
-                if is_dead {
-                    send_db_creature_motion_stop(stream, broadcast, session, target, header_crypto)
-                        .await?;
-                    finalize_db_creature_death(
-                        stream,
-                        character_db_pool,
-                        world_db_pool,
-                        shared_world,
-                        session,
-                        death_finalization,
-                        header_crypto,
-                    )
-                    .await?;
+                )?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        } else if starter_spell.kind == StarterSpellKind::InstantDamage {
+            if let Some(target) = targets.unit_target {
+                let can_apply_damage = if starter_spell.requires_melee {
+                    db_creature_player_melee_check_from_map(shared_world, session, target).await
+                        == PlayerMeleeCheck::Clear
                 } else {
-                    send_db_creature_threat_target_switch(
-                        stream,
-                        shared_world,
-                        session,
-                        target_switch,
-                        header_crypto,
-                    )
-                    .await?;
-                    begin_shared_db_creature_combat(shared_world, session, target, Instant::now())
-                        .await;
+                    true
+                };
+                if can_apply_damage {
+                    if let Some(event) = shared_world
+                        .maps
+                        .apply_db_creature_damage(
+                            map_id,
+                            DbCreatureDamageRequest {
+                                creature_guid: target,
+                                killer: caster,
+                                damage: starter_spell.damage,
+                                melee_outcome: None,
+                                spell_id: Some(packet.spell_id),
+                                suppress_attacker_state: false,
+                                now: Instant::now(),
+                                now_epoch_secs: current_unix_epoch_secs(),
+                                exclude_character_guid: Some(character_guid),
+                            },
+                        )
+                        .await?
+                    {
+                        let death_finalization = event.death_finalization;
+                        let target_switch = event.target_switch;
+                        let is_dead = death_finalization.is_some();
+                        mirror_session_db_creature(session, target.raw(), event.creature.clone());
+                        if is_dead {
+                            mirror_session_player_auto_attack(session, None, None);
+                            shared_world
+                                .maps
+                                .set_player_auto_attack(map_id, character_guid, None, None)
+                                .await;
+                            clear_db_creature_combat_if_attacker(session, target);
+                        }
+                        if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
+                            send_packet(
+                                stream,
+                                SMSG_SPELLNONMELEEDAMAGELOG,
+                                spell_non_melee_log_body,
+                                Some(&mut *header_crypto),
+                            )
+                            .await?;
+                        }
+                        if let Some(attacker_state_body) = &event.attacker_state_body {
+                            send_packet(
+                                stream,
+                                SMSG_ATTACKERSTATEUPDATE,
+                                attacker_state_body,
+                                Some(&mut *header_crypto),
+                            )
+                            .await?;
+                        }
+                        let creature_update_body = event.update_body.clone();
+                        send_packet(
+                            stream,
+                            SMSG_UPDATE_OBJECT,
+                            &creature_update_body,
+                            Some(&mut *header_crypto),
+                        )
+                        .await?;
+                        let broadcast = CreatureCombatBroadcast {
+                            shared_world,
+                            map_id,
+                            player: caster,
+                        };
+                        shared_world.sessions.dispatch(event.observer_packets).await;
+                        if is_dead {
+                            send_db_creature_motion_stop(
+                                stream,
+                                broadcast,
+                                session,
+                                target,
+                                header_crypto,
+                            )
+                            .await?;
+                            finalize_db_creature_death(
+                                stream,
+                                character_db_pool,
+                                world_db_pool,
+                                shared_world,
+                                session,
+                                death_finalization,
+                                header_crypto,
+                            )
+                            .await?;
+                        } else {
+                            send_db_creature_threat_target_switch(
+                                stream,
+                                shared_world,
+                                session,
+                                target_switch,
+                                header_crypto,
+                            )
+                            .await?;
+                            begin_shared_db_creature_combat(
+                                shared_world,
+                                session,
+                                target,
+                                Instant::now(),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
         }
     }
-    }
     if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
         Ok(())
     } else {
+        if starter_spell.kind == StarterSpellKind::AuraApplication {
+            let aura = build_active_aura(
+                &spell_template,
+                caster,
+                character_level,
+                now,
+                shared_world
+                    .maps
+                    .spell_duration(spell_template.duration_index),
+            );
+            apply_player_aura(session, aura.clone());
+            if let Some(event) = shared_world
+                .maps
+                .apply_player_aura(map_id, character_guid, aura)
+                .await?
+            {
+                for packet in event.direct_packets {
+                    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
+                        .await?;
+                }
+                shared_world.sessions.dispatch(event.observer_packets).await;
+            } else {
+                send_packet(
+                    stream,
+                    SMSG_UPDATE_OBJECT,
+                    &build_player_aura_update_body(caster, &session.active_auras)?,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+                for packet in build_player_aura_duration_update_packets(&session.active_auras, now)
+                {
+                    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
+                        .await?;
+                }
+            }
+        }
         let power_update = match starter_spell.power {
             StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
             StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
@@ -534,10 +598,20 @@ async fn starter_spell_cast_failure(
     starter_spell_melee_cast_failure(shared_world, session, starter_spell, targets).await
 }
 
-fn normalize_fixture_spell_targets(mut targets: SpellCastTargets) -> SpellCastTargets {
-    targets.target_mask =
-        (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
-    targets.unit_target = Some(targets.unit_target.unwrap_or_else(rust_combat_dummy_guid));
+fn normalize_starter_spell_targets(
+    mut targets: SpellCastTargets,
+    starter_spell: &SupportedStarterSpell,
+    caster: ObjectGuid,
+) -> SpellCastTargets {
+    targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
+        & !SPELL_CAST_TARGET_UNIT_ENEMY;
+    targets.unit_target = Some(targets.unit_target.unwrap_or_else(|| {
+        if starter_spell.kind == StarterSpellKind::AuraApplication {
+            caster
+        } else {
+            rust_combat_dummy_guid()
+        }
+    }));
     targets.gameobject_target = None;
     targets
 }
@@ -551,13 +625,14 @@ struct SupportedStarterSpell {
     power: StarterSpellPower,
     requires_melee: bool,
     triggers_global_cooldown: bool,
+    global_cooldown_millis: u64,
     cooldown_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StarterSpellKind {
-    #[allow(dead_code)]
     InstantDamage,
+    AuraApplication,
     NextMeleeSwing,
 }
 
@@ -567,34 +642,173 @@ enum StarterSpellPower {
     Mana { cost: u32 },
 }
 
-fn supported_starter_spell(spell_id: u32) -> Option<SupportedStarterSpell> {
-    match spell_id {
-        WARRIOR_HEROIC_STRIKE_RANK_1 => Some(SupportedStarterSpell {
-            spell_id,
-            kind: StarterSpellKind::NextMeleeSwing,
-            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
-            damage: 0,
-            power: StarterSpellPower::Rage {
-                cost: HEROIC_STRIKE_RAGE_COST,
-            },
-            requires_melee: true,
-            triggers_global_cooldown: false,
-            cooldown_millis: 0,
-        }),
-        HUNTER_RAPTOR_STRIKE_RANK_1 => Some(SupportedStarterSpell {
-            spell_id,
-            kind: StarterSpellKind::NextMeleeSwing,
-            bonus_damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
-            damage: RAPTOR_STRIKE_FIXTURE_DAMAGE,
-            power: StarterSpellPower::Mana {
-                cost: RAPTOR_STRIKE_MANA_COST,
-            },
-            requires_melee: true,
-            triggers_global_cooldown: false,
-            cooldown_millis: 0,
-        }),
-        _ => None,
+const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
+const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
+const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 58;
+const SPELL_EFFECT_APPLY_AURA: u32 = 6;
+const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
+const POWER_TYPE_MANA: u32 = 0;
+const POWER_TYPE_RAGE: u32 = 1;
+const POSITIVE_AURA_FLAGS: u32 = 0x05;
+const MAX_AURA_SLOTS: usize = 48;
+const MAX_AURA_FLAG_FIELDS: usize = 6;
+const MAX_AURA_LEVEL_FIELDS: usize = 12;
+
+fn supported_starter_spell(template: &wow_db::SpellTemplateQuery) -> Option<SupportedStarterSpell> {
+    let kind = if spell_has_on_next_swing_attribute(template) {
+        StarterSpellKind::NextMeleeSwing
+    } else if spell_has_aura_application(template) {
+        StarterSpellKind::AuraApplication
+    } else if spell_has_direct_damage_effect(template) {
+        StarterSpellKind::InstantDamage
+    } else {
+        return None;
+    };
+
+    Some(SupportedStarterSpell {
+        spell_id: template.id,
+        kind,
+        bonus_damage: spell_bonus_damage(template),
+        damage: spell_direct_damage(template),
+        power: spell_power(template),
+        requires_melee: kind == StarterSpellKind::NextMeleeSwing || template.dmg_class == 2,
+        triggers_global_cooldown: template.start_recovery_category != 0
+            || template.start_recovery_time != 0,
+        global_cooldown_millis: template.start_recovery_time as u64,
+        cooldown_millis: template.recovery_time.max(template.category_recovery_time) as u64,
+    })
+}
+
+fn spell_has_on_next_swing_attribute(template: &wow_db::SpellTemplateQuery) -> bool {
+    (template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING)) != 0
+}
+
+fn spell_has_aura_application(template: &wow_db::SpellTemplateQuery) -> bool {
+    [template.effect1, template.effect2, template.effect3].contains(&SPELL_EFFECT_APPLY_AURA)
+}
+
+fn spell_has_direct_damage_effect(template: &wow_db::SpellTemplateQuery) -> bool {
+    [
+        template.effect_base_points1,
+        template.effect_base_points2,
+        template.effect_base_points3,
+    ]
+    .into_iter()
+    .any(|base_points| base_points > 0)
+}
+
+fn spell_bonus_damage(template: &wow_db::SpellTemplateQuery) -> u32 {
+    spell_effects(template)
+        .into_iter()
+        .filter(|effect| {
+            effect.effect == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
+                || effect.effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE
+        })
+        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+        .max()
+        .unwrap_or(0)
+}
+
+fn spell_direct_damage(template: &wow_db::SpellTemplateQuery) -> u32 {
+    if spell_has_on_next_swing_attribute(template) {
+        return 0;
     }
+    spell_effects(template)
+        .into_iter()
+        .filter(|effect| effect.effect != 0 && effect.effect != SPELL_EFFECT_APPLY_AURA)
+        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+        .sum()
+}
+
+fn spell_effect_simple_value(base_points: i32) -> Option<u32> {
+    (base_points >= 0).then_some((base_points + 1) as u32)
+}
+
+fn spell_power(template: &wow_db::SpellTemplateQuery) -> StarterSpellPower {
+    match template.power_type {
+        POWER_TYPE_RAGE => StarterSpellPower::Rage {
+            cost: template.mana_cost,
+        },
+        POWER_TYPE_MANA => StarterSpellPower::Mana {
+            cost: template.mana_cost,
+        },
+        _ => StarterSpellPower::Mana {
+            cost: template.mana_cost,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpellEffectData {
+    effect: u32,
+    aura_name: u32,
+    base_points: i32,
+}
+
+fn spell_effects(template: &wow_db::SpellTemplateQuery) -> [SpellEffectData; 3] {
+    [
+        SpellEffectData {
+            effect: template.effect1,
+            aura_name: template.effect_apply_aura_name1,
+            base_points: template.effect_base_points1,
+        },
+        SpellEffectData {
+            effect: template.effect2,
+            aura_name: template.effect_apply_aura_name2,
+            base_points: template.effect_base_points2,
+        },
+        SpellEffectData {
+            effect: template.effect3,
+            aura_name: template.effect_apply_aura_name3,
+            base_points: template.effect_base_points3,
+        },
+    ]
+}
+
+fn build_active_aura(
+    template: &wow_db::SpellTemplateQuery,
+    caster: ObjectGuid,
+    level: u8,
+    now: Instant,
+    duration: Option<SpellDurationEntry>,
+) -> ActiveAura {
+    let duration_millis = duration
+        .map(|duration| {
+            if duration.duration_millis == -1 {
+                -1
+            } else {
+                duration.duration_millis.abs()
+            }
+        })
+        .unwrap_or(0);
+    ActiveAura {
+        spell_id: template.id,
+        caster,
+        level,
+        positive: true,
+        duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
+        expires_at: (duration_millis > 0)
+            .then_some(now + Duration::from_millis(duration_millis as u64)),
+        stat_modifiers: spell_aura_stat_modifiers(template),
+    }
+}
+
+fn spell_aura_stat_modifiers(template: &wow_db::SpellTemplateQuery) -> Vec<AuraStatModifier> {
+    spell_effects(template)
+        .into_iter()
+        .filter(|effect| effect.effect == SPELL_EFFECT_APPLY_AURA)
+        .filter_map(|effect| match effect.aura_name {
+            SPELL_AURA_MOD_ATTACK_POWER => Some(AuraStatModifier::AttackPower {
+                amount: spell_effect_simple_i32(effect.base_points),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn spell_effect_simple_i32(base_points: i32) -> i32 {
+    base_points.saturating_add(1)
 }
 
 fn apply_starter_spell_cooldowns(
@@ -604,7 +818,7 @@ fn apply_starter_spell_cooldowns(
 ) {
     if starter_spell.triggers_global_cooldown {
         session.starter_global_cooldown_until =
-            Some(now + Duration::from_millis(STARTER_GLOBAL_COOLDOWN_MILLIS));
+            Some(now + Duration::from_millis(starter_spell.global_cooldown_millis));
     }
     if starter_spell.cooldown_millis > 0 {
         session.starter_spell_cooldowns_until.insert(
@@ -612,6 +826,108 @@ fn apply_starter_spell_cooldowns(
             now + Duration::from_millis(starter_spell.cooldown_millis),
         );
     }
+}
+
+fn apply_player_aura(session: &mut WorldSessionState, aura: ActiveAura) {
+    apply_active_aura(&mut session.active_auras, aura);
+}
+
+fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, aura: ActiveAura) {
+    if let Some(existing) = active_auras
+        .iter_mut()
+        .find(|existing| existing.spell_id == aura.spell_id && existing.caster == aura.caster)
+    {
+        *existing = aura;
+    } else {
+        active_auras.push(aura);
+    }
+}
+
+fn expire_session_auras(session: &mut WorldSessionState, now: Instant) {
+    session
+        .active_auras
+        .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+}
+
+fn build_player_aura_update_body(
+    player: ObjectGuid,
+    active_auras: &[ActiveAura],
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_player_aura_update_values(&mut values, active_auras)?;
+
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
+fn set_player_aura_update_values(
+    values: &mut [Option<u32>],
+    active_auras: &[ActiveAura],
+) -> anyhow::Result<()> {
+    for slot in 0..MAX_AURA_SLOTS {
+        set_update_value(values, UNIT_FIELD_AURA + slot, 0)?;
+    }
+    for field in 0..MAX_AURA_FLAG_FIELDS {
+        set_update_value(values, UNIT_FIELD_AURAFLAGS + field, 0)?;
+    }
+    for field in 0..MAX_AURA_LEVEL_FIELDS {
+        set_update_value(values, UNIT_FIELD_AURALEVELS + field, 0)?;
+        set_update_value(values, UNIT_FIELD_AURAAPPLICATIONS + field, 0)?;
+    }
+
+    for (slot, aura) in active_auras.iter().take(MAX_AURA_SLOTS).enumerate() {
+        set_update_value(values, UNIT_FIELD_AURA + slot, aura.spell_id)?;
+        if aura.positive {
+            let flags_index = UNIT_FIELD_AURAFLAGS + (slot / 8);
+            let flags_shift = ((slot % 8) * 4) as u32;
+            let previous = values[flags_index].unwrap_or(0);
+            set_update_value(
+                values,
+                flags_index,
+                previous | (POSITIVE_AURA_FLAGS << flags_shift),
+            )?;
+        }
+
+        let level_index = UNIT_FIELD_AURALEVELS + (slot / 4);
+        let level_shift = ((slot % 4) * 8) as u32;
+        let previous = values[level_index].unwrap_or(0);
+        set_update_value(
+            values,
+            level_index,
+            previous | ((aura.level.max(1) as u32) << level_shift),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn build_aura_duration_update_body(slot: u8, remaining_millis: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(5);
+    body.push(slot);
+    body.extend_from_slice(&remaining_millis.to_le_bytes());
+    body
+}
+
+fn build_player_aura_duration_update_packets(
+    active_auras: &[ActiveAura],
+    now: Instant,
+) -> Vec<OutboundWorldPacket> {
+    active_auras
+        .iter()
+        .take(MAX_AURA_SLOTS)
+        .enumerate()
+        .filter_map(|(slot, aura)| {
+            aura.remaining_duration_millis(now)
+                .map(|remaining_millis| OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_AURA_DURATION,
+                    body: build_aura_duration_update_body(slot as u8, remaining_millis),
+                })
+        })
+        .collect()
 }
 
 fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {

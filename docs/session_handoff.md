@@ -7,35 +7,17 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/c2-quest-reward-transaction`.
-- Purpose: focused Checkpoint 2 worker slice for CMaNGOS-like quest reward
-  transactions, quest reputation rewards, and real-client reputation packet
-  feedback.
-- Base intent: branch from the latest integration state, prove the slice with
-  focused tests plus the full Rust suite, then merge/rebase into
-  `codex/rusty-mangos` or the current Checkpoint 2 integration branch.
-- Latest branch commits:
-  - `34291459d` adds quest reward reputation transactions and immediate
-    reputation standing packets.
-- Current branch changes now include:
-  - quest templates now load `RewRepFaction1..5` and `RewRepValue1..5`;
-  - quest reward completion persists money and quest reputation changes in the
-    same DB transaction;
-  - changed reputation rows are returned to the world layer so the client can
-    receive immediate visible/standing packets;
-  - reputation packet helpers send CMaNGOS-shaped
-    `SMSG_SET_FACTION_VISIBLE` / `SMSG_SET_FACTION_STANDING`;
-  - quest source items now update the player backpack slot and send
-    `SMSG_ITEM_PUSH_RESULT`, matching the CMaNGOS `GiveQuestSourceItemIfNeed`
-    / `SendNewItem` shape;
-  - reputation reward changes also send a 1.12 `CHAT_MSG_SYSTEM` line using the
-    current DBC-derived faction bridge, until full default `Faction.dbc`
-    reputation initialization lets the client generate this feedback natively;
-  - Northshire Stormwind quest reward rows were verified in the local world DB.
+- Branch: `codex/c2-spell-aura-system`.
+- Current state: uncommitted spell/aura foundation changes are present.
+- Purpose: Checkpoint 2 warrior spell slice that moves starter spell execution
+  away from spell-id fixtures and toward the CMaNGOS `Spell.dbc` /
+  `spell_template` model.
+- Base intent: this branch is stacked on the current C2 closure/testing state
+  rather than the stale old `codex/c2-warrior-spells-gcd` branch.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the source-item/chat follow-up:
-  - authserver PID `36452` on `127.0.0.1:13724`;
-  - worldserver PID `48168` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after this slice:
+  - authserver PID `44896` on `127.0.0.1:13724`;
+  - worldserver PID `26968` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -50,6 +32,10 @@ into generalized systems work and priorities; do not hardcode Northshire-only
 fixes. Anything less than CMaNGOS/source-backed gameplay math is considered
 fake.**
 
+Immediate focus: continue warrior level 1-6 spell parity using a real
+CMaNGOS-style spell/aura pipeline, not one-off Heroic Strike or Battle Shout
+patches.
+
 Important scope rule: stay focused on the current goal, but use judgment. Fix
 blockers and safety/data-integrity guardrails when practical. Log useful
 follow-ups when they should not be handled immediately.
@@ -59,21 +45,19 @@ Use DB data, DBC/source-derived values, or CMaNGOS formulas. If the real data
 source is not wired yet, leave behavior unimplemented or narrowly guarded and
 log the follow-up.
 
-## Recently Landed
+## Recently Landed Or Confirmed
 
-- Quest status markers: unavailable quest givers now surface gray quest status
-  instead of being invisible to the player, and quest accept/reward handlers
-  proactively resend visible questgiver status after state changes.
-- Combat resource feel: damage-based rage generation, overkill fields, max-HP
-  regen cap sync, immediate first-swing scheduling, no attack-rage from
-  Heroic-Strike-style rage-spending swings, delayed Heroic Strike rage spend,
-  and map-owned swing timers that cannot be accelerated by toggling autoattack.
+- Quest status markers, quest source items, quest reputation rewards, and
+  gameobject quest pickups are working in the real client.
+- Combat resource feel has improved: damage-based rage generation, overkill
+  fields, max-HP regen cap sync, immediate first-swing scheduling, no
+  attack-rage from Heroic-Strike-style rage-spending swings, delayed Heroic
+  Strike rage spend, and map-owned swing timers that cannot be accelerated by
+  toggling autoattack.
 - Creature fidelity: DB-backed walk/run speed, CMaNGOS-style DBC display scale
   fallback, and virtual item/equipment bytes for weapon visuals are integrated.
-- Loot fidelity: creature and gameobject loot rolls keep DB group IDs, support
-  multiple independent drops, pick at most one row per group, preserve loot
-  slots after partial pickup, gate quest drops on active incomplete objectives,
-  and roll corpse copper from DB min/max gold.
+- Loot fidelity: DB-backed multi-drop creature/gameobject loot and variable
+  copper are integrated.
 - Combat skill math: character skills load on login, PvE weapon/defense
   skill-ups follow CMaNGOS two-roll logic with Intellect bonus for weapon
   skills, melee hit tables use skill vs defense, and level-up skill caps now
@@ -85,75 +69,81 @@ log the follow-up.
 
 ## Current Slice Details
 
-- DB-backed quest reputation rewards:
-  - `QuestTemplateQuery` now carries `rew_rep_faction` and `rew_rep_value`
-    arrays loaded from `quest_template`.
-  - `reward_character_quest` now marks the quest rewarded, updates money, and
-    upserts `character_reputation` rows in one transaction.
-  - Reputation standing is clamped to CMaNGOS caps (`42999` / `-42000`) and
-    written with `FACTION_FLAG_VISIBLE`.
-- World/client feedback:
-  - quest completion computes CMaNGOS-like quest reputation gains from quest
-    level and player level;
-  - mapped factions send visible and standing packets immediately after reward;
-  - changed standings send a system chat line such as
-    `Reputation with Stormwind increased by 75.`;
-  - login initial reputation packets use the same faction-to-reputation-list
-    bridge.
-- Quest source item delivery:
-  - accepting a quest with `SrcItemId` stores the source item in the first empty
-    backpack slot;
-  - the server sends both the item create block and the player inventory-slot
-    update, then sends `SMSG_ITEM_PUSH_RESULT` so the real client displays the
-    received item.
-- Local DB evidence:
-  - quest `3100` Simple Letter uses `SrcItemId=9542`, `SrcItemCount=1`, and
-    Stormwind reputation `72 => 75`;
-  - quests `7`, `33`, `783`, and `5261` also carry Stormwind reward rows.
-- Known architecture compromise:
-  - the faction-to-reputation-list bridge is static and DBC-derived for known
-    1.12 factions. It is sufficient for Northshire proof but should be replaced
-    by a real `Faction.dbc` loader before broader faction coverage.
+- `wow-db` now exposes `SpellTemplateQuery` over the local
+  `spell_template` table exported from `Spell.dbc`.
+- `ObjectMgr` now caches spell templates, matching the existing quest/loot
+  immutable world-data cache shape.
+- Starter spell execution now derives from CMaNGOS fields:
+  - on-next-swing from `SPELL_ATTR_ON_NEXT_SWING*`;
+  - power type and cost from `PowerType` / `ManaCost`;
+  - GCD from `StartRecoveryCategory` / `StartRecoveryTime`;
+  - spell cooldown from `max(RecoveryTime, CategoryRecoveryTime)`;
+  - simple damage/bonus values from DBC effect base points.
+- Heroic Strike remains next-swing queued and spends rage when the swing fires,
+  but its queue shape now comes from the spell template instead of a spell-id
+  fixture.
+- Battle Shout now proves the first aura vertical slice: source-backed 10 rage
+  cost, 1.5s GCD, `SMSG_SPELL_GO`, visible positive aura slot update,
+  `SpellDuration.dbc` duration lookup, map-owned aura expiration, and the
+  CMaNGOS `SPELL_AURA_MOD_ATTACK_POWER` stat modifier path. Timed auras also
+  send CMaNGOS-shaped `SMSG_UPDATE_AURA_DURATION` (`slot`, remaining
+  milliseconds), fixing the real-client `0 sec remaining` display.
+- `WorldDataFiles` now parses `dbc/SpellDuration.dbc` with CMaNGOS `niii`
+  layout. `MapRuntime` owns active player aura state, keeps base combat stats
+  separate from aura-modified combat stats, and expires auras from the map
+  update loop so expiration packets can be sent without waiting for client
+  input.
 
 ## Tests Run
 
 - `cargo fmt`
-- `cargo fmt --check`
-- `cargo check -p wow-db`
-- `cargo check -p wow-network`
-- `cargo test -p wow-network reputation --lib`
-- `cargo test -p wow-network quest_reward --lib`
-- `cargo test -p wow-network initial_reputations --lib`
-- `cargo test -p wow-network source_item --lib`
-- `cargo test -p wow-network item_push --lib`
-- `cargo test -p wow-network system_chat --lib`
-- `.\scripts\test-rust.cmd` passed with `wow_network` at 331 lib tests.
-- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`
-- `Test-NetConnection` passed for `127.0.0.1:13724` and `127.0.0.1:18085`.
+- `cargo test -p wow-network starter`
+- `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot`
+- `cargo test -p wow-network spell_duration_dbc_parser_reads_cmangos_duration_fields`
+- `cargo test -p wow-network map_owned_player_aura_applies_attack_power_mod_and_expires`
+- `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing`
+- `cargo test -p wow-network` passed with 334 lib tests.
+- First `.\scripts\test-rust.cmd` reached tests/checks but failed the final
+  `authserver` build because the old running server locked
+  `target\debug\authserver.exe` on Windows.
+- Stopped the old auth/world server processes, then reran
+  `.\scripts\test-rust.cmd`; it passed.
+- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart` restarted the client
+  stack successfully after the aura duration/stat-mod slice and again after
+  adding `SMSG_UPDATE_AURA_DURATION`.
 
 ## Real-Client Success Criteria For Current Smoke
 
-- Turn in `A Threat Within`, `Kobold Camp Cleanup`,
-  `Wolves Across the Border`, and `Eagan Peltskinner`.
-- Confirm Stormwind reputation gain appears immediately in the real client and
-  the reputation pane standing increases.
-- Confirm the chat frame receives a reputation line after quest turn-in.
-- Relog after gaining reputation; standing should persist and initialize
-  correctly.
-- Accept quest `Simple Letter` (`3100`) and confirm item `Simple Letter`
-  (`9542`) appears in the backpack on accept and produces an item-received chat
-  notification.
-- Confirm prior parity fixes still hold: gray unavailable quest `!`, no trainer
-  disconnect on `Train me`, no autoattack toggle acceleration, correct creature
-  scale/equipment animation, variable copper, combo loot, and skill cap UI
-  updates.
+- Log in through `set realmlist 127.0.0.1:13724`.
+- Warrior with Heroic Strike:
+  - queuing Heroic Strike should send the cast/start feedback immediately;
+  - rage should not be consumed until the next melee swing lands;
+  - toggling autoattack must not accelerate swing timers.
+- Warrior with Battle Shout after training:
+  - cast should require enough rage and spend 10 rage;
+  - cast should trigger GCD;
+  - client should receive spell visual/GO and show the positive aura icon;
+  - Attack Power should gain the Battle Shout positive modifier while the aura
+    is active;
+  - the aura tooltip should show a real countdown rather than `0 sec remaining`;
+  - when the DBC duration expires, the aura icon and AP modifier should clear
+    without needing another client action.
+- Re-check prior parity while in the same session: gray unavailable quest `!`,
+  no trainer disconnect on `Train me`, correct creature scale/equipment
+  animation, variable copper, combo loot, skill cap UI updates, Simple Letter on
+  accept, and quest reputation feedback.
 
 ## Known Follow-Ups
 
+- Battle Shout now covers duration, expiration, and flat AP stat modification.
+  Aura persistence across logout/relog, other aura modifier families, dispel
+  rules, charges/stacks, periodic ticks, and aura save/load remain future spell
+  system slices.
+- The spell pipeline should next cover level 1-6 warrior abilities from
+  `spell_template`: Rend, Charge, Thunder Clap, stances, Overpower availability,
+  and any trainer-learned spell edge cases.
 - GitHub issue #63 tracks replacing the static reputation-list bridge with a
-  real `Faction.dbc` loader. That should also replace the current explicit
-  reputation system-chat fallback once default faction visibility/standing is
-  client-native.
+  real `Faction.dbc` loader.
 - Full trainer spell-cast animation is still incomplete: CMaNGOS starts the
   trainer spell after buy success, while the current Rust slice sends the
   source-backed visual/impact packets and direct learned-spell updates.
@@ -169,10 +159,8 @@ log the follow-up.
 ## Key Files
 
 - `crates/wow-db/src/world_data.rs`
-- `crates/wow-db/src/character/state.rs`
-- `crates/wow-db/src/character/types.rs`
-- `crates/wow-network/src/world/quests.rs`
-- `crates/wow-network/src/world/reputation/reputation_mgr.rs`
-- `crates/wow-network/src/world/server/world_session.rs`
+- `crates/wow-network/src/world/globals/object_mgr.rs`
+- `crates/wow-network/src/world/session.rs`
+- `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `docs/playable_execution_roadmap.md`

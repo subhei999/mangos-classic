@@ -2,6 +2,7 @@
 struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
     creature_display_scales: HashMap<u32, f32>,
+    spell_durations: HashMap<u32, SpellDurationEntry>,
     creature_grid_load_ensure_calls: AtomicU64,
     creature_grid_load_cache_hits: AtomicU64,
     creature_grid_load_db_queries: AtomicU64,
@@ -46,8 +47,13 @@ impl MapRuntimeManager {
     fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
         Self {
             creature_display_scales: world_data_files.creature_display_scales.clone(),
+            spell_durations: world_data_files.spell_durations.clone(),
             ..Self::default()
         }
+    }
+
+    fn spell_duration(&self, duration_index: u32) -> Option<SpellDurationEntry> {
+        self.spell_durations.get(&duration_index).copied()
     }
 
     async fn add_player(
@@ -455,6 +461,20 @@ impl MapRuntimeManager {
             );
         }
         Ok(())
+    }
+
+    async fn apply_player_aura(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        aura: ActiveAura,
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.apply_player_aura(character_guid, aura);
+        event
     }
 
     #[cfg(test)]
@@ -1232,6 +1252,25 @@ impl MapRuntimeManager {
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_regen_tick(now)?);
+        }
+        Ok(packets)
+    }
+
+    async fn advance_all_player_aura_expirations(
+        &self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_player_aura_expirations(now)?);
         }
         Ok(packets)
     }

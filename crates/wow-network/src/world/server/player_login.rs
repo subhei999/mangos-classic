@@ -330,6 +330,8 @@ async fn handle_player_login(
         active_spells: session.active_spells.clone(),
         inventory: session.inventory.clone(),
         quest_statuses: session.quest_statuses.clone(),
+        active_auras: session.active_auras.clone(),
+        base_combat_stats: combat_stats,
         combat_stats,
     };
     let packets = deps.maps.add_player(player_runtime).await?;

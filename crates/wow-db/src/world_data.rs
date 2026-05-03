@@ -197,6 +197,39 @@ pub struct TrainerSpellQuery {
     pub req_ability3: Option<u32>,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct SpellTemplateQuery {
+    pub id: u32,
+    pub spell_name: String,
+    pub rank: Option<String>,
+    pub attributes: u32,
+    pub attributes_ex: u32,
+    pub attributes_ex2: u32,
+    pub attributes_ex3: u32,
+    pub recovery_time: u32,
+    pub category_recovery_time: u32,
+    pub start_recovery_category: u32,
+    pub start_recovery_time: u32,
+    pub power_type: u32,
+    pub mana_cost: u32,
+    pub duration_index: u32,
+    pub effect1: u32,
+    pub effect2: u32,
+    pub effect3: u32,
+    pub effect_base_points1: i32,
+    pub effect_base_points2: i32,
+    pub effect_base_points3: i32,
+    pub effect_apply_aura_name1: u32,
+    pub effect_apply_aura_name2: u32,
+    pub effect_apply_aura_name3: u32,
+    pub effect_implicit_target_a1: u32,
+    pub effect_implicit_target_a2: u32,
+    pub effect_implicit_target_a3: u32,
+    pub spell_family_name: u32,
+    pub spell_family_flags: u64,
+    pub dmg_class: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestTemplateQuery {
     pub entry: u32,
@@ -338,6 +371,36 @@ pub async fn get_creature_template_query(
     .await?;
 
     Ok(row)
+}
+
+pub async fn get_spell_template_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<SpellTemplateQuery>, DbError> {
+    sqlx::query_as::<_, SpellTemplateQuery>(
+        "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, \
+                Attributes AS attributes, AttributesEx AS attributes_ex, \
+                AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
+                RecoveryTime AS recovery_time, CategoryRecoveryTime AS category_recovery_time, \
+                StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
+                PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
+                Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
+                EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
+                EffectBasePoints3 AS effect_base_points3, \
+                EffectApplyAuraName1 AS effect_apply_aura_name1, \
+                EffectApplyAuraName2 AS effect_apply_aura_name2, \
+                EffectApplyAuraName3 AS effect_apply_aura_name3, \
+                EffectImplicitTargetA1 AS effect_implicit_target_a1, \
+                EffectImplicitTargetA2 AS effect_implicit_target_a2, \
+                EffectImplicitTargetA3 AS effect_implicit_target_a3, \
+                SpellFamilyName AS spell_family_name, SpellFamilyFlags AS spell_family_flags, \
+                DmgClass AS dmg_class \
+         FROM spell_template WHERE Id = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_creature_loot_items(

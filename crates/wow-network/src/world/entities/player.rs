@@ -115,6 +115,7 @@ fn write_other_player_update_values(
     set_update_value(&mut values, PLAYER_BYTES_2, player.player_bytes2)?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values_from_equipment(&mut values, &player.visible_equipment)?;
+    set_player_aura_update_values(&mut values, &player.active_auras)?;
     write_update_values(body, &values)
 }
 
@@ -237,7 +238,14 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, unit_bytes_2())?;
     set_player_resistance_update_values(&mut values, &combat_stats)?;
     set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, combat_stats.melee_attack_power)?;
-    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER_MODS, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_ATTACK_POWER_MODS,
+        attack_power_mod_pair(
+            combat_stats.melee_attack_power_mod_positive,
+            combat_stats.melee_attack_power_mod_negative,
+        ),
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_ATTACK_POWER_MULTIPLIER,
@@ -248,7 +256,14 @@ fn write_minimal_player_update_values(
         UNIT_FIELD_RANGED_ATTACK_POWER,
         combat_stats.ranged_attack_power,
     )?;
-    set_update_value(&mut values, UNIT_FIELD_RANGED_ATTACK_POWER_MODS, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGED_ATTACK_POWER_MODS,
+        attack_power_mod_pair(
+            combat_stats.ranged_attack_power_mod_positive,
+            combat_stats.ranged_attack_power_mod_negative,
+        ),
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER,
@@ -583,6 +598,10 @@ struct PlayerCombatStats {
     ranged_attack_time_ms: u32,
     melee_attack_power: u32,
     ranged_attack_power: u32,
+    melee_attack_power_mod_positive: i16,
+    melee_attack_power_mod_negative: i16,
+    ranged_attack_power_mod_positive: i16,
+    ranged_attack_power_mod_negative: i16,
     main_min_damage: f32,
     main_max_damage: f32,
     off_min_damage: f32,
@@ -652,6 +671,10 @@ fn player_combat_stats_for_values(
         ranged_attack_time_ms,
         melee_attack_power,
         ranged_attack_power,
+        melee_attack_power_mod_positive: 0,
+        melee_attack_power_mod_negative: 0,
+        ranged_attack_power_mod_positive: 0,
+        ranged_attack_power_mod_negative: 0,
         main_min_damage,
         main_max_damage,
         off_min_damage,
@@ -721,7 +744,14 @@ fn build_player_combat_stats_update_body(
         UNIT_FIELD_ATTACK_POWER,
         combat_stats.melee_attack_power,
     )?;
-    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER_MODS, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_ATTACK_POWER_MODS,
+        attack_power_mod_pair(
+            combat_stats.melee_attack_power_mod_positive,
+            combat_stats.melee_attack_power_mod_negative,
+        ),
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_ATTACK_POWER_MULTIPLIER,
@@ -732,7 +762,14 @@ fn build_player_combat_stats_update_body(
         UNIT_FIELD_RANGED_ATTACK_POWER,
         combat_stats.ranged_attack_power,
     )?;
-    set_update_value(&mut values, UNIT_FIELD_RANGED_ATTACK_POWER_MODS, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGED_ATTACK_POWER_MODS,
+        attack_power_mod_pair(
+            combat_stats.ranged_attack_power_mod_positive,
+            combat_stats.ranged_attack_power_mod_negative,
+        ),
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER,
@@ -795,6 +832,75 @@ fn weapon_damage_with_attack_power(
     };
     let ap_damage = attack_power as f32 / 14.0 * attack_time_ms as f32 / 1000.0;
     (weapon.dmg_min1 + ap_damage, weapon.dmg_max1 + ap_damage)
+}
+
+fn attack_power_mod_pair(positive: i16, negative: i16) -> u32 {
+    make_pair32(positive as u16, negative as u16)
+}
+
+fn combat_stats_with_active_auras(
+    base_stats: PlayerCombatStats,
+    active_auras: &[ActiveAura],
+) -> PlayerCombatStats {
+    let attack_power_delta = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::AttackPower { amount } => *amount,
+        })
+        .sum::<i32>();
+
+    apply_attack_power_delta(base_stats, attack_power_delta, 0)
+}
+
+fn apply_attack_power_delta(
+    mut stats: PlayerCombatStats,
+    melee_delta: i32,
+    ranged_delta: i32,
+) -> PlayerCombatStats {
+    stats.melee_attack_power_mod_positive = melee_delta.max(0).min(i16::MAX as i32) as i16;
+    stats.melee_attack_power_mod_negative = melee_delta.min(0).max(i16::MIN as i32) as i16;
+    stats.ranged_attack_power_mod_positive = ranged_delta.max(0).min(i16::MAX as i32) as i16;
+    stats.ranged_attack_power_mod_negative = ranged_delta.min(0).max(i16::MIN as i32) as i16;
+
+    let melee_effective_delta =
+        effective_attack_power_delta(stats.melee_attack_power, melee_delta);
+    let ranged_effective_delta =
+        effective_attack_power_delta(stats.ranged_attack_power, ranged_delta);
+    let main_damage_delta = attack_power_damage_delta(
+        melee_effective_delta,
+        stats.main_attack_time_ms,
+        stats.main_max_damage > 0.0,
+    );
+    let off_damage_delta = attack_power_damage_delta(
+        melee_effective_delta,
+        stats.off_attack_time_ms,
+        stats.off_max_damage > 0.0,
+    );
+    let ranged_damage_delta = attack_power_damage_delta(
+        ranged_effective_delta,
+        stats.ranged_attack_time_ms,
+        stats.ranged_max_damage > 0.0,
+    );
+    stats.main_min_damage += main_damage_delta;
+    stats.main_max_damage += main_damage_delta;
+    stats.off_min_damage += off_damage_delta;
+    stats.off_max_damage += off_damage_delta;
+    stats.ranged_min_damage += ranged_damage_delta;
+    stats.ranged_max_damage += ranged_damage_delta;
+    stats
+}
+
+fn effective_attack_power_delta(base_attack_power: u32, delta: i32) -> i32 {
+    let effective = (base_attack_power as i32 + delta).max(0);
+    effective - base_attack_power as i32
+}
+
+fn attack_power_damage_delta(delta: i32, attack_time_ms: u32, has_weapon_damage: bool) -> f32 {
+    if !has_weapon_damage || delta == 0 {
+        return 0.0;
+    }
+    delta as f32 / 14.0 * attack_time_ms as f32 / 1000.0
 }
 
 fn equipment_resistances(

@@ -156,6 +156,7 @@ struct WorldSessionState {
     queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
+    character_skills: Vec<CharacterSkill>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,

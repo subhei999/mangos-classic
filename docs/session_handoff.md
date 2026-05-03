@@ -8,21 +8,20 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 ## Current Branch And Worktree
 
 - Branch: `codex/c2-real-client-closure`.
-- Purpose: integrate focused Checkpoint 2 real-client parity branches, one at a
+- Purpose: integrate focused Checkpoint 2 real-client parity slices, one at a
   time, then let the user validate against a live 1.12.1 client.
-- Latest integrated commits before the current fix:
-  - `1de9b747b` (`Merge quest status markers`);
-  - `a41449b76` (`Merge combat resource feel`);
-  - `8627829d1` (`Merge creature template fidelity`);
-  - `60e5a60b9` (`Fix creature visuals and questgiver status refresh`);
-  - `b2ac5617f` (`Use DBC creature display scale fallback`).
-- Current uncommitted state: DB loot fidelity port for multi-item creature and
-  gameobject loot, grouped loot rows, slot-aware autostore, and randomized
-  corpse copper from template min/max values.
+- Latest integrated work:
+  - quest status markers and questgiver refresh;
+  - combat resource feel, overkill damage fields, regen cap sync, first-swing
+    timing, and delayed Heroic Strike rage spend;
+  - creature template fidelity for speed, display scale, and equipment fields;
+  - DB loot multi-drop fidelity for creature/gameobject loot, grouped loot rows,
+    slot-aware autostore, quest-drop gating, and randomized corpse copper;
+  - CMaNGOS-like PvE combat skill progression and skill-vs-defense melee math.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the loot fidelity patch:
-  - authserver PID `24404` on `127.0.0.1:13724`;
-  - worldserver PID `39540` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the combat skill patch:
+  - authserver PID `38244` on `127.0.0.1:13724`;
+  - worldserver PID `42116` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -34,7 +33,8 @@ shared multiplayer state**.
 Current user direction: **Do not use a Northshire grading harness. The user is
 the grader using real-client side-by-side testing. Convert real-client notes
 into generalized systems work and priorities; do not hardcode Northshire-only
-fixes.**
+fixes. Anything less than CMaNGOS/source-backed gameplay math is considered
+fake.**
 
 Important scope rule: stay focused on the current goal, but use judgment. Fix
 blockers and safety/data-integrity guardrails when practical. Log useful
@@ -48,189 +48,113 @@ log the follow-up.
 ## Recently Landed
 
 - Quest status markers: unavailable quest givers now surface gray quest status
-  instead of being invisible to the player.
+  instead of being invisible to the player, and quest accept/reward handlers
+  proactively resend visible questgiver status after state changes.
 - Combat resource feel: damage-based rage generation, overkill fields, max-HP
-  regen cap sync, and immediate first-swing scheduling are integrated.
-- Creature template fidelity: DB-backed walk/run speed, model scale, and
-  equipment display fields are integrated for creature create blocks.
-- Login-disconnect fix: creature equipment display projections now
-  cast `COALESCE(item_template.displayid, 0)` to unsigned integers so MariaDB
-  does not return a decimal type that `sqlx` refuses to decode into `u32`.
-- Current real-client feedback patch:
-  - trainer `Train me` disconnect was caused by an ambiguous `Entry` column in
-    the joined creature-template query; the query is now fully
-    `creature_template.`-qualified;
-  - Heroic Strike/next-melee rage-spending swings no longer award attack rage;
-  - manual attack stop/start preserves the map-owned next swing timestamp so
-    players cannot reset swing timers by toggling autoattack.
-- Current delayed rage-cost patch:
-  - next-melee starter spells now validate power at queue time but store the
-    cost on the queued swing;
-  - Heroic Strike rage is consumed when the queued swing resolves, not when the
-    client queues the attack;
-  - the queue packet path no longer sends a power update at cast time for
-    next-melee spells.
-- Current creature/status patch:
-  - DB creature template projections now include `item_template` class,
-    subclass, material, inventory type, and sheath data for all three creature
-    equipment slots;
-  - DB creature create blocks now send `UNIT_VIRTUAL_ITEM_INFO` and
-    `UNIT_FIELD_BYTES_2` melee/aura bytes like CMaNGOS, so armed creatures have
-    the metadata the client uses for weapon animations;
-  - quest accept/reward handlers now proactively resend visible questgiver
-    status packets after quest state changes, including gray unavailable
-    status for level-locked visible quests.
-- Current scale patch:
-  - world startup parses `dbc/CreatureDisplayInfo.dbc` display scales;
-  - DB creature grid loading now follows CMaNGOS scale fallback: positive
-    `creature_template.Scale` wins, otherwise the first display model's DBC
-    scale fills the template before create blocks are built;
-  - this should address broadly wrong mob scale in Northshire, Teldrassil, and
-    other zones where DB scale is zero.
-- Current loot fidelity patch:
-  - creature and gameobject loot rows now carry DB `groupid` and no longer
-    discard grouped/equal-chance loot templates at query time;
-  - loot selection can return multiple independent rows for combo loot while
-    picking at most one row from each loot group;
-  - quest drops still require an active incomplete quest item objective and stop
-    rolling once the player already has enough of the required item;
-  - map-owned creature and gameobject loot state now stores item lists and
-    supports slot-aware `CMSG_AUTOSTORE_LOOT_ITEM`, including restore on failed
-    inventory autostore;
-  - corpse copper is rolled once at death from DB min/max gold instead of always
-    using the max value.
+  regen cap sync, immediate first-swing scheduling, no attack-rage from
+  Heroic-Strike-style rage-spending swings, and map-owned swing timers that
+  cannot be accelerated by toggling autoattack.
+- Delayed Heroic Strike cost: next-melee starter spells validate power at queue
+  time but consume the stored rage/mana cost only when the queued swing resolves.
+- Creature fidelity: DB-backed walk/run speed, CMaNGOS-style DBC display scale
+  fallback, and virtual item/equipment bytes for weapon visuals are integrated.
+- Loot fidelity: creature and gameobject loot rolls keep DB group IDs, support
+  multiple independent drops, pick at most one row per group, preserve loot
+  slots after partial pickup, gate quest drops on active incomplete objectives,
+  and roll corpse copper from DB min/max gold.
+- Combat skill math:
+  - character skills are loaded into session state on login and persisted when
+    they advance;
+  - player main-hand attacks use the equipped weapon subclass to choose the
+    matching weapon skill, or unarmed when no main-hand weapon is equipped;
+  - player attacks against DB creatures use actual weapon skill against creature
+    defense (`level * 5`) for miss/glancing/crit calculations;
+  - creature attacks use the player's actual defense skill for incoming melee
+    avoidance;
+  - weapon and defense skill-ups follow the CMaNGOS `UpdateCombatSkills` /
+    `UpdateSkill` two-roll flow, including the Intellect bonus for weapon
+    skills only;
+  - skill value/max updates are persisted and sent to the real client with a
+    targeted `SMSG_UPDATE_OBJECT` skill field update.
 
 ## Still Unmerged Worker Branches
 
-- `codex/c2-skills-weapon-progression`:
-  `C:\Users\subhe\Documents\mangos-worktrees\c2-skills-weapon-progression`
 - `codex/c2-npc-trainer-scripts`:
   `C:\Users\subhe\Documents\mangos-worktrees\c2-npc-trainer-scripts`
 
-The loot worker branch was stale and was manually ported into the integration
-branch instead of merged directly. Merge remaining worker branches one by one
-only after inspecting scope, rebuilding, restarting the client stack, and giving
-the user concrete real-client success criteria.
+Merge remaining worker branches one by one only after inspecting scope,
+rebuilding, restarting the client stack, and giving the user concrete
+real-client success criteria. The old `codex/c2-skills-weapon-progression` and
+loot branches were manually ported into the integration branch instead of being
+merged directly.
 
 ## Tests Run
 
-- Before the login-disconnect fix, after the three selected merges:
+- Previous integrated slices:
+  - `.\scripts\test-rust.cmd` passed after quest/status, combat resource,
+    delayed rage-cost, creature/status, scale, and loot fidelity patches;
+  - targeted quest, rage, regen, combat, creature create, random motion,
+    creature display scale, creature/gameobject/quest loot, and loot packet
+    tests passed for their respective slices;
+  - real-client stack was restarted after each user-facing slice and ports
+    checked with `Test-NetConnection`.
+- Current combat skill patch:
   - `cargo fmt --check`;
-  - `cargo test -p wow-network quest --lib`;
-  - `cargo test -p wow-network rage --lib`;
-  - `cargo test -p wow-network regen --lib`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network skill --lib`;
+  - `cargo test -p wow-network melee --lib`;
   - `cargo test -p wow-network combat --lib`;
-  - `cargo test -p wow-network creature_create --lib`;
-  - `cargo test -p wow-network db_creature_random_motion --lib`;
-  - `cargo check -p wow-network`;
-  - `.\scripts\test-rust.cmd`.
-- Current login-disconnect fix:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network creature_create --lib`;
-  - `cargo build -p authserver -p worldserver`;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`;
-  - live MariaDB equipment-display join returned numeric display IDs with the
-    new cast.
-- Current real-client feedback patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_tick --lib`;
-  - `cargo test -p wow-network heroic_strike_queue_consumes_on_next_swing_only_once --lib`;
-  - live MariaDB `get_creature_template_query`-shape query for Lyria Du Lac
-    returned successfully with joined equipment rows.
-- Current delayed rage-cost patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-network`;
   - `cargo test -p wow-network heroic_strike --lib`;
-  - `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue --lib`;
-  - `.\scripts\test-rust.cmd`.
-- Current creature/status patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network creature_create --lib`;
-  - `cargo test -p wow-network quest_state_refresh --lib`;
-  - `cargo test -p wow-network quest --lib`;
-  - `.\scripts\test-rust.cmd`;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`.
-- Current scale patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network creature_display_info --lib`;
-  - `cargo test -p wow-network creature_template_zero_scale --lib`;
-  - `.\scripts\test-rust.cmd`;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`;
-  - worldserver startup log reported `creature_display_scales=10531`.
-- Current loot fidelity patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
   - `cargo test -p wow-network creature_loot --lib`;
-  - `cargo test -p wow-network quest_loot --lib`;
-  - `cargo test -p wow-network gameobject_loot --lib`;
-  - `cargo test -p wow-network loot_packets --lib`;
-  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\test-rust.cmd` passed with `wow_network` at 324 lib tests;
   - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
   - `Test-NetConnection` passed for `127.0.0.1:13724` and
     `127.0.0.1:18085`.
+
+## Real-Client Success Criteria For Current Smoke
+
+- Fight starter mobs with the starting weapon:
+  - weapon skill can increase during melee and updates in the Skills UI;
+  - defense skill can increase when the player is hit;
+  - skill changes persist through relog;
+  - miss behavior should improve as weapon skill rises because the hit table now
+    uses actual weapon skill vs creature defense.
+- Confirm Heroic Strike still keeps rage while queued, consumes rage when the
+  swing resolves, and does not award attack rage from that swing.
+- Confirm prior parity fixes still hold: gray unavailable quest `!`, no trainer
+  disconnect on `Train me`, no autoattack toggle acceleration, correct creature
+  scale/equipment animation, variable copper, and combo loot.
 
 ## Known Follow-Ups
 
-- Real-client smoke still needs to confirm that Heroic Strike keeps rage while
-  queued, consumes rage when the swing lands, does not generate rage from that
-  swing, and that prior fixes remain stable: trainer `Train me` no disconnect,
-  autoattack stop/start no acceleration.
-- Current real-client smoke should confirm creature size in multiple zones
-  after relog/restart, especially Northshire wolves/Defias and Teldrassil
-  starter mobs whose DB scale is zero and should now use DBC display scale.
-- Current real-client smoke should confirm combo loot: killing wolves/kobolds/
-  thugs can show quest item plus junk or multiple junk rows when DB rolls allow
-  it; taking one slot leaves other slots available; completed quest item
-  requirements stop quest drops; Defias copper should vary when DB min/max
-  values differ.
-- Current real-client smoke should also confirm that after turning in/accepting
-  early Deputy Willem quests, newly visible but level-locked quests show a gray
-  `!`, and that armed NPCs such as Defias Thugs swing with weapon animations
-  instead of looking like unarmed punches.
-- User confirmed: Milly quest is no longer incorrectly available at level 2;
-  creature speed feels fixed; overkill packet damage is improved but combat log
-  still needs explicit `(overkill)` display parity; wolf/drop items and other
-  previously fixed items should remain under smoke watch.
-- Still observed before latest patches: gray unavailable quest marker was not
-  visible; creature visual scale did not match; NPCs with weapons could look
-  like they punched while holding a sword. Re-test these on the restarted stack.
-  CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
-- Continue user-led side-by-side testing and turn observations into generalized
-  system tasks. Current observation list includes NPC work animations, rage
-  formula, creature speed/scale/equipment, gray quest markers, overkill, combo
-  loot, skills/weapon skills, real loot tables, reputation, quest eligibility,
-  first swing timing, creature speech, quest reward items, trainer text/icon,
-  training feedback, copper variance, regen caps, and equipped thug weapons.
+- PvP skill max behavior is not wired in this slice; current math is PvE DB
+  creature combat.
+- Flat hit bonuses, weapon-specific auras, and gear hit modifiers still need a
+  later combat-math slice. Classic does not use TBC-style combat ratings, but
+  hit modifiers still matter.
+- Offhand and ranged skill progression are not fully wired; current closure
+  slice covers main-hand/base attack and defense for the Human Warrior starter
+  path.
+- Weapon-skill training from NPCs is separate from combat progression and still
+  belongs with trainer/script parity.
+- Skill-up chat/combat feedback should be checked in the real client; the field
+  update is implemented, but display text/effects may need a follow-up.
+- CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
 - Full CMaNGOS loot-table rolling remains tracked as issue #58.
 - GitHub issue #62 tracks a starter-zone wrapper readiness race from the old
-  grade-report path; the grade surface is removed, but normal starter-zone
-  runs can still benefit from a readiness check instead of fixed sleep.
+  grade-report path; the grade surface is removed, but normal starter-zone runs
+  can still benefit from a readiness check instead of fixed sleep.
 
 ## Key Files
 
-- `crates/wow-db/src/world_data.rs`
-- `crates/wow-network/src/world/server/player_login.rs`
-- `crates/wow-network/src/world/entities/update_data.rs`
-- `crates/wow-network/src/world/entities/creature.rs`
-- `crates/wow-network/src/world/maps/world_data.rs`
-- `crates/wow-network/src/world/maps/map_manager.rs`
-- `crates/wow-network/src/world/quests.rs`
+- `crates/wow-db/src/character/state.rs`
 - `crates/wow-network/src/world/combat/lifecycle.rs`
-- `crates/wow-network/src/world/combat/melee.rs`
-- `crates/wow-network/src/world/maps/map.rs`
-- `scripts/run-client-stack-18085.ps1`
+- `crates/wow-network/src/world/combat/outcome.rs`
+- `crates/wow-network/src/world/combat/aggro.rs`
+- `crates/wow-network/src/world/entities/player.rs`
+- `crates/wow-network/src/world/server/player_login.rs`
+- `crates/wow-network/src/world/server/world_session.rs`
+- `crates/wow-network/src/world/session.rs`
+- `crates/wow-network/src/world/tests.rs`
 - `docs/playable_execution_roadmap.md`

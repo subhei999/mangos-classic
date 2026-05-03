@@ -574,6 +574,7 @@ struct EquippedItemTemplate {
 
 #[derive(Debug, Clone, Copy)]
 struct PlayerCombatStats {
+    intellect: u32,
     armor: u32,
     shield_block_value: u32,
     resistances: [u32; MAX_SPELL_SCHOOL],
@@ -616,6 +617,7 @@ fn player_combat_stats_for_values(
 ) -> PlayerCombatStats {
     let strength = world_stats.stats[0];
     let agility = world_stats.stats[1];
+    let intellect = world_stats.stats[3];
     let level = level as u32;
     let melee_attack_power = class_melee_attack_power(class, level, strength, agility);
     let ranged_attack_power = class_ranged_attack_power(class, level, agility);
@@ -641,6 +643,7 @@ fn player_combat_stats_for_values(
         weapon_damage_with_attack_power(ranged_weapon, ranged_attack_power, ranged_attack_time_ms);
 
     PlayerCombatStats {
+        intellect,
         armor: player_armor(world_stats, equipped_templates),
         shield_block_value: player_shield_block_value(world_stats, equipped_templates),
         resistances: equipment_resistances(world_stats, equipped_templates),

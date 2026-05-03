@@ -369,6 +369,28 @@ pub async fn get_character_skills(
     Ok(rows)
 }
 
+pub async fn upsert_character_skill(
+    pool: &MySqlPool,
+    guid: u32,
+    skill: u16,
+    value: u16,
+    max: u16,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO character_skills (guid, skill, value, max) \
+         VALUES (?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE value = VALUES(value), max = VALUES(max)",
+    )
+    .bind(guid)
+    .bind(skill)
+    .bind(value)
+    .bind(max)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn get_character_quest_statuses(
     pool: &MySqlPool,
     guid: u32,

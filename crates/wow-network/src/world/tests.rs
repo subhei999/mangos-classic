@@ -1591,7 +1591,8 @@ fn melee_damage_outcome_serializes_miss_and_block_like_attacker_state_update() {
     let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
     let input = MeleeDamageInput {
         attacker_level: 1,
-        victim_level: 1,
+        attacker_skill: 5,
+        victim_defense: 5,
         min_damage: 10.0,
         max_damage: 10.0,
         victim_armor: 0,
@@ -1633,6 +1634,113 @@ fn armor_reduced_damage_matches_cmangos_cap_shape() {
     let reduced = armor_reduced_damage(1, 100, 10.0);
     assert!(reduced < 10);
     assert_eq!(armor_reduced_damage(60, 999_999, 100.0), 25);
+}
+
+#[test]
+fn player_miss_chance_uses_weapon_skill_against_creature_defense() {
+    let even = player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 5, 1);
+    let under_skilled =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 1, 5, 1);
+    let heavily_under_skilled =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 20, 4);
+
+    assert_eq!(even.miss, 5.0);
+    assert!(under_skilled.miss > even.miss);
+    assert_eq!(heavily_under_skilled.miss, 9.0);
+}
+
+#[test]
+fn combat_skill_progression_uses_intellect_for_weapon_skills_only() {
+    let mut without_intellect = vec![CharacterSkill {
+        skill: SKILL_SWORDS,
+        value: 250,
+        max: 300,
+    }];
+    let missed = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_SWORDS,
+        0,
+        true,
+        &mut without_intellect,
+        || 20.0,
+        || 512,
+    );
+    assert!(missed.is_none());
+    assert_eq!(without_intellect[0].value, 250);
+
+    let mut with_intellect = vec![CharacterSkill {
+        skill: SKILL_SWORDS,
+        value: 250,
+        max: 300,
+    }];
+    let advanced = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_SWORDS,
+        20,
+        true,
+        &mut with_intellect,
+        || 20.0,
+        || 512,
+    )
+    .expect("intellect should raise the weapon skill-up chance enough to pass");
+    assert_eq!(advanced.value, 251);
+    assert_eq!(with_intellect[0].value, 251);
+
+    let mut defense = vec![CharacterSkill {
+        skill: SKILL_DEFENSE,
+        value: 250,
+        max: 300,
+    }];
+    let defense_missed = try_advance_combat_skill_value_with_rolls(
+        60,
+        SKILL_DEFENSE,
+        999,
+        false,
+        &mut defense,
+        || 20.0,
+        || 512,
+    );
+    assert!(defense_missed.is_none());
+    assert_eq!(defense[0].value, 250);
+}
+
+#[test]
+fn combat_skill_progression_updates_level_cap_and_value() {
+    let mut skills = vec![test_skill(SKILL_UNARMED, 1, 5)];
+    let updated = try_advance_combat_skill_value_with_rolls(
+        2,
+        SKILL_UNARMED,
+        0,
+        true,
+        &mut skills,
+        || 0.0,
+        || 512,
+    )
+    .expect("expected unarmed skill progression update");
+
+    assert_eq!(updated.slot, 0);
+    assert_eq!(updated.skill, SKILL_UNARMED);
+    assert_eq!(updated.value, 2);
+    assert_eq!(updated.max, 10);
+    assert_eq!(skills[0].value, 2);
+    assert_eq!(skills[0].max, 10);
+}
+
+#[test]
+fn item_weapon_skill_mapping_matches_cmangos_known_ids() {
+    let mut sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    sword.subclass = 7;
+    let mut fist = test_item_template(26, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    fist.subclass = 13;
+    let mut unknown = test_item_template(27, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    unknown.subclass = 9;
+
+    assert_eq!(item_weapon_skill_from_template(&sword), Some(SKILL_SWORDS));
+    assert_eq!(
+        item_weapon_skill_from_template(&fist),
+        Some(SKILL_FIST_WEAPONS)
+    );
+    assert_eq!(item_weapon_skill_from_template(&unknown), None);
 }
 
 #[test]
@@ -1717,7 +1825,7 @@ fn player_main_hand_outcome_uses_db_creature_template_armor() {
     let creature = DbCreatureRuntime::new(spawn);
 
     let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
-        &stats, 1, &creature, 1, 10_000,
+        &stats, 1, 5, &creature, 1, 10_000,
     );
 
     assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
@@ -1755,6 +1863,7 @@ fn creature_melee_outcome_uses_player_armor_from_defense_input() {
     let creature = DbCreatureRuntime::new(spawn);
     let defense = PlayerMeleeDefenseInput {
         level: 1,
+        defense_skill: 5,
         armor: 100,
         block_value: 0,
         dodge_percent: 0.0,
@@ -1782,6 +1891,7 @@ fn creature_block_outcome_uses_supplied_player_shield_block_value() {
     let creature = DbCreatureRuntime::new(spawn);
     let defense = PlayerMeleeDefenseInput {
         level: 1,
+        defense_skill: 5,
         armor: 0,
         block_value: 7,
         dodge_percent: 0.0,

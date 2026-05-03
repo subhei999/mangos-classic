@@ -295,7 +295,8 @@ async fn send_single_active_db_creature_attack(
                 character_snapshot.guid
             )
         })?;
-    let defense_input = player_melee_defense_input(&character_snapshot, &combat_stats);
+    let defense_input =
+        player_melee_defense_input(&character_snapshot, &combat_stats, &session.character_skills);
     let outcome = active.creature.melee_outcome_against_player(defense_input);
     let Some(event) = shared_world
         .maps
@@ -314,6 +315,23 @@ async fn send_single_active_db_creature_attack(
         return Ok(());
     };
     session.player_health = event.victim_health;
+    let advanced_skill = try_advance_combat_skill_value(
+        character_snapshot.level,
+        SKILL_DEFENSE,
+        combat_stats.intellect,
+        false,
+        &mut session.character_skills,
+    );
+    if let Some(updated) = advanced_skill {
+        wow_db::upsert_character_skill(
+            character_db_pool,
+            character_snapshot.guid,
+            updated.skill,
+            updated.value,
+            updated.max,
+        )
+        .await?;
+    }
     let rage_gain = rage_gain_from_damage(event.damage, character_snapshot.level, false);
     if rage_gain > 0 {
         session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
@@ -338,6 +356,15 @@ async fn send_single_active_db_creature_attack(
         Some(&mut *header_crypto),
     )
     .await?;
+    if let Some(updated) = advanced_skill {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_skill_update_body(character_snapshot.guid, updated)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     if rage_gain > 0 {
         send_packet(
             stream,

@@ -6,6 +6,7 @@ struct EnterWorldBootstrap<'a> {
     world_stats: &'a PlayerWorldStats,
     equipped_templates: &'a [EquippedItemTemplate],
     spells: &'a [CharacterSpell],
+    skills: &'a [CharacterSkill],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
@@ -38,8 +39,6 @@ async fn send_enter_world_bootstrap(
         wow_db::get_character_reputations(bootstrap.character_db_pool, bootstrap.character.guid)
             .await?;
     send_initial_reputations(stream, &reputations, header_crypto.as_deref_mut()).await?;
-    let skills =
-        wow_db::get_character_skills(bootstrap.character_db_pool, bootstrap.character.guid).await?;
     send_login_set_time_speed(stream, header_crypto.as_deref_mut()).await?;
     send_init_world_states(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     if let Some(cinematic_sequence) = bootstrap.cinematic_sequence {
@@ -51,7 +50,7 @@ async fn send_enter_world_bootstrap(
             character: bootstrap.character,
             inventory: bootstrap.inventory,
             world_stats: bootstrap.world_stats,
-            skills: &skills,
+            skills: bootstrap.skills,
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: bootstrap.equipped_templates,
             nearby_creatures: bootstrap.nearby_creatures,

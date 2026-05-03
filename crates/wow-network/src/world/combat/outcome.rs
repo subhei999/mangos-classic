@@ -10,6 +10,26 @@ enum MeleeHitOutcome {
     Normal,
 }
 
+const SKILL_DEFENSE: u16 = 95;
+const SKILL_SWORDS: u16 = 43;
+const SKILL_AXES: u16 = 44;
+const SKILL_BOWS: u16 = 45;
+const SKILL_GUNS: u16 = 46;
+const SKILL_MACES: u16 = 54;
+const SKILL_TWO_HANDED_SWORDS: u16 = 55;
+const SKILL_STAVES: u16 = 136;
+const SKILL_TWO_HANDED_MACES: u16 = 160;
+const SKILL_UNARMED: u16 = 162;
+const SKILL_TWO_HANDED_AXES: u16 = 172;
+const SKILL_DAGGERS: u16 = 173;
+const SKILL_THROWN: u16 = 176;
+const SKILL_CROSSBOWS: u16 = 226;
+const SKILL_WANDS: u16 = 228;
+const SKILL_POLEARMS: u16 = 229;
+const SKILL_SPEARS: u16 = 253;
+const SKILL_FISHING: u16 = 356;
+const SKILL_FIST_WEAPONS: u16 = 473;
+
 #[derive(Debug, Clone, Copy)]
 struct MeleeRollChances {
     miss: f32,
@@ -24,7 +44,8 @@ struct MeleeRollChances {
 #[derive(Debug, Clone, Copy)]
 struct MeleeDamageInput {
     attacker_level: u8,
-    victim_level: u8,
+    attacker_skill: u16,
+    victim_defense: u16,
     min_damage: f32,
     max_damage: f32,
     victim_armor: u32,
@@ -35,6 +56,7 @@ struct MeleeDamageInput {
 #[derive(Debug, Clone, Copy)]
 struct PlayerMeleeDefenseInput {
     level: u8,
+    defense_skill: u16,
     armor: u32,
     block_value: u32,
     dodge_percent: f32,
@@ -233,9 +255,7 @@ fn armor_reduced_damage(attacker_level: u8, victim_armor: u32, damage: f32) -> u
 }
 
 fn glancing_multiplier(input: MeleeDamageInput) -> f32 {
-    let skill = input.attacker_level as i32 * 5;
-    let defense = input.victim_level as i32 * 5;
-    let difference = defense - skill;
+    let difference = input.victim_defense as i32 - input.attacker_skill as i32;
     if difference < 0 {
         return 1.0;
     }
@@ -249,9 +269,11 @@ fn creature_melee_input_against_player(
     defense: PlayerMeleeDefenseInput,
 ) -> MeleeDamageInput {
     let level = creature.spawn.template.max_level.max(creature.spawn.template.min_level);
+    let attacker_skill = u16::from(level.max(1)).saturating_mul(5);
     MeleeDamageInput {
         attacker_level: level.max(1),
-        victim_level: defense.level.max(1),
+        attacker_skill,
+        victim_defense: defense.defense_skill,
         min_damage: creature.spawn.template.min_melee_dmg,
         max_damage: creature.spawn.template.max_melee_dmg,
         victim_armor: defense.armor,
@@ -278,12 +300,14 @@ fn calculate_player_main_hand_melee_damage(
 fn player_main_hand_melee_outcome_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_level: u8,
+    attacker_skill: u16,
     creature: &DbCreatureRuntime,
 ) -> MeleeDamageOutcome {
     let mut rng = rand::thread_rng();
     calculate_player_main_hand_melee_outcome_against_db_creature(
         combat_stats,
         attacker_level,
+        attacker_skill,
         creature,
         rng.gen_range(1..=10_000),
         rng.gen_range(1..=10_000),
@@ -293,6 +317,7 @@ fn player_main_hand_melee_outcome_against_db_creature(
 fn calculate_player_main_hand_melee_outcome_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_level: u8,
+    attacker_skill: u16,
     creature: &DbCreatureRuntime,
     damage_roll: u32,
     outcome_roll: u32,
@@ -303,15 +328,22 @@ fn calculate_player_main_hand_melee_outcome_against_db_creature(
         .max_level
         .max(creature.spawn.template.min_level)
         .max(1);
+    let creature_defense = u16::from(level).saturating_mul(5);
     calculate_melee_damage(
         MeleeDamageInput {
             attacker_level: attacker_level.max(1),
-            victim_level: level,
+            attacker_skill,
+            victim_defense: creature_defense,
             min_damage: combat_stats.main_min_damage,
             max_damage: combat_stats.main_max_damage,
             victim_armor: creature.spawn.template.armor,
             victim_block_value: 0,
-            chances: player_main_hand_chances_against_db_creature(combat_stats, attacker_level, level),
+            chances: player_main_hand_chances_against_db_creature(
+                combat_stats,
+                attacker_skill,
+                creature_defense,
+                level,
+            ),
         },
         damage_roll,
         outcome_roll,
@@ -320,24 +352,13 @@ fn calculate_player_main_hand_melee_outcome_against_db_creature(
 
 fn player_main_hand_chances_against_db_creature(
     combat_stats: &PlayerCombatStats,
-    attacker_level: u8,
+    attacker_skill: u16,
+    creature_defense: u16,
     creature_level: u8,
 ) -> MeleeRollChances {
-    let attacker_skill = attacker_level.max(1) as i32 * 5;
-    let creature_defense = creature_level.max(1) as i32 * 5;
-    let mut miss_difference = creature_defense - attacker_skill;
-    let mut miss = 5.0;
-    if miss_difference > 0 {
-        if miss_difference > 10 {
-            miss += 10.0 * 0.1;
-            miss_difference -= 10;
-            miss += miss_difference as f32 * 0.2;
-        } else {
-            miss += miss_difference as f32 * 0.1;
-        }
-    } else {
-        miss += miss_difference as f32 * 0.04;
-    }
+    let attacker_skill = i32::from(attacker_skill);
+    let creature_defense = i32::from(creature_defense);
+    let miss = cmangos_melee_miss_chance(attacker_skill, creature_defense, false);
     let crit_difference = attacker_skill - creature_defense;
     let crit = combat_stats.crit_percent + crit_difference as f32 * 0.2;
     MeleeRollChances {
@@ -359,10 +380,12 @@ fn starter_player_defense_chances(
     creature_level: u8,
     defense: PlayerMeleeDefenseInput,
 ) -> MeleeRollChances {
-    let skill_difference = defense.level as i32 * 5 - creature_level as i32 * 5;
+    let creature_skill = i32::from(u16::from(creature_level.max(1)).saturating_mul(5));
+    let defense_skill = i32::from(defense.defense_skill);
+    let skill_difference = defense_skill - creature_skill;
     let skill_adjust = skill_difference as f32 * 0.04;
     MeleeRollChances {
-        miss: (5.0 + skill_adjust).clamp(0.0, 100.0),
+        miss: cmangos_melee_miss_chance(creature_skill, defense_skill, true),
         dodge: (defense.dodge_percent + skill_adjust).clamp(0.0, 100.0),
         parry: (defense.parry_percent + skill_adjust).clamp(0.0, 100.0),
         block: (defense.block_percent + skill_adjust).clamp(0.0, 100.0),
@@ -379,13 +402,41 @@ fn starter_player_defense_chances(
 fn player_melee_defense_input(
     character: &ActiveCharacter,
     combat_stats: &PlayerCombatStats,
+    character_skills: &[CharacterSkill],
 ) -> PlayerMeleeDefenseInput {
     PlayerMeleeDefenseInput {
         level: character.level.max(1),
+        defense_skill: current_skill_value(character_skills, SKILL_DEFENSE),
         armor: combat_stats.armor,
         block_value: combat_stats.shield_block_value,
         dodge_percent: combat_stats.dodge_percent,
         parry_percent: combat_stats.parry_percent,
         block_percent: combat_stats.block_percent,
     }
+}
+
+fn cmangos_melee_miss_chance(attacker_skill: i32, victim_defense: i32, victim_is_player: bool) -> f32 {
+    let mut chance = 5.0;
+    let mut difference = victim_defense - attacker_skill;
+    let mut factor = 0.04;
+    if !victim_is_player && difference > 0 {
+        if difference > 10 {
+            chance += 10.0 * 0.1;
+            difference -= 10;
+            factor = 0.4;
+            chance += difference as f32 * 0.2;
+        } else {
+            factor = 0.1;
+        }
+    }
+    chance += difference as f32 * factor;
+    chance.clamp(0.0, 100.0)
+}
+
+fn current_skill_value(character_skills: &[CharacterSkill], skill_id: u16) -> u16 {
+    character_skills
+        .iter()
+        .find(|skill| skill.skill == skill_id)
+        .map(|skill| skill.value)
+        .unwrap_or(0)
 }

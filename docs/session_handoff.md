@@ -18,10 +18,13 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   - DB loot multi-drop fidelity for creature/gameobject loot, grouped loot rows,
     slot-aware autostore, quest-drop gating, and randomized corpse copper;
   - CMaNGOS-like PvE combat skill progression and skill-vs-defense melee math.
+  - level-up skill-cap UI refresh;
+  - CMaNGOS-backed trainer greeting, gossip icon, and trainer-buy visual impact
+    parity.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the level-up skill-cap UI fix:
-  - authserver PID `38020` on `127.0.0.1:13724`;
-  - worldserver PID `35096` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after the trainer/gossip patch:
+  - authserver PID `46460` on `127.0.0.1:13724`;
+  - worldserver PID `29460` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -83,17 +86,22 @@ log the follow-up.
   - fixed-cap skills such as languages/generic entries are left unchanged;
   - the Skills UI should no longer wait for the next skill-up before showing the
     new weapon/defense max.
+- Trainer/gossip parity:
+  - gossip options now carry CMaNGOS icon IDs instead of always using the chat
+    bubble, so trainer options use the book icon and vendors use the bag icon;
+  - trainer gossip option text now uses `I seek training.`;
+  - trainer list greetings use DB `trainer_greeting.Text`, falling back to
+    `What can I teach you?` when the DB row is missing or empty;
+  - buying a trainer spell now sends CMaNGOS `SMSG_PLAY_SPELL_VISUAL` on the
+    trainer (`0xB3`) and `SMSG_PLAY_SPELL_IMPACT` on the player (`0x016A`)
+    before `SMSG_TRAINER_BUY_SUCCEEDED`.
 
 ## Still Unmerged Worker Branches
 
-- `codex/c2-npc-trainer-scripts`:
-  `C:\Users\subhe\Documents\mangos-worktrees\c2-npc-trainer-scripts`
-
-Merge remaining worker branches one by one only after inspecting scope,
-rebuilding, restarting the client stack, and giving the user concrete
-real-client success criteria. The old `codex/c2-skills-weapon-progression` and
-loot branches were manually ported into the integration branch instead of being
-merged directly.
+- None currently selected. The old `codex/c2-skills-weapon-progression`,
+  `codex/c2-loot-multidrop-fidelity`, and `codex/c2-npc-trainer-scripts`
+  branches were manually ported into the integration branch instead of being
+  merged directly because their worktrees were stale or uncommitted.
 
 ## Tests Run
 
@@ -129,6 +137,16 @@ merged directly.
   - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
   - `Test-NetConnection` passed for `127.0.0.1:13724` and
     `127.0.0.1:18085`.
+- Current trainer/gossip patch:
+  - `cargo fmt --check`;
+  - `cargo check -p wow-db`;
+  - `cargo check -p wow-network`;
+  - `cargo test -p wow-network trainer --lib`;
+  - `cargo test -p wow-network gossip --lib`;
+  - `.\scripts\test-rust.cmd`;
+  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
+  - `Test-NetConnection` passed for `127.0.0.1:13724` and
+    `127.0.0.1:18085`.
 
 ## Real-Client Success Criteria For Current Smoke
 
@@ -142,6 +160,9 @@ merged directly.
     uses actual weapon skill vs creature defense.
 - Confirm Heroic Strike still keeps rage while queued, consumes rage when the
   swing resolves, and does not award attack rage from that swing.
+- Confirm warrior trainer gossip uses the book icon and `I seek training.`, the
+  trainer list uses a DB/fallback greeting, and training Battle Shout shows the
+  trainer/player visual impact while still teaching the spell.
 - Confirm prior parity fixes still hold: gray unavailable quest `!`, no trainer
   disconnect on `Train me`, no autoattack toggle acceleration, correct creature
   scale/equipment animation, variable copper, and combo loot.
@@ -158,6 +179,11 @@ merged directly.
   path.
 - Weapon-skill training from NPCs is separate from combat progression and still
   belongs with trainer/script parity.
+- Full trainer spell-cast animation is still incomplete: CMaNGOS starts the
+  trainer spell after buy success, while the current Rust slice sends the
+  source-backed visual/impact packets and direct learned-spell updates. Do not
+  fake missing salute/cast behavior with a loose emote; implement the CMaNGOS
+  spell-start path when taking the next trainer polish slice.
 - Skill-up chat/combat feedback should be checked in the real client; the field
   update is implemented, but display text/effects may need a follow-up.
 - CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.

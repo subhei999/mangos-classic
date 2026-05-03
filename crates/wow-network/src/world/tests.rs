@@ -571,16 +571,34 @@ fn db_vendor_gossip_message_points_at_db_creature() {
     let body = build_gossip_message(
         guid,
         DB_VENDOR_GOSSIP_TEXT_ID,
-        &[(0, DB_VENDOR_GOSSIP_OPTION)],
+        &[(0, GOSSIP_ICON_VENDOR, DB_VENDOR_GOSSIP_OPTION)],
     );
     assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
     assert_eq!(&body[8..12], &DB_VENDOR_GOSSIP_TEXT_ID.to_le_bytes());
     assert_eq!(&body[12..16], &1u32.to_le_bytes());
     assert_eq!(&body[16..20], &0u32.to_le_bytes());
-    assert_eq!(body[20], 0);
+    assert_eq!(body[20], GOSSIP_ICON_VENDOR);
     assert_eq!(body[21], 0);
     assert_eq!(&body[22..36], b"Browse goods.\0");
     assert_eq!(&body[36..40], &0u32.to_le_bytes());
+}
+
+#[test]
+fn db_trainer_gossip_message_uses_trainer_book_icon() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_002);
+    let body = build_gossip_message(
+        guid,
+        DB_TRAINER_GOSSIP_TEXT_ID,
+        &[(0, GOSSIP_ICON_TRAINER, DB_TRAINER_GOSSIP_OPTION)],
+    );
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &DB_TRAINER_GOSSIP_TEXT_ID.to_le_bytes());
+    assert_eq!(&body[12..16], &1u32.to_le_bytes());
+    assert_eq!(&body[16..20], &0u32.to_le_bytes());
+    assert_eq!(body[20], GOSSIP_ICON_TRAINER);
+    assert_eq!(body[21], 0);
+    assert_eq!(&body[22..39], b"I seek training.\0");
+    assert_eq!(&body[39..43], &0u32.to_le_bytes());
 }
 
 #[test]
@@ -8933,6 +8951,21 @@ fn trainer_buy_packets_match_vanilla_shapes() {
     let learned = build_learned_spell_body(6673);
     assert_eq!(learned.len(), 4);
     assert_eq!(&learned, &6673u32.to_le_bytes());
+
+    let visual = build_play_spell_visual_body(guid, 0xB3);
+    assert_eq!(visual.len(), 12);
+    assert_eq!(&visual[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&visual[8..12], &0xB3u32.to_le_bytes());
+
+    let impact = build_play_spell_impact_body(123, 0x016A);
+    assert_eq!(impact.len(), 12);
+    assert_eq!(
+        &impact[0..8],
+        &ObjectGuid::new(HighGuid::Player, REALM_ID, 123)
+            .raw()
+            .to_le_bytes()
+    );
+    assert_eq!(&impact[8..12], &0x016Au32.to_le_bytes());
 }
 
 #[test]

@@ -858,6 +858,17 @@ pub async fn get_trainer_spells(
     Ok(rows)
 }
 
+pub async fn get_trainer_greeting(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Option<String>, DbError> {
+    sqlx::query_scalar("SELECT Text FROM trainer_greeting WHERE Entry = ?")
+        .bind(creature_entry)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_nearby_creature_spawns(
     pool: &MySqlPool,
     map: u32,

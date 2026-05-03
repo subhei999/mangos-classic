@@ -30,7 +30,7 @@ async fn handle_gossip_hello(
         let response = build_gossip_message(
             guid,
             RUST_GUIDE_GOSSIP_TEXT_ID,
-            &[(0, RUST_GUIDE_GOSSIP_OPTION)],
+            &[(0, GOSSIP_ICON_CHAT, RUST_GUIDE_GOSSIP_OPTION)],
         );
         return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
     }
@@ -60,7 +60,7 @@ async fn handle_gossip_hello(
             let response = build_gossip_message(
                 guid,
                 SPIRIT_HEALER_GOSSIP_TEXT_ID,
-                &[(0, SPIRIT_HEALER_GOSSIP_OPTION)],
+                &[(0, GOSSIP_ICON_INTERACT_1, SPIRIT_HEALER_GOSSIP_OPTION)],
             );
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }
@@ -105,7 +105,7 @@ async fn handle_gossip_hello(
             let response = build_gossip_message(
                 guid,
                 DB_VENDOR_GOSSIP_TEXT_ID,
-                &[(0, DB_VENDOR_GOSSIP_OPTION)],
+                &[(0, GOSSIP_ICON_VENDOR, DB_VENDOR_GOSSIP_OPTION)],
             );
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }
@@ -124,7 +124,7 @@ async fn handle_gossip_hello(
             let response = build_gossip_message(
                 guid,
                 DB_TRAINER_GOSSIP_TEXT_ID,
-                &[(0, DB_TRAINER_GOSSIP_OPTION)],
+                &[(0, GOSSIP_ICON_TRAINER, DB_TRAINER_GOSSIP_OPTION)],
             );
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }

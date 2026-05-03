@@ -266,14 +266,6 @@ fn build_initial_reputations_body(reputations: &[CharacterReputation]) -> Vec<u8
     body
 }
 
-fn reputation_list_slot_for_faction(_faction: u32) -> Option<usize> {
-    // Faction.dbc IDs are not the same as the client's 0..63 reputationListID
-    // slots. Keep saved reputation rows quiet until the DBC-backed mapping is
-    // ported; otherwise the client displays unrelated factions such as
-    // Bloodsail Buccaneers for starter city reputations.
-    None
-}
-
 async fn send_trigger_cinematic(
     stream: &mut WorldPacketSink,
     sequence: u32,

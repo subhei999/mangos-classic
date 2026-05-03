@@ -236,6 +236,8 @@ pub struct QuestTemplateQuery {
     pub rew_choice_item_count: [u32; 6],
     pub rew_item_id: [u32; 4],
     pub rew_item_count: [u32; 4],
+    pub rew_rep_faction: [u32; 5],
+    pub rew_rep_value: [i32; 5],
     pub point_map_id: u32,
     pub point_x: f32,
     pub point_y: f32,
@@ -483,6 +485,11 @@ pub async fn get_quest_template_query(
                 CAST(RewItemId3 AS UNSIGNED) AS rew_item_id3, CAST(RewItemId4 AS UNSIGNED) AS rew_item_id4, \
                 CAST(RewItemCount1 AS UNSIGNED) AS rew_item_count1, CAST(RewItemCount2 AS UNSIGNED) AS rew_item_count2, \
                 CAST(RewItemCount3 AS UNSIGNED) AS rew_item_count3, CAST(RewItemCount4 AS UNSIGNED) AS rew_item_count4, \
+                CAST(RewRepFaction1 AS UNSIGNED) AS rew_rep_faction1, CAST(RewRepFaction2 AS UNSIGNED) AS rew_rep_faction2, \
+                CAST(RewRepFaction3 AS UNSIGNED) AS rew_rep_faction3, CAST(RewRepFaction4 AS UNSIGNED) AS rew_rep_faction4, \
+                CAST(RewRepFaction5 AS UNSIGNED) AS rew_rep_faction5, RewRepValue1 AS rew_rep_value1, \
+                RewRepValue2 AS rew_rep_value2, RewRepValue3 AS rew_rep_value3, RewRepValue4 AS rew_rep_value4, \
+                RewRepValue5 AS rew_rep_value5, \
                 CAST(PointMapId AS UNSIGNED) AS point_map_id, PointX AS point_x, PointY AS point_y, \
                 CAST(PointOpt AS UNSIGNED) AS point_opt, CAST(DetailsEmote1 AS UNSIGNED) AS details_emote1, \
                 CAST(DetailsEmote2 AS UNSIGNED) AS details_emote2, CAST(DetailsEmote3 AS UNSIGNED) AS details_emote3, \
@@ -1578,6 +1585,16 @@ struct QuestTemplateRow {
     rew_item_count2: u32,
     rew_item_count3: u32,
     rew_item_count4: u32,
+    rew_rep_faction1: u32,
+    rew_rep_faction2: u32,
+    rew_rep_faction3: u32,
+    rew_rep_faction4: u32,
+    rew_rep_faction5: u32,
+    rew_rep_value1: i32,
+    rew_rep_value2: i32,
+    rew_rep_value3: i32,
+    rew_rep_value4: i32,
+    rew_rep_value5: i32,
     point_map_id: u32,
     point_x: f32,
     point_y: f32,
@@ -1691,6 +1708,20 @@ impl QuestTemplateRow {
                 self.rew_item_count2,
                 self.rew_item_count3,
                 self.rew_item_count4,
+            ],
+            rew_rep_faction: [
+                self.rew_rep_faction1,
+                self.rew_rep_faction2,
+                self.rew_rep_faction3,
+                self.rew_rep_faction4,
+                self.rew_rep_faction5,
+            ],
+            rew_rep_value: [
+                self.rew_rep_value1,
+                self.rew_rep_value2,
+                self.rew_rep_value3,
+                self.rew_rep_value4,
+                self.rew_rep_value5,
             ],
             point_map_id: self.point_map_id,
             point_x: self.point_x,

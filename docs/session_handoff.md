@@ -7,24 +7,26 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/c2-real-client-closure`.
-- Purpose: integrate focused Checkpoint 2 real-client parity slices, one at a
-  time, then let the user validate against a live 1.12.1 client.
-- Latest integrated work:
-  - quest status markers and questgiver refresh;
-  - combat resource feel, overkill damage fields, regen cap sync, first-swing
-    timing, and delayed Heroic Strike rage spend;
-  - creature template fidelity for speed, display scale, and equipment fields;
-  - DB loot multi-drop fidelity for creature/gameobject loot, grouped loot rows,
-    slot-aware autostore, quest-drop gating, and randomized corpse copper;
-  - CMaNGOS-like PvE combat skill progression and skill-vs-defense melee math.
-  - level-up skill-cap UI refresh;
-  - CMaNGOS-backed trainer greeting, gossip icon, and trainer-buy visual impact
-    parity.
+- Branch: `codex/c2-quest-reward-transaction`.
+- Purpose: focused Checkpoint 2 worker slice for CMaNGOS-like quest reward
+  transactions, quest reputation rewards, and real-client reputation packet
+  feedback.
+- Base intent: branch from the latest integration state, prove the slice with
+  focused tests plus the full Rust suite, then merge/rebase into
+  `codex/rusty-mangos` or the current Checkpoint 2 integration branch.
+- Current uncommitted code changes:
+  - quest templates now load `RewRepFaction1..5` and `RewRepValue1..5`;
+  - quest reward completion persists money and quest reputation changes in the
+    same DB transaction;
+  - changed reputation rows are returned to the world layer so the client can
+    receive immediate visible/standing packets;
+  - reputation packet helpers send CMaNGOS-shaped
+    `SMSG_SET_FACTION_VISIBLE` / `SMSG_SET_FACTION_STANDING`;
+  - Northshire Stormwind quest reward rows were verified in the local world DB.
 - Re-run `git status --short --branch` before editing.
-- Live client stack was rebuilt/restarted after the trainer/gossip patch:
-  - authserver PID `46460` on `127.0.0.1:13724`;
-  - worldserver PID `29460` on `127.0.0.1:18085`;
+- Live client stack was rebuilt/restarted after this slice:
+  - authserver PID `47804` on `127.0.0.1:13724`;
+  - worldserver PID `27128` on `127.0.0.1:18085`;
   - logs: `auth-client-13724.log`, `world-client-18085.log`;
   - auto-restart is disabled.
 
@@ -55,152 +57,100 @@ log the follow-up.
   proactively resend visible questgiver status after state changes.
 - Combat resource feel: damage-based rage generation, overkill fields, max-HP
   regen cap sync, immediate first-swing scheduling, no attack-rage from
-  Heroic-Strike-style rage-spending swings, and map-owned swing timers that
-  cannot be accelerated by toggling autoattack.
-- Delayed Heroic Strike cost: next-melee starter spells validate power at queue
-  time but consume the stored rage/mana cost only when the queued swing resolves.
+  Heroic-Strike-style rage-spending swings, delayed Heroic Strike rage spend,
+  and map-owned swing timers that cannot be accelerated by toggling autoattack.
 - Creature fidelity: DB-backed walk/run speed, CMaNGOS-style DBC display scale
   fallback, and virtual item/equipment bytes for weapon visuals are integrated.
 - Loot fidelity: creature and gameobject loot rolls keep DB group IDs, support
   multiple independent drops, pick at most one row per group, preserve loot
   slots after partial pickup, gate quest drops on active incomplete objectives,
   and roll corpse copper from DB min/max gold.
-- Combat skill math:
-  - character skills are loaded into session state on login and persisted when
-    they advance;
-  - player main-hand attacks use the equipped weapon subclass to choose the
-    matching weapon skill, or unarmed when no main-hand weapon is equipped;
-  - player attacks against DB creatures use actual weapon skill against creature
-    defense (`level * 5`) for miss/glancing/crit calculations;
-  - creature attacks use the player's actual defense skill for incoming melee
-    avoidance;
-  - weapon and defense skill-ups follow the CMaNGOS `UpdateCombatSkills` /
-    `UpdateSkill` two-roll flow, including the Intellect bonus for weapon
-    skills only;
-  - skill value/max updates are persisted and sent to the real client with a
-    targeted `SMSG_UPDATE_OBJECT` skill field update.
-- Level-up skill-cap UI fix:
-  - when a character levels up, known level-capped combat skills now have their
-    max value raised to `level * 5`, persisted, and sent immediately to the
-    client as skill field updates;
-  - fixed-cap skills such as languages/generic entries are left unchanged;
-  - the Skills UI should no longer wait for the next skill-up before showing the
-    new weapon/defense max.
-- Trainer/gossip parity:
-  - gossip options now carry CMaNGOS icon IDs instead of always using the chat
-    bubble, so trainer options use the book icon and vendors use the bag icon;
-  - trainer gossip option text now uses `I seek training.`;
-  - trainer list greetings use DB `trainer_greeting.Text`, falling back to
-    `What can I teach you?` when the DB row is missing or empty;
-  - buying a trainer spell now sends CMaNGOS `SMSG_PLAY_SPELL_VISUAL` on the
-    trainer (`0xB3`) and `SMSG_PLAY_SPELL_IMPACT` on the player (`0x016A`)
-    before `SMSG_TRAINER_BUY_SUCCEEDED`.
+- Combat skill math: character skills load on login, PvE weapon/defense
+  skill-ups follow CMaNGOS two-roll logic with Intellect bonus for weapon
+  skills, melee hit tables use skill vs defense, and level-up skill caps now
+  update the client immediately.
+- Trainer/gossip parity: trainer gossip uses the book icon and
+  `I seek training.`, trainer list greetings come from DB/fallback text, and
+  buying a trainer spell sends source-backed visual/impact packets before
+  `SMSG_TRAINER_BUY_SUCCEEDED`.
 
-## Still Unmerged Worker Branches
+## Current Slice Details
 
-- None currently selected. The old `codex/c2-skills-weapon-progression`,
-  `codex/c2-loot-multidrop-fidelity`, and `codex/c2-npc-trainer-scripts`
-  branches were manually ported into the integration branch instead of being
-  merged directly because their worktrees were stale or uncommitted.
+- DB-backed quest reputation rewards:
+  - `QuestTemplateQuery` now carries `rew_rep_faction` and `rew_rep_value`
+    arrays loaded from `quest_template`.
+  - `reward_character_quest` now marks the quest rewarded, updates money, and
+    upserts `character_reputation` rows in one transaction.
+  - Reputation standing is clamped to CMaNGOS caps (`42999` / `-42000`) and
+    written with `FACTION_FLAG_VISIBLE`.
+- World/client feedback:
+  - quest completion computes CMaNGOS-like quest reputation gains from quest
+    level and player level;
+  - mapped factions send visible and standing packets immediately after reward;
+  - login initial reputation packets use the same faction-to-reputation-list
+    bridge.
+- Local DB evidence:
+  - quest `3100` Simple Letter uses `SrcItemId=9542`, `SrcItemCount=1`, and
+    Stormwind reputation `72 => 75`;
+  - quests `7`, `33`, `783`, and `5261` also carry Stormwind reward rows.
+- Known architecture compromise:
+  - the faction-to-reputation-list bridge is static and DBC-derived for known
+    1.12 factions. It is sufficient for Northshire proof but should be replaced
+    by a real `Faction.dbc` loader before broader faction coverage.
 
 ## Tests Run
 
-- Previous integrated slices:
-  - `.\scripts\test-rust.cmd` passed after quest/status, combat resource,
-    delayed rage-cost, creature/status, scale, and loot fidelity patches;
-  - targeted quest, rage, regen, combat, creature create, random motion,
-    creature display scale, creature/gameobject/quest loot, and loot packet
-    tests passed for their respective slices;
-  - real-client stack was restarted after each user-facing slice and ports
-    checked with `Test-NetConnection`.
-- Current combat skill patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network skill --lib`;
-  - `cargo test -p wow-network melee --lib`;
-  - `cargo test -p wow-network combat --lib`;
-  - `cargo test -p wow-network heroic_strike --lib`;
-  - `cargo test -p wow-network creature_loot --lib`;
-  - `.\scripts\test-rust.cmd` passed with `wow_network` at 324 lib tests;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`.
-- Current level-up skill-cap UI fix:
-  - `cargo fmt`;
-  - `cargo fmt --check`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network level_up_updates_combat_skill_maxes_without_waiting_for_skill_gain --lib`;
-  - `cargo test -p wow-network progression --lib`;
-  - `cargo test -p wow-network skill --lib`;
-  - `.\scripts\test-rust.cmd`;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`.
-- Current trainer/gossip patch:
-  - `cargo fmt --check`;
-  - `cargo check -p wow-db`;
-  - `cargo check -p wow-network`;
-  - `cargo test -p wow-network trainer --lib`;
-  - `cargo test -p wow-network gossip --lib`;
-  - `.\scripts\test-rust.cmd`;
-  - `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`;
-  - `Test-NetConnection` passed for `127.0.0.1:13724` and
-    `127.0.0.1:18085`.
+- `cargo fmt`
+- `cargo fmt --check`
+- `cargo check -p wow-db`
+- `cargo check -p wow-network`
+- `cargo test -p wow-network reputation --lib`
+- `cargo test -p wow-network quest_reward --lib`
+- `cargo test -p wow-network initial_reputations --lib`
+- `.\scripts\test-rust.cmd` passed with `wow_network` at 328 lib tests.
+- `.\scripts\run-client-stack-18085.cmd -NoAutoRestart`
+- `Test-NetConnection` passed for `127.0.0.1:13724` and `127.0.0.1:18085`.
 
 ## Real-Client Success Criteria For Current Smoke
 
-- Fight starter mobs with the starting weapon:
-  - weapon skill can increase during melee and updates in the Skills UI;
-  - defense skill can increase when the player is hit;
-  - after leveling, weapon/defense max values should update in the Skills UI
-    immediately, before gaining another skill point;
-  - skill changes persist through relog;
-  - miss behavior should improve as weapon skill rises because the hit table now
-    uses actual weapon skill vs creature defense.
-- Confirm Heroic Strike still keeps rage while queued, consumes rage when the
-  swing resolves, and does not award attack rage from that swing.
-- Confirm warrior trainer gossip uses the book icon and `I seek training.`, the
-  trainer list uses a DB/fallback greeting, and training Battle Shout shows the
-  trainer/player visual impact while still teaching the spell.
+- Turn in `A Threat Within`, `Kobold Camp Cleanup`,
+  `Wolves Across the Border`, and `Eagan Peltskinner`.
+- Confirm Stormwind reputation gain appears immediately in the real client and
+  the reputation pane standing increases.
+- Relog after gaining reputation; standing should persist and initialize
+  correctly.
+- Accept quest `Simple Letter` (`3100`) and confirm item `Simple Letter`
+  (`9542`) appears in the backpack on accept. If not, the next target is the
+  source-item create/update packet or inventory slot sync path, because the DB
+  source item fields and accept-grant path are present.
 - Confirm prior parity fixes still hold: gray unavailable quest `!`, no trainer
   disconnect on `Train me`, no autoattack toggle acceleration, correct creature
-  scale/equipment animation, variable copper, and combo loot.
+  scale/equipment animation, variable copper, combo loot, and skill cap UI
+  updates.
 
 ## Known Follow-Ups
 
-- PvP skill max behavior is not wired in this slice; current math is PvE DB
-  creature combat.
-- Flat hit bonuses, weapon-specific auras, and gear hit modifiers still need a
-  later combat-math slice. Classic does not use TBC-style combat ratings, but
-  hit modifiers still matter.
-- Offhand and ranged skill progression are not fully wired; current closure
-  slice covers main-hand/base attack and defense for the Human Warrior starter
-  path.
-- Weapon-skill training from NPCs is separate from combat progression and still
-  belongs with trainer/script parity.
+- GitHub issue #63 tracks replacing the static reputation-list bridge with a
+  real `Faction.dbc` loader.
 - Full trainer spell-cast animation is still incomplete: CMaNGOS starts the
   trainer spell after buy success, while the current Rust slice sends the
-  source-backed visual/impact packets and direct learned-spell updates. Do not
-  fake missing salute/cast behavior with a loose emote; implement the CMaNGOS
-  spell-start path when taking the next trainer polish slice.
-- Skill-up chat/combat feedback should be checked in the real client; the field
-  update is implemented, but display text/effects may need a follow-up.
+  source-backed visual/impact packets and direct learned-spell updates.
+- PvP skill max behavior, offhand/ranged skill progression, flat hit bonuses,
+  weapon-specific auras, and gear hit modifiers remain later combat slices.
+- Weapon-skill training from NPCs is separate from combat progression and still
+  belongs with trainer/script parity.
 - CMSG_SETSHEATHED (`0x01E0`) appears frequently and is still unhandled.
-- Full CMaNGOS loot-table rolling remains tracked as issue #58.
 - GitHub issue #62 tracks a starter-zone wrapper readiness race from the old
   grade-report path; the grade surface is removed, but normal starter-zone runs
   can still benefit from a readiness check instead of fixed sleep.
 
 ## Key Files
 
+- `crates/wow-db/src/world_data.rs`
 - `crates/wow-db/src/character/state.rs`
-- `crates/wow-network/src/world/combat/lifecycle.rs`
-- `crates/wow-network/src/world/combat/outcome.rs`
-- `crates/wow-network/src/world/combat/aggro.rs`
-- `crates/wow-network/src/world/entities/player.rs`
-- `crates/wow-network/src/world/server/player_login.rs`
+- `crates/wow-db/src/character/types.rs`
+- `crates/wow-network/src/world/quests.rs`
+- `crates/wow-network/src/world/reputation/reputation_mgr.rs`
 - `crates/wow-network/src/world/server/world_session.rs`
-- `crates/wow-network/src/world/session.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `docs/playable_execution_roadmap.md`

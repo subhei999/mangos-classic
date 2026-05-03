@@ -4,6 +4,7 @@ include!("inventory.rs");
 include!("creatures.rs");
 include!("gameobjects.rs");
 include!("gossip.rs");
+include!("reputation/reputation_mgr.rs");
 include!("quests.rs");
 include!("vendors.rs");
 include!("trainers.rs");

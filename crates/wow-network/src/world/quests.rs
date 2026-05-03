@@ -319,6 +319,7 @@ async fn handle_questgiver_choose_reward(
     };
     let reward_money = quest.rew_or_req_money.max(0) as u32;
     let reward_xp = quest_xp_reward(character_level, &quest);
+    let reputation_rewards = quest_reputation_rewards(character_level, &quest);
     let slot = quest_log_slot_for_quest(session, request.quest);
     let Some(reward_items) = selected_quest_reward_items(&quest, request.reward) else {
         warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward item choice");
@@ -369,9 +370,15 @@ async fn handle_questgiver_choose_reward(
         session,
     )
     .await?;
-    let Some(new_money) =
-        wow_db::reward_character_quest(character_db_pool, character_guid, request.quest, reward_money)
-            .await?
+    let Some(reward_result) =
+        wow_db::reward_character_quest(
+            character_db_pool,
+            character_guid,
+            request.quest,
+            reward_money,
+            &reputation_rewards,
+        )
+        .await?
     else {
         return Ok(());
     };
@@ -389,10 +396,11 @@ async fn handle_questgiver_choose_reward(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_player_money_update_body(character_guid, new_money)?,
+        &build_player_money_update_body(character_guid, reward_result.money)?,
         Some(&mut *header_crypto),
     )
     .await?;
+    send_quest_reputation_updates(stream, &reward_result.reputations, header_crypto).await?;
     if !reward_update_blocks.is_empty() {
         let body = build_update_object_body(&reward_update_blocks);
         send_packet(
@@ -430,6 +438,39 @@ async fn handle_questgiver_choose_reward(
         header_crypto,
     )
     .await
+}
+
+async fn send_quest_reputation_updates(
+    stream: &mut WorldPacketSink,
+    reputations: &[CharacterReputation],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    for reputation in reputations {
+        if (reputation.flags & FACTION_FLAG_VISIBLE) == 0 {
+            continue;
+        }
+        if let Some(body) = build_set_faction_visible_body(reputation.faction) {
+            send_packet(
+                stream,
+                SMSG_SET_FACTION_VISIBLE,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+
+    let body = build_set_faction_standing_body(reputations);
+    if body.len() > 4 {
+        send_packet(
+            stream,
+            SMSG_SET_FACTION_STANDING,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn handle_questlog_remove_quest(

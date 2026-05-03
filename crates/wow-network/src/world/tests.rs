@@ -398,6 +398,8 @@ fn test_quest_template(entry: u32) -> QuestTemplateQuery {
         rew_choice_item_count: [0; 6],
         rew_item_id: [0; 4],
         rew_item_count: [0; 4],
+        rew_rep_faction: [0; 5],
+        rew_rep_value: [0; 5],
         point_map_id: 0,
         point_x: 0.0,
         point_y: 0.0,
@@ -2826,6 +2828,40 @@ fn selected_quest_rewards_include_choice_and_fixed_items() {
         ]
     );
     assert!(selected_quest_reward_items(&quest, 0).is_none());
+}
+
+#[test]
+fn quest_reputation_reward_uses_cmangos_low_level_quest_formula() {
+    let mut quest = test_quest_template(783);
+    quest.quest_level = 1;
+    quest.rew_rep_faction[0] = 72;
+    quest.rew_rep_value[0] = 250;
+
+    assert_eq!(quest_reputation_rewards(1, &quest), vec![(72, 250)]);
+    assert_eq!(quest_reputation_rewards(7, &quest), vec![(72, 200)]);
+    assert_eq!(quest_reputation_rewards(10, &quest), vec![(72, 50)]);
+}
+
+#[test]
+fn faction_standing_packet_uses_dbc_reputation_list_slots() {
+    let body = build_set_faction_standing_body(&[
+        CharacterReputation {
+            faction: 72,
+            standing: 250,
+            flags: 1,
+        },
+        CharacterReputation {
+            faction: 999_999,
+            standing: 42,
+            flags: 1,
+        },
+    ]);
+    let mut cursor = 0;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 19);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 250);
+    assert_eq!(cursor, body.len());
 }
 
 #[test]
@@ -9752,11 +9788,11 @@ fn initial_reputations_packet_matches_cmangos_empty_shape() {
 }
 
 #[test]
-fn initial_reputations_packet_ignores_rows_without_dbc_slot_mapping() {
+fn initial_reputations_packet_maps_dbc_reputation_list_slots() {
     let body = build_initial_reputations_body(&[
         CharacterReputation {
             faction: 72,
-            standing: 0,
+            standing: 250,
             flags: 1,
         },
         CharacterReputation {
@@ -9771,7 +9807,28 @@ fn initial_reputations_packet_ignores_rows_without_dbc_slot_mapping() {
         },
     ]);
 
-    assert!(body[4..].iter().all(|byte| *byte == 0));
+    let stormwind_offset = 4 + 19 * 5;
+    assert_eq!(body[stormwind_offset], 1);
+    assert_eq!(
+        &body[stormwind_offset + 1..stormwind_offset + 5],
+        &250i32.to_le_bytes()
+    );
+    let ironforge_offset = 4 + 20 * 5;
+    assert_eq!(body[ironforge_offset], 1);
+    assert_eq!(
+        &body[ironforge_offset + 1..ironforge_offset + 5],
+        &500i32.to_le_bytes()
+    );
+    assert_eq!(
+        body[4..]
+            .chunks_exact(5)
+            .enumerate()
+            .filter(|(slot, chunk)| *slot != 19
+                && *slot != 20
+                && chunk.iter().any(|byte| *byte != 0))
+            .count(),
+        0
+    );
 }
 
 #[test]

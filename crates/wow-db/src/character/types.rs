@@ -120,6 +120,12 @@ pub struct CharacterReputation {
     pub flags: i32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CharacterQuestRewardResult {
+    pub money: u32,
+    pub reputations: Vec<CharacterReputation>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CharacterInventoryItem {
     pub bag: u32,

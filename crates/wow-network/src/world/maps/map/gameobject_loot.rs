@@ -23,7 +23,7 @@ impl MapRuntime {
 
         let state = self.gameobject_loots.entry(gameobject_guid).or_default();
         if state.loot_items.is_empty() {
-            state.loot_items = loot_items;
+            state.loot_items = loot_items_with_stable_slots(loot_items);
         }
         state.open_characters.insert(character_guid);
 
@@ -43,9 +43,11 @@ impl MapRuntime {
     ) -> Option<(u64, u8, DbCreatureLootRuntime)> {
         let gameobject_guid = self.db_gameobject_loot_guid_for_character(character_guid)?;
         let state = self.gameobject_loots.get_mut(&gameobject_guid)?;
-        let slot = usize::from(loot_slot);
-        let loot = state.loot_items.get(slot).cloned()?;
-        state.loot_items.remove(slot);
+        let slot = state
+            .loot_items
+            .iter()
+            .position(|loot| loot.slot == loot_slot)?;
+        let loot = state.loot_items.remove(slot);
         Some((gameobject_guid, loot_slot, loot))
     }
 
@@ -57,8 +59,10 @@ impl MapRuntime {
     ) -> Option<Vec<DbCreatureLootRuntime>> {
         self.gameobjects.get(&gameobject_guid)?;
         let state = self.gameobject_loots.entry(gameobject_guid).or_default();
-        let slot = usize::from(loot_slot).min(state.loot_items.len());
-        state.loot_items.insert(slot, loot);
+        let mut loot = loot;
+        loot.slot = loot_slot;
+        state.loot_items.push(loot);
+        state.loot_items.sort_by_key(|loot| loot.slot);
         Some(state.loot_items.clone())
     }
 

@@ -267,14 +267,22 @@
         self.already_called_assistance = false;
     }
 
-    fn can_aggro_player(&self, character: &ActiveCharacter) -> bool {
+    fn can_aggro_player(
+        &self,
+        faction_templates: &FactionTemplateStore,
+        character: &ActiveCharacter,
+    ) -> bool {
         self.is_alive()
             && !self.is_evading_home()
             && self.spawn.map == character.position.map_id
             && self.spawn.template.civilian == 0
             && self.spawn.template.creature_type != CREATURE_TYPE_CRITTER
             && self.spawn.template.npc_flags == 0
-            && can_creature_attack_player_on_sight(self.spawn.template.faction, character.race)
+            && can_creature_attack_player_on_sight(
+                faction_templates,
+                self.spawn.template.faction,
+                character.race,
+            )
     }
 
     fn distance_to_player_squared(&self, character: &ActiveCharacter) -> Option<f32> {

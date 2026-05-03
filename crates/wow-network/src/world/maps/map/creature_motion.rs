@@ -222,12 +222,25 @@ impl MapRuntime {
             return None;
         }
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
+        let geometry = self.geometry.clone();
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
         }
-        let motion = start_db_creature_random_motion_runtime(navigation, creature, now)
-            .or_else(|| start_db_creature_waypoint_motion_runtime(navigation, creature, now))?;
+        let motion = start_db_creature_random_motion_runtime(
+            navigation,
+            Some(&geometry),
+            creature,
+            now,
+        )
+        .or_else(|| {
+            start_db_creature_waypoint_motion_runtime(
+                navigation,
+                Some(&geometry),
+                creature,
+                now,
+            )
+        })?;
         let snapshot = creature.clone();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
@@ -246,12 +259,19 @@ impl MapRuntime {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
+        let geometry = self.geometry.clone();
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
         }
-        let motion =
-            start_db_creature_chase_motion_runtime(navigation, creature, target, target_position, now)?;
+        let motion = start_db_creature_chase_motion_runtime(
+            navigation,
+            Some(&geometry),
+            creature,
+            target,
+            target_position,
+            now,
+        )?;
         let snapshot = creature.clone();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
@@ -268,8 +288,14 @@ impl MapRuntime {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
+        let geometry = self.geometry.clone();
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
-        let motion = start_db_creature_return_home_motion_runtime(navigation, creature, now)?;
+        let motion = start_db_creature_return_home_motion_runtime(
+            navigation,
+            Some(&geometry),
+            creature,
+            now,
+        )?;
         let snapshot = creature.clone();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
@@ -304,6 +330,11 @@ impl MapRuntime {
         target_position: WorldPosition,
     ) -> Option<(DbCreatureRuntime, WorldPosition, u32)> {
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        // CMaNGOS Unit::SetFacingToObject refuses in-place facing while a movement
+        // spline is active. Chase splines already carry the target-facing flag.
+        if !matches!(creature.motion, CreatureMotionState::Idle) {
+            return None;
+        }
         let dx = target_position.x - creature.current_position.x;
         let dy = target_position.y - creature.current_position.y;
         creature.current_position.orientation = normalize_orientation(dy.atan2(dx));
@@ -333,6 +364,7 @@ impl MapRuntime {
 
     fn select_db_creature_sight_aggro_targets(
         &self,
+        faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
     ) -> Vec<DbCreatureRuntime> {
         if character.position.map_id != self.map_id {
@@ -346,7 +378,7 @@ impl MapRuntime {
             .into_iter()
             .filter_map(|guid| self.creatures.get(&guid))
             .filter(|creature| !self.active_creature_combats.contains_key(&creature.guid().raw()))
-            .filter(|creature| creature.can_aggro_player(character))
+            .filter(|creature| creature.can_aggro_player(faction_templates, character))
             .filter_map(|creature| {
                 let distance_sq = creature.distance_to_player_squared(character)?;
                 let attack_distance = db_creature_attack_distance(
@@ -371,6 +403,7 @@ impl MapRuntime {
 
     fn select_db_creature_assist_targets(
         &mut self,
+        faction_templates: &FactionTemplateStore,
         caller_guid: ObjectGuid,
         character: &ActiveCharacter,
     ) -> Option<(DbCreatureRuntime, Vec<ObjectGuid>)> {
@@ -395,7 +428,7 @@ impl MapRuntime {
                     .contains_key(&creature.guid().raw())
             })
             .filter(|creature| creature.spawn.template.faction == caller.spawn.template.faction)
-            .filter(|creature| creature.can_aggro_player(character))
+            .filter(|creature| creature.can_aggro_player(faction_templates, character))
             .filter_map(|creature| {
                 let distance = distance_2d(
                     caller.current_position.x,

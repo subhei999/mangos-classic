@@ -42,6 +42,8 @@ fn build_combat_dummy_loot_response_body(session: &WorldSessionState) -> Vec<u8>
 impl From<CreatureLootQuery> for DbCreatureLootRuntime {
     fn from(loot: CreatureLootQuery) -> Self {
         Self {
+            slot: 0,
+
             item: loot.item,
 
             count: loot.max_count.max(loot.min_count).max(1),
@@ -244,8 +246,8 @@ fn build_db_creature_loot_response_body(
 
     body.push(item_count);
 
-    for (index, loot) in creature.loot_items.iter().take(item_count as usize).enumerate() {
-        body.push(index as u8);
+    for loot in creature.loot_items.iter().take(item_count as usize) {
+        body.push(loot.slot);
 
         body.extend_from_slice(&loot.item.to_le_bytes());
 
@@ -275,8 +277,8 @@ fn build_gameobject_loot_response_body(
     body.extend_from_slice(&0u32.to_le_bytes());
     body.push(item_count);
 
-    for (index, loot) in loot_items.iter().take(item_count as usize).enumerate() {
-        body.push(index as u8);
+    for loot in loot_items.iter().take(item_count as usize) {
+        body.push(loot.slot);
         body.extend_from_slice(&loot.item.to_le_bytes());
         body.extend_from_slice(&loot.count.to_le_bytes());
         body.extend_from_slice(&loot.display_id.to_le_bytes());

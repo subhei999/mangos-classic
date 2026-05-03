@@ -10,7 +10,7 @@ Classic behavior. Use it with:
   requirement tree and parent rollup rules;
 - `docs/rust_migration_plan.md` for durable milestone history;
 - focused briefs such as `docs/g12_shared_mapruntime_plan.md` and
-  `docs/briefs/combat.md` for subsystem detail.
+  `docs/terrain_height_vmap_parity_plan.md` for subsystem detail.
 
 Keep this document practical. It should answer:
 

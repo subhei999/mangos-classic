@@ -17,7 +17,7 @@ impl MapRuntime {
             return None;
         }
         if creature.loot_items.is_empty() {
-            creature.loot_items = loot_items;
+            creature.loot_items = loot_items_with_stable_slots(loot_items);
         }
         creature.looting = true;
         self.creature_looting_by_character
@@ -59,9 +59,11 @@ impl MapRuntime {
         if !creature.looting {
             return None;
         }
-        let slot = usize::from(loot_slot);
-        let loot = creature.loot_items.get(slot).cloned()?;
-        creature.loot_items.remove(slot);
+        let slot = creature
+            .loot_items
+            .iter()
+            .position(|loot| loot.slot == loot_slot)?;
+        let loot = creature.loot_items.remove(slot);
         let creature = creature.clone();
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         Some((creature_guid, loot_slot, loot, creature))
@@ -74,8 +76,10 @@ impl MapRuntime {
         loot: DbCreatureLootRuntime,
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid)?;
-        let slot = usize::from(loot_slot).min(creature.loot_items.len());
-        creature.loot_items.insert(slot, loot);
+        let mut loot = loot;
+        loot.slot = loot_slot;
+        creature.loot_items.push(loot);
+        creature.loot_items.sort_by_key(|loot| loot.slot);
         let creature = creature.clone();
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         Some(creature)
@@ -123,4 +127,17 @@ impl MapRuntime {
             observer_packets,
         }))
     }
+}
+
+fn loot_items_with_stable_slots(
+    loot_items: Vec<DbCreatureLootRuntime>,
+) -> Vec<DbCreatureLootRuntime> {
+    loot_items
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut loot)| {
+            loot.slot = index.min(u8::MAX as usize) as u8;
+            loot
+        })
+        .collect()
 }

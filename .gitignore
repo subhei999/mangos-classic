@@ -50,6 +50,9 @@ cmake-build-*/
 #
 # Git stuff
 !.github/
+!.codex/
+!.codex/environments/
+!.codex/environments/environment.toml
 # stgit directories
 patches-*
 

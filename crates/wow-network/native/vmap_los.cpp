@@ -1,15 +1,13 @@
 #include "IVMapManager.h"
 #include "VMapFactory.h"
+#include "vmap_bridge.h"
 
 #include <cmath>
 #include <cstdio>
-#include <mutex>
 #include <string>
 
 namespace
 {
-std::mutex g_vmapMutex;
-
 bool tileIdIsValid(unsigned int tile)
 {
     return tile < 64;
@@ -61,7 +59,7 @@ int wow_vmap_line_of_sight(
             !std::isfinite(targetX) || !std::isfinite(targetY) || !std::isfinite(targetZ))
             return -3;
 
-        std::lock_guard<std::mutex> lock(g_vmapMutex);
+        std::lock_guard<std::mutex> lock(wow_vmap_bridge_mutex());
         VMAP::IVMapManager* manager = VMAP::VMapFactory::createOrGetVMapManager();
         if (!manager)
             return -4;

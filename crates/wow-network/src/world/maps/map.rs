@@ -63,6 +63,7 @@ struct PlayerRuntimeSnapshot {
 struct MapRuntime {
     map_id: u32,
     instance_id: u32,
+    geometry: Arc<WorldGeometry>,
     grids: HashMap<GridCoord, GridRuntime>,
     loaded_creature_grids: HashSet<GridCoord>,
     loaded_gameobject_grids: HashSet<GridCoord>,
@@ -195,10 +196,16 @@ struct DbGameObjectLootState {
 }
 
 impl MapRuntime {
+    #[cfg(test)]
     fn new(map_id: u32, instance_id: u32) -> Self {
+        Self::with_geometry(map_id, instance_id, Arc::new(WorldGeometry::default()))
+    }
+
+    fn with_geometry(map_id: u32, instance_id: u32, geometry: Arc<WorldGeometry>) -> Self {
         Self {
             map_id,
             instance_id,
+            geometry,
             grids: HashMap::new(),
             loaded_creature_grids: HashSet::new(),
             loaded_gameobject_grids: HashSet::new(),

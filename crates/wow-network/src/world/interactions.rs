@@ -10,6 +10,7 @@ include!("vendors.rs");
 include!("trainers.rs");
 include!("mmap_path.rs");
 include!("vmap_los.rs");
+include!("terrain_height.rs");
 include!("combat.rs");
 include!("death.rs");
 include!("loot.rs");

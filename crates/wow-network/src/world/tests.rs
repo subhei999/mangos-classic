@@ -863,6 +863,42 @@ fn spell_duration_dbc_parser_reads_cmangos_duration_fields() {
 }
 
 #[test]
+fn faction_template_dbc_parser_reads_cmangos_relation_fields() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&14u32.to_le_bytes());
+    bytes.extend_from_slice(&56u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    let fixture_rows: [[u32; 14]; 3] = [
+        [1, 1, 72, 3, 2, 12, 0, 0, 0, 0, 0, 0, 0, 0],
+        [22, 22, 0, 8, 0, 1, 0, 0, 0, 0, 22, 0, 0, 0],
+        [25, 25, 0, 8, 0, 0, 0, 0, 0, 0, 25, 0, 0, 0],
+    ];
+    for fields in fixture_rows {
+        for field in fields {
+            bytes.extend_from_slice(&field.to_le_bytes());
+        }
+    }
+    bytes.push(0);
+
+    let templates = FactionTemplateStore::from_dbc(parse_faction_templates(&bytes));
+
+    assert!(templates.is_dbc_backed());
+    assert_eq!(templates.len(), 3);
+    assert_eq!(
+        faction_reaction_to(&templates, 22, 1),
+        FactionReaction::Hostile,
+        "Webwood faction template is hostile to player faction templates in CMaNGOS DBC"
+    );
+    assert_eq!(
+        faction_reaction_to(&templates, 25, 1),
+        FactionReaction::Neutral,
+        "neutral monster factions must stay neutral even when the DBC parser is active"
+    );
+}
+
+#[test]
 fn creature_template_zero_scale_falls_back_to_first_display_dbc_scale() {
     let mut spawns = vec![test_creature_spawn(299)];
     spawns[0].template.scale = 0.0;
@@ -3725,6 +3761,64 @@ fn quest_log_count_state_packs_all_objective_counters() {
 }
 
 #[test]
+fn completed_delivery_quest_requires_items_to_reward() {
+    let quest = quest_template_with_required_item(3100, 9542, 2);
+    let status = CharacterQuestStatus {
+        quest: 3100,
+        status: QUEST_STATUS_COMPLETE,
+        rewarded: 0,
+        mobcount1: 0,
+        mobcount2: 0,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+    let one_item = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 9542,
+        count: 1,
+        durability: 0,
+    }];
+    let enough_items = [CharacterInventoryItem {
+        count: 2,
+        ..one_item[0].clone()
+    }];
+
+    assert!(!quest_status_can_reward_from_inventory(
+        &status, &quest, &one_item
+    ));
+    assert!(quest_status_can_reward_from_inventory(
+        &status,
+        &quest,
+        &enough_items
+    ));
+}
+
+#[test]
+fn quest_completion_requires_every_objective() {
+    let mut quest = test_quest_template(3104);
+    quest.req_creature_or_go_id = [6, 38, 0, 0];
+    quest.req_creature_or_go_count = [1, 2, 0, 0];
+    let partial = CharacterQuestStatus {
+        quest: 3104,
+        status: QUEST_STATUS_INCOMPLETE,
+        rewarded: 0,
+        mobcount1: 1,
+        mobcount2: 1,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+    let complete = CharacterQuestStatus {
+        mobcount2: 2,
+        ..partial.clone()
+    };
+
+    assert!(!quest_status_can_complete(&partial, &quest, &[]));
+    assert!(quest_status_can_complete(&complete, &quest, &[]));
+}
+
+#[test]
 fn quest_source_item_storage_rejects_full_backpack_without_stack_room() {
     let mut quest = test_quest_template(3101);
     quest.src_item_id = 9542;
@@ -4312,6 +4406,35 @@ fn db_creature_attack_distance_matches_cmangos_level_delta_shape() {
     assert_eq!(db_creature_attack_distance(1, 1, 0), 0.0);
 }
 
+fn test_mmap_navigation_for_positions(
+    positions: &[WorldPosition],
+) -> DbCreatureNavigationGuardrail {
+    let mut mmap_headers = HashSet::new();
+    let mut mmap_tiles = HashSet::new();
+    for position in positions {
+        if let Some((tile_x, tile_y)) = mmap_tile_for_position(*position) {
+            mmap_headers.insert(position.map_id);
+            mmap_tiles.insert((position.map_id, tile_x, tile_y));
+        }
+    }
+    DbCreatureNavigationGuardrail {
+        world_data_files: Arc::new(WorldDataFiles {
+            data_dir: std::path::PathBuf::from("fixture"),
+            data_dir_for_native: None,
+            maps_available: false,
+            vmaps_available: false,
+            creature_display_scales: HashMap::new(),
+            spell_durations: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
+            mmap_headers,
+            mmap_tiles,
+            vmap_trees: HashSet::new(),
+            vmap_tiles: HashSet::new(),
+        }),
+        ..DbCreatureNavigationGuardrail::default()
+    }
+}
+
 #[test]
 fn db_creature_aggro_selects_nearest_hostile_in_range() {
     let character = ActiveCharacter {
@@ -4327,6 +4450,7 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
         fall_time: 0,
         jump: JumpInfo::default(),
     };
+    let character_position = character.position;
     let mut far_hostile = test_creature_spawn(6);
     far_hostile.guid = 45;
     far_hostile.position_x = -8931.0;
@@ -4346,6 +4470,23 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
     friendly.template.npc_flags = UNIT_NPC_FLAG_GOSSIP;
     let mut session = WorldSessionState {
         active_character: Some(character),
+        db_creature_navigation: test_mmap_navigation_for_positions(&[
+            character_position,
+            WorldPosition::new(
+                0,
+                far_hostile.position_x,
+                far_hostile.position_y,
+                far_hostile.position_z,
+                0.0,
+            ),
+            WorldPosition::new(
+                0,
+                near_hostile.position_x,
+                near_hostile.position_y,
+                near_hostile.position_z,
+                0.0,
+            ),
+        ]),
         ..WorldSessionState::default()
     };
     for creature in [far_hostile.clone(), near_hostile.clone(), friendly] {
@@ -4470,8 +4611,19 @@ fn db_creature_aggro_uses_template_detection_range() {
     kobold.template.npc_flags = 0;
     kobold.template.min_level = 1;
     kobold.template.detection_range = 18;
+    let character_position = character.position;
     let mut session = WorldSessionState {
         active_character: Some(character),
+        db_creature_navigation: test_mmap_navigation_for_positions(&[
+            character_position,
+            WorldPosition::new(
+                0,
+                kobold.position_x,
+                kobold.position_y,
+                kobold.position_z,
+                0.0,
+            ),
+        ]),
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold.clone());
@@ -4512,8 +4664,20 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
         fall_time: 0,
         jump: JumpInfo::default(),
     };
+    let character_position = character.position;
+    let kobold_position = WorldPosition::new(
+        0,
+        kobold.position_x,
+        kobold.position_y,
+        kobold.position_z,
+        0.0,
+    );
     let mut session = WorldSessionState {
         active_character: Some(character),
+        db_creature_navigation: test_mmap_navigation_for_positions(&[
+            character_position,
+            kobold_position,
+        ]),
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
@@ -4720,7 +4884,20 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
         db_creature_navigation: DbCreatureNavigationGuardrail {
             line_of_sight_clear: false,
             path_available: true,
-            ..DbCreatureNavigationGuardrail::default()
+            world_data_files: Arc::new(WorldDataFiles {
+                data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+                data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data")
+                    .ok(),
+                maps_available: true,
+                vmaps_available: false,
+                creature_display_scales: HashMap::new(),
+                spell_durations: HashMap::new(),
+                faction_templates: FactionTemplateStore::fallback_bridge(),
+                mmap_headers: HashSet::new(),
+                mmap_tiles: HashSet::new(),
+                vmap_trees: HashSet::new(),
+                vmap_tiles: HashSet::new(),
+            }),
         },
         ..WorldSessionState::default()
     };
@@ -4993,10 +5170,22 @@ fn db_creature_aggro_includes_real_defias_thugs() {
     defias.template.npc_flags = 0;
     defias.template.creature_type = 7;
     defias.template.min_level = 2;
+    let character_position = character.position;
+    let defias_position = WorldPosition::new(
+        0,
+        defias.position_x,
+        defias.position_y,
+        defias.position_z,
+        0.0,
+    );
     let defias_guid = creature_spawn_guid(&defias);
     let runtime = DbCreatureRuntime::new(defias);
     let mut session = WorldSessionState {
         active_character: Some(character),
+        db_creature_navigation: test_mmap_navigation_for_positions(&[
+            character_position,
+            defias_position,
+        ]),
         ..WorldSessionState::default()
     };
     session.db_creatures.insert(runtime.guid().raw(), runtime);
@@ -5006,27 +5195,28 @@ fn db_creature_aggro_includes_real_defias_thugs() {
 
 #[test]
 fn db_creature_aggro_uses_cmangos_faction_template_reactions() {
+    let faction_templates = FactionTemplateStore::fallback_bridge();
     assert_eq!(
-        faction_reaction_to(17, 1),
+        faction_reaction_to(&faction_templates, 17, 1),
         FactionReaction::Hostile,
         "Defias Thug faction should be hostile to Alliance players"
     );
     assert_eq!(
-        faction_reaction_to(25, 1),
+        faction_reaction_to(&faction_templates, 25, 1),
         FactionReaction::Neutral,
         "Kobold Vermin faction should not auto-aggro Alliance players"
     );
     assert_eq!(
-        faction_reaction_to(32, 1),
+        faction_reaction_to(&faction_templates, 32, 1),
         FactionReaction::Neutral,
         "Young Wolf faction should not auto-aggro"
     );
     assert_eq!(
-        faction_reaction_to(12, 1),
+        faction_reaction_to(&faction_templates, 12, 1),
         FactionReaction::Friendly,
         "Northshire friendly NPCs should not auto-aggro Alliance players"
     );
-    assert!(!can_faction_attack_on_sight(9_999, 1));
+    assert!(!can_faction_attack_on_sight(&faction_templates, 9_999, 1));
 }
 
 #[tokio::test]
@@ -5359,7 +5549,7 @@ fn db_creature_melee_reach_is_position_gated() {
 }
 
 #[test]
-fn db_creature_navigation_guardrail_blocks_aggro_and_melee_but_not_chase_pathing() {
+fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
     creature.position_y = 0.0;
@@ -5385,7 +5575,20 @@ fn db_creature_navigation_guardrail_blocks_aggro_and_melee_but_not_chase_pathing
         db_creature_navigation: DbCreatureNavigationGuardrail {
             line_of_sight_clear: false,
             path_available: true,
-            ..DbCreatureNavigationGuardrail::default()
+            world_data_files: Arc::new(WorldDataFiles {
+                data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+                data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data")
+                    .ok(),
+                maps_available: true,
+                vmaps_available: false,
+                creature_display_scales: HashMap::new(),
+                spell_durations: HashMap::new(),
+                faction_templates: FactionTemplateStore::fallback_bridge(),
+                mmap_headers: HashSet::new(),
+                mmap_tiles: HashSet::new(),
+                vmap_trees: HashSet::new(),
+                vmap_tiles: HashSet::new(),
+            }),
         },
         ..WorldSessionState::default()
     };
@@ -5397,8 +5600,8 @@ fn db_creature_navigation_guardrail_blocks_aggro_and_melee_but_not_chase_pathing
     assert!(!db_creature_can_reach_player(&session, attacker));
     session.active_character.as_mut().unwrap().position.x = 10.0;
     assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_some(),
-        "blocked LOS should prevent aggro/melee, but should not stop an already-combat creature from trying to path around geometry"
+        start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none(),
+        "missing mmap data must not create generated aggro/chase movement"
     );
 
     session.db_creature_navigation.path_available = false;
@@ -5768,11 +5971,13 @@ fn map_runtime_db_gameobject_loot_item_is_shared_between_characters() {
         vec![DbGameObjectRuntime::new(spawn)],
     );
     let first_loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 117,
         count: 1,
         display_id: 117,
     };
     let second_loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 118,
         count: 1,
         display_id: 118,
@@ -5817,6 +6022,7 @@ fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
         vec![DbGameObjectRuntime::new(spawn)],
     );
     let loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 117,
         count: 1,
         display_id: 117,
@@ -5838,6 +6044,58 @@ fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
         .expect("second character should open restored shared loot");
     let reclaimed = map.take_db_gameobject_loot_item(2, 0);
     assert_eq!(reclaimed.map(|(_, _, loot)| loot.item), Some(117));
+}
+
+#[test]
+fn map_runtime_db_gameobject_loot_slots_stay_stable_after_top_claim() {
+    let mut map = MapRuntime::new(0, 0);
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_CHEST);
+    let guid = gameobject_spawn_guid(&spawn).raw();
+    map.insert_loaded_gameobject_grid(
+        grid_coord_for_position(gameobject_spawn_position(&spawn)),
+        vec![DbGameObjectRuntime::new(spawn)],
+    );
+    map.open_db_gameobject_loot(
+        guid,
+        1,
+        vec![
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 117,
+                count: 1,
+                display_id: 117,
+            },
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 118,
+                count: 1,
+                display_id: 118,
+            },
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 119,
+                count: 1,
+                display_id: 119,
+            },
+        ],
+    )
+    .expect("gameobject loot should open");
+
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1, 0)
+            .map(|(_, slot, loot)| (slot, loot.item)),
+        Some((0, 117))
+    );
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1, 1)
+            .map(|(_, slot, loot)| (slot, loot.item)),
+        Some((1, 118))
+    );
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1, 2)
+            .map(|(_, slot, loot)| (slot, loot.item)),
+        Some((2, 119))
+    );
 }
 
 #[test]
@@ -5892,7 +6150,8 @@ fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
         DbCreatureRuntime::new(unindexed_hostile),
     );
 
-    let targets = map.select_db_creature_sight_aggro_targets(&character);
+    let faction_templates = FactionTemplateStore::fallback_bridge();
+    let targets = map.select_db_creature_sight_aggro_targets(&faction_templates, &character);
 
     assert_eq!(
         targets
@@ -6311,6 +6570,7 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
     let mut creature = DbCreatureRuntime::new(spawn);
     creature.begin_corpse(Instant::now(), 1_000);
     let loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 117,
         count: 1,
         display_id: 117,
@@ -6333,6 +6593,61 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
 }
 
 #[test]
+fn map_runtime_db_creature_loot_slots_stay_stable_after_top_claim() {
+    let spawn = CreatureSpawnQuery {
+        guid: 45,
+        entry: 6,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+    map.open_db_creature_loot(
+        guid,
+        1,
+        vec![
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 117,
+                count: 1,
+                display_id: 117,
+            },
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 118,
+                count: 1,
+                display_id: 118,
+            },
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 119,
+                count: 1,
+                display_id: 119,
+            },
+        ],
+    )
+    .expect("creature loot should open");
+
+    assert_eq!(
+        map.take_db_creature_loot_item(1, 0)
+            .map(|(_, slot, loot, _)| (slot, loot.item)),
+        Some((0, 117))
+    );
+    assert_eq!(
+        map.take_db_creature_loot_item(1, 1)
+            .map(|(_, slot, loot, _)| (slot, loot.item)),
+        Some((1, 118))
+    );
+    assert_eq!(
+        map.take_db_creature_loot_item(1, 2)
+            .map(|(_, slot, loot, _)| (slot, loot.item)),
+        Some((2, 119))
+    );
+}
+
+#[test]
 fn map_runtime_db_creature_loot_item_is_generated_once() {
     let spawn = CreatureSpawnQuery {
         guid: 45,
@@ -6343,11 +6658,13 @@ fn map_runtime_db_creature_loot_item_is_generated_once() {
     let mut creature = DbCreatureRuntime::new(spawn);
     creature.begin_corpse(Instant::now(), 1_000);
     let first_loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 117,
         count: 1,
         display_id: 117,
     };
     let second_loot = DbCreatureLootRuntime {
+        slot: 0,
         item: 159,
         count: 1,
         display_id: 159,
@@ -7283,13 +7600,14 @@ fn map_runtime_db_creature_assistance_call_is_shared_once() {
         DbCreatureRuntime::new(helper_spawn),
     ]);
 
+    let faction_templates = FactionTemplateStore::fallback_bridge();
     let first = map
-        .select_db_creature_assist_targets(caller, &character)
+        .select_db_creature_assist_targets(&faction_templates, caller, &character)
         .expect("caller should exist");
     assert_eq!(first.1, vec![helper]);
     assert!(first.0.already_called_assistance);
     let second = map
-        .select_db_creature_assist_targets(caller, &character)
+        .select_db_creature_assist_targets(&faction_templates, caller, &character)
         .expect("caller should still exist");
     assert!(second.1.is_empty());
     assert!(
@@ -8913,6 +9231,7 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             vmaps_available: true,
             creature_display_scales: HashMap::new(),
             spell_durations: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -8947,6 +9266,24 @@ fn world_data_parses_cmangos_vmap_file_names() {
         Some((530, 31, 24))
     );
     assert_eq!(parse_vmap_tile_file_name("000_48_32.vmtile.tmp"), None);
+}
+
+#[test]
+fn faction_template_uses_local_cmangos_dbc_when_available() {
+    let data = WorldDataFiles::inspect("C:/World of Warcraft Classic");
+    if !data.faction_templates.is_dbc_backed() {
+        return;
+    }
+
+    assert!(
+        data.faction_templates.len() > 100,
+        "local FactionTemplate.dbc should load the broad Classic faction table"
+    );
+    assert_eq!(
+        faction_reaction_to(&data.faction_templates, 22, 1),
+        FactionReaction::Hostile,
+        "Webwood faction 22 should aggro Alliance players from the real DBC"
+    );
 }
 
 #[test]
@@ -9021,8 +9358,9 @@ fn db_creature_mmap_path_uses_cmangos_smooth_steps_when_available() {
     let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
 
-    let path = db_creature_path_to_destination(&navigation, start, target, CreaturePathMode::Full)
-        .expect("local Northshire mmap should produce a smoothed path");
+    let path =
+        db_creature_path_to_destination(&navigation, None, start, target, CreaturePathMode::Full)
+            .expect("local Northshire mmap should produce a smoothed path");
 
     assert!(path.flags.contains(DbCreaturePathFlags::NORMAL));
     assert!(!path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH));
@@ -9043,23 +9381,87 @@ fn db_creature_mmap_path_uses_cmangos_smooth_steps_when_available() {
 }
 
 #[test]
-fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
-    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
-    let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
-    let fallback_navigation = DbCreatureNavigationGuardrail::default();
+fn db_creature_mmap_path_uses_kalimdor_teldrassil_data_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let start = WorldPosition::new(1, 10311.3, 832.463, 1326.41, 5.69632);
+    let target = WorldPosition::new(1, 10321.3, 832.463, 1326.41, 5.69632);
+    let Some(start_tile) = mmap_tile_for_position(start) else {
+        panic!("Night Elf starter position should resolve to a mmap tile");
+    };
+    let Some(target_tile) = mmap_tile_for_position(target) else {
+        panic!("nearby Teldrassil target should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(1, start_tile.0, start_tile.1)
+        || !data.has_mmap_tile(1, target_tile.0, target_tile.1)
+    {
+        return;
+    }
+    let navigation = DbCreatureNavigationGuardrail {
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
 
-    let fallback_path = db_creature_path_to_destination(
-        &fallback_navigation,
+    let path = db_creature_path_to_destination(
+        &navigation,
+        None,
         start,
         target,
         CreaturePathMode::Full,
     )
-    .expect("missing mmap data should preserve the permissive straight fallback");
-    assert_eq!(fallback_path.points.len(), 1);
-    assert_eq!(fallback_path.points[0].x, target.x);
-    assert!(fallback_path
-        .flags
-        .contains(DbCreaturePathFlags::NOT_USING_PATH));
+    .unwrap_or_else(|| {
+            panic!(
+                "local Teldrassil mmap should produce a Detour path; tiles={start_tile:?}->{target_tile:?}"
+            )
+        });
+
+    assert!(path.flags.contains(DbCreaturePathFlags::NORMAL));
+    assert!(!path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH));
+    assert!(path.points.iter().all(|point| point.map_id == 1));
+}
+
+#[test]
+fn terrain_height_uses_local_cmangos_map_data_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.maps_available {
+        return;
+    }
+    let geometry = WorldGeometry::new(data);
+    let northshire = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let teldrassil = WorldPosition::new(1, 10311.3, 832.463, 1326.41, 5.69632);
+
+    let northshire_ground = geometry
+        .ground_position(northshire)
+        .expect("local Northshire map/vmap data should produce a ground z");
+    assert!(northshire_ground.z.is_finite());
+    assert!(
+        (northshire_ground.z - northshire.z).abs() < 25.0,
+        "Northshire sampled ground should stay near the known DB/player z, got {} from {}",
+        northshire_ground.z,
+        northshire.z
+    );
+
+    if geometry.world_data_files.has_mmap_tile(
+        1,
+        mmap_tile_for_position(teldrassil).unwrap().0,
+        mmap_tile_for_position(teldrassil).unwrap().1,
+    ) {
+        let teldrassil_ground = geometry
+            .ground_position(teldrassil)
+            .expect("local Teldrassil map/vmap data should produce a ground z");
+        assert!(teldrassil_ground.z.is_finite());
+        assert!(
+            (teldrassil_ground.z - teldrassil.z).abs() < 50.0,
+            "Teldrassil sampled ground should stay near the known starter z, got {} from {}",
+            teldrassil_ground.z,
+            teldrassil.z
+        );
+    }
+}
+
+#[test]
+fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let target = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
 
     let native_missing_navigation = DbCreatureNavigationGuardrail {
         world_data_files: Arc::new(WorldDataFiles {
@@ -9069,6 +9471,7 @@ fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
             vmaps_available: false,
             creature_display_scales: HashMap::new(),
             spell_durations: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -9092,6 +9495,7 @@ fn db_creature_path_uses_straight_fallback_only_when_mmap_unavailable() {
     assert!(
         db_creature_path_to_destination(
             &native_missing_navigation,
+            None,
             start,
             target,
             CreaturePathMode::Full,
@@ -9927,6 +10331,40 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
 }
 
 #[test]
+fn map_runtime_refuses_in_place_facing_while_creature_is_moving() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    creature.orientation = 0.0;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(creature);
+    runtime.next_spline_id = 4;
+    runtime.motion = CreatureMotionState::Chase(CreatureChaseMotion {
+        target: player,
+        start: runtime.current_position,
+        destination: WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0),
+        path: vec![WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0)],
+        started_at: now,
+        duration: Duration::from_secs(1),
+        recheck_at: now + Duration::from_secs(1),
+    });
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![runtime]);
+
+    assert!(map
+        .face_db_creature_toward_position(attacker, WorldPosition::new(0, 0.0, 10.0, 0.0, 0.0),)
+        .is_none());
+    let snapshot = map
+        .db_creature_snapshot(attacker)
+        .expect("creature should stay loaded");
+    assert_eq!(snapshot.current_position.orientation, 0.0);
+    assert_eq!(snapshot.next_spline_id, 4);
+}
+
+#[test]
 fn db_creature_chase_motion_stop_distance_uses_combined_reach() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
@@ -10000,6 +10438,7 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             vmaps_available: true,
             creature_display_scales: HashMap::new(),
             spell_durations: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::from([0]),
@@ -10008,13 +10447,10 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
         ..DbCreatureNavigationGuardrail::default()
     };
 
-    let path = db_creature_chase_path(&navigation, start, target, 2.5)
-        .expect("missing mmap data should preserve the permissive straight fallback");
-
-    assert!(path.flags.contains(DbCreaturePathFlags::NORMAL));
-    assert!(path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH));
-    assert_eq!(path.points.len(), 1);
-    assert!((path.points[0].x - 7.5).abs() < 0.001);
+    assert!(
+        db_creature_chase_path(&navigation, None, start, target, 2.5).is_none(),
+        "LOS-only straight chase must not run without mmap path support"
+    );
 }
 
 #[test]

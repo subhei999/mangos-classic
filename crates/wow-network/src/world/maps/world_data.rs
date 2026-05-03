@@ -6,6 +6,7 @@ struct WorldDataFiles {
     vmaps_available: bool,
     creature_display_scales: HashMap<u32, f32>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
+    faction_templates: FactionTemplateStore,
     mmap_headers: HashSet<u32>,
     mmap_tiles: HashSet<(u32, u32, u32)>,
     vmap_trees: HashSet<u32>,
@@ -21,6 +22,7 @@ impl WorldDataFiles {
             vmaps_available: false,
             creature_display_scales: HashMap::new(),
             spell_durations: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::new(),
@@ -35,6 +37,8 @@ impl WorldDataFiles {
         let creature_display_scales =
             load_creature_display_info_scales(&data_dir.join("dbc").join("CreatureDisplayInfo.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
+        let faction_templates =
+            load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let mut mmap_headers = HashSet::new();
         let mut mmap_tiles = HashSet::new();
         let mut vmap_trees = HashSet::new();
@@ -85,6 +89,7 @@ impl WorldDataFiles {
             vmaps_available,
             creature_display_scales,
             spell_durations,
+            faction_templates,
             mmap_headers,
             mmap_tiles,
             vmap_trees,
@@ -114,6 +119,288 @@ struct SpellDurationEntry {
     duration_millis: i32,
     duration_per_level_millis: i32,
     max_duration_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactionReaction {
+    Hostile,
+    Neutral,
+    Friendly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FactionTemplateEntry {
+    id: u32,
+    faction: u32,
+    faction_flags: u32,
+    faction_group_mask: u32,
+    friend_group_mask: u32,
+    enemy_group_mask: u32,
+    enemy_faction: [u32; 4],
+    friend_faction: [u32; 4],
+}
+
+#[derive(Debug, Clone)]
+struct FactionTemplateStore {
+    entries: HashMap<u32, FactionTemplateEntry>,
+    source: FactionTemplateStoreSource,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum FactionTemplateStoreSource {
+    Dbc,
+    #[default]
+    FallbackBridge,
+}
+
+impl FactionTemplateStore {
+    fn fallback_bridge() -> Self {
+        let entries = [
+            faction_template_from_fields([
+                1,
+                1,
+                72,
+                FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_HORDE,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                2,
+                2,
+                72,
+                FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_HORDE,
+                FACTION_GROUP_MASK_HORDE,
+                FACTION_GROUP_MASK_ALLIANCE,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                11,
+                72,
+                2081,
+                FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_HORDE | FACTION_GROUP_MASK_MONSTER,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                12,
+                72,
+                0,
+                FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_HORDE,
+                0,
+                0,
+                0,
+                0,
+                72,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                RUST_GUIDE_FACTION_TEMPLATE,
+                RUST_GUIDE_FACTION_TEMPLATE,
+                0,
+                FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_ALLIANCE,
+                FACTION_GROUP_MASK_HORDE,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                14,
+                14,
+                0,
+                FACTION_GROUP_MASK_MONSTER,
+                0,
+                FACTION_GROUP_MASK_PLAYER,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                17,
+                15,
+                1,
+                FACTION_GROUP_MASK_MONSTER,
+                0,
+                FACTION_GROUP_MASK_PLAYER,
+                0,
+                0,
+                0,
+                0,
+                15,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([
+                25,
+                25,
+                0,
+                FACTION_GROUP_MASK_MONSTER,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                25,
+                0,
+                0,
+                0,
+            ]),
+            faction_template_from_fields([32, 29, 16, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0]),
+        ]
+        .into_iter()
+        .map(|entry| (entry.id, entry))
+        .collect();
+        Self {
+            entries,
+            source: FactionTemplateStoreSource::FallbackBridge,
+        }
+    }
+
+    fn from_dbc(entries: HashMap<u32, FactionTemplateEntry>) -> Self {
+        if entries.is_empty() {
+            Self::fallback_bridge()
+        } else {
+            Self {
+                entries,
+                source: FactionTemplateStoreSource::Dbc,
+            }
+        }
+    }
+
+    fn entry(&self, id: u32) -> Option<FactionTemplateEntry> {
+        self.entries.get(&id).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_dbc_backed(&self) -> bool {
+        self.source == FactionTemplateStoreSource::Dbc
+    }
+}
+
+impl Default for FactionTemplateStore {
+    fn default() -> Self {
+        Self::fallback_bridge()
+    }
+}
+
+const FACTION_GROUP_MASK_PLAYER: u32 = 1;
+const FACTION_GROUP_MASK_ALLIANCE: u32 = 2;
+const FACTION_GROUP_MASK_HORDE: u32 = 4;
+const FACTION_GROUP_MASK_MONSTER: u32 = 8;
+
+fn faction_template_from_fields(fields: [u32; 14]) -> FactionTemplateEntry {
+    FactionTemplateEntry {
+        id: fields[0],
+        faction: fields[1],
+        faction_flags: fields[2],
+        faction_group_mask: fields[3],
+        friend_group_mask: fields[4],
+        enemy_group_mask: fields[5],
+        enemy_faction: [fields[6], fields[7], fields[8], fields[9]],
+        friend_faction: [fields[10], fields[11], fields[12], fields[13]],
+    }
+}
+
+fn load_faction_templates(path: &std::path::Path) -> FactionTemplateStore {
+    let Ok(bytes) = std::fs::read(path) else {
+        return FactionTemplateStore::fallback_bridge();
+    };
+    FactionTemplateStore::from_dbc(parse_faction_templates(&bytes))
+}
+
+fn parse_faction_templates(bytes: &[u8]) -> HashMap<u32, FactionTemplateEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const FACTION_TEMPLATE_FIELD_COUNT: usize = 14;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count != FACTION_TEMPLATE_FIELD_COUNT
+        || record_size < FACTION_TEMPLATE_FIELD_COUNT * 4
+    {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut templates = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        if id == 0 {
+            continue;
+        }
+        templates.insert(
+            id,
+            faction_template_from_fields([
+                id,
+                field(1),
+                field(2),
+                field(3),
+                field(4),
+                field(5),
+                field(6),
+                field(7),
+                field(8),
+                field(9),
+                field(10),
+                field(11),
+                field(12),
+                field(13),
+            ]),
+        );
+    }
+    templates
 }
 
 fn load_creature_display_info_scales(path: &std::path::Path) -> HashMap<u32, f32> {

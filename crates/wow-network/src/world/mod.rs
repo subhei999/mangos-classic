@@ -98,6 +98,8 @@ impl WorldServer {
             maps = world_data_files.maps_available,
             vmaps = world_data_files.vmaps_available,
             creature_display_scales = world_data_files.creature_display_scales.len(),
+            faction_templates = world_data_files.faction_templates.len(),
+            faction_templates_dbc_backed = world_data_files.faction_templates.is_dbc_backed(),
             mmap_maps = world_data_files.mmap_headers.len(),
             mmap_tiles = world_data_files.mmap_tiles.len(),
             vmap_maps = world_data_files.vmap_trees.len(),
@@ -113,7 +115,13 @@ impl WorldServer {
         if world_data_files.mmap_tiles.is_empty() {
             warn!(
                 data_dir = %world_data_files.data_dir.display(),
-                "No mmap tiles found; DB creature pathing will use the permissive fallback",
+                "No mmap tiles found; DB creature generated movement and path-gated aggro checks will stay unavailable",
+            );
+        }
+        if !world_data_files.faction_templates.is_dbc_backed() {
+            warn!(
+                data_dir = %world_data_files.data_dir.display(),
+                "FactionTemplate.dbc was not loaded; creature sight aggro will use the limited test/bootstrap faction bridge",
             );
         }
         if world_data_files.vmaps_available && world_data_files.vmap_tiles.is_empty() {

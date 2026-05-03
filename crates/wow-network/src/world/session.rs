@@ -5,6 +5,7 @@ include!("entities/corpse.rs");
 include!("entities/item.rs");
 include!("motion/motion_master.rs");
 include!("maps/world_data.rs");
+include!("maps/world_geometry.rs");
 include!("maps/navigation.rs");
 include!("maps/grid.rs");
 include!("maps/static_world_cache.rs");

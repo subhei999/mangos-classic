@@ -135,6 +135,10 @@ function Stop-StackProcess {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
+Write-Host "Stopping any running Rust authserver/worldserver before restart."
+Stop-StackProcess -Process $null
+Start-Sleep -Milliseconds 500
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "docker was not found on PATH. Install/start Docker Desktop first."
 }

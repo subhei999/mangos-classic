@@ -273,12 +273,13 @@ struct InventoryDeps<'a> {
 
 async fn handle_destroy_item(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let world_db_pool = deps.world_db_pool;
     let Some(character) = &session.active_character else {
         warn!("Ignoring item destroy before character login");
         return Ok(());
@@ -358,19 +359,28 @@ async fn handle_destroy_item(
     match destroyed {
         wow_db::InventoryDestroyResult::CountChanged { item, count } => {
             let body = build_item_stack_count_update_body(item, count)?;
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
         }
         wow_db::InventoryDestroyResult::Removed { item } => {
             if request.bag == INVENTORY_SLOT_BAG_0 {
                 let body =
                     build_inventory_slots_update_body(character_guid, &session.inventory, &[request.slot])?;
-                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
             } else {
                 let body = build_destroy_object_body(item);
-                send_packet(stream, SMSG_DESTROY_OBJECT, &body, Some(header_crypto)).await
+                send_packet(stream, SMSG_DESTROY_OBJECT, &body, Some(&mut *header_crypto)).await?;
             }
         }
-    }
+    };
+
+    revalidate_completed_item_quests_after_inventory_change(
+        stream,
+        deps,
+        session,
+        character_guid,
+        header_crypto,
+    )
+    .await
 }
 
 async fn handle_split_item(

@@ -2,8 +2,10 @@
 struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
     static_world_cache: Arc<StaticWorldSpawnCache>,
+    geometry: Arc<WorldGeometry>,
     creature_display_scales: HashMap<u32, f32>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
+    faction_templates: FactionTemplateStore,
     creature_grid_load_ensure_calls: AtomicU64,
     creature_grid_load_cache_hits: AtomicU64,
     creature_grid_load_db_queries: AtomicU64,
@@ -57,10 +59,13 @@ impl MapRuntimeManager {
         world_data_files: &WorldDataFiles,
         static_world_cache: Arc<StaticWorldSpawnCache>,
     ) -> Self {
+        let world_data_files = Arc::new(world_data_files.clone());
         Self {
             static_world_cache,
+            geometry: Arc::new(WorldGeometry::new(world_data_files.clone())),
             creature_display_scales: world_data_files.creature_display_scales.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
+            faction_templates: world_data_files.faction_templates.clone(),
             ..Self::default()
         }
     }
@@ -85,7 +90,13 @@ impl MapRuntimeManager {
         let map = {
             let mut maps = self.maps.lock().await;
             maps.entry(map_key)
-                .or_insert_with(|| Arc::new(Mutex::new(MapRuntime::new(map_key.0, map_key.1))))
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(MapRuntime::with_geometry(
+                        map_key.0,
+                        map_key.1,
+                        self.geometry.clone(),
+                    )))
+                })
                 .clone()
         };
         let packets = map.lock().await.add_player(player);
@@ -1565,7 +1576,7 @@ impl MapRuntimeManager {
         let targets = map
             .lock()
             .await
-            .select_db_creature_sight_aggro_targets(character);
+            .select_db_creature_sight_aggro_targets(&self.faction_templates, character);
         targets
     }
 
@@ -1579,7 +1590,7 @@ impl MapRuntimeManager {
         let targets = map
             .lock()
             .await
-            .select_db_creature_assist_targets(caller_guid, character);
+            .select_db_creature_assist_targets(&self.faction_templates, caller_guid, character);
         targets
     }
 
@@ -1587,7 +1598,13 @@ impl MapRuntimeManager {
         let map_key = (map_id, instance_id);
         let mut maps = self.maps.lock().await;
         maps.entry(map_key)
-            .or_insert_with(|| Arc::new(Mutex::new(MapRuntime::new(map_key.0, map_key.1))))
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(MapRuntime::with_geometry(
+                    map_key.0,
+                    map_key.1,
+                    self.geometry.clone(),
+                )))
+            })
             .clone()
     }
 }

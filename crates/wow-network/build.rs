@@ -56,8 +56,10 @@ fn main() {
         "../../src/game/vmap/VMapFactory.cpp",
         "../../src/game/vmap/VMapManager2.cpp",
         "../../src/game/vmap/WorldModel.cpp",
+        "native/vmap_bridge.cpp",
         "native/mmap_path.cpp",
         "native/vmap_los.cpp",
+        "native/map_height.cpp",
         "native/zlib_stubs.cpp",
     ];
 

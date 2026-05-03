@@ -193,12 +193,13 @@ async fn vendor_buy_item(
 
 async fn handle_sell_item(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
+    deps: QuestMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let world_db_pool = deps.world_db_pool;
     let Some(character) = &session.active_character else {
         warn!("Ignoring vendor sell before character login");
         return Ok(());
@@ -323,7 +324,16 @@ async fn handle_sell_item(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_player_money_update_body(character_guid, money)?,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    revalidate_completed_item_quests_after_inventory_change(
+        stream,
+        deps,
+        session,
+        character_guid,
+        header_crypto,
     )
     .await
 }

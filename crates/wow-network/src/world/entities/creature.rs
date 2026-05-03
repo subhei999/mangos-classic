@@ -45,6 +45,7 @@ enum CreatureLifeState {
 
 #[derive(Debug, Clone)]
 struct CreatureLoot {
+    slot: u8,
     item: u32,
     count: u32,
     display_id: u32,

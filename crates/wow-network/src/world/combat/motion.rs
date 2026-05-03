@@ -163,11 +163,12 @@ fn start_db_creature_random_motion(
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_random_motion_runtime(&session.db_creature_navigation, creature, now)
+    start_db_creature_random_motion_runtime(&session.db_creature_navigation, None, creature, now)
 }
 
 fn start_db_creature_random_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
@@ -191,6 +192,7 @@ fn start_db_creature_random_motion_runtime(
     };
     let Some(path_result) = db_creature_path_to_destination(
         navigation,
+        geometry,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -233,11 +235,12 @@ fn start_db_creature_waypoint_motion(
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_waypoint_motion_runtime(&session.db_creature_navigation, creature, now)
+    start_db_creature_waypoint_motion_runtime(&session.db_creature_navigation, None, creature, now)
 }
 
 fn start_db_creature_waypoint_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
@@ -269,6 +272,7 @@ fn start_db_creature_waypoint_motion_runtime(
     }
     let Some((path, arrived_node)) = db_creature_waypoint_buffered_path(
         navigation,
+        geometry,
         creature,
         start,
         node_index,
@@ -313,6 +317,7 @@ fn start_db_creature_waypoint_motion_runtime(
 
 fn db_creature_waypoint_buffered_path(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     creature: &DbCreatureRuntime,
     start: WorldPosition,
     first_node_index: usize,
@@ -339,6 +344,7 @@ fn db_creature_waypoint_buffered_path(
         );
         let path_result = db_creature_path_to_destination(
             navigation,
+            geometry,
             current_start,
             raw_destination,
             CreaturePathMode::Full,
@@ -381,6 +387,7 @@ fn start_db_creature_chase_motion(
     let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
     start_db_creature_chase_motion_runtime(
         &session.db_creature_navigation,
+        None,
         creature,
         target,
         target_position,
@@ -390,6 +397,7 @@ fn start_db_creature_chase_motion(
 
 fn start_db_creature_chase_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
     target: ObjectGuid,
     target_position: WorldPosition,
@@ -399,6 +407,7 @@ fn start_db_creature_chase_motion_runtime(
     let stop_distance = db_creature_chase_stop_distance(creature);
     let path_result = db_creature_chase_path(
         navigation,
+        geometry,
         start,
         target_position,
         stop_distance,
@@ -452,11 +461,12 @@ fn start_db_creature_return_home_motion(
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_return_home_motion_runtime(&session.db_creature_navigation, creature, now)
+    start_db_creature_return_home_motion_runtime(&session.db_creature_navigation, None, creature, now)
 }
 
 fn start_db_creature_return_home_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
@@ -475,6 +485,7 @@ fn start_db_creature_return_home_motion_runtime(
     }
     let path_result = db_creature_path_to_destination(
         navigation,
+        geometry,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -538,9 +549,6 @@ impl DbCreaturePathFlags {
         self.0 & flag.0 != 0
     }
 
-    fn union(self, flag: Self) -> Self {
-        Self(self.0 | flag.0)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -558,6 +566,7 @@ enum DbCreaturePathBuild {
 
 fn db_creature_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     target_position: WorldPosition,
     stop_distance: f32,
@@ -580,6 +589,7 @@ fn db_creature_chase_path(
 
     let mut path = db_creature_path_to_destination(
         navigation,
+        geometry,
         start,
         target_position,
         CreaturePathMode::Full,
@@ -643,10 +653,12 @@ fn db_creature_cut_chase_path(
 
 fn db_creature_path_to_destination(
     navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     target_position: WorldPosition,
     mode: CreaturePathMode,
 ) -> Option<DbCreaturePath> {
+    let target_position = db_creature_ground_destination(geometry, target_position)?;
     match db_creature_mmap_path(navigation, start, target_position, mode) {
         DbCreaturePathBuild::Path(path) => {
             debug_assert!(!path.flags.contains(DbCreaturePathFlags::NOPATH));
@@ -656,11 +668,38 @@ fn db_creature_path_to_destination(
             debug_assert!(flags.contains(DbCreaturePathFlags::NOPATH));
             None
         }
-        DbCreaturePathBuild::Unavailable => db_creature_straight_path(start, target_position, mode)
-            .map(|points| DbCreaturePath {
-                flags: DbCreaturePathFlags::NORMAL.union(DbCreaturePathFlags::NOT_USING_PATH),
-                points,
-            }),
+        DbCreaturePathBuild::Unavailable => {
+            if db_creature_uses_unit_fixture_pathing(navigation) {
+                db_creature_straight_path(start, target_position, mode).map(|points| {
+                    DbCreaturePath {
+                        flags: DbCreaturePathFlags(
+                            DbCreaturePathFlags::NORMAL.0 | DbCreaturePathFlags::NOT_USING_PATH.0,
+                        ),
+                        points,
+                    }
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn db_creature_uses_unit_fixture_pathing(navigation: &DbCreatureNavigationGuardrail) -> bool {
+    navigation.world_data_files.data_dir_for_native.is_none()
+        && !navigation.world_data_files.maps_available
+        && !navigation.world_data_files.vmaps_available
+        && navigation.world_data_files.mmap_tiles.is_empty()
+        && navigation.world_data_files.vmap_tiles.is_empty()
+}
+
+fn db_creature_ground_destination(
+    geometry: Option<&WorldGeometry>,
+    target_position: WorldPosition,
+) -> Option<WorldPosition> {
+    match geometry {
+        Some(geometry) => geometry.ground_position(target_position),
+        None => Some(target_position),
     }
 }
 
@@ -820,7 +859,8 @@ fn db_creature_has_valid_path(
     target_position: WorldPosition,
 ) -> bool {
     if navigation.world_data_files.mmap_tiles.is_empty() {
-        return true;
+        return navigation.world_data_files.data_dir_for_native.is_none()
+            && !navigation.world_data_files.maps_available;
     }
 
     let map_id = start.map_id;

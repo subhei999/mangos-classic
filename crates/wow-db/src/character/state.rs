@@ -534,6 +534,27 @@ pub async fn complete_character_quest(
         .expect("completed quest row must exist"))
 }
 
+pub async fn incomplete_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+) -> Result<CharacterQuestStatus, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_incomplete");
+    sqlx::query(
+        "UPDATE character_queststatus \
+         SET status = 3 \
+         WHERE guid = ? AND quest = ? AND status = 1 AND rewarded = 0",
+    )
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?;
+
+    Ok(get_character_quest_status(pool, guid, quest)
+        .await?
+        .expect("incompleted quest row must exist"))
+}
+
 pub async fn abandon_character_quest(
     pool: &MySqlPool,
     guid: u32,

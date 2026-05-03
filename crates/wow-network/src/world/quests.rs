@@ -323,16 +323,42 @@ async fn handle_questgiver_complete_quest(
     if !questgiver_completes_quest(object_mgr, world_db_pool, request.guid, request.quest).await? {
         return Ok(());
     }
-    let Some(status) = session.quest_statuses.get(&request.quest) else {
+    let Some(status) = session.quest_statuses.get(&request.quest).cloned() else {
         return Ok(());
     };
     let Some(quest) = object_mgr.quest_template(world_db_pool, request.quest).await? else {
         return Ok(());
     };
-    let reward_ready = if quest_status_can_reward_from_inventory(status, &quest, &session.inventory) {
-        if status.status != QUEST_STATUS_COMPLETE {
+    let reward_ready = if status.status == QUEST_STATUS_COMPLETE
+        && quest_status_can_reward_from_inventory(&status, &quest, &session.inventory)
+    {
+        true
+    } else if quest_status_can_complete(&status, &quest, &session.inventory) {
+        let updated =
+            wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
+                .await?;
+        session.quest_statuses.insert(request.quest, updated.clone());
+        if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_quest_log_update_body(character_guid, slot, &updated)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        send_packet(
+            stream,
+            SMSG_QUESTUPDATE_COMPLETE,
+            &request.quest.to_le_bytes(),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        true
+    } else {
+        if status.status == QUEST_STATUS_COMPLETE {
             let updated =
-                wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
+                wow_db::incomplete_character_quest(character_db_pool, character_guid, request.quest)
                     .await?;
             session.quest_statuses.insert(request.quest, updated.clone());
             if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
@@ -344,16 +370,7 @@ async fn handle_questgiver_complete_quest(
                 )
                 .await?;
             }
-            send_packet(
-                stream,
-                SMSG_QUESTUPDATE_COMPLETE,
-                &request.quest.to_le_bytes(),
-                Some(&mut *header_crypto),
-            )
-            .await?;
         }
-        true
-    } else {
         false
     };
     if reward_ready {
@@ -415,6 +432,51 @@ async fn handle_questgiver_choose_reward(
         return Ok(());
     };
     let reward_grants = load_quest_reward_grants(world_db_pool, &reward_items).await?;
+    let Some(current_status) = session.quest_statuses.get(&request.quest).cloned() else {
+        return Ok(());
+    };
+    if !quest_status_can_reward_from_inventory(&current_status, &quest, &session.inventory) {
+        if current_status.status == QUEST_STATUS_COMPLETE {
+            let updated =
+                wow_db::incomplete_character_quest(character_db_pool, character_guid, request.quest)
+                    .await?;
+            session.quest_statuses.insert(request.quest, updated.clone());
+            if let Some(slot) = slot {
+                send_packet(
+                    stream,
+                    SMSG_UPDATE_OBJECT,
+                    &build_player_quest_log_update_body(character_guid, slot, &updated)?,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
+        }
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_ITEM_NOT_FOUND,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
+    if current_status.status != QUEST_STATUS_COMPLETE {
+        let updated =
+            wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
+                .await?;
+        session.quest_statuses.insert(request.quest, updated.clone());
+        if let Some(slot) = slot {
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_quest_log_update_body(character_guid, slot, &updated)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+
     let required_item_slots = quest_required_item_inventory_slots(&quest, &session.inventory);
     let reward_slots_needed = reward_grants.len();
     let empty_slots = empty_backpack_slots(&session.inventory);
@@ -432,16 +494,6 @@ async fn handle_questgiver_choose_reward(
         )
         .await?;
         return Ok(());
-    }
-    if let Some(status) = session.quest_statuses.get(&request.quest).cloned() {
-        if status.status != QUEST_STATUS_COMPLETE
-            && quest_status_can_reward_from_inventory(&status, &quest, &session.inventory)
-        {
-            let updated =
-                wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
-                    .await?;
-            session.quest_statuses.insert(request.quest, updated);
-        }
     }
     consume_quest_required_items(
         stream,
@@ -1201,10 +1253,7 @@ fn quest_can_complete_from_inventory(
     quest: &QuestTemplateQuery,
     inventory: &[CharacterInventoryItem],
 ) -> bool {
-    const QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT: u32 = 0x002;
-    if (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0
-        || quest.rep_objective_faction != 0
-    {
+    if quest_has_unsupported_completion_requirements(quest) {
         return false;
     }
 
@@ -1217,21 +1266,7 @@ fn quest_can_complete_from_inventory(
         return false;
     }
 
-    for (item_id, required_count) in quest.req_item_id.iter().zip(quest.req_item_count.iter()) {
-        if *item_id == 0 || *required_count == 0 {
-            continue;
-        }
-        let current_count = inventory
-            .iter()
-            .filter(|item| item.item_template == *item_id)
-            .map(|item| item.count)
-            .sum::<u32>();
-        if current_count < *required_count {
-            return false;
-        }
-    }
-
-    true
+    quest_required_items_satisfied(quest, inventory)
 }
 
 async fn quest_reward_item_displays(
@@ -1503,9 +1538,93 @@ fn quest_status_can_reward_from_inventory(
     inventory: &[CharacterInventoryItem],
 ) -> bool {
     status.rewarded == 0
-        && (status.status == QUEST_STATUS_COMPLETE
-            || (status.status == QUEST_STATUS_INCOMPLETE
-                && quest_can_complete_from_inventory(quest, inventory)))
+        && (status.status == QUEST_STATUS_COMPLETE || status.status == QUEST_STATUS_INCOMPLETE)
+        && quest_completion_requirements_satisfied(status, quest, inventory)
+}
+
+fn quest_status_can_complete(
+    status: &CharacterQuestStatus,
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    status.rewarded == 0
+        && status.status == QUEST_STATUS_INCOMPLETE
+        && quest_completion_requirements_satisfied(status, quest, inventory)
+}
+
+fn quest_completion_requirements_satisfied(
+    status: &CharacterQuestStatus,
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    if quest_has_unsupported_completion_requirements(quest) {
+        return false;
+    }
+
+    quest_creature_or_go_objectives_satisfied(status, quest)
+        && quest_required_items_satisfied(quest, inventory)
+}
+
+fn quest_has_unsupported_completion_requirements(quest: &QuestTemplateQuery) -> bool {
+    const QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT: u32 = 0x002;
+    (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0
+        || quest.rep_objective_faction != 0
+}
+
+fn quest_creature_or_go_objectives_satisfied(
+    status: &CharacterQuestStatus,
+    quest: &QuestTemplateQuery,
+) -> bool {
+    quest.req_creature_or_go_id
+        .iter()
+        .zip(quest.req_creature_or_go_count.iter())
+        .enumerate()
+        .all(|(index, (id, required_count))| {
+            if *id == 0 || *required_count == 0 {
+                return true;
+            }
+            quest_status_creature_or_go_count(status, index) >= *required_count
+        })
+}
+
+fn quest_status_creature_or_go_count(status: &CharacterQuestStatus, index: usize) -> u32 {
+    match index {
+        0 => status.mobcount1,
+        1 => status.mobcount2,
+        2 => status.mobcount3,
+        3 => status.mobcount4,
+        _ => 0,
+    }
+}
+
+fn quest_required_items_satisfied(
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    quest.req_item_id
+        .iter()
+        .zip(quest.req_item_count.iter())
+        .all(|(item_id, required_count)| {
+            if *item_id == 0 || *required_count == 0 {
+                return true;
+            }
+            quest_inventory_item_count(inventory, *item_id) >= *required_count
+        })
+}
+
+fn quest_inventory_item_count(inventory: &[CharacterInventoryItem], item_id: u32) -> u32 {
+    inventory
+        .iter()
+        .filter(|item| item.item_template == item_id)
+        .map(|item| item.count)
+        .sum()
+}
+
+fn quest_has_required_items(quest: &QuestTemplateQuery) -> bool {
+    quest.req_item_id
+        .iter()
+        .zip(quest.req_item_count.iter())
+        .any(|(item_id, required_count)| *item_id != 0 && *required_count != 0)
 }
 
 async fn complete_inventory_item_quests(
@@ -1528,7 +1647,10 @@ async fn complete_inventory_item_quests(
         let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
             continue;
         };
-        if !quest_can_complete_from_inventory(&quest, &session.inventory) {
+        let Some(current_status) = session.quest_statuses.get(&quest_id).cloned() else {
+            continue;
+        };
+        if !quest_status_can_complete(&current_status, &quest, &session.inventory) {
             continue;
         }
 
@@ -1554,6 +1676,69 @@ async fn complete_inventory_item_quests(
             SMSG_QUESTUPDATE_COMPLETE,
             &quest_id.to_le_bytes(),
             Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn revalidate_completed_item_quests_after_inventory_change(
+    stream: &mut WorldPacketSink,
+    deps: QuestMutationDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let object_mgr = deps.object_mgr;
+    let world_db_pool = deps.world_db_pool;
+    let completed_quests: Vec<u32> = session
+        .quest_statuses
+        .values()
+        .filter(|status| status.status == QUEST_STATUS_COMPLETE && status.rewarded == 0)
+        .map(|status| status.quest)
+        .collect();
+    let mut changed = false;
+
+    for quest_id in completed_quests {
+        let Some(status) = session.quest_statuses.get(&quest_id).cloned() else {
+            continue;
+        };
+        let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
+            continue;
+        };
+        if !quest_has_required_items(&quest) {
+            continue;
+        }
+        if quest_status_can_reward_from_inventory(&status, &quest, &session.inventory) {
+            continue;
+        }
+
+        let updated = wow_db::incomplete_character_quest(character_db_pool, character_guid, quest_id)
+            .await?;
+        session.quest_statuses.insert(quest_id, updated.clone());
+        if let Some(slot) = quest_log_slot_for_quest(session, quest_id) {
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_quest_log_update_body(character_guid, slot, &updated)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        changed = true;
+    }
+
+    if changed {
+        send_visible_questgiver_status_updates(
+            stream,
+            object_mgr,
+            world_db_pool,
+            deps.shared_world,
+            session,
+            &[],
+            header_crypto,
         )
         .await?;
     }
@@ -1990,7 +2175,27 @@ async fn grant_db_creature_kill_credit(
             continue;
         }
         let new_count = (current + 1).min(required);
-        let complete = new_count >= required;
+        let mut next_status = session
+            .quest_statuses
+            .get(&quest_id)
+            .cloned()
+            .unwrap_or(CharacterQuestStatus {
+                quest: quest_id,
+                status: QUEST_STATUS_INCOMPLETE,
+                rewarded: 0,
+                mobcount1: 0,
+                mobcount2: 0,
+                mobcount3: 0,
+                mobcount4: 0,
+            });
+        match index {
+            0 => next_status.mobcount1 = new_count,
+            1 => next_status.mobcount2 = new_count,
+            2 => next_status.mobcount3 = new_count,
+            3 => next_status.mobcount4 = new_count,
+            _ => {}
+        }
+        let complete = quest_status_can_complete(&next_status, &quest, &session.inventory);
         let status = wow_db::update_character_quest_mob_count(
             character_db_pool,
             character.guid,

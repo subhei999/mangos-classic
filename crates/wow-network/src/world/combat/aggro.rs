@@ -457,6 +457,7 @@ fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGu
     let Some(character) = session.active_character.as_ref() else {
         return Vec::new();
     };
+    let faction_templates = FactionTemplateStore::fallback_bridge();
     let mut targets = session
         .db_creatures
         .values()
@@ -465,7 +466,7 @@ fn select_db_creature_aggro_targets(session: &WorldSessionState) -> Vec<ObjectGu
                 .active_creature_combats
                 .contains_key(&creature.guid().raw())
         })
-        .filter(|creature| creature.can_aggro_player(character))
+        .filter(|creature| creature.can_aggro_player(&faction_templates, character))
         .filter_map(|creature| {
             let distance_sq = creature.distance_to_player_squared(character)?;
             let attack_distance = db_creature_attack_distance(
@@ -516,6 +517,7 @@ fn select_db_creature_assist_targets(
     caller.already_called_assistance = true;
     let caller_position = caller.current_position;
     let caller_faction = caller.spawn.template.faction;
+    let faction_templates = FactionTemplateStore::fallback_bridge();
     let radius = if caller.spawn.template.call_for_help > 0 {
         caller.spawn.template.call_for_help as f32
     } else {
@@ -531,7 +533,7 @@ fn select_db_creature_assist_targets(
                 .contains_key(&creature.guid().raw())
         })
         .filter(|creature| creature.spawn.template.faction == caller_faction)
-        .filter(|creature| creature.can_aggro_player(character))
+        .filter(|creature| creature.can_aggro_player(&faction_templates, character))
         .filter_map(|creature| {
             let distance = distance_2d(
                 caller_position.x,

@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+const ROLLING_ONE_MINUTE: Duration = Duration::from_secs(60);
+const ROLLING_FIVE_MINUTES: Duration = Duration::from_secs(300);
 
 static REGISTRY: OnceLock<DbMetricsRegistry> = OnceLock::new();
 
@@ -13,11 +16,25 @@ struct DbMetricsRegistry {
     query_families: Mutex<HashMap<&'static str, DbQueryStats>>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct DbQueryStats {
     count: u64,
     sum_micros: u64,
     latest_micros: u64,
+    max_micros: u64,
+    recent: VecDeque<TimedSample>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TimedSample {
+    at: Instant,
+    micros: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RollingStats {
+    count: u64,
+    sum_micros: u64,
     max_micros: u64,
 }
 
@@ -28,8 +45,41 @@ impl DbQueryStats {
         self.sum_micros += micros;
         self.latest_micros = micros;
         self.max_micros = self.max_micros.max(micros);
+        let now = Instant::now();
+        self.recent.push_back(TimedSample { at: now, micros });
+        prune_samples(&mut self.recent, now, ROLLING_FIVE_MINUTES);
     }
 
+    fn average_milliseconds(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        self.sum_micros as f64 / self.count as f64 / 1_000.0
+    }
+
+    fn latest_milliseconds(&self) -> f64 {
+        self.latest_micros as f64 / 1_000.0
+    }
+
+    fn max_milliseconds(&self) -> f64 {
+        self.max_micros as f64 / 1_000.0
+    }
+
+    fn rolling_stats(&self, window: Duration) -> RollingStats {
+        let now = Instant::now();
+        self.recent
+            .iter()
+            .filter(|sample| now.saturating_duration_since(sample.at) <= window)
+            .fold(RollingStats::default(), |mut stats, sample| {
+                stats.count += 1;
+                stats.sum_micros += sample.micros;
+                stats.max_micros = stats.max_micros.max(sample.micros);
+                stats
+            })
+    }
+}
+
+impl RollingStats {
     fn average_milliseconds(self) -> f64 {
         if self.count == 0 {
             return 0.0;
@@ -37,12 +87,17 @@ impl DbQueryStats {
         self.sum_micros as f64 / self.count as f64 / 1_000.0
     }
 
-    fn latest_milliseconds(self) -> f64 {
-        self.latest_micros as f64 / 1_000.0
-    }
-
     fn max_milliseconds(self) -> f64 {
         self.max_micros as f64 / 1_000.0
+    }
+}
+
+fn prune_samples(samples: &mut VecDeque<TimedSample>, now: Instant, window: Duration) {
+    while samples
+        .front()
+        .is_some_and(|sample| now.saturating_duration_since(sample.at) > window)
+    {
+        samples.pop_front();
     }
 }
 
@@ -76,13 +131,19 @@ pub fn record_db_query_duration(family: &'static str, duration: Duration) {
 }
 
 pub fn render_db_metrics_prometheus() -> String {
-    let mut values: Vec<(&'static str, DbQueryStats)> = registry()
+    let mut families = registry()
         .query_families
         .lock()
-        .expect("DB metrics query family registry poisoned")
-        .iter()
-        .map(|(family, stats)| (*family, *stats))
+        .expect("DB metrics query family registry poisoned");
+    let now = Instant::now();
+    let mut values: Vec<(&'static str, DbQueryStats)> = families
+        .iter_mut()
+        .map(|(family, stats)| {
+            prune_samples(&mut stats.recent, now, ROLLING_FIVE_MINUTES);
+            (*family, stats.clone())
+        })
         .collect();
+    drop(families);
     values.sort_by_key(|(family, _)| *family);
 
     let mut body = String::new();
@@ -112,6 +173,42 @@ pub fn render_db_metrics_prometheus() -> String {
         "Maximum observed DB call duration by query family since server start.",
         &values,
         DbQueryStats::max_milliseconds,
+    );
+    write_db_query_float_gauge(
+        &mut body,
+        "wow_db_query_duration_average_1m_milliseconds",
+        "Average DB call duration by query family over the last minute.",
+        &values,
+        |stats| {
+            stats
+                .rolling_stats(ROLLING_ONE_MINUTE)
+                .average_milliseconds()
+        },
+    );
+    write_db_query_float_gauge(
+        &mut body,
+        "wow_db_query_duration_max_1m_milliseconds",
+        "Maximum DB call duration by query family over the last minute.",
+        &values,
+        |stats| stats.rolling_stats(ROLLING_ONE_MINUTE).max_milliseconds(),
+    );
+    write_db_query_float_gauge(
+        &mut body,
+        "wow_db_query_duration_average_5m_milliseconds",
+        "Average DB call duration by query family over the last five minutes.",
+        &values,
+        |stats| {
+            stats
+                .rolling_stats(ROLLING_FIVE_MINUTES)
+                .average_milliseconds()
+        },
+    );
+    write_db_query_float_gauge(
+        &mut body,
+        "wow_db_query_duration_max_5m_milliseconds",
+        "Maximum DB call duration by query family over the last five minutes.",
+        &values,
+        |stats| stats.rolling_stats(ROLLING_FIVE_MINUTES).max_milliseconds(),
     );
     body
 }
@@ -145,7 +242,7 @@ fn write_db_query_float_gauge(
     name: &str,
     help: &str,
     values: &[(&'static str, DbQueryStats)],
-    value: fn(DbQueryStats) -> f64,
+    value: impl Fn(&DbQueryStats) -> f64,
 ) {
     body.push_str("# HELP ");
     body.push_str(name);
@@ -160,7 +257,7 @@ fn write_db_query_float_gauge(
         body.push_str("{family=\"");
         body.push_str(family);
         body.push_str("\"} ");
-        body.push_str(&format!("{:.3}", value(*stats)));
+        body.push_str(&format!("{:.3}", value(stats)));
         body.push('\n');
     }
 }
@@ -184,6 +281,18 @@ mod tests {
         ));
         assert!(rendered.contains(
             "wow_db_query_duration_max_milliseconds{family=\"observability_test\"} 5.000"
+        ));
+        assert!(rendered.contains(
+            "wow_db_query_duration_average_1m_milliseconds{family=\"observability_test\"} 5.000"
+        ));
+        assert!(rendered.contains(
+            "wow_db_query_duration_max_1m_milliseconds{family=\"observability_test\"} 5.000"
+        ));
+        assert!(rendered.contains(
+            "wow_db_query_duration_average_5m_milliseconds{family=\"observability_test\"} 5.000"
+        ));
+        assert!(rendered.contains(
+            "wow_db_query_duration_max_5m_milliseconds{family=\"observability_test\"} 5.000"
         ));
     }
 }

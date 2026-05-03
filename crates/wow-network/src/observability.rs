@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -11,6 +11,8 @@ use tracing::{info, warn};
 const MAP_TICK_BUCKETS_SECONDS: [f64; 10] = [
     0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.000, 2.500,
 ];
+const ROLLING_ONE_MINUTE: Duration = Duration::from_secs(60);
+const ROLLING_FIVE_MINUTES: Duration = Duration::from_secs(300);
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
 
@@ -30,6 +32,11 @@ struct MetricsRegistry {
     map_tick_lag: Histogram,
     map_phase_duration: MapPhaseDurations,
     map_runtime_snapshots: Mutex<HashMap<(u32, u32), MapRuntimeSnapshot>>,
+    static_world_cache_loads: Mutex<HashMap<&'static str, StaticWorldCacheLoadStats>>,
+    static_world_cache_lookups: Mutex<HashMap<&'static str, DurationStats>>,
+    static_world_cache_instantiations: Mutex<HashMap<&'static str, DurationStats>>,
+    monitoring_session_started_unix_seconds: AtomicU64,
+    monitoring_session_marks_total: AtomicU64,
     world_packets_in: Mutex<HashMap<u32, u64>>,
     world_packets_out: Mutex<HashMap<u32, u64>>,
     world_unknown_opcodes: Mutex<HashMap<u32, u64>>,
@@ -48,6 +55,69 @@ pub struct MapRuntimeSnapshot {
     pub loaded_player_corpse_grids: u64,
     pub active_creature_combats: u64,
     pub corpses: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum StaticWorldCacheKind {
+    Creature,
+    GameObject,
+}
+
+impl StaticWorldCacheKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Creature => "creature",
+            Self::GameObject => "gameobject",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StaticWorldCacheLoadStats {
+    spawns: u64,
+    grids: u64,
+    duration_micros: u64,
+}
+
+impl StaticWorldCacheLoadStats {
+    fn duration_milliseconds(self) -> f64 {
+        self.duration_micros as f64 / 1_000.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DurationStats {
+    count: u64,
+    rows: u64,
+    sum_micros: u64,
+    latest_micros: u64,
+    max_micros: u64,
+}
+
+impl DurationStats {
+    fn record(&mut self, rows: u64, duration: Duration) {
+        let micros = duration.as_micros() as u64;
+        self.count += 1;
+        self.rows += rows;
+        self.sum_micros += micros;
+        self.latest_micros = micros;
+        self.max_micros = self.max_micros.max(micros);
+    }
+
+    fn average_milliseconds(self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        self.sum_micros as f64 / self.count as f64 / 1_000.0
+    }
+
+    fn latest_milliseconds(self) -> f64 {
+        self.latest_micros as f64 / 1_000.0
+    }
+
+    fn max_milliseconds(self) -> f64 {
+        self.max_micros as f64 / 1_000.0
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +183,33 @@ struct Histogram {
     sum_micros: AtomicU64,
     latest_micros: AtomicU64,
     max_micros: AtomicU64,
+    recent: Mutex<VecDeque<TimedSample>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TimedSample {
+    at: Instant,
+    micros: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RollingStats {
+    count: u64,
+    sum_micros: u64,
+    max_micros: u64,
+}
+
+impl RollingStats {
+    fn average_milliseconds(self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        self.sum_micros as f64 / self.count as f64 / 1_000.0
+    }
+
+    fn max_milliseconds(self) -> f64 {
+        self.max_micros as f64 / 1_000.0
+    }
 }
 
 impl Histogram {
@@ -131,6 +228,13 @@ impl Histogram {
         self.sum_micros.fetch_add(micros, Ordering::Relaxed);
         self.latest_micros.store(micros, Ordering::Relaxed);
         self.max_micros.fetch_max(micros, Ordering::Relaxed);
+        let now = Instant::now();
+        let mut recent = self
+            .recent
+            .lock()
+            .expect("metrics rolling sample window poisoned");
+        recent.push_back(TimedSample { at: now, micros });
+        prune_samples(&mut recent, now, ROLLING_FIVE_MINUTES);
     }
 
     fn average_milliseconds(&self) -> f64 {
@@ -149,6 +253,33 @@ impl Histogram {
 
     fn max_milliseconds(&self) -> f64 {
         self.max_micros.load(Ordering::Relaxed) as f64 / 1_000.0
+    }
+
+    fn rolling_stats(&self, window: Duration) -> RollingStats {
+        let now = Instant::now();
+        let mut recent = self
+            .recent
+            .lock()
+            .expect("metrics rolling sample window poisoned");
+        prune_samples(&mut recent, now, ROLLING_FIVE_MINUTES);
+        recent
+            .iter()
+            .filter(|sample| now.saturating_duration_since(sample.at) <= window)
+            .fold(RollingStats::default(), |mut stats, sample| {
+                stats.count += 1;
+                stats.sum_micros += sample.micros;
+                stats.max_micros = stats.max_micros.max(sample.micros);
+                stats
+            })
+    }
+}
+
+fn prune_samples(samples: &mut VecDeque<TimedSample>, now: Instant, window: Duration) {
+    while samples
+        .front()
+        .is_some_and(|sample| now.saturating_duration_since(sample.at) > window)
+    {
+        samples.pop_front();
     }
 }
 
@@ -213,10 +344,90 @@ pub fn record_map_runtime_snapshots(snapshots: impl IntoIterator<Item = MapRunti
     }
 }
 
+pub fn record_static_world_cache_load(
+    kind: StaticWorldCacheKind,
+    spawns: u64,
+    grids: u64,
+    duration: Duration,
+) {
+    let mut loads = registry()
+        .static_world_cache_loads
+        .lock()
+        .expect("metrics static world cache load registry poisoned");
+    loads.insert(
+        kind.label(),
+        StaticWorldCacheLoadStats {
+            spawns,
+            grids,
+            duration_micros: duration.as_micros() as u64,
+        },
+    );
+}
+
+pub fn record_static_world_cache_lookup(kind: StaticWorldCacheKind, duration: Duration) {
+    let mut lookups = registry()
+        .static_world_cache_lookups
+        .lock()
+        .expect("metrics static world cache lookup registry poisoned");
+    lookups.entry(kind.label()).or_default().record(0, duration);
+}
+
+pub fn record_static_world_cache_instantiation(
+    kind: StaticWorldCacheKind,
+    rows: u64,
+    duration: Duration,
+) {
+    let mut instantiations = registry()
+        .static_world_cache_instantiations
+        .lock()
+        .expect("metrics static world cache instantiation registry poisoned");
+    instantiations
+        .entry(kind.label())
+        .or_default()
+        .record(rows, duration);
+}
+
 pub fn record_map_tick_error() {
     registry()
         .map_tick_errors_total
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn mark_monitoring_session() -> u64 {
+    let started_at = current_unix_seconds();
+    let metrics = registry();
+    metrics
+        .monitoring_session_started_unix_seconds
+        .store(started_at, Ordering::Relaxed);
+    metrics
+        .monitoring_session_marks_total
+        .fetch_add(1, Ordering::Relaxed);
+    started_at
+}
+
+fn monitoring_session_started_unix_seconds(metrics: &MetricsRegistry) -> u64 {
+    let started_at = metrics
+        .monitoring_session_started_unix_seconds
+        .load(Ordering::Relaxed);
+    if started_at != 0 {
+        return started_at;
+    }
+
+    let now = current_unix_seconds();
+    match metrics
+        .monitoring_session_started_unix_seconds
+        .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed)
+    {
+        Ok(_) => now,
+        Err(existing) => existing,
+    }
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn increment_opcode(counters: &Mutex<HashMap<u32, u64>>, opcode: u32) {
@@ -249,6 +460,20 @@ pub fn render_prometheus() -> String {
         "wow_world_sessions_connected",
         "Currently connected authenticated world sessions.",
         metrics.world_sessions_connected.load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut body,
+        "wow_monitoring_session_started_unix_seconds",
+        "Unix timestamp for the current monitoring session marker.",
+        monitoring_session_started_unix_seconds(metrics),
+    );
+    write_counter(
+        &mut body,
+        "wow_monitoring_session_marks_total",
+        "Total monitoring session markers requested from the dashboard.",
+        metrics
+            .monitoring_session_marks_total
+            .load(Ordering::Relaxed),
     );
     write_counter(
         &mut body,
@@ -292,6 +517,12 @@ pub fn render_prometheus() -> String {
         "Maximum observed time spent executing map runtime update work since server start.",
         metrics.map_tick_duration.max_milliseconds(),
     );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_map_tick_duration",
+        "time spent executing map runtime update work",
+        &metrics.map_tick_duration,
+    );
     write_histogram(
         &mut body,
         "wow_map_tick_lag_seconds",
@@ -316,8 +547,20 @@ pub fn render_prometheus() -> String {
         "Maximum observed delay between the scheduled map tick time and the actual start time since server start.",
         metrics.map_tick_lag.max_milliseconds(),
     );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_map_tick_lag",
+        "delay between the scheduled map tick time and the actual start time",
+        &metrics.map_tick_lag,
+    );
     write_map_phase_duration_summaries(&mut body, &metrics.map_phase_duration);
     write_map_runtime_gauges(&mut body, &metrics.map_runtime_snapshots);
+    write_static_world_cache_metrics(
+        &mut body,
+        &metrics.static_world_cache_loads,
+        &metrics.static_world_cache_lookups,
+        &metrics.static_world_cache_instantiations,
+    );
     write_opcode_counter(
         &mut body,
         "wow_world_packets_in_total",
@@ -423,6 +666,40 @@ fn write_histogram(body: &mut String, name: &str, help: &str, histogram: &Histog
     body.push('\n');
 }
 
+fn write_rolling_histogram_gauges(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    histogram: &Histogram,
+) {
+    let one_minute = histogram.rolling_stats(ROLLING_ONE_MINUTE);
+    let five_minutes = histogram.rolling_stats(ROLLING_FIVE_MINUTES);
+    write_float_gauge(
+        body,
+        &format!("{prefix}_average_1m_milliseconds"),
+        &format!("Average {subject} over the last minute."),
+        one_minute.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_max_1m_milliseconds"),
+        &format!("Maximum observed {subject} over the last minute."),
+        one_minute.max_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_average_5m_milliseconds"),
+        &format!("Average {subject} over the last five minutes."),
+        five_minutes.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_max_5m_milliseconds"),
+        &format!("Maximum observed {subject} over the last five minutes."),
+        five_minutes.max_milliseconds(),
+    );
+}
+
 fn write_map_phase_duration_summaries(body: &mut String, phases: &MapPhaseDurations) {
     write_phase_float_gauges(
         body,
@@ -444,6 +721,38 @@ fn write_map_phase_duration_summaries(body: &mut String, phases: &MapPhaseDurati
         "Maximum observed map update phase duration since server start.",
         phases,
         Histogram::max_milliseconds,
+    );
+    write_phase_rolling_gauges(
+        body,
+        "wow_map_phase_duration_average_1m_milliseconds",
+        "Average map update phase duration over the last minute.",
+        phases,
+        ROLLING_ONE_MINUTE,
+        RollingStats::average_milliseconds,
+    );
+    write_phase_rolling_gauges(
+        body,
+        "wow_map_phase_duration_max_1m_milliseconds",
+        "Maximum map update phase duration over the last minute.",
+        phases,
+        ROLLING_ONE_MINUTE,
+        RollingStats::max_milliseconds,
+    );
+    write_phase_rolling_gauges(
+        body,
+        "wow_map_phase_duration_average_5m_milliseconds",
+        "Average map update phase duration over the last five minutes.",
+        phases,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::average_milliseconds,
+    );
+    write_phase_rolling_gauges(
+        body,
+        "wow_map_phase_duration_max_5m_milliseconds",
+        "Maximum map update phase duration over the last five minutes.",
+        phases,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::max_milliseconds,
     );
 }
 
@@ -552,6 +861,186 @@ fn write_map_runtime_gauge_family(
     }
 }
 
+fn write_static_world_cache_metrics(
+    body: &mut String,
+    loads: &Mutex<HashMap<&'static str, StaticWorldCacheLoadStats>>,
+    lookups: &Mutex<HashMap<&'static str, DurationStats>>,
+    instantiations: &Mutex<HashMap<&'static str, DurationStats>>,
+) {
+    let mut load_values = loads
+        .lock()
+        .expect("metrics static world cache load registry poisoned")
+        .iter()
+        .map(|(kind, stats)| (*kind, *stats))
+        .collect::<Vec<_>>();
+    load_values.sort_by_key(|(kind, _)| *kind);
+    write_static_cache_load_gauge(
+        body,
+        "wow_static_world_cache_load_spawns",
+        "Static world cache spawn rows loaded at startup.",
+        &load_values,
+        |stats| stats.spawns as f64,
+    );
+    write_static_cache_load_gauge(
+        body,
+        "wow_static_world_cache_load_grids",
+        "Static world cache populated grids at startup.",
+        &load_values,
+        |stats| stats.grids as f64,
+    );
+    write_static_cache_load_gauge(
+        body,
+        "wow_static_world_cache_load_duration_milliseconds",
+        "Static world cache startup load duration.",
+        &load_values,
+        StaticWorldCacheLoadStats::duration_milliseconds,
+    );
+
+    write_static_cache_duration_metrics(
+        body,
+        "wow_static_world_cache_lookup",
+        "Static world cache grid lookup",
+        lookups,
+        false,
+    );
+    write_static_cache_duration_metrics(
+        body,
+        "wow_static_world_cache_instantiation",
+        "Static world cache runtime instantiation",
+        instantiations,
+        true,
+    );
+}
+
+fn write_static_cache_load_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &[(&'static str, StaticWorldCacheLoadStats)],
+    value: fn(StaticWorldCacheLoadStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    for (kind, stats) in values {
+        body.push_str(name);
+        body.push_str("{kind=\"");
+        body.push_str(kind);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", value(*stats)));
+        body.push('\n');
+    }
+}
+
+fn write_static_cache_duration_metrics(
+    body: &mut String,
+    name_prefix: &str,
+    help_prefix: &str,
+    stats: &Mutex<HashMap<&'static str, DurationStats>>,
+    include_rows: bool,
+) {
+    let mut values = stats
+        .lock()
+        .expect("metrics static world cache duration registry poisoned")
+        .iter()
+        .map(|(kind, stats)| (*kind, *stats))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(kind, _)| *kind);
+
+    write_static_cache_duration_counter(
+        body,
+        &format!("{name_prefix}_total"),
+        &format!("{help_prefix} calls."),
+        &values,
+        |stats| stats.count,
+    );
+    if include_rows {
+        write_static_cache_duration_counter(
+            body,
+            &format!("{name_prefix}_rows_total"),
+            &format!("{help_prefix} spawn rows."),
+            &values,
+            |stats| stats.rows,
+        );
+    }
+    write_static_cache_duration_gauge(
+        body,
+        &format!("{name_prefix}_duration_average_milliseconds"),
+        &format!("Average {help_prefix} duration."),
+        &values,
+        DurationStats::average_milliseconds,
+    );
+    write_static_cache_duration_gauge(
+        body,
+        &format!("{name_prefix}_duration_latest_milliseconds"),
+        &format!("Most recent {help_prefix} duration."),
+        &values,
+        DurationStats::latest_milliseconds,
+    );
+    write_static_cache_duration_gauge(
+        body,
+        &format!("{name_prefix}_duration_max_milliseconds"),
+        &format!("Maximum observed {help_prefix} duration since server start."),
+        &values,
+        DurationStats::max_milliseconds,
+    );
+}
+
+fn write_static_cache_duration_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &[(&'static str, DurationStats)],
+    value: fn(DurationStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    for (kind, stats) in values {
+        body.push_str(name);
+        body.push_str("{kind=\"");
+        body.push_str(kind);
+        body.push_str("\"} ");
+        body.push_str(&value(*stats).to_string());
+        body.push('\n');
+    }
+}
+
+fn write_static_cache_duration_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &[(&'static str, DurationStats)],
+    value: fn(DurationStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    for (kind, stats) in values {
+        body.push_str(name);
+        body.push_str("{kind=\"");
+        body.push_str(kind);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", value(*stats)));
+        body.push('\n');
+    }
+}
+
 fn write_phase_float_gauges(
     body: &mut String,
     name: &str,
@@ -573,6 +1062,35 @@ fn write_phase_float_gauges(
         body.push_str(phase.label());
         body.push_str("\"} ");
         body.push_str(&format!("{:.3}", value(phases.get(phase))));
+        body.push('\n');
+    }
+}
+
+fn write_phase_rolling_gauges(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    phases: &MapPhaseDurations,
+    window: Duration,
+    value: fn(RollingStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    for phase in MAP_TICK_PHASES {
+        body.push_str(name);
+        body.push_str("{phase=\"");
+        body.push_str(phase.label());
+        body.push_str("\"} ");
+        body.push_str(&format!(
+            "{:.3}",
+            value(phases.get(phase).rolling_stats(window))
+        ));
         body.push('\n');
     }
 }
@@ -618,6 +1136,589 @@ fn format_opcode(opcode: u32) -> String {
     format!("0x{opcode:04X}")
 }
 
+pub fn render_dashboard_html() -> &'static str {
+    DASHBOARD_HTML
+}
+
+const DASHBOARD_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worldserver Monitor</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #101214;
+  --panel: #181c20;
+  --panel-2: #20262b;
+  --text: #eef2f4;
+  --muted: #97a3ad;
+  --line: #303941;
+  --good: #48c78e;
+  --warn: #f2b84b;
+  --bad: #ef6b73;
+  --info: #64b5f6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: 0;
+}
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--info); }
+main {
+  width: min(1440px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 18px 0 24px;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+}
+h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--warn);
+  display: inline-block;
+}
+.status-dot.good { background: var(--good); }
+.status-dot.bad { background: var(--bad); }
+.grid {
+  display: grid;
+  gap: 12px;
+}
+.kpis {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 14px;
+}
+.card, .section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.card {
+  min-height: 92px;
+  padding: 12px;
+}
+.label {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+.value {
+  margin-top: 8px;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+.sub {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.section {
+  padding: 14px;
+  min-width: 0;
+}
+.layout {
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
+  margin-top: 12px;
+}
+.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+.chart {
+  width: 100%;
+  height: 190px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0c0e10;
+  display: block;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  white-space: normal;
+}
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+tr:last-child td { border-bottom: 0; }
+.phase-row, .map-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.9fr) minmax(0, 1.3fr) 76px 76px 76px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.phase-row:last-child, .map-row:last-child { border-bottom: 0; }
+.bar {
+  height: 9px;
+  background: #0c0e10;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  width: 0%;
+  background: var(--info);
+}
+.fill.warn { background: var(--warn); }
+.fill.bad { background: var(--bad); }
+.metric-good { color: var(--good); }
+.metric-warn { color: var(--warn); }
+.metric-bad { color: var(--bad); }
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 0;
+}
+@media (max-width: 1080px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .layout, .two { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  main { width: min(100vw - 20px, 1440px); padding-top: 12px; }
+  header { align-items: flex-start; flex-direction: column; }
+  .toolbar { flex-wrap: wrap; white-space: normal; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .value { font-size: 22px; }
+  .phase-row, .map-row {
+    grid-template-columns: minmax(100px, 1fr) 64px 64px 64px;
+  }
+  .phase-row .bar, .map-row .bar { display: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Worldserver Monitor</h1>
+      <div class="sub">localhost:9091</div>
+    </div>
+    <div class="toolbar">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">connecting</span>
+      <span id="lastUpdated">never</span>
+      <button id="pauseButton" type="button">Pause</button>
+      <button id="resetButton" type="button">Mark Session</button>
+      <a href="/metrics" style="color: var(--info); text-decoration: none;">Metrics</a>
+    </div>
+  </header>
+
+  <section class="grid kpis">
+    <div class="card"><div class="label">Sessions</div><div id="sessions" class="value">0</div><div id="sessionSub" class="sub">registered 0</div></div>
+    <div class="card"><div class="label">Loop Avg 1m</div><div id="loopAvg" class="value">0.000 ms</div><div id="loopLatest" class="sub">latest 0.000 ms</div></div>
+    <div class="card"><div class="label">Loop Max 1m</div><div id="loopMax" class="value">0.000 ms</div><div id="loopBudget" class="sub">lifetime max 0.000 ms</div></div>
+    <div class="card"><div class="label">Lag Avg 1m</div><div id="lagAvg" class="value">0.000 ms</div><div id="lagLatest" class="sub">latest 0.000 ms</div></div>
+    <div class="card"><div class="label">DB Slowest 1m</div><div id="dbSlowest" class="value">0.000 ms</div><div id="dbSlowestFamily" class="sub">no samples</div></div>
+    <div class="card"><div class="label">Unknown Opcodes</div><div id="unknownTotal" class="value">0</div><div id="unknownSub" class="sub">families 0</div></div>
+  </section>
+
+  <section class="grid layout">
+    <div class="section">
+      <h2>Loop Timing</h2>
+      <canvas id="loopChart" class="chart" width="900" height="260"></canvas>
+    </div>
+    <div class="section">
+      <h2>Map Runtime</h2>
+      <div id="mapTable"></div>
+    </div>
+  </section>
+
+  <section class="grid two">
+    <div class="section">
+      <h2>Map Phases</h2>
+      <div id="phaseTable"></div>
+    </div>
+    <div class="section">
+      <h2>Static World Cache</h2>
+      <div id="cacheTable"></div>
+    </div>
+    <div class="section">
+      <h2>DB Query Families</h2>
+      <div id="dbTable"></div>
+    </div>
+  </section>
+
+  <section class="grid two">
+    <div class="section">
+      <h2>Packets In</h2>
+      <div id="packetsIn"></div>
+    </div>
+    <div class="section">
+      <h2>Unknown Opcodes</h2>
+      <div id="unknownTable"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const state = {
+  paused: false,
+  history: [],
+  previous: new Map(),
+  lastTickCount: 0
+};
+
+const $ = (id) => document.getElementById(id);
+const metricKey = (name, labels) => {
+  const parts = Object.keys(labels).sort().map((key) => `${key}=${labels[key]}`).join(",");
+  return parts ? `${name}{${parts}}` : name;
+};
+const fmt = (value, digits = 3) => Number.isFinite(value) ? value.toFixed(digits) : "0.000";
+const intFmt = (value) => Number.isFinite(value) ? Math.round(value).toLocaleString() : "0";
+const classForMs = (value, warn, bad) => value >= bad ? "metric-bad" : value >= warn ? "metric-warn" : "metric-good";
+
+function parseMetrics(text) {
+  const metrics = new Map();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([^\s{]+)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)$/);
+    if (!match) continue;
+    const labels = {};
+    if (match[2]) {
+      for (const part of match[2].matchAll(/([^=,]+)="([^"]*)"/g)) {
+        labels[part[1]] = part[2];
+      }
+    }
+    const name = match[1];
+    const value = Number(match[3]);
+    metrics.set(metricKey(name, labels), { name, labels, value });
+  }
+  return metrics;
+}
+
+function get(metrics, key) {
+  return metrics.get(key)?.value ?? 0;
+}
+
+function getLabeled(metrics, name, labels) {
+  return metrics.get(metricKey(name, labels))?.value ?? 0;
+}
+
+function series(metrics, name) {
+  return [...metrics.values()].filter((item) => item.name === name);
+}
+
+function renderKpis(metrics) {
+  const connected = get(metrics, "wow_world_sessions_connected");
+  const registered = get(metrics, "wow_world_sessions_registered_total");
+  const unregistered = get(metrics, "wow_world_sessions_unregistered_total");
+  const durationAvg = get(metrics, "wow_map_tick_duration_average_milliseconds");
+  const durationAvg1m = get(metrics, "wow_map_tick_duration_average_1m_milliseconds") || durationAvg;
+  const durationLatest = get(metrics, "wow_map_tick_duration_latest_milliseconds");
+  const durationMax = get(metrics, "wow_map_tick_duration_max_milliseconds");
+  const durationMax1m = get(metrics, "wow_map_tick_duration_max_1m_milliseconds") || durationMax;
+  const lagAvg = get(metrics, "wow_map_tick_lag_average_milliseconds");
+  const lagAvg1m = get(metrics, "wow_map_tick_lag_average_1m_milliseconds") || lagAvg;
+  const lagLatest = get(metrics, "wow_map_tick_lag_latest_milliseconds");
+  const overBudget = get(metrics, "wow_map_tick_over_budget_total");
+  const sessionStarted = get(metrics, "wow_monitoring_session_started_unix_seconds");
+  const dbMaxRows = (series(metrics, "wow_db_query_duration_max_1m_milliseconds").length
+    ? series(metrics, "wow_db_query_duration_max_1m_milliseconds")
+    : series(metrics, "wow_db_query_duration_max_milliseconds"))
+    .sort((a, b) => b.value - a.value);
+  const unknownRows = series(metrics, "wow_world_unknown_opcodes_total")
+    .sort((a, b) => b.value - a.value);
+  const unknownTotal = unknownRows.reduce((sum, row) => sum + row.value, 0);
+
+  $("sessions").textContent = intFmt(connected);
+  const sessionText = sessionStarted > 0 ? new Date(sessionStarted * 1000).toLocaleTimeString() : "startup";
+  $("sessionSub").textContent = `registered ${intFmt(registered)} / marked ${sessionText} / left ${intFmt(unregistered)}`;
+  $("loopAvg").textContent = `${fmt(durationAvg1m)} ms`;
+  $("loopAvg").className = `value ${classForMs(durationAvg1m, 25, 100)}`;
+  $("loopLatest").textContent = `latest ${fmt(durationLatest)} ms`;
+  $("loopMax").textContent = `${fmt(durationMax1m)} ms`;
+  $("loopMax").className = `value ${classForMs(durationMax1m, 50, 100)}`;
+  $("loopBudget").textContent = `lifetime max ${fmt(durationMax)} ms / over budget ${intFmt(overBudget)}`;
+  $("lagAvg").textContent = `${fmt(lagAvg1m)} ms`;
+  $("lagLatest").textContent = `latest ${fmt(lagLatest)} ms`;
+  $("dbSlowest").textContent = `${fmt(dbMaxRows[0]?.value ?? 0)} ms`;
+  $("dbSlowest").className = `value ${classForMs(dbMaxRows[0]?.value ?? 0, 25, 100)}`;
+  $("dbSlowestFamily").textContent = dbMaxRows[0]?.labels.family ?? "no samples";
+  $("unknownTotal").textContent = intFmt(unknownTotal);
+  $("unknownSub").textContent = `families ${unknownRows.length}`;
+}
+
+function renderLoopChart(metrics) {
+  const ticks = get(metrics, "wow_map_ticks_total");
+  const durationLatest = get(metrics, "wow_map_tick_duration_latest_milliseconds");
+  const lagLatest = get(metrics, "wow_map_tick_lag_latest_milliseconds");
+  if (ticks !== state.lastTickCount) {
+    state.history.push({ durationLatest, lagLatest });
+    state.history = state.history.slice(-120);
+    state.lastTickCount = ticks;
+  }
+
+  const canvas = $("loopChart");
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0c0e10";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#303941";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 5; i++) {
+    const y = (height / 5) * i;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+  const max = Math.max(25, ...state.history.flatMap((point) => [point.durationLatest, point.lagLatest]));
+  drawSeries(ctx, state.history.map((point) => point.durationLatest), max, width, height, "#48c78e");
+  drawSeries(ctx, state.history.map((point) => point.lagLatest), max, width, height, "#64b5f6");
+  ctx.fillStyle = "#97a3ad";
+  ctx.font = "12px Segoe UI, sans-serif";
+  ctx.fillText(`latest duration ${fmt(durationLatest)} ms`, 12, 20);
+  ctx.fillText(`latest lag ${fmt(lagLatest)} ms`, 12, 38);
+  ctx.fillText(`scale ${fmt(max)} ms`, width - 105, 20);
+}
+
+function drawSeries(ctx, values, max, width, height, color) {
+  if (values.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  values.forEach((value, index) => {
+    const x = values.length === 1 ? 0 : (index / (values.length - 1)) * width;
+    const y = height - Math.min(value / max, 1) * (height - 28) - 12;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function renderPhases(metrics) {
+  const averages = byLabel(
+    series(metrics, "wow_map_phase_duration_average_1m_milliseconds").length
+      ? series(metrics, "wow_map_phase_duration_average_1m_milliseconds")
+      : series(metrics, "wow_map_phase_duration_average_milliseconds"),
+    "phase"
+  );
+  const latest = byLabel(series(metrics, "wow_map_phase_duration_latest_milliseconds"), "phase");
+  const maxes = byLabel(
+    series(metrics, "wow_map_phase_duration_max_1m_milliseconds").length
+      ? series(metrics, "wow_map_phase_duration_max_1m_milliseconds")
+      : series(metrics, "wow_map_phase_duration_max_milliseconds"),
+    "phase"
+  );
+  const phases = [...new Set([...averages.keys(), ...latest.keys(), ...maxes.keys()])].sort();
+  const maxValue = Math.max(1, ...[...maxes.values()]);
+  $("phaseTable").innerHTML = phases.length ? phases.map((phase) => {
+    const avg = averages.get(phase) ?? 0;
+    const now = latest.get(phase) ?? 0;
+    const max = maxes.get(phase) ?? 0;
+    const pct = Math.min((max / maxValue) * 100, 100);
+    const barClass = max >= 100 ? "bad" : max >= 25 ? "warn" : "";
+    return `<div class="phase-row"><div>${phase}</div><div class="bar"><div class="fill ${barClass}" style="width:${pct}%"></div></div><div>${fmt(avg)}</div><div>${fmt(now)}</div><div>${fmt(max)}</div></div>`;
+  }).join("") : `<div class="empty">No phase samples yet.</div>`;
+}
+
+function renderMaps(metrics) {
+  const players = series(metrics, "wow_map_active_players");
+  if (!players.length) {
+    $("mapTable").innerHTML = `<div class="empty">No loaded maps yet.</div>`;
+    return;
+  }
+  const rows = players.map((row) => {
+    const labels = { map_id: row.labels.map_id, instance_id: row.labels.instance_id };
+    return {
+      map: `${row.labels.map_id}/${row.labels.instance_id}`,
+      players: row.value,
+      creatures: getLabeled(metrics, "wow_map_active_creatures", labels),
+      gameobjects: getLabeled(metrics, "wow_map_active_gameobjects", labels),
+      grids: getLabeled(metrics, "wow_map_loaded_grids", labels),
+      combats: getLabeled(metrics, "wow_map_active_creature_combats", labels)
+    };
+  }).sort((a, b) => b.players - a.players || Number(a.map.split("/")[0]) - Number(b.map.split("/")[0]));
+  $("mapTable").innerHTML = table(["Map", "Players", "Creatures", "Gameobjects", "Grids", "Combats"], rows.map((row) => [
+    row.map, intFmt(row.players), intFmt(row.creatures), intFmt(row.gameobjects), intFmt(row.grids), intFmt(row.combats)
+  ]));
+}
+
+function renderDb(metrics) {
+  const totals = byLabel(series(metrics, "wow_db_query_total"), "family");
+  const avg = byLabel(
+    series(metrics, "wow_db_query_duration_average_1m_milliseconds").length
+      ? series(metrics, "wow_db_query_duration_average_1m_milliseconds")
+      : series(metrics, "wow_db_query_duration_average_milliseconds"),
+    "family"
+  );
+  const latest = byLabel(series(metrics, "wow_db_query_duration_latest_milliseconds"), "family");
+  const maxes = byLabel(
+    series(metrics, "wow_db_query_duration_max_1m_milliseconds").length
+      ? series(metrics, "wow_db_query_duration_max_1m_milliseconds")
+      : series(metrics, "wow_db_query_duration_max_milliseconds"),
+    "family"
+  );
+  const families = [...new Set([...totals.keys(), ...maxes.keys()])];
+  const rows = families.map((family) => ({
+    family,
+    count: totals.get(family) ?? 0,
+    avg: avg.get(family) ?? 0,
+    latest: latest.get(family) ?? 0,
+    max: maxes.get(family) ?? 0
+  })).sort((a, b) => b.max - a.max).slice(0, 12);
+  $("dbTable").innerHTML = rows.length ? table(["Family", "Count", "Avg", "Latest", "Max"], rows.map((row) => [
+    row.family, intFmt(row.count), fmt(row.avg), fmt(row.latest), fmt(row.max)
+  ])) : `<div class="empty">No DB samples yet.</div>`;
+}
+
+function renderCache(metrics) {
+  const loads = series(metrics, "wow_static_world_cache_load_spawns");
+  if (!loads.length) {
+    $("cacheTable").innerHTML = `<div class="empty">Cache has not loaded yet.</div>`;
+    return;
+  }
+  const rows = loads.map((row) => {
+    const labels = { kind: row.labels.kind };
+    return [
+      row.labels.kind,
+      intFmt(row.value),
+      intFmt(getLabeled(metrics, "wow_static_world_cache_load_grids", labels)),
+      fmt(getLabeled(metrics, "wow_static_world_cache_load_duration_milliseconds", labels)),
+      intFmt(getLabeled(metrics, "wow_static_world_cache_lookup_total", labels)),
+      intFmt(getLabeled(metrics, "wow_static_world_cache_instantiation_rows_total", labels)),
+      fmt(getLabeled(metrics, "wow_static_world_cache_instantiation_duration_max_milliseconds", labels))
+    ];
+  }).sort((a, b) => a[0].localeCompare(b[0]));
+  $("cacheTable").innerHTML = table(["Kind", "Spawns", "Grids", "Load ms", "Lookups", "Rows", "Max ms"], rows);
+}
+
+function renderPackets(metrics) {
+  const rows = series(metrics, "wow_world_packets_in_total")
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 12)
+    .map((row) => [row.labels.opcode, intFmt(row.value), deltaText(metrics, row)]);
+  $("packetsIn").innerHTML = rows.length ? table(["Opcode", "Total", "Delta"], rows) : `<div class="empty">No packets yet.</div>`;
+
+  const unknownRows = series(metrics, "wow_world_unknown_opcodes_total")
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 12)
+    .map((row) => [row.labels.opcode, intFmt(row.value), deltaText(metrics, row)]);
+  $("unknownTable").innerHTML = unknownRows.length ? table(["Opcode", "Total", "Delta"], unknownRows) : `<div class="empty">No unknown opcodes.</div>`;
+}
+
+function deltaText(metrics, row) {
+  const key = metricKey(row.name, row.labels);
+  const previous = state.previous.get(key) ?? row.value;
+  const delta = row.value - previous;
+  return delta > 0 ? `+${intFmt(delta)}` : "0";
+}
+
+function byLabel(rows, label) {
+  const map = new Map();
+  for (const row of rows) map.set(row.labels[label] ?? "", row.value);
+  return map;
+}
+
+function table(headers, rows) {
+  return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+async function refresh() {
+  if (state.paused) return;
+  try {
+    const response = await fetch("/metrics", { cache: "no-store" });
+    const text = await response.text();
+    const metrics = parseMetrics(text);
+    renderKpis(metrics);
+    renderLoopChart(metrics);
+    renderPhases(metrics);
+    renderMaps(metrics);
+    renderCache(metrics);
+    renderDb(metrics);
+    renderPackets(metrics);
+    state.previous = metrics;
+    $("statusDot").className = "status-dot good";
+    $("statusText").textContent = "live";
+    $("lastUpdated").textContent = new Date().toLocaleTimeString();
+  } catch (error) {
+    $("statusDot").className = "status-dot bad";
+    $("statusText").textContent = "offline";
+  }
+}
+
+$("pauseButton").addEventListener("click", () => {
+  state.paused = !state.paused;
+  $("pauseButton").textContent = state.paused ? "Resume" : "Pause";
+  $("statusText").textContent = state.paused ? "paused" : "live";
+});
+$("resetButton").addEventListener("click", async () => {
+  state.history = [];
+  state.previous = new Map();
+  try {
+    await fetch("/dashboard/mark", { method: "POST", cache: "no-store" });
+    await refresh();
+  } catch (error) {
+    $("statusDot").className = "status-dot bad";
+    $("statusText").textContent = "mark failed";
+  }
+});
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>"##;
+
 pub async fn run_metrics_endpoint(bind_addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "Observability metrics endpoint listening");
@@ -640,6 +1741,20 @@ pub async fn run_metrics_endpoint(bind_addr: SocketAddr) -> anyhow::Result<()> {
                     "200 OK",
                     "text/plain; version=0.0.4; charset=utf-8",
                     render_prometheus(),
+                )
+            } else if first_line.starts_with("GET /dashboard ") || first_line.starts_with("GET / ")
+            {
+                (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    render_dashboard_html().to_string(),
+                )
+            } else if first_line.starts_with("POST /dashboard/mark ") {
+                let started_at = mark_monitoring_session();
+                (
+                    "200 OK",
+                    "text/plain; charset=utf-8",
+                    format!("marked {started_at}\n"),
                 )
             } else if first_line.starts_with("GET /healthz ") {
                 ("200 OK", "text/plain; charset=utf-8", "ok\n".to_string())
@@ -686,6 +1801,18 @@ mod tests {
             active_creature_combats: 2,
             corpses: 1,
         }]);
+        record_static_world_cache_load(
+            StaticWorldCacheKind::Creature,
+            10,
+            2,
+            Duration::from_millis(15),
+        );
+        record_static_world_cache_lookup(StaticWorldCacheKind::Creature, Duration::from_millis(1));
+        record_static_world_cache_instantiation(
+            StaticWorldCacheKind::Creature,
+            3,
+            Duration::from_millis(2),
+        );
         record_world_packet_in(0x01E0);
         record_world_packet_out(0x00DD);
         record_world_unknown_opcode(0x01E0);
@@ -698,20 +1825,64 @@ mod tests {
         assert!(rendered.contains("wow_map_tick_duration_average_milliseconds 12.000"));
         assert!(rendered.contains("wow_map_tick_duration_latest_milliseconds 12.000"));
         assert!(rendered.contains("wow_map_tick_duration_max_milliseconds 12.000"));
+        assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds 12.000"));
+        assert!(rendered.contains("wow_map_tick_duration_max_1m_milliseconds 12.000"));
+        assert!(rendered.contains("wow_map_tick_duration_average_5m_milliseconds 12.000"));
+        assert!(rendered.contains("wow_map_tick_duration_max_5m_milliseconds 12.000"));
         assert!(rendered.contains("wow_map_tick_lag_average_milliseconds 3.000"));
         assert!(rendered.contains("wow_map_tick_lag_latest_milliseconds 3.000"));
         assert!(rendered.contains("wow_map_tick_lag_max_milliseconds 3.000"));
+        assert!(rendered.contains("wow_map_tick_lag_average_1m_milliseconds 3.000"));
+        assert!(rendered.contains("wow_map_tick_lag_max_1m_milliseconds 3.000"));
         assert!(rendered
             .contains("wow_map_phase_duration_max_milliseconds{phase=\"player_regen\"} 7.000"));
+        assert!(rendered.contains(
+            "wow_map_phase_duration_average_1m_milliseconds{phase=\"player_regen\"} 7.000"
+        ));
+        assert!(rendered
+            .contains("wow_map_phase_duration_max_1m_milliseconds{phase=\"player_regen\"} 7.000"));
         assert!(rendered
             .contains("wow_map_phase_duration_latest_milliseconds{phase=\"idle_motion\"} 0.000"));
+        assert!(rendered.contains("wow_monitoring_session_started_unix_seconds "));
+        assert!(rendered.contains("wow_monitoring_session_marks_total "));
         assert!(rendered.contains("wow_map_active_players{map_id=\"0\",instance_id=\"0\"} 1"));
         assert!(rendered.contains("wow_map_active_creatures{map_id=\"0\",instance_id=\"0\"} 42"));
         assert!(
             rendered.contains("wow_map_active_creature_combats{map_id=\"0\",instance_id=\"0\"} 2")
         );
+        assert!(rendered.contains("wow_static_world_cache_load_spawns{kind=\"creature\"} 10.000"));
+        assert!(rendered.contains(
+            "wow_static_world_cache_load_duration_milliseconds{kind=\"creature\"} 15.000"
+        ));
+        assert!(rendered.contains("wow_static_world_cache_lookup_total{kind=\"creature\"} 1"));
+        assert!(rendered
+            .contains("wow_static_world_cache_instantiation_rows_total{kind=\"creature\"} 3"));
         assert!(rendered.contains("wow_world_packets_in_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains("wow_world_packets_out_total{opcode=\"0x00DD\"}"));
         assert!(rendered.contains("wow_world_unknown_opcodes_total{opcode=\"0x01E0\"}"));
+    }
+
+    #[test]
+    fn monitoring_session_marker_updates_prometheus_value() {
+        let started_at = mark_monitoring_session();
+        let rendered = render_prometheus();
+
+        assert!(started_at > 0);
+        assert!(rendered.contains(&format!(
+            "wow_monitoring_session_started_unix_seconds {started_at}"
+        )));
+    }
+
+    #[test]
+    fn dashboard_renders_live_metrics_page() {
+        let rendered = render_dashboard_html();
+
+        assert!(rendered.contains("<title>Worldserver Monitor</title>"));
+        assert!(rendered.contains("fetch(\"/metrics\""));
+        assert!(rendered.contains("fetch(\"/dashboard/mark\""));
+        assert!(rendered.contains("wow_map_tick_duration_average_milliseconds"));
+        assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds"));
+        assert!(rendered.contains("wow_static_world_cache_load_spawns"));
+        assert!(rendered.contains("wow_db_query_duration_max_milliseconds"));
     }
 }

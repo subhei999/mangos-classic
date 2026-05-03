@@ -49,16 +49,46 @@ pub struct WorldServer {
 }
 
 impl WorldServer {
-    pub fn new(
+    pub async fn new(
         bind_addr: SocketAddr,
         login_db_pool: MySqlPool,
         character_db_pool: MySqlPool,
         world_db_pool: MySqlPool,
         delete_options: CharacterDeleteOptions,
         data_dir: impl Into<std::path::PathBuf>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
-        let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data_files));
+        let creature_cache_load_started_at = Instant::now();
+        let mut creature_spawns = wow_db::get_all_static_creature_spawns(&world_db_pool).await?;
+        apply_creature_display_scale_fallbacks(
+            &mut creature_spawns,
+            &world_data_files.creature_display_scales,
+        );
+        let creature_cache_load_duration = creature_cache_load_started_at.elapsed();
+        let gameobject_cache_load_started_at = Instant::now();
+        let gameobject_spawns = wow_db::get_all_static_gameobject_spawns(&world_db_pool).await?;
+        let gameobject_cache_load_duration = gameobject_cache_load_started_at.elapsed();
+        let static_world_cache = Arc::new(StaticWorldSpawnCache::from_spawns(
+            creature_spawns,
+            gameobject_spawns,
+        ));
+        let static_cache_counts = static_world_cache.counts();
+        crate::observability::record_static_world_cache_load(
+            crate::observability::StaticWorldCacheKind::Creature,
+            static_cache_counts.creature_spawns,
+            static_cache_counts.creature_grids,
+            creature_cache_load_duration,
+        );
+        crate::observability::record_static_world_cache_load(
+            crate::observability::StaticWorldCacheKind::GameObject,
+            static_cache_counts.gameobject_spawns,
+            static_cache_counts.gameobject_grids,
+            gameobject_cache_load_duration,
+        );
+        let maps = Arc::new(MapRuntimeManager::with_world_data_files_and_static_cache(
+            &world_data_files,
+            static_world_cache,
+        ));
         info!(
             data_dir = %world_data_files.data_dir.display(),
             maps = world_data_files.maps_available,
@@ -68,6 +98,12 @@ impl WorldServer {
             mmap_tiles = world_data_files.mmap_tiles.len(),
             vmap_maps = world_data_files.vmap_trees.len(),
             vmap_tiles = world_data_files.vmap_tiles.len(),
+            static_creature_spawns = static_cache_counts.creature_spawns,
+            static_creature_grids = static_cache_counts.creature_grids,
+            static_gameobject_spawns = static_cache_counts.gameobject_spawns,
+            static_gameobject_grids = static_cache_counts.gameobject_grids,
+            static_creature_cache_load_ms = creature_cache_load_duration.as_secs_f64() * 1_000.0,
+            static_gameobject_cache_load_ms = gameobject_cache_load_duration.as_secs_f64() * 1_000.0,
             "World data files inspected",
         );
         if world_data_files.mmap_tiles.is_empty() {
@@ -82,7 +118,7 @@ impl WorldServer {
                 "No compatible CMaNGOS VMAP_7.0 tiles found; DB creature line-of-sight will use the permissive fallback",
             );
         }
-        Self {
+        Ok(Self {
             bind_addr,
             login_db_pool,
             character_db_pool,
@@ -95,7 +131,7 @@ impl WorldServer {
                 maps,
                 object_mgr: Arc::new(ObjectMgr::default()),
             },
-        }
+        })
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {

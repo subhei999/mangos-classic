@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
-use sqlx::{FromRow, QueryBuilder};
+use sqlx::{FromRow, MySql, QueryBuilder};
 
 use crate::pool::DbError;
 
@@ -183,6 +183,150 @@ pub struct GameObjectSpawnQuery {
     pub anim_progress: u8,
     pub template: GameObjectTemplateQuery,
 }
+
+const GAMEOBJECT_SPAWN_SELECT: &str =
+    "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+                CAST(gameobject.position_x AS DOUBLE) AS position_x, \
+                CAST(gameobject.position_y AS DOUBLE) AS position_y, \
+                CAST(gameobject.position_z AS DOUBLE) AS position_z, \
+                CAST(gameobject.orientation AS DOUBLE) AS orientation, \
+                CAST(gameobject.rotation0 AS DOUBLE) AS rotation0, \
+                CAST(gameobject.rotation1 AS DOUBLE) AS rotation1, \
+                CAST(gameobject.rotation2 AS DOUBLE) AS rotation2, \
+                CAST(gameobject.rotation3 AS DOUBLE) AS rotation3, \
+                gameobject.spawntimesecsmin AS spawn_time_secs_min, \
+                gameobject.spawntimesecsmax AS spawn_time_secs_max, \
+                CAST(COALESCE(gameobject_addon.state, -1) AS SIGNED) AS state, \
+                CAST(COALESCE(gameobject_addon.animprogress, 100) AS UNSIGNED) AS anim_progress, \
+                gameobject_template.entry AS template_entry, \
+                gameobject_template.type AS template_object_type, \
+                gameobject_template.displayId AS template_display_id, \
+                gameobject_template.name AS template_name, \
+                gameobject_template.IconName AS template_icon_name, \
+                CAST(gameobject_template.faction AS UNSIGNED) AS template_faction, \
+                CAST(gameobject_template.flags AS UNSIGNED) AS template_flags, \
+                gameobject_template.size AS template_size, \
+                CAST(gameobject_template.data0 AS SIGNED) AS template_data0, \
+                CAST(gameobject_template.data1 AS SIGNED) AS template_data1, \
+                CAST(gameobject_template.data2 AS SIGNED) AS template_data2, \
+                CAST(gameobject_template.data3 AS SIGNED) AS template_data3, \
+                CAST(gameobject_template.data4 AS SIGNED) AS template_data4, \
+                CAST(gameobject_template.data5 AS SIGNED) AS template_data5, \
+                CAST(gameobject_template.data6 AS SIGNED) AS template_data6, \
+                CAST(gameobject_template.data7 AS SIGNED) AS template_data7, \
+                CAST(gameobject_template.data8 AS SIGNED) AS template_data8, \
+                CAST(gameobject_template.data9 AS SIGNED) AS template_data9, \
+                CAST(gameobject_template.data10 AS SIGNED) AS template_data10, \
+                CAST(gameobject_template.data11 AS SIGNED) AS template_data11, \
+                CAST(gameobject_template.data12 AS SIGNED) AS template_data12, \
+                CAST(gameobject_template.data13 AS SIGNED) AS template_data13, \
+                CAST(gameobject_template.data14 AS SIGNED) AS template_data14, \
+                CAST(gameobject_template.data15 AS SIGNED) AS template_data15, \
+                CAST(gameobject_template.data16 AS SIGNED) AS template_data16, \
+                CAST(gameobject_template.data17 AS SIGNED) AS template_data17, \
+                CAST(gameobject_template.data18 AS SIGNED) AS template_data18, \
+                CAST(gameobject_template.data19 AS SIGNED) AS template_data19, \
+                CAST(gameobject_template.data20 AS SIGNED) AS template_data20, \
+                CAST(gameobject_template.data21 AS SIGNED) AS template_data21, \
+                CAST(gameobject_template.data22 AS SIGNED) AS template_data22, \
+                CAST(gameobject_template.data23 AS SIGNED) AS template_data23 \
+         FROM gameobject \
+         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
+         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid";
+
+const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry, creature.map, \
+                CAST(creature.position_x AS DOUBLE) AS position_x, \
+                CAST(creature.position_y AS DOUBLE) AS position_y, \
+                CAST(creature.position_z AS DOUBLE) AS position_z, \
+                CAST(creature.orientation AS DOUBLE) AS orientation, \
+                creature.spawntimesecsmin AS spawn_time_secs_min, \
+                creature.spawntimesecsmax AS spawn_time_secs_max, \
+                CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
+                creature.MovementType AS movement_type, \
+                CAST(spawn_group_formation.MovementType AS UNSIGNED) AS formation_movement_type, \
+                CAST(spawn_group_formation.PathId AS UNSIGNED) AS formation_waypoint_path_id, \
+                creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
+                creature_template.SubName AS template_subname, \
+                creature_template.MinLevel AS template_min_level, \
+                creature_template.MaxLevel AS template_max_level, \
+                creature_template.DisplayId1 AS template_display_id1, \
+                creature_template.DisplayId2 AS template_display_id2, \
+                creature_template.DisplayId3 AS template_display_id3, \
+                creature_template.DisplayId4 AS template_display_id4, \
+                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
+                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
+                creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
+                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
+                creature_template.Detection AS template_detection_range, \
+                creature_template.CallForHelp AS template_call_for_help, \
+                creature_template.Pursuit AS template_pursuit, \
+                creature_template.Leash AS template_leash, \
+                creature_template.Family AS template_family, \
+                creature_template.CreatureType AS template_creature_type, \
+                creature_template.NpcFlags AS template_npc_flags, \
+                creature_template.UnitFlags AS template_unit_flags, \
+                creature_template.DynamicFlags AS template_dynamic_flags, \
+                creature_template.UnitClass AS template_unit_class, \
+                creature_template.Rank AS template_rank, \
+                creature_template.HealthMultiplier AS template_health_multiplier, \
+                creature_template.PowerMultiplier AS template_power_multiplier, \
+                creature_template.DamageMultiplier AS template_damage_multiplier, \
+                creature_template.DamageVariance AS template_damage_variance, \
+                creature_template.ArmorMultiplier AS template_armor_multiplier, \
+                creature_template.MinLevelHealth AS template_min_level_health, \
+                creature_template.MaxLevelHealth AS template_max_level_health, \
+                creature_template.MinLevelMana AS template_min_level_mana, \
+                creature_template.MaxLevelMana AS template_max_level_mana, \
+                creature_template.MinMeleeDmg AS template_min_melee_dmg, \
+                creature_template.MaxMeleeDmg AS template_max_melee_dmg, \
+                creature_template.MinRangedDmg AS template_min_ranged_dmg, \
+                creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
+                creature_template.Armor AS template_armor, \
+                creature_template.MeleeAttackPower AS template_melee_attack_power, \
+                creature_template.RangedAttackPower AS template_ranged_attack_power, \
+                creature_template.MinLootGold AS template_min_loot_gold, \
+                creature_template.MaxLootGold AS template_max_loot_gold, \
+                creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
+                creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
+                creature_template.DamageSchool AS template_damage_school, \
+                creature_template.TrainerType AS template_trainer_type, \
+                creature_template.TrainerClass AS template_trainer_class, \
+                creature_template.PetSpellDataId AS template_pet_spell_data_id, \
+                creature_template.Civilian AS template_civilian, \
+                creature_template.CorpseDecay AS template_corpse_decay, \
+                creature_template.MovementType AS template_movement_type, \
+                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
+                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
+                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
+                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
+                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
+                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
+                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
+                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
+                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
+                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
+                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
+                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
+                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
+                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
+                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
+                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
+                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
+                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
+                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
+                creature_template.ExperienceMultiplier AS template_experience_multiplier \
+         FROM creature \
+         JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN creature_model_info \
+           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
+         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
+         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
+         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
+         LEFT JOIN spawn_group_spawn \
+           ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
+         LEFT JOIN spawn_group_formation \
+           ON spawn_group_formation.Id = spawn_group_spawn.Id";
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct TrainerSpellQuery {
@@ -471,30 +615,30 @@ pub async fn get_gameobject_template_query(
                 CAST(faction AS UNSIGNED) AS faction, \
                 CAST(flags AS UNSIGNED) AS flags, \
                 size, \
-                CAST(data0 AS UNSIGNED) AS data0, \
-                CAST(data1 AS UNSIGNED) AS data1, \
-                CAST(data2 AS UNSIGNED) AS data2, \
-                CAST(data3 AS UNSIGNED) AS data3, \
-                CAST(data4 AS UNSIGNED) AS data4, \
-                CAST(data5 AS UNSIGNED) AS data5, \
-                CAST(data6 AS UNSIGNED) AS data6, \
-                CAST(data7 AS UNSIGNED) AS data7, \
-                CAST(data8 AS UNSIGNED) AS data8, \
-                CAST(data9 AS UNSIGNED) AS data9, \
-                CAST(data10 AS UNSIGNED) AS data10, \
-                CAST(data11 AS UNSIGNED) AS data11, \
-                CAST(data12 AS UNSIGNED) AS data12, \
-                CAST(data13 AS UNSIGNED) AS data13, \
-                CAST(data14 AS UNSIGNED) AS data14, \
-                CAST(data15 AS UNSIGNED) AS data15, \
-                CAST(data16 AS UNSIGNED) AS data16, \
-                CAST(data17 AS UNSIGNED) AS data17, \
-                CAST(data18 AS UNSIGNED) AS data18, \
-                CAST(data19 AS UNSIGNED) AS data19, \
-                CAST(data20 AS UNSIGNED) AS data20, \
-                CAST(data21 AS UNSIGNED) AS data21, \
-                CAST(data22 AS UNSIGNED) AS data22, \
-                CAST(data23 AS UNSIGNED) AS data23 \
+                CAST(data0 AS SIGNED) AS data0, \
+                CAST(data1 AS SIGNED) AS data1, \
+                CAST(data2 AS SIGNED) AS data2, \
+                CAST(data3 AS SIGNED) AS data3, \
+                CAST(data4 AS SIGNED) AS data4, \
+                CAST(data5 AS SIGNED) AS data5, \
+                CAST(data6 AS SIGNED) AS data6, \
+                CAST(data7 AS SIGNED) AS data7, \
+                CAST(data8 AS SIGNED) AS data8, \
+                CAST(data9 AS SIGNED) AS data9, \
+                CAST(data10 AS SIGNED) AS data10, \
+                CAST(data11 AS SIGNED) AS data11, \
+                CAST(data12 AS SIGNED) AS data12, \
+                CAST(data13 AS SIGNED) AS data13, \
+                CAST(data14 AS SIGNED) AS data14, \
+                CAST(data15 AS SIGNED) AS data15, \
+                CAST(data16 AS SIGNED) AS data16, \
+                CAST(data17 AS SIGNED) AS data17, \
+                CAST(data18 AS SIGNED) AS data18, \
+                CAST(data19 AS SIGNED) AS data19, \
+                CAST(data20 AS SIGNED) AS data20, \
+                CAST(data21 AS SIGNED) AS data21, \
+                CAST(data22 AS SIGNED) AS data22, \
+                CAST(data23 AS SIGNED) AS data23 \
          FROM gameobject_template \
          WHERE entry = ?",
     )
@@ -1146,30 +1290,30 @@ pub async fn get_nearby_gameobject_spawns(
                 CAST(gameobject_template.faction AS UNSIGNED) AS template_faction, \
                 CAST(gameobject_template.flags AS UNSIGNED) AS template_flags, \
                 gameobject_template.size AS template_size, \
-                CAST(gameobject_template.data0 AS UNSIGNED) AS template_data0, \
-                CAST(gameobject_template.data1 AS UNSIGNED) AS template_data1, \
-                CAST(gameobject_template.data2 AS UNSIGNED) AS template_data2, \
-                CAST(gameobject_template.data3 AS UNSIGNED) AS template_data3, \
-                CAST(gameobject_template.data4 AS UNSIGNED) AS template_data4, \
-                CAST(gameobject_template.data5 AS UNSIGNED) AS template_data5, \
-                CAST(gameobject_template.data6 AS UNSIGNED) AS template_data6, \
-                CAST(gameobject_template.data7 AS UNSIGNED) AS template_data7, \
-                CAST(gameobject_template.data8 AS UNSIGNED) AS template_data8, \
-                CAST(gameobject_template.data9 AS UNSIGNED) AS template_data9, \
-                CAST(gameobject_template.data10 AS UNSIGNED) AS template_data10, \
-                CAST(gameobject_template.data11 AS UNSIGNED) AS template_data11, \
-                CAST(gameobject_template.data12 AS UNSIGNED) AS template_data12, \
-                CAST(gameobject_template.data13 AS UNSIGNED) AS template_data13, \
-                CAST(gameobject_template.data14 AS UNSIGNED) AS template_data14, \
-                CAST(gameobject_template.data15 AS UNSIGNED) AS template_data15, \
-                CAST(gameobject_template.data16 AS UNSIGNED) AS template_data16, \
-                CAST(gameobject_template.data17 AS UNSIGNED) AS template_data17, \
-                CAST(gameobject_template.data18 AS UNSIGNED) AS template_data18, \
-                CAST(gameobject_template.data19 AS UNSIGNED) AS template_data19, \
-                CAST(gameobject_template.data20 AS UNSIGNED) AS template_data20, \
-                CAST(gameobject_template.data21 AS UNSIGNED) AS template_data21, \
-                CAST(gameobject_template.data22 AS UNSIGNED) AS template_data22, \
-                CAST(gameobject_template.data23 AS UNSIGNED) AS template_data23 \
+                CAST(gameobject_template.data0 AS SIGNED) AS template_data0, \
+                CAST(gameobject_template.data1 AS SIGNED) AS template_data1, \
+                CAST(gameobject_template.data2 AS SIGNED) AS template_data2, \
+                CAST(gameobject_template.data3 AS SIGNED) AS template_data3, \
+                CAST(gameobject_template.data4 AS SIGNED) AS template_data4, \
+                CAST(gameobject_template.data5 AS SIGNED) AS template_data5, \
+                CAST(gameobject_template.data6 AS SIGNED) AS template_data6, \
+                CAST(gameobject_template.data7 AS SIGNED) AS template_data7, \
+                CAST(gameobject_template.data8 AS SIGNED) AS template_data8, \
+                CAST(gameobject_template.data9 AS SIGNED) AS template_data9, \
+                CAST(gameobject_template.data10 AS SIGNED) AS template_data10, \
+                CAST(gameobject_template.data11 AS SIGNED) AS template_data11, \
+                CAST(gameobject_template.data12 AS SIGNED) AS template_data12, \
+                CAST(gameobject_template.data13 AS SIGNED) AS template_data13, \
+                CAST(gameobject_template.data14 AS SIGNED) AS template_data14, \
+                CAST(gameobject_template.data15 AS SIGNED) AS template_data15, \
+                CAST(gameobject_template.data16 AS SIGNED) AS template_data16, \
+                CAST(gameobject_template.data17 AS SIGNED) AS template_data17, \
+                CAST(gameobject_template.data18 AS SIGNED) AS template_data18, \
+                CAST(gameobject_template.data19 AS SIGNED) AS template_data19, \
+                CAST(gameobject_template.data20 AS SIGNED) AS template_data20, \
+                CAST(gameobject_template.data21 AS SIGNED) AS template_data21, \
+                CAST(gameobject_template.data22 AS SIGNED) AS template_data22, \
+                CAST(gameobject_template.data23 AS SIGNED) AS template_data23 \
          FROM gameobject \
          JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
          LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
@@ -1216,67 +1360,40 @@ pub async fn get_gameobject_spawns_in_rect(
     max_y: f32,
 ) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("gameobject_grid_load");
-    let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
-        "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
-                CAST(gameobject.position_x AS DOUBLE) AS position_x, \
-                CAST(gameobject.position_y AS DOUBLE) AS position_y, \
-                CAST(gameobject.position_z AS DOUBLE) AS position_z, \
-                CAST(gameobject.orientation AS DOUBLE) AS orientation, \
-                CAST(gameobject.rotation0 AS DOUBLE) AS rotation0, \
-                CAST(gameobject.rotation1 AS DOUBLE) AS rotation1, \
-                CAST(gameobject.rotation2 AS DOUBLE) AS rotation2, \
-                CAST(gameobject.rotation3 AS DOUBLE) AS rotation3, \
-                gameobject.spawntimesecsmin AS spawn_time_secs_min, \
-                gameobject.spawntimesecsmax AS spawn_time_secs_max, \
-                CAST(COALESCE(gameobject_addon.state, -1) AS SIGNED) AS state, \
-                CAST(COALESCE(gameobject_addon.animprogress, 100) AS UNSIGNED) AS anim_progress, \
-                gameobject_template.entry AS template_entry, \
-                gameobject_template.type AS template_object_type, \
-                gameobject_template.displayId AS template_display_id, \
-                gameobject_template.name AS template_name, \
-                gameobject_template.IconName AS template_icon_name, \
-                CAST(gameobject_template.faction AS UNSIGNED) AS template_faction, \
-                CAST(gameobject_template.flags AS UNSIGNED) AS template_flags, \
-                gameobject_template.size AS template_size, \
-                CAST(gameobject_template.data0 AS UNSIGNED) AS template_data0, \
-                CAST(gameobject_template.data1 AS UNSIGNED) AS template_data1, \
-                CAST(gameobject_template.data2 AS UNSIGNED) AS template_data2, \
-                CAST(gameobject_template.data3 AS UNSIGNED) AS template_data3, \
-                CAST(gameobject_template.data4 AS UNSIGNED) AS template_data4, \
-                CAST(gameobject_template.data5 AS UNSIGNED) AS template_data5, \
-                CAST(gameobject_template.data6 AS UNSIGNED) AS template_data6, \
-                CAST(gameobject_template.data7 AS UNSIGNED) AS template_data7, \
-                CAST(gameobject_template.data8 AS UNSIGNED) AS template_data8, \
-                CAST(gameobject_template.data9 AS UNSIGNED) AS template_data9, \
-                CAST(gameobject_template.data10 AS UNSIGNED) AS template_data10, \
-                CAST(gameobject_template.data11 AS UNSIGNED) AS template_data11, \
-                CAST(gameobject_template.data12 AS UNSIGNED) AS template_data12, \
-                CAST(gameobject_template.data13 AS UNSIGNED) AS template_data13, \
-                CAST(gameobject_template.data14 AS UNSIGNED) AS template_data14, \
-                CAST(gameobject_template.data15 AS UNSIGNED) AS template_data15, \
-                CAST(gameobject_template.data16 AS UNSIGNED) AS template_data16, \
-                CAST(gameobject_template.data17 AS UNSIGNED) AS template_data17, \
-                CAST(gameobject_template.data18 AS UNSIGNED) AS template_data18, \
-                CAST(gameobject_template.data19 AS UNSIGNED) AS template_data19, \
-                CAST(gameobject_template.data20 AS UNSIGNED) AS template_data20, \
-                CAST(gameobject_template.data21 AS UNSIGNED) AS template_data21, \
-                CAST(gameobject_template.data22 AS UNSIGNED) AS template_data22, \
-                CAST(gameobject_template.data23 AS UNSIGNED) AS template_data23 \
-         FROM gameobject \
-         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
-         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
-         WHERE gameobject.map = ? \
-           AND gameobject.position_x BETWEEN ? AND ? \
-           AND gameobject.position_y BETWEEN ? AND ? \
-         ORDER BY gameobject.guid ASC",
-    )
-    .bind(map)
-    .bind(min_x)
-    .bind(max_x)
-    .bind(min_y)
-    .bind(max_y)
-    .fetch_all(pool)
-    .await?;
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(GAMEOBJECT_SPAWN_SELECT);
+    builder.push(" WHERE gameobject.map = ");
+    builder.push_bind(map);
+    builder.push(" AND gameobject.position_x BETWEEN ");
+    builder.push_bind(min_x);
+    builder.push(" AND ");
+    builder.push_bind(max_x);
+    builder.push(" AND gameobject.position_y BETWEEN ");
+    builder.push_bind(min_y);
+    builder.push(" AND ");
+    builder.push_bind(max_y);
+    builder.push(" ORDER BY gameobject.guid ASC");
+    let rows = builder
+        .build_query_as::<GameObjectSpawnRow>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(GameObjectSpawnRow::into_query)
+        .collect())
+}
+
+pub async fn get_all_static_gameobject_spawns(
+    pool: &MySqlPool,
+) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("static_gameobject_spawn_cache_load");
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(GAMEOBJECT_SPAWN_SELECT);
+    builder.push(" ORDER BY gameobject.map ASC, gameobject.guid ASC");
+    let rows = builder
+        .build_query_as::<GameObjectSpawnRow>()
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -1293,113 +1410,51 @@ pub async fn get_creature_spawns_in_rect(
     max_y: f32,
 ) -> Result<Vec<CreatureSpawnQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("creature_grid_load");
-    let rows = sqlx::query_as::<_, CreatureSpawnRow>(
-        "SELECT creature.guid, creature.id AS entry, creature.map, \
-                CAST(creature.position_x AS DOUBLE) AS position_x, \
-                CAST(creature.position_y AS DOUBLE) AS position_y, \
-                CAST(creature.position_z AS DOUBLE) AS position_z, \
-                CAST(creature.orientation AS DOUBLE) AS orientation, \
-                creature.spawntimesecsmin AS spawn_time_secs_min, \
-                creature.spawntimesecsmax AS spawn_time_secs_max, \
-                CAST(creature.spawndist AS DOUBLE) AS spawn_dist, \
-                creature.MovementType AS movement_type, \
-                CAST(spawn_group_formation.MovementType AS UNSIGNED) AS formation_movement_type, \
-                CAST(spawn_group_formation.PathId AS UNSIGNED) AS formation_waypoint_path_id, \
-                creature_template.Entry AS template_entry, creature_template.Name AS template_name, \
-                creature_template.SubName AS template_subname, \
-                creature_template.MinLevel AS template_min_level, \
-                creature_template.MaxLevel AS template_max_level, \
-                creature_template.DisplayId1 AS template_display_id1, \
-                creature_template.DisplayId2 AS template_display_id2, \
-                creature_template.DisplayId3 AS template_display_id3, \
-                creature_template.DisplayId4 AS template_display_id4, \
-                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
-                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
-                creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
-                creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
-                creature_template.Detection AS template_detection_range, \
-                creature_template.CallForHelp AS template_call_for_help, \
-                creature_template.Pursuit AS template_pursuit, \
-                creature_template.Leash AS template_leash, \
-                creature_template.Family AS template_family, \
-                creature_template.CreatureType AS template_creature_type, \
-                creature_template.NpcFlags AS template_npc_flags, \
-                creature_template.UnitFlags AS template_unit_flags, \
-                creature_template.DynamicFlags AS template_dynamic_flags, \
-                creature_template.UnitClass AS template_unit_class, \
-                creature_template.Rank AS template_rank, \
-                creature_template.HealthMultiplier AS template_health_multiplier, \
-                creature_template.PowerMultiplier AS template_power_multiplier, \
-                creature_template.DamageMultiplier AS template_damage_multiplier, \
-                creature_template.DamageVariance AS template_damage_variance, \
-                creature_template.ArmorMultiplier AS template_armor_multiplier, \
-                creature_template.MinLevelHealth AS template_min_level_health, \
-                creature_template.MaxLevelHealth AS template_max_level_health, \
-                creature_template.MinLevelMana AS template_min_level_mana, \
-                creature_template.MaxLevelMana AS template_max_level_mana, \
-                creature_template.MinMeleeDmg AS template_min_melee_dmg, \
-                creature_template.MaxMeleeDmg AS template_max_melee_dmg, \
-                creature_template.MinRangedDmg AS template_min_ranged_dmg, \
-                creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
-                creature_template.Armor AS template_armor, \
-                creature_template.MeleeAttackPower AS template_melee_attack_power, \
-                creature_template.RangedAttackPower AS template_ranged_attack_power, \
-                creature_template.MinLootGold AS template_min_loot_gold, \
-                creature_template.MaxLootGold AS template_max_loot_gold, \
-                creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
-                creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
-                creature_template.DamageSchool AS template_damage_school, \
-                creature_template.TrainerType AS template_trainer_type, \
-                creature_template.TrainerClass AS template_trainer_class, \
-                creature_template.PetSpellDataId AS template_pet_spell_data_id, \
-                creature_template.Civilian AS template_civilian, \
-                creature_template.CorpseDecay AS template_corpse_decay, \
-                creature_template.MovementType AS template_movement_type, \
-                creature_template.EquipmentTemplateId AS template_equipment_template_id, \
-                CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS template_equip_display_id1, \
-                CAST(COALESCE(equip_2.displayid, 0) AS UNSIGNED) AS template_equip_display_id2, \
-                CAST(COALESCE(equip_3.displayid, 0) AS UNSIGNED) AS template_equip_display_id3, \
-                CAST(COALESCE(equip_1.class, 0) AS UNSIGNED) AS template_equip_class1, \
-                CAST(COALESCE(equip_2.class, 0) AS UNSIGNED) AS template_equip_class2, \
-                CAST(COALESCE(equip_3.class, 0) AS UNSIGNED) AS template_equip_class3, \
-                CAST(COALESCE(equip_1.subclass, 0) AS UNSIGNED) AS template_equip_subclass1, \
-                CAST(COALESCE(equip_2.subclass, 0) AS UNSIGNED) AS template_equip_subclass2, \
-                CAST(COALESCE(equip_3.subclass, 0) AS UNSIGNED) AS template_equip_subclass3, \
-                CAST(COALESCE(equip_1.Material, 0) AS SIGNED) AS template_equip_material1, \
-                CAST(COALESCE(equip_2.Material, 0) AS SIGNED) AS template_equip_material2, \
-                CAST(COALESCE(equip_3.Material, 0) AS SIGNED) AS template_equip_material3, \
-                CAST(COALESCE(equip_1.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type1, \
-                CAST(COALESCE(equip_2.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type2, \
-                CAST(COALESCE(equip_3.InventoryType, 0) AS UNSIGNED) AS template_equip_inventory_type3, \
-                CAST(COALESCE(equip_1.sheath, 0) AS UNSIGNED) AS template_equip_sheath1, \
-                CAST(COALESCE(equip_2.sheath, 0) AS UNSIGNED) AS template_equip_sheath2, \
-                CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
-                creature_template.ExperienceMultiplier AS template_experience_multiplier \
-         FROM creature \
-         JOIN creature_template ON creature.id = creature_template.Entry \
-         LEFT JOIN creature_model_info \
-           ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
-         LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
-         LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
-         LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
-         LEFT JOIN item_template AS equip_3 ON equip_3.entry = creature_equip_template.equipentry3 \
-         LEFT JOIN spawn_group_spawn \
-           ON spawn_group_spawn.Guid = creature.guid AND spawn_group_spawn.SlotId = 0 \
-         LEFT JOIN spawn_group_formation \
-           ON spawn_group_formation.Id = spawn_group_spawn.Id \
-         WHERE creature.map = ? \
-           AND creature.position_x BETWEEN ? AND ? \
-           AND creature.position_y BETWEEN ? AND ? \
-         ORDER BY creature.guid ASC",
-    )
-    .bind(map)
-    .bind(min_x)
-    .bind(max_x)
-    .bind(min_y)
-    .bind(max_y)
-    .fetch_all(pool)
-    .await?;
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(CREATURE_SPAWN_SELECT);
+    builder.push(" WHERE creature.map = ");
+    builder.push_bind(map);
+    builder.push(" AND creature.position_x BETWEEN ");
+    builder.push_bind(min_x);
+    builder.push(" AND ");
+    builder.push_bind(max_x);
+    builder.push(" AND creature.position_y BETWEEN ");
+    builder.push_bind(min_y);
+    builder.push(" AND ");
+    builder.push_bind(max_y);
+    builder.push(" ORDER BY creature.guid ASC");
+    let rows = builder
+        .build_query_as::<CreatureSpawnRow>()
+        .fetch_all(pool)
+        .await?;
 
+    creature_spawns_from_rows_with_waypoints(pool, rows).await
+}
+
+pub async fn get_all_static_creature_spawns(
+    pool: &MySqlPool,
+) -> Result<Vec<CreatureSpawnQuery>, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("static_creature_spawn_cache_load");
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(CREATURE_SPAWN_SELECT);
+    builder.push(" ORDER BY creature.map ASC, creature.guid ASC");
+    let rows = builder
+        .build_query_as::<CreatureSpawnRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let mut spawns = rows
+        .into_iter()
+        .map(CreatureSpawnRow::into_query)
+        .collect::<Vec<_>>();
+    let waypoint_paths = load_bulk_creature_waypoint_paths(pool, &spawns).await?;
+    attach_bulk_creature_waypoint_paths(&mut spawns, &waypoint_paths);
+    Ok(spawns)
+}
+
+async fn creature_spawns_from_rows_with_waypoints(
+    pool: &MySqlPool,
+    rows: Vec<CreatureSpawnRow>,
+) -> Result<Vec<CreatureSpawnQuery>, DbError> {
     let mut spawns = rows
         .into_iter()
         .map(CreatureSpawnRow::into_query)
@@ -1581,6 +1636,100 @@ fn creature_effective_movement_type(spawn: &CreatureSpawnQuery) -> u8 {
     }
 }
 
+#[derive(Debug, Default)]
+struct BulkCreatureWaypointPaths {
+    formation_paths: HashMap<u32, Vec<CreatureWaypointQuery>>,
+    guid_paths: HashMap<u32, Vec<CreatureWaypointQuery>>,
+    template_paths: HashMap<(u32, u32), Vec<CreatureWaypointQuery>>,
+}
+
+async fn load_bulk_creature_waypoint_paths(
+    pool: &MySqlPool,
+    spawns: &[CreatureSpawnQuery],
+) -> Result<BulkCreatureWaypointPaths, DbError> {
+    let path_spawns = spawns
+        .iter()
+        .filter(|spawn| {
+            let movement_type = creature_effective_movement_type(spawn);
+            movement_type == 2 || movement_type == 4
+        })
+        .collect::<Vec<_>>();
+    if path_spawns.is_empty() {
+        return Ok(BulkCreatureWaypointPaths::default());
+    }
+
+    let mut formation_path_ids = path_spawns
+        .iter()
+        .filter_map(|spawn| {
+            spawn
+                .formation_waypoint_path_id
+                .filter(|path_id| *path_id != 0)
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    formation_path_ids.sort_unstable();
+
+    let mut guid_ids = path_spawns
+        .iter()
+        .map(|spawn| spawn.guid)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    guid_ids.sort_unstable();
+
+    let mut template_entries = path_spawns
+        .iter()
+        .map(|spawn| spawn.entry)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    template_entries.sort_unstable();
+
+    Ok(BulkCreatureWaypointPaths {
+        formation_paths: get_waypoint_paths(pool, &formation_path_ids).await?,
+        guid_paths: get_creature_guid_waypoint_paths(pool, &guid_ids).await?,
+        template_paths: get_creature_template_waypoint_paths(pool, &template_entries, 0).await?,
+    })
+}
+
+fn attach_bulk_creature_waypoint_paths(
+    spawns: &mut [CreatureSpawnQuery],
+    paths: &BulkCreatureWaypointPaths,
+) {
+    for spawn in spawns {
+        let movement_type = creature_effective_movement_type(spawn);
+        if movement_type != 2 && movement_type != 4 {
+            continue;
+        }
+
+        if let Some(formation_path) = spawn
+            .formation_waypoint_path_id
+            .filter(|path_id| *path_id != 0)
+            .and_then(|path_id| paths.formation_paths.get(&path_id))
+            .filter(|path| !path.is_empty())
+        {
+            spawn.waypoint_path = formation_path.clone();
+            continue;
+        }
+
+        if let Some(guid_path) = paths
+            .guid_paths
+            .get(&spawn.guid)
+            .filter(|path| !path.is_empty())
+        {
+            spawn.waypoint_path = guid_path.clone();
+            continue;
+        }
+
+        spawn.waypoint_path = paths
+            .template_paths
+            .get(&(spawn.entry, 0))
+            .cloned()
+            .unwrap_or_default();
+    }
+}
+
 fn creature_waypoint_rows_into_path(rows: Vec<CreatureWaypointRow>) -> Vec<CreatureWaypointQuery> {
     if rows.iter().any(|row| row.point == 0) {
         return Vec::new();
@@ -1588,6 +1737,307 @@ fn creature_waypoint_rows_into_path(rows: Vec<CreatureWaypointRow>) -> Vec<Creat
     rows.into_iter()
         .map(CreatureWaypointRow::into_query)
         .collect()
+}
+
+async fn get_waypoint_paths(
+    pool: &MySqlPool,
+    path_ids: &[u32],
+) -> Result<HashMap<u32, Vec<CreatureWaypointQuery>>, DbError> {
+    if path_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("creature_waypoint_path_bulk_load");
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(
+        "SELECT PathId AS path_id, Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM waypoint_path \
+         WHERE PathId IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for path_id in path_ids {
+        separated.push_bind(*path_id);
+    }
+    separated.push_unseparated(") ORDER BY PathId, Point");
+
+    let rows = builder
+        .build_query_as::<WaypointPathRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut grouped: HashMap<u32, Vec<CreatureWaypointRow>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry(row.path_id)
+            .or_default()
+            .push(row.into_waypoint_row());
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(path_id, rows)| (path_id, creature_waypoint_rows_into_path(rows)))
+        .collect())
+}
+
+async fn get_creature_guid_waypoint_paths(
+    pool: &MySqlPool,
+    guids: &[u32],
+) -> Result<HashMap<u32, Vec<CreatureWaypointQuery>>, DbError> {
+    if guids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("creature_guid_waypoint_path_bulk_load");
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(
+        "SELECT Id AS guid, Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM creature_movement \
+         WHERE Id IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for guid in guids {
+        separated.push_bind(*guid);
+    }
+    separated.push_unseparated(") ORDER BY Id, Point");
+
+    let rows = builder
+        .build_query_as::<CreatureGuidWaypointRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut grouped: HashMap<u32, Vec<CreatureWaypointRow>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry(row.guid)
+            .or_default()
+            .push(row.into_waypoint_row());
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(guid, rows)| (guid, creature_waypoint_rows_into_path(rows)))
+        .collect())
+}
+
+async fn get_creature_template_waypoint_paths(
+    pool: &MySqlPool,
+    entries: &[u32],
+    path_id: u32,
+) -> Result<HashMap<(u32, u32), Vec<CreatureWaypointQuery>>, DbError> {
+    if entries.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("creature_template_waypoint_path_bulk_load");
+    let mut builder: QueryBuilder<MySql> = QueryBuilder::new(
+        "SELECT Entry AS entry, PathId AS path_id, Point AS point, \
+                CAST(PositionX AS DOUBLE) AS position_x, \
+                CAST(PositionY AS DOUBLE) AS position_y, \
+                CAST(PositionZ AS DOUBLE) AS position_z, \
+                CAST(Orientation AS DOUBLE) AS orientation, \
+                WaitTime AS wait_time, ScriptId AS script_id \
+         FROM creature_movement_template \
+         WHERE PathId = ",
+    );
+    builder.push_bind(path_id);
+    builder.push(" AND Entry IN (");
+    let mut separated = builder.separated(", ");
+    for entry in entries {
+        separated.push_bind(*entry);
+    }
+    separated.push_unseparated(") ORDER BY Entry, PathId, Point");
+
+    let rows = builder
+        .build_query_as::<CreatureTemplateWaypointRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut grouped: HashMap<(u32, u32), Vec<CreatureWaypointRow>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry((row.entry, row.path_id))
+            .or_default()
+            .push(row.into_waypoint_row());
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(key, rows)| (key, creature_waypoint_rows_into_path(rows)))
+        .collect())
+}
+
+#[cfg(test)]
+mod world_data_tests {
+    use super::*;
+
+    #[test]
+    fn bulk_creature_waypoint_attachment_preserves_cmangos_precedence() {
+        let mut spawns = vec![
+            test_creature_spawn(1, 10, 2, Some(100)),
+            test_creature_spawn(2, 20, 2, Some(200)),
+            test_creature_spawn(3, 30, 2, None),
+            test_creature_spawn(4, 40, 0, Some(400)),
+        ];
+        spawns[3].template.movement_type = 0;
+
+        let paths = BulkCreatureWaypointPaths {
+            formation_paths: HashMap::from([
+                (100, vec![test_waypoint(11)]),
+                (200, Vec::new()),
+                (400, vec![test_waypoint(44)]),
+            ]),
+            guid_paths: HashMap::from([
+                (1, vec![test_waypoint(12)]),
+                (2, vec![test_waypoint(22)]),
+                (3, Vec::new()),
+            ]),
+            template_paths: HashMap::from([
+                ((10, 0), vec![test_waypoint(13)]),
+                ((20, 0), vec![test_waypoint(23)]),
+                ((30, 0), vec![test_waypoint(33)]),
+                ((40, 0), vec![test_waypoint(43)]),
+            ]),
+        };
+
+        attach_bulk_creature_waypoint_paths(&mut spawns, &paths);
+
+        assert_eq!(spawns[0].waypoint_path, vec![test_waypoint(11)]);
+        assert_eq!(spawns[1].waypoint_path, vec![test_waypoint(22)]);
+        assert_eq!(spawns[2].waypoint_path, vec![test_waypoint(33)]);
+        assert!(spawns[3].waypoint_path.is_empty());
+    }
+
+    #[test]
+    fn waypoint_rows_with_zero_point_are_invalid_for_bulk_fallback() {
+        let path =
+            creature_waypoint_rows_into_path(vec![test_waypoint_row(0), test_waypoint_row(1)]);
+
+        assert!(path.is_empty());
+    }
+
+    fn test_waypoint(point: u32) -> CreatureWaypointQuery {
+        CreatureWaypointQuery {
+            point,
+            position_x: point as f32,
+            position_y: point as f32 + 1.0,
+            position_z: point as f32 + 2.0,
+            orientation: Some(point as f32 + 3.0),
+            wait_time: point * 10,
+            script_id: point * 100,
+        }
+    }
+
+    fn test_waypoint_row(point: u32) -> CreatureWaypointRow {
+        CreatureWaypointRow {
+            point,
+            position_x: point as f64,
+            position_y: point as f64 + 1.0,
+            position_z: point as f64 + 2.0,
+            orientation: point as f64 + 3.0,
+            wait_time: point * 10,
+            script_id: point * 100,
+        }
+    }
+
+    fn test_creature_spawn(
+        guid: u32,
+        entry: u32,
+        movement_type: u8,
+        formation_waypoint_path_id: Option<u32>,
+    ) -> CreatureSpawnQuery {
+        CreatureSpawnQuery {
+            guid,
+            entry,
+            map: 0,
+            position_x: 0.0,
+            position_y: 0.0,
+            position_z: 0.0,
+            orientation: 0.0,
+            spawn_time_secs_min: 25,
+            spawn_time_secs_max: 25,
+            spawn_dist: 0.0,
+            movement_type,
+            formation_waypoint_path_id,
+            template: CreatureTemplateQuery {
+                entry,
+                name: format!("Creature {entry}"),
+                subname: None,
+                min_level: 1,
+                max_level: 1,
+                display_id1: 0,
+                display_id2: 0,
+                display_id3: 0,
+                display_id4: 0,
+                model_bounding_radius: 0.0,
+                model_combat_reach: 0.0,
+                faction: 0,
+                scale: 1.0,
+                speed_walk: 1.0,
+                speed_run: 1.0,
+                detection_range: 20,
+                call_for_help: 0,
+                pursuit: 0,
+                leash: 0,
+                family: 0,
+                creature_type: 0,
+                npc_flags: 0,
+                unit_flags: 0,
+                dynamic_flags: 0,
+                unit_class: 1,
+                rank: 0,
+                health_multiplier: 1.0,
+                power_multiplier: 1.0,
+                damage_multiplier: 1.0,
+                damage_variance: 1.0,
+                armor_multiplier: 1.0,
+                min_level_health: 42,
+                max_level_health: 42,
+                min_level_mana: 0,
+                max_level_mana: 0,
+                min_melee_dmg: 1.0,
+                max_melee_dmg: 2.0,
+                min_ranged_dmg: 0.0,
+                max_ranged_dmg: 0.0,
+                armor: 0,
+                melee_attack_power: 0,
+                ranged_attack_power: 0,
+                min_loot_gold: 0,
+                max_loot_gold: 0,
+                melee_base_attack_time: 2000,
+                ranged_base_attack_time: 2000,
+                damage_school: 0,
+                trainer_type: 0,
+                trainer_class: 0,
+                pet_spell_data_id: 0,
+                civilian: 0,
+                corpse_decay: 0,
+                movement_type: 0,
+                equipment_template_id: 0,
+                equip_display_id1: 0,
+                equip_display_id2: 0,
+                equip_display_id3: 0,
+                equip_class1: 0,
+                equip_class2: 0,
+                equip_class3: 0,
+                equip_subclass1: 0,
+                equip_subclass2: 0,
+                equip_subclass3: 0,
+                equip_material1: 0,
+                equip_material2: 0,
+                equip_material3: 0,
+                equip_inventory_type1: 0,
+                equip_inventory_type2: 0,
+                equip_inventory_type3: 0,
+                equip_sheath1: 0,
+                equip_sheath2: 0,
+                equip_sheath3: 0,
+                experience_multiplier: 1.0,
+            },
+            waypoint_path: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1898,6 +2348,43 @@ struct CreatureWaypointRow {
     script_id: u32,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct WaypointPathRow {
+    path_id: u32,
+    point: u32,
+    position_x: f64,
+    position_y: f64,
+    position_z: f64,
+    orientation: f64,
+    wait_time: u32,
+    script_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CreatureGuidWaypointRow {
+    guid: u32,
+    point: u32,
+    position_x: f64,
+    position_y: f64,
+    position_z: f64,
+    orientation: f64,
+    wait_time: u32,
+    script_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CreatureTemplateWaypointRow {
+    entry: u32,
+    path_id: u32,
+    point: u32,
+    position_x: f64,
+    position_y: f64,
+    position_z: f64,
+    orientation: f64,
+    wait_time: u32,
+    script_id: u32,
+}
+
 #[derive(Debug, FromRow)]
 struct CreatureRespawnRow {
     guid: u32,
@@ -1914,30 +2401,30 @@ struct GameObjectTemplateRow {
     faction: u32,
     flags: u32,
     size: f32,
-    data0: u32,
-    data1: u32,
-    data2: u32,
-    data3: u32,
-    data4: u32,
-    data5: u32,
-    data6: u32,
-    data7: u32,
-    data8: u32,
-    data9: u32,
-    data10: u32,
-    data11: u32,
-    data12: u32,
-    data13: u32,
-    data14: u32,
-    data15: u32,
-    data16: u32,
-    data17: u32,
-    data18: u32,
-    data19: u32,
-    data20: u32,
-    data21: u32,
-    data22: u32,
-    data23: u32,
+    data0: i32,
+    data1: i32,
+    data2: i32,
+    data3: i32,
+    data4: i32,
+    data5: i32,
+    data6: i32,
+    data7: i32,
+    data8: i32,
+    data9: i32,
+    data10: i32,
+    data11: i32,
+    data12: i32,
+    data13: i32,
+    data14: i32,
+    data15: i32,
+    data16: i32,
+    data17: i32,
+    data18: i32,
+    data19: i32,
+    data20: i32,
+    data21: i32,
+    data22: i32,
+    data23: i32,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1965,30 +2452,30 @@ struct GameObjectSpawnRow {
     template_faction: u32,
     template_flags: u32,
     template_size: f32,
-    template_data0: u32,
-    template_data1: u32,
-    template_data2: u32,
-    template_data3: u32,
-    template_data4: u32,
-    template_data5: u32,
-    template_data6: u32,
-    template_data7: u32,
-    template_data8: u32,
-    template_data9: u32,
-    template_data10: u32,
-    template_data11: u32,
-    template_data12: u32,
-    template_data13: u32,
-    template_data14: u32,
-    template_data15: u32,
-    template_data16: u32,
-    template_data17: u32,
-    template_data18: u32,
-    template_data19: u32,
-    template_data20: u32,
-    template_data21: u32,
-    template_data22: u32,
-    template_data23: u32,
+    template_data0: i32,
+    template_data1: i32,
+    template_data2: i32,
+    template_data3: i32,
+    template_data4: i32,
+    template_data5: i32,
+    template_data6: i32,
+    template_data7: i32,
+    template_data8: i32,
+    template_data9: i32,
+    template_data10: i32,
+    template_data11: i32,
+    template_data12: i32,
+    template_data13: i32,
+    template_data14: i32,
+    template_data15: i32,
+    template_data16: i32,
+    template_data17: i32,
+    template_data18: i32,
+    template_data19: i32,
+    template_data20: i32,
+    template_data21: i32,
+    template_data22: i32,
+    template_data23: i32,
 }
 
 impl CreatureWaypointRow {
@@ -1999,6 +2486,48 @@ impl CreatureWaypointRow {
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,
             orientation: (self.orientation as f32 != 100.0).then_some(self.orientation as f32),
+            wait_time: self.wait_time,
+            script_id: self.script_id,
+        }
+    }
+}
+
+impl WaypointPathRow {
+    fn into_waypoint_row(self) -> CreatureWaypointRow {
+        CreatureWaypointRow {
+            point: self.point,
+            position_x: self.position_x,
+            position_y: self.position_y,
+            position_z: self.position_z,
+            orientation: self.orientation,
+            wait_time: self.wait_time,
+            script_id: self.script_id,
+        }
+    }
+}
+
+impl CreatureGuidWaypointRow {
+    fn into_waypoint_row(self) -> CreatureWaypointRow {
+        CreatureWaypointRow {
+            point: self.point,
+            position_x: self.position_x,
+            position_y: self.position_y,
+            position_z: self.position_z,
+            orientation: self.orientation,
+            wait_time: self.wait_time,
+            script_id: self.script_id,
+        }
+    }
+}
+
+impl CreatureTemplateWaypointRow {
+    fn into_waypoint_row(self) -> CreatureWaypointRow {
+        CreatureWaypointRow {
+            point: self.point,
+            position_x: self.position_x,
+            position_y: self.position_y,
+            position_z: self.position_z,
+            orientation: self.orientation,
             wait_time: self.wait_time,
             script_id: self.script_id,
         }
@@ -2017,30 +2546,30 @@ impl GameObjectTemplateRow {
             flags: self.flags,
             size: self.size,
             raw_data: [
-                self.data0,
-                self.data1,
-                self.data2,
-                self.data3,
-                self.data4,
-                self.data5,
-                self.data6,
-                self.data7,
-                self.data8,
-                self.data9,
-                self.data10,
-                self.data11,
-                self.data12,
-                self.data13,
-                self.data14,
-                self.data15,
-                self.data16,
-                self.data17,
-                self.data18,
-                self.data19,
-                self.data20,
-                self.data21,
-                self.data22,
-                self.data23,
+                self.data0 as u32,
+                self.data1 as u32,
+                self.data2 as u32,
+                self.data3 as u32,
+                self.data4 as u32,
+                self.data5 as u32,
+                self.data6 as u32,
+                self.data7 as u32,
+                self.data8 as u32,
+                self.data9 as u32,
+                self.data10 as u32,
+                self.data11 as u32,
+                self.data12 as u32,
+                self.data13 as u32,
+                self.data14 as u32,
+                self.data15 as u32,
+                self.data16 as u32,
+                self.data17 as u32,
+                self.data18 as u32,
+                self.data19 as u32,
+                self.data20 as u32,
+                self.data21 as u32,
+                self.data22 as u32,
+                self.data23 as u32,
             ],
         }
     }
@@ -2259,30 +2788,30 @@ impl GameObjectSpawnRow {
                 flags: self.template_flags,
                 size: self.template_size,
                 raw_data: [
-                    self.template_data0,
-                    self.template_data1,
-                    self.template_data2,
-                    self.template_data3,
-                    self.template_data4,
-                    self.template_data5,
-                    self.template_data6,
-                    self.template_data7,
-                    self.template_data8,
-                    self.template_data9,
-                    self.template_data10,
-                    self.template_data11,
-                    self.template_data12,
-                    self.template_data13,
-                    self.template_data14,
-                    self.template_data15,
-                    self.template_data16,
-                    self.template_data17,
-                    self.template_data18,
-                    self.template_data19,
-                    self.template_data20,
-                    self.template_data21,
-                    self.template_data22,
-                    self.template_data23,
+                    self.template_data0 as u32,
+                    self.template_data1 as u32,
+                    self.template_data2 as u32,
+                    self.template_data3 as u32,
+                    self.template_data4 as u32,
+                    self.template_data5 as u32,
+                    self.template_data6 as u32,
+                    self.template_data7 as u32,
+                    self.template_data8 as u32,
+                    self.template_data9 as u32,
+                    self.template_data10 as u32,
+                    self.template_data11 as u32,
+                    self.template_data12 as u32,
+                    self.template_data13 as u32,
+                    self.template_data14 as u32,
+                    self.template_data15 as u32,
+                    self.template_data16 as u32,
+                    self.template_data17 as u32,
+                    self.template_data18 as u32,
+                    self.template_data19 as u32,
+                    self.template_data20 as u32,
+                    self.template_data21 as u32,
+                    self.template_data22 as u32,
+                    self.template_data23 as u32,
                 ],
             },
         }

@@ -1,6 +1,7 @@
 #[derive(Debug, Default)]
 struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
+    static_world_cache: Arc<StaticWorldSpawnCache>,
     creature_display_scales: HashMap<u32, f32>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
     creature_grid_load_ensure_calls: AtomicU64,
@@ -44,10 +45,30 @@ fn apply_creature_display_scale_fallbacks(
 }
 
 impl MapRuntimeManager {
+    #[allow(dead_code)]
     fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
+        Self::with_world_data_files_and_static_cache(
+            world_data_files,
+            Arc::new(StaticWorldSpawnCache::default()),
+        )
+    }
+
+    fn with_world_data_files_and_static_cache(
+        world_data_files: &WorldDataFiles,
+        static_world_cache: Arc<StaticWorldSpawnCache>,
+    ) -> Self {
         Self {
+            static_world_cache,
             creature_display_scales: world_data_files.creature_display_scales.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_static_world_cache(static_world_cache: StaticWorldSpawnCache) -> Self {
+        Self {
+            static_world_cache: Arc::new(static_world_cache),
             ..Self::default()
         }
     }
@@ -394,7 +415,7 @@ impl MapRuntimeManager {
     async fn ensure_db_creature_grids_loaded(
         &self,
         character_db_pool: &MySqlPool,
-        world_db_pool: &MySqlPool,
+        _world_db_pool: &MySqlPool,
         map_id: u32,
         position: WorldPosition,
         radius: f32,
@@ -424,19 +445,16 @@ impl MapRuntimeManager {
         }
         for grid in grids {
             let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
-            let spawns = wow_db::get_creature_spawns_in_rect(
-                world_db_pool,
-                map_id,
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-            )
-            .await?;
+            let lookup_started_at = Instant::now();
+            let spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+            crate::observability::record_static_world_cache_lookup(
+                crate::observability::StaticWorldCacheKind::Creature,
+                lookup_started_at.elapsed(),
+            );
             let mut spawns = spawns;
             apply_creature_display_scale_fallbacks(&mut spawns, &self.creature_display_scales);
             let spawn_count = spawns.len() as u64;
-            let db_queries = self
+            let cache_lookups = self
                 .creature_grid_load_db_queries
                 .fetch_add(1, Ordering::Relaxed)
                 + 1;
@@ -444,7 +462,13 @@ impl MapRuntimeManager {
                 .creature_grid_load_rows
                 .fetch_add(spawn_count, Ordering::Relaxed)
                 + spawn_count;
+            let instantiation_started_at = Instant::now();
             let runtimes = build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
+            crate::observability::record_static_world_cache_instantiation(
+                crate::observability::StaticWorldCacheKind::Creature,
+                spawn_count,
+                instantiation_started_at.elapsed(),
+            );
             map.lock().await.insert_loaded_creature_grid(grid, runtimes);
             info!(
                 map_id,
@@ -455,9 +479,9 @@ impl MapRuntimeManager {
                 min_y,
                 max_y,
                 spawn_count,
-                db_queries,
+                cache_lookups,
                 rows_loaded,
-                "Loaded DB creature grid into MapRuntime"
+                "Loaded static creature grid into MapRuntime"
             );
         }
         Ok(())
@@ -504,6 +528,49 @@ impl MapRuntimeManager {
                 .fetch_add(1, Ordering::Relaxed);
             self.creature_grid_load_rows
                 .fetch_add(runtimes.len() as u64, Ordering::Relaxed);
+            map.lock().await.insert_loaded_creature_grid(grid, runtimes);
+        }
+    }
+
+    #[cfg(test)]
+    async fn ensure_static_creature_grids_loaded_for_test(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) {
+        self.creature_grid_load_ensure_calls
+            .fetch_add(1, Ordering::Relaxed);
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_creature_grids_for_area(position, radius)
+        };
+        if grids.is_empty() {
+            self.creature_grid_load_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        for grid in grids {
+            let lookup_started_at = Instant::now();
+            let spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+            crate::observability::record_static_world_cache_lookup(
+                crate::observability::StaticWorldCacheKind::Creature,
+                lookup_started_at.elapsed(),
+            );
+            let spawn_count = spawns.len() as u64;
+            self.creature_grid_load_db_queries
+                .fetch_add(1, Ordering::Relaxed);
+            self.creature_grid_load_rows
+                .fetch_add(spawn_count, Ordering::Relaxed);
+            let instantiation_started_at = Instant::now();
+            let runtimes = spawns.into_iter().map(DbCreatureRuntime::new).collect();
+            crate::observability::record_static_world_cache_instantiation(
+                crate::observability::StaticWorldCacheKind::Creature,
+                spawn_count,
+                instantiation_started_at.elapsed(),
+            );
             map.lock().await.insert_loaded_creature_grid(grid, runtimes);
         }
     }
@@ -593,7 +660,7 @@ impl MapRuntimeManager {
 
     async fn ensure_db_gameobject_grids_loaded(
         &self,
-        world_db_pool: &MySqlPool,
+        _world_db_pool: &MySqlPool,
         map_id: u32,
         position: WorldPosition,
         radius: f32,
@@ -606,16 +673,22 @@ impl MapRuntimeManager {
         };
         for grid in grids {
             let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
-            let spawns = wow_db::get_gameobject_spawns_in_rect(
-                world_db_pool,
-                map_id,
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-            )
-            .await?;
+            let lookup_started_at = Instant::now();
+            let spawns = self
+                .static_world_cache
+                .gameobject_spawns_for_grid(map_id, grid);
+            crate::observability::record_static_world_cache_lookup(
+                crate::observability::StaticWorldCacheKind::GameObject,
+                lookup_started_at.elapsed(),
+            );
+            let spawn_count = spawns.len() as u64;
+            let instantiation_started_at = Instant::now();
             let runtimes = spawns.into_iter().map(DbGameObjectRuntime::new).collect();
+            crate::observability::record_static_world_cache_instantiation(
+                crate::observability::StaticWorldCacheKind::GameObject,
+                spawn_count,
+                instantiation_started_at.elapsed(),
+            );
             map.lock()
                 .await
                 .insert_loaded_gameobject_grid(grid, runtimes);
@@ -627,7 +700,8 @@ impl MapRuntimeManager {
                 max_x,
                 min_y,
                 max_y,
-                "Loaded DB gameobject grid into MapRuntime"
+                spawn_count,
+                "Loaded static gameobject grid into MapRuntime"
             );
         }
         Ok(())
@@ -649,6 +723,42 @@ impl MapRuntimeManager {
         };
         for grid in grids {
             let runtimes = runtimes_for_grid(grid);
+            map.lock()
+                .await
+                .insert_loaded_gameobject_grid(grid, runtimes);
+        }
+    }
+
+    #[cfg(test)]
+    async fn ensure_static_gameobject_grids_loaded_for_test(
+        &self,
+        map_id: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let grids = {
+            map.lock()
+                .await
+                .unloaded_gameobject_grids_for_area(position, radius)
+        };
+        for grid in grids {
+            let lookup_started_at = Instant::now();
+            let spawns = self
+                .static_world_cache
+                .gameobject_spawns_for_grid(map_id, grid);
+            crate::observability::record_static_world_cache_lookup(
+                crate::observability::StaticWorldCacheKind::GameObject,
+                lookup_started_at.elapsed(),
+            );
+            let spawn_count = spawns.len() as u64;
+            let instantiation_started_at = Instant::now();
+            let runtimes = spawns.into_iter().map(DbGameObjectRuntime::new).collect();
+            crate::observability::record_static_world_cache_instantiation(
+                crate::observability::StaticWorldCacheKind::GameObject,
+                spawn_count,
+                instantiation_started_at.elapsed(),
+            );
             map.lock()
                 .await
                 .insert_loaded_gameobject_grid(grid, runtimes);

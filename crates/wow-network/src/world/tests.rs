@@ -4699,6 +4699,117 @@ fn map_runtime_lazy_gameobject_grid_tracks_loaded_grids_and_nearby_snapshots() {
 }
 
 #[tokio::test]
+async fn map_runtime_static_world_cache_loads_creatures_without_db_grid_query() {
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut in_grid = test_creature_spawn(6);
+    in_grid.guid = 44;
+    in_grid.position_x = center.x + 10.0;
+    in_grid.position_y = center.y;
+    let in_grid_guid = creature_spawn_guid(&in_grid).raw();
+
+    let other_grid_position = grid_center_position(GridCoord {
+        x: grid_coord_for_position(center).x + 1,
+        y: grid_coord_for_position(center).y,
+    });
+    let mut other_grid = test_creature_spawn(6);
+    other_grid.guid = 45;
+    other_grid.position_x = other_grid_position.x;
+    other_grid.position_y = other_grid_position.y;
+
+    let cache = StaticWorldSpawnCache::from_spawns(vec![in_grid, other_grid], Vec::new());
+    assert_eq!(
+        cache.counts(),
+        StaticWorldCacheCounts {
+            creature_spawns: 2,
+            creature_grids: 2,
+            gameobject_spawns: 0,
+            gameobject_grids: 0,
+        }
+    );
+    let maps = MapRuntimeManager::with_static_world_cache(cache);
+
+    maps.ensure_static_creature_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS)
+        .await;
+
+    assert_eq!(
+        maps.creature_grid_load_stats(),
+        CreatureGridLoadStats {
+            ensure_calls: 1,
+            cache_hits: 0,
+            db_queries: 1,
+            rows_loaded: 1,
+        }
+    );
+    let nearby = maps
+        .nearby_db_creature_snapshots(0, center, CREATURE_SPAWN_RADIUS_YARDS, 16)
+        .await;
+    assert_eq!(
+        nearby
+            .into_iter()
+            .map(|creature| creature.guid().raw())
+            .collect::<Vec<_>>(),
+        vec![in_grid_guid]
+    );
+
+    maps.ensure_static_creature_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS)
+        .await;
+    assert_eq!(
+        maps.creature_grid_load_stats(),
+        CreatureGridLoadStats {
+            ensure_calls: 2,
+            cache_hits: 1,
+            db_queries: 1,
+            rows_loaded: 1,
+        }
+    );
+}
+
+#[tokio::test]
+async fn map_runtime_static_world_cache_loads_gameobjects_without_db_grid_query() {
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut in_grid = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    in_grid.guid = 44;
+    in_grid.position_x = center.x + 10.0;
+    in_grid.position_y = center.y;
+    let in_grid_guid = gameobject_spawn_guid(&in_grid).raw();
+
+    let other_grid_position = grid_center_position(GridCoord {
+        x: grid_coord_for_position(center).x + 1,
+        y: grid_coord_for_position(center).y,
+    });
+    let mut other_grid = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    other_grid.guid = 45;
+    other_grid.position_x = other_grid_position.x;
+    other_grid.position_y = other_grid_position.y;
+
+    let cache = StaticWorldSpawnCache::from_spawns(Vec::new(), vec![in_grid, other_grid]);
+    assert_eq!(
+        cache.counts(),
+        StaticWorldCacheCounts {
+            creature_spawns: 0,
+            creature_grids: 0,
+            gameobject_spawns: 2,
+            gameobject_grids: 2,
+        }
+    );
+    let maps = MapRuntimeManager::with_static_world_cache(cache);
+
+    maps.ensure_static_gameobject_grids_loaded_for_test(0, center, CREATURE_SPAWN_RADIUS_YARDS)
+        .await;
+
+    let nearby = maps
+        .nearby_db_gameobject_snapshots(0, center, CREATURE_SPAWN_RADIUS_YARDS, 16)
+        .await;
+    assert_eq!(
+        nearby
+            .into_iter()
+            .map(|gameobject| gameobject.guid().raw())
+            .collect::<Vec<_>>(),
+        vec![in_grid_guid]
+    );
+}
+
+#[tokio::test]
 async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
     let maps = Arc::new(MapRuntimeManager::default());
     let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);

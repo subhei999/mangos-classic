@@ -7,6 +7,7 @@ include!("motion/motion_master.rs");
 include!("maps/world_data.rs");
 include!("maps/navigation.rs");
 include!("maps/grid.rs");
+include!("maps/static_world_cache.rs");
 include!("maps/map.rs");
 include!("maps/map_manager.rs");
 

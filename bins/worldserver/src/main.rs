@@ -128,7 +128,9 @@ async fn main() -> anyhow::Result<()> {
         world_pool,
         delete_options,
         config.data_dir,
-    );
+    )
+    .await
+    .context("Failed to initialize world runtime")?;
     info!("World server skeleton is ready. Waiting for connections...");
     server.run().await
 }

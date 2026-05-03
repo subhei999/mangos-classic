@@ -1273,6 +1273,9 @@ h2 {
   background: #0c0e10;
   display: block;
 }
+.solo-chart {
+  margin-top: 12px;
+}
 table {
   width: 100%;
   border-collapse: collapse;
@@ -1379,6 +1382,11 @@ tr:last-child td { border-bottom: 0; }
     </div>
   </section>
 
+  <section class="section solo-chart">
+    <h2>Loop Avg 10s</h2>
+    <canvas id="loopAvg10sChart" class="chart" width="900" height="220"></canvas>
+  </section>
+
   <section class="grid two">
     <div class="section">
       <h2>Map Phases</h2>
@@ -1410,6 +1418,7 @@ tr:last-child td { border-bottom: 0; }
 const state = {
   paused: false,
   history: [],
+  avg10sHistory: [],
   previous: new Map(),
   lastTickCount: 0
 };
@@ -1500,8 +1509,15 @@ function renderLoopChart(metrics) {
   const durationLatest = get(metrics, "wow_map_tick_duration_latest_milliseconds");
   const lagLatest = get(metrics, "wow_map_tick_lag_latest_milliseconds");
   if (ticks !== state.lastTickCount) {
-    state.history.push({ durationLatest, lagLatest });
+    const now = Date.now();
+    state.history.push({ at: now, durationLatest, lagLatest });
     state.history = state.history.slice(-120);
+    const recent = state.history.filter((point) => now - point.at <= 10000);
+    const durationAvg10s = recent.length
+      ? recent.reduce((sum, point) => sum + point.durationLatest, 0) / recent.length
+      : durationLatest;
+    state.avg10sHistory.push({ at: now, durationAvg10s });
+    state.avg10sHistory = state.avg10sHistory.slice(-120);
     state.lastTickCount = ticks;
   }
 
@@ -1529,6 +1545,36 @@ function renderLoopChart(metrics) {
   ctx.fillText(`latest duration ${fmt(durationLatest)} ms`, 12, 20);
   ctx.fillText(`latest lag ${fmt(lagLatest)} ms`, 12, 38);
   ctx.fillText(`scale ${fmt(max)} ms`, width - 105, 20);
+}
+
+function renderLoopAvg10sChart(metrics) {
+  const durationLatest = get(metrics, "wow_map_tick_duration_latest_milliseconds");
+  const fallbackAvg = get(metrics, "wow_map_tick_duration_average_milliseconds") || durationLatest;
+  const values = state.avg10sHistory.map((point) => point.durationAvg10s);
+  const latest = values.length ? values[values.length - 1] : fallbackAvg;
+  const scale = Math.max(1, ...values) * 1.15;
+
+  const canvas = $("loopAvg10sChart");
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0c0e10";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#303941";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 5; i++) {
+    const y = (height / 5) * i;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+  drawSeries(ctx, values, scale, width, height, "#f7c948");
+  ctx.fillStyle = "#97a3ad";
+  ctx.font = "12px Segoe UI, sans-serif";
+  ctx.fillText(`avg 10s ${fmt(latest)} ms`, 12, 20);
+  ctx.fillText(`scale ${fmt(scale)} ms`, width - 105, 20);
 }
 
 function drawSeries(ctx, values, max, width, height, color) {
@@ -1681,6 +1727,7 @@ async function refresh() {
     const metrics = parseMetrics(text);
     renderKpis(metrics);
     renderLoopChart(metrics);
+    renderLoopAvg10sChart(metrics);
     renderPhases(metrics);
     renderMaps(metrics);
     renderCache(metrics);
@@ -1703,6 +1750,7 @@ $("pauseButton").addEventListener("click", () => {
 });
 $("resetButton").addEventListener("click", async () => {
   state.history = [];
+  state.avg10sHistory = [];
   state.previous = new Map();
   try {
     await fetch("/dashboard/mark", { method: "POST", cache: "no-store" });
@@ -1880,6 +1928,8 @@ mod tests {
         assert!(rendered.contains("<title>Worldserver Monitor</title>"));
         assert!(rendered.contains("fetch(\"/metrics\""));
         assert!(rendered.contains("fetch(\"/dashboard/mark\""));
+        assert!(rendered.contains("Loop Avg 10s"));
+        assert!(rendered.contains("loopAvg10sChart"));
         assert!(rendered.contains("wow_map_tick_duration_average_milliseconds"));
         assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds"));
         assert!(rendered.contains("wow_static_world_cache_load_spawns"));

@@ -88,7 +88,8 @@ async fn handle_client(
         },
         ..WorldSessionState::default()
     };
-    let mut next_world_tick_at = Instant::now() + Duration::from_millis(WORLD_TICK_MILLIS);
+    let world_tick_interval = runtime_state.world_tick_interval;
+    let mut next_world_tick_at = Instant::now() + world_tick_interval;
 
     let session_result: anyhow::Result<()> = async {
         loop {
@@ -751,7 +752,11 @@ async fn handle_client(
                         )
                         .await?;
                         sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
-                        advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
+                        advance_world_tick_deadline(
+                            &mut next_world_tick_at,
+                            Instant::now(),
+                            world_tick_interval,
+                        );
                     }
                 }
                 Ok(Err(e)) => {
@@ -791,7 +796,11 @@ async fn handle_client(
                     )
                     .await?;
                     sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
-                    advance_world_tick_deadline(&mut next_world_tick_at, Instant::now());
+                    advance_world_tick_deadline(
+                        &mut next_world_tick_at,
+                        Instant::now(),
+                        world_tick_interval,
+                    );
                 }
             }
         }
@@ -875,10 +884,14 @@ fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Dur
     next_world_tick_at.saturating_duration_since(now)
 }
 
-fn advance_world_tick_deadline(next_world_tick_at: &mut Instant, now: Instant) {
-    let tick = Duration::from_millis(WORLD_TICK_MILLIS);
+fn advance_world_tick_deadline(
+    next_world_tick_at: &mut Instant,
+    now: Instant,
+    world_tick_interval: Duration,
+) {
+    debug_assert!(!world_tick_interval.is_zero());
     while *next_world_tick_at <= now {
-        *next_world_tick_at += tick;
+        *next_world_tick_at += world_tick_interval;
     }
 }
 

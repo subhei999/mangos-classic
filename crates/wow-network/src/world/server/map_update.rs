@@ -5,9 +5,9 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
         world_data_files: runtime_state.world_data_files.clone(),
         ..DbCreatureNavigationGuardrail::default()
     };
-    let mut ticker = tokio::time::interval(Duration::from_millis(WORLD_TICK_MILLIS));
+    let tick_budget = runtime_state.world_tick_interval;
+    let mut ticker = tokio::time::interval(tick_budget);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let tick_budget = Duration::from_millis(WORLD_TICK_MILLIS);
     let mut next_tick_at = Instant::now();
 
     loop {
@@ -18,7 +18,11 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
         let phase_started_at = Instant::now();
         match runtime_state
             .maps
-            .advance_all_active_db_creature_idle_motions(&navigation, now)
+            .advance_all_active_db_creature_idle_motions_with_interval(
+                &navigation,
+                now,
+                tick_budget,
+            )
             .await
         {
             Ok(tick) => {

@@ -56,7 +56,11 @@ impl WorldServer {
         world_db_pool: MySqlPool,
         delete_options: CharacterDeleteOptions,
         data_dir: impl Into<std::path::PathBuf>,
+        world_tick_interval: Duration,
     ) -> anyhow::Result<Self> {
+        if world_tick_interval.is_zero() {
+            anyhow::bail!("world tick interval must be greater than 0");
+        }
         let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
         let creature_cache_load_started_at = Instant::now();
         let mut creature_spawns = wow_db::get_all_static_creature_spawns(&world_db_pool).await?;
@@ -127,6 +131,7 @@ impl WorldServer {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
                 delete_options,
                 world_data_files,
+                world_tick_interval,
                 sessions: Arc::new(SessionRegistry::default()),
                 maps,
                 object_mgr: Arc::new(ObjectMgr::default()),

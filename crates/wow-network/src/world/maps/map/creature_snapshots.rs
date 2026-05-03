@@ -70,6 +70,7 @@ impl MapRuntime {
             })
             .collect();
         self.refresh_grid_state(grid_coord);
+        self.invalidate_idle_motion_start_schedule();
         loaded
     }
 
@@ -265,7 +266,7 @@ impl MapRuntime {
             || grid.cells.values().any(|cell| !cell.players.is_empty())
         {
             GridState::Active
-        } else if let Some(blocker) = self.creature_grid_unload_blocker(grid_coord) {
+        } else if let Some(blocker) = self.grid_unload_blocker(grid_coord) {
             GridState::UnloadBlocked(blocker)
         } else if self.loaded_creature_grids.contains(&grid_coord)
             || self.loaded_gameobject_grids.contains(&grid_coord)
@@ -280,7 +281,7 @@ impl MapRuntime {
         }
     }
 
-    fn creature_grid_unload_blocker(&self, grid_coord: GridCoord) -> Option<GridUnloadBlocker> {
+    fn grid_unload_blocker(&self, grid_coord: GridCoord) -> Option<GridUnloadBlocker> {
         let grid = self.grids.get(&grid_coord)?;
         let creature_guids = grid
             .cells
@@ -313,14 +314,83 @@ impl MapRuntime {
             }
             if creature.corpse_expires_at.is_some()
                 || creature.respawn_at.is_some()
-                || creature.next_random_move_at.is_some()
-                || creature.next_waypoint_move_at.is_some()
                 || !matches!(creature.motion, CreatureMotionState::Idle)
             {
                 return Some(GridUnloadBlocker::Timer);
             }
         }
 
+        let gameobject_guids = grid
+            .cells
+            .values()
+            .flat_map(|cell| cell.gameobjects.iter().copied())
+            .collect::<HashSet<_>>();
+        for guid in gameobject_guids {
+            if self.gameobject_loots.contains_key(&guid) {
+                return Some(GridUnloadBlocker::Loot);
+            }
+            if self
+                .gameobjects
+                .get(&guid)
+                .is_some_and(|gameobject| gameobject.consumed_until.is_some())
+            {
+                return Some(GridUnloadBlocker::Timer);
+            }
+        }
+
         None
+    }
+
+    fn unload_expired_idle_grids(&mut self, now: Instant) -> Vec<GridCoord> {
+        let mut grids = self
+            .grids
+            .iter()
+            .filter_map(|(grid_coord, grid)| {
+                (matches!(grid.state, GridState::Idle)
+                    && now
+                        >= grid.last_touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS)
+                    && !self.is_grid_near_player_interest(*grid_coord))
+                .then_some(*grid_coord)
+            })
+            .collect::<Vec<_>>();
+        grids.sort_by_key(|grid| (grid.x, grid.y));
+
+        let mut unloaded = Vec::new();
+        for grid_coord in grids {
+            if self.grid_unload_blocker(grid_coord).is_some() {
+                self.refresh_grid_state(grid_coord);
+                continue;
+            }
+            let Some(grid) = self.grids.remove(&grid_coord) else {
+                continue;
+            };
+            self.loaded_creature_grids.remove(&grid_coord);
+            self.loaded_gameobject_grids.remove(&grid_coord);
+            self.loaded_player_corpse_grids.remove(&grid_coord);
+            for cell in grid.cells.values() {
+                for creature_guid in &cell.creatures {
+                    self.creatures.remove(creature_guid);
+                }
+                for gameobject_guid in &cell.gameobjects {
+                    self.gameobjects.remove(gameobject_guid);
+                }
+                for corpse_guid in &cell.corpses {
+                    self.corpses.remove(corpse_guid);
+                }
+            }
+            unloaded.push(grid_coord);
+        }
+        if !unloaded.is_empty() {
+            self.invalidate_idle_motion_start_schedule();
+        }
+        unloaded
+    }
+
+    fn is_grid_near_player_interest(&self, grid_coord: GridCoord) -> bool {
+        self.players.values().any(|player| {
+            calculate_cell_area(player.position, CREATURE_SPAWN_RADIUS_YARDS)
+                .into_iter()
+                .any(|(near_grid, _)| near_grid == grid_coord)
+        })
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -71,9 +72,14 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr: std::net::SocketAddr = format!("{}:{}", config.bind_address, config.bind_port)
         .parse()
         .context("Invalid bind address")?;
+    let map_update_interval_ms = config.world.map_update_interval_ms;
+    if map_update_interval_ms == 0 {
+        anyhow::bail!("world.map_update_interval_ms / MapUpdateInterval must be greater than 0");
+    }
 
     info!(
         bind = %bind_addr,
+        map_update_interval_ms = map_update_interval_ms,
         observability_enabled = config.observability.enabled,
         observability_bind = %format!("{}:{}", config.observability.bind_address, config.observability.bind_port),
         login_database = %config.login_database.database,
@@ -128,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
         world_pool,
         delete_options,
         config.data_dir,
+        Duration::from_millis(u64::from(map_update_interval_ms)),
     )
     .await
     .context("Failed to initialize world runtime")?;

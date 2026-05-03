@@ -65,6 +65,7 @@ const GRID_SIZE_YARDS: f32 = 533.333_3;
 const CELL_COUNT_PER_GRID: f32 = MAX_NUMBER_OF_CELLS as f32;
 const CELL_SIZE_YARDS: f32 = GRID_SIZE_YARDS / CELL_COUNT_PER_GRID;
 const TOTAL_CELL_COUNT_PER_AXIS: u32 = MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_CELLS;
+const GRID_UNLOAD_DELAY_MILLIS: u64 = 60_000;
 
 fn grid_coord_for_position(position: WorldPosition) -> GridCoord {
     GridCoord {

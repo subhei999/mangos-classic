@@ -179,18 +179,26 @@ fn start_db_creature_random_motion_runtime(
         return None;
     }
     let start = creature.current_position;
-    let raw_destination = db_creature_random_destination(
+    let Some(raw_destination) = db_creature_random_destination(
         creature.home_position,
         radius,
         creature.guid().raw(),
         creature.next_spline_id,
-    )?;
-    let path_result = db_creature_path_to_destination(
+    ) else {
+        creature.next_random_move_at =
+            Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
+        return None;
+    };
+    let Some(path_result) = db_creature_path_to_destination(
         navigation,
         start,
         raw_destination,
         CreaturePathMode::Full,
-    )?;
+    ) else {
+        creature.next_random_move_at =
+            Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
+        return None;
+    };
     let path = path_result.points;
     let destination = *path.last()?;
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
@@ -244,12 +252,31 @@ fn start_db_creature_waypoint_motion_runtime(
         .waypoint_next_index
         .min(creature.spawn.waypoint_path.len().saturating_sub(1));
     let start = creature.current_position;
-    let (path, arrived_node) = db_creature_waypoint_buffered_path(
+    let node = creature.spawn.waypoint_path.get(node_index)?;
+    let node_wait_time = node.wait_time;
+    let raw_destination = WorldPosition::new(
+        creature.spawn.map,
+        node.position_x,
+        node.position_y,
+        node.position_z,
+        node.orientation.unwrap_or(start.orientation),
+    );
+    if distance_2d(start.x, start.y, raw_destination.x, raw_destination.y) <= f32::EPSILON {
+        creature.current_position = raw_destination;
+        advance_db_creature_waypoint_index(creature, node_index);
+        creature.next_waypoint_move_at = Some(now + Duration::from_millis(node_wait_time as u64));
+        return None;
+    }
+    let Some((path, arrived_node)) = db_creature_waypoint_buffered_path(
         navigation,
         creature,
         start,
         node_index,
-    )?;
+    ) else {
+        creature.next_waypoint_move_at =
+            Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
+        return None;
+    };
     let destination = *path.last()?;
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {

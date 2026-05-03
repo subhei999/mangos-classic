@@ -1,0 +1,63 @@
+# ============================================================================
+# CMaNGOS Rust -- World Server Configuration
+# ============================================================================
+# Runtime settings for the world server.
+# Override any value with environment variables prefixed WORLD_
+# (use double-underscore for nested keys, e.g. WORLD_WORLD__MAP_UPDATE_INTERVAL_MS).
+# ============================================================================
+
+# Address and port the world server listens on.
+bind_address = "0.0.0.0"
+bind_port = 8085
+
+# Path to extracted Classic data files: maps, vmaps, mmaps, and DBC-derived data.
+data_dir = "./data"
+
+# --------------------------------------------------------------------------
+# Realmd / auth database connection
+# --------------------------------------------------------------------------
+[login_database]
+host     = "127.0.0.1"
+port     = 3306
+user     = "mangos"
+password = "mangos"
+database = "realmd"
+
+# --------------------------------------------------------------------------
+# World database connection
+# --------------------------------------------------------------------------
+[world_database]
+host     = "127.0.0.1"
+port     = 3306
+user     = "mangos"
+password = "mangos"
+database = "mangos"
+
+# --------------------------------------------------------------------------
+# Character database connection
+# --------------------------------------------------------------------------
+[character_database]
+host     = "127.0.0.1"
+port     = 3306
+user     = "mangos"
+password = "mangos"
+database = "characters"
+
+# --------------------------------------------------------------------------
+# World runtime
+# --------------------------------------------------------------------------
+[world]
+# CMaNGOS reference: mangosd.conf MapUpdateInterval, in milliseconds.
+MapUpdateInterval = 100
+
+# CMaNGOS-compatible character delete behavior.
+char_delete_method = 0
+char_delete_min_level = 0
+
+# --------------------------------------------------------------------------
+# Observability
+# --------------------------------------------------------------------------
+[observability]
+enabled = true
+bind_address = "127.0.0.1"
+bind_port = 9091

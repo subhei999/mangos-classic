@@ -24,7 +24,7 @@ impl MapRuntime {
     ) -> Vec<DbGameObjectRuntime> {
         self.loaded_gameobject_grids.insert(grid_coord);
         self.grids.entry(grid_coord).or_default().last_touched = Instant::now();
-        gameobjects
+        let loaded = gameobjects
             .into_iter()
             .map(|gameobject| {
                 let guid = gameobject.guid().raw();
@@ -41,7 +41,9 @@ impl MapRuntime {
                     .insert(shared.guid().raw());
                 shared.clone()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        self.refresh_grid_state(grid_coord);
+        loaded
     }
 
     fn nearby_db_gameobject_snapshots(

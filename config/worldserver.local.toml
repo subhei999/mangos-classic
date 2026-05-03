@@ -26,6 +26,8 @@ password = "mangos"
 database = "characters"
 
 [world]
+# CMaNGOS reference: mangosd.conf MapUpdateInterval, in milliseconds.
+MapUpdateInterval = 100
 char_delete_method = 0
 char_delete_min_level = 0
 

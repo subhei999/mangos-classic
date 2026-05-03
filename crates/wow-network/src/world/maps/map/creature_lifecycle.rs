@@ -53,6 +53,7 @@ impl MapRuntime {
                 let old_position = creature.current_position;
                 creature.respawn();
                 let creature = creature.clone();
+                self.invalidate_idle_motion_start_schedule();
                 self.refresh_db_creature_spatial_index(
                     creature_guid.raw(),
                     old_position,

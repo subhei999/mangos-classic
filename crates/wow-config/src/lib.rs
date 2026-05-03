@@ -38,8 +38,12 @@ fn default_db_password() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorldConfig {
-    #[serde(default = "default_update_interval_ms")]
-    pub update_interval_ms: u32,
+    #[serde(
+        default = "default_map_update_interval_ms",
+        alias = "update_interval_ms",
+        alias = "MapUpdateInterval"
+    )]
+    pub map_update_interval_ms: u32,
     #[serde(default = "default_max_players")]
     pub max_players: u32,
     #[serde(default = "default_player_save_interval_secs")]
@@ -88,8 +92,8 @@ impl Default for ObservabilityConfig {
     }
 }
 
-fn default_update_interval_ms() -> u32 {
-    50
+fn default_map_update_interval_ms() -> u32 {
+    100
 }
 fn default_max_players() -> u32 {
     100
@@ -163,7 +167,7 @@ fn default_data_dir() -> String {
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            update_interval_ms: default_update_interval_ms(),
+            map_update_interval_ms: default_map_update_interval_ms(),
             max_players: default_max_players(),
             player_save_interval_secs: default_player_save_interval_secs(),
             visibility_distance: default_visibility_distance(),
@@ -231,13 +235,36 @@ database = "realmd"
     #[test]
     fn world_config_defaults() {
         let wc = WorldConfig::default();
-        assert_eq!(wc.update_interval_ms, 50);
+        assert_eq!(wc.map_update_interval_ms, 100);
         assert_eq!(wc.max_players, 100);
         assert_eq!(wc.player_save_interval_secs, 900);
         assert!((wc.visibility_distance - 90.0).abs() < f32::EPSILON);
         assert_eq!(wc.motd, "Welcome to CMaNGOS Rust!");
         assert_eq!(wc.char_delete_method, 0);
         assert_eq!(wc.char_delete_min_level, 0);
+    }
+
+    #[test]
+    fn world_config_accepts_cmangos_map_update_interval_name() {
+        let toml_content = r#"
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[login_database]
+database = "realmd"
+
+[world]
+MapUpdateInterval = 75
+"#;
+        let config: WorldServerConfig = Figment::new()
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("should parse CMaNGOS-shaped map update interval");
+
+        assert_eq!(config.world.map_update_interval_ms, 75);
     }
 
     #[test]

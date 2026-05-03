@@ -12,14 +12,28 @@ impl MapRuntime {
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
     ) -> anyhow::Result<DbCreatureIdleMotionTick> {
+        self.advance_active_db_creature_idle_motions_with_interval(
+            navigation,
+            now,
+            Duration::from_millis(WORLD_TICK_MILLIS),
+        )
+    }
+
+    fn advance_active_db_creature_idle_motions_with_interval(
+        &mut self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+        world_tick_interval: Duration,
+    ) -> anyhow::Result<DbCreatureIdleMotionTick> {
+        debug_assert!(!world_tick_interval.is_zero());
         if self.next_idle_motion_tick_at.is_some_and(|next| now < next) {
             return Ok(DbCreatureIdleMotionTick {
                 creatures: Vec::new(),
                 packets: Vec::new(),
             });
         }
-        self.next_idle_motion_tick_at =
-            Some(now + Duration::from_millis(WORLD_TICK_MILLIS));
+        self.next_idle_motion_tick_at = Some(now + world_tick_interval);
+        self.unload_expired_idle_grids(now);
 
         let mut creatures = Vec::new();
         for guid in self.db_creature_idle_motion_advancement_guids() {
@@ -31,50 +45,56 @@ impl MapRuntime {
         }
 
         let mut packets = Vec::new();
-        for guid in self
-            .db_creature_idle_motion_start_guids(now)
-            .into_iter()
-            .take(DB_CREATURE_IDLE_MOTION_STARTS_PER_TICK)
+        if self
+            .next_idle_motion_start_check_at
+            .is_none_or(|next| now >= next)
         {
-            let creature_guid = ObjectGuid::from_raw(guid);
-            let Some((creature, motion)) =
-                self.start_db_creature_idle_motion(navigation, creature_guid, now)
-            else {
-                continue;
-            };
-            let move_packet = OutboundWorldPacket {
-                opcode: SMSG_MONSTER_MOVE,
-                body: build_monster_move_walk_path_body(
-                    creature_guid,
-                    motion.start,
-                    &motion.path,
-                    motion.spline_id,
-                    motion.duration.as_millis().max(1) as u32,
-                )?,
-            };
-            let create_packet = OutboundWorldPacket {
-                opcode: SMSG_UPDATE_OBJECT,
-                body: build_update_object_body(&[build_db_creature_runtime_create_block(
-                    &creature,
-                )?]),
-            };
-            for player_guid in self.nearby_player_guids(
-                creature.current_position,
-                CREATURE_SPAWN_RADIUS_YARDS,
-                None,
-            ) {
-                if let Some(player) = self.players.get_mut(&player_guid) {
-                    if !player.visible_objects.contains(&creature_guid) {
-                        player.visible_objects.insert(creature_guid);
-                        packets.push((player.session_id, create_packet.clone()));
+            for guid in self.db_creature_idle_motion_start_guids(now) {
+                let creature_guid = ObjectGuid::from_raw(guid);
+                let Some((creature, motion)) =
+                    self.start_db_creature_idle_motion(navigation, creature_guid, now)
+                else {
+                    continue;
+                };
+                let move_packet = OutboundWorldPacket {
+                    opcode: SMSG_MONSTER_MOVE,
+                    body: build_monster_move_walk_path_body(
+                        creature_guid,
+                        motion.start,
+                        &motion.path,
+                        motion.spline_id,
+                        motion.duration.as_millis().max(1) as u32,
+                    )?,
+                };
+                let create_packet = OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_update_object_body(&[build_db_creature_runtime_create_block(
+                        &creature,
+                    )?]),
+                };
+                for player_guid in self.nearby_player_guids(
+                    creature.current_position,
+                    CREATURE_SPAWN_RADIUS_YARDS,
+                    None,
+                ) {
+                    if let Some(player) = self.players.get_mut(&player_guid) {
+                        if !player.visible_objects.contains(&creature_guid) {
+                            player.visible_objects.insert(creature_guid);
+                            packets.push((player.session_id, create_packet.clone()));
+                        }
+                        packets.push((player.session_id, move_packet.clone()));
                     }
-                    packets.push((player.session_id, move_packet.clone()));
                 }
+                creatures.push(creature);
             }
-            creatures.push(creature);
+            self.next_idle_motion_start_check_at = self.next_db_creature_idle_motion_start_at();
         }
 
         Ok(DbCreatureIdleMotionTick { creatures, packets })
+    }
+
+    fn invalidate_idle_motion_start_schedule(&mut self) {
+        self.next_idle_motion_start_check_at = None;
     }
 
     fn db_creatures_in_active_or_blocked_grids(&self) -> Vec<(u64, &DbCreatureRuntime)> {
@@ -85,7 +105,7 @@ impl MapRuntime {
                 self.grids.get(&grid).is_some_and(|grid| {
                     matches!(
                         grid.state,
-                        GridState::Active | GridState::Idle | GridState::UnloadBlocked(_)
+                        GridState::Active | GridState::UnloadBlocked(_)
                     )
                 })
             })
@@ -153,6 +173,23 @@ impl MapRuntime {
             .collect::<Vec<_>>();
         guids.sort_unstable();
         guids
+    }
+
+    fn next_db_creature_idle_motion_start_at(&self) -> Option<Instant> {
+        self.db_creatures_in_player_interest_radius()
+            .into_iter()
+            .filter(|(guid, creature)| {
+                creature.is_alive()
+                    && !self.active_creature_combats.contains_key(guid)
+                    && matches!(creature.motion, CreatureMotionState::Idle)
+            })
+            .filter_map(|(_, creature)| {
+                [creature.next_random_move_at, creature.next_waypoint_move_at]
+                    .into_iter()
+                    .flatten()
+                    .min()
+            })
+            .min()
     }
 
     fn advance_db_creature_motion(

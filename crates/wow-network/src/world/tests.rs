@@ -9709,6 +9709,85 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     session.active_character = None;
 }
 
+#[tokio::test]
+async fn killing_blow_target_clear_preserves_weapon_swing_cooldown_for_retarget() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+
+    let killed_target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let next_target = ObjectGuid::new(HighGuid::Unit, 6, 78);
+    let now = Instant::now();
+    let weapon_delay = Duration::from_millis(1600);
+    let next_swing = now + weapon_delay;
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: character_guid,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+
+    maps.set_player_auto_attack(map_id, character_guid, Some(killed_target), Some(now))
+        .await;
+    maps.set_player_auto_attack(map_id, character_guid, None, Some(next_swing))
+        .await;
+
+    let retargeted_next = scheduled_player_auto_attack_next_swing(
+        shared_world,
+        &session,
+        next_target,
+        now + Duration::from_millis(100),
+        weapon_delay,
+    )
+    .await;
+    assert_eq!(
+        retargeted_next, next_swing,
+        "a killing blow should clear the dead target, not the player's weapon cooldown"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            next_swing - Duration::from_millis(1)
+        )
+        .await,
+        None
+    );
+    maps.set_player_auto_attack(
+        map_id,
+        character_guid,
+        Some(next_target),
+        Some(retargeted_next),
+    )
+    .await;
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, next_swing)
+            .await,
+        Some(next_target)
+    );
+}
+
 #[test]
 fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
     let navigation = DbCreatureNavigationGuardrail {

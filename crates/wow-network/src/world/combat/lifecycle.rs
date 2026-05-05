@@ -446,6 +446,8 @@ async fn send_db_creature_swing(
         melee_outcome.total_damage = melee_outcome.total_damage.saturating_add(queued.bonus_damage);
     }
     let requested_damage = melee_outcome.total_damage;
+    let swing_time = Instant::now();
+    let next_swing = player_main_hand_next_swing_at(swing_time, &combat_stats);
     let corpse_loot = if requested_damage >= target_creature.health {
         Some(
             prepare_db_creature_corpse_loot(
@@ -476,7 +478,7 @@ async fn send_db_creature_swing(
                 },
                 spell_id: queued_spell.map(|queued| queued.spell_id),
                 suppress_attacker_state: queued_spell.is_some(),
-                now: Instant::now(),
+                now: swing_time,
                 now_epoch_secs: current_unix_epoch_secs(),
                 exclude_character_guid: Some(character_snapshot.guid),
                 corpse_loot,
@@ -521,14 +523,13 @@ async fn send_db_creature_swing(
     }
     mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if is_dead {
-        mirror_session_player_auto_attack(session, None, None);
+        mirror_session_player_auto_attack(session, None, Some(next_swing));
         clear_db_creature_combat_if_attacker(session, target);
         shared_world
             .maps
-            .set_player_auto_attack(map_id, character_snapshot.guid, None, None)
+            .set_player_auto_attack(map_id, character_snapshot.guid, None, Some(next_swing))
             .await;
     } else {
-        let next_swing = player_main_hand_next_swing_at(Instant::now(), &combat_stats);
         mirror_session_player_next_swing_at(session, Some(next_swing));
         shared_world
             .maps
@@ -961,11 +962,20 @@ async fn finalize_db_creature_death(
         )
         .await?;
     }
-    mirror_session_player_auto_attack(session, None, None);
-    if let Some(character) = session.active_character.as_ref() {
+    if let Some((map_id, character_guid)) = session
+        .active_character
+        .as_ref()
+        .map(|character| (character.position.map_id, character.guid))
+    {
+        let next_swing_at = shared_world
+            .maps
+            .player_runtime_snapshot(map_id, character_guid)
+            .await
+            .and_then(|snapshot| snapshot.active_combat_next_swing_at);
+        mirror_session_player_auto_attack(session, None, next_swing_at);
         shared_world
             .maps
-            .set_player_auto_attack(character.position.map_id, character.guid, None, None)
+            .set_player_auto_attack(map_id, character_guid, None, next_swing_at)
             .await;
     }
     clear_db_creature_combat_if_attacker(session, killed);

@@ -155,6 +155,14 @@ fn build_item_query_single_response(
     body
 }
 
+fn build_item_name_query_response(template: &wow_db::ItemTemplateQuery) -> Vec<u8> {
+    let mut body = Vec::with_capacity(9 + template.name.len());
+    write_u32(&mut body, template.entry);
+    write_c_string(&mut body, &template.name);
+    write_u32(&mut body, template.inventory_type);
+    body
+}
+
 fn item_query_subclass(template: &wow_db::ItemTemplateQuery) -> u32 {
     if template.class == 0 {
         0

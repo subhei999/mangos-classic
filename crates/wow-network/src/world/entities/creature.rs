@@ -34,6 +34,26 @@ struct Creature {
     loot_money: u32,
     loot_money_available: bool,
     loot_items: Vec<CreatureLoot>,
+    loot_items_generated: bool,
+    loot_roll_released_slots: HashSet<u8>,
+    loot_current_looter_pass_slots: HashSet<u8>,
+    loot_owner: Option<CreatureLootOwner>,
+    loot_current_looter: Option<u32>,
+    loot_allowed_players: HashSet<u32>,
+    loot_method: Option<CreatureLootMethod>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreatureLootOwner {
+    Player(u32),
+    Party(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreatureLootMethod {
+    method: u8,
+    threshold: u8,
+    master_looter: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +69,9 @@ struct CreatureLoot {
     item: u32,
     count: u32,
     display_id: u32,
+    quality: u8,
+    free_for_all: bool,
+    quest_drop: bool,
 }
 
 // CMaNGOS reference: src/game/Entities/Creature.* DB creature update builders.

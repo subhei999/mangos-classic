@@ -72,6 +72,12 @@ impl WorldServer {
         let gameobject_cache_load_started_at = Instant::now();
         let gameobject_spawns = wow_db::get_all_static_gameobject_spawns(&world_db_pool).await?;
         let gameobject_cache_load_duration = gameobject_cache_load_started_at.elapsed();
+        let next_gm_creature_guid = creature_spawns
+            .iter()
+            .map(|spawn| spawn.guid as u64)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         let static_world_cache = Arc::new(StaticWorldSpawnCache::from_spawns(
             creature_spawns,
             gameobject_spawns,
@@ -89,10 +95,13 @@ impl WorldServer {
             static_cache_counts.gameobject_grids,
             gameobject_cache_load_duration,
         );
-        let maps = Arc::new(MapRuntimeManager::with_world_data_files_and_static_cache(
-            &world_data_files,
-            static_world_cache,
-        ));
+        let maps = Arc::new(
+            MapRuntimeManager::with_world_data_files_static_cache_and_next_gm_guid(
+                &world_data_files,
+                static_world_cache,
+                next_gm_creature_guid,
+            ),
+        );
         info!(
             data_dir = %world_data_files.data_dir.display(),
             maps = world_data_files.maps_available,
@@ -142,6 +151,7 @@ impl WorldServer {
                 world_tick_interval,
                 sessions: Arc::new(SessionRegistry::default()),
                 maps,
+                parties: Arc::new(PartyManager::default()),
                 object_mgr: Arc::new(ObjectMgr::default()),
             },
         })

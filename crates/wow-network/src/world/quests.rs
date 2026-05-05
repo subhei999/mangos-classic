@@ -2120,7 +2120,14 @@ fn start_quest_dialog_status(can_take: bool, can_see: bool) -> Option<u32> {
 }
 
 fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<usize> {
-    active_quest_statuses_sorted(&session.quest_statuses)
+    quest_log_slot_for_statuses(&session.quest_statuses, quest)
+}
+
+fn quest_log_slot_for_statuses(
+    statuses: &HashMap<u32, CharacterQuestStatus>,
+    quest: u32,
+) -> Option<usize> {
+    active_quest_statuses_sorted(statuses)
         .into_iter()
         .take(MAX_QUEST_LOG_SIZE)
         .position(|status| status.quest == quest)

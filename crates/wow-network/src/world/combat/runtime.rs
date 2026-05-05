@@ -26,6 +26,13 @@
             loot_money: 0,
             loot_money_available: false,
             loot_items: Vec::new(),
+            loot_items_generated: false,
+            loot_roll_released_slots: HashSet::new(),
+            loot_current_looter_pass_slots: HashSet::new(),
+            loot_owner: None,
+            loot_current_looter: None,
+            loot_allowed_players: HashSet::new(),
+            loot_method: None,
         }
     }
 
@@ -70,6 +77,13 @@
                 creature.loot_money = 0;
                 creature.loot_money_available = false;
                 creature.loot_items.clear();
+                creature.loot_items_generated = false;
+                creature.loot_roll_released_slots.clear();
+                creature.loot_current_looter_pass_slots.clear();
+                creature.loot_owner = None;
+                creature.loot_current_looter = None;
+                creature.loot_allowed_players.clear();
+                creature.loot_method = None;
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_waypoint_move_at = None;
@@ -174,10 +188,82 @@
     }
 
     fn dynamic_flags(&self) -> u32 {
+        self.dynamic_flags_for_player(None)
+    }
+
+    fn dynamic_flags_for_player(&self, character_guid: Option<u32>) -> u32 {
         if self.life_state == DbCreatureLifeState::Corpse && self.lootable {
-            UNIT_DYNFLAG_LOOTABLE
+            if self.can_loot_for_player(character_guid) {
+                UNIT_DYNFLAG_LOOTABLE
+            } else {
+                0
+            }
         } else {
             self.spawn.template.dynamic_flags
+        }
+    }
+
+    fn can_loot_for_player(&self, character_guid: Option<u32>) -> bool {
+        if self.life_state != DbCreatureLifeState::Corpse || !self.lootable {
+            return false;
+        }
+        if !self.loot_items_generated {
+            return true;
+        }
+        let Some(character_guid) = character_guid else {
+            return self.loot_money_available || !self.loot_items.is_empty();
+        };
+        if !self.loot_owner_allows_character(character_guid) {
+            return false;
+        }
+        if self.loot_money_available {
+            return true;
+        }
+        self.loot_items
+            .iter()
+            .any(|loot| self.can_loot_item_for_player(character_guid, loot))
+    }
+
+    fn loot_owner_allows_character(&self, character_guid: u32) -> bool {
+        match self.loot_owner {
+            None => true,
+            Some(CreatureLootOwner::Player(owner)) => owner == character_guid,
+            Some(CreatureLootOwner::Party(_)) => {
+                self.loot_allowed_players.is_empty()
+                    || self.loot_allowed_players.contains(&character_guid)
+            }
+        }
+    }
+
+    fn can_loot_item_for_player(&self, character_guid: u32, loot: &DbCreatureLootRuntime) -> bool {
+        if loot.free_for_all {
+            return true;
+        }
+        let Some(loot_method) = self.loot_method else {
+            return true;
+        };
+        let under_threshold = loot.quest_drop || loot.quality < loot_method.threshold;
+        match loot_method.method {
+            0 => true,
+            1 | 4 => {
+                !under_threshold
+                    || self.loot_current_looter == Some(character_guid)
+                    || self.loot_current_looter_pass_slots.contains(&loot.slot)
+                    || self.loot_roll_released_slots.contains(&loot.slot)
+            }
+            3 => {
+                under_threshold
+                    && (self.loot_current_looter == Some(character_guid)
+                        || self.loot_current_looter_pass_slots.contains(&loot.slot))
+                    || self.loot_roll_released_slots.contains(&loot.slot)
+            }
+            2 if under_threshold => {
+                self.loot_current_looter == Some(character_guid)
+                    || self.loot_current_looter_pass_slots.contains(&loot.slot)
+                    || self.loot_roll_released_slots.contains(&loot.slot)
+            }
+            2 => true,
+            _ => true,
         }
     }
 
@@ -194,6 +280,12 @@
         self.loot_money = self.roll_loot_money();
         self.loot_money_available = self.loot_money > 0;
         self.loot_items.clear();
+        self.loot_items_generated = false;
+        self.loot_roll_released_slots.clear();
+        self.loot_current_looter_pass_slots.clear();
+        self.loot_current_looter = None;
+        self.loot_allowed_players.clear();
+        self.loot_method = None;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
         self.next_waypoint_move_at = None;
@@ -232,6 +324,13 @@
         self.loot_money_available = false;
         self.loot_money = 0;
         self.loot_items.clear();
+        self.loot_items_generated = false;
+        self.loot_roll_released_slots.clear();
+        self.loot_current_looter_pass_slots.clear();
+        self.loot_owner = None;
+        self.loot_current_looter = None;
+        self.loot_allowed_players.clear();
+        self.loot_method = None;
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
@@ -258,6 +357,13 @@
         self.loot_money_available = false;
         self.loot_money = 0;
         self.loot_items.clear();
+        self.loot_items_generated = false;
+        self.loot_roll_released_slots.clear();
+        self.loot_current_looter_pass_slots.clear();
+        self.loot_owner = None;
+        self.loot_current_looter = None;
+        self.loot_allowed_players.clear();
+        self.loot_method = None;
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = Self::initial_random_move_at(&self.spawn);

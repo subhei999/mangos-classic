@@ -6,6 +6,7 @@ struct MapRuntimeManager {
     creature_display_scales: HashMap<u32, f32>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
     faction_templates: FactionTemplateStore,
+    next_gm_creature_guid: AtomicU64,
     creature_grid_load_ensure_calls: AtomicU64,
     creature_grid_load_cache_hits: AtomicU64,
     creature_grid_load_db_queries: AtomicU64,
@@ -59,6 +60,18 @@ impl MapRuntimeManager {
         world_data_files: &WorldDataFiles,
         static_world_cache: Arc<StaticWorldSpawnCache>,
     ) -> Self {
+        Self::with_world_data_files_static_cache_and_next_gm_guid(
+            world_data_files,
+            static_world_cache,
+            1,
+        )
+    }
+
+    fn with_world_data_files_static_cache_and_next_gm_guid(
+        world_data_files: &WorldDataFiles,
+        static_world_cache: Arc<StaticWorldSpawnCache>,
+        next_gm_creature_guid: u64,
+    ) -> Self {
         let world_data_files = Arc::new(world_data_files.clone());
         Self {
             static_world_cache,
@@ -66,6 +79,7 @@ impl MapRuntimeManager {
             creature_display_scales: world_data_files.creature_display_scales.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
             faction_templates: world_data_files.faction_templates.clone(),
+            next_gm_creature_guid: AtomicU64::new(next_gm_creature_guid.max(1)),
             ..Self::default()
         }
     }
@@ -135,6 +149,60 @@ impl MapRuntimeManager {
         packets
     }
 
+    fn allocate_gm_creature_guid(&self) -> u32 {
+        loop {
+            let stored = self.next_gm_creature_guid.load(Ordering::Relaxed);
+            let current = stored.clamp(1, 0x00FF_FFFF);
+            let next = current.saturating_add(1).min(0x00FF_FFFF);
+            if self
+                .next_gm_creature_guid
+                .compare_exchange(stored, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return current as u32;
+            }
+        }
+    }
+
+    async fn spawn_gm_db_creature(
+        &self,
+        mut spawn: CreatureSpawnQuery,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<(DbCreatureRuntime, Vec<(SessionId, OutboundWorldPacket)>)> {
+        spawn.guid = self.allocate_gm_creature_guid();
+        apply_creature_display_scale_fallbacks(
+            std::slice::from_mut(&mut spawn),
+            &self.creature_display_scales,
+        );
+        let creature = DbCreatureRuntime::new(spawn);
+        let body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+        let map = self.get_or_create_map(creature.current_position.map_id, 0).await;
+        let packets = map
+            .lock()
+            .await
+            .spawn_db_creature_and_broadcast(creature.clone(), exclude_character_guid, body);
+        Ok((creature, packets))
+    }
+
+    async fn delete_db_creature_runtime(
+        &self,
+        map_id: u32,
+        creature_guid: Option<ObjectGuid>,
+        db_guid: Option<u32>,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureDeleteEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.delete_db_creature_runtime(
+            creature_guid,
+            db_guid,
+            exclude_character_guid,
+        )?;
+        Ok(event)
+    }
+
     async fn update_player_visible_equipment(
         &self,
         map_id: u32,
@@ -194,6 +262,36 @@ impl MapRuntimeManager {
         let map = map?;
         let snapshot = map.lock().await.player_runtime_snapshot(character_guid);
         snapshot
+    }
+
+    async fn update_player_reward_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        reward: PlayerRewardRuntimeUpdate,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .update_player_reward_state(character_guid, reward);
+    }
+
+    async fn update_player_inventory(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        inventory: Vec<CharacterInventoryItem>,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .update_player_inventory(character_guid, inventory);
     }
 
     async fn player_visible_db_creature_guids(&self, map_id: u32, character_guid: u32) -> Vec<u64> {
@@ -1121,13 +1219,49 @@ impl MapRuntimeManager {
         map_id: u32,
         creature_guid: u64,
         character_guid: u32,
+        access_owner: CreatureLootOwner,
+        current_looter: Option<u32>,
         loot_items: Vec<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
         let creature = map
             .lock()
             .await
-            .open_db_creature_loot(creature_guid, character_guid, loot_items);
+            .open_db_creature_loot(
+                creature_guid,
+                character_guid,
+                access_owner,
+                current_looter,
+                loot_items,
+            );
+        creature
+    }
+
+    async fn set_db_creature_loot_owner(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        owner: CreatureLootOwner,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map
+            .lock()
+            .await
+            .set_db_creature_loot_owner(creature_guid, owner);
+        creature
+    }
+
+    async fn force_db_creature_loot_owner(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        owner: CreatureLootOwner,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map
+            .lock()
+            .await
+            .force_db_creature_loot_owner(creature_guid, owner);
         creature
     }
 
@@ -1143,6 +1277,21 @@ impl MapRuntimeManager {
             .await
             .db_creature_loot_guid_for_character(character_guid);
         creature_guid
+    }
+
+    async fn db_creature_looting_characters(
+        &self,
+        map_id: u32,
+        creature_guid: u64,
+    ) -> Vec<u32> {
+        let Some(map) = self.maps.lock().await.get(&(map_id, 0)).cloned() else {
+            return Vec::new();
+        };
+        let characters = map
+            .lock()
+            .await
+            .db_creature_looting_characters(creature_guid);
+        characters
     }
 
     async fn db_creature_needs_loot_item(&self, map_id: u32, creature_guid: u64) -> Option<bool> {
@@ -1176,6 +1325,20 @@ impl MapRuntimeManager {
         loot
     }
 
+    async fn take_db_creature_loot_item_by_guid(
+        &self,
+        map_id: u32,
+        creature_guid: u64,
+        loot_slot: u8,
+    ) -> Option<(u8, DbCreatureLootRuntime, DbCreatureRuntime)> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let loot = map
+            .lock()
+            .await
+            .take_db_creature_loot_item_by_guid(creature_guid, loot_slot);
+        loot
+    }
+
     async fn restore_db_creature_loot_item(
         &self,
         map_id: u32,
@@ -1188,6 +1351,34 @@ impl MapRuntimeManager {
             .lock()
             .await
             .restore_db_creature_loot_item(creature_guid, loot_slot, loot);
+        creature
+    }
+
+    async fn release_db_creature_loot_roll_item(
+        &self,
+        map_id: u32,
+        creature_guid: u64,
+        loot_slot: u8,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map
+            .lock()
+            .await
+            .release_db_creature_loot_roll_item(creature_guid, loot_slot);
+        creature
+    }
+
+    async fn release_db_creature_current_looter_pass_item(
+        &self,
+        map_id: u32,
+        creature_guid: u64,
+        loot_slot: u8,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let creature = map
+            .lock()
+            .await
+            .release_db_creature_current_looter_pass_item(creature_guid, loot_slot);
         creature
     }
 

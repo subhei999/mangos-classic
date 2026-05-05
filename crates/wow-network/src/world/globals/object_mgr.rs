@@ -16,6 +16,8 @@ struct ObjectMgr {
     exclusive_group_quests: tokio::sync::Mutex<std::collections::HashMap<i32, Vec<u32>>>,
     creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
+    reference_loot_templates:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     gameobject_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     spell_templates:
@@ -280,6 +282,24 @@ impl ObjectMgr {
             .loot_template_db_loads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         cache.insert(loot_entry, rows.clone());
+        Ok(rows)
+    }
+
+    async fn reference_loot_items(
+        &self,
+        world_db_pool: &MySqlPool,
+        reference_entry: u32,
+    ) -> anyhow::Result<Vec<wow_db::CreatureLootQuery>> {
+        let mut cache = self.reference_loot_templates.lock().await;
+        if let Some(rows) = cache.get(&reference_entry) {
+            return Ok(rows.clone());
+        }
+
+        let rows = wow_db::get_reference_loot_items(world_db_pool, reference_entry).await?;
+        self.stats
+            .loot_template_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cache.insert(reference_entry, rows.clone());
         Ok(rows)
     }
 

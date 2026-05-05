@@ -149,6 +149,10 @@ impl CreatureLootQuery {
     pub fn is_quest_drop(&self) -> bool {
         self.chance_or_quest_chance < 0.0
     }
+
+    pub fn is_reference(&self) -> bool {
+        self.min_count == 0 && self.display_id == 0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -566,18 +570,52 @@ pub async fn get_creature_loot_items(
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT creature_loot_template.item, \
                 creature_loot_template.groupid AS group_id, \
-                CAST(GREATEST(creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
-                CAST(GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
-                item_template.displayid AS display_id, \
+                CAST(CASE WHEN creature_loot_template.mincountOrRef < 0 THEN 0 \
+                     ELSE GREATEST(creature_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS min_count, \
+                CAST(CASE WHEN creature_loot_template.mincountOrRef < 0 THEN GREATEST(creature_loot_template.maxcount, 1) \
+                     ELSE GREATEST(creature_loot_template.maxcount, creature_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS max_count, \
+                CAST(COALESCE(item_template.displayid, 0) AS UNSIGNED) AS display_id, \
                 creature_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
          FROM creature_loot_template \
-         JOIN item_template ON creature_loot_template.item = item_template.entry \
+         LEFT JOIN item_template \
+           ON creature_loot_template.item = item_template.entry \
+          AND creature_loot_template.mincountOrRef > 0 \
          WHERE creature_loot_template.entry = ? \
            AND creature_loot_template.condition_id = 0 \
-           AND creature_loot_template.mincountOrRef > 0 \
+           AND (creature_loot_template.mincountOrRef < 0 OR item_template.entry IS NOT NULL) \
          ORDER BY creature_loot_template.groupid, creature_loot_template.item",
     )
     .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
+}
+
+pub async fn get_reference_loot_items(
+    pool: &MySqlPool,
+    reference_entry: u32,
+) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("reference_loot_load");
+    let rows = sqlx::query_as::<_, CreatureLootRow>(
+        "SELECT reference_loot_template.item, \
+                reference_loot_template.groupid AS group_id, \
+                CAST(CASE WHEN reference_loot_template.mincountOrRef < 0 THEN 0 \
+                     ELSE GREATEST(reference_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS min_count, \
+                CAST(CASE WHEN reference_loot_template.mincountOrRef < 0 THEN GREATEST(reference_loot_template.maxcount, 1) \
+                     ELSE GREATEST(reference_loot_template.maxcount, reference_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS max_count, \
+                CAST(COALESCE(item_template.displayid, 0) AS UNSIGNED) AS display_id, \
+                reference_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
+         FROM reference_loot_template \
+         LEFT JOIN item_template \
+           ON reference_loot_template.item = item_template.entry \
+          AND reference_loot_template.mincountOrRef > 0 \
+         WHERE reference_loot_template.entry = ? \
+           AND reference_loot_template.condition_id = 0 \
+           AND (reference_loot_template.mincountOrRef < 0 OR item_template.entry IS NOT NULL) \
+         ORDER BY reference_loot_template.groupid, reference_loot_template.item",
+    )
+    .bind(reference_entry)
     .fetch_all(pool)
     .await?;
 

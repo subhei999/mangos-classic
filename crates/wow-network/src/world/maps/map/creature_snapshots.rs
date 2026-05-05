@@ -28,6 +28,101 @@ impl MapRuntime {
             .collect()
     }
 
+    fn spawn_db_creature_and_broadcast(
+        &mut self,
+        creature: DbCreatureRuntime,
+        exclude_character_guid: Option<u32>,
+        create_body: Vec<u8>,
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        let position = creature.current_position;
+        self.share_db_creature_snapshots(vec![creature]);
+        self.refresh_grid_state(grid_coord_for_position(position));
+        self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
+            .into_iter()
+            .filter_map(|player_guid| {
+                self.players.get(&player_guid).map(|player| {
+                    (
+                        player.session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: create_body.clone(),
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn delete_db_creature_runtime(
+        &mut self,
+        creature_guid: Option<ObjectGuid>,
+        db_guid: Option<u32>,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureDeleteEvent>> {
+        let raw_guid = if let Some(creature_guid) = creature_guid {
+            creature_guid.raw()
+        } else if let Some(db_guid) = db_guid {
+            let Some(raw_guid) = self
+                .creatures
+                .iter()
+                .find_map(|(raw_guid, creature)| (creature.spawn.guid == db_guid).then_some(*raw_guid))
+            else {
+                return Ok(None);
+            };
+            raw_guid
+        } else {
+            return Ok(None);
+        };
+        let Some(creature) = self.creatures.remove(&raw_guid) else {
+            return Ok(None);
+        };
+        let guid = creature.guid();
+        let position = creature.current_position;
+        let grid_coord = grid_coord_for_position(position);
+        let cell_coord = cell_coord_for_position(position);
+        if let Some(grid) = self.grids.get_mut(&grid_coord) {
+            if let Some(cell) = grid.cells.get_mut(&cell_coord) {
+                cell.creatures.remove(&raw_guid);
+            }
+            grid.last_touched = Instant::now();
+        }
+        self.active_creature_combats.remove(&raw_guid);
+        self.creature_combat_leash.remove(&raw_guid);
+        self.creature_threats.remove(&raw_guid);
+        self.creature_looting_by_character
+            .retain(|_, looting_guid| *looting_guid != raw_guid);
+        for player in self.players.values_mut() {
+            player.visible_objects.remove(&guid);
+            if player.selected_target == Some(guid) {
+                player.selected_target = None;
+            }
+            if player.active_combat_target == Some(guid) {
+                player.active_combat_target = None;
+                player.active_combat_next_swing_at = None;
+            }
+        }
+        self.refresh_grid_state(grid_coord);
+        self.invalidate_idle_motion_start_schedule();
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_DESTROY_OBJECT,
+            body: build_destroy_guid_body(guid),
+        };
+        let observer_packets = self
+            .nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
+            .into_iter()
+            .filter_map(|player_guid| {
+                self.players
+                    .get(&player_guid)
+                    .map(|player| (player.session_id, packet.clone()))
+            })
+            .collect();
+        Ok(Some(DbCreatureDeleteEvent {
+            creature,
+            direct_packet: packet,
+            observer_packets,
+        }))
+    }
+
     fn unloaded_creature_grids_for_area(
         &self,
         position: WorldPosition,

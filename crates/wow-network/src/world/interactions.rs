@@ -1,4 +1,5 @@
 include!("chat.rs");
+include!("gm_commands.rs");
 include!("spells.rs");
 include!("inventory.rs");
 include!("creatures.rs");

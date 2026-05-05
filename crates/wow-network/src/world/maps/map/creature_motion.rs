@@ -358,6 +358,9 @@ impl MapRuntime {
         creature.loot_money = 0;
         creature.loot_money_available = false;
         creature.loot_items.clear();
+        creature.loot_roll_released_slots.clear();
+        creature.loot_current_looter_pass_slots.clear();
+        creature.loot_owner = None;
         self.clear_db_creature_combat(creature_guid);
         self.creatures.get(&creature_guid.raw()).cloned()
     }

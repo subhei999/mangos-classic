@@ -1,8 +1,7 @@
 ﻿async fn handle_attack_swing(
     stream: &mut WorldPacketSink,
-    _character_db_pool: &MySqlPool,
-    _world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
+    parties: &PartyManager,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -64,6 +63,11 @@
 
     let now = Instant::now();
     if let Some(character) = session.active_character.as_ref() {
+        let loot_owner = parties.loot_owner_for(character.guid).await;
+        shared_world
+            .maps
+            .set_db_creature_loot_owner(character.position.map_id, target, loot_owner)
+            .await;
         let next_swing = scheduled_player_auto_attack_next_swing(
             shared_world,
             session,

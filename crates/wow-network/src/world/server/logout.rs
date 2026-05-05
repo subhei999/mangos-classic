@@ -75,7 +75,7 @@ async fn unregister_active_character(
 ) {
     if let Some(character) = session.active_character.take() {
         online_characters.lock().await.remove(&character.guid);
-        sessions.set_character_guid(session_id, None).await;
+        sessions.set_active_character(session_id, None, None).await;
         let packets = maps
             .remove_player(character.position.map_id, character.guid)
             .await;

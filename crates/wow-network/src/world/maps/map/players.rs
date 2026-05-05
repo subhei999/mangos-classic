@@ -422,6 +422,9 @@ impl MapRuntime {
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
         if let Some(character) = session.active_character.as_ref() {
+            player.level = character.level;
+            player.xp = character.xp;
+            player.flags = session.player_flags;
             player.position = character.position;
             player.movement_flags = character.movement_flags;
             player.client_time = character.client_time;
@@ -442,8 +445,15 @@ impl MapRuntime {
         let player = self.players.get(&character_guid)?;
         Some(PlayerRuntimeSnapshot {
             position: player.position,
+            flags: player.flags,
+            level: player.level,
+            race: player.race,
+            class: player.class,
+            xp: player.xp,
             health: player.health,
+            max_health: player.max_health,
             power1: player.power1,
+            max_power1: player.max_power1,
             power2: player.power2,
             active_spells: player.active_spells.clone(),
             inventory: player.inventory.clone(),
@@ -468,6 +478,35 @@ impl MapRuntime {
             .collect::<Vec<_>>();
         guids.sort_unstable();
         guids
+    }
+
+    fn update_player_reward_state(
+        &mut self,
+        character_guid: u32,
+        reward: PlayerRewardRuntimeUpdate,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        player.level = reward.level;
+        player.xp = reward.xp;
+        player.max_health = reward.max_health.max(1);
+        player.max_power1 = reward.max_power1;
+        player.health = reward.health.min(player.max_health);
+        player.power1 = reward.power1.min(player.max_power1);
+        player.power2 = reward.power2.min(POWER_RAGE_DEFAULT);
+        player.quest_statuses = reward.quest_statuses;
+    }
+
+    fn update_player_inventory(
+        &mut self,
+        character_guid: u32,
+        inventory: Vec<CharacterInventoryItem>,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        player.inventory = inventory;
     }
 
     fn player_visible_db_gameobject_guids(&self, character_guid: u32) -> Vec<u64> {

@@ -69,13 +69,13 @@ async fn handle_message_chat(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     body: &[u8],
-    session: &WorldSessionState,
+    session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let chat = ChatMessage::read(body)?;
     if !matches!(
         chat.chat_type,
-        CHAT_MSG_SAY | CHAT_MSG_YELL | CHAT_MSG_EMOTE
+        CHAT_MSG_SAY | CHAT_MSG_PARTY | CHAT_MSG_YELL | CHAT_MSG_EMOTE
     ) {
         info!(
             chat_type = chat.chat_type,
@@ -95,9 +95,34 @@ async fn handle_message_chat(
     if chat.message.is_empty() {
         return Ok(());
     }
+    if chat.message.starts_with('.') {
+        handle_gm_dot_command(stream, deps, &chat.message, session, header_crypto).await?;
+        return Ok(());
+    }
 
     let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, character);
     send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await?;
+
+    if chat.chat_type == CHAT_MSG_PARTY {
+        let party_members = deps.parties.party_members(character.guid).await;
+        let mut packets = Vec::new();
+        for member in party_members {
+            if member.guid == character.guid {
+                continue;
+            }
+            if let Some(session_id) = deps.sessions.session_for_character(member.guid).await {
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_MESSAGECHAT,
+                        body: body.clone(),
+                    },
+                ));
+            }
+        }
+        deps.sessions.dispatch(packets).await;
+        return Ok(());
+    }
 
     let radius = chat_radius_yards(chat.chat_type);
     if radius > 0.0 {
@@ -119,8 +144,11 @@ async fn handle_message_chat(
 }
 
 struct ChatDeps<'a> {
+    world_db_pool: &'a MySqlPool,
+    object_mgr: &'a ObjectMgr,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
+    parties: &'a Arc<PartyManager>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +183,7 @@ fn build_message_chat_body(
     body.push(chat_type as u8);
     body.extend_from_slice(&language.to_le_bytes());
     match chat_type {
-        CHAT_MSG_SAY | CHAT_MSG_YELL => {
+        CHAT_MSG_SAY | CHAT_MSG_PARTY | CHAT_MSG_YELL => {
             body.extend_from_slice(&sender.raw().to_le_bytes());
             body.extend_from_slice(&sender.raw().to_le_bytes());
         }

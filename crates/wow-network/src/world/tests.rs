@@ -3975,6 +3975,26 @@ fn quest_source_item_push_result_matches_cmangos_shape() {
 }
 
 #[test]
+fn item_push_result_for_stack_merge_uses_unknown_slot_like_cmangos() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 117,
+        count: 4,
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, true, false, true);
+    let mut cursor = 8 + 4 + 4 + 4 + 1;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), u32::MAX);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 117);
+    cursor += 8;
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(cursor, body.len());
+}
+
+#[test]
 fn incomplete_item_quest_can_reward_when_inventory_satisfies_objective() {
     let mut quest = test_quest_template(33);
     quest.req_item_id[0] = 777;
@@ -5924,6 +5944,7 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         gender: 0,
         health: 20,
         max_health: 20,
+        xp: 0,
         power1: 0,
         max_power1: 0,
         power2: 0,
@@ -5975,12 +5996,18 @@ fn map_runtime_db_gameobject_loot_item_is_shared_between_characters() {
         item: 117,
         count: 1,
         display_id: 117,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
     let second_loot = DbCreatureLootRuntime {
         slot: 0,
         item: 118,
         count: 1,
         display_id: 118,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
 
     let first_open = map.open_db_gameobject_loot(guid, 1, vec![first_loot]);
@@ -6026,6 +6053,9 @@ fn map_runtime_db_gameobject_loot_item_can_restore_after_failed_autostore() {
         item: 117,
         count: 1,
         display_id: 117,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
     map.open_db_gameobject_loot(guid, 1, vec![loot.clone()])
         .expect("gameobject loot should open");
@@ -6064,18 +6094,27 @@ fn map_runtime_db_gameobject_loot_slots_stay_stable_after_top_claim() {
                 item: 117,
                 count: 1,
                 display_id: 117,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
             DbCreatureLootRuntime {
                 slot: 0,
                 item: 118,
                 count: 1,
                 display_id: 118,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
             DbCreatureLootRuntime {
                 slot: 0,
                 item: 119,
                 count: 1,
                 display_id: 119,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
         ],
     )
@@ -6549,7 +6588,9 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
     creature.begin_corpse(Instant::now(), 1_000);
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
-    assert!(map.open_db_creature_loot(guid, 1, Vec::new()).is_some());
+    assert!(map
+        .open_db_creature_loot(guid, 1, CreatureLootOwner::Player(1), None, Vec::new())
+        .is_some());
 
     let first = map.take_db_creature_loot_money(1);
     let second = map.take_db_creature_loot_money(1);
@@ -6557,6 +6598,44 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
     assert_eq!(first.map(|(money, _)| money), Some(7));
     assert!(second.is_none());
     assert!(!map.creatures.get(&guid).unwrap().loot_money_available);
+}
+
+#[test]
+fn map_runtime_db_creature_loot_owner_blocks_unrelated_players() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 46;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_owner = Some(CreatureLootOwner::Player(1));
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+
+    assert!(map
+        .open_db_creature_loot(guid, 2, CreatureLootOwner::Player(2), None, Vec::new())
+        .is_none());
+    assert!(map
+        .open_db_creature_loot(guid, 1, CreatureLootOwner::Player(1), None, Vec::new())
+        .is_some());
+}
+
+#[test]
+fn map_runtime_db_creature_party_loot_owner_allows_party_members() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 47;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_owner = Some(CreatureLootOwner::Party(9));
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+
+    assert!(map
+        .open_db_creature_loot(guid, 2, CreatureLootOwner::Party(9), None, Vec::new())
+        .is_some());
+    assert!(map
+        .open_db_creature_loot(guid, 3, CreatureLootOwner::Party(10), None, Vec::new())
+        .is_none());
 }
 
 #[test]
@@ -6574,11 +6653,20 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
         item: 117,
         count: 1,
         display_id: 117,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
     assert!(map
-        .open_db_creature_loot(guid, 1, vec![loot.clone()])
+        .open_db_creature_loot(
+            guid,
+            1,
+            CreatureLootOwner::Player(1),
+            None,
+            vec![loot.clone()]
+        )
         .is_some());
 
     let first = map.take_db_creature_loot_item(1, 0);
@@ -6590,6 +6678,62 @@ fn map_runtime_db_creature_loot_item_can_restore_after_failed_claim() {
     assert_eq!(restored.loot_items.first().map(|loot| loot.item), Some(117));
     let reclaimed = map.take_db_creature_loot_item(1, 0);
     assert_eq!(reclaimed.map(|(_, _, loot, _)| loot.item), Some(117));
+}
+
+#[test]
+fn map_runtime_release_by_current_looter_releases_under_threshold_group_loot_to_party() {
+    let spawn = CreatureSpawnQuery {
+        guid: 46,
+        entry: 6,
+        ..test_creature_spawn(6)
+    };
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_owner = Some(CreatureLootOwner::Party(7));
+    creature.loot_allowed_players = HashSet::from([1, 2]);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 3,
+        threshold: 2,
+        master_looter: 1,
+    });
+    let loot = DbCreatureLootRuntime {
+        slot: 0,
+        item: 117,
+        count: 1,
+        display_id: 117,
+        quality: 1,
+        free_for_all: false,
+        quest_drop: false,
+    };
+
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+    assert!(map
+        .open_db_creature_loot(guid, 1, CreatureLootOwner::Party(7), Some(1), vec![loot])
+        .is_some());
+
+    let released = map
+        .release_db_creature_loot(guid, Instant::now(), Some(1))
+        .unwrap()
+        .expect("current looter release should update corpse");
+    assert!(released
+        .creature
+        .loot_current_looter_pass_slots
+        .contains(&0));
+    assert!(released.creature.can_loot_for_player(Some(2)));
+
+    let reopened = map
+        .open_db_creature_loot(guid, 2, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .expect("party member should reopen released under-threshold corpse loot");
+    let body = build_db_creature_loot_response_body_for_player(
+        reopened.guid(),
+        &reopened,
+        db_creature_loot_method_tuple(reopened.loot_method),
+        2,
+    );
+    assert_eq!(body[13], 1);
+    assert_eq!(body[35], LOOT_SLOT_NORMAL);
 }
 
 #[test]
@@ -6607,24 +6751,35 @@ fn map_runtime_db_creature_loot_slots_stay_stable_after_top_claim() {
     map.open_db_creature_loot(
         guid,
         1,
+        CreatureLootOwner::Player(1),
+        None,
         vec![
             DbCreatureLootRuntime {
                 slot: 0,
                 item: 117,
                 count: 1,
                 display_id: 117,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
             DbCreatureLootRuntime {
                 slot: 0,
                 item: 118,
                 count: 1,
                 display_id: 118,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
             DbCreatureLootRuntime {
                 slot: 0,
                 item: 119,
                 count: 1,
                 display_id: 119,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
             },
         ],
     )
@@ -6662,27 +6817,151 @@ fn map_runtime_db_creature_loot_item_is_generated_once() {
         item: 117,
         count: 1,
         display_id: 117,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
     let second_loot = DbCreatureLootRuntime {
         slot: 0,
         item: 159,
         count: 1,
         display_id: 159,
+        quality: 0,
+        free_for_all: false,
+        quest_drop: false,
     };
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![creature]);
 
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(true));
     let opened = map
-        .open_db_creature_loot(guid, 1, vec![first_loot.clone()])
+        .open_db_creature_loot(
+            guid,
+            1,
+            CreatureLootOwner::Player(1),
+            None,
+            vec![first_loot.clone()],
+        )
         .unwrap();
     assert_eq!(opened.loot_items.first().map(|loot| loot.item), Some(117));
     assert_eq!(map.db_creature_needs_loot_item(guid), Some(false));
 
     let reopened = map
-        .open_db_creature_loot(guid, 1, vec![second_loot])
+        .open_db_creature_loot(
+            guid,
+            1,
+            CreatureLootOwner::Player(1),
+            None,
+            vec![second_loot],
+        )
         .unwrap();
     assert_eq!(reopened.loot_items.first().map(|loot| loot.item), Some(117));
+}
+
+#[test]
+fn map_runtime_tracks_all_open_db_creature_looters_for_ui_fanout() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 512;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    map.share_db_creature_snapshots(vec![creature]);
+
+    assert!(map
+        .open_db_creature_loot(guid, 1, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .is_some());
+    assert!(map
+        .open_db_creature_loot(guid, 2, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .is_some());
+
+    let mut looters = map.db_creature_looting_characters(guid);
+    looters.sort_unstable();
+    assert_eq!(looters, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn loot_removed_fanout_notifies_all_open_non_targets_after_master_assignment() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 513;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    maps.share_db_creature_snapshots(0, vec![creature]).await;
+
+    assert!(maps
+        .open_db_creature_loot(0, guid, 1, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .await
+        .is_some());
+    assert!(maps
+        .open_db_creature_loot(0, guid, 2, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .await
+        .is_some());
+    assert!(maps
+        .open_db_creature_loot(0, guid, 3, CreatureLootOwner::Party(7), Some(1), Vec::new())
+        .await
+        .is_some());
+
+    let (master_tx, mut master_rx) = mpsc::unbounded_channel();
+    let (target_tx, mut target_rx) = mpsc::unbounded_channel();
+    let (viewer_tx, mut viewer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            SessionId(1),
+            SessionHandle {
+                account_id: 1,
+                character_guid: Some(1),
+                character_name: Some("Master".to_string()),
+                outbound: master_tx,
+            },
+        )
+        .await;
+    sessions
+        .register(
+            SessionId(2),
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                character_name: Some("Target".to_string()),
+                outbound: target_tx,
+            },
+        )
+        .await;
+    sessions
+        .register(
+            SessionId(3),
+            SessionHandle {
+                account_id: 3,
+                character_guid: Some(3),
+                character_name: Some("Viewer".to_string()),
+                outbound: viewer_tx,
+            },
+        )
+        .await;
+
+    dispatch_creature_loot_removed_to_other_open_looters(
+        SharedWorldDeps {
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        },
+        0,
+        guid,
+        2,
+        4,
+    )
+    .await;
+
+    let packet = master_rx.try_recv().expect("master looter gets UI removal");
+    assert_eq!(packet.opcode, SMSG_LOOT_REMOVED);
+    assert_eq!(packet.body, vec![4]);
+    let packet = viewer_rx.try_recv().expect("other viewer gets UI removal");
+    assert_eq!(packet.opcode, SMSG_LOOT_REMOVED);
+    assert_eq!(packet.body, vec![4]);
+    assert!(target_rx.try_recv().is_err());
 }
 
 #[test]
@@ -6824,6 +7103,7 @@ fn map_runtime_db_creature_damage_switches_active_target_from_threat() {
             now,
             now_epoch_secs: 0,
             exclude_character_guid: Some(new_victim.counter()),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("damage should apply");
@@ -7001,6 +7281,7 @@ fn map_runtime_db_creature_damage_preserves_attacker_state_overkill_damage() {
             now: Instant::now(),
             now_epoch_secs: 0,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("damage event");
@@ -7068,6 +7349,7 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
         now: refreshed_at,
         now_epoch_secs: current_unix_epoch_secs(),
         exclude_character_guid: None,
+        corpse_loot: None,
     })
     .expect("damage apply should succeed")
     .expect("damage event");
@@ -7166,6 +7448,7 @@ fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
             now,
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("spell damage event");
@@ -7226,6 +7509,7 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             now,
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("death event");
@@ -7281,9 +7565,81 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             now,
             now_epoch_secs: 2_001,
             exclude_character_guid: Some(2),
+            corpse_loot: None,
         },)
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn map_runtime_death_update_uses_corpse_created_group_loot_rights() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    insert_map_runtime_player_for_test(&mut map, 2, WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0));
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 178;
+    spawn.position_x = 0.5;
+    spawn.position_y = 0.0;
+    spawn.template.min_level_health = 10;
+    spawn.template.max_level_health = 10;
+    spawn.template.min_loot_gold = 0;
+    spawn.template.max_loot_gold = 0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 10,
+            melee_outcome: None,
+            spell_id: None,
+            suppress_attacker_state: false,
+            now: Instant::now(),
+            now_epoch_secs: 1_000,
+            exclude_character_guid: Some(1),
+            corpse_loot: Some(DbCreatureCorpseLootInit {
+                owner: CreatureLootOwner::Party(9),
+                allowed_players: vec![1, 2],
+                current_looter: Some(1),
+                loot_method: Some(CreatureLootMethod {
+                    method: 1,
+                    threshold: 2,
+                    master_looter: 1,
+                }),
+                loot_items: vec![DbCreatureLootRuntime {
+                    slot: 0,
+                    item: 117,
+                    count: 1,
+                    display_id: 641,
+                    quality: 1,
+                    free_for_all: false,
+                    quest_drop: false,
+                }],
+            }),
+        })
+        .unwrap()
+        .expect("death event");
+
+    let (direct_values, _) = decode_values_update_block(&event.update_body[5..], creature_guid);
+    assert_eq!(
+        direct_values[UNIT_DYNAMIC_FLAGS],
+        Some(UNIT_DYNFLAG_LOOTABLE)
+    );
+    let observer_update = event
+        .observer_packets
+        .iter()
+        .find(|(session_id, packet)| {
+            *session_id == SessionId(2) && packet.opcode == SMSG_UPDATE_OBJECT
+        })
+        .expect("observer update packet");
+    let (observer_values, _) =
+        decode_values_update_block(&observer_update.1.body[5..], creature_guid);
+    assert_eq!(observer_values[UNIT_DYNAMIC_FLAGS], Some(0));
+    assert_eq!(
+        map.db_creature_needs_loot_item(creature_guid.raw()),
+        Some(false)
+    );
 }
 
 #[test]
@@ -7323,6 +7679,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             now,
             now_epoch_secs: 1_000,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("A damage should apply");
@@ -7345,6 +7702,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             now,
             now_epoch_secs: 1_001,
             exclude_character_guid: Some(2),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("B damage should apply to the same shared creature");
@@ -7379,6 +7737,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             now,
             now_epoch_secs: 1_002,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("A kill should produce one shared death event");
@@ -7414,12 +7773,19 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             now,
             now_epoch_secs: 1_003,
             exclude_character_guid: Some(2),
+            corpse_loot: None,
         })
         .unwrap()
         .is_none());
 
     assert!(map
-        .open_db_creature_loot(creature_guid.raw(), 1, Vec::new())
+        .open_db_creature_loot(
+            creature_guid.raw(),
+            1,
+            CreatureLootOwner::Player(1),
+            None,
+            Vec::new(),
+        )
         .is_some());
     let first_money = map.take_db_creature_loot_money(1);
     let second_money = map.take_db_creature_loot_money(1);
@@ -7619,6 +7985,122 @@ fn map_runtime_db_creature_assistance_call_is_shared_once() {
 }
 
 #[test]
+fn gm_instakill_suppresses_damage_packet_but_keeps_killer_loot_rights() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 179;
+    spawn.position_x = 0.5;
+    spawn.position_y = 0.0;
+    spawn.template.min_level_health = 10;
+    spawn.template.max_level_health = 10;
+    spawn.template.min_loot_gold = 0;
+    spawn.template.max_loot_gold = 0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 10,
+            melee_outcome: None,
+            spell_id: None,
+            suppress_attacker_state: true,
+            now: Instant::now(),
+            now_epoch_secs: 1_000,
+            exclude_character_guid: Some(1),
+            corpse_loot: Some(DbCreatureCorpseLootInit {
+                owner: CreatureLootOwner::Player(1),
+                allowed_players: vec![1],
+                current_looter: Some(1),
+                loot_method: None,
+                loot_items: vec![DbCreatureLootRuntime {
+                    slot: 0,
+                    item: 117,
+                    count: 1,
+                    display_id: 641,
+                    quality: 1,
+                    free_for_all: false,
+                    quest_drop: false,
+                }],
+            }),
+        })
+        .unwrap()
+        .expect("death event");
+
+    assert!(
+        event.attacker_state_body.is_none(),
+        "GM instakill should not look like a melee damage packet"
+    );
+    let (direct_values, _) = decode_values_update_block(&event.update_body[5..], creature_guid);
+    assert_eq!(
+        direct_values[UNIT_DYNAMIC_FLAGS],
+        Some(UNIT_DYNFLAG_LOOTABLE)
+    );
+    let corpse = map.db_creature_snapshot(creature_guid).unwrap();
+    assert!(corpse.can_loot_for_player(Some(1)));
+}
+
+#[test]
+fn gm_instakill_can_reclaim_existing_loot_owner_before_death() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 180;
+    spawn.position_x = 0.5;
+    spawn.position_y = 0.0;
+    spawn.template.min_level_health = 10;
+    spawn.template.max_level_health = 10;
+    spawn.template.min_loot_gold = 0;
+    spawn.template.max_loot_gold = 0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.force_db_creature_loot_owner(creature_guid, CreatureLootOwner::Player(2));
+
+    let owner = CreatureLootOwner::Player(1);
+    map.force_db_creature_loot_owner(creature_guid, owner);
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+            damage: 10,
+            melee_outcome: None,
+            spell_id: None,
+            suppress_attacker_state: true,
+            now: Instant::now(),
+            now_epoch_secs: 1_000,
+            exclude_character_guid: Some(1),
+            corpse_loot: Some(DbCreatureCorpseLootInit {
+                owner,
+                allowed_players: vec![1],
+                current_looter: Some(1),
+                loot_method: None,
+                loot_items: vec![DbCreatureLootRuntime {
+                    slot: 0,
+                    item: 117,
+                    count: 1,
+                    display_id: 641,
+                    quality: 1,
+                    free_for_all: false,
+                    quest_drop: false,
+                }],
+            }),
+        })
+        .unwrap()
+        .expect("death event");
+
+    let (direct_values, _) = decode_values_update_block(&event.update_body[5..], creature_guid);
+    assert_eq!(
+        direct_values[UNIT_DYNAMIC_FLAGS],
+        Some(UNIT_DYNFLAG_LOOTABLE)
+    );
+    let corpse = map.db_creature_snapshot(creature_guid).unwrap();
+    assert!(corpse.can_loot_for_player(Some(1)));
+    assert!(!corpse.can_loot_for_player(Some(2)));
+}
+
+#[test]
 fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -7654,6 +8136,7 @@ fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
             now: Instant::now(),
             now_epoch_secs: 2_000,
             exclude_character_guid: Some(1),
+            corpse_loot: None,
         })
         .unwrap()
         .expect("miss event");
@@ -7700,6 +8183,7 @@ fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
         now: killed_at,
         now_epoch_secs: 3_000,
         exclude_character_guid: Some(1),
+        corpse_loot: None,
     })
     .unwrap()
     .expect("death event");
@@ -7828,6 +8312,7 @@ fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition
         gender: 0,
         health: 20,
         max_health: 20,
+        xp: 0,
         power1: 0,
         max_power1: 0,
         power2: 0,
@@ -8345,6 +8830,7 @@ async fn shared_db_creature_idle_motion_prioritizes_player_interest_over_far_gui
             SessionHandle {
                 account_id: 1,
                 character_guid: Some(1),
+                character_name: Some("Player1".to_string()),
                 outbound: direct_tx,
             },
         )
@@ -8864,6 +9350,7 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
             SessionHandle {
                 account_id: 2,
                 character_guid: Some(2),
+                character_name: Some("Player2".to_string()),
                 outbound: observer_tx,
             },
         )
@@ -8962,6 +9449,7 @@ async fn player_attack_stop_broadcasts_to_nearby_observer() {
             SessionHandle {
                 account_id: 2,
                 character_guid: Some(2),
+                character_name: Some("Player2".to_string()),
                 outbound: observer_tx,
             },
         )
@@ -9997,6 +10485,7 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
             SessionHandle {
                 account_id: 1,
                 character_guid: Some(1),
+                character_name: Some("Player1".to_string()),
                 outbound: direct_tx,
             },
         )
@@ -10007,6 +10496,7 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
             SessionHandle {
                 account_id: 2,
                 character_guid: Some(2),
+                character_name: Some("Player2".to_string()),
                 outbound: observer_tx,
             },
         )
@@ -10061,6 +10551,7 @@ async fn shared_db_creature_idle_motion_recreates_local_visibility_before_move()
             SessionHandle {
                 account_id: 1,
                 character_guid: Some(1),
+                character_name: Some("Player1".to_string()),
                 outbound: direct_tx,
             },
         )
@@ -10674,6 +11165,7 @@ fn quest_loot_selection_prefers_active_required_quest_item() {
 
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &active_quests,
         &quest_statuses,
         &[],
@@ -10730,6 +11222,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
 
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &active_quests,
         &quest_statuses,
         &inventory,
@@ -10777,6 +11270,7 @@ fn quest_loot_selection_includes_active_required_source_item() {
 
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &active_quests,
         &quest_statuses,
         &inventory,
@@ -10826,6 +11320,7 @@ fn quest_loot_selection_uses_source_item_template_limit_when_count_is_zero() {
 
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &active_quests,
         &quest_statuses,
         &inventory,
@@ -10841,6 +11336,7 @@ fn quest_loot_selection_uses_source_item_template_limit_when_count_is_zero() {
     }];
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &active_quests,
         &quest_statuses,
         &full_inventory,
@@ -10873,6 +11369,7 @@ fn creature_loot_roll_respects_chance_thresholds() {
     ];
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
         &[],
@@ -10909,6 +11406,7 @@ fn creature_loot_roll_can_return_multiple_independent_rows() {
         &loot_rows,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         &[],
         &HashMap::new(),
         || 0.0,
@@ -10917,6 +11415,54 @@ fn creature_loot_roll_can_return_multiple_independent_rows() {
 
     let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
     assert_eq!(items, vec![159, 160]);
+}
+
+#[test]
+fn creature_loot_roll_processes_reference_templates() {
+    let loot_rows = vec![CreatureLootQuery {
+        item: 34_000,
+        group_id: 0,
+        min_count: 0,
+        max_count: 2,
+        display_id: 0,
+        chance_or_quest_chance: 100.0,
+    }];
+    let mut reference_loot_templates = HashMap::new();
+    reference_loot_templates.insert(
+        34_000,
+        vec![
+            CreatureLootQuery {
+                item: 16_900,
+                group_id: 1,
+                min_count: 1,
+                max_count: 1,
+                display_id: 10,
+                chance_or_quest_chance: 0.0,
+            },
+            CreatureLootQuery {
+                item: 16_908,
+                group_id: 1,
+                min_count: 1,
+                max_count: 1,
+                display_id: 11,
+                chance_or_quest_chance: 0.0,
+            },
+        ],
+    );
+
+    let selected = select_creature_loot_for_active_quests_with_rolls(
+        &loot_rows,
+        &reference_loot_templates,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        || 0.0,
+        |_min_count, _max_count| 1,
+    );
+
+    let items = selected.iter().map(|loot| loot.item).collect::<Vec<_>>();
+    assert_eq!(items, vec![16_908, 16_908]);
 }
 
 #[test]
@@ -10952,6 +11498,7 @@ fn creature_loot_roll_picks_one_row_per_group() {
         &loot_rows,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         &[],
         &HashMap::new(),
         || 25.0,
@@ -10974,6 +11521,7 @@ fn creature_loot_roll_uses_randomized_count_range() {
     }];
     let selected = select_creature_loot_for_active_quests_with_rolls(
         &loot_rows,
+        &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
         &[],
@@ -11569,9 +12117,12 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
 
     handle_cast_spell(
         &mut stream,
-        &character_db_pool,
-        &world_db_pool,
-        shared_world,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
         &body,
         &mut session,
         &mut header_crypto,
@@ -11660,9 +12211,12 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
 
     handle_cast_spell(
         &mut stream,
-        &character_db_pool,
-        &world_db_pool,
-        shared_world,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
         &body,
         &mut session,
         &mut header_crypto,
@@ -13357,6 +13911,788 @@ fn message_chat_body_matches_cmangos_say_shape() {
     assert_eq!(&body[21..25], &6u32.to_le_bytes());
     assert_eq!(&body[25..31], b"hello\0");
     assert_eq!(body[31], CHAT_TAG_NONE);
+}
+
+#[test]
+fn parses_gm_dot_commands_for_creature_spawn_and_die() {
+    assert_eq!(
+        parse_gm_dot_command(".gm on"),
+        Some(Ok(GmDotCommand::Gm(Some(true))))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".gm off"),
+        Some(Ok(GmDotCommand::Gm(Some(false))))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".npc add #6"),
+        Some(Ok(GmDotCommand::NpcAdd(6)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".npc add |Hcreature_entry:94|h[Defias Cutpurse]|h"),
+        Some(Ok(GmDotCommand::NpcAdd(94)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".npc delete"),
+        Some(Ok(GmDotCommand::NpcDelete(None)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".npc delete #123"),
+        Some(Ok(GmDotCommand::NpcDelete(Some(123))))
+    );
+    assert_eq!(parse_gm_dot_command(".die"), Some(Ok(GmDotCommand::Die)));
+}
+
+#[test]
+fn malformed_gm_npc_add_returns_syntax_error() {
+    assert_eq!(
+        parse_gm_dot_command(".npc add"),
+        Some(Err("Syntax: .npc add #creatureid".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn party_manager_invite_accept_leave_updates_membership() {
+    let parties = PartyManager::default();
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    assert_eq!(invite.invitee_session, Some(SessionId(2)));
+    assert_eq!(
+        invite.invite_packet.as_ref().map(|packet| packet.opcode),
+        Some(SMSG_GROUP_INVITE)
+    );
+
+    let accepted = parties.accept(2).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+    assert_eq!(accepted.packets.len(), 2);
+    assert!(parties.same_party(1, 2).await);
+    assert_eq!(parties.party_members(1).await.len(), 2);
+    assert!(matches!(
+        parties.loot_owner_for(1).await,
+        CreatureLootOwner::Party(_)
+    ));
+    assert!(parties.membership(1).await.is_some());
+
+    let left = parties.leave(2).await;
+    assert_eq!(left.result, PartyResult::Ok);
+    assert!(!parties.same_party(1, 2).await);
+    assert!(parties.membership(1).await.is_none());
+    assert!(parties.membership(2).await.is_none());
+}
+
+#[tokio::test]
+async fn party_manager_leader_can_kick_and_transfer_leadership() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 3,
+                name: "Third".to_string(),
+            },
+            SessionId(3),
+        )
+        .await;
+    parties.accept(3).await;
+
+    let transfer = parties.set_leader(1, 2).await;
+    assert_eq!(transfer.result, PartyResult::Ok);
+    assert!(transfer
+        .packets
+        .iter()
+        .any(|(guid, packet)| *guid == 1 && packet.opcode == SMSG_GROUP_SET_LEADER));
+    assert!(transfer
+        .packets
+        .iter()
+        .any(|(guid, packet)| *guid == 2 && packet.opcode == SMSG_GROUP_SET_LEADER));
+    assert_eq!(parties.membership(1).await.map(|m| m.leader), Some(2));
+    let kicked = parties.kick(2, 3).await;
+    assert_eq!(kicked.result, PartyResult::Ok);
+    assert!(kicked
+        .packets
+        .iter()
+        .any(|(guid, packet)| *guid == 3 && packet.opcode == SMSG_GROUP_UNINVITE));
+    assert!(kicked.packets.iter().any(|(guid, packet)| {
+        *guid == 3
+            && packet.opcode == SMSG_GROUP_LIST
+            && packet.body == build_empty_group_list_body()
+    }));
+    assert!(kicked
+        .packets
+        .iter()
+        .any(|(guid, packet)| *guid == 1 && packet.opcode == SMSG_GROUP_LIST));
+    assert!(kicked
+        .packets
+        .iter()
+        .any(|(guid, packet)| *guid == 2 && packet.opcode == SMSG_GROUP_LIST));
+    assert!(parties.same_party(1, 2).await);
+    assert!(!parties.same_party(1, 3).await);
+}
+
+#[test]
+fn empty_group_list_body_matches_cmangos_three_zero_guids() {
+    let body = build_empty_group_list_body();
+    assert_eq!(body.len(), 24);
+    assert!(body.iter().all(|byte| *byte == 0));
+}
+
+#[tokio::test]
+async fn party_manager_leader_updates_loot_method() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+
+    let outcome = parties.set_loot_method(1, 2, 2, 3).await;
+    assert_eq!(outcome.result, PartyResult::Ok);
+    assert_eq!(outcome.packets.len(), 2);
+    for (_, packet) in outcome.packets {
+        assert_eq!(packet.opcode, SMSG_GROUP_LIST);
+        let tail = &packet.body[packet.body.len() - 11..];
+        assert_eq!(tail[0], 2);
+        assert_eq!(
+            u64::from_le_bytes(tail[1..9].try_into().unwrap()),
+            ObjectGuid::new(HighGuid::Player, 0, 2).raw()
+        );
+        assert_eq!(tail[9], 3);
+    }
+}
+
+#[tokio::test]
+async fn party_group_loot_roll_need_beats_greed_and_awards_once() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+    assert_eq!(
+        parties.set_loot_method(1, 3, 0, 2).await.result,
+        PartyResult::Ok
+    );
+
+    let loot_guid = ObjectGuid::new(HighGuid::Unit, 0, 99);
+    let loot = DbCreatureLootRuntime {
+        slot: 4,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    };
+    let start = parties
+        .start_loot_roll(1, 0, loot_guid, loot.slot, loot.clone())
+        .await
+        .expect("group loot starts a roll for party items");
+    assert_eq!(start.packets.len(), 2);
+    assert!(start
+        .packets
+        .iter()
+        .all(|(_, packet)| packet.opcode == SMSG_LOOT_START_ROLL));
+
+    let first = parties
+        .record_loot_roll_vote(1, loot_guid, loot.slot, LootRollVote::Greed)
+        .await
+        .expect("first vote is recorded");
+    assert!(first.winner.is_none());
+    assert_eq!(first.packets.len(), 2);
+    assert!(first
+        .packets
+        .iter()
+        .all(|(_, packet)| packet.opcode == SMSG_LOOT_ROLL));
+
+    let finished = parties
+        .record_loot_roll_vote(2, loot_guid, loot.slot, LootRollVote::Need)
+        .await
+        .expect("final vote resolves roll");
+    assert_eq!(finished.winner, Some(2));
+    assert_eq!(finished.loot.as_ref().map(|item| item.item), Some(25));
+    assert!(finished.packets.iter().any(|(_, packet)| {
+        packet.opcode == SMSG_LOOT_ROLL && packet.body[32] == 0 && packet.body[33] == 0
+    }));
+    assert!(finished.packets.iter().any(|(_, packet)| {
+        packet.opcode == SMSG_LOOT_ROLL
+            && (1..=100).contains(&packet.body[32])
+            && packet.body[33] == LootRollVote::Need as u8
+    }));
+    assert!(finished
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_LOOT_ROLL_WON));
+    assert!(
+        parties
+            .record_loot_roll_vote(1, loot_guid, loot.slot, LootRollVote::Need)
+            .await
+            .is_none(),
+        "finished rolls cannot be voted again"
+    );
+}
+
+#[tokio::test]
+async fn party_group_loot_roll_timeout_passes_missing_voters() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+    assert_eq!(
+        parties.set_loot_method(1, 3, 0, 2).await.result,
+        PartyResult::Ok
+    );
+
+    let loot_guid = ObjectGuid::new(HighGuid::Unit, 0, 101);
+    let loot = DbCreatureLootRuntime {
+        slot: 1,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    };
+    parties
+        .start_loot_roll(1, 7, loot_guid, loot.slot, loot.clone())
+        .await
+        .expect("roll starts");
+    parties
+        .record_loot_roll_vote(1, loot_guid, loot.slot, LootRollVote::Greed)
+        .await
+        .expect("first voter greeds");
+
+    let outcomes = parties
+        .expire_loot_rolls(Instant::now() + GROUP_LOOT_ROLL_TIMEOUT + Duration::from_millis(1))
+        .await;
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].map_id, 7);
+    assert_eq!(outcomes[0].winner, Some(1));
+    assert!(outcomes[0].packets.iter().any(|(_, packet)| {
+        packet.opcode == SMSG_LOOT_ROLL
+            && u64::from_le_bytes(packet.body[12..20].try_into().unwrap())
+                == ObjectGuid::new(HighGuid::Player, 0, 2).raw()
+            && packet.body[32] == 128
+            && packet.body[33] == 128
+    }));
+    assert!(outcomes[0]
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_LOOT_ROLL_WON));
+}
+
+#[test]
+fn group_loot_response_hides_under_threshold_items_from_non_current_looter() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 117,
+        count: 1,
+        display_id: 117,
+        quality: 1,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+    let guid = creature.guid();
+
+    let current =
+        build_db_creature_loot_response_body_for_player(guid, &creature, Some((3, 2, 0)), 1);
+    let other =
+        build_db_creature_loot_response_body_for_player(guid, &creature, Some((3, 2, 0)), 2);
+
+    assert_eq!(
+        current[13], 1,
+        "current looter sees the under-threshold item"
+    );
+    assert_eq!(current[35], LOOT_SLOT_NORMAL);
+    assert_eq!(
+        other[13], 0,
+        "other party member does not see normal trash loot"
+    );
+}
+
+#[test]
+fn group_loot_response_releases_current_looter_passed_trash_to_party_looters() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 117,
+        count: 1,
+        display_id: 117,
+        quality: 1,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+    creature.loot_current_looter_pass_slots.insert(0);
+
+    let other = build_db_creature_loot_response_body_for_player(
+        creature.guid(),
+        &creature,
+        Some((3, 2, 0)),
+        2,
+    );
+
+    assert_eq!(other[13], 1);
+    assert_eq!(other[35], LOOT_SLOT_NORMAL);
+    assert!(can_autostore_shared_creature_loot(
+        2,
+        &creature,
+        &creature.loot_items[0]
+    ));
+}
+
+#[test]
+fn group_loot_response_shows_green_items_as_view_only_until_roll_resolves() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+    let body = build_db_creature_loot_response_body_for_player(
+        creature.guid(),
+        &creature,
+        Some((3, 2, 0)),
+        2,
+    );
+
+    assert_eq!(body[13], 1);
+    assert_eq!(
+        body[35], 1,
+        "green group loot is visible but not directly lootable"
+    );
+}
+
+#[test]
+fn group_loot_response_releases_all_passed_green_to_party_looters() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+    creature.loot_roll_released_slots.insert(0);
+
+    let current = build_db_creature_loot_response_body_for_player(
+        creature.guid(),
+        &creature,
+        Some((3, 2, 0)),
+        1,
+    );
+    let other = build_db_creature_loot_response_body_for_player(
+        creature.guid(),
+        &creature,
+        Some((3, 2, 0)),
+        2,
+    );
+
+    assert_eq!(current[13], 1);
+    assert_eq!(current[35], LOOT_SLOT_NORMAL);
+    assert_eq!(other[13], 1);
+    assert_eq!(other[35], LOOT_SLOT_NORMAL);
+}
+
+#[test]
+fn corpse_loot_method_snapshot_controls_group_loot_autostore() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 3,
+        threshold: 2,
+        master_looter: 0,
+    });
+    let loot = DbCreatureLootRuntime {
+        slot: 0,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    };
+
+    assert!(should_use_group_loot_roll(&creature, &loot));
+    assert!(
+        !can_autostore_shared_creature_loot(1, &creature, &loot),
+        "green group-loot corpse item remains roll-blocked even if party rules later change"
+    );
+
+    creature.loot_roll_released_slots.insert(loot.slot);
+    assert!(can_autostore_shared_creature_loot(2, &creature, &loot));
+}
+
+#[test]
+fn corpse_loot_method_snapshot_controls_master_loot_autostore() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_current_looter = Some(1);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 2,
+        threshold: 2,
+        master_looter: 2,
+    });
+    let loot = DbCreatureLootRuntime {
+        slot: 0,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    };
+
+    assert!(should_block_master_loot(&creature, 1, &loot));
+    assert!(!should_block_master_loot(&creature, 2, &loot));
+}
+
+#[test]
+fn master_loot_viewer_can_reopen_after_gold_is_taken() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_items_generated = true;
+    creature.loot_money_available = false;
+    creature.loot_owner = Some(CreatureLootOwner::Party(77));
+    creature.loot_allowed_players = HashSet::from([1, 2]);
+    creature.loot_current_looter = Some(2);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 2,
+        threshold: 2,
+        master_looter: 1,
+    });
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+
+    assert!(
+        creature.can_loot_for_player(Some(2)),
+        "non-master eligible party members can reopen to view master-loot items after money is gone"
+    );
+    assert_eq!(
+        creature.dynamic_flags_for_player(Some(2)),
+        UNIT_DYNFLAG_LOOTABLE
+    );
+    let body = build_db_creature_loot_response_body_for_player(
+        creature.guid(),
+        &creature,
+        db_creature_loot_method_tuple(creature.loot_method),
+        2,
+    );
+    assert_eq!(body[13], 1);
+    assert_eq!(body[35], 1, "non-master sees the item as view-only");
+}
+
+#[test]
+fn creature_loot_money_share_splits_by_corpse_owner_set() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 3,
+        threshold: 2,
+        master_looter: 0,
+    });
+    creature.loot_allowed_players = HashSet::from([1, 2, 3]);
+
+    assert_eq!(creature_loot_money_share(&creature, 10), 3);
+    assert_eq!(creature_loot_money_recipients(&creature, 1), vec![1, 2, 3]);
+}
+
+#[test]
+fn creature_loot_money_share_does_not_split_solo_corpse() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+
+    assert_eq!(creature_loot_money_share(&creature, 10), 10);
+    assert_eq!(creature_loot_money_recipients(&creature, 1), vec![1]);
+}
+
+#[test]
+fn loot_inventory_full_error_matches_cmangos() {
+    assert_eq!(EQUIP_ERR_INVENTORY_FULL, 50);
+}
+
+#[test]
+fn creature_loot_money_share_falls_back_to_looter_for_empty_group_owner_set() {
+    let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_method = Some(CreatureLootMethod {
+        method: 3,
+        threshold: 2,
+        master_looter: 0,
+    });
+
+    assert_eq!(creature_loot_money_share(&creature, 10), 10);
+    assert_eq!(creature_loot_money_recipients(&creature, 7), vec![7]);
+}
+
+#[test]
+fn loot_start_roll_body_uses_cmangos_vote_mask_all() {
+    let loot = DbCreatureLootRuntime {
+        slot: 4,
+        item: 25,
+        count: 1,
+        display_id: 100,
+        quality: 2,
+        free_for_all: false,
+        quest_drop: false,
+    };
+    let body = build_loot_start_roll_body(ObjectGuid::new(HighGuid::Unit, 0, 99), loot.slot, &loot);
+
+    assert_eq!(body.len(), 29);
+    assert_eq!(u32::from_le_bytes(body[8..12].try_into().unwrap()), 4);
+    assert_eq!(u32::from_le_bytes(body[12..16].try_into().unwrap()), 25);
+    assert_eq!(u32::from_le_bytes(body[24..28].try_into().unwrap()), 60_000);
+    assert_eq!(body[28], 0x0F);
+}
+
+#[test]
+fn item_name_query_response_matches_cmangos_shape() {
+    let mut template = test_item_template(25, 2, 13, 1.0, 2.0, 0);
+    template.name = "Worn Shortsword".to_string();
+    template.displayid = 1542;
+    let body = build_item_name_query_response(&template);
+
+    assert_eq!(u32::from_le_bytes(body[0..4].try_into().unwrap()), 25);
+    assert_eq!(&body[4..20], b"Worn Shortsword\0");
+    assert_eq!(
+        u32::from_le_bytes(body[20..24].try_into().unwrap()),
+        template.inventory_type
+    );
+}
+
+#[tokio::test]
+async fn party_master_loot_members_only_for_current_master_looter() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+    assert_eq!(
+        parties.set_loot_method(1, 2, 2, 3).await.result,
+        PartyResult::Ok
+    );
+
+    assert_eq!(parties.master_loot_members_for(2).await, Some(vec![1, 2]));
+    assert_eq!(parties.master_loot_members_for(1).await, None);
+    assert_eq!(build_loot_master_list_body(&[1, 2]).len(), 17);
+}
+
+#[tokio::test]
+async fn party_manager_converts_to_raid_and_updates_subgroup_assistant_flags() {
+    let parties = PartyManager::default();
+    parties
+        .invite(
+            PartyMember {
+                guid: 1,
+                name: "Leader".to_string(),
+            },
+            PartyMember {
+                guid: 2,
+                name: "Member".to_string(),
+            },
+            SessionId(2),
+        )
+        .await;
+    parties.accept(2).await;
+
+    let raid = parties.convert_to_raid(1).await;
+    assert_eq!(raid.result, PartyResult::Ok);
+    assert_eq!(parties.membership(2).await.map(|m| m.raid), Some(true));
+
+    let assistant = parties.set_assistant(1, 2, true).await;
+    assert_eq!(assistant.result, PartyResult::Ok);
+    let subgroup = parties.change_subgroup(2, "Leader", 1).await;
+    assert_eq!(subgroup.result, PartyResult::Ok);
+
+    let leader_list = parties.group_list_packet_for(1).await.unwrap();
+    assert_eq!(leader_list.body[0], 1, "group-list marks raid groups");
+    assert_eq!(leader_list.body[1], 1, "leader moved to subgroup 1");
+    let member_offset = 6 + "Member".len() + 1 + 8 + 1;
+    assert_eq!(
+        leader_list.body[member_offset], 0x80,
+        "member entry carries assistant bit"
+    );
+}
+
+#[test]
+fn party_member_stats_full_body_matches_cmangos_core_fields() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let snapshot = PlayerRuntimeSnapshot {
+        position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
+        flags: 0,
+        level: 3,
+        race: 1,
+        class: 1,
+        xp: 0,
+        health: 33,
+        max_health: 44,
+        power1: 0,
+        max_power1: 0,
+        power2: 50,
+        active_spells: HashSet::new(),
+        inventory: Vec::new(),
+        quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
+        combat_stats: test_player_combat_stats(),
+        active_combat_target: None,
+        active_combat_next_swing_at: None,
+    };
+
+    let body = build_party_member_stats_full_body(guid, Some(&snapshot)).unwrap();
+    let packed_len = body[0] as usize + 1;
+    let payload = &body[packed_len..];
+    assert_eq!(u32::from_le_bytes(payload[0..4].try_into().unwrap()), 0x7FF);
+    assert_eq!(payload[4], MEMBER_STATUS_ONLINE);
+    assert_eq!(u16::from_le_bytes(payload[5..7].try_into().unwrap()), 33);
+    assert_eq!(u16::from_le_bytes(payload[7..9].try_into().unwrap()), 44);
+    assert_eq!(payload[9], 1, "warrior reports rage power type");
+    assert_eq!(u16::from_le_bytes(payload[10..12].try_into().unwrap()), 50);
+    assert_eq!(
+        u16::from_le_bytes(payload[12..14].try_into().unwrap()),
+        POWER_RAGE_DEFAULT as u16
+    );
+    assert_eq!(u16::from_le_bytes(payload[14..16].try_into().unwrap()), 3);
+}
+
+#[test]
+fn party_member_stats_reports_rogue_energy_power() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let mut snapshot = PlayerRuntimeSnapshot {
+        position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
+        flags: 0,
+        level: 3,
+        race: 1,
+        class: 4,
+        xp: 0,
+        health: 33,
+        max_health: 44,
+        power1: 0,
+        max_power1: 0,
+        power2: 0,
+        active_spells: HashSet::new(),
+        inventory: Vec::new(),
+        quest_statuses: HashMap::new(),
+        active_auras: Vec::new(),
+        base_combat_stats: test_player_combat_stats(),
+        combat_stats: test_player_combat_stats(),
+        active_combat_target: None,
+        active_combat_next_swing_at: None,
+    };
+    snapshot.class = 4;
+
+    let body = build_party_member_stats_full_body(guid, Some(&snapshot)).unwrap();
+    let packed_len = body[0] as usize + 1;
+    let payload = &body[packed_len..];
+
+    assert_eq!(payload[9], POWER_ENERGY);
+    assert_eq!(
+        u16::from_le_bytes(payload[10..12].try_into().unwrap()),
+        POWER_ENERGY_DEFAULT as u16
+    );
+    assert_eq!(
+        u16::from_le_bytes(payload[12..14].try_into().unwrap()),
+        POWER_ENERGY_DEFAULT as u16
+    );
+}
+
+#[test]
+fn group_xp_rate_matches_cmangos_party_sizes() {
+    assert_eq!(group_xp_rate(1), 1.0);
+    assert_eq!(group_xp_rate(2), 1.0);
+    assert_eq!(group_xp_rate(3), 1.166);
+    assert_eq!(group_xp_rate(4), 1.3);
+    assert_eq!(group_xp_rate(5), 1.4);
+    assert_eq!(group_xp_rate(6), 0.7);
 }
 
 #[test]

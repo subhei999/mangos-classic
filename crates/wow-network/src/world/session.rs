@@ -61,6 +61,7 @@ impl WorldPacketSink {
 struct SessionHandle {
     account_id: u32,
     character_guid: Option<u32>,
+    character_name: Option<String>,
     outbound: mpsc::UnboundedSender<OutboundWorldPacket>,
 }
 
@@ -90,10 +91,37 @@ impl SessionRegistry {
         removed
     }
 
-    async fn set_character_guid(&self, session_id: SessionId, character_guid: Option<u32>) {
+    async fn set_active_character(
+        &self,
+        session_id: SessionId,
+        character_guid: Option<u32>,
+        character_name: Option<String>,
+    ) {
         if let Some(handle) = self.sessions.lock().await.get_mut(&session_id) {
             handle.character_guid = character_guid;
+            handle.character_name = character_name;
         }
+    }
+
+    async fn session_for_character(&self, character_guid: u32) -> Option<SessionId> {
+        self.sessions
+            .lock()
+            .await
+            .iter()
+            .find_map(|(session_id, handle)| {
+                (handle.character_guid == Some(character_guid)).then_some(*session_id)
+            })
+    }
+
+    async fn online_character_by_name(&self, name: &str) -> Option<(u32, String, SessionId)> {
+        let needle = name.to_ascii_lowercase();
+        self.sessions.lock().await.iter().find_map(|(session_id, handle)| {
+            let character_guid = handle.character_guid?;
+            let character_name = handle.character_name.as_ref()?;
+            (character_name.to_ascii_lowercase() == needle).then(|| {
+                (character_guid, character_name.clone(), *session_id)
+            })
+        })
     }
 
     async fn send_packet(&self, session_id: SessionId, packet: OutboundWorldPacket) {
@@ -116,6 +144,8 @@ impl SessionRegistry {
     }
 }
 
+include!("social/party.rs");
+
 #[derive(Clone)]
 struct WorldRuntimeState {
     online_characters: OnlineCharacters,
@@ -124,6 +154,7 @@ struct WorldRuntimeState {
     world_tick_interval: Duration,
     sessions: Arc<SessionRegistry>,
     maps: Arc<MapRuntimeManager>,
+    parties: Arc<PartyManager>,
     object_mgr: Arc<ObjectMgr>,
 }
 
@@ -137,6 +168,8 @@ struct SharedWorldDeps<'a> {
 #[derive(Debug, Default)]
 struct WorldSessionState {
     active_character: Option<ActiveCharacter>,
+    account_security: u8,
+    gm_mode: bool,
     selected_target: Option<ObjectGuid>,
     combat_dummy_health: u32,
     #[cfg(test)]

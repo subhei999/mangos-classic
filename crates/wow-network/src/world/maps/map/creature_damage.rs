@@ -31,6 +31,22 @@ impl MapRuntime {
         };
         if is_dead {
             creature.begin_corpse(request.now, request.now_epoch_secs);
+            if let Some(corpse_loot) = request.corpse_loot {
+                creature.loot_owner.get_or_insert(corpse_loot.owner);
+                creature.loot_allowed_players = corpse_loot.allowed_players.into_iter().collect();
+                creature.loot_current_looter = corpse_loot.current_looter.or_else(|| {
+                    request
+                        .killer
+                        .is_player()
+                        .then(|| request.killer.counter())
+                });
+                creature.loot_method = corpse_loot.loot_method;
+                creature.loot_items = loot_items_with_stable_slots(corpse_loot.loot_items);
+                creature.loot_items_generated = true;
+                if !creature.can_loot_for_player(None) {
+                    creature.lootable = false;
+                }
+            }
         }
         let creature = creature.clone();
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
@@ -45,7 +61,12 @@ impl MapRuntime {
         let update_body = if is_dead {
             build_db_creature_death_update_body(
                 creature_guid,
-                creature.dynamic_flags(),
+                creature.dynamic_flags_for_player(
+                    request
+                        .killer
+                        .is_player()
+                        .then(|| request.killer.counter()),
+                ),
                 db_creature_unit_flags(&creature, false),
             )?
         } else {
@@ -65,7 +86,7 @@ impl MapRuntime {
             .filter_map(|player_guid| {
                 self.players
                     .get(&player_guid)
-                    .map(|player| player.session_id)
+                    .map(|player| (player_guid, player.session_id))
             })
             .collect::<Vec<_>>();
         let attacker_state_body = if request.suppress_attacker_state {
@@ -115,7 +136,7 @@ impl MapRuntime {
         let observer_packets = nearby_observers
             .iter()
             .copied()
-            .flat_map(|session_id| {
+            .flat_map(|(player_guid, session_id)| {
                 let mut packets = Vec::with_capacity(3);
                 if let Some(spell_non_melee_log_body) = &spell_non_melee_log_body {
                     packets.push((
@@ -135,11 +156,21 @@ impl MapRuntime {
                         },
                     ));
                 }
+                let update_body = if is_dead {
+                    build_db_creature_death_update_body(
+                        creature_guid,
+                        creature.dynamic_flags_for_player(Some(player_guid)),
+                        db_creature_unit_flags(&creature, false),
+                    )
+                    .unwrap_or_else(|_| update_body.clone())
+                } else {
+                    update_body.clone()
+                };
                 packets.push((
                     session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
-                        body: update_body.clone(),
+                        body: update_body,
                     },
                 ));
                 packets
@@ -159,7 +190,7 @@ impl MapRuntime {
             };
             let observer_packets = nearby_observers
                 .into_iter()
-                .flat_map(|session_id| {
+                .flat_map(|(_, session_id)| {
                     motion_stop_packet
                         .iter()
                         .cloned()

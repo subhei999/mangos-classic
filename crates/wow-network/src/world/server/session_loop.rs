@@ -67,6 +67,7 @@ async fn handle_client(
             SessionHandle {
                 account_id: account.id,
                 character_guid: None,
+                character_name: None,
                 outbound: outbound_tx.clone(),
             },
         )
@@ -82,6 +83,8 @@ async fn handle_client(
     let mut header_crypto = HeaderCrypto::new(&session_key);
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
     let mut session = WorldSessionState {
+        account_security: account.gmlevel,
+        gm_mode: false,
         db_creature_navigation: DbCreatureNavigationGuardrail {
             world_data_files: runtime_state.world_data_files.clone(),
             ..DbCreatureNavigationGuardrail::default()
@@ -161,6 +164,7 @@ async fn handle_client(
                                     online_characters: &runtime_state.online_characters,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
+                                    parties: &runtime_state.parties,
                                     session_id,
                                 },
                                 account.id,
@@ -184,6 +188,15 @@ async fn handle_client(
                         }
                         CMSG_ITEM_QUERY_SINGLE => {
                             handle_item_query_single(
+                                &mut stream,
+                                &world_db_pool,
+                                &body,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_ITEM_NAME_QUERY => {
+                            handle_item_name_query(
                                 &mut stream,
                                 &world_db_pool,
                                 &body,
@@ -223,10 +236,176 @@ async fn handle_client(
                             handle_message_chat(
                                 &mut stream,
                                 ChatDeps {
+                                    world_db_pool: &world_db_pool,
+                                    object_mgr: &runtime_state.object_mgr,
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
+                                    parties: &runtime_state.parties,
                                 },
                                 &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_INVITE => {
+                            handle_group_invite(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_CANCEL => {
+                            handle_group_decline(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_ACCEPT => {
+                            handle_group_accept(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_DECLINE => {
+                            handle_group_decline(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_UNINVITE => {
+                            handle_group_uninvite(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_UNINVITE_GUID => {
+                            handle_group_uninvite_guid(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_SET_LEADER => {
+                            handle_group_set_leader(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_RAID_CONVERT => {
+                            handle_group_raid_convert(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_CHANGE_SUB_GROUP => {
+                            handle_group_change_subgroup(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_ASSISTANT_LEADER => {
+                            handle_group_assistant_leader(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_REQUEST_PARTY_MEMBER_STATS => {
+                            handle_request_party_member_stats(
+                                &mut stream,
+                                &runtime_state.maps,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOOT_METHOD => {
+                            handle_loot_method(
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
+                                &body,
+                                &session,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOOT_ROLL => {
+                            handle_loot_roll(
+                                &mut stream,
+                                LootMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                    parties: runtime_state.parties.as_ref(),
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_LOOT_MASTER_GIVE => {
+                            handle_loot_master_give(
+                                &mut stream,
+                                LootMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                    parties: runtime_state.parties.as_ref(),
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
+                        CMSG_GROUP_DISBAND => {
+                            handle_group_disband(
+                                &mut stream,
+                                &runtime_state.parties,
+                                &runtime_state.sessions,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -261,12 +440,15 @@ async fn handle_client(
                         CMSG_CAST_SPELL => {
                             handle_cast_spell(
                                 &mut stream,
-                                &character_db_pool,
-                                &world_db_pool,
-                                SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
+                                SpellCastDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                    parties: runtime_state.parties.as_ref(),
                                 },
                                 &body,
                                 &mut session,
@@ -546,13 +728,12 @@ async fn handle_client(
                         CMSG_ATTACKSWING => {
                             handle_attack_swing(
                                 &mut stream,
-                                &character_db_pool,
-                                &world_db_pool,
                                 SharedWorldDeps {
                                     object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
+                                &runtime_state.parties,
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -625,13 +806,13 @@ async fn handle_client(
                         CMSG_LOOT => {
                             handle_loot(
                                 &mut stream,
-                                &runtime_state.object_mgr,
                                 &world_db_pool,
                                 SharedWorldDeps {
                                     object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
+                                &runtime_state.parties,
                                 &body,
                                 &mut session,
                                 &mut header_crypto,
@@ -641,12 +822,15 @@ async fn handle_client(
                         CMSG_AUTOSTORE_LOOT_ITEM => {
                             handle_autostore_loot_item(
                                 &mut stream,
-                                &character_db_pool,
-                                &world_db_pool,
-                                SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
+                                LootMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                    parties: &runtime_state.parties,
                                 },
                                 &body,
                                 &mut session,
@@ -755,14 +939,33 @@ async fn handle_client(
                     if Instant::now() >= next_world_tick_at {
                         handle_combat_tick(
                             &mut stream,
-                            &character_db_pool,
-                            &world_db_pool,
-                            SharedWorldDeps {
-                                object_mgr: runtime_state.object_mgr.as_ref(),
-                                maps: &runtime_state.maps,
-                                sessions: &runtime_state.sessions,
+                            CombatTickDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                shared_world: SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                parties: &runtime_state.parties,
+                                account_id: account.id,
                             },
-                            account.id,
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                        handle_loot_roll_timeouts(
+                            &mut stream,
+                            LootMutationDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                shared_world: SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                parties: &runtime_state.parties,
+                            },
                             &mut session,
                             &mut header_crypto,
                         )
@@ -799,14 +1002,33 @@ async fn handle_client(
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
                     handle_combat_tick(
                         &mut stream,
-                        &character_db_pool,
-                        &world_db_pool,
-                        SharedWorldDeps {
-                            object_mgr: runtime_state.object_mgr.as_ref(),
-                            maps: &runtime_state.maps,
-                            sessions: &runtime_state.sessions,
+                        CombatTickDeps {
+                            character_db_pool: &character_db_pool,
+                            world_db_pool: &world_db_pool,
+                            shared_world: SharedWorldDeps {
+                                object_mgr: runtime_state.object_mgr.as_ref(),
+                                maps: &runtime_state.maps,
+                                sessions: &runtime_state.sessions,
+                            },
+                            parties: &runtime_state.parties,
+                            account_id: account.id,
                         },
-                        account.id,
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
+                    handle_loot_roll_timeouts(
+                        &mut stream,
+                        LootMutationDeps {
+                            character_db_pool: &character_db_pool,
+                            world_db_pool: &world_db_pool,
+                            shared_world: SharedWorldDeps {
+                                object_mgr: runtime_state.object_mgr.as_ref(),
+                                maps: &runtime_state.maps,
+                                sessions: &runtime_state.sessions,
+                            },
+                            parties: &runtime_state.parties,
+                        },
                         &mut session,
                         &mut header_crypto,
                     )
@@ -930,8 +1152,11 @@ async fn refresh_active_player_session_cache(
     session.active_spells = snapshot.active_spells;
     session.inventory = snapshot.inventory;
     session.quest_statuses = snapshot.quest_statuses;
+    session.player_flags = snapshot.flags;
     if let Some(character) = session.active_character.as_mut() {
         character.position = snapshot.position;
+        character.level = snapshot.level;
+        character.xp = snapshot.xp;
     }
 }
 

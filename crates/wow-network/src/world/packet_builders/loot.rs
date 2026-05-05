@@ -49,6 +49,12 @@ impl From<CreatureLootQuery> for DbCreatureLootRuntime {
             count: loot.max_count.max(loot.min_count).max(1),
 
             display_id: loot.display_id,
+
+            quality: 0,
+
+            free_for_all: false,
+
+            quest_drop: loot.is_quest_drop(),
         }
     }
 }
@@ -102,6 +108,7 @@ async fn autostore_loot_item(
     let mut remaining_count = loot.count;
 
     let mut update_blocks = Vec::new();
+    let mut pushed_item = None;
 
     if max_stack > 1 {
         if let Some(existing_stack) = session
@@ -142,6 +149,10 @@ async fn autostore_loot_item(
                     existing_stack.item,
                     merged_count,
                 )?);
+                pushed_item = Some(CharacterInventoryItem {
+                    count: merged_count,
+                    ..existing_stack
+                });
             }
         }
     }
@@ -150,7 +161,7 @@ async fn autostore_loot_item(
         let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
             send_inventory_change_failure(
                 stream,
-                EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+                EQUIP_ERR_INVENTORY_FULL,
                 None,
                 None,
                 header_crypto,
@@ -190,6 +201,7 @@ async fn autostore_loot_item(
                 &session.inventory,
                 &[dst_slot],
             )?);
+            pushed_item = Some(new_item.clone());
         }
     } else {
         session.inventory =
@@ -203,6 +215,17 @@ async fn autostore_loot_item(
         Some(&mut *header_crypto),
     )
     .await?;
+
+    if let Some(item) = pushed_item.as_ref() {
+        let body = build_item_push_result_body(character_guid, item, loot.count, true, false, true);
+        send_packet(
+            stream,
+            SMSG_ITEM_PUSH_RESULT,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
 
     let body = build_update_object_body(&update_blocks);
 
@@ -222,10 +245,11 @@ async fn autostore_loot_item(
     Ok(true)
 }
 
-fn build_db_creature_loot_response_body(
+fn build_db_creature_loot_response_body_for_player(
     target: ObjectGuid,
-
     creature: &DbCreatureRuntime,
+    loot_method: Option<(u8, u8, u32)>,
+    character_guid: u32,
 ) -> Vec<u8> {
     let item_count = creature.loot_items.len().min(u8::MAX as usize) as u8;
 
@@ -244,9 +268,16 @@ fn build_db_creature_loot_response_body(
         .to_le_bytes(),
     );
 
-    body.push(item_count);
+    let count_pos = body.len();
+    body.push(0);
 
+    let mut shown = 0u8;
     for loot in creature.loot_items.iter().take(item_count as usize) {
+        let Some(slot_type) =
+            db_creature_loot_slot_type_for_player(creature, loot_method, character_guid, loot)
+        else {
+            continue;
+        };
         body.push(loot.slot);
 
         body.extend_from_slice(&loot.item.to_le_bytes());
@@ -259,10 +290,65 @@ fn build_db_creature_loot_response_body(
 
         body.extend_from_slice(&0u32.to_le_bytes());
 
-        body.push(LOOT_SLOT_NORMAL);
+        body.push(slot_type);
+        shown = shown.saturating_add(1);
     }
+    body[count_pos] = shown;
 
     body
+}
+
+fn db_creature_loot_slot_type_for_player(
+    creature: &DbCreatureRuntime,
+    loot_method: Option<(u8, u8, u32)>,
+    character_guid: u32,
+    loot: &DbCreatureLootRuntime,
+) -> Option<u8> {
+    const LOOT_SLOT_VIEW: u8 = 1;
+    const LOOT_SLOT_MASTER: u8 = 2;
+    let Some((method, threshold, master_looter)) = loot_method else {
+        return Some(LOOT_SLOT_NORMAL);
+    };
+    if loot.free_for_all {
+        return Some(LOOT_SLOT_NORMAL);
+    }
+    let under_threshold = loot.quest_drop || loot.quality < threshold;
+    match method {
+        0 => Some(LOOT_SLOT_NORMAL), // free for all
+        1 | 3 | 4 => {
+            if !under_threshold {
+                if creature.loot_roll_released_slots.contains(&loot.slot) {
+                    Some(LOOT_SLOT_NORMAL)
+                } else {
+                    Some(LOOT_SLOT_VIEW)
+                }
+            } else if creature.loot_current_looter == Some(character_guid)
+                || creature
+                    .loot_current_looter_pass_slots
+                    .contains(&loot.slot)
+                || creature.loot_roll_released_slots.contains(&loot.slot)
+            {
+                Some(LOOT_SLOT_NORMAL)
+            } else {
+                None
+            }
+        }
+        2 => {
+            if under_threshold {
+                (creature.loot_current_looter == Some(character_guid)
+                    || creature
+                        .loot_current_looter_pass_slots
+                        .contains(&loot.slot)
+                    || creature.loot_roll_released_slots.contains(&loot.slot))
+                .then_some(LOOT_SLOT_NORMAL)
+            } else if character_guid == master_looter {
+                Some(LOOT_SLOT_MASTER)
+            } else {
+                Some(LOOT_SLOT_VIEW)
+            }
+        }
+        _ => Some(LOOT_SLOT_NORMAL),
+    }
 }
 
 fn build_gameobject_loot_response_body(
@@ -287,6 +373,19 @@ fn build_gameobject_loot_response_body(
         body.push(LOOT_SLOT_NORMAL);
     }
 
+    body
+}
+
+fn build_loot_master_list_body(members: &[u32]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(1 + members.len().min(u8::MAX as usize) * 8);
+    body.push(members.len().min(u8::MAX as usize) as u8);
+    for member in members.iter().take(u8::MAX as usize) {
+        body.extend_from_slice(
+            &ObjectGuid::new(HighGuid::Player, 0, *member)
+                .raw()
+                .to_le_bytes(),
+        );
+    }
     body
 }
 

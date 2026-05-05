@@ -1,8 +1,6 @@
 async fn handle_cast_spell(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
+    deps: SpellCastDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -30,8 +28,8 @@ async fn handle_cast_spell(
         };
         return handle_opening_spell(
             stream,
-            world_db_pool,
-            shared_world,
+            deps.world_db_pool,
+            deps.shared_world,
             session,
             header_crypto,
             request,
@@ -47,9 +45,9 @@ async fn handle_cast_spell(
         );
         return Ok(());
     }
-    let Some(spell_template) = shared_world
+    let Some(spell_template) = deps.shared_world
         .object_mgr
-        .spell_template(world_db_pool, packet.spell_id)
+        .spell_template(deps.world_db_pool, packet.spell_id)
         .await?
     else {
         warn!(
@@ -69,8 +67,8 @@ async fn handle_cast_spell(
 
     let targets = normalize_starter_spell_targets(packet.targets, &starter_spell, caster);
     if let Some(failure) = starter_spell_cast_failure(
-        shared_world,
-        session,
+            deps.shared_world,
+            session,
         &starter_spell,
         &targets,
         Instant::now(),
@@ -127,7 +125,7 @@ async fn handle_cast_spell(
             Some(&mut *header_crypto),
         )
         .await?;
-        let observer_packets = shared_world
+        let observer_packets = deps.shared_world
             .maps
             .broadcast_nearby_player_packet(
                 map_id,
@@ -139,7 +137,7 @@ async fn handle_cast_spell(
                 },
             )
             .await;
-        shared_world.sessions.dispatch(observer_packets).await;
+        deps.shared_world.sessions.dispatch(observer_packets).await;
         if let Some(target) = targets.unit_target {
             let (rage_cost, mana_cost) = match starter_spell.power {
                 StarterSpellPower::Rage { cost } => (cost, 0),
@@ -162,7 +160,7 @@ async fn handle_cast_spell(
             Some(&mut *header_crypto),
         )
         .await?;
-        let observer_packets = shared_world
+        let observer_packets = deps.shared_world
             .maps
             .broadcast_nearby_player_packet(
                 map_id,
@@ -174,7 +172,7 @@ async fn handle_cast_spell(
                 },
             )
             .await;
-        shared_world.sessions.dispatch(observer_packets).await;
+        deps.shared_world.sessions.dispatch(observer_packets).await;
         if starter_spell.kind == StarterSpellKind::InstantDamage
             && targets.unit_target == Some(rust_combat_dummy_guid())
             && !session.combat_dummy_lootable
@@ -188,7 +186,7 @@ async fn handle_cast_spell(
                 session.combat_dummy_loot_money_available = true;
                 session.combat_dummy_loot_item_available = true;
                 mirror_session_player_auto_attack(session, None, None);
-                shared_world
+                deps.shared_world
                     .maps
                     .set_player_auto_attack(map_id, character_guid, None, None)
                     .await;
@@ -240,13 +238,35 @@ async fn handle_cast_spell(
         } else if starter_spell.kind == StarterSpellKind::InstantDamage {
             if let Some(target) = targets.unit_target {
                 let can_apply_damage = if starter_spell.requires_melee {
-                    db_creature_player_melee_check_from_map(shared_world, session, target).await
+                    db_creature_player_melee_check_from_map(deps.shared_world, session, target)
+                        .await
                         == PlayerMeleeCheck::Clear
                 } else {
                     true
                 };
                 if can_apply_damage {
-                    if let Some(event) = shared_world
+                    let corpse_loot = if let Some(target_creature) = deps
+                        .shared_world
+                        .maps
+                        .db_creature_snapshot(map_id, target)
+                        .await
+                        .filter(|creature| starter_spell.damage >= creature.health)
+                    {
+                        Some(
+                            prepare_db_creature_corpse_loot(
+                                deps.shared_world.object_mgr,
+                                deps.world_db_pool,
+                                deps.parties,
+                                session,
+                                character_guid,
+                                target_creature.spawn.entry,
+                            )
+                            .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(event) = deps.shared_world
                         .maps
                         .apply_db_creature_damage(
                             map_id,
@@ -260,6 +280,7 @@ async fn handle_cast_spell(
                                 now: Instant::now(),
                                 now_epoch_secs: current_unix_epoch_secs(),
                                 exclude_character_guid: Some(character_guid),
+                                corpse_loot,
                             },
                         )
                         .await?
@@ -270,7 +291,7 @@ async fn handle_cast_spell(
                         mirror_session_db_creature(session, target.raw(), event.creature.clone());
                         if is_dead {
                             mirror_session_player_auto_attack(session, None, None);
-                            shared_world
+                            deps.shared_world
                                 .maps
                                 .set_player_auto_attack(map_id, character_guid, None, None)
                                 .await;
@@ -303,11 +324,11 @@ async fn handle_cast_spell(
                         )
                         .await?;
                         let broadcast = CreatureCombatBroadcast {
-                            shared_world,
+                            shared_world: deps.shared_world,
                             map_id,
                             player: caster,
                         };
-                        shared_world.sessions.dispatch(event.observer_packets).await;
+                        deps.shared_world.sessions.dispatch(event.observer_packets).await;
                         if is_dead {
                             send_db_creature_motion_stop(
                                 stream,
@@ -319,9 +340,12 @@ async fn handle_cast_spell(
                             .await?;
                             finalize_db_creature_death(
                                 stream,
-                                character_db_pool,
-                                world_db_pool,
-                                shared_world,
+                                CombatRewardDeps {
+                                    character_db_pool: deps.character_db_pool,
+                                    world_db_pool: deps.world_db_pool,
+                                    shared_world: deps.shared_world,
+                                    parties: deps.parties,
+                                },
                                 session,
                                 death_finalization,
                                 header_crypto,
@@ -330,14 +354,14 @@ async fn handle_cast_spell(
                         } else {
                             send_db_creature_threat_target_switch(
                                 stream,
-                                shared_world,
+                                deps.shared_world,
                                 session,
                                 target_switch,
                                 header_crypto,
                             )
                             .await?;
                             begin_shared_db_creature_combat(
-                                shared_world,
+                                deps.shared_world,
                                 session,
                                 target,
                                 Instant::now(),
@@ -358,12 +382,12 @@ async fn handle_cast_spell(
                 caster,
                 character_level,
                 now,
-                shared_world
+                deps.shared_world
                     .maps
                     .spell_duration(spell_template.duration_index),
             );
             apply_player_aura(session, aura.clone());
-            if let Some(event) = shared_world
+            if let Some(event) = deps.shared_world
                 .maps
                 .apply_player_aura(map_id, character_guid, aura)
                 .await?
@@ -372,7 +396,7 @@ async fn handle_cast_spell(
                     send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
                         .await?;
                 }
-                shared_world.sessions.dispatch(event.observer_packets).await;
+                deps.shared_world.sessions.dispatch(event.observer_packets).await;
             } else {
                 send_packet(
                     stream,
@@ -394,6 +418,14 @@ async fn handle_cast_spell(
         };
         send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
     }
+}
+
+#[derive(Clone, Copy)]
+struct SpellCastDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    shared_world: SharedWorldDeps<'a>,
+    parties: &'a PartyManager,
 }
 
 struct OpeningSpellRequest {
@@ -1007,6 +1039,31 @@ async fn handle_item_query_single(
     send_packet(
         stream,
         SMSG_ITEM_QUERY_SINGLE_RESPONSE,
+        &response,
+        Some(header_crypto),
+    )
+    .await
+}
+
+async fn handle_item_name_query(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    body: &[u8],
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if body.len() < 4 {
+        anyhow::bail!("CMSG_ITEM_NAME_QUERY payload too short: {} bytes", body.len());
+    }
+
+    let item = u32::from_le_bytes(body[0..4].try_into()?);
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, item).await? else {
+        warn!(item, "Ignoring item name query for unknown item");
+        return Ok(());
+    };
+    let response = build_item_name_query_response(&template);
+    send_packet(
+        stream,
+        SMSG_ITEM_NAME_QUERY_RESPONSE,
         &response,
         Some(header_crypto),
     )

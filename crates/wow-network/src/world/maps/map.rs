@@ -28,6 +28,7 @@ struct PlayerRuntime {
     gender: u8,
     health: u32,
     max_health: u32,
+    xp: u32,
     power1: u32,
     max_power1: u32,
     power2: u32,
@@ -45,8 +46,15 @@ struct PlayerRuntime {
 #[allow(dead_code)]
 struct PlayerRuntimeSnapshot {
     position: WorldPosition,
+    flags: u32,
+    level: u8,
+    race: u8,
+    class: u8,
+    xp: u32,
     health: u32,
+    max_health: u32,
     power1: u32,
+    max_power1: u32,
     power2: u32,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
@@ -56,6 +64,18 @@ struct PlayerRuntimeSnapshot {
     combat_stats: PlayerCombatStats,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct PlayerRewardRuntimeUpdate {
+    level: u8,
+    xp: u32,
+    health: u32,
+    max_health: u32,
+    power1: u32,
+    max_power1: u32,
+    power2: u32,
+    quest_statuses: HashMap<u32, CharacterQuestStatus>,
 }
 
 #[derive(Debug)]
@@ -113,7 +133,7 @@ struct DbCreatureDamageEvent {
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct DbCreatureDamageRequest {
     creature_guid: ObjectGuid,
     killer: ObjectGuid,
@@ -124,6 +144,23 @@ struct DbCreatureDamageRequest {
     now: Instant,
     now_epoch_secs: u64,
     exclude_character_guid: Option<u32>,
+    corpse_loot: Option<DbCreatureCorpseLootInit>,
+}
+
+#[derive(Debug)]
+struct DbCreatureDeleteEvent {
+    creature: DbCreatureRuntime,
+    direct_packet: OutboundWorldPacket,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Clone)]
+struct DbCreatureCorpseLootInit {
+    owner: CreatureLootOwner,
+    allowed_players: Vec<u32>,
+    current_looter: Option<u32>,
+    loot_method: Option<CreatureLootMethod>,
+    loot_items: Vec<DbCreatureLootRuntime>,
 }
 
 #[derive(Debug)]

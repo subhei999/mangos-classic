@@ -43,6 +43,27 @@ the local game stack and observability dashboard:
   - `scripts/run-client-stack-18085.ps1`
   - `scripts/restart-game-stack.cmd`
   - `scripts/restart-game-stack.ps1`
+- Current uncommitted multiplayer first pass adds in-memory party invite,
+  accept, decline/cancel, leave/disband, kick, leader-transfer, group-list
+  packet updates, party chat routing, and DB-creature loot owner checks for
+  player/party tags. Follow-up work in the same uncommitted set adds
+  CMaNGOS-shaped nearby party kill credit, group XP rate splitting,
+  `CMSG_LOOT_METHOD` updates, and login-time group-list refresh for runtime
+  parties. Later multiplayer follow-up work adds raid conversion/subgroups,
+  assistant flags, core party member stats requests, group-loot need/greed/pass
+  roll packets and winner item distribution, master-loot member lists, and
+  `CMSG_LOOT_MASTER_GIVE` assignment for over-threshold creature loot. Persisted
+  group rows and real-client two-account proof remain follow-ups.
+- Current uncommitted GM command first pass wires account `gmlevel` into world
+  sessions and consumes chat dot commands for `.gm on/off`, `.npc add
+  #creatureid`, `.npc delete [#guid]`, and `.die`. Spawned creatures use real world DB
+  `creature_template` data, are inserted into shared `MapRuntime`, broadcast as
+  DB creature create blocks, and can be killed through the shared DB-creature
+  corpse-loot/death path for real-client loot testing. `.npc delete` removes
+  the selected or specified creature from the live map runtime and broadcasts
+  a destroy packet, but deliberately does not delete world DB rows. `.npc add`
+  persistence to the world `creature` table is not implemented yet; GitHub
+  issue #65 tracks the CMaNGOS `Creature::SaveToDB` parity gap.
 
 Run `git status --short --branch` before editing.
 
@@ -171,6 +192,138 @@ arrays. Rust now mirrors that shape with `FactionTemplateStore` loaded through
 assist calls. The old small Northshire faction bridge remains only as a
 warned bootstrap/test fallback when real DBC data is unavailable; it is not
 extended with Webwood-specific hardcoding.
+- Added a first CMaNGOS-shaped party runtime under shared world state. Online
+  sessions now retain active character names for invite lookup, support the
+  vanilla group opcodes for invite/accept/decline/leave/kick/leader changes,
+  and send `SMSG_GROUP_INVITE`, `SMSG_GROUP_LIST`,
+  `SMSG_GROUP_DESTROYED`, and `SMSG_PARTY_COMMAND_RESULT` packet shapes.
+- Party chat (`CHAT_MSG_PARTY`) now routes only to current party members.
+- DB-creature loot now records a `Player` or `Party` owner when a player starts
+  attacking, allows party-owned corpse opens for same-party members, and blocks
+  unrelated players from opening a tagged corpse.
+- Party kill rewards now use the shared party membership to award nearby
+  online members quest kill credit and split XP using the CMaNGOS group XP
+  rate table. Remote members get DB progression/quest updates, map runtime
+  reward state updates, and outbound XP/quest packets.
+- Party loot method changes now handle `CMSG_LOOT_METHOD` for the leader and
+  resend `SMSG_GROUP_LIST` with free-for-all, round-robin, master-loot, or
+  group-loot settings. Runtime party membership is still in-memory, but relog
+  now resends the group list if membership survived the socket transition.
+- Raid-visible party controls now handle `CMSG_GROUP_RAID_CONVERT`,
+  `CMSG_GROUP_CHANGE_SUB_GROUP`, and `CMSG_GROUP_ASSISTANT_LEADER`. Shared
+  party state tracks raid flag, subgroup, and assistant bits, and group-list
+  packet bodies now carry CMaNGOS group flags for self and other members.
+- Party member stats requests now handle `CMSG_REQUEST_PARTY_MEMBER_STATS`
+  with `SMSG_PARTY_MEMBER_STATS_FULL` for online map-owned players or offline
+  status for missing players. This gives the real client the core member
+  health/power/level/position fields it asks for after group membership.
+- Group loot now starts CMaNGOS-shaped need/greed/pass rolls for
+  over-threshold DB creature loot. The shared party runtime sends
+  `SMSG_LOOT_START_ROLL`, records `CMSG_LOOT_ROLL` votes, emits vote/winner or
+  all-passed packets, and awards the rolled item to the winner through a shared
+  DB inventory grant path that refreshes map-owned inventory and the winner
+  session cache on the next packet.
+- Group loot response filtering now mirrors the CMaNGOS `LootItem` slot-type
+  split more closely: DB creature loot carries item quality, free-for-all, and
+  quest-drop metadata; shared corpses remember a current looter; under-threshold
+  normal party loot is visible/lootable only to that current looter; green-or-
+  better group-loot items are visible as view-only while the roll resolves; and
+  autostore rejects hidden/view/master-only slots instead of consuming them.
+- DB creature corpse loot is now generated at the map-owned death/corpse
+  transition instead of first `CMSG_LOOT`, matching CMaNGOS `Loot` creation
+  timing closely enough for pre-open rights: the corpse stores owner,
+  allowed party members, current looter, loot method, and stable loot slots
+  before death update packets are built. The death update now sends
+  player-specific `UNIT_DYNFLAG_LOOTABLE` for present observers, so a
+  non-current party member no longer sees ordinary under-threshold group loot
+  as lootable just because the corpse exists.
+- Master loot now sends `SMSG_LOOT_MASTER_LIST` to the current master looter
+  and handles `CMSG_LOOT_MASTER_GIVE` for same-party over-threshold DB creature
+  loot assignment. Non-master autostore attempts for master-loot threshold items
+  are blocked and restored to the shared corpse loot state.
+- Real-client multiplayer playtest confirmed the core invite/accept/decline,
+  leave, two-player disband, leader transfer, party chat, relog group-list,
+  party HP stats, party corpse ownership, unrelated-player loot rejection,
+  group XP split, corpse-created lootability, under-threshold current-looter
+  sparkle, non-current no-sparkle, free-for-all access, empty corpse
+  lootability clearing, party-to-raid conversion, and subgroup movement.
+  Follow-up fixes from that playtest corrected CMaNGOS packet details for
+  group removal and leader changes: empty `SMSG_GROUP_LIST` is now the
+  three-zero-guid payload, kicks send `SMSG_GROUP_UNINVITE` to the removed
+  player, and leader changes send `SMSG_GROUP_SET_LEADER` before group-list
+  refreshes.
+- Shared DB-creature loot windows now fan out `SMSG_LOOT_REMOVED` and
+  `SMSG_LOOT_CLEAR_MONEY` to other characters currently looting the same
+  corpse, so free-for-all/two-looter windows should remove claimed items/money
+  immediately instead of leaving stale UI.
+- Party member stats now report rogue energy as energy type with 100/100
+  energy instead of falling through to mana. Warrior rage and mana users still
+  need a real-client retest after this packet cleanup because the prior
+  observation was "HP updates, not rage/mana/energy".
+- GM dot commands now intercept chat before normal chat broadcast. `.gm on/off`
+  toggles runtime GM mode for accounts with security 1+, `.npc add
+  #creatureid` requires security 2+ and spawns a shared DB-template creature at
+  the player's current position, `.npc delete [#guid]` requires security 2+
+  and removes a live runtime creature without deleting DB data, and `.die`
+  requires security 3+ and kills the selected DB creature with corpse loot
+  created eagerly from real loot tables. `.die` now suppresses the
+  `SMSG_ATTACKERSTATEUPDATE` damage packet for the default no-argument
+  CMaNGOS `INSTAKILL` path so it does not present like a normal melee swing,
+  while explicitly forcing the selected creature's runtime loot owner to the
+  GM/party before death so the corpse remains claimed for the command issuer.
+- Creature loot loading now preserves CMaNGOS reference entries instead of
+  filtering them out with the direct item join. `ObjectMgr` caches
+  `reference_loot_template` rows, and the shared loot roller recursively
+  processes selected references before corpse loot runtime items are built.
+  This fixes named boss loot stored behind negative `mincountOrRef` rows such
+  as Onyxia's `34000`-series references. Loot `condition_id` evaluation is
+  still a fidelity follow-up. A follow-up fix explicitly casts the loot query
+  `CASE`/`COALESCE` expressions to unsigned integers; without that, MariaDB
+  exposed `min_count` and then `display_id` as `DECIMAL`, sqlx rejected the row
+  decode, and `.die` on Onyxia ended the world session while preparing corpse
+  loot.
+- Group-loot roll popups now start when a shared corpse loot window is opened,
+  matching CMaNGOS' `Loot::NotifyLootList` timing, instead of waiting for an
+  impossible autostore click on a view-only roll-blocked item. Rust also now
+  handles `CMSG_ITEM_NAME_QUERY` / `SMSG_ITEM_NAME_QUERY_RESPONSE`, which the
+  1.12 client sends while building roll UI for the item, and the roll-start
+  vote mask now matches CMaNGOS' `ROLL_VOTE_MASK_ALL`.
+- Group-loot roll lifecycle has been hardened against the latest real-client
+  findings. Reopening an already-rolling corpse no longer creates a new roll;
+  winner resolution removes the corpse slot by loot GUID/slot before granting
+  the item so the item cannot remain lootable and duplicate; CMaNGOS-style
+  final `SMSG_LOOT_ROLL` packets now send the actual need/greed roll numbers
+  before `SMSG_LOOT_ROLL_WON`; and timeout expiry treats non-voters as pass,
+  resolves the roll, and releases all-passed items back to eligible party
+  corpse looters instead of leaving them permanently view-only.
+- Corpse loot decisions now use the loot-method snapshot captured on the corpse
+  instead of consulting the party's current loot settings. This prevents
+  `CMSG_LOOT_METHOD` changes after mob death from changing an existing corpse's
+  group-loot, master-loot, threshold, or master-looter rules.
+- Master-loot viewer eligibility was tightened after real-client testing:
+  eligible non-master party members can reopen a corpse to view over-threshold
+  master-loot items after taking the corpse money, while autostore still blocks
+  them from directly taking those master-loot items.
+- Creature loot money now splits for grouped corpse loot using the corpse's
+  allowed owner set, mirroring CMaNGOS integer division. Online owners receive
+  `SMSG_LOOT_MONEY_NOTIFY` plus coinage updates; solo/non-group corpses still
+  award all gold to the looter.
+- Master-loot assignment now fans out `SMSG_LOOT_REMOVED` to all open corpse
+  looters except the assigned recipient when the assigned target is someone
+  other than the master looter. This covers both the master looter and other
+  non-target viewers, fixing stale master loot UI after assignment.
+- CMaNGOS-style loot release/full-inventory edge cases are now wired for shared
+  DB-creature corpses. When the current group looter closes a corpse without
+  taking under-threshold non-rolling items, the corpse records a per-slot
+  current-looter pass so eligible party members can reopen and loot those
+  items. Full backpacks now send vanilla `EQUIP_ERR_INVENTORY_FULL` (`50`)
+  instead of the split-stack error, and failed autostore preserves all-pass or
+  current-looter-pass release state so reopening does not restart a roll.
+- Direct loot autostore now sends `SMSG_ITEM_PUSH_RESULT` after storing corpse,
+  gameobject, or combat-dummy loot, matching CMaNGOS
+  `Loot::SendItem -> Player::SendNewItem` so the client can show the chat log
+  "You receive loot" line and item link. The stack-merge shape uses the
+  CMaNGOS-style unknown slot while still reporting the looted count.
 
 ## Tests Run
 
@@ -201,6 +354,40 @@ passed.
 - `cmd /c scripts\restart-game-stack.cmd` passed after stopping the previous
 live stack, rebuilding, starting authserver/worldserver, and verifying auth,
 world, and observability ports.
+- Loot-rule hardening verification:
+`cargo fmt --check`, `cargo check -p wow-network`,
+`cargo test -p wow-network party_group_loot --lib`,
+`cargo test -p wow-network group_loot_response --lib`,
+`cargo test -p wow-network loot_start_roll_body_uses_cmangos_vote_mask_all --lib`,
+`cargo test -p wow-network creature_loot_roll --lib`,
+`cargo test -p wow-network loot_response --lib`, and
+`cargo test -p wow-network item_name_query_response_matches_cmangos_shape --lib`
+passed.
+- Post corpse-loot-method snapshot fix:
+`cargo fmt --check`, `cargo check -p wow-network`,
+`cargo test -p wow-network corpse_loot_method_snapshot --lib`,
+`cargo test -p wow-network group_loot_response --lib`, and
+`cargo test -p wow-network party_master_loot_members_only_for_current_master_looter --lib`
+passed.
+- Post master-loot reopen-after-gold fix: `cargo fmt --check`,
+`cargo check -p wow-network`,
+`cargo test -p wow-network master_loot_viewer_can_reopen_after_gold_is_taken --lib`,
+`cargo test -p wow-network master_loot --lib`, and
+`cargo test -p wow-network group_loot_response --lib` passed.
+- Post master-loot assignment UI fanout fix: `cargo fmt --check`,
+`cargo check -p wow-network`,
+`cargo test -p wow-network loot_removed_fanout_notifies_all_open_non_targets_after_master_assignment --lib`,
+and `cargo test -p wow-network master_loot --lib` passed.
+- Post group-gold split fix: `cargo fmt --check`,
+`cargo check -p wow-network`,
+`cargo test -p wow-network creature_loot_money_share --lib`,
+`cargo test -p wow-network master_loot --lib`, and
+`cargo test -p wow-network group_loot_response --lib` passed.
+- Latest `.\scripts\test-rust.cmd` passed clippy, checks, workspace unit tests
+including 405 `wow-network` tests, and doc-tests, then failed only at the final
+`cargo build -p authserver` because the live local `authserver.exe` process
+locked `target\debug\authserver.exe`. `.\scripts\restart-game-stack.cmd`
+then passed after stopping/rebuilding/restarting the local stack.
 - Baseline before the Teldrassil mmap data fix: `.\scripts\test-rust.cmd`
 passed.
 - `cargo fmt --check` passed.
@@ -280,6 +467,152 @@ process locks `target\debug\authserver.exe`.
 - Replacement verification after that lock passed:
 `cargo build -p authserver --target-dir target/codex-verify` and
 `cargo build -p worldserver --target-dir target/codex-verify`.
+- Multiplayer first-pass focused tests passed:
+`cargo test -p wow-network party_manager --lib`,
+`cargo test -p wow-network map_runtime_db_creature_loot_owner --lib`, and
+`cargo test -p wow-network map_runtime_db_creature_party_loot_owner_allows_party_members --lib`.
+- Latest post-party `.\scripts\test-rust.cmd` passed fully: fmt, clippy,
+workspace tests, doc-tests, 384 `wow-network` tests, and final authserver /
+worldserver builds all succeeded.
+- Closeout after removing unused party-reward follow-up stubs:
+`cargo check -p wow-network` passed; `cargo fmt --check` passed; the focused
+party/loot owner tests above passed again; and `.\scripts\test-rust.cmd`
+passed fully with 384 `wow-network` tests plus final authserver/worldserver
+builds.
+- Post group-reward/loot-method follow-up: `cargo check -p wow-network`
+passed; focused tests `cargo test -p wow-network party_manager --lib`,
+`cargo test -p wow-network group_xp_rate --lib`,
+`cargo test -p wow-network map_runtime_db_creature_loot_owner --lib`, and
+`cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot --lib`
+passed; latest `.\scripts\test-rust.cmd` passed fully with 386
+`wow-network` tests and final authserver/worldserver builds.
+- Post raid/subgroup/stats follow-up: `cargo fmt --check` passed; focused
+tests `cargo test -p wow-network party_manager --lib` and
+`cargo test -p wow-network party_member_stats_full_body_matches_cmangos_core_fields --lib`
+passed; latest `.\scripts\test-rust.cmd` passed fully with 388
+`wow-network` tests and final authserver/worldserver builds.
+- Post group-loot/master-loot follow-up: `cargo check -p wow-network` passed;
+  `cargo fmt --check` passed; focused tests
+  `cargo test -p wow-network party_manager --lib`,
+  `cargo test -p wow-network party_group_loot --lib`, and
+  `cargo test -p wow-network party_master_loot --lib` passed. Latest
+  `.\scripts\test-rust.cmd` passed fully with 390 `wow-network` tests,
+  workspace tests/doc-tests, and final authserver/worldserver builds.
+- Post group-loot visibility/parity correction: focused tests
+  `cargo test -p wow-network group_loot_response --lib`,
+  `cargo test -p wow-network party_group_loot --lib`, and
+  `cargo test -p wow-network party_manager --lib` passed. Latest
+  `.\scripts\test-rust.cmd` ran fmt, clippy, workspace tests, doc-tests, and
+  392 `wow-network` tests successfully, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify`,
+  `cargo build -p worldserver --target-dir target/codex-verify`, and
+  `cargo fmt --check`.
+- Post eager corpse-loot creation correction: `cargo fmt --check` passed;
+  focused tests `cargo test -p wow-network map_runtime_death_update_uses_corpse_created_group_loot_rights --lib`,
+  `cargo test -p wow-network group_loot_response --lib`,
+  `cargo test -p wow-network party_group_loot --lib`,
+  `cargo test -p wow-network party_master_loot --lib`, and
+  `cargo test -p wow-network party_manager --lib` passed; `cargo check -p wow-network`
+  passed. Latest `.\scripts\test-rust.cmd` ran fmt, clippy/checks, workspace
+  tests, doc-tests, and 393 `wow-network` tests successfully, then failed only
+  at the final `cargo build -p authserver` because the live local
+  `authserver.exe` locked `target\debug\authserver.exe`. Replacement
+  verification passed: `cargo build -p authserver --target-dir target/codex-verify`,
+  `cargo build -p worldserver --target-dir target/codex-verify`, and
+  `cargo fmt --check`.
+- Post multiplayer playtest patch: focused tests
+  `cargo test -p wow-network party_manager --lib`,
+  `cargo test -p wow-network party_member_stats --lib`,
+  `cargo test -p wow-network map_runtime_tracks_all_open_db_creature_looters_for_ui_fanout --lib`,
+  `cargo test -p wow-network empty_group_list_body_matches_cmangos_three_zero_guids --lib`, and
+  `cargo test -p wow-network group_loot_response --lib` passed; `cargo check -p wow-network`
+  passed. Latest `.\scripts\test-rust.cmd` ran fmt, clippy/checks, workspace
+  tests, doc-tests, and 396 `wow-network` tests successfully, then failed only
+  at the final `cargo build -p authserver` because the live local
+  `authserver.exe` locked `target\debug\authserver.exe`. Replacement
+  verification passed: `cargo build -p authserver --target-dir target/codex-verify`,
+  `cargo build -p worldserver --target-dir target/codex-verify`, and
+  `cargo fmt --check`.
+- Post GM dot command first pass: focused tests
+  `cargo test -p wow-network gm_dot --lib`,
+  `cargo test -p wow-network malformed_gm_npc_add_returns_syntax_error --lib`,
+  `cargo test -p wow-network db_creature_damage --lib`, and
+  `cargo test -p wow-network map_runtime_death_update_uses_corpse_created_group_loot_rights --lib`
+  passed; `cargo check -p wow-network` and `cargo fmt --check` passed. Latest
+  `.\scripts\test-rust.cmd` passed fmt, clippy/checks, workspace tests,
+  doc-tests, and 398 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify`,
+  `cargo build -p worldserver --target-dir target/codex-verify`, and
+  `cargo fmt --check`.
+- Post `.npc delete` follow-up: `cargo check -p wow-network` passed; focused
+  tests `cargo test -p wow-network gm_dot --lib`,
+  `cargo test -p wow-network malformed_gm_npc_add_returns_syntax_error --lib`,
+  and `cargo test -p wow-network map_runtime_db_creature_lifecycle_expires_and_respawns_once --lib`
+  passed; `cargo fmt --check` passed.
+- Post `.die` instakill parity tweak: focused tests
+  `cargo test -p wow-network gm_dot --lib` and
+  `cargo test -p wow-network db_creature_damage --lib` passed;
+  `cargo check -p wow-network` and `cargo fmt --check` passed.
+- Post `.die` loot-owner reclaim fix: focused tests
+  `cargo test -p wow-network gm_instakill --lib` and
+  `cargo test -p wow-network db_creature_damage --lib` passed;
+  `cargo check -p wow-network` and `cargo fmt --check` passed.
+- Post reference-loot fix: `cargo fmt --check` passed; `cargo check -p wow-network`
+  passed; focused tests
+  `cargo test -p wow-network creature_loot_roll_processes_reference_templates --lib`,
+  `cargo test -p wow-network creature_loot_roll --lib`, and
+  `cargo test -p wow-network quest_loot_selection --lib` passed. Live DB
+  inspection confirmed Onyxia `10184` has reference rows `34000`/`34001`/
+  `34002`/`34003` with 9/4/79/121 referenced named-item rows respectively.
+- Post `.die` Onyxia logout fix: inspected `world-client-18085.log` and found
+  sqlx aborting the session with `min_count` decode mismatch (`DECIMAL` vs
+  `u32`). Tightened the creature/reference loot SQL casts, then reran
+  `cargo fmt --check`, `cargo check -p wow-network`, and
+  `cargo test -p wow-network creature_loot_roll --lib`; all passed. Restarted
+  the local game stack with `scripts\restart-game-stack.cmd` so the running
+  worldserver has the fix.
+- Post second `.die` Onyxia logout: inspected the fresh log and found the next
+  sqlx decode mismatch on `display_id` (`DECIMAL` vs `u32`). Cast both
+  creature/reference loot `display_id` expressions as unsigned too, reran
+  `cargo fmt --check`, `cargo check -p wow-network`, and
+  `cargo test -p wow-network creature_loot_roll --lib`; all passed. Restarted
+  the local game stack again with `scripts\restart-game-stack.cmd`.
+- Post group-loot popup fix: `cargo fmt --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network loot_start_roll_body_uses_cmangos_vote_mask_all --lib`,
+  `cargo test -p wow-network item_name_query_response_matches_cmangos_shape --lib`,
+  `cargo test -p wow-network party_group_loot --lib`,
+  `cargo test -p wow-network group_loot_response --lib`, and
+  `cargo test -p wow-network creature_loot_roll --lib` passed. Restarted the
+  local game stack with `scripts\restart-game-stack.cmd`.
+- Post group-loot release/full-inventory fix: `cargo fmt --check`,
+  `cargo check -p wow-network`, `cargo test -p wow-network group_loot_response --lib`,
+  `cargo test -p wow-network map_runtime_release_by_current_looter_releases_under_threshold_group_loot_to_party --lib`,
+  `cargo test -p wow-network loot_inventory_full_error_matches_cmangos --lib`,
+  `cargo test -p wow-network party_group_loot --lib`,
+  `cargo test -p wow-network party_master_loot --lib`, and
+  `cargo test -p wow-network master_loot --lib` passed. Latest
+  `.\scripts\test-rust.cmd` passed clippy, checks, workspace tests, doc-tests,
+  and 415 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`. Restarted the
+  local game stack with `scripts\restart-game-stack.cmd`.
+- Post loot chat pickup notification fix: `cargo fmt --check`,
+  `cargo check -p wow-network`,
+  `cargo test -p wow-network item_push_result --lib`, and
+  `cargo test -p wow-network group_loot_response --lib` passed. Latest
+  `.\scripts\test-rust.cmd` passed clippy, checks, workspace tests, doc-tests,
+  and 416 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`. Restarted the
+  local game stack with `scripts\restart-game-stack.cmd`.
 - `cargo fmt --check` passed after the DBC-backed faction-template work.
 - `cargo test -p wow-network faction_template --lib` passed with 4 tests,
 including a local real-DBC proof that faction `22` reacts hostile to player
@@ -303,9 +636,11 @@ future checkouts.
 dependent breadcrumbs, weekly/timed constraints, active quest flags, exact
 event-controlled quest active state, and broader source-item/bag storage
 semantics are not all wired yet.
-- Loot-table fidelity still does not process references or condition rows; the
-source-item slice only covers direct DB loot rows already loaded by the Rust
-loot query.
+- Loot-table fidelity now processes unconditioned direct and referenced loot
+  rows. Remaining fidelity gap: `condition_id` rows are still filtered until
+  `ObjectMgr::IsConditionSatisfied` parity exists, so class/faction/event-
+  gated boss loot may still be absent even though ordinary named reference
+  drops now roll.
 - Gameobject quest pickup still needs real-client proof on the Northshire route
 after the dynamic-flag refresh lands.
 - Continue warrior level 1-6 spell/GCD/resource/skill behavior, aggro/leash
@@ -330,6 +665,30 @@ normal melee swings once in range.
 and another non-map-0 hostile creature. Expected result is automatic sight
 aggro from real DBC faction reaction, followed by the existing mmap-backed
 chase/leash pathing.
+- Multiplayer party follow-ups: persist group rows or intentionally document
+  runtime-only party scope, add timed/auto-pass handling for mid-roll
+  disconnects, retest >2 member disband/kick after the packet-shape fix,
+  retest party power stats for warrior rage/mana/rogue energy, add
+  late-visibility per-player corpse create-block proof, and continue the
+  untested checklist items from the user's playtest: nearby party kill credit,
+  far/offline reward exclusion, quest drops for eligible players, round-robin
+  rotation, green+ need/greed/pass flow, master-loot assignment, group/raid
+  list updates, disconnect cases, no loot reroll after reopen, spam-open
+  duplicate prevention, real-client inventory-full retest after the latest
+  packet/release-state fix, and player entering range after corpse creation.
+  Current-looter response filtering and eager
+  corpse-loot creation are in place for present players; the remaining
+  dynamic-flag proof is whether a party member who newly enters visibility after
+  corpse creation receives the same per-player lootability filtering in create
+  blocks. Tagged enemies also do not yet show as a gray portrait for unrelated
+  players even though loot access is rejected. Raid conversion/subgroups/
+  assistant flags, core member stats request packets, group loot rolls, and
+  master-loot assignment are now implemented, but raid-instance restrictions/
+  ready checks/target icons are not.
+- GM command follow-up: [GitHub issue #65](https://github.com/subhei999/mangos-classic/issues/65)
+  tracks that `.npc add` currently creates a runtime shared DB-template
+  creature for testing but does not persist a new `creature` row like CMaNGOS
+  `ChatHandler::HandleNpcAddCommand` / `Creature::SaveToDB`.
 
 ## Key Files
 
@@ -347,6 +706,9 @@ chase/leash pathing.
 - `crates/wow-network/src/world/combat/motion.rs`
 - `crates/wow-network/src/world/combat/faction.rs`
 - `crates/wow-network/src/world/combat/runtime.rs`
+- `crates/wow-network/src/world/social/party.rs`
+- `crates/wow-network/src/world/chat.rs`
+- `crates/wow-network/src/world/gm_commands.rs`
 - `crates/wow-network/src/world/loot.rs`
 - `crates/wow-network/src/world/inventory.rs`
 - `crates/wow-network/src/world/vendors.rs`

@@ -1,8 +1,8 @@
 async fn handle_loot(
     stream: &mut WorldPacketSink,
-    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
+    parties: &PartyManager,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -42,7 +42,7 @@ async fn handle_loot(
             return Ok(());
         }
         let loot_items = select_db_gameobject_loot_item_for_character(
-            object_mgr,
+            shared_world.object_mgr,
             world_db_pool,
             session,
             &gameobject.spawn.template,
@@ -87,10 +87,20 @@ async fn handle_loot(
         .unwrap_or(creature.loot_items.is_empty());
     let entry = creature.spawn.entry;
     let loot_items = if needs_loot_item {
-        select_db_creature_loot_item_for_character(object_mgr, world_db_pool, session, entry)
-            .await?
+        select_db_creature_loot_item_for_character(
+            shared_world.object_mgr,
+            world_db_pool,
+            session,
+            entry,
+        )
+        .await?
     } else {
         Vec::new()
+    };
+    let current_looter = if needs_loot_item {
+        parties.assign_current_looter(character.guid).await
+    } else {
+        None
     };
     let Some(creature) = shared_world
         .maps
@@ -98,6 +108,8 @@ async fn handle_loot(
             character.position.map_id,
             target.raw(),
             character.guid,
+            parties.loot_owner_for(character.guid).await,
+            current_looter,
             loot_items,
         )
         .await
@@ -105,8 +117,35 @@ async fn handle_loot(
         warn!("Ignoring loot request for DB creature before it is lootable");
         return Ok(());
     };
-    let response = build_db_creature_loot_response_body(target, &creature);
-    send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
+    let response = build_db_creature_loot_response_body_for_player(
+        target,
+        &creature,
+        db_creature_loot_method_tuple(creature.loot_method),
+        character.guid,
+    );
+    send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(&mut *header_crypto)).await?;
+    start_group_loot_rolls_for_open_creature(
+        shared_world,
+        parties,
+        character.guid,
+        target,
+        &creature,
+    )
+    .await;
+    if creature
+        .loot_method
+        .is_some_and(|method| method.method == 2 && method.master_looter == character.guid)
+    {
+        let mut members = creature
+            .loot_allowed_players
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        members.sort_unstable();
+        let body = build_loot_master_list_body(&members);
+        send_packet(stream, SMSG_LOOT_MASTER_LIST, &body, Some(header_crypto)).await?;
+    }
+    Ok(())
 }
 
 async fn select_db_creature_loot_item_for_character(
@@ -121,6 +160,8 @@ async fn select_db_creature_loot_item_for_character(
     if loot_rows.is_empty() {
         return Ok(Vec::new());
     }
+    let reference_loot_templates =
+        load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
 
     let active_quest_ids: Vec<u32> = session
         .quest_statuses
@@ -137,8 +178,9 @@ async fn select_db_creature_loot_item_for_character(
     let source_item_default_counts =
         load_quest_source_item_default_counts(world_db_pool, &active_quests).await?;
 
-    Ok(select_creature_loot_for_active_quests(
+    let mut loot_items = select_creature_loot_for_active_quests(
         &loot_rows,
+        &reference_loot_templates,
         &active_quests,
         &session.quest_statuses,
         &session.inventory,
@@ -146,7 +188,52 @@ async fn select_db_creature_loot_item_for_character(
     )
     .into_iter()
     .map(DbCreatureLootRuntime::from)
-    .collect())
+    .collect::<Vec<_>>();
+    apply_loot_item_template_metadata(world_db_pool, &mut loot_items).await?;
+    Ok(loot_items)
+}
+
+async fn prepare_db_creature_corpse_loot(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    parties: &PartyManager,
+    session: &WorldSessionState,
+    character_guid: u32,
+    creature_entry: u32,
+) -> anyhow::Result<DbCreatureCorpseLootInit> {
+    let owner = parties.loot_owner_for(character_guid).await;
+    let party_members = parties.party_members(character_guid).await;
+    let allowed_players = if party_members.is_empty() {
+        vec![character_guid]
+    } else {
+        party_members
+            .into_iter()
+            .map(|member| member.guid)
+            .collect::<Vec<_>>()
+    };
+    let current_looter = parties
+        .assign_current_looter(character_guid)
+        .await
+        .or(Some(character_guid));
+    let loot_method =
+        parties
+            .loot_method_for(character_guid)
+            .await
+            .map(|(method, threshold, master_looter)| CreatureLootMethod {
+                method,
+                threshold,
+                master_looter,
+            });
+    let loot_items =
+        select_db_creature_loot_item_for_character(object_mgr, world_db_pool, session, creature_entry)
+            .await?;
+    Ok(DbCreatureCorpseLootInit {
+        owner,
+        allowed_players,
+        current_looter,
+        loot_method,
+        loot_items,
+    })
 }
 
 async fn select_db_gameobject_loot_item_for_character(
@@ -164,6 +251,8 @@ async fn select_db_gameobject_loot_item_for_character(
     if loot_rows.is_empty() {
         return Ok(Vec::new());
     }
+    let reference_loot_templates =
+        load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
 
     let active_quest_ids: Vec<u32> = session
         .quest_statuses
@@ -180,8 +269,9 @@ async fn select_db_gameobject_loot_item_for_character(
     let source_item_default_counts =
         load_quest_source_item_default_counts(world_db_pool, &active_quests).await?;
 
-    Ok(select_creature_loot_for_active_quests(
+    let mut loot_items = select_creature_loot_for_active_quests(
         &loot_rows,
+        &reference_loot_templates,
         &active_quests,
         &session.quest_statuses,
         &session.inventory,
@@ -190,11 +280,108 @@ async fn select_db_gameobject_loot_item_for_character(
     .into_iter()
     .filter(|loot| loot.is_quest_drop())
     .map(DbCreatureLootRuntime::from)
-    .collect())
+    .collect::<Vec<_>>();
+    apply_loot_item_template_metadata(world_db_pool, &mut loot_items).await?;
+    Ok(loot_items)
+}
+
+async fn apply_loot_item_template_metadata(
+    world_db_pool: &MySqlPool,
+    loot_items: &mut [DbCreatureLootRuntime],
+) -> anyhow::Result<()> {
+    const ITEM_FLAG_MULTI_DROP: u32 = 0x0000_0800;
+    for loot in loot_items {
+        let template = match wow_db::get_item_template_query(world_db_pool, loot.item).await {
+            Ok(Some(template)) => template,
+            Ok(None) => continue,
+            Err(error) => {
+                warn!(
+                    item = loot.item,
+                    "Could not load item template metadata for loot item: {}",
+                    error
+                );
+                continue;
+            }
+        };
+        loot.quality = template.quality.min(u8::MAX as u32) as u8;
+        loot.free_for_all = (template.flags & ITEM_FLAG_MULTI_DROP) != 0;
+    }
+    Ok(())
+}
+
+async fn start_group_loot_rolls_for_open_creature(
+    shared_world: SharedWorldDeps<'_>,
+    parties: &PartyManager,
+    character_guid: u32,
+    loot_guid: ObjectGuid,
+    creature: &DbCreatureRuntime,
+) {
+    let Some(loot_method) = creature.loot_method else {
+        return;
+    };
+    if loot_method.method != 3 {
+        return;
+    }
+    for loot in creature
+        .loot_items
+        .iter()
+        .filter(|loot| {
+            !loot.quest_drop
+                && !loot.free_for_all
+                && loot.quality >= loot_method.threshold
+                && !creature.loot_roll_released_slots.contains(&loot.slot)
+        })
+    {
+        if let Some(start) = parties
+            .start_loot_roll(
+                character_guid,
+                creature.current_position.map_id,
+                loot_guid,
+                loot.slot,
+                loot.clone(),
+            )
+            .await
+        {
+            dispatch_party_member_packets(shared_world.sessions, start.packets).await;
+        }
+    }
+}
+
+async fn load_reference_loot_templates(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    root_rows: &[CreatureLootQuery],
+) -> anyhow::Result<HashMap<u32, Vec<CreatureLootQuery>>> {
+    let mut templates = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut pending = root_rows
+        .iter()
+        .filter(|row| row.is_reference())
+        .map(|row| row.item)
+        .collect::<Vec<_>>();
+
+    while let Some(reference_entry) = pending.pop() {
+        if !seen.insert(reference_entry) {
+            continue;
+        }
+
+        let rows = object_mgr
+            .reference_loot_items(world_db_pool, reference_entry)
+            .await?;
+        for nested_reference in rows.iter().filter(|row| row.is_reference()) {
+            if !seen.contains(&nested_reference.item) {
+                pending.push(nested_reference.item);
+            }
+        }
+        templates.insert(reference_entry, rows);
+    }
+
+    Ok(templates)
 }
 
 fn select_creature_loot_for_active_quests(
     loot_rows: &[CreatureLootQuery],
+    reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
@@ -204,6 +391,7 @@ fn select_creature_loot_for_active_quests(
     let mut count_rng = rand::thread_rng();
     select_creature_loot_for_active_quests_with_rolls(
         loot_rows,
+        reference_loot_templates,
         active_quests,
         quest_statuses,
         inventory,
@@ -213,8 +401,10 @@ fn select_creature_loot_for_active_quests(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_creature_loot_for_active_quests_with_rolls(
     loot_rows: &[CreatureLootQuery],
+    reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     inventory: &[CharacterInventoryItem],
@@ -222,6 +412,30 @@ fn select_creature_loot_for_active_quests_with_rolls(
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
 ) -> Vec<CreatureLootQuery> {
+    select_creature_loot_for_active_quests_with_rolls_inner(
+        loot_rows,
+        reference_loot_templates,
+        active_quests,
+        quest_statuses,
+        inventory,
+        source_item_default_counts,
+        &mut chance_roll,
+        &mut count_roll,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_creature_loot_for_active_quests_with_rolls_inner(
+    loot_rows: &[CreatureLootQuery],
+    reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
+    active_quests: &HashMap<u32, QuestTemplateQuery>,
+    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    inventory: &[CharacterInventoryItem],
+    source_item_default_counts: &HashMap<u32, u32>,
+    chance_roll: &mut dyn FnMut() -> f32,
+    count_roll: &mut dyn FnMut(u32, u32) -> u32,
+) -> Vec<CreatureLootQuery> {
+    let mut active_references = Vec::new();
     let mut rolled = Vec::new();
     let mut grouped: HashMap<u8, Vec<CreatureLootQuery>> = HashMap::new();
     for loot in loot_rows {
@@ -236,10 +450,14 @@ fn select_creature_loot_for_active_quests_with_rolls(
             quest_statuses,
             inventory,
             source_item_default_counts,
-            &mut chance_roll,
-            &mut count_roll,
+            &mut *chance_roll,
+            &mut *count_roll,
         ) {
-            rolled.push(loot);
+            if loot.is_reference() {
+                active_references.push(loot);
+            } else {
+                rolled.push(loot);
+            }
         }
     }
 
@@ -255,10 +473,33 @@ fn select_creature_loot_for_active_quests_with_rolls(
             quest_statuses,
             inventory,
             source_item_default_counts,
-            &mut chance_roll,
-            &mut count_roll,
+            &mut *chance_roll,
+            &mut *count_roll,
         ) {
-            rolled.push(loot);
+            if loot.is_reference() {
+                active_references.push(loot);
+            } else {
+                rolled.push(loot);
+            }
+        }
+    }
+
+    for reference in active_references {
+        let Some(reference_rows) = reference_loot_templates.get(&reference.item) else {
+            continue;
+        };
+        let loops = reference.max_count.max(1);
+        for _ in 0..loops {
+            rolled.extend(select_creature_loot_for_active_quests_with_rolls_inner(
+                reference_rows,
+                reference_loot_templates,
+                active_quests,
+                quest_statuses,
+                inventory,
+                source_item_default_counts,
+                &mut *chance_roll,
+                &mut *count_roll,
+            ));
         }
     }
 
@@ -315,6 +556,11 @@ fn roll_loot_group(
         equal_chance.get(index as usize).cloned()
     }?;
 
+    let mut selected = selected;
+    if selected.chance_or_quest_chance == 0.0 {
+        selected.chance_or_quest_chance = 100.0;
+    }
+
     roll_loot_row(
         &selected,
         active_quests,
@@ -335,7 +581,8 @@ fn roll_loot_row(
     mut chance_roll: impl FnMut() -> f32,
     mut count_roll: impl FnMut(u32, u32) -> u32,
 ) -> Option<CreatureLootQuery> {
-    let is_quest_drop = loot.is_quest_drop();
+    let is_reference = loot.is_reference();
+    let is_quest_drop = !is_reference && loot.is_quest_drop();
     if is_quest_drop
         && !player_needs_quest_loot_item(
             loot.item,
@@ -350,11 +597,17 @@ fn roll_loot_row(
     let chance = if is_quest_drop {
         -loot.chance_or_quest_chance
     } else {
-        loot.chance_or_quest_chance
+        loot.chance_or_quest_chance.abs()
     }
     .clamp(0.0, 100.0);
     if chance <= 0.0 || chance_roll() >= chance {
         return None;
+    }
+
+    if is_reference {
+        let mut rolled_loot = loot.clone();
+        rolled_loot.max_count = loot.max_count.max(1);
+        return Some(rolled_loot);
     }
 
     let min_count = loot.min_count.max(1);
@@ -438,13 +691,17 @@ async fn load_quest_source_item_default_counts(
 
 async fn handle_autostore_loot_item(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
+    deps: LootMutationDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let LootMutationDeps {
+        character_db_pool,
+        world_db_pool,
+        shared_world,
+        parties,
+    } = deps;
     let Some(character) = &session.active_character else {
         warn!("Ignoring loot item request before character login");
         return Ok(());
@@ -461,7 +718,7 @@ async fn handle_autostore_loot_item(
         .await
         .is_some()
     {
-        let Some((creature_guid, loot_slot, loot, _creature)) = shared_world
+        let Some((creature_guid, loot_slot, loot, creature)) = shared_world
             .maps
             .take_db_creature_loot_item(character_map_id, character_guid, loot_slot)
             .await
@@ -469,6 +726,47 @@ async fn handle_autostore_loot_item(
             warn!("Ignoring DB creature loot item request after shared loot was claimed");
             return Ok(());
         };
+        let release_state = LootItemReleaseState::from_creature(&creature, loot_slot);
+        if !can_autostore_shared_creature_loot(character_guid, &creature, &loot) {
+            restore_db_creature_loot_item_with_release_state(
+                shared_world,
+                character_map_id,
+                creature_guid,
+                loot_slot,
+                loot,
+                release_state,
+            )
+            .await;
+            return Ok(());
+        }
+        if !creature.loot_roll_released_slots.contains(&loot_slot)
+            && should_use_group_loot_roll(&creature, &loot)
+        {
+            shared_world
+                .maps
+                .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot.clone())
+                .await;
+            if let Some(start) = parties
+                .start_loot_roll(
+                    character_guid,
+                    character_map_id,
+                    ObjectGuid::from_raw(creature_guid),
+                    loot_slot,
+                    loot.clone(),
+                )
+                .await
+            {
+                dispatch_party_member_packets(shared_world.sessions, start.packets).await;
+            }
+            return Ok(());
+        }
+        if should_block_master_loot(&creature, character_guid, &loot) {
+            shared_world
+                .maps
+                .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot)
+                .await;
+            return Ok(());
+        }
         let stored = autostore_loot_item(
             LootAutostoreContext {
                 stream,
@@ -485,10 +783,24 @@ async fn handle_autostore_loot_item(
         )
         .await?;
         if !stored {
-            shared_world
-                .maps
-                .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot)
-                .await;
+            restore_db_creature_loot_item_with_release_state(
+                shared_world,
+                character_map_id,
+                creature_guid,
+                loot_slot,
+                loot,
+                release_state,
+            )
+            .await;
+        } else {
+            dispatch_creature_loot_removed_to_other_open_looters(
+                shared_world,
+                character_map_id,
+                creature_guid,
+                character_guid,
+                loot_slot,
+            )
+            .await;
         }
         return Ok(());
     }
@@ -561,6 +873,7 @@ async fn handle_autostore_loot_item(
         .unwrap_or(1);
     let mut remaining_count = RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT;
     let mut update_blocks = Vec::new();
+    let mut pushed_item = None;
 
     if max_stack > 1 {
         if let Some(existing_stack) = session
@@ -598,6 +911,10 @@ async fn handle_autostore_loot_item(
                     existing_stack.item,
                     merged_count,
                 )?);
+                pushed_item = Some(CharacterInventoryItem {
+                    count: merged_count,
+                    ..existing_stack
+                });
             }
         }
     }
@@ -613,6 +930,23 @@ async fn handle_autostore_loot_item(
             Some(&mut *header_crypto),
         )
         .await?;
+        if let Some(item) = pushed_item.as_ref() {
+            let body = build_item_push_result_body(
+                character_guid,
+                item,
+                RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
+                true,
+                false,
+                true,
+            );
+            send_packet(
+                stream,
+                SMSG_ITEM_PUSH_RESULT,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
         let body = build_update_object_body(&update_blocks);
         return send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await;
     }
@@ -620,7 +954,7 @@ async fn handle_autostore_loot_item(
     let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
         send_inventory_change_failure(
             stream,
-            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            EQUIP_ERR_INVENTORY_FULL,
             None,
             None,
             header_crypto,
@@ -650,6 +984,21 @@ async fn handle_autostore_loot_item(
     };
 
     send_packet(stream, SMSG_LOOT_REMOVED, &[loot_slot], Some(&mut *header_crypto)).await?;
+    let body = build_item_push_result_body(
+        character_guid,
+        new_item,
+        RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
+        true,
+        false,
+        true,
+    );
+    send_packet(
+        stream,
+        SMSG_ITEM_PUSH_RESULT,
+        &body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let create_block = build_item_create_update_block(owner_guid, owner_guid, new_item, None)?;
     let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[dst_slot])?;
@@ -657,6 +1006,484 @@ async fn handle_autostore_loot_item(
     update_blocks.push(slot_block);
     let body = build_update_object_body(&update_blocks);
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
+#[derive(Clone, Copy)]
+struct LootMutationDeps<'a> {
+    character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
+    shared_world: SharedWorldDeps<'a>,
+    parties: &'a PartyManager,
+}
+
+struct LootGrantRequest {
+    target_guid: u32,
+    loot_slot: u8,
+    loot: DbCreatureLootRuntime,
+}
+
+#[derive(Clone, Copy)]
+struct LootItemReleaseState {
+    roll_released: bool,
+    current_looter_pass: bool,
+}
+
+impl LootItemReleaseState {
+    fn from_creature(creature: &DbCreatureRuntime, loot_slot: u8) -> Self {
+        Self {
+            roll_released: creature.loot_roll_released_slots.contains(&loot_slot),
+            current_looter_pass: creature
+                .loot_current_looter_pass_slots
+                .contains(&loot_slot),
+        }
+    }
+}
+
+async fn restore_db_creature_loot_item_with_release_state(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    creature_guid: u64,
+    loot_slot: u8,
+    loot: DbCreatureLootRuntime,
+    release_state: LootItemReleaseState,
+) {
+    shared_world
+        .maps
+        .restore_db_creature_loot_item(map_id, creature_guid, loot_slot, loot)
+        .await;
+    if release_state.roll_released {
+        shared_world
+            .maps
+            .release_db_creature_loot_roll_item(map_id, creature_guid, loot_slot)
+            .await;
+    }
+    if release_state.current_looter_pass {
+        shared_world
+            .maps
+            .release_db_creature_current_looter_pass_item(map_id, creature_guid, loot_slot)
+            .await;
+    }
+}
+
+fn db_creature_loot_method_tuple(method: Option<CreatureLootMethod>) -> Option<(u8, u8, u32)> {
+    method.map(|method| (method.method, method.threshold, method.master_looter))
+}
+
+async fn resolve_loot_roll_outcome(
+    stream: &mut WorldPacketSink,
+    deps: LootMutationDeps<'_>,
+    outcome: LootRollVoteOutcome,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(loot) = outcome.loot else {
+        return Ok(());
+    };
+    let creature_guid = outcome.loot_guid.raw();
+    if let Some(winner) = outcome.winner {
+        let Some((loot_slot, removed_loot, _creature)) = deps
+            .shared_world
+            .maps
+            .take_db_creature_loot_item_by_guid(outcome.map_id, creature_guid, outcome.loot_slot)
+            .await
+        else {
+            return Ok(());
+        };
+        if removed_loot.item != loot.item || loot_slot != outcome.loot_slot {
+            deps.shared_world
+                .maps
+                .restore_db_creature_loot_item(outcome.map_id, creature_guid, loot_slot, removed_loot)
+                .await;
+            return Ok(());
+        }
+        let granted = grant_loot_item_to_character(
+            stream,
+            deps,
+            LootGrantRequest {
+                target_guid: winner,
+                loot_slot,
+                loot: removed_loot.clone(),
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
+        if granted {
+            dispatch_creature_loot_removed_to_other_open_looters(
+                deps.shared_world,
+                outcome.map_id,
+                creature_guid,
+                winner,
+                loot_slot,
+            )
+            .await;
+        } else {
+            deps.shared_world
+                .maps
+                .restore_db_creature_loot_item(outcome.map_id, creature_guid, loot_slot, removed_loot)
+                .await;
+            deps.shared_world
+                .maps
+                .release_db_creature_loot_roll_item(outcome.map_id, creature_guid, loot_slot)
+                .await;
+        }
+    } else {
+        deps.shared_world
+            .maps
+            .release_db_creature_loot_roll_item(outcome.map_id, creature_guid, outcome.loot_slot)
+            .await;
+    }
+    Ok(())
+}
+
+fn should_use_group_loot_roll(creature: &DbCreatureRuntime, loot: &DbCreatureLootRuntime) -> bool {
+    let Some(loot_method) = creature.loot_method else {
+        return false;
+    };
+    if loot_method.method != 3 {
+        return false;
+    }
+    if loot.quest_drop || loot.free_for_all {
+        return false;
+    }
+    loot.quality >= loot_method.threshold
+}
+
+fn can_autostore_shared_creature_loot(
+    character_guid: u32,
+    creature: &DbCreatureRuntime,
+    loot: &DbCreatureLootRuntime,
+) -> bool {
+    let Some(loot_method) = creature.loot_method else {
+        return true;
+    };
+    if loot.free_for_all {
+        return true;
+    }
+    let under_threshold = loot.quest_drop || loot.quality < loot_method.threshold;
+    match loot_method.method {
+        0 => true,
+        1 | 4 => {
+            !under_threshold
+                || creature.loot_current_looter == Some(character_guid)
+                || creature.loot_current_looter_pass_slots.contains(&loot.slot)
+                || creature.loot_roll_released_slots.contains(&loot.slot)
+        }
+        3 => {
+            under_threshold
+                && (creature.loot_current_looter == Some(character_guid)
+                    || creature.loot_current_looter_pass_slots.contains(&loot.slot))
+                || creature.loot_roll_released_slots.contains(&loot.slot)
+        }
+        2 if under_threshold => {
+            creature.loot_current_looter == Some(character_guid)
+                || creature.loot_current_looter_pass_slots.contains(&loot.slot)
+                || creature.loot_roll_released_slots.contains(&loot.slot)
+        }
+        2 => false,
+        _ => true,
+    }
+}
+
+fn should_block_master_loot(
+    creature: &DbCreatureRuntime,
+    character_guid: u32,
+    loot: &DbCreatureLootRuntime,
+) -> bool {
+    let Some(loot_method) = creature.loot_method else {
+        return false;
+    };
+    if loot_method.method != 2 || character_guid == loot_method.master_looter {
+        return false;
+    }
+    loot.quality >= loot_method.threshold
+}
+
+async fn handle_loot_master_give(
+    stream: &mut WorldPacketSink,
+    deps: LootMutationDeps<'_>,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let LootMutationDeps {
+        character_db_pool,
+        world_db_pool,
+        shared_world,
+        parties,
+    } = deps;
+    ensure_available(body, 17)?;
+    let loot_guid = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
+    let loot_slot = body[8];
+    let target_guid = ObjectGuid::from_raw(u64::from_le_bytes(body[9..17].try_into()?));
+    if !target_guid.is_player() {
+        return Ok(());
+    }
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+
+    let character_map_id = character.position.map_id;
+    let Some((creature_guid, loot_slot, loot, creature)) = shared_world
+        .maps
+        .take_db_creature_loot_item(character_map_id, character.guid, loot_slot)
+        .await
+    else {
+        return Ok(());
+    };
+    let valid_assignment = creature_guid == loot_guid.raw()
+        && creature.loot_method.is_some_and(|loot_method| {
+            loot_method.method == 2
+                && loot_method.master_looter == character.guid
+                && loot.quality >= loot_method.threshold
+        })
+        && creature.loot_allowed_players.contains(&target_guid.counter());
+    if !valid_assignment {
+        shared_world
+            .maps
+            .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot)
+            .await;
+        return Ok(());
+    }
+    let granted = grant_loot_item_to_character(
+        stream,
+        LootMutationDeps {
+            character_db_pool,
+            world_db_pool,
+            shared_world,
+            parties,
+        },
+        LootGrantRequest {
+            target_guid: target_guid.counter(),
+            loot_slot,
+            loot: loot.clone(),
+        },
+        session,
+        header_crypto,
+    )
+    .await?;
+    if !granted {
+        shared_world
+            .maps
+            .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot)
+            .await;
+    } else {
+        dispatch_creature_loot_removed_to_other_open_looters(
+            shared_world,
+            character_map_id,
+            creature_guid,
+            target_guid.counter(),
+            loot_slot,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn grant_loot_item_to_character(
+    stream: &mut WorldPacketSink,
+    deps: LootMutationDeps<'_>,
+    request: LootGrantRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let LootMutationDeps {
+        character_db_pool,
+        world_db_pool,
+        shared_world,
+        parties: _,
+    } = deps;
+    let LootGrantRequest {
+        target_guid,
+        loot_slot,
+        loot,
+    } = request;
+    let current_guid = session.active_character.as_ref().map(|character| character.guid);
+    let target_is_current = current_guid == Some(target_guid);
+    let target_map_id = if target_is_current {
+        session
+            .active_character
+            .as_ref()
+            .map(|character| character.position.map_id)
+    } else {
+        let Some(character) = session.active_character.as_ref() else {
+            return Ok(false);
+        };
+        shared_world
+            .maps
+            .player_runtime_snapshot(character.position.map_id, target_guid)
+            .await
+            .map(|snapshot| snapshot.position.map_id)
+    };
+    let Some(target_map_id) = target_map_id else {
+        return Ok(false);
+    };
+    let target_session_id = shared_world.sessions.session_for_character(target_guid).await;
+    if target_session_id.is_none() && !target_is_current {
+        return Ok(false);
+    }
+
+    let inventory = if target_is_current {
+        session.inventory.clone()
+    } else {
+        wow_db::get_character_inventory_items(character_db_pool, target_guid).await?
+    };
+    let max_stack = wow_db::get_item_template_query(world_db_pool, loot.item)
+        .await?
+        .map(|template| template.stackable.max(1))
+        .unwrap_or(1);
+
+    let mut update_blocks = Vec::new();
+    let mut changed_slot = None;
+    let mut pushed_item = None;
+
+    if max_stack > 1 {
+        if let Some(existing_stack) = inventory
+            .iter()
+            .filter(|item| {
+                item.item_template == loot.item
+                    && item.count < max_stack
+                    && loot.count <= max_stack - item.count
+                    && u8::try_from(item.bag)
+                        .ok()
+                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
+            })
+            .min_by_key(|item| {
+                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+                    0
+                } else {
+                    1
+                };
+                (bag_order, item.bag, item.slot)
+            })
+            .cloned()
+        {
+            let merged_count = existing_stack.count + loot.count;
+            if wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                target_guid,
+                existing_stack.item,
+                merged_count,
+            )
+            .await?
+            {
+                update_blocks.push(build_item_stack_count_update_block(
+                    existing_stack.item,
+                    merged_count,
+                )?);
+                changed_slot = Some(existing_stack.slot);
+            }
+        }
+    }
+
+    if changed_slot.is_none() {
+        let Some(dst_slot) = first_empty_backpack_slot(&inventory) else {
+            if target_is_current {
+                send_inventory_change_failure(
+                    stream,
+                    EQUIP_ERR_INVENTORY_FULL,
+                    None,
+                    None,
+                    header_crypto,
+                )
+                .await?;
+            }
+            return Ok(false);
+        };
+        wow_db::add_character_inventory_item(
+            character_db_pool,
+            target_guid,
+            INVENTORY_SLOT_BAG_0 as u32,
+            dst_slot,
+            loot.item,
+            loot.count,
+            0,
+        )
+        .await?;
+        changed_slot = Some(dst_slot);
+    }
+
+    let new_inventory = wow_db::get_character_inventory_items(character_db_pool, target_guid).await?;
+    let Some(changed_slot) = changed_slot else {
+        return Ok(false);
+    };
+    if let Some(item) = new_inventory
+        .iter()
+        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == changed_slot)
+    {
+        pushed_item = Some(item.clone());
+        if item.item_template == loot.item && item.count == loot.count {
+            let owner_guid = ObjectGuid::new(HighGuid::Player, 0, target_guid);
+            update_blocks.push(build_item_create_update_block(
+                owner_guid,
+                owner_guid,
+                item,
+                None,
+            )?);
+        }
+    }
+    update_blocks.push(build_inventory_slots_update_block(
+        target_guid,
+        &new_inventory,
+        &[changed_slot],
+    )?);
+
+    if target_is_current {
+        session.inventory = new_inventory.clone();
+    }
+    shared_world
+        .maps
+        .update_player_inventory(target_map_id, target_guid, new_inventory)
+        .await;
+
+    let mut packets = vec![OutboundWorldPacket {
+        opcode: SMSG_LOOT_REMOVED,
+        body: vec![loot_slot],
+    }];
+    if let Some(item) = pushed_item.as_ref() {
+        packets.push(OutboundWorldPacket {
+            opcode: SMSG_ITEM_PUSH_RESULT,
+            body: build_item_push_result_body(target_guid, item, loot.count, true, false, true),
+        });
+    }
+    packets.push(OutboundWorldPacket {
+        opcode: SMSG_UPDATE_OBJECT,
+        body: build_update_object_body(&update_blocks),
+    });
+
+    if target_is_current {
+        for packet in packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        complete_inventory_item_quests(
+            stream,
+            character_db_pool,
+            shared_world.object_mgr,
+            world_db_pool,
+            session,
+            target_guid,
+            header_crypto,
+        )
+        .await?;
+    } else if let Some(session_id) = target_session_id {
+        shared_world
+            .sessions
+            .dispatch(
+                packets
+                    .into_iter()
+                    .map(|packet| (session_id, packet))
+                    .collect(),
+            )
+            .await;
+    }
+
+    Ok(true)
 }
 
 async fn handle_loot_money(
@@ -670,34 +1497,45 @@ async fn handle_loot_money(
         warn!("Ignoring loot money request before character login");
         return Ok(());
     };
+    let character_guid = character.guid;
+    let character_map_id = character.position.map_id;
     if shared_world
         .maps
-        .db_creature_loot_guid_for_character(character.position.map_id, character.guid)
+        .db_creature_loot_guid_for_character(character_map_id, character_guid)
         .await
         .is_some()
     {
-        let Some((gained_money, _creature)) = shared_world
+        let Some(creature_guid) = shared_world
             .maps
-            .take_db_creature_loot_money(character.position.map_id, character.guid)
+            .db_creature_loot_guid_for_character(character_map_id, character_guid)
             .await
         else {
             return Ok(());
         };
-        let money =
-            wow_db::add_character_money(character_db_pool, character.guid, gained_money).await?;
-        send_packet(
-            stream,
-            SMSG_LOOT_MONEY_NOTIFY,
-            &gained_money.to_le_bytes(),
-            Some(&mut *header_crypto),
-        )
-        .await?;
+        let Some((gained_money, creature)) = shared_world
+            .maps
+            .take_db_creature_loot_money(character_map_id, character_guid)
+            .await
+        else {
+            return Ok(());
+        };
         send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(&mut *header_crypto)).await?;
-        return send_packet(
+        dispatch_creature_loot_clear_money_to_other_open_looters(
+            shared_world,
+            character_map_id,
+            creature_guid,
+            character_guid,
+        )
+        .await;
+        return grant_creature_loot_money(
             stream,
-            SMSG_UPDATE_OBJECT,
-            &build_player_money_update_body(character.guid, money)?,
-            Some(header_crypto),
+            character_db_pool,
+            shared_world,
+            session,
+            header_crypto,
+            character_guid,
+            gained_money,
+            &creature,
         )
         .await;
     }
@@ -732,6 +1570,147 @@ async fn handle_loot_money(
         Some(header_crypto),
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn grant_creature_loot_money(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    looter_guid: u32,
+    gained_money: u32,
+    creature: &DbCreatureRuntime,
+) -> anyhow::Result<()> {
+    let recipients = creature_loot_money_recipients(creature, looter_guid);
+    let share = creature_loot_money_share(creature, gained_money);
+    for recipient_guid in recipients {
+        let target_session_id = if recipient_guid == looter_guid {
+            None
+        } else {
+            shared_world
+                .sessions
+                .session_for_character(recipient_guid)
+                .await
+        };
+        if recipient_guid != looter_guid && target_session_id.is_none() {
+            continue;
+        }
+        let money = wow_db::add_character_money(character_db_pool, recipient_guid, share).await?;
+        let packets = vec![
+            OutboundWorldPacket {
+                opcode: SMSG_LOOT_MONEY_NOTIFY,
+                body: share.to_le_bytes().to_vec(),
+            },
+            OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_player_money_update_body(recipient_guid, money)?,
+            },
+        ];
+        if recipient_guid == looter_guid {
+            for packet in packets {
+                send_packet(
+                    stream,
+                    packet.opcode,
+                    &packet.body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
+        } else if let Some(session_id) = target_session_id {
+            shared_world
+                .sessions
+                .dispatch(
+                    packets
+                        .into_iter()
+                        .map(|packet| (session_id, packet))
+                        .collect(),
+                )
+                .await;
+        }
+    }
+    if session
+        .active_character
+        .as_ref()
+        .is_some_and(|character| character.guid == looter_guid)
+    {
+        sync_active_player_gameplay_state(shared_world.maps, session).await;
+    }
+    Ok(())
+}
+
+fn creature_loot_money_recipients(creature: &DbCreatureRuntime, looter_guid: u32) -> Vec<u32> {
+    if creature.loot_method.is_none() {
+        return vec![looter_guid];
+    }
+    let mut recipients = creature.loot_allowed_players.iter().copied().collect::<Vec<_>>();
+    if recipients.is_empty() {
+        recipients.push(looter_guid);
+    }
+    recipients.sort_unstable();
+    recipients.dedup();
+    recipients
+}
+
+fn creature_loot_money_share(creature: &DbCreatureRuntime, gained_money: u32) -> u32 {
+    let divisor = if creature.loot_method.is_some() {
+        creature.loot_allowed_players.len().max(1)
+    } else {
+        1
+    };
+    gained_money / divisor as u32
+}
+
+async fn dispatch_creature_loot_removed_to_other_open_looters(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    creature_guid: u64,
+    looter_guid: u32,
+    loot_slot: u8,
+) {
+    let packets = shared_world
+        .maps
+        .db_creature_looting_characters(map_id, creature_guid)
+        .await
+        .into_iter()
+        .filter(|character_guid| *character_guid != looter_guid)
+        .map(|character_guid| {
+            (
+                character_guid,
+                OutboundWorldPacket {
+                    opcode: SMSG_LOOT_REMOVED,
+                    body: vec![loot_slot],
+                },
+            )
+        })
+        .collect();
+    dispatch_party_member_packets(shared_world.sessions, packets).await;
+}
+
+async fn dispatch_creature_loot_clear_money_to_other_open_looters(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    creature_guid: u64,
+    looter_guid: u32,
+) {
+    let packets = shared_world
+        .maps
+        .db_creature_looting_characters(map_id, creature_guid)
+        .await
+        .into_iter()
+        .filter(|character_guid| *character_guid != looter_guid)
+        .map(|character_guid| {
+            (
+                character_guid,
+                OutboundWorldPacket {
+                    opcode: SMSG_LOOT_CLEAR_MONEY,
+                    body: Vec::new(),
+                },
+            )
+        })
+        .collect();
+    dispatch_party_member_packets(shared_world.sessions, packets).await;
 }
 
 async fn handle_loot_release(

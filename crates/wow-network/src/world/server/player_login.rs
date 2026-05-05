@@ -280,8 +280,17 @@ async fn handle_player_login(
     )
     .await?;
     deps.sessions
-        .set_character_guid(deps.session_id, Some(character.guid))
+        .set_active_character(deps.session_id, Some(character.guid), Some(character.name.clone()))
         .await;
+    if let Some(group_list) = deps.parties.group_list_packet_for(character.guid).await {
+        send_packet(
+            stream,
+            group_list.opcode,
+            &group_list.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     let mut visible_objects = HashSet::new();
     visible_objects.extend(
         visible_nearby_creatures
@@ -329,6 +338,7 @@ async fn handle_player_login(
         gender: character.gender,
         health: session.player_health,
         max_health: world_stats.max_health().max(1),
+        xp: character.xp,
         power1: session.player_mana,
         max_power1: world_stats.max_mana(),
         power2: session.player_rage,
@@ -353,6 +363,7 @@ struct PlayerLoginDeps<'a> {
     online_characters: &'a OnlineCharacters,
     maps: &'a Arc<MapRuntimeManager>,
     sessions: &'a Arc<SessionRegistry>,
+    parties: &'a Arc<PartyManager>,
     session_id: SessionId,
 }
 

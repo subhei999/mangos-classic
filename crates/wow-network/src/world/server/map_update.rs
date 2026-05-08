@@ -15,6 +15,29 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
         let now = Instant::now();
         let tick_started_at = now;
         let tick_lag = now.saturating_duration_since(next_tick_at);
+        let game_events = GameEventState::from_schedules_at(
+            &runtime_state.game_event_schedules,
+            current_unix_epoch_secs() as i64,
+        );
+        match runtime_state
+            .maps
+            .refresh_static_game_event_spawns(
+                &runtime_state.character_db_pool,
+                game_events,
+                now,
+            )
+            .await
+        {
+            Ok(packets) => {
+                if !packets.is_empty() {
+                    runtime_state.sessions.dispatch(packets).await;
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime game-event spawn refresh failed: {error}");
+            }
+        }
         let phase_started_at = Instant::now();
         match runtime_state
             .maps

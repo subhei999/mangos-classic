@@ -463,6 +463,26 @@ fn build_player_selection_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_player_stand_state_update_body(
+    character: &Player,
+    stand_state: u8,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        unit_bytes_1_for_class(character.class) | u32::from(stand_state),
+    )?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
 fn set_player_stat_update_values(
     values: &mut [Option<u32>],
     world_stats: &PlayerWorldStats,
@@ -1055,11 +1075,15 @@ fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
 }
 
 fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
-    let pet_loyalty = match character.class {
+    unit_bytes_1_for_class(character.class)
+}
+
+fn unit_bytes_1_for_class(class: u8) -> u32 {
+    let pet_loyalty = match class {
         1 | 8 => 0xEE, // CMaNGOS initializes this for rage and mana users.
         _ => 0,
     };
-    let shapeshift_form = match character.class {
+    let shapeshift_form = match class {
         1 => FORM_BATTLESTANCE,
         _ => 0,
     };

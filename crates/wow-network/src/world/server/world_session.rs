@@ -1,6 +1,7 @@
 // CMaNGOS reference: src/game/Server/WorldSession.cpp login/bootstrap packet path.
 struct EnterWorldBootstrap<'a> {
     character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
     base_world_stats: &'a PlayerWorldStats,
@@ -28,6 +29,13 @@ async fn send_enter_world_bootstrap(
     send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
     send_set_rest_start(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
+    send_known_proficiencies(
+        stream,
+        bootstrap.world_db_pool,
+        bootstrap.spells,
+        header_crypto.as_deref_mut(),
+    )
+    .await?;
     send_tutorial_flags(
         stream,
         bootstrap.tutorial_flags,
@@ -202,6 +210,93 @@ async fn send_initial_spells(
 ) -> anyhow::Result<()> {
     let body = build_initial_spells_body(spells);
     send_packet(stream, SMSG_INITIAL_SPELLS, &body, header_crypto).await
+}
+
+async fn send_known_proficiencies(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    spells: &[CharacterSpell],
+    mut header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    let (weapon_mask, armor_mask) = known_proficiency_masks(world_db_pool, spells).await?;
+    if weapon_mask != 0 {
+        send_packet(
+            stream,
+            SMSG_SET_PROFICIENCY,
+            &build_set_proficiency_body(ITEM_CLASS_WEAPON, weapon_mask),
+            reborrow_header_crypto(&mut header_crypto),
+        )
+        .await?;
+    }
+    if armor_mask != 0 {
+        send_packet(
+            stream,
+            SMSG_SET_PROFICIENCY,
+            &build_set_proficiency_body(ITEM_CLASS_ARMOR, armor_mask),
+            reborrow_header_crypto(&mut header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn reborrow_header_crypto<'a>(
+    header_crypto: &'a mut Option<&mut HeaderCrypto>,
+) -> Option<&'a mut HeaderCrypto> {
+    match header_crypto {
+        Some(crypto) => Some(&mut **crypto),
+        None => None,
+    }
+}
+
+async fn known_proficiency_masks(
+    world_db_pool: &MySqlPool,
+    spells: &[CharacterSpell],
+) -> anyhow::Result<(u32, u32)> {
+    let mut weapon_mask = 0u32;
+    let mut armor_mask = 0u32;
+    for spell in spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+    {
+        let Some(template) = wow_db::get_spell_template_query(world_db_pool, spell.spell).await?
+        else {
+            continue;
+        };
+        if !spell_template_has_proficiency_effect(&template) {
+            continue;
+        }
+        add_template_proficiency_masks(&template, &mut weapon_mask, &mut armor_mask);
+    }
+    Ok((weapon_mask, armor_mask))
+}
+
+fn add_template_proficiency_masks(
+    template: &wow_db::SpellTemplateQuery,
+    weapon_mask: &mut u32,
+    armor_mask: &mut u32,
+) {
+    match template.equipped_item_class {
+        class if class == ITEM_CLASS_WEAPON as i32 => {
+            *weapon_mask |= template.equipped_item_subclass_mask as u32;
+        }
+        class if class == ITEM_CLASS_ARMOR as i32 => {
+            *armor_mask |= template.equipped_item_subclass_mask as u32;
+        }
+        _ => {}
+    }
+}
+
+fn spell_template_has_proficiency_effect(template: &wow_db::SpellTemplateQuery) -> bool {
+    const SPELL_EFFECT_PROFICIENCY: u32 = 60;
+    [template.effect1, template.effect2, template.effect3].contains(&SPELL_EFFECT_PROFICIENCY)
+}
+
+fn build_set_proficiency_body(item_class: u32, item_subclass_mask: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(5);
+    body.push(item_class as u8);
+    body.extend_from_slice(&item_subclass_mask.to_le_bytes());
+    body
 }
 
 fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {

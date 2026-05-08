@@ -1,9 +1,27 @@
 // CMaNGOS reference: src/game/Handlers/ItemHandler.cpp item query packet builders.
 
+#[cfg(test)]
 fn build_item_query_single_response(
     item: u32,
 
     template: Option<&wow_db::ItemTemplateQuery>,
+) -> Vec<u8> {
+    build_item_query_single_response_with_spell_cooldowns(item, template, None)
+}
+
+#[derive(Clone, Copy)]
+struct ItemQuerySpellCooldown {
+    recovery_time: i32,
+    category: u32,
+    category_recovery_time: i32,
+}
+
+fn build_item_query_single_response_with_spell_cooldowns(
+    item: u32,
+
+    template: Option<&wow_db::ItemTemplateQuery>,
+
+    spell_cooldowns: Option<&[Option<ItemQuerySpellCooldown>; 5]>,
 ) -> Vec<u8> {
     let Some(template) = template else {
         return (item | 0x8000_0000).to_le_bytes().to_vec();
@@ -106,18 +124,19 @@ fn build_item_query_single_response(
 
     write_f32(&mut body, template.ranged_mod_range);
 
-    for spell in template.spells {
+    for (index, spell) in template.spells.into_iter().enumerate() {
+        let cooldown = item_query_spell_cooldown(spell, spell_cooldowns.and_then(|c| c[index]));
         write_u32(&mut body, spell.spell_id);
 
         write_u32(&mut body, spell.spell_trigger);
 
         write_i32(&mut body, spell.spell_charges);
 
-        write_i32(&mut body, spell.spell_cooldown);
+        write_i32(&mut body, cooldown.recovery_time);
 
-        write_u32(&mut body, spell.spell_category);
+        write_u32(&mut body, cooldown.category);
 
-        write_i32(&mut body, spell.spell_category_cooldown);
+        write_i32(&mut body, cooldown.category_recovery_time);
     }
 
     write_u32(&mut body, template.bonding);
@@ -153,6 +172,25 @@ fn build_item_query_single_response(
     write_i32(&mut body, template.bag_family);
 
     body
+}
+
+fn item_query_spell_cooldown(
+    spell: wow_db::ItemTemplateSpell,
+    spell_template_cooldown: Option<ItemQuerySpellCooldown>,
+) -> ItemQuerySpellCooldown {
+    if spell.spell_cooldown >= 0 || spell.spell_category_cooldown >= 0 {
+        ItemQuerySpellCooldown {
+            recovery_time: spell.spell_cooldown,
+            category: spell.spell_category,
+            category_recovery_time: spell.spell_category_cooldown,
+        }
+    } else {
+        spell_template_cooldown.unwrap_or(ItemQuerySpellCooldown {
+            recovery_time: spell.spell_cooldown,
+            category: spell.spell_category,
+            category_recovery_time: spell.spell_category_cooldown,
+        })
+    }
 }
 
 fn build_item_name_query_response(template: &wow_db::ItemTemplateQuery) -> Vec<u8> {

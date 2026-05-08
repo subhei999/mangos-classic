@@ -4642,14 +4642,16 @@ fn test_player_corpse_runtime(counter: u32, position: WorldPosition) -> PlayerCo
 }
 
 #[test]
-fn spirit_healer_detection_accepts_template_flag_or_classic_entry() {
+fn spirit_healer_detection_uses_db_npc_flag() {
     let mut flagged = test_creature_spawn(197);
     flagged.template.npc_flags = UNIT_NPC_FLAG_SPIRITHEALER;
     assert!(is_spirit_healer_creature(&DbCreatureRuntime::new(flagged)));
 
-    let mut classic = test_creature_spawn(SPIRIT_HEALER_ENTRY);
-    classic.template.npc_flags = 0;
-    assert!(is_spirit_healer_creature(&DbCreatureRuntime::new(classic)));
+    let mut classic_entry_without_flag = test_creature_spawn(6491);
+    classic_entry_without_flag.template.npc_flags = 0;
+    assert!(!is_spirit_healer_creature(&DbCreatureRuntime::new(
+        classic_entry_without_flag
+    )));
 
     let mut trainer = test_creature_spawn(197);
     trainer.template.npc_flags = UNIT_NPC_FLAG_TRAINER;
@@ -4657,20 +4659,17 @@ fn spirit_healer_detection_accepts_template_flag_or_classic_entry() {
 }
 
 #[test]
-fn db_spirit_healer_create_block_forces_spirit_healer_npc_flag() {
-    let mut healer = test_creature_spawn(SPIRIT_HEALER_ENTRY);
-    healer.template.npc_flags = UNIT_NPC_FLAG_GOSSIP;
-    let runtime = DbCreatureRuntime::new(healer);
+fn db_creature_create_block_preserves_db_npc_flags_without_entry_fallback() {
+    let mut creature = test_creature_spawn(6491);
+    creature.template.npc_flags = UNIT_NPC_FLAG_GOSSIP;
+    let runtime = DbCreatureRuntime::new(creature);
     let body = build_db_creature_runtime_create_block(&runtime).unwrap();
     let packed_guid_mask = body[1];
     let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
     let values_start = update_flags_offset + 1 + 56;
     let values = decode_update_values(&body[values_start..]);
 
-    assert_eq!(
-        values[UNIT_NPC_FLAGS],
-        Some(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_SPIRITHEALER)
-    );
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
 }
 
 #[test]
@@ -6234,6 +6233,137 @@ fn static_world_cache_filters_game_event_bound_spawns() {
             .collect::<Vec<_>>(),
         vec![49]
     );
+}
+
+#[test]
+fn static_world_cache_reevaluates_game_event_bound_spawns_after_event_change() {
+    let grid = grid_coord_for_position(WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0));
+    let active_events = GameEventState {
+        active_events: HashSet::from([10]),
+    };
+    let mut first_creature = test_creature_spawn(6);
+    first_creature.guid = 44;
+    first_creature.game_event = Some(10);
+    let mut second_creature = test_creature_spawn(7);
+    second_creature.guid = 45;
+    second_creature.game_event = Some(11);
+    let mut first_gameobject = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    first_gameobject.guid = 46;
+    first_gameobject.game_event = Some(10);
+    let mut second_gameobject = test_gameobject_spawn(161558, GO_TYPE_GOOBER);
+    second_gameobject.guid = 47;
+    second_gameobject.game_event = Some(11);
+    let cache = StaticWorldSpawnCache::from_spawns_for_game_events(
+        vec![first_creature, second_creature],
+        vec![first_gameobject, second_gameobject],
+        &active_events,
+    );
+
+    assert_eq!(
+        cache
+            .creature_spawns_for_grid(0, grid)
+            .into_iter()
+            .map(|spawn| spawn.guid)
+            .collect::<Vec<_>>(),
+        vec![44]
+    );
+    assert!(cache.replace_active_game_events(GameEventState {
+        active_events: HashSet::from([11]),
+    }));
+    assert_eq!(
+        cache
+            .creature_spawns_for_grid(0, grid)
+            .into_iter()
+            .map(|spawn| spawn.guid)
+            .collect::<Vec<_>>(),
+        vec![45]
+    );
+    assert_eq!(
+        cache
+            .gameobject_spawns_for_grid(0, grid)
+            .into_iter()
+            .map(|spawn| spawn.guid)
+            .collect::<Vec<_>>(),
+        vec![47]
+    );
+    assert_eq!(
+        cache.counts(),
+        StaticWorldCacheCounts {
+            creature_spawns: 1,
+            creature_grids: 1,
+            gameobject_spawns: 1,
+            gameobject_grids: 1,
+        }
+    );
+    assert!(!cache.replace_active_game_events(GameEventState {
+        active_events: HashSet::from([11]),
+    }));
+}
+
+#[test]
+fn map_runtime_game_event_refresh_reconciles_loaded_creatures_and_gameobjects() {
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(7, SessionId(7), center))
+        .unwrap();
+
+    let mut inactive_creature = test_creature_spawn(6);
+    inactive_creature.guid = 44;
+    inactive_creature.position_x = center.x + 1.0;
+    inactive_creature.position_y = center.y;
+    inactive_creature.game_event = Some(10);
+    let inactive_creature_guid = creature_spawn_guid(&inactive_creature);
+    let mut inactive_gameobject = test_gameobject_spawn(161557, GO_TYPE_GOOBER);
+    inactive_gameobject.guid = 45;
+    inactive_gameobject.position_x = center.x + 2.0;
+    inactive_gameobject.position_y = center.y;
+    inactive_gameobject.game_event = Some(10);
+    let inactive_gameobject_guid = gameobject_spawn_guid(&inactive_gameobject);
+    map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(inactive_creature)]);
+    map.insert_loaded_gameobject_grid(grid, vec![DbGameObjectRuntime::new(inactive_gameobject)]);
+
+    let mut active_creature = test_creature_spawn(7);
+    active_creature.guid = 46;
+    active_creature.position_x = center.x + 3.0;
+    active_creature.position_y = center.y;
+    active_creature.game_event = Some(11);
+    let active_creature_guid = creature_spawn_guid(&active_creature);
+    let mut active_gameobject = test_gameobject_spawn(161558, GO_TYPE_GOOBER);
+    active_gameobject.guid = 47;
+    active_gameobject.position_x = center.x + 4.0;
+    active_gameobject.position_y = center.y;
+    active_gameobject.game_event = Some(11);
+    let active_gameobject_guid = gameobject_spawn_guid(&active_gameobject);
+
+    let creature_packets = map
+        .refresh_static_event_creature_grid(grid, vec![DbCreatureRuntime::new(active_creature)])
+        .unwrap();
+    let gameobject_packets = map
+        .refresh_static_event_gameobject_grid(
+            grid,
+            vec![DbGameObjectRuntime::new(active_gameobject)],
+            Instant::now(),
+        )
+        .unwrap();
+
+    assert!(!map.creatures.contains_key(&inactive_creature_guid.raw()));
+    assert!(!map
+        .gameobjects
+        .contains_key(&inactive_gameobject_guid.raw()));
+    assert!(map.creatures.contains_key(&active_creature_guid.raw()));
+    assert!(map.gameobjects.contains_key(&active_gameobject_guid.raw()));
+    let visible = &map.players.get(&7).unwrap().visible_objects;
+    assert!(!visible.contains(&inactive_creature_guid));
+    assert!(!visible.contains(&inactive_gameobject_guid));
+    assert!(visible.contains(&active_creature_guid));
+    assert!(visible.contains(&active_gameobject_guid));
+    assert_eq!(creature_packets.len(), 2);
+    assert_eq!(gameobject_packets.len(), 2);
+    assert_eq!(creature_packets[0].1.opcode, SMSG_DESTROY_OBJECT);
+    assert_eq!(creature_packets[1].1.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(gameobject_packets[0].1.opcode, SMSG_DESTROY_OBJECT);
+    assert_eq!(gameobject_packets[1].1.opcode, SMSG_UPDATE_OBJECT);
 }
 
 #[tokio::test]
@@ -8781,6 +8911,7 @@ fn map_owned_player_aura_applies_attack_power_mod_and_expires() {
         duration_millis: Some(2_000),
         expires_at: Some(now + Duration::from_secs(2)),
         periodic_damage: None,
+        periodic_regen: None,
         stat_modifiers: vec![AuraStatModifier::AttackPower { amount: 15 }],
     };
 
@@ -8810,6 +8941,53 @@ fn map_owned_player_aura_applies_attack_power_mod_and_expires() {
     assert!(player.active_auras.is_empty());
     assert_eq!(player.combat_stats.melee_attack_power, base_attack_power);
     assert_eq!(player.combat_stats.melee_attack_power_mod_positive, 0);
+}
+
+#[test]
+fn map_owned_consumable_regen_aura_ticks_health_and_mana() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+    let now = Instant::now();
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.health = 10;
+        player.max_health = 50;
+        player.power1 = 5;
+        player.max_power1 = 40;
+        player.spirit = 0;
+        player.active_auras.push(ActiveAura {
+            spell_id: 1127,
+            caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+            level: 1,
+            positive: true,
+            visible: true,
+            duration_millis: Some(30_000),
+            expires_at: Some(now + Duration::from_secs(30)),
+            periodic_damage: None,
+            periodic_regen: Some(PeriodicRegenAura {
+                health_amount: 7,
+                mana_amount: 9,
+                tick_millis: 2_000,
+                next_tick_at: now,
+            }),
+            stat_modifiers: Vec::new(),
+        });
+    }
+    map.next_player_regen_tick_at = Some(now);
+
+    let packets = map.advance_player_regen_tick(now).unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(player.health, 17);
+    assert_eq!(player.power1, 14);
+    assert!(
+        packets
+            .iter()
+            .filter(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT)
+            .count()
+            >= 2
+    );
 }
 
 fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
@@ -9488,66 +9666,137 @@ fn map_runtime_ghost_player_only_stages_creatures_visible_to_ghosts() {
 }
 
 #[test]
-fn map_runtime_alive_player_destroys_visible_spirit_healer() {
+fn map_runtime_alive_player_destroys_visible_ghost_visible_creature() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     map.add_player(test_player_runtime(1, SessionId(1), player_position))
         .unwrap();
 
-    let mut healer_spawn = test_creature_spawn(SPIRIT_HEALER_ENTRY);
-    healer_spawn.guid = 79;
-    healer_spawn.position_x = player_position.x + 5.0;
-    healer_spawn.position_y = player_position.y;
-    healer_spawn.template.npc_flags = UNIT_NPC_FLAG_SPIRITHEALER;
-    healer_spawn.template.creature_type_flags = CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS;
-    let healer = DbCreatureRuntime::new(healer_spawn);
-    let healer_guid = healer.guid();
-    map.share_db_creature_snapshots(vec![healer.clone()]);
+    let mut ghost_visible_spawn = test_creature_spawn(197);
+    ghost_visible_spawn.guid = 79;
+    ghost_visible_spawn.position_x = player_position.x + 5.0;
+    ghost_visible_spawn.position_y = player_position.y;
+    ghost_visible_spawn.template.creature_type_flags = CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS;
+    let ghost_visible = DbCreatureRuntime::new(ghost_visible_spawn);
+    let ghost_visible_guid = ghost_visible.guid();
+    map.share_db_creature_snapshots(vec![ghost_visible.clone()]);
     map.players
         .get_mut(&1)
         .unwrap()
         .visible_objects
-        .insert(healer_guid);
+        .insert(ghost_visible_guid);
 
-    let stage = map.stage_player_db_creature_visibility(1, player_position, vec![healer.clone()]);
+    let stage =
+        map.stage_player_db_creature_visibility(1, player_position, vec![ghost_visible.clone()]);
 
     assert!(stage.create_guids.is_empty());
-    assert_eq!(stage.destroy_guids, vec![healer_guid]);
+    assert_eq!(stage.destroy_guids, vec![ghost_visible_guid]);
     assert!(!map
         .players
         .get(&1)
         .unwrap()
         .visible_objects
-        .contains(&healer_guid));
+        .contains(&ghost_visible_guid));
 }
 
 #[test]
-fn map_runtime_ghost_player_stages_spirit_healer() {
+fn map_runtime_ghost_player_stages_ghost_visible_creature() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let mut player = test_player_runtime(1, SessionId(1), player_position);
     player.flags = PLAYER_FLAGS_GHOST;
     map.add_player(player).unwrap();
 
-    let mut healer_spawn = test_creature_spawn(SPIRIT_HEALER_ENTRY);
-    healer_spawn.guid = 79;
-    healer_spawn.position_x = player_position.x + 5.0;
-    healer_spawn.position_y = player_position.y;
-    healer_spawn.template.npc_flags = UNIT_NPC_FLAG_SPIRITHEALER;
-    healer_spawn.template.creature_type_flags = CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS;
-    let healer = DbCreatureRuntime::new(healer_spawn);
-    let healer_guid = healer.guid();
+    let mut ghost_visible_spawn = test_creature_spawn(197);
+    ghost_visible_spawn.guid = 79;
+    ghost_visible_spawn.position_x = player_position.x + 5.0;
+    ghost_visible_spawn.position_y = player_position.y;
+    ghost_visible_spawn.template.creature_type_flags = CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS;
+    let ghost_visible = DbCreatureRuntime::new(ghost_visible_spawn);
+    let ghost_visible_guid = ghost_visible.guid();
 
-    let stage = map.stage_player_db_creature_visibility(1, player_position, vec![healer]);
+    let stage = map.stage_player_db_creature_visibility(1, player_position, vec![ghost_visible]);
 
-    assert_eq!(stage.create_guids, vec![healer_guid]);
+    assert_eq!(stage.create_guids, vec![ghost_visible_guid]);
     assert!(stage.destroy_guids.is_empty());
     assert!(map
         .players
         .get(&1)
         .unwrap()
         .visible_objects
-        .contains(&healer_guid));
+        .contains(&ghost_visible_guid));
+}
+
+#[test]
+fn map_runtime_ghost_visible_creature_visibility_updates_after_death_state_sync_without_movement() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+
+    let mut ghost_visible_spawn = test_creature_spawn(197);
+    ghost_visible_spawn.guid = 80;
+    ghost_visible_spawn.position_x = player_position.x + 5.0;
+    ghost_visible_spawn.position_y = player_position.y;
+    ghost_visible_spawn.template.creature_type_flags = CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS;
+    let ghost_visible = DbCreatureRuntime::new(ghost_visible_spawn);
+    let ghost_visible_guid = ghost_visible.guid();
+    map.share_db_creature_snapshots(vec![ghost_visible.clone()]);
+
+    let alive_stage =
+        map.stage_player_db_creature_visibility(1, player_position, vec![ghost_visible.clone()]);
+    assert!(alive_stage.create_guids.is_empty());
+    assert!(alive_stage.destroy_guids.is_empty());
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_flags: PLAYER_FLAGS_GHOST,
+        player_death_state: PlayerDeathState::Ghost,
+        player_health: PLAYER_SURVIVOR_HEALTH_FLOOR,
+        ..WorldSessionState::default()
+    };
+    map.sync_player_gameplay_state(1, &session);
+    map.reset_player_visibility_scan_positions(1);
+
+    let ghost_stage =
+        map.stage_player_db_creature_visibility(1, player_position, vec![ghost_visible.clone()]);
+    assert_eq!(ghost_stage.create_guids, vec![ghost_visible_guid]);
+    assert!(ghost_stage.destroy_guids.is_empty());
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ghost_visible_guid));
+
+    session.player_flags &= !PLAYER_FLAGS_GHOST;
+    session.player_death_state = PlayerDeathState::Alive;
+    session.player_health = 42;
+    map.sync_player_gameplay_state(1, &session);
+    map.reset_player_visibility_scan_positions(1);
+
+    let resurrect_stage =
+        map.stage_player_db_creature_visibility(1, player_position, vec![ghost_visible]);
+    assert!(resurrect_stage.create_guids.is_empty());
+    assert_eq!(resurrect_stage.destroy_guids, vec![ghost_visible_guid]);
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ghost_visible_guid));
 }
 
 #[test]
@@ -12747,6 +12996,7 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         attributes_ex3: 0,
         speed: 0.0,
         recovery_time: 0,
+        category: 0,
         category_recovery_time: 0,
         start_recovery_category: 0,
         start_recovery_time: 0,
@@ -12771,6 +13021,8 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         effect_implicit_target_a1: 0,
         effect_implicit_target_a2: 0,
         effect_implicit_target_a3: 0,
+        equipped_item_class: -1,
+        equipped_item_subclass_mask: 0,
         spell_family_name: 0,
         spell_family_flags: 0,
         dmg_class: 0,
@@ -12984,6 +13236,7 @@ fn diplomacy_passive_modifies_quest_reputation_gain() {
         duration_millis: None,
         expires_at: None,
         periodic_damage: None,
+        periodic_regen: None,
         stat_modifiers: vec![AuraStatModifier::ReputationGainPercent { percent: 10 }],
     };
     let mut quest = test_quest_template(3901);
@@ -12997,6 +13250,84 @@ fn diplomacy_passive_modifies_quest_reputation_gain() {
     );
 
     assert_eq!(rewards, vec![(72, 27)]);
+}
+
+#[test]
+fn item_use_spell_failure_allows_refreshing_existing_aura_during_cooldown() {
+    let now = Instant::now();
+    let mut session = WorldSessionState::default();
+    let spell_id = 1127;
+    session
+        .starter_spell_cooldowns_until
+        .insert(spell_id, now + Duration::from_secs(30));
+    session
+        .starter_global_cooldowns_until
+        .insert(1, now + Duration::from_secs(30));
+    session.active_auras.push(ActiveAura {
+        spell_id,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: Some(PeriodicRegenAura {
+            health_amount: 5,
+            mana_amount: 0,
+            tick_millis: 2_000,
+            next_tick_at: now + Duration::from_secs(2),
+        }),
+        stat_modifiers: Vec::new(),
+    });
+    let item_spell = SupportedStarterSpell {
+        spell_id,
+        kind: StarterSpellKind::AuraApplication,
+        aura_target: StarterSpellAuraTarget::Caster,
+        bonus_damage: 0,
+        damage: 0,
+        power: StarterSpellPower::Mana { cost: 0 },
+        requires_melee: false,
+        global_cooldown_category: 1,
+        global_cooldown_millis: 1_500,
+        cooldown_millis: 30_000,
+    };
+
+    assert_eq!(
+        item_use_spell_failure(&session, &item_spell, now, false),
+        None
+    );
+}
+
+#[test]
+fn consumable_regen_item_use_does_not_install_duration_cooldown() {
+    let now = Instant::now();
+    let mut session = WorldSessionState::default();
+    let item_spell = SupportedStarterSpell {
+        spell_id: 1127,
+        kind: StarterSpellKind::AuraApplication,
+        aura_target: StarterSpellAuraTarget::Caster,
+        bonus_damage: 0,
+        damage: 0,
+        power: StarterSpellPower::Mana { cost: 0 },
+        requires_melee: false,
+        global_cooldown_category: 1,
+        global_cooldown_millis: 1_500,
+        cooldown_millis: 30_000,
+    };
+
+    apply_item_use_spell_cooldowns(&mut session, &item_spell, now, true);
+
+    assert!(!session
+        .starter_spell_cooldowns_until
+        .contains_key(&item_spell.spell_id));
+    assert!(session
+        .starter_global_cooldowns_until
+        .contains_key(&item_spell.global_cooldown_category));
+    assert_eq!(
+        item_use_spell_failure(&session, &item_spell, now + Duration::from_secs(2), true,),
+        None
+    );
 }
 
 #[test]
@@ -14294,6 +14625,45 @@ fn initial_spells_include_active_enabled_spells() {
     ]);
 
     assert_eq!(body, [0, 1, 0, 78, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn set_proficiency_packet_matches_cmangos_class_and_mask_shape() {
+    let body = build_set_proficiency_body(ITEM_CLASS_WEAPON, (1 << 7) | (1 << 15));
+
+    assert_eq!(body.len(), 5);
+    assert_eq!(body[0], ITEM_CLASS_WEAPON as u8);
+    assert_eq!(&body[1..5], &((1u32 << 7) | (1u32 << 15)).to_le_bytes());
+}
+
+#[test]
+fn proficiency_masks_use_spell_template_class_and_subclass_mask() {
+    let mut sword_proficiency = test_spell_template(201);
+    sword_proficiency.effect1 = 60;
+    sword_proficiency.equipped_item_class = ITEM_CLASS_WEAPON as i32;
+    sword_proficiency.equipped_item_subclass_mask = 1 << 7;
+    let mut shield_proficiency = test_spell_template(9116);
+    shield_proficiency.effect1 = 60;
+    shield_proficiency.equipped_item_class = ITEM_CLASS_ARMOR as i32;
+    shield_proficiency.equipped_item_subclass_mask = 1 << 6;
+    let mut ignored_non_proficiency = test_spell_template(78);
+    ignored_non_proficiency.equipped_item_class = ITEM_CLASS_WEAPON as i32;
+    ignored_non_proficiency.equipped_item_subclass_mask = 1 << 15;
+
+    let mut weapon_mask = 0;
+    let mut armor_mask = 0;
+    if spell_template_has_proficiency_effect(&sword_proficiency) {
+        add_template_proficiency_masks(&sword_proficiency, &mut weapon_mask, &mut armor_mask);
+    }
+    if spell_template_has_proficiency_effect(&shield_proficiency) {
+        add_template_proficiency_masks(&shield_proficiency, &mut weapon_mask, &mut armor_mask);
+    }
+    if spell_template_has_proficiency_effect(&ignored_non_proficiency) {
+        add_template_proficiency_masks(&ignored_non_proficiency, &mut weapon_mask, &mut armor_mask);
+    }
+
+    assert_eq!(weapon_mask, 1 << 7);
+    assert_eq!(armor_mask, 1 << 6);
 }
 
 #[test]
@@ -16719,6 +17089,69 @@ fn item_query_response_includes_cmangos_stats_damage_and_spells() {
     );
 }
 
+#[test]
+fn item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override() {
+    let mut template = test_item_template(117, 0, 0, 0.0, 0.0, 0);
+    template.spells[0] = wow_db::ItemTemplateSpell {
+        spell_id: 433,
+        spell_trigger: ITEM_SPELLTRIGGER_ON_USE,
+        spell_charges: -1,
+        spell_cooldown: -1,
+        spell_category: 11,
+        spell_category_cooldown: -1,
+    };
+    let spell_cooldowns = [
+        Some(ItemQuerySpellCooldown {
+            recovery_time: 0,
+            category: 11,
+            category_recovery_time: 60_000,
+        }),
+        None,
+        None,
+        None,
+        None,
+    ];
+
+    let body = build_item_query_single_response_with_spell_cooldowns(
+        template.entry,
+        Some(&template),
+        Some(&spell_cooldowns),
+    );
+    let mut offset = 12;
+    offset += body[offset..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .expect("name terminator")
+        + 1;
+    offset += 3;
+    let spell_offset = offset + 20 * 4 + 10 * 8 + 5 * 12 + 7 * 4 + 3 * 4;
+
+    assert_eq!(
+        i32::from_le_bytes(
+            body[spell_offset + 12..spell_offset + 16]
+                .try_into()
+                .unwrap()
+        ),
+        0
+    );
+    assert_eq!(
+        u32::from_le_bytes(
+            body[spell_offset + 16..spell_offset + 20]
+                .try_into()
+                .unwrap()
+        ),
+        11
+    );
+    assert_eq!(
+        i32::from_le_bytes(
+            body[spell_offset + 20..spell_offset + 24]
+                .try_into()
+                .unwrap()
+        ),
+        60_000
+    );
+}
+
 #[tokio::test]
 async fn party_master_loot_members_only_for_current_master_looter() {
     let parties = PartyManager::default();
@@ -17051,6 +17484,63 @@ fn starter_spell_packets_match_cmangos_success_shapes() {
         read_packed_guid(&go, &mut cursor).unwrap(),
         rust_combat_dummy_guid()
     );
+    assert_eq!(cursor, go.len());
+}
+
+#[test]
+fn item_spell_packets_use_item_source_and_item_cast_flag() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let item = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let targets = SpellCastTargets {
+        target_mask: 0,
+        unit_target: None,
+        gameobject_target: None,
+    };
+
+    let start = build_spell_start_body_with_source(item, caster, 433, 0, &targets).unwrap();
+    let mut cursor = 0;
+    assert_eq!(read_packed_guid(&start, &mut cursor).unwrap(), item);
+    assert_eq!(read_packed_guid(&start, &mut cursor).unwrap(), caster);
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), 433);
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_START
+    );
+    cursor += 2;
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), 0);
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        0
+    );
+    cursor += 2;
+    assert_eq!(cursor, start.len());
+
+    let go = build_spell_go_body_with_source(
+        item,
+        caster,
+        433,
+        CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER,
+        &targets,
+    )
+    .unwrap();
+    let mut cursor = 0;
+    assert_eq!(read_packed_guid(&go, &mut cursor).unwrap(), item);
+    assert_eq!(read_packed_guid(&go, &mut cursor).unwrap(), caster);
+    assert_eq!(read_u32(&go, &mut cursor).unwrap(), 433);
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER
+    );
+    cursor += 2;
+    assert_eq!(go[cursor], 0);
+    cursor += 1;
+    assert_eq!(go[cursor], 0);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        0
+    );
+    cursor += 2;
     assert_eq!(cursor, go.len());
 }
 

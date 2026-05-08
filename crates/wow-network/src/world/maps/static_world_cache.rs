@@ -10,7 +10,7 @@ struct StaticWorldCacheCounts {
 struct StaticWorldSpawnCache {
     creature_spawns_by_grid: HashMap<(u32, GridCoord), Vec<CreatureSpawnQuery>>,
     gameobject_spawns_by_grid: HashMap<(u32, GridCoord), Vec<wow_db::GameObjectSpawnQuery>>,
-    counts: StaticWorldCacheCounts,
+    active_game_events: RwLock<GameEventState>,
 }
 
 impl StaticWorldSpawnCache {
@@ -31,16 +31,6 @@ impl StaticWorldSpawnCache {
         gameobject_spawns: Vec<wow_db::GameObjectSpawnQuery>,
         game_events: &GameEventState,
     ) -> Self {
-        let creature_spawns = creature_spawns
-            .into_iter()
-            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
-            .collect::<Vec<_>>();
-        let gameobject_spawns = gameobject_spawns
-            .into_iter()
-            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
-            .collect::<Vec<_>>();
-        let creature_spawn_count = creature_spawns.len() as u64;
-        let gameobject_spawn_count = gameobject_spawns.len() as u64;
         let mut creature_spawns_by_grid: HashMap<(u32, GridCoord), Vec<CreatureSpawnQuery>> =
             HashMap::new();
         let mut gameobject_spawns_by_grid: HashMap<
@@ -83,28 +73,82 @@ impl StaticWorldSpawnCache {
             spawns.sort_by_key(|spawn| spawn.guid);
         }
 
-        let counts = StaticWorldCacheCounts {
-            creature_spawns: creature_spawn_count,
-            creature_grids: creature_spawns_by_grid.len() as u64,
-            gameobject_spawns: gameobject_spawn_count,
-            gameobject_grids: gameobject_spawns_by_grid.len() as u64,
-        };
-
         Self {
             creature_spawns_by_grid,
             gameobject_spawns_by_grid,
-            counts,
+            active_game_events: RwLock::new(game_events.clone()),
         }
     }
 
     fn counts(&self) -> StaticWorldCacheCounts {
-        self.counts
+        let game_events = self.active_game_events();
+        let creature_spawns = self
+            .creature_spawns_by_grid
+            .values()
+            .flat_map(|spawns| spawns.iter())
+            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+            .count() as u64;
+        let creature_grids = self
+            .creature_spawns_by_grid
+            .iter()
+            .filter(|(_, spawns)| {
+                spawns
+                    .iter()
+                    .any(|spawn| game_events.spawn_is_active(spawn.game_event))
+            })
+            .count() as u64;
+        let gameobject_spawns = self
+            .gameobject_spawns_by_grid
+            .values()
+            .flat_map(|spawns| spawns.iter())
+            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+            .count() as u64;
+        let gameobject_grids = self
+            .gameobject_spawns_by_grid
+            .iter()
+            .filter(|(_, spawns)| {
+                spawns
+                    .iter()
+                    .any(|spawn| game_events.spawn_is_active(spawn.game_event))
+            })
+            .count() as u64;
+        StaticWorldCacheCounts {
+            creature_spawns,
+            creature_grids,
+            gameobject_spawns,
+            gameobject_grids,
+        }
+    }
+
+    fn active_game_events(&self) -> GameEventState {
+        self.active_game_events
+            .read()
+            .map(|events| events.clone())
+            .unwrap_or_default()
+    }
+
+    fn replace_active_game_events(&self, game_events: GameEventState) -> bool {
+        let Ok(mut active_game_events) = self.active_game_events.write() else {
+            return false;
+        };
+        if *active_game_events == game_events {
+            return false;
+        }
+        *active_game_events = game_events;
+        true
     }
 
     fn creature_spawns_for_grid(&self, map_id: u32, grid: GridCoord) -> Vec<CreatureSpawnQuery> {
+        let game_events = self.active_game_events();
         self.creature_spawns_by_grid
             .get(&(map_id, grid))
-            .cloned()
+            .map(|spawns| {
+                spawns
+                    .iter()
+                    .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -113,9 +157,16 @@ impl StaticWorldSpawnCache {
         map_id: u32,
         grid: GridCoord,
     ) -> Vec<wow_db::GameObjectSpawnQuery> {
+        let game_events = self.active_game_events();
         self.gameobject_spawns_by_grid
             .get(&(map_id, grid))
-            .cloned()
+            .map(|spawns| {
+                spawns
+                    .iter()
+                    .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }

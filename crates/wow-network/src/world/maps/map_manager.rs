@@ -613,6 +613,57 @@ impl MapRuntimeManager {
         Ok(())
     }
 
+    async fn refresh_static_game_event_spawns(
+        &self,
+        character_db_pool: &MySqlPool,
+        game_events: GameEventState,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if !self.static_world_cache.replace_active_game_events(game_events) {
+            return Ok(Vec::new());
+        }
+
+        let map_handles = {
+            self.maps
+                .lock()
+                .await
+                .iter()
+                .map(|(key, map)| (*key, map.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for ((map_id, _instance_id), map) in map_handles {
+            let (creature_grids, gameobject_grids) = {
+                let map = map.lock().await;
+                (map.loaded_creature_grids(), map.loaded_gameobject_grids())
+            };
+
+            for grid in creature_grids {
+                let mut spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+                apply_creature_display_scale_fallbacks(&mut spawns, &self.creature_display_scales);
+                let runtimes = build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
+                packets.extend(
+                    map.lock()
+                        .await
+                        .refresh_static_event_creature_grid(grid, runtimes)?,
+                );
+            }
+
+            for grid in gameobject_grids {
+                let spawns = self
+                    .static_world_cache
+                    .gameobject_spawns_for_grid(map_id, grid);
+                let runtimes = spawns.into_iter().map(DbGameObjectRuntime::new).collect();
+                packets.extend(
+                    map.lock()
+                        .await
+                        .refresh_static_event_gameobject_grid(grid, runtimes, now)?,
+                );
+            }
+        }
+        Ok(packets)
+    }
+
     async fn apply_player_aura(
         &self,
         map_id: u32,

@@ -51,6 +51,9 @@ async fn handle_repop_request(
         character.fall_time = 0;
     }
     deps.maps
+        .sync_player_gameplay_state(old_map_id, character_guid, session)
+        .await;
+    deps.maps
         .reset_player_visibility_scan_positions(old_map_id, character_guid)
         .await;
 
@@ -284,8 +287,7 @@ async fn handle_spirit_healer_activate(
 }
 
 fn is_spirit_healer_creature(creature: &DbCreatureRuntime) -> bool {
-    creature.spawn.entry == SPIRIT_HEALER_ENTRY
-        || creature.spawn.template.npc_flags & UNIT_NPC_FLAG_SPIRITHEALER != 0
+    creature.spawn.template.npc_flags & UNIT_NPC_FLAG_SPIRITHEALER != 0
 }
 
 async fn resurrect_player_at_position(
@@ -305,23 +307,31 @@ async fn resurrect_player_at_position(
     );
     let world_stats = wow_db::get_player_world_stats(deps.world_db_pool, race, class, level).await?;
     let resurrected_health = (world_stats.max_health().max(1) / 2).max(1);
-    let Some(character) = &mut session.active_character else {
-        return Ok(());
-    };
     session.player_death_state = PlayerDeathState::Alive;
     let corpse_to_bones = session.player_corpse.take();
     session.player_health = resurrected_health;
     session.player_flags &= !PLAYER_FLAGS_GHOST;
-    character.position = position;
-    character.movement_flags = 0;
-    character.fall_time = 0;
-
-    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let (character_guid, map_id) = {
+        let Some(character) = &mut session.active_character else {
+            return Ok(());
+        };
+        character.position = position;
+        character.movement_flags = 0;
+        character.fall_time = 0;
+        (character.guid, character.position.map_id)
+    };
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let packets = deps
         .maps
-        .update_player_health(character.position.map_id, character.guid, session.player_health)
+        .update_player_health(map_id, character_guid, session.player_health)
         .await?;
     deps.sessions.dispatch(packets).await;
+    deps.maps
+        .sync_player_gameplay_state(map_id, character_guid, session)
+        .await;
+    deps.maps
+        .reset_player_visibility_scan_positions(map_id, character_guid)
+        .await;
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
@@ -336,7 +346,7 @@ async fn resurrect_player_at_position(
     )
     .await?;
     if let Some(corpse) = corpse_to_bones {
-        wow_db::delete_player_corpse(deps.character_db_pool, character.guid).await?;
+        wow_db::delete_player_corpse(deps.character_db_pool, character_guid).await?;
         let bones = player_bones_runtime_from_corpse(corpse);
         deps.maps
             .upsert_player_corpse(bones.position.map_id, bones.clone())
@@ -352,8 +362,17 @@ async fn resurrect_player_at_position(
     send_packet(
         stream,
         MSG_MOVE_TELEPORT_ACK,
-        &build_near_teleport_ack_body(character, 0)?,
-        Some(header_crypto),
+        &build_near_teleport_ack_body(session.active_character.as_ref().unwrap(), 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    stream_newly_visible_db_creatures(
+        stream,
+        deps.character_db_pool,
+        deps.world_db_pool,
+        deps.maps,
+        session,
+        header_crypto,
     )
     .await?;
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await

@@ -613,9 +613,14 @@ async fn handle_use_item(
 
     let now = Instant::now();
     let targets = normalize_item_use_targets(request.targets, &item_spell_shape, caster);
-    if let Some(failure) =
-        item_use_spell_failure(session, &item_spell_shape, now)
-    {
+    let refreshable_consumable_regen = item_spell_shape.kind == StarterSpellKind::AuraApplication
+        && spell_periodic_regen_aura(&spell_template, now).is_some();
+    if let Some(failure) = item_use_spell_failure(
+        session,
+        &item_spell_shape,
+        now,
+        refreshable_consumable_regen,
+    ) {
         send_packet(
             stream,
             SMSG_CAST_RESULT,
@@ -639,8 +644,14 @@ async fn handle_use_item(
         .await;
     }
 
-    apply_starter_spell_cooldowns(session, &item_spell_shape, now);
-    let spell_start_body = build_spell_start_body(caster, spell_template.id, 0, &targets)?;
+    apply_item_use_spell_cooldowns(
+        session,
+        &item_spell_shape,
+        now,
+        refreshable_consumable_regen,
+    );
+    let spell_start_body =
+        build_spell_start_body_with_source(item_guid, caster, spell_template.id, 0, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_START,
@@ -672,7 +683,13 @@ async fn handle_use_item(
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = build_spell_go_body(caster, spell_template.id, &targets)?;
+    let spell_go_body = build_spell_go_body_with_source(
+        item_guid,
+        caster,
+        spell_template.id,
+        CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER,
+        &targets,
+    )?;
     send_packet(
         stream,
         SMSG_SPELL_GO,
@@ -1203,11 +1220,21 @@ const SPELL_EFFECT_HEAL: u32 = 10;
 const SPELL_EFFECT_ENERGIZE: u32 = 30;
 const SPELL_EFFECT_CHARGE: u32 = 96;
 const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
+const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
+const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
+const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
 const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 const SPELL_AURA_MOD_SKILL: u32 = 30;
+const SPELL_AURA_MOD_REGEN: u32 = 84;
+const SPELL_AURA_MOD_POWER_REGEN: u32 = 85;
 const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
 const SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE: u32 = 137;
 const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
+const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
+const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
+const AURA_INTERRUPT_FLAG_STANDING_CANCELS: u32 = 0x0004_0000;
+const PLAYER_STAND_STATE_STAND: u8 = 0;
+const PLAYER_STAND_STATE_SIT: u8 = 1;
 const POWER_TYPE_MANA: u32 = 0;
 const POWER_TYPE_RAGE: u32 = 1;
 const POSITIVE_AURA_FLAGS: u32 = 0x05;
@@ -1439,6 +1466,7 @@ fn build_active_aura(
         expires_at: (duration_millis > 0)
             .then_some(now + Duration::from_millis(duration_millis as u64)),
         periodic_damage: spell_periodic_damage_aura(template, now),
+        periodic_regen: spell_periodic_regen_aura(template, now),
         stat_modifiers: spell_aura_stat_modifiers(template),
     }
 }
@@ -1475,6 +1503,46 @@ fn spell_periodic_damage_aura(
                 next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
             })
         })
+}
+
+fn spell_periodic_regen_aura(
+    template: &wow_db::SpellTemplateQuery,
+    now: Instant,
+) -> Option<PeriodicRegenAura> {
+    let mut health_amount = 0u32;
+    let mut mana_amount = 0u32;
+    let mut tick_millis = 0u32;
+    for effect in spell_effects(template) {
+        if effect.effect != SPELL_EFFECT_APPLY_AURA {
+            continue;
+        }
+        let Some(amount) = spell_effect_simple_value(effect.base_points) else {
+            continue;
+        };
+        match effect.aura_name {
+            SPELL_AURA_PERIODIC_HEAL | SPELL_AURA_OBS_MOD_HEALTH | SPELL_AURA_MOD_REGEN => {
+                health_amount = health_amount.saturating_add(amount);
+                tick_millis = tick_millis.max(effect.amplitude);
+            }
+            SPELL_AURA_PERIODIC_ENERGIZE | SPELL_AURA_MOD_POWER_REGEN
+                if effect.misc_value == POWER_TYPE_MANA as i32 =>
+            {
+                mana_amount = mana_amount.saturating_add(amount);
+                tick_millis = tick_millis.max(effect.amplitude);
+            }
+            _ => {}
+        }
+    }
+    if health_amount == 0 && mana_amount == 0 {
+        return None;
+    }
+    let tick_millis = tick_millis.max(2_000);
+    Some(PeriodicRegenAura {
+        health_amount,
+        mana_amount,
+        tick_millis,
+        next_tick_at: now + Duration::from_millis(tick_millis as u64),
+    })
 }
 
 fn passive_spell_active_aura(
@@ -1659,18 +1727,49 @@ fn apply_starter_spell_cooldowns(
     }
 }
 
+fn apply_item_use_spell_cooldowns(
+    session: &mut WorldSessionState,
+    item_spell: &SupportedStarterSpell,
+    now: Instant,
+    skip_spell_cooldown: bool,
+) {
+    if item_spell.global_cooldown_millis > 0 {
+        session.starter_global_cooldowns_until.insert(
+            item_spell.global_cooldown_category,
+            now + Duration::from_millis(item_spell.global_cooldown_millis),
+        );
+    }
+    if !skip_spell_cooldown && item_spell.cooldown_millis > 0 {
+        session.starter_spell_cooldowns_until.insert(
+            item_spell.spell_id,
+            now + Duration::from_millis(item_spell.cooldown_millis),
+        );
+    }
+}
+
 fn item_use_spell_failure(
     session: &WorldSessionState,
     item_spell: &SupportedStarterSpell,
     now: Instant,
+    ignore_spell_cooldown: bool,
 ) -> Option<u8> {
-    if let Some(until) = session
-        .starter_spell_cooldowns_until
-        .get(&item_spell.spell_id)
-        .copied()
-    {
-        if now < until {
-            return Some(SPELL_FAILED_NOT_READY);
+    let refreshing_active_aura = item_spell.kind == StarterSpellKind::AuraApplication
+        && session
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == item_spell.spell_id);
+    if refreshing_active_aura {
+        return None;
+    }
+    if !ignore_spell_cooldown {
+        if let Some(until) = session
+            .starter_spell_cooldowns_until
+            .get(&item_spell.spell_id)
+            .copied()
+        {
+            if now < until {
+                return Some(SPELL_FAILED_NOT_READY);
+            }
         }
     }
     if session
@@ -1700,6 +1799,7 @@ async fn apply_item_use_spell_effects(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let character_level = character.level;
+    let character_snapshot = character.clone();
     let mut update_bodies = Vec::new();
 
     let world_stats = wow_db::get_player_world_stats(
@@ -1731,7 +1831,15 @@ async fn apply_item_use_spell_effects(
             now,
             deps.shared_world.maps.spell_duration(spell_template.duration_index),
         );
+        let makes_player_sit = aura.periodic_regen.is_some();
         apply_player_aura(session, aura.clone());
+        if makes_player_sit {
+            session.player_stand_state = PLAYER_STAND_STATE_SIT;
+            update_bodies.push(build_player_stand_state_update_body(
+                &character_snapshot,
+                session.player_stand_state,
+            )?);
+        }
         if let Some(event) = deps
             .shared_world
             .maps
@@ -1747,6 +1855,25 @@ async fn apply_item_use_spell_effects(
             for packet in build_player_aura_duration_update_packets(&session.active_auras, now) {
                 send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
             }
+        }
+        if makes_player_sit {
+            let observer_packets = deps
+                .shared_world
+                .maps
+                .broadcast_nearby_player_packet(
+                    map_id,
+                    character_guid,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_stand_state_update_body(
+                            &character_snapshot,
+                            session.player_stand_state,
+                        )?,
+                    },
+                )
+                .await;
+            deps.shared_world.sessions.dispatch(observer_packets).await;
         }
     }
 
@@ -1839,6 +1966,86 @@ fn expire_session_auras(session: &mut WorldSessionState, now: Instant) {
     session
         .active_auras
         .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+}
+
+fn active_aura_interrupt_flags(aura: &ActiveAura) -> u32 {
+    if aura.periodic_regen.is_some() {
+        AURA_INTERRUPT_FLAG_DAMAGE | AURA_INTERRUPT_FLAG_MOVING | AURA_INTERRUPT_FLAG_STANDING_CANCELS
+    } else {
+        0
+    }
+}
+
+fn remove_active_auras_with_interrupt_flag(
+    active_auras: &mut Vec<ActiveAura>,
+    interrupt_flag: u32,
+) -> bool {
+    let before = active_auras.len();
+    active_auras.retain(|aura| active_aura_interrupt_flags(aura) & interrupt_flag == 0);
+    active_auras.len() != before
+}
+
+async fn interrupt_player_consumable_auras(
+    stream: &mut WorldPacketSink,
+    maps: &Arc<MapRuntimeManager>,
+    sessions: &Arc<SessionRegistry>,
+    session: &mut WorldSessionState,
+    interrupt_flag: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    if !remove_active_auras_with_interrupt_flag(&mut session.active_auras, interrupt_flag) {
+        return Ok(false);
+    }
+    session.player_stand_state = PLAYER_STAND_STATE_STAND;
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(true);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let aura_packet = OutboundWorldPacket {
+        opcode: SMSG_UPDATE_OBJECT,
+        body: build_player_aura_update_body(player, &session.active_auras)?,
+    };
+    let stand_packet = OutboundWorldPacket {
+        opcode: SMSG_UPDATE_OBJECT,
+        body: build_player_stand_state_update_body(character, session.player_stand_state)?,
+    };
+    send_packet(
+        stream,
+        aura_packet.opcode,
+        &aura_packet.body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        stand_packet.opcode,
+        &stand_packet.body,
+        Some(header_crypto),
+    )
+    .await?;
+    maps.sync_player_gameplay_state(map_id, character_guid, session)
+        .await;
+    let mut observer_packets = maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            aura_packet,
+        )
+        .await;
+    observer_packets.extend(
+        maps.broadcast_nearby_player_packet(
+            map_id,
+            character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            stand_packet,
+        )
+        .await,
+    );
+    sessions.dispatch(observer_packets).await;
+    Ok(true)
 }
 
 fn build_player_aura_update_body(
@@ -1971,11 +2178,21 @@ fn build_spell_go_body(
     spell_id: u32,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Vec<u8>> {
+    build_spell_go_body_with_source(caster, caster, spell_id, CAST_FLAG_SPELL_GO, targets)
+}
+
+fn build_spell_go_body_with_source(
+    source: ObjectGuid,
+    caster: ObjectGuid,
+    spell_id: u32,
+    cast_flags: u16,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(40);
-    PackedGuid::write(&mut body, caster)?;
+    PackedGuid::write(&mut body, source)?;
     PackedGuid::write(&mut body, caster)?;
     body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&CAST_FLAG_SPELL_GO.to_le_bytes());
+    body.extend_from_slice(&cast_flags.to_le_bytes());
 
     if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
         body.push(1);
@@ -1994,8 +2211,18 @@ fn build_spell_start_body(
     cast_time_ms: u32,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Vec<u8>> {
+    build_spell_start_body_with_source(caster, caster, spell_id, cast_time_ms, targets)
+}
+
+fn build_spell_start_body_with_source(
+    source: ObjectGuid,
+    caster: ObjectGuid,
+    spell_id: u32,
+    cast_time_ms: u32,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(44);
-    PackedGuid::write(&mut body, caster)?;
+    PackedGuid::write(&mut body, source)?;
     PackedGuid::write(&mut body, caster)?;
     body.extend_from_slice(&spell_id.to_le_bytes());
     body.extend_from_slice(&CAST_FLAG_SPELL_START.to_le_bytes());
@@ -2019,12 +2246,21 @@ async fn handle_item_query_single(
 
     let item = u32::from_le_bytes(body[0..4].try_into()?);
     let template = wow_db::get_item_template_query(world_db_pool, item).await?;
+    let spell_cooldowns = if let Some(template) = template.as_ref() {
+        Some(item_query_spell_cooldowns(world_db_pool, template).await?)
+    } else {
+        None
+    };
     info!(
         item,
         found = template.is_some(),
         "Answering item template query"
     );
-    let response = build_item_query_single_response(item, template.as_ref());
+    let response = build_item_query_single_response_with_spell_cooldowns(
+        item,
+        template.as_ref(),
+        spell_cooldowns.as_ref(),
+    );
     send_packet(
         stream,
         SMSG_ITEM_QUERY_SINGLE_RESPONSE,
@@ -2032,6 +2268,30 @@ async fn handle_item_query_single(
         Some(header_crypto),
     )
     .await
+}
+
+async fn item_query_spell_cooldowns(
+    world_db_pool: &MySqlPool,
+    template: &wow_db::ItemTemplateQuery,
+) -> anyhow::Result<[Option<ItemQuerySpellCooldown>; 5]> {
+    let mut cooldowns = [None; 5];
+    for (index, spell) in template.spells.iter().enumerate() {
+        if spell.spell_id == 0 {
+            continue;
+        }
+        let Some(spell_template) = wow_db::get_spell_template_query(world_db_pool, spell.spell_id).await?
+        else {
+            continue;
+        };
+        cooldowns[index] = Some(ItemQuerySpellCooldown {
+            recovery_time: spell_template.recovery_time.min(i32::MAX as u32) as i32,
+            category: spell_template.category,
+            category_recovery_time: spell_template
+                .category_recovery_time
+                .min(i32::MAX as u32) as i32,
+        });
+    }
+    Ok(cooldowns)
 }
 
 async fn handle_item_name_query(

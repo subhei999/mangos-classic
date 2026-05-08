@@ -34,6 +34,38 @@ impl MapRuntime {
             let mut health_changed = false;
             let mut mana_changed = false;
             let mut rage_changed = false;
+            let mut consumable_health_gain = 0u32;
+            let mut consumable_mana_gain = 0u32;
+
+            for aura in &mut player.active_auras {
+                let Some(regen) = aura.periodic_regen.as_mut() else {
+                    continue;
+                };
+                while regen.next_tick_at <= now {
+                    consumable_health_gain =
+                        consumable_health_gain.saturating_add(regen.health_amount);
+                    consumable_mana_gain = consumable_mana_gain.saturating_add(regen.mana_amount);
+                    regen.next_tick_at += Duration::from_millis(regen.tick_millis as u64);
+                }
+            }
+
+            if consumable_health_gain > 0 && player.health < player.max_health {
+                let new_health = player
+                    .health
+                    .saturating_add(consumable_health_gain)
+                    .min(player.max_health);
+                health_changed = new_health != player.health;
+                player.health = new_health;
+            }
+
+            if consumable_mana_gain > 0 && player.max_power1 > 0 && player.power1 < player.max_power1 {
+                let new_mana = player
+                    .power1
+                    .saturating_add(consumable_mana_gain)
+                    .min(player.max_power1);
+                mana_changed = new_mana != player.power1;
+                player.power1 = new_mana;
+            }
 
             if !in_combat && player.health < player.max_health {
                 let regen = health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);

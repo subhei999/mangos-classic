@@ -320,18 +320,13 @@ fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
 }
 
 fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
-    if is_spirit_healer_creature(creature) {
-        creature.spawn.template.npc_flags | UNIT_NPC_FLAG_SPIRITHEALER
-    } else {
-        creature.spawn.template.npc_flags
-    }
+    creature.spawn.template.npc_flags
 }
 
 const CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x0000_0002;
 
 fn db_creature_visible_to_ghosts(creature: &DbCreatureRuntime) -> bool {
     creature.spawn.template.creature_type_flags & CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS != 0
-        || is_spirit_healer_creature(creature)
 }
 
 fn creature_health(template: &CreatureTemplateQuery) -> u32 {

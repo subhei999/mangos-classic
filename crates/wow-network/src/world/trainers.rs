@@ -154,12 +154,18 @@ async fn handle_trainer_buy_spell(
         Some(&mut *header_crypto),
     )
     .await?;
+    let known_spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
+    send_known_proficiencies(
+        stream,
+        world_db_pool,
+        &known_spells,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_INITIAL_SPELLS,
-        &build_initial_spells_body(
-            &wow_db::get_character_spells(character_db_pool, character.guid).await?,
-        ),
+        &build_initial_spells_body(&known_spells),
         Some(&mut *header_crypto),
     )
     .await?;

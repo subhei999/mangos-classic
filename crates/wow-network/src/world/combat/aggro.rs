@@ -344,6 +344,15 @@ async fn send_single_active_db_creature_attack(
             .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
             .await;
     }
+    interrupt_player_consumable_auras(
+        stream,
+        shared_world.maps,
+        shared_world.sessions,
+        session,
+        AURA_INTERRUPT_FLAG_DAMAGE,
+        header_crypto,
+    )
+    .await?;
     mirror_session_active_creature_combat(session, event.combat);
     shared_world.sessions.dispatch(event.observer_packets).await;
     send_packet(

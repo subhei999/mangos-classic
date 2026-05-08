@@ -114,6 +114,20 @@ the local game stack and observability dashboard:
   `CMSG_USE_ITEM` for DB-backed on-use/no-delay item spells, sending the normal
   spell start/result/go lifecycle, applying supported self aura/direct
   heal/energize effects, and consuming negative-charge item stacks.
+- Current uncommitted consumable/proficiency follow-up keeps item query
+  `RequiredSpell` raw like CMaNGOS and sends `SMSG_SET_PROFICIENCY` on login
+  and trainer learn using real `spell_template` proficiency effect class/mask
+  fields so the client can color weapon/armor subclass labels itself.
+  Food/drink-style item auras now make the player sit, refresh over an existing
+  matching aura instead of returning "item not ready", tick map-owned
+  health/mana regen, and break on movement or incoming damage while clearing
+  the aura and standing the player back up. Follow-up consumable packet parity
+  fixes item casts to use the item packed GUID as the cast source plus the
+  CMaNGOS item-cast flag, and item query spell cooldowns now fall back to
+  `spell_template` cooldown/category fields only when item_template uses the
+  `-1` sentinel; starter food/water DB rows keep their 1s item category
+  cooldown override so the client should show the short item cooldown while
+  allowing the regen aura to be refreshed.
 - Current uncommitted warrior debuff/charge fix makes starter hostile aura
   spells target DB creatures instead of the caster, serializes harmful aura
   flags on creature unit fields, advances periodic damage from the map update
@@ -157,31 +171,36 @@ the local game stack and observability dashboard:
   Creatures that kill the player now reset health/combat state, send
   attack-stop/state packets, and start run-speed return-home motion instead of
   staying at the player's corpse.
-- Current uncommitted environmental/world-ambience work now covers four
+- Current uncommitted environmental/world-ambience work now covers five
   CMaNGOS-shaped first slices:
-  - Holiday/event spawn gating at startup/grid-load time: Rust loads
+  - Holiday/event spawn gating at startup/grid-load/runtime-refresh time: Rust loads
     `game_event`/`game_event_time`, preserves signed
     `game_event_creature`/`game_event_gameobject` bindings on static creature
     and gameobject spawns, computes the active event set from DB schedules,
-    and filters positive event spawns in only while active and negative event
-    spawns out while active.
+    filters positive event spawns in only while active and negative event
+    spawns out while active, retains inactive event rows in the static cache
+    instead of discarding them, and the map update loop now reconciles loaded
+    grids when the active event set changes by destroying inactive event-bound
+    creatures/gameobjects and creating newly active ones for nearby players.
   - Static ambient NPC emote state: Rust loads
     `creature_addon.emote`/`creature_template_addon.emote` with per-spawn
     addon precedence and writes `UNIT_NPC_EMOTESTATE` in DB-creature create
     blocks.
   - Per-viewer ghost visibility foundation: Rust loads
     `creature_template.CreatureTypeFlags`, sends those type flags in
-    `SMSG_CREATURE_QUERY_RESPONSE` like CMaNGOS, ghost players only stage
-    DB-creatures marked CMaNGOS `VISIBLE_TO_GHOSTS` or known spirit healers,
-    and alive players destroy/skip spirit healers so they disappear after
-    resurrection.
+    `SMSG_CREATURE_QUERY_RESPONSE` like CMaNGOS, ghost players stage
+    DB-creatures marked CMaNGOS `VISIBLE_TO_GHOSTS`, and alive players
+    destroy/skip those ghost-visible DB creatures so Spirit Healers and other
+    DB-flagged ghost services disappear after resurrection. Spirit Healer
+    interaction/gossip validation uses DB `UNIT_NPC_FLAG_SPIRITHEALER`, not
+    entry-id fallback.
   - Fall environmental damage: map-owned player movement tracks fall start
     height and applies the CMaNGOS fall-damage formula on
     `MSG_MOVE_FALL_LAND`, sends `SMSG_ENVIRONMENTALDAMAGELOG` plus health
     updates, and hands fatal falls to the existing player death path.
-  Runtime event start/stop create/destroy diffs, `game_event_creature_data`
-  overlays, event pools, event quests/conditions, DB script actions, and
-  liquid/drowning/lava/fire damage remain follow-ups.
+  `game_event_creature_data` overlays, event pools, event quests/conditions,
+  CMaNGOS `creature_conditional_spawn` dungeon-team entry selection, DB script
+  actions, and liquid/drowning/lava/fire damage remain follow-ups.
 
 Run `git status --short --branch` before editing.
 
@@ -205,6 +224,48 @@ follow-up.
 
 ## Recently Changed
 
+- Consumable/proficiency follow-up: `SMSG_ITEM_QUERY_SINGLE_RESPONSE` keeps DB
+  `RequiredSpell` raw like CMaNGOS. A real-client check showed the earlier
+  derived-proficiency spell ids put red "Requires ..." text below the tooltip
+  instead of coloring the weapon class/subclass line, so that derived field was
+  removed. Rust now sends CMaNGOS-shaped `SMSG_SET_PROFICIENCY` packets with
+  item class plus subclass mask, derived from active known proficiency spells'
+  real `spell_template.EquippedItemClass` and `EquippedItemSubClassMask`, on
+  login and after trainer learns. Item aura uses now identify food/drink-style
+  regen auras from real `spell_template` aura effects, sit the player, allow
+  refreshing an already-active matching buff despite item/GCD cooldown state,
+  do not install a long item-spell cooldown that would survive movement/damage
+  interruption, tick map-owned health/mana regen every aura interval, and
+  remove those auras on movement or incoming damage while sending aura/stand
+  updates to the owner and nearby observers. Proof:
+  `cargo test -p wow-network --lib` passed with 460 tests; `.\scripts\test-rust.cmd`
+  initially hit a Windows lock on
+  `target\debug\authserver.exe`, then passed after stopping the stale local
+  `authserver` process. A follow-up real-client login disconnect was traced to
+  SQLx decoding `spell_template.EquippedItemSubClassMask` as unsigned while
+  MySQL reports the column as signed `INT`, then to negative sentinel masks
+  overflowing an unsigned cast. Rust now decodes the field as signed like the
+  DB/DBC source and converts to `u32` only when OR-ing the CMaNGOS packet mask.
+  Proof after that fix: `cargo test -p wow-network --lib proficiency`,
+  `.\scripts\test-rust-db.cmd`, and `cargo test -p wow-network --lib` passed.
+  Follow-up consumable readiness fix sends item-use `SMSG_SPELL_START` and
+  `SMSG_SPELL_GO` with the item packed GUID as the source/cast item plus
+  CMaNGOS' item-cast flag, and item query spell cooldown serialization now
+  matches CMaNGOS fallback behavior when item cooldown fields are `-1` while
+  preserving DB item overrides like Tough Jerky/Refreshing Spring Water's 1s
+  category cooldown. Proof after that packet fix:
+  `cargo fmt --package wow-network --package wow-db --check`, `cargo check -p
+  wow-db`, `cargo check -p wow-network`, focused `item_spell_packets`,
+  `item_query_response`, and `use_item` tests, plus `cargo test -p wow-network
+  --lib` passed with 462 tests. `.\scripts\test-rust.cmd` passed clippy,
+  checks, workspace tests, doc-tests, and 462 `wow-network` tests, then failed
+  only at the final `cargo build -p authserver` because the live local
+  `authserver.exe` locked `target\debug\authserver.exe`; replacement builds
+  passed with `cargo build -p authserver --target-dir
+  target/codex-consumable-verify` and `cargo build -p worldserver --target-dir
+  target/codex-consumable-verify`. Stack was restarted successfully afterward.
+  Real-client proof still needed for exact food/water item cooldown display,
+  buff refresh, tooltip red text, and sit/interrupt visuals.
 - Item restriction/use parity: equip moves now send
   `SMSG_INVENTORY_CHANGE_FAILURE` with CMaNGOS inventory result codes instead
   of silently ignoring wrong level/class/skill/proficiency/slot cases; level
@@ -224,27 +285,32 @@ follow-up.
 - Environmental/world-event planning: four read-only subagent investigations
   mapped CMaNGOS references for environmental damage, DB scripts/ambient NPC
   behavior, game-event spawns, and dead/quest/player-dependent visibility.
-  Implemented slices now include event-bound static spawn gating, static
-  addon emote create fields, ghost-only viewer filtering for non-ghost-visible
-  DB creatures, and CMaNGOS-formula fall damage. Proof:
+  Implemented slices now include event-bound static spawn gating, runtime
+  event-bound creature/gameobject refresh for loaded grids, static addon emote
+  create fields, ghost-only viewer filtering for non-ghost-visible DB
+  creatures, and CMaNGOS-formula fall damage. Proof:
   `cargo fmt --package wow-db --package wow-network --check`,
   `cargo check -p wow-db`, `cargo check -p wow-network`, focused tests for
   `static_world_cache_filters_game_event_bound_spawns`,
+  `static_world_cache_reevaluates_game_event_bound_spawns_after_event_change`,
+  `map_runtime_game_event_refresh_reconciles_loaded_creatures_and_gameobjects`,
   `db_creature_create_block_uses_addon_emote_state`,
   `map_runtime_ghost_player_only_stages_creatures_visible_to_ghosts`, and
   `map_runtime_fall_land_applies_cmangos_fall_damage_and_log`, plus
-  `$env:CARGO_TARGET_DIR='target\codex-env-update-check'; .\scripts\test-rust.cmd`
-  passed with 446 `wow-network` tests.
+  `$env:CARGO_TARGET_DIR='target\codex-event-refresh-check'; .\scripts\test-rust.cmd`
+  passed with 458 `wow-network` tests.
 - Spirit Healer alive-visibility correction: CMaNGOS DB row 6491 has
   `CreatureTypeFlags=2` and CMaNGOS `QueryHandler.cpp` writes `ci->TypeFlags`
   into `SMSG_CREATURE_QUERY_RESPONSE`; Rust was incorrectly hardcoding that
   field to zero, making the client treat Spirit Healers like normal visible
-  creatures. Rust now sends DB type flags and the map visibility stage removes
-  spirit healers for alive viewers while still staging them for ghosts. Proof:
+  creatures. Rust now sends DB type flags, map visibility is driven by the
+  DB-backed `VISIBLE_TO_GHOSTS` flag rather than entry ids, and Spirit Healer
+  service detection uses DB `UNIT_NPC_FLAG_SPIRITHEALER` only. Proof:
   `cargo fmt --package wow-network --check`, focused
-  `creature_query_response`/`spirit_healer` tests, `cargo check -p wow-network`,
-  and `$env:CARGO_TARGET_DIR='target\codex-spirit-healer-full'; .\scripts\test-rust.cmd`
-  passed with 448 `wow-network` tests.
+  `creature_query_response`/`spirit_healer`/`ghost_visible` tests,
+  `cargo check -p wow-network`, and
+  `$env:CARGO_TARGET_DIR='target\codex-ghost-visibility-no-hardcode-final'; .\scripts\test-rust.cmd`
+  passed with 453 `wow-network` tests.
 - Item tooltip/stat root cause: Rust's `SMSG_ITEM_QUERY_SINGLE_RESPONSE`
   packet matched CMaNGOS' outer item-query shape but zero-filled the 10
   `ItemStat` pairs, all 5 damage triples, and all 5 item spell blocks instead
@@ -1125,12 +1191,11 @@ process locks `target\debug\authserver.exe`.
 
 ## Known Follow-Ups
 
-- Continue environmental/world-ambience implementation after event spawn
-  gating: add runtime game-event start/stop create/destroy diffs for loaded
-  grids, `game_event_creature_data` overlays, event pools, `game_event_quest`
-  and condition evaluator integration, DB script waypoint `TALK`/`EMOTE`
-  support, creature addon ambient emote state, fall damage, liquid-status bridge
-  for drowning/fatigue/lava, and DB/type-flag-driven ghost visibility proof.
+- Continue environmental/world-ambience implementation after runtime event
+  spawn refresh: add `game_event_creature_data` overlays, event pools,
+  `game_event_quest` and condition evaluator integration, CMaNGOS
+  `creature_conditional_spawn` dungeon-team entry selection, DB script waypoint
+  `TALK`/`EMOTE` support, and liquid-status bridge for drowning/fatigue/lava.
 - Commit/push the local Codex Run action setup if it should be shared with
 future checkouts.
 - Continue quest availability parity from CMaNGOS `CanTakeQuest` /

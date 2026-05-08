@@ -174,6 +174,15 @@ async fn handle_movement(
             header_crypto,
         )
         .await?;
+        interrupt_player_consumable_auras(
+            stream,
+            deps.maps,
+            deps.sessions,
+            session,
+            AURA_INTERRUPT_FLAG_MOVING,
+            header_crypto,
+        )
+        .await?;
         try_start_db_creature_aggro(
             stream,
             SharedWorldDeps {

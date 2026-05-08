@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -153,13 +153,15 @@ impl WorldServer {
         Ok(Self {
             bind_addr,
             login_db_pool,
-            character_db_pool,
+            character_db_pool: character_db_pool.clone(),
             world_db_pool,
             runtime_state: WorldRuntimeState {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
                 delete_options,
+                character_db_pool: character_db_pool.clone(),
                 world_data_files,
                 world_tick_interval,
+                game_event_schedules: Arc::new(game_event_schedules),
                 sessions: Arc::new(SessionRegistry::default()),
                 maps,
                 parties: Arc::new(PartyManager::default()),

@@ -285,6 +285,7 @@ async fn handle_player_login(
         stream,
         EnterWorldBootstrap {
             character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
             character: &bootstrap_character,
             inventory: &session.inventory,
             base_world_stats: &world_stats,

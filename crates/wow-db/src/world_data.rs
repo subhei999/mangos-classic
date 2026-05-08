@@ -385,6 +385,7 @@ pub struct SpellTemplateQuery {
     pub attributes_ex3: u32,
     pub speed: f32,
     pub recovery_time: u32,
+    pub category: u32,
     pub category_recovery_time: u32,
     pub start_recovery_category: u32,
     pub start_recovery_time: u32,
@@ -409,6 +410,8 @@ pub struct SpellTemplateQuery {
     pub effect_implicit_target_a1: u32,
     pub effect_implicit_target_a2: u32,
     pub effect_implicit_target_a3: u32,
+    pub equipped_item_class: i32,
+    pub equipped_item_subclass_mask: i32,
     pub spell_family_name: u32,
     pub spell_family_flags: u64,
     pub dmg_class: u32,
@@ -579,7 +582,7 @@ pub async fn get_spell_template_query(
         "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, School AS school, \
                 Attributes AS attributes, AttributesEx AS attributes_ex, Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
-                RecoveryTime AS recovery_time, CategoryRecoveryTime AS category_recovery_time, \
+                RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
                 Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
@@ -595,6 +598,8 @@ pub async fn get_spell_template_query(
                 EffectImplicitTargetA1 AS effect_implicit_target_a1, \
                 EffectImplicitTargetA2 AS effect_implicit_target_a2, \
                 EffectImplicitTargetA3 AS effect_implicit_target_a3, \
+                EquippedItemClass AS equipped_item_class, \
+                EquippedItemSubClassMask AS equipped_item_subclass_mask, \
                 SpellFamilyName AS spell_family_name, SpellFamilyFlags AS spell_family_flags, \
                 DmgClass AS dmg_class \
          FROM spell_template WHERE Id = ?",

@@ -139,6 +139,12 @@ impl MapRuntime {
         grids
     }
 
+    fn loaded_creature_grids(&self) -> Vec<GridCoord> {
+        let mut grids = self.loaded_creature_grids.iter().copied().collect::<Vec<_>>();
+        grids.sort_by_key(|grid| (grid.x, grid.y));
+        grids
+    }
+
     fn insert_loaded_creature_grid(
         &mut self,
         grid_coord: GridCoord,
@@ -167,6 +173,76 @@ impl MapRuntime {
         self.refresh_grid_state(grid_coord);
         self.invalidate_idle_motion_start_schedule();
         loaded
+    }
+
+    fn refresh_static_event_creature_grid(
+        &mut self,
+        grid_coord: GridCoord,
+        active_creatures: Vec<DbCreatureRuntime>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let desired_event_guids = active_creatures
+            .iter()
+            .filter(|creature| creature.spawn.game_event.is_some())
+            .map(|creature| creature.guid().raw())
+            .collect::<HashSet<_>>();
+        let mut packets = Vec::new();
+        let mut remove_guids = self
+            .creatures
+            .iter()
+            .filter_map(|(guid, creature)| {
+                let is_grid_spawn =
+                    grid_coord_for_position(db_creature_spawn_position(&creature.spawn))
+                        == grid_coord;
+                (is_grid_spawn
+                    && creature.spawn.game_event.is_some()
+                    && !desired_event_guids.contains(guid))
+                .then_some(*guid)
+            })
+            .collect::<Vec<_>>();
+        remove_guids.sort_unstable();
+        for guid in remove_guids {
+            if let Some(event) =
+                self.delete_db_creature_runtime(Some(ObjectGuid::from_raw(guid)), None, None)?
+            {
+                packets.extend(event.observer_packets);
+            }
+        }
+
+        for creature in active_creatures
+            .into_iter()
+            .filter(|creature| creature.spawn.game_event.is_some())
+        {
+            let guid = creature.guid();
+            if self.creatures.contains_key(&guid.raw()) {
+                continue;
+            }
+            let position = creature.current_position;
+            self.share_db_creature_snapshots(vec![creature.clone()]);
+            self.refresh_grid_state(grid_coord_for_position(position));
+            let body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None) {
+                let Some(player) = self.players.get(&player_guid) else {
+                    continue;
+                };
+                let player_is_ghost = player.flags & PLAYER_FLAGS_GHOST != 0;
+                if !Self::db_creature_visible_for_player_death_state(&creature, player_is_ghost) {
+                    continue;
+                }
+                let Some(player) = self.players.get_mut(&player_guid) else {
+                    continue;
+                };
+                if player.visible_objects.insert(guid) {
+                    packets.push((
+                        player.session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: body.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        Ok(packets)
     }
 
     fn nearby_db_creature_snapshots(
@@ -312,11 +388,12 @@ impl MapRuntime {
         creature: &DbCreatureRuntime,
         player_is_ghost: bool,
     ) -> bool {
-        if is_spirit_healer_creature(creature) {
-            return player_is_ghost;
+        let visible_to_ghosts = db_creature_visible_to_ghosts(creature);
+        if player_is_ghost {
+            visible_to_ghosts
+        } else {
+            !visible_to_ghosts
         }
-
-        !player_is_ghost || db_creature_visible_to_ghosts(creature)
     }
 
     #[allow(dead_code)]

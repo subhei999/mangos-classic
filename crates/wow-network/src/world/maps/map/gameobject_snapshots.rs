@@ -17,6 +17,16 @@ impl MapRuntime {
         grids
     }
 
+    fn loaded_gameobject_grids(&self) -> Vec<GridCoord> {
+        let mut grids = self
+            .loaded_gameobject_grids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        grids.sort_by_key(|grid| (grid.x, grid.y));
+        grids
+    }
+
     fn insert_loaded_gameobject_grid(
         &mut self,
         grid_coord: GridCoord,
@@ -44,6 +54,117 @@ impl MapRuntime {
             .collect::<Vec<_>>();
         self.refresh_grid_state(grid_coord);
         loaded
+    }
+
+    fn refresh_static_event_gameobject_grid(
+        &mut self,
+        grid_coord: GridCoord,
+        active_gameobjects: Vec<DbGameObjectRuntime>,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let desired_event_guids = active_gameobjects
+            .iter()
+            .filter(|gameobject| gameobject.spawn.game_event.is_some())
+            .map(|gameobject| gameobject.guid().raw())
+            .collect::<HashSet<_>>();
+        let mut packets = Vec::new();
+        let mut remove_guids = self
+            .gameobjects
+            .iter()
+            .filter_map(|(guid, gameobject)| {
+                let is_grid_spawn =
+                    grid_coord_for_position(gameobject_spawn_position(&gameobject.spawn))
+                        == grid_coord;
+                (is_grid_spawn
+                    && gameobject.spawn.game_event.is_some()
+                    && !desired_event_guids.contains(guid))
+                .then_some(*guid)
+            })
+            .collect::<Vec<_>>();
+        remove_guids.sort_unstable();
+        for guid in remove_guids {
+            if let Some(destroy_packets) =
+                self.delete_db_gameobject_runtime(ObjectGuid::from_raw(guid), None)
+            {
+                packets.extend(destroy_packets);
+            }
+        }
+
+        for gameobject in active_gameobjects
+            .into_iter()
+            .filter(|gameobject| gameobject.spawn.game_event.is_some())
+        {
+            let guid = gameobject.guid();
+            if self.gameobjects.contains_key(&guid.raw()) {
+                continue;
+            }
+            let position = gameobject.position();
+            self.insert_loaded_gameobject_grid(
+                grid_coord_for_position(position),
+                vec![gameobject.clone()],
+            );
+            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None) {
+                let Some(player) = self.players.get_mut(&player_guid) else {
+                    continue;
+                };
+                if gameobject.is_consumed(now) || !player.visible_objects.insert(guid) {
+                    continue;
+                }
+                let create_block = build_db_gameobject_runtime_create_block_for_quest_statuses(
+                    &gameobject,
+                    &player.quest_statuses,
+                )?;
+                packets.push((
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_update_object_body(&[create_block]),
+                    },
+                ));
+            }
+        }
+        Ok(packets)
+    }
+
+    fn delete_db_gameobject_runtime(
+        &mut self,
+        gameobject_guid: ObjectGuid,
+        exclude_character_guid: Option<u32>,
+    ) -> Option<Vec<(SessionId, OutboundWorldPacket)>> {
+        let gameobject = self.gameobjects.remove(&gameobject_guid.raw())?;
+        let position = gameobject.position();
+        let grid_coord = grid_coord_for_position(position);
+        let cell_coord = cell_coord_for_position(position);
+        if let Some(grid) = self.grids.get_mut(&grid_coord) {
+            if let Some(cell) = grid.cells.get_mut(&cell_coord) {
+                cell.gameobjects.remove(&gameobject_guid.raw());
+            }
+            grid.last_touched = Instant::now();
+        }
+        self.clear_db_gameobject_loot(gameobject_guid.raw());
+        self.gameobject_looting_by_character
+            .retain(|_, looting_guid| *looting_guid != gameobject_guid.raw());
+        for player in self.players.values_mut() {
+            player.visible_objects.remove(&gameobject_guid);
+            if player.selected_target == Some(gameobject_guid) {
+                player.selected_target = None;
+            }
+        }
+        self.refresh_grid_state(grid_coord);
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_DESTROY_OBJECT,
+            body: build_destroy_guid_body(gameobject_guid),
+        };
+        Some(
+            self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
+                .into_iter()
+                .filter_map(|player_guid| {
+                    self.players
+                        .get(&player_guid)
+                        .map(|player| (player.session_id, packet.clone()))
+                })
+                .collect(),
+        )
     }
 
     fn nearby_db_gameobject_snapshots(

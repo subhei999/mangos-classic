@@ -150,8 +150,10 @@ include!("social/party.rs");
 struct WorldRuntimeState {
     online_characters: OnlineCharacters,
     delete_options: CharacterDeleteOptions,
+    character_db_pool: MySqlPool,
     world_data_files: Arc<WorldDataFiles>,
     world_tick_interval: Duration,
+    game_event_schedules: Arc<Vec<wow_db::GameEventScheduleQuery>>,
     sessions: Arc<SessionRegistry>,
     maps: Arc<MapRuntimeManager>,
     parties: Arc<PartyManager>,
@@ -195,6 +197,7 @@ struct WorldSessionState {
     player_health: u32,
     player_rage: u32,
     player_mana: u32,
+    player_stand_state: u8,
     movement_client_time_delay: Option<u32>,
     starter_global_cooldowns_until: HashMap<u32, Instant>,
     starter_spell_cooldowns_until: HashMap<u32, Instant>,
@@ -226,6 +229,7 @@ struct ActiveAura {
     duration_millis: Option<u32>,
     expires_at: Option<Instant>,
     periodic_damage: Option<PeriodicDamageAura>,
+    periodic_regen: Option<PeriodicRegenAura>,
     stat_modifiers: Vec<AuraStatModifier>,
 }
 
@@ -242,6 +246,14 @@ struct PeriodicDamageAura {
     school: u32,
     damage_class: u32,
     amount: u32,
+    tick_millis: u32,
+    next_tick_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeriodicRegenAura {
+    health_amount: u32,
+    mana_amount: u32,
     tick_millis: u32,
     next_tick_at: Instant,
 }

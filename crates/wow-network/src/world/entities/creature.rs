@@ -29,6 +29,7 @@ struct Creature {
     corpse_expires_at: Option<Instant>,
     respawn_at: Option<Instant>,
     respawn_epoch_secs: Option<u64>,
+    life_generation: u64,
     client_visible: bool,
     lootable: bool,
     looting: bool,
@@ -43,6 +44,8 @@ struct Creature {
     loot_allowed_players: HashSet<u32>,
     loot_method: Option<CreatureLootMethod>,
     active_auras: Vec<ActiveAura>,
+    display_id_override: Option<u32>,
+    pending_movement_scripts: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,7 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
         creature.template.unit_flags,
         creature.template.npc_flags,
         &[],
+        None,
     )
 }
 
@@ -110,9 +114,11 @@ fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyho
             db_creature_npc_flags(creature)
         },
         &creature.active_auras,
+        creature.display_id_override,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_db_creature_create_block_inner(
     creature: &CreatureSpawnQuery,
     position: WorldPosition,
@@ -121,6 +127,7 @@ fn build_db_creature_create_block_inner(
     unit_flags: u32,
     npc_flags: u32,
     active_auras: &[ActiveAura],
+    display_id_override: Option<u32>,
 ) -> anyhow::Result<Vec<u8>> {
     let guid = creature_spawn_guid(creature);
     let mut block = Vec::new();
@@ -154,6 +161,7 @@ fn build_db_creature_create_block_inner(
         unit_flags,
         npc_flags,
         active_auras,
+        display_id_override,
     )?;
     Ok(block)
 }
@@ -168,10 +176,11 @@ fn write_db_creature_update_values(
     unit_flags: u32,
     npc_flags: u32,
     active_auras: &[ActiveAura],
+    display_id_override: Option<u32>,
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
-    let display_id = creature_display_id(template);
+    let display_id = display_id_override.unwrap_or_else(|| creature_display_id(template));
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
@@ -294,6 +303,32 @@ fn build_db_creature_aura_update_body(
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_unit_aura_update_values(&mut values, active_auras)?;
 
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
+fn build_db_creature_emote_state_update_body(
+    creature: ObjectGuid,
+    emote: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, creature)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_NPC_EMOTESTATE, emote)?;
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
+fn build_db_creature_display_update_body(
+    creature: ObjectGuid,
+    display_id: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, creature)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_DISPLAYID, display_id)?;
     write_update_values(&mut block, &values)?;
     Ok(build_update_object_body(&[block]))
 }

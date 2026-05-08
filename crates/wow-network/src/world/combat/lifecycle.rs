@@ -46,32 +46,19 @@ async fn handle_combat_tick(
             .player_auto_attack_due(character.position.map_id, character.guid, now)
             .await
         {
-            if target == rust_combat_dummy_guid() {
-                let next_swing = combat_dummy_next_swing_at(now);
-                deps.shared_world
-                    .maps
-                    .set_player_next_swing_at(
-                        character.position.map_id,
-                        character.guid,
-                        Some(next_swing),
-                    )
-                    .await;
-                send_combat_dummy_swing(stream, deps.shared_world, session, header_crypto).await?;
-            } else {
-                send_db_creature_swing(
-                    stream,
-                    CombatRewardDeps {
-                        character_db_pool: deps.character_db_pool,
-                        world_db_pool: deps.world_db_pool,
-                        shared_world: deps.shared_world,
-                        parties: deps.parties,
-                    },
-                    session,
-                    header_crypto,
-                    target,
-                )
-                .await?;
-            }
+            send_db_creature_swing(
+                stream,
+                CombatRewardDeps {
+                    character_db_pool: deps.character_db_pool,
+                    world_db_pool: deps.world_db_pool,
+                    shared_world: deps.shared_world,
+                    parties: deps.parties,
+                },
+                session,
+                header_crypto,
+                target,
+            )
+            .await?;
         }
     }
 
@@ -103,17 +90,6 @@ struct CombatRewardDeps<'a> {
     world_db_pool: &'a MySqlPool,
     shared_world: SharedWorldDeps<'a>,
     parties: &'a PartyManager,
-}
-
-fn queued_next_melee_spell_power_failure(
-    session: &WorldSessionState,
-    queued: QueuedNextMeleeSpell,
-) -> Option<u8> {
-    if session.player_rage < queued.rage_cost || session.player_mana < queued.mana_cost {
-        Some(SPELL_FAILED_NO_POWER)
-    } else {
-        None
-    }
 }
 
 async fn send_queued_next_melee_spell_cast_failure(
@@ -500,25 +476,36 @@ async fn send_db_creature_swing(
         attacker_skill,
         &target_creature,
     );
-    let mut queued_spell = session
-        .queued_next_melee_spell
-        .filter(|queued| queued.target == target);
+    let mut queued_spell = shared_world
+        .maps
+        .queued_player_next_melee_spell(map_id, character_snapshot.guid, target)
+        .await;
     if let Some(queued) = queued_spell {
-        if let Some(failure) = queued_next_melee_spell_power_failure(session, queued) {
-            session.queued_next_melee_spell = None;
+        let has_power = shared_world
+            .maps
+            .player_runtime_snapshot(map_id, character_snapshot.guid)
+            .await
+            .is_some_and(|snapshot| {
+                snapshot.power2 >= queued.rage_cost && snapshot.power1 >= queued.mana_cost
+            });
+        if !has_power {
+            shared_world
+                .maps
+                .clear_player_next_melee_spell(map_id, character_snapshot.guid)
+                .await;
             send_queued_next_melee_spell_cast_failure(
                 stream,
                 header_crypto,
                 attacker,
                 queued,
-                failure,
+                SPELL_FAILED_NO_POWER,
             )
             .await?;
             queued_spell = None;
         }
     }
     if let Some(queued) = queued_spell {
-        melee_outcome.total_damage = melee_outcome.total_damage.saturating_add(queued.bonus_damage);
+        melee_outcome = melee_outcome.with_next_melee_spell_bonus(queued.bonus_damage);
     }
     let requested_damage = melee_outcome.total_damage;
     let swing_time = Instant::now();
@@ -546,12 +533,9 @@ async fn send_db_creature_swing(
                 creature_guid: target,
                 killer: attacker,
                 damage: requested_damage,
-                melee_outcome: if queued_spell.is_some() {
-                    None
-                } else {
-                    Some(melee_outcome)
-                },
+                melee_outcome: Some(melee_outcome),
                 spell_id: queued_spell.map(|queued| queued.spell_id),
+                spell_school: 0,
                 suppress_attacker_state: queued_spell.is_some(),
                 now: swing_time,
                 now_epoch_secs: current_unix_epoch_secs(),
@@ -572,9 +556,35 @@ async fn send_db_creature_swing(
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
     if let Some(queued) = queued_spell {
-        session.queued_next_melee_spell = None;
-        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
-        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
+        if let Err(failure) = shared_world
+            .maps
+            .spend_queued_player_next_melee_spell_power(
+                map_id,
+                character_snapshot.guid,
+                queued,
+            )
+            .await
+        {
+            send_queued_next_melee_spell_cast_failure(
+                stream,
+                header_crypto,
+                attacker,
+                queued,
+                failure,
+            )
+            .await?;
+            queued_spell = None;
+        } else {
+            if let Some(snapshot) = shared_world
+                .maps
+                .player_runtime_snapshot(map_id, character_snapshot.guid)
+                .await
+            {
+                session.player_mana = snapshot.power1;
+                session.player_rage = snapshot.power2;
+                session.player_energy = snapshot.power4;
+            }
+        }
     }
     let mut advanced_skill = None;
     if let Some(skill_id) = weapon_skill_id {
@@ -984,10 +994,6 @@ async fn begin_db_creature_retaliation_if_needed(
         .await?;
     }
     Ok(())
-}
-
-fn combat_dummy_next_swing_at(now: Instant) -> Instant {
-    now + Duration::from_millis(BASE_ATTACK_TIME_MS as u64)
 }
 
 fn player_melee_retry_at(now: Instant) -> Instant {
@@ -1851,149 +1857,3 @@ fn nearbyint_to_u32(value: f32) -> u32 {
     }
 }
 
-async fn send_combat_dummy_swing(
-    stream: &mut WorldPacketSink,
-    shared_world: SharedWorldDeps<'_>,
-    session: &mut WorldSessionState,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
-        return Ok(());
-    };
-    let map_id = character.position.map_id;
-    let character_guid = character.guid;
-    let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-    let target = rust_combat_dummy_guid();
-
-    let mut queued_spell = session
-        .queued_next_melee_spell
-        .filter(|queued| queued.target == target);
-    if let Some(queued) = queued_spell {
-        if let Some(failure) = queued_next_melee_spell_power_failure(session, queued) {
-            session.queued_next_melee_spell = None;
-            send_queued_next_melee_spell_cast_failure(
-                stream,
-                header_crypto,
-                attacker,
-                queued,
-                failure,
-            )
-            .await?;
-            queued_spell = None;
-        }
-    }
-    let hit_damage = queued_spell
-        .map(|queued| RUST_COMBAT_DUMMY_HIT_DAMAGE.saturating_add(queued.bonus_damage))
-        .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
-    let damage = session.combat_dummy_health.min(hit_damage);
-    session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-    let rage_gain = if queued_spell.is_some() {
-        0
-    } else {
-        rage_gain_from_main_hand_white_damage(
-            hit_damage,
-            character.level,
-            BASE_ATTACK_TIME_MS,
-            MeleeHitOutcome::Normal,
-        )
-    };
-    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
-    if let Some(queued) = queued_spell {
-        session.player_rage = session.player_rage.saturating_sub(queued.rage_cost);
-        session.player_mana = session.player_mana.saturating_sub(queued.mana_cost);
-    }
-    shared_world
-        .maps
-        .set_player_power2(map_id, character_guid, session.player_rage)
-        .await;
-
-    let attacker_state = if let Some(queued) = queued_spell {
-        session.queued_next_melee_spell = None;
-        let targets = SpellCastTargets {
-            target_mask: SPELL_CAST_TARGET_UNIT,
-            unit_target: Some(target),
-            gameobject_target: None,
-        };
-        let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
-        send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
-        send_packet(
-            stream,
-            SMSG_SPELL_GO,
-            &spell_go_body,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            SMSG_SPELLNONMELEEDAMAGELOG,
-            &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
-                attacker,
-                target,
-                spell_id: queued.spell_id,
-                damage,
-                school: 0,
-                absorb: 0,
-                resist: 0,
-                periodic: false,
-                blocked: 0,
-                hit_info: 0,
-            })?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        None
-    } else {
-        Some(build_attacker_state_update_body(attacker, target, damage)?)
-    };
-    if let Some(attacker_state) = &attacker_state {
-        send_packet(
-            stream,
-            SMSG_ATTACKERSTATEUPDATE,
-            attacker_state,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-    }
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_combat_dummy_state_update_body(session.combat_dummy_health, 0)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_rage_update_body(attacker, session.player_rage)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-
-    if session.combat_dummy_health == 0 {
-        session.combat_dummy_lootable = true;
-        session.combat_dummy_looting = false;
-        session.combat_dummy_loot_money_available = true;
-        session.combat_dummy_loot_item_available = true;
-        send_packet(
-            stream,
-            SMSG_ATTACKSTOP,
-            &build_attack_stop_body(attacker, target, true)?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            SMSG_UPDATE_OBJECT,
-            &build_combat_dummy_state_update_body(0, UNIT_DYNFLAG_LOOTABLE)?,
-            Some(header_crypto),
-        )
-        .await?;
-        mirror_session_player_auto_attack(session, None, None);
-        shared_world
-            .maps
-            .set_player_auto_attack(map_id, character_guid, None, None)
-            .await;
-    }
-
-    Ok(())
-}

@@ -89,6 +89,14 @@ impl MeleeDamageOutcome {
             blocked: 0,
         }
     }
+
+    fn with_next_melee_spell_bonus(mut self, bonus_damage: u32) -> Self {
+        if self.total_damage > 0 {
+            self.total_damage = self.total_damage.saturating_add(bonus_damage);
+            self.school_damage = self.school_damage.saturating_add(bonus_damage);
+        }
+        self
+    }
 }
 
 fn roll_melee_damage(input: MeleeDamageInput) -> MeleeDamageOutcome {

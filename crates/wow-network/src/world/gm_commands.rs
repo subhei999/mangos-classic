@@ -228,6 +228,7 @@ async fn kill_selected_db_creature(
                 damage: target_creature.health,
                 melee_outcome: None,
                 spell_id: None,
+                spell_school: 0,
                 suppress_attacker_state: true,
                 now: Instant::now(),
                 now_epoch_secs: current_unix_epoch_secs(),

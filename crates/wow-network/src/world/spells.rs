@@ -15,7 +15,6 @@ async fn handle_cast_spell(
         return Ok(());
     };
     let character_guid = character.guid;
-    let character_level = character.level;
     let map_id = character.position.map_id;
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
@@ -56,7 +55,9 @@ async fn handle_cast_spell(
         );
         return Ok(());
     };
-    let Some(starter_spell) = supported_starter_spell(&spell_template) else {
+    let spell_info = SpellInfo::from_template(&spell_template);
+    let Some(mut prepared_spell) = spell_info.prepare_player_cast()
+    else {
         warn!(
             spell_id = packet.spell_id,
             spell_name = spell_template.spell_name.as_str(),
@@ -64,12 +65,28 @@ async fn handle_cast_spell(
         );
         return Ok(());
     };
+    prepared_spell.prepare();
+    let spell_profile = prepared_spell.profile;
+    let cast_time_ms = spell_cast_time_millis(
+        deps.shared_world
+            .maps
+            .spell_cast_time(spell_template.casting_time_index),
+    );
 
-    let targets = normalize_starter_spell_targets(packet.targets, &starter_spell, caster);
-    if let Some(failure) = starter_spell_cast_failure(
-            deps.shared_world,
-            session,
-        &starter_spell,
+    let targets = resolve_player_spell_cast_targets(
+        deps.shared_world.maps,
+        map_id,
+        character_guid,
+        normalize_spell_cast_targets(packet.targets, &spell_profile, caster),
+        &spell_info,
+        spell_profile.kind,
+    )
+    .await;
+    if let Some(failure) = spell_cast_failure(
+        deps.shared_world,
+        session,
+        &spell_template,
+        &spell_profile,
         &targets,
         Instant::now(),
     )
@@ -98,18 +115,7 @@ async fn handle_cast_spell(
         .await;
     }
     let now = Instant::now();
-    if starter_spell.kind != StarterSpellKind::NextMeleeSwing {
-        match starter_spell.power {
-            StarterSpellPower::Rage { cost } => {
-                session.player_rage = session.player_rage.saturating_sub(cost);
-            }
-            StarterSpellPower::Mana { cost } => {
-                session.player_mana = session.player_mana.saturating_sub(cost);
-            }
-        }
-    }
-    apply_starter_spell_cooldowns(session, &starter_spell, now);
-    let spell_start_body = build_spell_start_body(caster, packet.spell_id, 0, &targets)?;
+    let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_START,
@@ -130,358 +136,65 @@ async fn handle_cast_spell(
         )
         .await;
     deps.shared_world.sessions.dispatch(observer_packets).await;
-    if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
+    if spell_profile.kind == SpellCastKind::NextMeleeSwing {
+        deps.shared_world
+            .maps
+            .apply_player_spell_cooldowns(map_id, character_guid, &spell_profile, now, false)
+            .await;
         if let Some(target) = targets.unit_target {
-            let (rage_cost, mana_cost) = match starter_spell.power {
-                StarterSpellPower::Rage { cost } => (cost, 0),
-                StarterSpellPower::Mana { cost } => (0, cost),
+            let (rage_cost, mana_cost) = match spell_profile.power {
+                SpellPowerCost::Rage { cost } => (cost, 0),
+                SpellPowerCost::Mana { cost } => (0, cost),
+                SpellPowerCost::Energy { .. } => (0, 0),
             };
-            session.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
+            let queued = QueuedNextMeleeSpell {
                 spell_id: packet.spell_id,
                 target,
-                bonus_damage: starter_spell.bonus_damage,
+                bonus_damage: spell_profile.bonus_damage,
                 rage_cost,
                 mana_cost,
-            });
+            };
+            deps.shared_world
+                .maps
+                .queue_player_next_melee_spell(map_id, character_guid, queued)
+                .await;
         }
     } else {
-        send_packet(
-            stream,
-            SMSG_CAST_RESULT,
-            &build_cast_result_ok_body(packet.spell_id),
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        let spell_go_body = build_spell_go_body(caster, packet.spell_id, &targets)?;
-        send_packet(
-            stream,
-            SMSG_SPELL_GO,
-            &spell_go_body,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        let observer_packets = deps.shared_world
+        deps.shared_world
             .maps
-            .broadcast_nearby_player_packet(
-                map_id,
-                character_guid,
-                PLAYER_VISIBILITY_RADIUS_YARDS,
-                OutboundWorldPacket {
-                    opcode: SMSG_SPELL_GO,
-                    body: spell_go_body,
-                },
-            )
+            .apply_player_spell_cooldowns(map_id, character_guid, &spell_profile, now, false)
             .await;
-        deps.shared_world.sessions.dispatch(observer_packets).await;
-        if starter_spell.kind == StarterSpellKind::Charge {
-            if let Some(target) = targets.unit_target {
-                apply_charge_movement(
-                    stream,
-                    deps.shared_world,
-                    session,
-                    caster,
-                    target,
-                    spell_template.speed,
-                    packet.spell_id,
-                    header_crypto,
-                )
-                .await?;
-                begin_db_creature_retaliation_if_needed(
-                    stream,
-                    deps.shared_world,
+        if cast_time_ms > 0 {
+            deps.shared_world
+                .maps
+                .set_active_player_spell_cast(
                     map_id,
-                    session,
-                    target,
-                    caster,
-                    header_crypto,
-                )
-                .await?;
-            }
-        }
-        if starter_spell.kind == StarterSpellKind::InstantDamage
-            && targets.unit_target == Some(rust_combat_dummy_guid())
-            && !session.combat_dummy_lootable
-            && session.combat_dummy_health > 0
-        {
-            let damage = session.combat_dummy_health.min(starter_spell.damage);
-            session.combat_dummy_health = session.combat_dummy_health.saturating_sub(damage);
-            if session.combat_dummy_health == 0 {
-                session.combat_dummy_lootable = true;
-                session.combat_dummy_looting = false;
-                session.combat_dummy_loot_money_available = true;
-                session.combat_dummy_loot_item_available = true;
-                mirror_session_player_auto_attack(session, None, None);
-                deps.shared_world
-                    .maps
-                    .set_player_auto_attack(map_id, character_guid, None, None)
-                    .await;
-            }
-            send_packet(
-                stream,
-                SMSG_SPELLNONMELEEDAMAGELOG,
-                &build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
-                    attacker: caster,
-                    target: rust_combat_dummy_guid(),
-                    spell_id: packet.spell_id,
-                    damage,
-                    school: 0,
-                    absorb: 0,
-                    resist: 0,
-                    periodic: false,
-                    blocked: 0,
-                    hit_info: 0,
-                })?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            send_packet(
-                stream,
-                SMSG_ATTACKERSTATEUPDATE,
-                &build_attacker_state_update_body_with_spell_id(
-                    caster,
-                    rust_combat_dummy_guid(),
-                    damage,
-                    packet.spell_id,
-                )?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            send_packet(
-                stream,
-                SMSG_UPDATE_OBJECT,
-                &build_combat_dummy_state_update_body(
-                    session.combat_dummy_health,
-                    if session.combat_dummy_health == 0 {
-                        UNIT_DYNFLAG_LOOTABLE
-                    } else {
-                        0
+                    character_guid,
+                    ActivePlayerSpellCast {
+                        spell_id: packet.spell_id,
+                        source: ActivePlayerSpellCastSource::Player,
+                        profile: spell_profile,
+                        targets: PendingSpellCastTargets::from_spell_targets(&targets),
+                        due_at: now + Duration::from_millis(cast_time_ms as u64),
                     },
-                )?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-        } else if starter_spell.kind == StarterSpellKind::InstantDamage {
-            if let Some(target) = targets.unit_target {
-                let can_apply_damage = if starter_spell.requires_melee {
-                    db_creature_player_melee_check_from_map(deps.shared_world, session, target)
-                        .await
-                        == PlayerMeleeCheck::Clear
-                } else {
-                    true
-                };
-                if can_apply_damage {
-                    let corpse_loot = if let Some(target_creature) = deps
-                        .shared_world
-                        .maps
-                        .db_creature_snapshot(map_id, target)
-                        .await
-                        .filter(|creature| starter_spell.damage >= creature.health)
-                    {
-                        Some(
-                            prepare_db_creature_corpse_loot(
-                                deps.shared_world.object_mgr,
-                                deps.world_db_pool,
-                                deps.parties,
-                                session,
-                                character_guid,
-                                target_creature.spawn.entry,
-                            )
-                            .await?,
-                        )
-                    } else {
-                        None
-                    };
-                    if let Some(event) = deps.shared_world
-                        .maps
-                        .apply_db_creature_damage(
-                            map_id,
-                            DbCreatureDamageRequest {
-                                creature_guid: target,
-                                killer: caster,
-                                damage: starter_spell.damage,
-                                melee_outcome: None,
-                                spell_id: Some(packet.spell_id),
-                                suppress_attacker_state: false,
-                                now: Instant::now(),
-                                now_epoch_secs: current_unix_epoch_secs(),
-                                exclude_character_guid: Some(character_guid),
-                                corpse_loot,
-                            },
-                        )
-                        .await?
-                    {
-                        let death_finalization = event.death_finalization;
-                        let target_switch = event.target_switch;
-                        let is_dead = death_finalization.is_some();
-                        mirror_session_db_creature(session, target.raw(), event.creature.clone());
-                        if is_dead {
-                            mirror_session_player_auto_attack(session, None, None);
-                            deps.shared_world
-                                .maps
-                                .set_player_auto_attack(map_id, character_guid, None, None)
-                                .await;
-                            clear_db_creature_combat_if_attacker(session, target);
-                        }
-                        if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
-                            send_packet(
-                                stream,
-                                SMSG_SPELLNONMELEEDAMAGELOG,
-                                spell_non_melee_log_body,
-                                Some(&mut *header_crypto),
-                            )
-                            .await?;
-                        }
-                        if let Some(attacker_state_body) = &event.attacker_state_body {
-                            send_packet(
-                                stream,
-                                SMSG_ATTACKERSTATEUPDATE,
-                                attacker_state_body,
-                                Some(&mut *header_crypto),
-                            )
-                            .await?;
-                        }
-                        let creature_update_body = event.update_body.clone();
-                        send_packet(
-                            stream,
-                            SMSG_UPDATE_OBJECT,
-                            &creature_update_body,
-                            Some(&mut *header_crypto),
-                        )
-                        .await?;
-                        let broadcast = CreatureCombatBroadcast {
-                            shared_world: deps.shared_world,
-                            map_id,
-                            player: caster,
-                        };
-                        deps.shared_world.sessions.dispatch(event.observer_packets).await;
-                        if is_dead {
-                            send_db_creature_motion_stop(
-                                stream,
-                                broadcast,
-                                session,
-                                target,
-                                header_crypto,
-                            )
-                            .await?;
-                            finalize_db_creature_death(
-                                stream,
-                                CombatRewardDeps {
-                                    character_db_pool: deps.character_db_pool,
-                                    world_db_pool: deps.world_db_pool,
-                                    shared_world: deps.shared_world,
-                                    parties: deps.parties,
-                                },
-                                session,
-                                death_finalization,
-                                header_crypto,
-                            )
-                            .await?;
-                        } else {
-                            send_db_creature_threat_target_switch(
-                                stream,
-                                deps.shared_world,
-                                session,
-                                target_switch,
-                                header_crypto,
-                            )
-                            .await?;
-                            begin_shared_db_creature_combat(
-                                deps.shared_world,
-                                session,
-                                target,
-                                Instant::now(),
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
+                )
+                .await;
+            return Ok(());
         }
+        complete_player_spell_cast(
+            stream,
+            deps,
+            session,
+            prepared_spell,
+            spell_template,
+            spell_profile,
+            targets,
+            now,
+            header_crypto,
+        )
+        .await?;
     }
-    if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
-        Ok(())
-    } else {
-        if starter_spell.kind == StarterSpellKind::AuraApplication {
-            let aura = build_active_aura(
-                &spell_template,
-                caster,
-                character_level,
-                now,
-                deps.shared_world
-                    .maps
-                    .spell_duration(spell_template.duration_index),
-            );
-            match starter_spell.aura_target {
-                StarterSpellAuraTarget::Caster => {
-                    apply_player_aura(session, aura.clone());
-                    if let Some(event) = deps.shared_world
-                        .maps
-                        .apply_player_aura(map_id, character_guid, aura)
-                        .await?
-                    {
-                        for packet in event.direct_packets {
-                            send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
-                                .await?;
-                        }
-                        deps.shared_world.sessions.dispatch(event.observer_packets).await;
-                    } else {
-                        send_packet(
-                            stream,
-                            SMSG_UPDATE_OBJECT,
-                            &build_player_aura_update_body(caster, &session.active_auras)?,
-                            Some(&mut *header_crypto),
-                        )
-                        .await?;
-                        for packet in build_player_aura_duration_update_packets(&session.active_auras, now)
-                        {
-                            send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
-                                .await?;
-                        }
-                    }
-                }
-                StarterSpellAuraTarget::UnitTarget => {
-                    if let Some(target) = targets.unit_target {
-                        if target.is_creature() {
-                            if let Some(event) = deps.shared_world
-                                .maps
-                                .apply_db_creature_aura(
-                                    map_id,
-                                    target,
-                                    character_guid,
-                                    aura,
-                                )
-                                .await?
-                            {
-                                send_packet(
-                                    stream,
-                                    SMSG_UPDATE_OBJECT,
-                                    &event.update_body,
-                                    Some(&mut *header_crypto),
-                                )
-                                .await?;
-                                deps.shared_world.sessions.dispatch(event.observer_packets).await;
-                            }
-                            begin_db_creature_retaliation_if_needed(
-                                stream,
-                                deps.shared_world,
-                                map_id,
-                                session,
-                                target,
-                                caster,
-                                header_crypto,
-                            )
-                            .await?;
-                        }
-                    }
-                }
-            }
-        }
-        let power_update = match starter_spell.power {
-            StarterSpellPower::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
-            StarterSpellPower::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
-        };
-        send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
-    }
+    Ok(())
 }
 
 async fn handle_use_item(
@@ -594,7 +307,8 @@ async fn handle_use_item(
         .await;
     };
 
-    let Some(item_spell_shape) = supported_item_use_spell(&spell_template) else {
+    let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
+    else {
         warn!(
             item = template.entry,
             spell_id = spell_template.id,
@@ -610,17 +324,29 @@ async fn handle_use_item(
         )
         .await;
     };
+    prepared_spell.prepare();
+    let item_spell_profile = prepared_spell.profile;
+    let cast_time_ms = spell_cast_time_millis(
+        deps.shared_world
+            .maps
+            .spell_cast_time(spell_template.casting_time_index),
+    );
 
     let now = Instant::now();
-    let targets = normalize_item_use_targets(request.targets, &item_spell_shape, caster);
-    let refreshable_consumable_regen = item_spell_shape.kind == StarterSpellKind::AuraApplication
-        && spell_periodic_regen_aura(&spell_template, now).is_some();
+    let targets = normalize_item_use_targets(request.targets, &item_spell_profile, caster);
+    let spell_info = SpellInfo::from_template(&spell_template);
+    let refreshable_consumable_regen = item_spell_profile.kind == SpellCastKind::AuraApplication
+        && spell_periodic_regen_aura(&spell_info, now).is_some();
     if let Some(failure) = item_use_spell_failure(
-        session,
-        &item_spell_shape,
+        deps.shared_world.maps,
+        map_id,
+        character_guid,
+        &item_spell_profile,
         now,
         refreshable_consumable_regen,
-    ) {
+    )
+    .await
+    {
         send_packet(
             stream,
             SMSG_CAST_RESULT,
@@ -645,13 +371,15 @@ async fn handle_use_item(
     }
 
     apply_item_use_spell_cooldowns(
-        session,
-        &item_spell_shape,
+        deps.shared_world.maps,
+        map_id,
+        character_guid,
+        &item_spell_profile,
         now,
         refreshable_consumable_regen,
-    );
-    let spell_start_body =
-        build_spell_start_body_with_source(item_guid, caster, spell_template.id, 0, &targets)?;
+    )
+    .await;
+    let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_START,
@@ -676,6 +404,118 @@ async fn handle_use_item(
                 .await,
         )
         .await;
+    if cast_time_ms > 0 {
+        deps.shared_world
+            .maps
+            .set_active_player_spell_cast(
+                map_id,
+                character_guid,
+                ActivePlayerSpellCast {
+                    spell_id: spell_template.id,
+                    source: ActivePlayerSpellCastSource::Item {
+                        item_guid,
+                        source_item,
+                        spell_charges: item_spell.spell_charges,
+                    },
+                    profile: item_spell_profile,
+                    targets: PendingSpellCastTargets::from_spell_targets(&targets),
+                    due_at: now + Duration::from_millis(cast_time_ms as u64),
+                },
+            )
+            .await;
+        return Ok(());
+    }
+    complete_item_use_spell_cast(
+        stream,
+        deps,
+        session,
+        caster,
+        prepared_spell,
+        spell_template,
+        item_spell_profile,
+        source_item,
+        item_spell.spell_charges,
+        targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_item_use_spell_cast_by_id(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_id: u32,
+    item_guid: ObjectGuid,
+    source_item: CharacterInventoryItem,
+    spell_charges: i32,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let Some(spell_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, spell_id)
+        .await?
+    else {
+        warn!(spell_id, "Dropping pending item spell cast with no spell_template row");
+        return Ok(());
+    };
+    let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
+    else {
+        warn!(
+            spell_id,
+            spell_name = spell_template.spell_name.as_str(),
+            "Dropping pending unsupported item spell cast"
+        );
+        return Ok(());
+    };
+    prepared_spell.start_casting();
+    let item_spell_profile = prepared_spell.profile;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    complete_item_use_spell_cast(
+        stream,
+        deps,
+        session,
+        caster,
+        prepared_spell,
+        spell_template,
+        item_spell_profile,
+        source_item,
+        spell_charges,
+        targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_item_use_spell_cast(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    mut prepared_spell: PreparedSpellCast,
+    spell_template: wow_db::SpellTemplateQuery,
+    item_spell_profile: SpellCastProfile,
+    source_item: CharacterInventoryItem,
+    spell_charges: i32,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let map_id = character.position.map_id;
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -683,13 +523,7 @@ async fn handle_use_item(
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = build_spell_go_body_with_source(
-        item_guid,
-        caster,
-        spell_template.id,
-        CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER,
-        &targets,
-    )?;
+    let spell_go_body = prepared_spell.spell_go_body(caster, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_GO,
@@ -721,12 +555,12 @@ async fn handle_use_item(
         session,
         caster,
         &spell_template,
-        &item_spell_shape,
+        &item_spell_profile,
         now,
         header_crypto,
     )
     .await?;
-    if item_spell.spell_charges < 0 {
+    if spell_charges < 0 {
         consume_used_item(
             stream,
             deps.character_db_pool,
@@ -737,13 +571,405 @@ async fn handle_use_item(
         )
         .await?;
     }
+    prepared_spell.finish();
     Ok(())
+}
+
+impl PendingSpellCastTargets {
+    fn from_spell_targets(targets: &SpellCastTargets) -> Self {
+        Self {
+            target_mask: targets.target_mask,
+            unit_target: targets.unit_target,
+            gameobject_target: targets.gameobject_target,
+        }
+    }
+
+    fn into_spell_targets(self) -> SpellCastTargets {
+        SpellCastTargets {
+            target_mask: self.target_mask,
+            unit_target: self.unit_target,
+            gameobject_target: self.gameobject_target,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_pending_player_spell_cast(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let now = Instant::now();
+    if let Some(active_cast) = deps
+        .shared_world
+        .maps
+        .take_due_active_player_spell_cast(map_id, character_guid, now)
+        .await
+    {
+        return match active_cast.source {
+            ActivePlayerSpellCastSource::Player => {
+                complete_player_spell_cast_by_id(
+                    stream,
+                    deps,
+                    session,
+                    active_cast.spell_id,
+                    active_cast.targets.into_spell_targets(),
+                    now,
+                    header_crypto,
+                )
+                .await
+            }
+            ActivePlayerSpellCastSource::Item {
+                item_guid,
+                source_item,
+                spell_charges,
+            } => {
+                complete_item_use_spell_cast_by_id(
+                    stream,
+                    deps,
+                    session,
+                    active_cast.spell_id,
+                    item_guid,
+                    source_item,
+                    spell_charges,
+                    active_cast.targets.into_spell_targets(),
+                    now,
+                    header_crypto,
+                )
+                .await
+            }
+        };
+    }
+    if let Some(event) = deps
+        .shared_world
+        .maps
+        .take_due_pending_spell_event(map_id, character_guid, now)
+        .await
+    {
+        return apply_player_spell_impact_by_id(
+            stream,
+            deps,
+            session,
+            event.spell_id,
+            event.targets.into_spell_targets(),
+            now,
+            header_crypto,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn next_pending_player_spell_cast_due_at(
+    maps: &MapRuntimeManager,
+    session: &WorldSessionState,
+) -> Option<Instant> {
+    let character = session.active_character.as_ref()?;
+    maps.next_pending_player_spell_cast_due_at(character.position.map_id, character.guid)
+        .await
+}
+
+async fn pending_player_spell_cast_is_due(
+    maps: &MapRuntimeManager,
+    session: &WorldSessionState,
+    now: Instant,
+) -> bool {
+    next_pending_player_spell_cast_due_at(maps, session)
+        .await
+        .is_some_and(|due_at| now >= due_at)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_player_spell_cast_by_id(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_id: u32,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(spell_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, spell_id)
+        .await?
+    else {
+        warn!(spell_id, "Dropping pending spell cast with no spell_template row");
+        return Ok(());
+    };
+    let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_player_cast()
+    else {
+        warn!(
+            spell_id,
+            spell_name = spell_template.spell_name.as_str(),
+            "Dropping pending unsupported spell effect shape"
+        );
+        return Ok(());
+    };
+    prepared_spell.start_casting();
+    let spell_profile = prepared_spell.profile;
+    complete_player_spell_cast(
+        stream,
+        deps,
+        session,
+        prepared_spell,
+        spell_template,
+        spell_profile,
+        targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_player_spell_cast(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    mut prepared_spell: PreparedSpellCast,
+    spell_template: wow_db::SpellTemplateQuery,
+    spell_profile: SpellCastProfile,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let character_level = character.level;
+    let map_id = character.position.map_id;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+
+    if let Err(failure) = deps
+        .shared_world
+        .maps
+        .spend_player_spell_power(
+            map_id,
+            character_guid,
+            &spell_profile,
+            now,
+            spell_blocks_mana_regen(&spell_template),
+        )
+        .await
+    {
+        return send_spell_cast_failure(stream, caster, prepared_spell.spell_id, failure, header_crypto).await;
+    }
+    sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid).await;
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_ok_body(prepared_spell.spell_id),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let spell_go_body = prepared_spell.spell_go_body(caster, &targets)?;
+    send_packet(
+        stream,
+        SMSG_SPELL_GO,
+        &spell_go_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_packets = deps
+        .shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character_guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_GO,
+                body: spell_go_body,
+            },
+        )
+        .await;
+    deps.shared_world.sessions.dispatch(observer_packets).await;
+    let travel_delay =
+        spell_travel_delay_millis(deps.shared_world, session, &spell_template, &targets).await;
+    if travel_delay > 0 {
+        deps.shared_world
+            .maps
+            .push_pending_spell_event(
+                map_id,
+                character_guid,
+                prepared_spell.spell_id,
+                PendingSpellCastTargets::from_spell_targets(&targets),
+                now + Duration::from_millis(travel_delay as u64),
+            )
+            .await;
+        prepared_spell.finish();
+        return Ok(());
+    }
+    let result = apply_player_spell_impact(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        &spell_template,
+        &spell_profile,
+        &targets,
+        now,
+        header_crypto,
+    )
+    .await;
+    prepared_spell.finish();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_spell_impact_by_id(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_id: u32,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let Some(spell_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, spell_id)
+        .await?
+    else {
+        warn!(spell_id, "Dropping pending spell impact with no spell_template row");
+        return Ok(());
+    };
+    let Some(prepared_spell) = SpellInfo::from_template(&spell_template).prepare_player_cast()
+    else {
+        warn!(
+            spell_id,
+            spell_name = spell_template.spell_name.as_str(),
+            "Dropping pending unsupported spell impact"
+        );
+        return Ok(());
+    };
+    let spell_profile = prepared_spell.profile;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    apply_player_spell_impact(
+        stream,
+        deps,
+        session,
+        caster,
+        character.guid,
+        character.level,
+        character.position.map_id,
+        &spell_template,
+        &spell_profile,
+        &targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_spell_impact(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    apply_player_spell_effects(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        spell_template,
+        spell_profile,
+        targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+async fn cancel_pending_player_spell_cast(
+    stream: &mut WorldPacketSink,
+    maps: &MapRuntimeManager,
+    session: &mut WorldSessionState,
+    failure: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(active_cast) = maps
+        .cancel_active_player_spell_cast(map_id, character_guid)
+        .await
+    else {
+        return Ok(false);
+    };
+    maps.clear_player_spell_recovery(map_id, character_guid, &active_cast.profile)
+        .await;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    send_spell_cast_failure(stream, caster, active_cast.spell_id, failure, header_crypto).await?;
+    Ok(true)
+}
+
+async fn send_spell_cast_failure(
+    stream: &mut WorldPacketSink,
+    caster: ObjectGuid,
+    spell_id: u32,
+    failure: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_failure_body(spell_id, failure),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILURE,
+        &build_spell_failure_body(caster, spell_id, failure)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILED_OTHER,
+        &build_spell_failed_other_body(caster, spell_id),
+        Some(header_crypto),
+    )
+    .await
 }
 
 #[derive(Clone, Copy)]
 struct SpellCastDeps<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
+    account_id: u32,
     shared_world: SharedWorldDeps<'a>,
     parties: &'a PartyManager,
 }
@@ -917,22 +1143,19 @@ async fn handle_opening_spell(
     .await
 }
 
-async fn starter_spell_melee_cast_failure(
+async fn spell_melee_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
-    starter_spell: &SupportedStarterSpell,
+    spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
 ) -> Option<u8> {
-    if !starter_spell.requires_melee {
+    if !spell_profile.requires_melee {
         return None;
     }
-    if starter_spell.kind == StarterSpellKind::NextMeleeSwing {
+    if spell_profile.kind == SpellCastKind::NextMeleeSwing {
         return None;
     }
     let target = targets.unit_target?;
-    if target == rust_combat_dummy_guid() {
-        return None;
-    }
     match db_creature_player_melee_check_from_map(shared_world, session, target).await {
         PlayerMeleeCheck::Clear => None,
         PlayerMeleeCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
@@ -943,7 +1166,7 @@ async fn starter_spell_melee_cast_failure(
     }
 }
 
-async fn starter_spell_charge_cast_failure(
+async fn spell_charge_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     targets: &SpellCastTargets,
@@ -1090,100 +1313,220 @@ fn angle_towards(from: WorldPosition, to: WorldPosition) -> f32 {
     (to.y - from.y).atan2(to.x - from.x)
 }
 
-async fn starter_spell_cast_failure(
+async fn spell_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
-    starter_spell: &SupportedStarterSpell,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
     now: Instant,
 ) -> Option<u8> {
-    if let Some(until) = session
-        .starter_spell_cooldowns_until
-        .get(&starter_spell.spell_id)
-        .copied()
-    {
-        if now < until {
-            return Some(SPELL_FAILED_NOT_READY);
-        }
-    }
-    if session
-        .starter_global_cooldowns_until
-        .get(&starter_spell.global_cooldown_category)
-        .is_some_and(|until| now < *until)
-    {
-        return Some(SPELL_FAILED_NOT_READY);
-    }
-    match starter_spell.power {
-        StarterSpellPower::Rage { cost } if session.player_rage < cost => {
-            return Some(SPELL_FAILED_NO_POWER);
-        }
-        StarterSpellPower::Mana { cost } if session.player_mana < cost => {
-            return Some(SPELL_FAILED_NO_POWER);
-        }
-        _ => {}
-    }
-    if starter_spell.kind == StarterSpellKind::NextMeleeSwing
-        && session
-            .queued_next_melee_spell
-            .is_some_and(|queued| queued.spell_id == starter_spell.spell_id)
-    {
-        return Some(SPELL_FAILED_NOT_READY);
-    }
-    if starter_spell.kind == StarterSpellKind::Charge {
-        return starter_spell_charge_cast_failure(shared_world, session, targets).await;
-    }
-    starter_spell_melee_cast_failure(shared_world, session, starter_spell, targets).await
-}
-
-fn normalize_starter_spell_targets(
-    mut targets: SpellCastTargets,
-    starter_spell: &SupportedStarterSpell,
-    caster: ObjectGuid,
-) -> SpellCastTargets {
-    targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
-        & !SPELL_CAST_TARGET_UNIT_ENEMY;
-    targets.unit_target = Some(targets.unit_target.unwrap_or_else(|| {
-        if starter_spell.kind == StarterSpellKind::AuraApplication
-            && starter_spell.aura_target == StarterSpellAuraTarget::Caster
+    if let Some(character) = session.active_character.as_ref() {
+        if let Some(failure) = shared_world
+            .maps
+            .player_spell_cast_failure(
+                character.position.map_id,
+                character.guid,
+                spell_profile,
+                now,
+            )
+            .await
         {
-            caster
-        } else {
-            rust_combat_dummy_guid()
+            return Some(failure);
         }
-    }));
-    targets.gameobject_target = None;
+    }
+    if spell_profile.kind == SpellCastKind::Charge {
+        return spell_charge_cast_failure(shared_world, session, targets).await;
+    }
+    if spell_profile.kind == SpellCastKind::DirectHeal {
+        return spell_heal_cast_failure(shared_world, session, spell_template, targets).await;
+    }
+    if let Some(failure) =
+        spell_unit_target_cast_failure(shared_world, session, spell_template, spell_profile, targets)
+            .await
+    {
+        return Some(failure);
+    }
+    spell_melee_cast_failure(shared_world, session, spell_profile, targets).await
+}
+
+async fn spell_heal_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    let character = session.active_character.as_ref()?;
+    if SpellInfo::from_template(spell_template).unit_target_kind(SpellCastKind::DirectHeal)
+        == SpellTargetKind::Caster
+    {
+        return None;
+    }
+    let target = targets.unit_target?;
+    if !target.is_player() {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    let target_guid = target.counter();
+    let Some(snapshot) = shared_world
+        .maps
+        .player_runtime_snapshot(character.position.map_id, target_guid)
+        .await
+    else {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    };
+    if snapshot.health == 0 {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    None
+}
+
+async fn spell_unit_target_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    let target_kind = SpellInfo::from_template(spell_template).unit_target_kind(spell_profile.kind);
+    if target_kind.requires_unit_target() && targets.unit_target.is_none() {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    if target_kind != SpellTargetKind::HostileUnit
+        || spell_profile.requires_melee
+        || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing | SpellCastKind::Charge)
+    {
+        return None;
+    }
+    let character = session.active_character.as_ref()?;
+    let target = targets.unit_target?;
+    if !target.is_creature() {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    let range = if spell_template.range_index == 0 {
+        None
+    } else {
+        let range = shared_world.maps.spell_range(spell_template.range_index);
+        if range.is_none() {
+            return Some(SPELL_FAILED_OUT_OF_RANGE);
+        }
+        range
+    };
+    let validation = shared_world
+        .maps
+        .validate_player_spell_against_db_creature(
+            character.position.map_id,
+            character.guid,
+            target,
+            &session.db_creature_navigation,
+            range,
+        )
+        .await;
+    match validation.check {
+        PlayerSpellTargetCheck::Clear => None,
+        PlayerSpellTargetCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        PlayerSpellTargetCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
+            Some(SPELL_FAILED_LINE_OF_SIGHT)
+        }
+        PlayerSpellTargetCheck::NoActiveCharacter
+        | PlayerSpellTargetCheck::MissingTarget
+        | PlayerSpellTargetCheck::TargetNotAlive
+        | PlayerSpellTargetCheck::NavigationBlocked(_)
+        | PlayerSpellTargetCheck::OutOfRange => Some(SPELL_FAILED_OUT_OF_RANGE),
+    }
+}
+
+async fn resolve_player_spell_cast_targets(
+    maps: &MapRuntimeManager,
+    map_id: u32,
+    character_guid: u32,
+    mut targets: SpellCastTargets,
+    spell_info: &SpellInfo<'_>,
+    kind: SpellCastKind,
+) -> SpellCastTargets {
+    let target_kind = spell_info.unit_target_kind(kind);
+    if target_kind.requires_unit_target() && targets.unit_target.is_none() {
+        if let Some(selected_target) = maps.player_selected_target(map_id, character_guid).await {
+            targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
+                & !SPELL_CAST_TARGET_UNIT_ENEMY;
+            targets.unit_target = Some(selected_target);
+        }
+    }
     targets
 }
 
-fn normalize_item_use_targets(
-    mut targets: SpellCastTargets,
-    item_spell: &SupportedStarterSpell,
-    caster: ObjectGuid,
-) -> SpellCastTargets {
-    if targets.target_mask == 0 {
-        targets.target_mask = SPELL_CAST_TARGET_UNIT;
-        targets.unit_target = Some(caster);
-        return targets;
+fn spell_blocks_mana_regen(template: &wow_db::SpellTemplateQuery) -> bool {
+    template.power_type == POWER_TYPE_MANA
+        && template.mana_cost > 0
+        && (template.attributes_ex2 & SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN) == 0
+}
+
+async fn sync_session_player_power_from_map(
+    maps: &MapRuntimeManager,
+    session: &mut WorldSessionState,
+    map_id: u32,
+    character_guid: u32,
+) {
+    if let Some(snapshot) = maps.player_runtime_snapshot(map_id, character_guid).await {
+        session.player_mana = snapshot.power1;
+        session.player_rage = snapshot.power2;
+        session.player_energy = snapshot.power4;
     }
-    if item_spell.kind == StarterSpellKind::AuraApplication
-        && item_spell.aura_target == StarterSpellAuraTarget::Caster
-    {
-        targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
-            & !SPELL_CAST_TARGET_UNIT_ENEMY;
-        targets.unit_target = Some(caster);
-        targets.gameobject_target = None;
+}
+
+fn spell_cast_time_millis(cast_time: Option<SpellCastTimeEntry>) -> u32 {
+    let Some(cast_time) = cast_time else {
+        return 0;
+    };
+    cast_time
+        .cast_time_millis
+        .max(cast_time.min_cast_time_millis)
+        .max(0) as u32
+}
+
+async fn spell_travel_delay_millis(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    targets: &SpellCastTargets,
+) -> u32 {
+    if spell_template.speed <= 0.0 {
+        return 0;
     }
-    targets
+    let spell_info = SpellInfo::from_template(spell_template);
+    let has_missile_damage = spell_info
+        .effects
+        .iter()
+        .any(|effect| effect.dispatch == SpellEffectDispatch::SchoolDamage);
+    if !has_missile_damage {
+        return 0;
+    }
+    let Some(character) = session.active_character.as_ref() else {
+        return 0;
+    };
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return 0;
+    };
+    let Some(creature) = shared_world
+        .maps
+        .db_creature_snapshot(character.position.map_id, target)
+        .await
+    else {
+        return 0;
+    };
+    let distance = character.position.distance_to(&creature.current_position);
+    ((distance / spell_template.speed.max(f32::EPSILON)) * 1000.0)
+        .round()
+        .max(1.0) as u32
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SupportedStarterSpell {
+struct SpellCastProfile {
     spell_id: u32,
-    kind: StarterSpellKind,
-    aura_target: StarterSpellAuraTarget,
+    kind: SpellCastKind,
+    aura_target: SpellAuraTarget,
     bonus_damage: u32,
     damage: u32,
-    power: StarterSpellPower,
+    power: SpellPowerCost,
     requires_melee: bool,
     global_cooldown_category: u32,
     global_cooldown_millis: u64,
@@ -1191,23 +1534,43 @@ struct SupportedStarterSpell {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StarterSpellKind {
+enum SpellCastKind {
     InstantDamage,
+    DirectHeal,
     AuraApplication,
     Charge,
     NextMeleeSwing,
+    Teleport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StarterSpellAuraTarget {
+enum SpellAuraTarget {
     Caster,
     UnitTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StarterSpellPower {
+enum SpellTargetKind {
+    Caster,
+    Unit,
+    HostileUnit,
+    FriendlyUnit,
+}
+
+impl SpellTargetKind {
+    fn requires_unit_target(self) -> bool {
+        matches!(
+            self,
+            SpellTargetKind::Unit | SpellTargetKind::HostileUnit | SpellTargetKind::FriendlyUnit
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpellPowerCost {
     Rage { cost: u32 },
     Mana { cost: u32 },
+    Energy { cost: u32 },
 }
 
 const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
@@ -1216,6 +1579,8 @@ const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
 const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
 const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 58;
 const SPELL_EFFECT_APPLY_AURA: u32 = 6;
+const SPELL_EFFECT_TELEPORT_UNITS: u32 = 5;
+const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
 const SPELL_EFFECT_HEAL: u32 = 10;
 const SPELL_EFFECT_ENERGIZE: u32 = 30;
 const SPELL_EFFECT_CHARGE: u32 = 96;
@@ -1237,6 +1602,7 @@ const PLAYER_STAND_STATE_STAND: u8 = 0;
 const PLAYER_STAND_STATE_SIT: u8 = 1;
 const POWER_TYPE_MANA: u32 = 0;
 const POWER_TYPE_RAGE: u32 = 1;
+const POWER_TYPE_ENERGY: u32 = 3;
 const POSITIVE_AURA_FLAGS: u32 = 0x05;
 const NEGATIVE_AURA_FLAGS: u32 = 0x08;
 const TARGET_UNIT_CASTER: u32 = 1;
@@ -1244,200 +1610,46 @@ const TARGET_UNIT_ENEMY: u32 = 6;
 const TARGET_UNIT: u32 = 25;
 const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
+const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
+const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
+const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
 const BASE_CHARGE_SPEED: f32 = 27.0;
 const MAX_AURA_SLOTS: usize = 48;
 const MAX_POSITIVE_AURA_SLOTS: usize = 32;
 const MAX_AURA_FLAG_FIELDS: usize = 6;
 const MAX_AURA_LEVEL_FIELDS: usize = 12;
 
-fn supported_starter_spell(template: &wow_db::SpellTemplateQuery) -> Option<SupportedStarterSpell> {
-    let kind = if spell_has_on_next_swing_attribute(template) {
-        StarterSpellKind::NextMeleeSwing
-    } else if spell_has_charge_effect(template) {
-        StarterSpellKind::Charge
-    } else if spell_has_aura_application(template) {
-        StarterSpellKind::AuraApplication
-    } else if spell_has_direct_damage_effect(template) {
-        StarterSpellKind::InstantDamage
-    } else {
-        return None;
-    };
+include!("spells/effects.rs");
+include!("spells/spell.rs");
+include!("spells/spell_mgr.rs");
+include!("spells/targets.rs");
+include!("spells/auras.rs");
+include!("spells/cooldowns.rs");
+include!("spells/packets.rs");
 
-    Some(SupportedStarterSpell {
-        spell_id: template.id,
-        kind,
-        aura_target: starter_spell_aura_target(template),
-        bonus_damage: spell_bonus_damage(template),
-        damage: spell_direct_damage(template),
-        power: spell_power(template),
-        requires_melee: kind == StarterSpellKind::NextMeleeSwing
-            || (template.dmg_class == 2 && kind != StarterSpellKind::Charge),
-        global_cooldown_category: template.start_recovery_category,
-        global_cooldown_millis: template.start_recovery_time as u64,
-        cooldown_millis: template.recovery_time.max(template.category_recovery_time) as u64,
-    })
+#[cfg(test)]
+fn player_spell_cast_profile(template: &wow_db::SpellTemplateQuery) -> Option<SpellCastProfile> {
+    SpellInfo::from_template(template)
+        .prepare_player_cast()
+        .map(|prepared| prepared.profile)
 }
 
-fn supported_item_use_spell(template: &wow_db::SpellTemplateQuery) -> Option<SupportedStarterSpell> {
-    if spell_has_charge_effect(template) || spell_has_on_next_swing_attribute(template) {
-        return None;
-    }
-    let kind = if spell_has_aura_application(template) {
-        StarterSpellKind::AuraApplication
-    } else if spell_has_item_direct_effect(template) {
-        StarterSpellKind::InstantDamage
-    } else {
-        return None;
-    };
-    Some(SupportedStarterSpell {
-        spell_id: template.id,
-        kind,
-        aura_target: starter_spell_aura_target(template),
-        bonus_damage: 0,
-        damage: spell_direct_damage(template),
-        power: spell_power(template),
-        requires_melee: false,
-        global_cooldown_category: template.start_recovery_category,
-        global_cooldown_millis: template.start_recovery_time as u64,
-        cooldown_millis: template.recovery_time.max(template.category_recovery_time) as u64,
-    })
-}
-
-fn spell_has_item_direct_effect(template: &wow_db::SpellTemplateQuery) -> bool {
-    spell_effects(template).into_iter().any(|effect| {
-        matches!(effect.effect, SPELL_EFFECT_HEAL | SPELL_EFFECT_ENERGIZE)
-            && spell_effect_simple_value(effect.base_points).is_some()
-    })
-}
-
-fn spell_has_on_next_swing_attribute(template: &wow_db::SpellTemplateQuery) -> bool {
-    (template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING)) != 0
+#[cfg(test)]
+fn item_use_spell_cast_profile(template: &wow_db::SpellTemplateQuery) -> Option<SpellCastProfile> {
+    SpellInfo::from_template(template)
+        .prepare_item_cast(ObjectGuid::EMPTY)
+        .map(|prepared| prepared.profile)
 }
 
 fn spell_has_aura_application(template: &wow_db::SpellTemplateQuery) -> bool {
-    [template.effect1, template.effect2, template.effect3].contains(&SPELL_EFFECT_APPLY_AURA)
-}
-
-fn spell_has_charge_effect(template: &wow_db::SpellTemplateQuery) -> bool {
-    [template.effect1, template.effect2, template.effect3].contains(&SPELL_EFFECT_CHARGE)
-}
-
-fn starter_spell_aura_target(template: &wow_db::SpellTemplateQuery) -> StarterSpellAuraTarget {
-    spell_effects(template)
-        .into_iter()
-        .find(|effect| effect.effect == SPELL_EFFECT_APPLY_AURA)
-        .map(|effect| match effect.implicit_target_a {
-            TARGET_UNIT_CASTER => StarterSpellAuraTarget::Caster,
-            TARGET_UNIT_ENEMY | TARGET_UNIT => StarterSpellAuraTarget::UnitTarget,
-            _ => StarterSpellAuraTarget::Caster,
-        })
-        .unwrap_or(StarterSpellAuraTarget::Caster)
-}
-
-fn spell_has_direct_damage_effect(template: &wow_db::SpellTemplateQuery) -> bool {
-    [
-        template.effect_base_points1,
-        template.effect_base_points2,
-        template.effect_base_points3,
-    ]
-    .into_iter()
-    .any(|base_points| base_points > 0)
-}
-
-fn spell_bonus_damage(template: &wow_db::SpellTemplateQuery) -> u32 {
-    spell_effects(template)
-        .into_iter()
-        .filter(|effect| {
-            effect.effect == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
-                || effect.effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE
-        })
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-        .max()
-        .unwrap_or(0)
-}
-
-fn spell_direct_damage(template: &wow_db::SpellTemplateQuery) -> u32 {
-    if spell_has_on_next_swing_attribute(template) || spell_has_charge_effect(template) {
-        return 0;
-    }
-    spell_effects(template)
-        .into_iter()
-        .filter(|effect| effect.effect != 0 && effect.effect != SPELL_EFFECT_APPLY_AURA)
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-        .sum()
+    SpellInfo::from_template(template)
+        .effects
+        .iter()
+        .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
 }
 
 fn spell_effect_simple_value(base_points: i32) -> Option<u32> {
     (base_points >= 0).then_some((base_points + 1) as u32)
-}
-
-fn spell_power(template: &wow_db::SpellTemplateQuery) -> StarterSpellPower {
-    match template.power_type {
-        POWER_TYPE_RAGE => StarterSpellPower::Rage {
-            cost: template.mana_cost,
-        },
-        POWER_TYPE_MANA => StarterSpellPower::Mana {
-            cost: template.mana_cost,
-        },
-        _ => StarterSpellPower::Mana {
-            cost: template.mana_cost,
-        },
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SpellEffectData {
-    effect: u32,
-    aura_name: u32,
-    base_points: i32,
-    amplitude: u32,
-    implicit_target_a: u32,
-    misc_value: i32,
-}
-
-fn spell_direct_heal(template: &wow_db::SpellTemplateQuery) -> u32 {
-    spell_effects(template)
-        .into_iter()
-        .filter(|effect| effect.effect == SPELL_EFFECT_HEAL)
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-        .sum()
-}
-
-fn spell_direct_energize(template: &wow_db::SpellTemplateQuery) -> u32 {
-    spell_effects(template)
-        .into_iter()
-        .filter(|effect| effect.effect == SPELL_EFFECT_ENERGIZE)
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-        .sum()
-}
-
-fn spell_effects(template: &wow_db::SpellTemplateQuery) -> [SpellEffectData; 3] {
-    [
-        SpellEffectData {
-            effect: template.effect1,
-            aura_name: template.effect_apply_aura_name1,
-            base_points: template.effect_base_points1,
-            amplitude: template.effect_amplitude1,
-            implicit_target_a: template.effect_implicit_target_a1,
-            misc_value: template.effect_misc_value1,
-        },
-        SpellEffectData {
-            effect: template.effect2,
-            aura_name: template.effect_apply_aura_name2,
-            base_points: template.effect_base_points2,
-            amplitude: template.effect_amplitude2,
-            implicit_target_a: template.effect_implicit_target_a2,
-            misc_value: template.effect_misc_value2,
-        },
-        SpellEffectData {
-            effect: template.effect3,
-            aura_name: template.effect_apply_aura_name3,
-            base_points: template.effect_base_points3,
-            amplitude: template.effect_amplitude3,
-            implicit_target_a: template.effect_implicit_target_a3,
-            misc_value: template.effect_misc_value3,
-        },
-    ]
 }
 
 fn build_active_aura(
@@ -1456,39 +1668,40 @@ fn build_active_aura(
             }
         })
         .unwrap_or(0);
+    let spell_info = SpellInfo::from_template(template);
     ActiveAura {
         spell_id: template.id,
         caster,
         level,
-        positive: active_aura_is_positive(template),
+        positive: active_aura_is_positive(&spell_info),
         visible: true,
         duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
         expires_at: (duration_millis > 0)
             .then_some(now + Duration::from_millis(duration_millis as u64)),
-        periodic_damage: spell_periodic_damage_aura(template, now),
-        periodic_regen: spell_periodic_regen_aura(template, now),
-        stat_modifiers: spell_aura_stat_modifiers(template),
+        periodic_damage: spell_periodic_damage_aura(&spell_info, now),
+        periodic_regen: spell_periodic_regen_aura(&spell_info, now),
+        stat_modifiers: spell_aura_stat_modifiers(&spell_info),
     }
 }
 
-fn active_aura_is_positive(template: &wow_db::SpellTemplateQuery) -> bool {
-    !spell_effects(template)
-        .into_iter()
+fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
+    !spell_info
+        .effects
+        .iter()
         .any(|effect| {
-            effect.effect == SPELL_EFFECT_APPLY_AURA
+            effect.dispatch == SpellEffectDispatch::ApplyAura
                 && (effect.implicit_target_a == TARGET_UNIT_ENEMY
                     || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE)
         })
 }
 
-fn spell_periodic_damage_aura(
-    template: &wow_db::SpellTemplateQuery,
-    now: Instant,
-) -> Option<PeriodicDamageAura> {
-    spell_effects(template)
-        .into_iter()
+fn spell_periodic_damage_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option<PeriodicDamageAura> {
+    spell_info
+        .effects
+        .iter()
+        .copied()
         .find(|effect| {
-            effect.effect == SPELL_EFFECT_APPLY_AURA
+            effect.dispatch == SpellEffectDispatch::ApplyAura
                 && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
                 && effect.amplitude > 0
         })
@@ -1496,8 +1709,8 @@ fn spell_periodic_damage_aura(
             let damage = spell_effect_simple_value(effect.base_points)?;
             Some(PeriodicDamageAura {
                 aura_name: effect.aura_name,
-                school: template.school,
-                damage_class: template.dmg_class,
+                school: spell_info.template.school,
+                damage_class: spell_info.template.dmg_class,
                 amount: damage,
                 tick_millis: effect.amplitude,
                 next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
@@ -1505,15 +1718,12 @@ fn spell_periodic_damage_aura(
         })
 }
 
-fn spell_periodic_regen_aura(
-    template: &wow_db::SpellTemplateQuery,
-    now: Instant,
-) -> Option<PeriodicRegenAura> {
+fn spell_periodic_regen_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option<PeriodicRegenAura> {
     let mut health_amount = 0u32;
     let mut mana_amount = 0u32;
     let mut tick_millis = 0u32;
-    for effect in spell_effects(template) {
-        if effect.effect != SPELL_EFFECT_APPLY_AURA {
+    for effect in spell_info.effects {
+        if effect.dispatch != SpellEffectDispatch::ApplyAura {
             continue;
         }
         let Some(amount) = spell_effect_simple_value(effect.base_points) else {
@@ -1564,10 +1774,11 @@ fn spell_needs_passive_cast_at_learn(template: &wow_db::SpellTemplateQuery) -> b
     template.attributes & SPELL_ATTR_PASSIVE != 0 && spell_has_aura_application(template)
 }
 
-fn spell_aura_stat_modifiers(template: &wow_db::SpellTemplateQuery) -> Vec<AuraStatModifier> {
-    spell_effects(template)
+fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier> {
+    spell_info
+        .effects
         .into_iter()
-        .filter(|effect| effect.effect == SPELL_EFFECT_APPLY_AURA)
+        .filter(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
         .filter_map(|effect| match effect.aura_name {
             SPELL_AURA_MOD_SKILL | SPELL_AURA_MOD_SKILL_TALENT => {
                 let skill_id = u16::try_from(effect.misc_value).ok()?;
@@ -1706,185 +1917,6 @@ fn apply_percent_modifier(value: u32, percent: i32) -> u32 {
 
 fn spell_effect_simple_i32(base_points: i32) -> i32 {
     base_points.saturating_add(1)
-}
-
-fn apply_starter_spell_cooldowns(
-    session: &mut WorldSessionState,
-    starter_spell: &SupportedStarterSpell,
-    now: Instant,
-) {
-    if starter_spell.global_cooldown_millis > 0 {
-        session.starter_global_cooldowns_until.insert(
-            starter_spell.global_cooldown_category,
-            now + Duration::from_millis(starter_spell.global_cooldown_millis),
-        );
-    }
-    if starter_spell.cooldown_millis > 0 {
-        session.starter_spell_cooldowns_until.insert(
-            starter_spell.spell_id,
-            now + Duration::from_millis(starter_spell.cooldown_millis),
-        );
-    }
-}
-
-fn apply_item_use_spell_cooldowns(
-    session: &mut WorldSessionState,
-    item_spell: &SupportedStarterSpell,
-    now: Instant,
-    skip_spell_cooldown: bool,
-) {
-    if item_spell.global_cooldown_millis > 0 {
-        session.starter_global_cooldowns_until.insert(
-            item_spell.global_cooldown_category,
-            now + Duration::from_millis(item_spell.global_cooldown_millis),
-        );
-    }
-    if !skip_spell_cooldown && item_spell.cooldown_millis > 0 {
-        session.starter_spell_cooldowns_until.insert(
-            item_spell.spell_id,
-            now + Duration::from_millis(item_spell.cooldown_millis),
-        );
-    }
-}
-
-fn item_use_spell_failure(
-    session: &WorldSessionState,
-    item_spell: &SupportedStarterSpell,
-    now: Instant,
-    ignore_spell_cooldown: bool,
-) -> Option<u8> {
-    let refreshing_active_aura = item_spell.kind == StarterSpellKind::AuraApplication
-        && session
-            .active_auras
-            .iter()
-            .any(|aura| aura.spell_id == item_spell.spell_id);
-    if refreshing_active_aura {
-        return None;
-    }
-    if !ignore_spell_cooldown {
-        if let Some(until) = session
-            .starter_spell_cooldowns_until
-            .get(&item_spell.spell_id)
-            .copied()
-        {
-            if now < until {
-                return Some(SPELL_FAILED_NOT_READY);
-            }
-        }
-    }
-    if session
-        .starter_global_cooldowns_until
-        .get(&item_spell.global_cooldown_category)
-        .is_some_and(|until| now < *until)
-    {
-        return Some(SPELL_FAILED_NOT_READY);
-    }
-    None
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn apply_item_use_spell_effects(
-    stream: &mut WorldPacketSink,
-    deps: SpellCastDeps<'_>,
-    session: &mut WorldSessionState,
-    caster: ObjectGuid,
-    spell_template: &wow_db::SpellTemplateQuery,
-    item_spell: &SupportedStarterSpell,
-    now: Instant,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
-        return Ok(());
-    };
-    let map_id = character.position.map_id;
-    let character_guid = character.guid;
-    let character_level = character.level;
-    let character_snapshot = character.clone();
-    let mut update_bodies = Vec::new();
-
-    let world_stats = wow_db::get_player_world_stats(
-        deps.world_db_pool,
-        character.race,
-        character.class,
-        character.level,
-    )
-    .await?;
-    let effective_world_stats = player_world_stats_with_active_auras(world_stats, &session.active_auras);
-    let max_health = effective_world_stats.max_health().max(1);
-    let max_mana = effective_world_stats.max_mana();
-
-    let heal = spell_direct_heal(spell_template);
-    if heal != 0 {
-        session.player_health = session.player_health.saturating_add(heal).min(max_health);
-        update_bodies.push(build_player_health_update_body(caster, session.player_health)?);
-    }
-    let energize = spell_direct_energize(spell_template);
-    if energize != 0 && max_mana != 0 {
-        session.player_mana = session.player_mana.saturating_add(energize).min(max_mana);
-        update_bodies.push(build_player_mana_update_body(caster, session.player_mana)?);
-    }
-    if item_spell.kind == StarterSpellKind::AuraApplication {
-        let aura = build_active_aura(
-            spell_template,
-            caster,
-            character_level,
-            now,
-            deps.shared_world.maps.spell_duration(spell_template.duration_index),
-        );
-        let makes_player_sit = aura.periodic_regen.is_some();
-        apply_player_aura(session, aura.clone());
-        if makes_player_sit {
-            session.player_stand_state = PLAYER_STAND_STATE_SIT;
-            update_bodies.push(build_player_stand_state_update_body(
-                &character_snapshot,
-                session.player_stand_state,
-            )?);
-        }
-        if let Some(event) = deps
-            .shared_world
-            .maps
-            .apply_player_aura(map_id, character_guid, aura)
-            .await?
-        {
-            for packet in event.direct_packets {
-                send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
-            }
-            deps.shared_world.sessions.dispatch(event.observer_packets).await;
-        } else {
-            update_bodies.push(build_player_aura_update_body(caster, &session.active_auras)?);
-            for packet in build_player_aura_duration_update_packets(&session.active_auras, now) {
-                send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
-            }
-        }
-        if makes_player_sit {
-            let observer_packets = deps
-                .shared_world
-                .maps
-                .broadcast_nearby_player_packet(
-                    map_id,
-                    character_guid,
-                    PLAYER_VISIBILITY_RADIUS_YARDS,
-                    OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_player_stand_state_update_body(
-                            &character_snapshot,
-                            session.player_stand_state,
-                        )?,
-                    },
-                )
-                .await;
-            deps.shared_world.sessions.dispatch(observer_packets).await;
-        }
-    }
-
-    for body in update_bodies {
-        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
-    }
-    deps.shared_world
-        .maps
-        .sync_player_gameplay_state(map_id, character_guid, session)
-        .await;
-    Ok(())
 }
 
 async fn consume_used_item(
@@ -2108,127 +2140,6 @@ fn set_unit_aura_update_values(
     }
 
     Ok(())
-}
-
-fn visible_aura_slots(active_auras: &[ActiveAura]) -> Vec<(usize, &ActiveAura)> {
-    let mut positive_slot = 0;
-    let mut negative_slot = MAX_POSITIVE_AURA_SLOTS;
-    let mut slots = Vec::new();
-    for aura in active_auras.iter().filter(|aura| aura.visible) {
-        let slot = if aura.positive {
-            if positive_slot >= MAX_POSITIVE_AURA_SLOTS {
-                continue;
-            }
-            let slot = positive_slot;
-            positive_slot += 1;
-            slot
-        } else {
-            if negative_slot >= MAX_AURA_SLOTS {
-                continue;
-            }
-            let slot = negative_slot;
-            negative_slot += 1;
-            slot
-        };
-        slots.push((slot, aura));
-    }
-    slots
-}
-
-fn build_aura_duration_update_body(slot: u8, remaining_millis: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(5);
-    body.push(slot);
-    body.extend_from_slice(&remaining_millis.to_le_bytes());
-    body
-}
-
-fn build_player_aura_duration_update_packets(
-    active_auras: &[ActiveAura],
-    now: Instant,
-) -> Vec<OutboundWorldPacket> {
-    visible_aura_slots(active_auras)
-        .into_iter()
-        .filter_map(|(slot, aura)| {
-            aura.remaining_duration_millis(now)
-                .map(|remaining_millis| OutboundWorldPacket {
-                    opcode: SMSG_UPDATE_AURA_DURATION,
-                    body: build_aura_duration_update_body(slot as u8, remaining_millis),
-                })
-        })
-        .collect()
-}
-
-fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(5);
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(0);
-    body
-}
-
-fn build_cast_result_failure_body(spell_id: u32, failure: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(6);
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(2);
-    body.push(failure);
-    body
-}
-
-fn build_spell_go_body(
-    caster: ObjectGuid,
-    spell_id: u32,
-    targets: &SpellCastTargets,
-) -> anyhow::Result<Vec<u8>> {
-    build_spell_go_body_with_source(caster, caster, spell_id, CAST_FLAG_SPELL_GO, targets)
-}
-
-fn build_spell_go_body_with_source(
-    source: ObjectGuid,
-    caster: ObjectGuid,
-    spell_id: u32,
-    cast_flags: u16,
-    targets: &SpellCastTargets,
-) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(40);
-    PackedGuid::write(&mut body, source)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&cast_flags.to_le_bytes());
-
-    if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
-        body.push(1);
-        body.extend_from_slice(&target.raw().to_le_bytes());
-    } else {
-        body.push(0);
-    }
-    body.push(0); // miss count
-    targets.write(&mut body)?;
-    Ok(body)
-}
-
-fn build_spell_start_body(
-    caster: ObjectGuid,
-    spell_id: u32,
-    cast_time_ms: u32,
-    targets: &SpellCastTargets,
-) -> anyhow::Result<Vec<u8>> {
-    build_spell_start_body_with_source(caster, caster, spell_id, cast_time_ms, targets)
-}
-
-fn build_spell_start_body_with_source(
-    source: ObjectGuid,
-    caster: ObjectGuid,
-    spell_id: u32,
-    cast_time_ms: u32,
-    targets: &SpellCastTargets,
-) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(44);
-    PackedGuid::write(&mut body, source)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&CAST_FLAG_SPELL_START.to_le_bytes());
-    body.extend_from_slice(&cast_time_ms.to_le_bytes());
-    targets.write(&mut body)?;
-    Ok(body)
 }
 
 async fn handle_item_query_single(

@@ -117,11 +117,6 @@ async fn handle_player_login(
     if let Some(corpse) = &session.player_corpse {
         deps.maps.upsert_player_corpse(corpse.position.map_id, corpse.clone()).await;
     }
-    session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
-    session.combat_dummy_lootable = false;
-    session.combat_dummy_looting = false;
-    session.combat_dummy_loot_money_available = false;
-    session.combat_dummy_loot_item_available = false;
     let login_position = WorldPosition::new(
         character.map,
         character.position_x,
@@ -194,6 +189,11 @@ async fn handle_player_login(
     session.player_health = character.health;
     session.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.player_mana = character.power1;
+    session.player_energy = if character.power4 > 0 {
+        character.power4
+    } else {
+        create_power_for_class_power(character.class, POWER_ENERGY)
+    };
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     repair_missing_inventory_random_properties(
@@ -258,6 +258,7 @@ async fn handle_player_login(
     bootstrap_character.health = session.player_health;
     bootstrap_character.power1 = session.player_mana;
     bootstrap_character.power2 = session.player_rage;
+    bootstrap_character.power4 = session.player_energy;
     bootstrap_character.player_bytes2 = player_bytes2_with_rest_state(character.player_bytes2);
     let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
     let cinematic_sequence = if character.cinematic == 0 {
@@ -344,6 +345,7 @@ async fn handle_player_login(
         fall_time: 0,
         last_fall_z: None,
         last_fall_time: 0,
+        environment: PlayerEnvironmentRuntime::default(),
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(login_position),
         visible_objects,
@@ -369,13 +371,20 @@ async fn handle_player_login(
         xp: character.xp,
         power1: session.player_mana,
         max_power1: effective_world_stats.max_mana(),
+        last_mana_use_at: None,
         power2: session.player_rage,
+        power4: session.player_energy,
+        max_power4: create_power_for_class_power(character.class, POWER_ENERGY),
         player_bytes: character.player_bytes,
         player_bytes2: player_bytes2_with_rest_state(character.player_bytes2),
+        stand_state: session.player_stand_state,
         active_spells: session.active_spells.clone(),
         inventory: session.inventory.clone(),
         quest_statuses: session.quest_statuses.clone(),
         active_auras: session.active_auras.clone(),
+        spell_global_cooldowns_until: HashMap::new(),
+        spell_cooldowns_until: HashMap::new(),
+        queued_next_melee_spell: None,
         base_combat_stats,
         combat_stats,
     };

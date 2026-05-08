@@ -71,6 +71,7 @@ fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Ins
                     .get(arrived_node)
                     .map(|node| node.wait_time)
                     .unwrap_or(0);
+                queue_db_creature_waypoint_script(creature, arrived_node);
                 advance_db_creature_waypoint_index(creature, arrived_node);
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_waypoint_move_at =
@@ -122,6 +123,18 @@ fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Ins
             };
             creature.current_position = position;
         }
+    }
+}
+
+fn queue_db_creature_waypoint_script(creature: &mut DbCreatureRuntime, node_index: usize) {
+    if let Some(script_id) = creature
+        .spawn
+        .waypoint_path
+        .get(node_index)
+        .map(|node| node.script_id)
+        .filter(|script_id| *script_id != 0)
+    {
+        creature.pending_movement_scripts.push(script_id);
     }
 }
 
@@ -275,6 +288,7 @@ fn start_db_creature_waypoint_motion_runtime(
     );
     if distance_2d(start.x, start.y, raw_destination.x, raw_destination.y) <= f32::EPSILON {
         creature.current_position = raw_destination;
+        queue_db_creature_waypoint_script(creature, node_index);
         advance_db_creature_waypoint_index(creature, node_index);
         creature.next_waypoint_move_at = Some(now + Duration::from_millis(node_wait_time as u64));
         return None;
@@ -294,6 +308,7 @@ fn start_db_creature_waypoint_motion_runtime(
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {
         creature.current_position = destination;
+        queue_db_creature_waypoint_script(creature, arrived_node);
         advance_db_creature_waypoint_index(creature, arrived_node);
         let wait_time = creature
             .spawn

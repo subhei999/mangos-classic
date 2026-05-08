@@ -96,6 +96,16 @@ async fn handle_movement(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
+    if movement_opcode_interrupts_spell_cast(opcode) {
+        cancel_pending_player_spell_cast(
+            stream,
+            deps.maps,
+            session,
+            SPELL_FAILED_INTERRUPTED,
+            header_crypto,
+        )
+        .await?;
+    }
     let server_time = synchronize_movement_server_time(session, movement.client_time);
     let mut fatal_environmental_damage_player = None;
     if let Some(character) = &mut session.active_character {
@@ -140,6 +150,9 @@ async fn handle_movement(
                 .await
             {
                 session.player_health = snapshot.health;
+                session.player_mana = snapshot.power1;
+                session.player_rage = snapshot.power2;
+                session.player_energy = snapshot.power4;
                 if previous_player_health > 0
                     && session.player_health == 0
                     && session.player_death_state == PlayerDeathState::Alive
@@ -213,6 +226,18 @@ async fn handle_movement(
         .await?;
     }
     Ok(())
+}
+
+fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
+    matches!(
+        opcode,
+        MSG_MOVE_START_FORWARD
+            | MSG_MOVE_START_BACKWARD
+            | MSG_MOVE_START_STRAFE_LEFT
+            | MSG_MOVE_START_STRAFE_RIGHT
+            | MSG_MOVE_JUMP
+            | MSG_MOVE_START_SWIM
+    )
 }
 
 struct MovementDeps<'a> {

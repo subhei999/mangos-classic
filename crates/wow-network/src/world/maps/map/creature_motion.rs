@@ -37,23 +37,34 @@ impl MapRuntime {
 
         let mut creatures = Vec::new();
         for guid in self.db_creature_idle_motion_advancement_guids() {
-            if let Some(creature) =
+            if let Some((creature, script_ids)) =
                 self.advance_db_creature_motion(ObjectGuid::from_raw(guid), now)
             {
+                for script_id in script_ids {
+                    self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
+                }
                 creatures.push(creature);
             }
         }
 
         let mut packets = Vec::new();
+        packets.extend(self.advance_pending_db_scripts(now)?);
         if self
             .next_idle_motion_start_check_at
             .is_none_or(|next| now >= next)
         {
             for guid in self.db_creature_idle_motion_start_guids(now) {
                 let creature_guid = ObjectGuid::from_raw(guid);
-                let Some((creature, motion)) =
+                let Some((creature, motion, script_ids)) =
                     self.start_db_creature_idle_motion(navigation, creature_guid, now)
                 else {
+                    continue;
+                };
+                for script_id in script_ids {
+                    self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
+                }
+                let Some(motion) = motion else {
+                    creatures.push(creature);
                     continue;
                 };
                 let move_packet = OutboundWorldPacket {
@@ -95,6 +106,203 @@ impl MapRuntime {
 
     fn invalidate_idle_motion_start_schedule(&mut self) {
         self.next_idle_motion_start_check_at = None;
+    }
+
+    fn schedule_db_creature_movement_script(
+        &mut self,
+        creature_guid: ObjectGuid,
+        script_id: u32,
+        now: Instant,
+    ) {
+        let Some(commands) = self.db_scripts.movement_script(script_id) else {
+            return;
+        };
+        self.pending_db_scripts
+            .extend(commands.iter().cloned().map(|command| PendingDbScriptAction {
+                due_at: now + Duration::from_millis(command.delay as u64),
+                source: creature_guid,
+                command,
+            }));
+        self.pending_db_scripts
+            .sort_by_key(|action| (action.due_at, action.command.priority));
+    }
+
+    fn advance_pending_db_scripts(
+        &mut self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if self.pending_db_scripts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut due = Vec::new();
+        let mut pending = Vec::new();
+        for action in self.pending_db_scripts.drain(..) {
+            if action.due_at <= now {
+                due.push(action);
+            } else {
+                pending.push(action);
+            }
+        }
+        self.pending_db_scripts = pending;
+
+        let mut packets = Vec::new();
+        for action in due {
+            packets.extend(self.execute_db_creature_script_action(action)?);
+        }
+        Ok(packets)
+    }
+
+    fn execute_db_creature_script_action(
+        &mut self,
+        action: PendingDbScriptAction,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if action.command.condition_id != 0 {
+            return Ok(Vec::new());
+        }
+        match action.command.command {
+            SCRIPT_COMMAND_TALK => self.execute_db_script_talk(action.source, &action.command),
+            SCRIPT_COMMAND_EMOTE => self.execute_db_script_emote(action.source, &action.command),
+            SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL => {
+                self.execute_db_script_morph(action.source, &action.command)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn execute_db_script_talk(
+        &mut self,
+        source: ObjectGuid,
+        command: &wow_db::DbScriptCommandQuery,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(creature) = self.creatures.get(&source.raw()) else {
+            return Ok(Vec::new());
+        };
+        let source_name = creature.spawn.template.name.clone();
+        let source_position = creature.current_position;
+        let Some(text_id) = db_script_random_nonzero_i32([
+            command.dataint,
+            command.dataint2,
+            command.dataint3,
+            command.dataint4,
+        ]) else {
+            return Ok(Vec::new());
+        };
+        let Some(text) = self.db_scripts.display_text(text_id) else {
+            return Ok(Vec::new());
+        };
+        let text_content = text.content.to_string();
+        let text_chat_type = text.chat_type;
+        let text_language = text.language;
+        let text_emote = text.emote;
+        let mut packets = Vec::new();
+        if text_emote != 0 {
+            packets.extend(self.execute_db_script_emote_id(source, text_emote)?);
+        }
+        let Some((chat_msg, radius)) = db_script_chat_opcode_and_radius(text_chat_type) else {
+            return Ok(packets);
+        };
+        let body = build_monster_message_chat_body(
+            chat_msg,
+            text_language,
+            source,
+            &source_name,
+            &text_content,
+        );
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_MESSAGECHAT,
+            body,
+        };
+        packets.extend(
+            self.nearby_db_script_player_sessions(source_position, radius, source)
+                .into_iter()
+                .map(|session_id| (session_id, packet.clone())),
+        );
+        Ok(packets)
+    }
+
+    fn execute_db_script_emote(
+        &mut self,
+        source: ObjectGuid,
+        command: &wow_db::DbScriptCommandQuery,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(emote) = db_script_random_nonzero_u32([
+            command.datalong,
+            command.dataint.max(0) as u32,
+            command.dataint2.max(0) as u32,
+            command.dataint3.max(0) as u32,
+            command.dataint4.max(0) as u32,
+        ]) else {
+            return Ok(Vec::new());
+        };
+        self.execute_db_script_emote_id(source, emote)
+    }
+
+    fn execute_db_script_emote_id(
+        &mut self,
+        source: ObjectGuid,
+        emote: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(creature) = self.creatures.get_mut(&source.raw()) else {
+            return Ok(Vec::new());
+        };
+        creature.spawn.addon_emote = emote;
+        let position = creature.current_position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_db_creature_emote_state_update_body(source, emote)?,
+        };
+        Ok(self
+            .nearby_db_script_player_sessions(position, CREATURE_SPAWN_RADIUS_YARDS, source)
+            .into_iter()
+            .map(|session_id| (session_id, packet.clone()))
+            .collect())
+    }
+
+    fn execute_db_script_morph(
+        &mut self,
+        source: ObjectGuid,
+        command: &wow_db::DbScriptCommandQuery,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(creature) = self.creatures.get_mut(&source.raw()) else {
+            return Ok(Vec::new());
+        };
+        let display_id = if command.datalong == 0 {
+            creature.display_id_override = None;
+            creature_display_id(&creature.spawn.template)
+        } else if command.data_flags & SCRIPT_FLAG_COMMAND_ADDITIONAL != 0 {
+            creature.display_id_override = Some(command.datalong);
+            command.datalong
+        } else {
+            return Ok(Vec::new());
+        };
+        let position = creature.current_position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_db_creature_display_update_body(source, display_id)?,
+        };
+        Ok(self
+            .nearby_db_script_player_sessions(position, CREATURE_SPAWN_RADIUS_YARDS, source)
+            .into_iter()
+            .map(|session_id| (session_id, packet.clone()))
+            .collect())
+    }
+
+    fn nearby_db_script_player_sessions(
+        &self,
+        position: WorldPosition,
+        radius: f32,
+        source: ObjectGuid,
+    ) -> Vec<SessionId> {
+        self.players
+            .values()
+            .filter(|player| player.visible_objects.contains(&source))
+            .filter(|player| {
+                radius.is_infinite()
+                    || is_position_inside_radius(position, player.position, radius)
+            })
+            .map(|player| player.session_id)
+            .collect()
     }
 
     fn db_creatures_in_active_or_blocked_grids(&self) -> Vec<(u64, &DbCreatureRuntime)> {
@@ -196,17 +404,18 @@ impl MapRuntime {
         &mut self,
         creature_guid: ObjectGuid,
         now: Instant,
-    ) -> Option<DbCreatureRuntime> {
+    ) -> Option<(DbCreatureRuntime, Vec<u32>)> {
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         advance_db_creature_motion_runtime(creature, now);
+        let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         let snapshot = creature.clone();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
             old_position,
             snapshot.current_position,
         );
-        Some(snapshot)
+        Some((snapshot, script_ids))
     }
 
     fn start_db_creature_idle_motion(
@@ -214,7 +423,7 @@ impl MapRuntime {
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
         now: Instant,
-    ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
+    ) -> Option<(DbCreatureRuntime, Option<StartedCreatureMotion>, Vec<u32>)> {
         if self
             .active_creature_combats
             .contains_key(&creature_guid.raw())
@@ -240,14 +449,18 @@ impl MapRuntime {
                 creature,
                 now,
             )
-        })?;
+        });
+        let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
+        if motion.is_none() && script_ids.is_empty() {
+            return None;
+        }
         let snapshot = creature.clone();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
             old_position,
             snapshot.current_position,
         );
-        Some((snapshot, motion))
+        Some((snapshot, motion, script_ids))
     }
 
     fn start_db_creature_chase_motion(

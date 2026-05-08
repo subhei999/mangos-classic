@@ -96,8 +96,15 @@ async fn handle_client(
 
     let session_result: anyhow::Result<()> = async {
         loop {
+            let loop_timeout = session_loop_timeout_duration(
+                runtime_state.maps.as_ref(),
+                &session,
+                next_world_tick_at,
+                Instant::now(),
+            )
+            .await;
             match timeout(
-                world_tick_timeout_duration(next_world_tick_at, Instant::now()),
+                loop_timeout,
                 read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
             )
             .await
@@ -116,6 +123,32 @@ async fn handle_client(
                             bytes = body.len(),
                             "Received world packet after auth"
                         );
+                    }
+
+                    if pending_player_spell_cast_is_due(
+                        runtime_state.maps.as_ref(),
+                        &session,
+                        Instant::now(),
+                    )
+                    .await
+                    {
+                        complete_pending_player_spell_cast(
+                            &mut stream,
+                            SpellCastDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                account_id: account.id,
+                                shared_world: SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                parties: runtime_state.parties.as_ref(),
+                            },
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
                     }
 
                     match opcode {
@@ -443,6 +476,7 @@ async fn handle_client(
                                 SpellCastDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
+                                    account_id: account.id,
                                     shared_world: SharedWorldDeps {
                                         object_mgr: runtime_state.object_mgr.as_ref(),
                                         maps: &runtime_state.maps,
@@ -462,6 +496,7 @@ async fn handle_client(
                                 SpellCastDeps {
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
+                                    account_id: account.id,
                                     shared_world: SharedWorldDeps {
                                         object_mgr: runtime_state.object_mgr.as_ref(),
                                         maps: &runtime_state.maps,
@@ -539,10 +574,20 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_CANCEL_CAST | CMSG_CANCEL_AUTO_REPEAT_SPELL => {
-                            debug!(
-                                opcode = expected_noop_opcode_name(opcode),
-                                "Ignoring spell cancel opcode for fixture spell slice"
-                            );
+                            if !cancel_pending_player_spell_cast(
+                                &mut stream,
+                                runtime_state.maps.as_ref(),
+                                &mut session,
+                                SPELL_FAILED_INTERRUPTED,
+                                &mut header_crypto,
+                            )
+                            .await?
+                            {
+                                debug!(
+                                    opcode = expected_noop_opcode_name(opcode),
+                                    "Ignoring spell cancel opcode with no pending spell cast"
+                                );
+                            }
                         }
                         CMSG_GOSSIP_HELLO => {
                             handle_gossip_hello(
@@ -955,6 +1000,31 @@ async fn handle_client(
                             );
                         }
                     }
+                    if pending_player_spell_cast_is_due(
+                        runtime_state.maps.as_ref(),
+                        &session,
+                        Instant::now(),
+                    )
+                    .await
+                    {
+                        complete_pending_player_spell_cast(
+                            &mut stream,
+                            SpellCastDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                account_id: account.id,
+                                shared_world: SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                parties: runtime_state.parties.as_ref(),
+                            },
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
                     if Instant::now() >= next_world_tick_at {
                         handle_combat_tick(
@@ -1020,6 +1090,31 @@ async fn handle_client(
                 }
                 Err(_) => {
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
+                    if pending_player_spell_cast_is_due(
+                        runtime_state.maps.as_ref(),
+                        &session,
+                        Instant::now(),
+                    )
+                    .await
+                    {
+                        complete_pending_player_spell_cast(
+                            &mut stream,
+                            SpellCastDeps {
+                                character_db_pool: &character_db_pool,
+                                world_db_pool: &world_db_pool,
+                                account_id: account.id,
+                                shared_world: SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                parties: runtime_state.parties.as_ref(),
+                            },
+                            &mut session,
+                            &mut header_crypto,
+                        )
+                        .await?;
+                    }
                     handle_combat_tick(
                         &mut stream,
                         CombatTickDeps {
@@ -1142,6 +1237,19 @@ fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Dur
     next_world_tick_at.saturating_duration_since(now)
 }
 
+async fn session_loop_timeout_duration(
+    maps: &MapRuntimeManager,
+    session: &WorldSessionState,
+    next_world_tick_at: Instant,
+    now: Instant,
+) -> Duration {
+    let world_tick_timeout = world_tick_timeout_duration(next_world_tick_at, now);
+    next_pending_player_spell_cast_due_at(maps, session)
+        .await
+        .map(|due_at| due_at.saturating_duration_since(now).min(world_tick_timeout))
+        .unwrap_or(world_tick_timeout)
+}
+
 fn advance_world_tick_deadline(
     next_world_tick_at: &mut Instant,
     now: Instant,
@@ -1169,6 +1277,7 @@ async fn refresh_active_player_session_cache(
     session.player_health = snapshot.health;
     session.player_mana = snapshot.power1;
     session.player_rage = snapshot.power2;
+    session.player_energy = snapshot.power4;
     session.active_spells = snapshot.active_spells;
     session.inventory = snapshot.inventory;
     session.quest_statuses = snapshot.quest_statuses;

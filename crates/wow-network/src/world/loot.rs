@@ -8,17 +8,6 @@ async fn handle_loot(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let target = read_packet_guid(body, "CMSG_LOOT")?;
-    if target == rust_combat_dummy_guid() {
-        if !session.combat_dummy_lootable {
-            warn!("Ignoring loot request for combat dummy before it is lootable");
-            return Ok(());
-        }
-
-        session.combat_dummy_looting = true;
-        let response = build_combat_dummy_loot_response_body(session);
-        return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
-    }
-
     let Some(character) = session.active_character.as_ref() else {
         warn!("Ignoring loot request before character login");
         return Ok(());
@@ -859,162 +848,8 @@ async fn handle_autostore_loot_item(
         return Ok(());
     }
 
-    if !session.combat_dummy_looting || loot_slot != 0 || !session.combat_dummy_loot_item_available {
-        warn!(
-            loot_slot,
-            "Ignoring loot item request without available combat dummy loot"
-        );
-        return Ok(());
-    }
-
-    let max_stack = wow_db::get_item_template_query(world_db_pool, RUST_COMBAT_DUMMY_LOOT_ITEM)
-        .await?
-        .map(|template| template.stackable.max(1))
-        .unwrap_or(1);
-    let mut remaining_count = RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT;
-    let mut update_blocks = Vec::new();
-    let mut pushed_item = None;
-
-    if max_stack > 1 {
-        if let Some(existing_stack) = session
-            .inventory
-            .iter()
-            .filter(|item| {
-                item.item_template == RUST_COMBAT_DUMMY_LOOT_ITEM
-                    && item.count < max_stack
-                    && remaining_count <= max_stack - item.count
-                    && u8::try_from(item.bag)
-                        .ok()
-                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
-            })
-            .min_by_key(|item| {
-                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-                    0
-                } else {
-                    1
-                };
-                (bag_order, item.bag, item.slot)
-            })
-            .cloned()
-        {
-            let merged_count = existing_stack.count + remaining_count;
-            if wow_db::update_character_inventory_item_count(
-                character_db_pool,
-                character_guid,
-                existing_stack.item,
-                merged_count,
-            )
-            .await?
-            {
-                remaining_count = 0;
-                update_blocks.push(build_item_stack_count_update_block(
-                    existing_stack.item,
-                    merged_count,
-                )?);
-                pushed_item = Some(CharacterInventoryItem {
-                    count: merged_count,
-                    ..existing_stack
-                });
-            }
-        }
-    }
-
-    if remaining_count == 0 {
-        session.combat_dummy_loot_item_available = false;
-        session.inventory =
-            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
-        send_packet(
-            stream,
-            SMSG_LOOT_REMOVED,
-            &[loot_slot],
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        if let Some(item) = pushed_item.as_ref() {
-            let body = build_item_push_result_body(
-                character_guid,
-                item,
-                RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
-                true,
-                false,
-                true,
-            );
-            send_packet(
-                stream,
-                SMSG_ITEM_PUSH_RESULT,
-                &body,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-        }
-        let body = build_update_object_body(&update_blocks);
-        return send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await;
-    }
-
-    let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
-        send_inventory_change_failure(
-            stream,
-            EQUIP_ERR_INVENTORY_FULL,
-            None,
-            None,
-            header_crypto,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    let random_properties = generate_item_instance_random_properties(
-        world_db_pool,
-        &session.db_creature_navigation.world_data_files,
-        RUST_COMBAT_DUMMY_LOOT_ITEM,
-    )
-    .await?;
-    wow_db::add_character_inventory_item_with_random_properties(
-        character_db_pool,
-        wow_db::AddCharacterInventoryItemRequest {
-            guid: character_guid,
-            bag: INVENTORY_SLOT_BAG_0 as u32,
-            slot: dst_slot,
-            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
-            count: remaining_count,
-            durability: 0,
-            random_properties: random_properties.as_ref(),
-        },
-    )
-    .await?;
-    session.combat_dummy_loot_item_available = false;
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
-    let Some(new_item) = session.inventory.iter().find(|item| {
-        item.bag == INVENTORY_SLOT_BAG_0 as u32
-            && item.slot == dst_slot
-            && item.item_template == RUST_COMBAT_DUMMY_LOOT_ITEM
-    }) else {
-        return Ok(());
-    };
-
-    send_packet(stream, SMSG_LOOT_REMOVED, &[loot_slot], Some(&mut *header_crypto)).await?;
-    let body = build_item_push_result_body(
-        character_guid,
-        new_item,
-        RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT,
-        true,
-        false,
-        true,
-    );
-    send_packet(
-        stream,
-        SMSG_ITEM_PUSH_RESULT,
-        &body,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let create_block = build_item_create_update_block(owner_guid, owner_guid, new_item, None)?;
-    let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[dst_slot])?;
-    update_blocks.push(create_block);
-    update_blocks.push(slot_block);
-    let body = build_update_object_body(&update_blocks);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+    warn!(loot_slot, "Ignoring loot item request without open DB loot");
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1558,36 +1393,8 @@ async fn handle_loot_money(
         .await;
     }
 
-    if !session.combat_dummy_looting {
-        warn!("Ignoring loot money request without an open combat dummy loot window");
-        return Ok(());
-    }
-    if !session.combat_dummy_loot_money_available {
-        return Ok(());
-    }
-
-    let money = wow_db::add_character_money(
-        character_db_pool,
-        character.guid,
-        RUST_COMBAT_DUMMY_LOOT_MONEY,
-    )
-    .await?;
-    session.combat_dummy_loot_money_available = false;
-    send_packet(
-        stream,
-        SMSG_LOOT_MONEY_NOTIFY,
-        &RUST_COMBAT_DUMMY_LOOT_MONEY.to_le_bytes(),
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(&mut *header_crypto)).await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_money_update_body(character.guid, money)?,
-        Some(header_crypto),
-    )
-    .await
+    warn!("Ignoring loot money request without open DB creature loot");
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1758,28 +1565,6 @@ async fn handle_loot_release(
         )
         .await;
     }
-    if target == rust_combat_dummy_guid() {
-        session.combat_dummy_looting = false;
-        session.combat_dummy_lootable = false;
-        session.combat_dummy_loot_money_available = false;
-        session.combat_dummy_loot_item_available = false;
-        session.combat_dummy_health = RUST_COMBAT_DUMMY_HEALTH;
-        send_packet(
-            stream,
-            SMSG_LOOT_RELEASE_RESPONSE,
-            &build_loot_release_response_body(target, true),
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        return send_packet(
-            stream,
-            SMSG_UPDATE_OBJECT,
-            &build_combat_dummy_state_update_body(RUST_COMBAT_DUMMY_HEALTH, 0)?,
-            Some(header_crypto),
-        )
-        .await;
-    }
-
     let Some(character) = session.active_character.as_ref() else {
         warn!("Ignoring loot release before character login");
         return Ok(());

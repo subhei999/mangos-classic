@@ -9,8 +9,7 @@ async fn handle_creature_query(
     info!(
         entry = query.entry,
         guid = format_args!("0x{:016X}", query.guid.raw()),
-        found = db_template.is_some()
-            || matches!(query.entry, RUST_GUIDE_ENTRY | RUST_COMBAT_DUMMY_ENTRY),
+        found = db_template.is_some() || query.entry == RUST_GUIDE_ENTRY,
         "Answering creature template query"
     );
     let response = build_creature_query_response(query.entry, db_template.as_ref());
@@ -118,11 +117,6 @@ fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
             name: RUST_GUIDE_NAME,
             subname: RUST_GUIDE_SUBNAME,
             display_id: RUST_GUIDE_DISPLAY_ID,
-        }),
-        RUST_COMBAT_DUMMY_ENTRY => Some(FixtureCreatureTemplate {
-            name: RUST_COMBAT_DUMMY_NAME,
-            subname: RUST_COMBAT_DUMMY_SUBNAME,
-            display_id: RUST_COMBAT_DUMMY_DISPLAY_ID,
         }),
         _ => None,
     }

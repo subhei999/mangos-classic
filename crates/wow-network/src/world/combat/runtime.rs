@@ -21,6 +21,7 @@
             corpse_expires_at: None,
             respawn_at: None,
             respawn_epoch_secs: None,
+            life_generation: 0,
             client_visible: true,
             lootable: false,
             looting: false,
@@ -35,6 +36,8 @@
             loot_allowed_players: HashSet::new(),
             loot_method: None,
             active_auras: Vec::new(),
+            display_id_override: None,
+            pending_movement_scripts: Vec::new(),
         }
     }
 
@@ -274,6 +277,8 @@
         let respawn_delay = db_creature_respawn_delay(&self.spawn);
         self.health = 0;
         self.life_state = DbCreatureLifeState::Corpse;
+        self.life_generation = self.life_generation.saturating_add(1);
+        self.active_auras.clear();
         self.corpse_expires_at = Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
         self.respawn_at = Some(now + respawn_delay);
         self.respawn_epoch_secs = Some(now_epoch_secs + respawn_delay.as_secs());
@@ -320,6 +325,7 @@
 
     fn remove_corpse(&mut self) {
         self.life_state = DbCreatureLifeState::Dead;
+        self.active_auras.clear();
         self.corpse_expires_at = None;
         self.health = 0;
         self.client_visible = false;
@@ -353,6 +359,8 @@
     fn respawn(&mut self) {
         self.health = self.max_health();
         self.life_state = DbCreatureLifeState::Alive;
+        self.life_generation = self.life_generation.saturating_add(1);
+        self.active_auras.clear();
         self.corpse_expires_at = None;
         self.respawn_at = None;
         self.respawn_epoch_secs = None;

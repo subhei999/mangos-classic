@@ -1,44 +1,5 @@
 // CMaNGOS reference: src/game/Handlers/LootHandler.cpp loot packet builders.
 
-fn build_combat_dummy_loot_response_body(session: &WorldSessionState) -> Vec<u8> {
-    let item_count = u8::from(session.combat_dummy_loot_item_available);
-
-    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
-
-    body.extend_from_slice(&rust_combat_dummy_guid().raw().to_le_bytes());
-
-    body.push(CLIENT_LOOT_CORPSE);
-
-    body.extend_from_slice(
-        &(if session.combat_dummy_loot_money_available {
-            RUST_COMBAT_DUMMY_LOOT_MONEY
-        } else {
-            0
-        })
-        .to_le_bytes(),
-    );
-
-    body.push(item_count);
-
-    if session.combat_dummy_loot_item_available {
-        body.push(0); // loot slot
-
-        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM.to_le_bytes());
-
-        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM_COUNT.to_le_bytes());
-
-        body.extend_from_slice(&RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY.to_le_bytes());
-
-        body.extend_from_slice(&0u32.to_le_bytes()); // random suffix factor
-
-        body.extend_from_slice(&0u32.to_le_bytes()); // random property id
-
-        body.push(LOOT_SLOT_NORMAL);
-    }
-
-    body
-}
-
 impl From<CreatureLootQuery> for DbCreatureLootRuntime {
     fn from(loot: CreatureLootQuery) -> Self {
         Self {

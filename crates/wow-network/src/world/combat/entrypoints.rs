@@ -12,39 +12,6 @@
         warn!("Ignoring attack swing before character login");
         return Ok(());
     };
-    if target == rust_combat_dummy_guid() {
-        if session.combat_dummy_lootable || session.combat_dummy_health == 0 {
-            warn!("Ignoring attack swing against dead combat dummy");
-            return Ok(());
-        }
-
-        let now = Instant::now();
-        let next_swing = scheduled_player_auto_attack_next_swing(
-            shared_world,
-            session,
-            target,
-            now,
-            Duration::from_millis(BASE_ATTACK_TIME_MS as u64),
-        )
-        .await;
-        if let Some(character) = session.active_character.as_ref() {
-            shared_world
-                .maps
-                .set_player_auto_attack(character.position.map_id, character.guid, Some(target), Some(next_swing))
-                .await;
-        }
-        let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        send_packet(
-            stream,
-            SMSG_ATTACKSTART,
-            &build_attack_start_body(attacker, target),
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        broadcast_player_attack_start(shared_world, session, attacker, target).await;
-        return Ok(());
-    }
-
     let Some(character) = session.active_character.as_ref() else {
         return Ok(());
     };

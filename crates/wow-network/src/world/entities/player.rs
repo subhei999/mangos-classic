@@ -115,7 +115,11 @@ fn write_other_player_update_values(
         UNIT_FIELD_NATIVEDISPLAYID,
         display_id_for_runtime_player(player),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        unit_bytes_1_for_class(player.class) | u32::from(player.stand_state),
+    )?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, player.flags)?;
     set_update_value(&mut values, PLAYER_BYTES, player.player_bytes)?;
@@ -467,7 +471,15 @@ fn build_player_stand_state_update_body(
     character: &Player,
     stand_state: u8,
 ) -> anyhow::Result<Vec<u8>> {
-    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    build_player_stand_state_update_body_for_class(character.guid, character.class, stand_state)
+}
+
+fn build_player_stand_state_update_body_for_class(
+    character_guid: u32,
+    class: u8,
+    stand_state: u8,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player_guid)?;
@@ -476,7 +488,7 @@ fn build_player_stand_state_update_body(
     set_update_value(
         &mut values,
         UNIT_FIELD_BYTES_1,
-        unit_bytes_1_for_class(character.class) | u32::from(stand_state),
+        unit_bytes_1_for_class(class) | u32::from(stand_state),
     )?;
     write_update_values(&mut block, &values)?;
 

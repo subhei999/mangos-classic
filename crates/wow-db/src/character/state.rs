@@ -23,6 +23,30 @@ pub async fn update_character_position(
     Ok(result.rows_affected())
 }
 
+pub async fn get_character_homebind(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Option<WorldPosition>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_homebind_load");
+    let row = sqlx::query(
+        "SELECT CAST(map AS UNSIGNED) AS map, position_x, position_y, position_z \
+         FROM character_homebind WHERE guid = ?",
+    )
+    .bind(guid)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| {
+        WorldPosition::new(
+            row.get::<u32, _>("map"),
+            row.get::<f32, _>("position_x"),
+            row.get::<f32, _>("position_y"),
+            row.get::<f32, _>("position_z"),
+            0.0,
+        )
+    }))
+}
+
 pub async fn update_character_position_and_vitals(
     pool: &MySqlPool,
     account_id: u32,

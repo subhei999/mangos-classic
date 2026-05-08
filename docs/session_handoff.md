@@ -114,6 +114,58 @@ the local game stack and observability dashboard:
   `CMSG_USE_ITEM` for DB-backed on-use/no-delay item spells, sending the normal
   spell start/result/go lifecycle, applying supported self aura/direct
   heal/energize effects, and consuming negative-charge item stacks.
+- Current uncommitted spell-system follow-up treats Hearthstone as a real
+  item-cast teleport spell instead of falling through to item-equip failure:
+  `CMSG_USE_ITEM` now accepts teleport effect item spells, loads
+  `character_homebind`, sends the existing item-cast spell start/result/go
+  packets, moves the player to the bind point, persists the new position, and
+  refreshes nearby creature visibility. Ordinary known direct-damage spells
+  use the generic `CMSG_CAST_SPELL` spell profile/effect path. Follow-up
+  spell-engine skeleton work adds `world/spells/` files for CMaNGOS-shaped
+  spell info/effect dispatch/cast lifecycle/targets/auras/cooldowns/packets and
+  routes the existing player/item spell shape classification through
+  `SpellInfo`/`PreparedSpellCast` instead of growing the old starter helpers.
+  The next lifecycle-entrypoint slice now routes player and item
+  `SMSG_SPELL_START`/`SMSG_SPELL_GO` packet construction through
+  `PreparedSpellCast`, including player-vs-item packet source and item cast
+  flags. Follow-up framework conversion moved spell packet builders into
+  `spells/packets.rs`, target normalization into `spells/targets.rs`, player
+  and item cooldown helpers into `spells/cooldowns.rs`, aura slot/duration
+  helpers into `spells/auras.rs`, and item heal/energize/aura/teleport effect
+  execution into `spells/effects.rs`. The next player-effect dispatch slice
+  moved direct damage, Rend/Battle Shout aura application, Charge movement, and
+  post-cast power updates behind `apply_player_spell_effects`, leaving
+  `CMSG_CAST_SPELL` as parse/validate/lifecycle orchestration while preserving
+  the existing behavior. The first real effect-loop slice now iterates
+  `SpellInfo.effects` and dispatches by `SpellEffectDispatch` for player
+  Charge/direct damage/aura effects and item teleport/heal/energize/aura
+  effects. Existing aggregate aura behavior is deliberately coalesced so
+  multi-slot food/drink auras still install one Rust `ActiveAura`. Follow-up
+  damage conversion now builds player direct damage execution from each
+  `SpellInfoEffect` damage slot instead of from aggregate spell damage,
+  preserving school on direct school-damage combat-log packets and proving
+  multi-slot damage with a focused regression. The final pause-for-testing
+  slice removed the raw `SpellEffectData` rebuild
+  path from aura construction: active aura positivity, periodic damage,
+  periodic regen, stat modifiers, passive aura gating, and consumable regen
+  refresh checks now read the same `SpellInfo.effects` metadata used by the
+  effect dispatcher, while preserving the current grouped `ActiveAura` behavior.
+  Latest follow-up removed `SupportedStarterSpell` entirely: `SpellInfo` now
+  produces a generic `SpellCastProfile`, `PreparedSpellCast` stores it, and
+  cast validation/targets/cooldowns/effects/tests no longer use the old
+  starter-specific helpers. Latest spell sprint adds generic player
+  `SPELL_EFFECT_HEAL` support, map-owned Energy (`POWER_ENERGY` /
+  `UNIT_FIELD_POWER4`) spend/sync for Rogue specials, instant weapon-damage
+  spell execution through the normal melee outcome path with spell-tagged
+  attacker-state packets, and DB-creature aura/pending-impact cleanup across
+  death/respawn generations so stale DoT ticks cannot land on a recreated
+  creature. Latest real-client bugfix follow-up adds map-owned selected-target
+  fallback for action-bar unit spells, loads `SpellRange.dbc` and
+  `spell_template.RangeIndex` for hostile spell range checks, enforces
+  LOS/facing/range before non-melee hostile impacts, blocks white swings while
+  a map-owned cast is active, applies CMaNGOS' five-second mana regen
+  interruption after mana-spending spells, and restores Rogue Energy on the
+  map regen tick.
 - Current uncommitted consumable/proficiency follow-up keeps item query
   `RequiredSpell` raw like CMaNGOS and sends `SMSG_SET_PROFICIENCY` on login
   and trainer learn using real `spell_template` proficiency effect class/mask
@@ -173,7 +225,7 @@ the local game stack and observability dashboard:
   Creatures that kill the player now reset health/combat state, send
   attack-stop/state packets, and start run-speed return-home motion instead of
   staying at the player's corpse.
-- Current uncommitted environmental/world-ambience work now covers five
+- Current uncommitted environmental/world-ambience work now covers eight
   CMaNGOS-shaped first slices:
   - Holiday/event spawn gating at startup/grid-load/runtime-refresh time: Rust loads
     `game_event`/`game_event_time`, preserves signed
@@ -200,9 +252,43 @@ the local game stack and observability dashboard:
     height and applies the CMaNGOS fall-damage formula on
     `MSG_MOVE_FALL_LAND`, sends `SMSG_ENVIRONMENTALDAMAGELOG` plus health
     updates, and hands fatal falls to the existing player death path.
-  `game_event_creature_data` overlays, event pools, event quests/conditions,
-  CMaNGOS `creature_conditional_spawn` dungeon-team entry selection, DB script
-  actions, and liquid/drowning/lava/fire damage remain follow-ups.
+  - Liquid environmental damage: the native CMaNGOS map/vmap bridge now reads
+    liquid status from `.map` MLIQ data and WMO/vmap liquids, `WorldGeometry`
+    converts that into CMaNGOS `EnvironmentFlags`, and the map update loop
+    advances player mirror timers for fatigue, breath, and server-only
+    environmental pulses. Drowning/exhaustion use `maxHealth / 5 + urand(0,
+    level - 1)`, lava uses the CMaNGOS default environmental damage range
+    `605..610`, sends `SMSG_ENVIRONMENTALDAMAGELOG` plus health/death updates,
+    sends breath/fatigue mirror timer start/stop packets, and allows release
+    after a map-tick environmental death by promoting the session to corpse
+    state on `CMSG_REPOP_REQUEST`.
+  - Generic CMaNGOS condition foundation: Rust loads the `conditions` table
+    into `ObjectMgr`, evaluates `RequiredCondition` through a CMaNGOS-shaped
+    recursive `ConditionEntry::Meets` path, supports NOT/OR/AND/NONE plus
+    DB-backed player state checks for team, race/class, level, gender, known
+    spell, inventory item/equipped item, skill/skill-below, quest rewarded,
+    quest taken modes, quest none, quest available, active game event, active
+    holiday, and the first dead-or-away cases. Unsupported condition types
+    fail closed instead of exposing gated content.
+  - DB-backed NPC movement script foundation: CMaNGOS Northshire Peasant rows
+    use waypoint `ScriptId`s such as `1126002`/`1234` and
+    `dbscripts_on_creature_movement` commands, not a hardcoded peasant path.
+    Rust now loads `dbscripts_on_creature_movement`, `broadcast_text`, and
+    `script_texts` at world startup, stores the script registry on
+    `MapRuntime`, schedules movement scripts from waypoint arrival with
+    millisecond delays, queues scripts from waypoint advancement itself so
+    zero-distance/orientation-only nodes are not skipped, and supports the
+    generalized commands needed by this
+    Northshire slice: `SCRIPT_COMMAND_TALK`, `SCRIPT_COMMAND_EMOTE`, and
+    `SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL` with explicit model ids. Scripted
+    emotes update `UNIT_NPC_EMOTESTATE` (for chopping wood emote `234`), talks
+    send CMaNGOS-shaped monster chat packets, and morphs are map-owned runtime
+    display overrides.
+  `game_event_creature_data` overlays, event pools, `game_event_quest`
+  relation wiring, CMaNGOS `creature_conditional_spawn` dungeon-team entry
+  selection, broader condition sources for loot/gossip/vendor/trainer, broader
+  DB script commands/buddy targeting/conditions, campfire/scripted fire damage,
+  and liquid-spell aura effects remain follow-ups.
 
 Run `git status --short --branch` before editing.
 
@@ -226,6 +312,37 @@ follow-up.
 
 ## Recently Changed
 
+- Liquid environmental damage: CMaNGOS reference checked in
+  `Player::UpdateTerainEnvironmentFlags`, mirror timers, and
+  `Player::EnvironmentalDamage`. Rust now samples native map/vmap liquid
+  status through `WorldGeometry`, stores per-player environment flags and
+  mirror timers in `MapRuntime`, advances drowning/fatigue/lava from the map
+  update loop, sends mirror timer packets for breath/fatigue and
+  `SMSG_ENVIRONMENTALDAMAGELOG`/health updates for damage, and has a release
+  guard for map-tick environmental deaths. Follow-up bug fix makes map-owned
+  environmental damage stand the player, interrupt food/drink-style periodic
+  regen auras like CMaNGOS `Unit::DealDamage`, and suppress normal health
+  regen while environmental damage is actively ticking. Proof: `cargo fmt
+  --package wow-network --check`, `cargo check -p wow-network`, `cargo test -p
+  wow-network map_runtime_ --lib -- --nocapture`, focused
+  `map_runtime_environmental_damage_interrupts_regen`, and full
+  `$env:CARGO_TARGET_DIR='target\codex-env-damage-check'; .\scripts\test-rust.cmd`
+  passed with 469 `wow-network` tests.
+- NPC movement scripts/world dialogue first slice: CMaNGOS reference checked in
+  `DBScripts/ScriptMgr.*`, `DoDisplayText`, and
+  `WaypointMovementGenerator.*`; live local DB proof for Northshire Peasant
+  entry `11260` shows waypoint `ScriptId`s using
+  `SCRIPT_COMMAND_EMOTE`/`MORPH_TO_ENTRY_OR_MODEL`, including generic script
+  `1234` = `STATE_WORK_CHOPWOOD` (`234`). Rust now has a startup-loaded
+  DB-script registry and map-owned waypoint-arrival script scheduler for
+  movement scripts, with monster say/yell/emote packet builders and runtime
+  NPC emote/display updates. Proof: `cargo fmt --package wow-db --package
+  wow-network --check`, `cargo check -p wow-db`, `cargo check -p
+  wow-network`, focused `cargo test -p wow-network
+  db_creature_movement_script --lib -- --nocapture`, `cargo test -p
+  wow-network map_runtime_ --lib -- --nocapture`, and full
+  `$env:CARGO_TARGET_DIR='target\codex-npc-scripts-check'; .\scripts\test-rust.cmd`
+  passed with 474 `wow-network` tests.
 - Consumable/proficiency follow-up: `SMSG_ITEM_QUERY_SINGLE_RESPONSE` keeps DB
   `RequiredSpell` raw like CMaNGOS. A real-client check showed the earlier
   derived-proficiency spell ids put red "Requires ..." text below the tooltip
@@ -669,6 +786,40 @@ extended with Webwood-specific hardcoding.
 
 ## Tests Run
 
+- Post spell bugfix follow-up:
+  `cargo fmt --package wow-network --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network spell --lib -- --nocapture`,
+  `cargo test -p wow-network regen --lib -- --nocapture`,
+  `cargo test -p wow-network sinister --lib -- --nocapture`, and
+  `cargo test -p wow-network auto_attack --lib -- --nocapture` passed.
+  `.\scripts\test-rust.cmd` passed formatting/checks/doc-tests and all 482
+  `wow-network` tests, then failed only at the final `cargo build -p
+  authserver` because the live local `target\debug\authserver.exe` is locked.
+  Replacement verification passed with `cargo build -p authserver
+  --target-dir target\codex-authserver-lock-check`.
+- Post heals/Rogue/aura-cleanup spell sprint:
+  `cargo fmt --package wow-network --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network spell --lib -- --nocapture`,
+  `cargo test -p wow-network heal --lib -- --nocapture`,
+  `cargo test -p wow-network sinister --lib -- --nocapture`,
+  `cargo test -p wow-network aura --lib -- --nocapture`, and
+  `cargo test -p wow-network player_energy --lib -- --nocapture` passed.
+  `.\scripts\test-rust.cmd` passed formatting/checks/doc-tests and all 479
+  `wow-network` tests, then failed only at the final default-target
+  `cargo build -p authserver` because a live
+  `target\debug\authserver.exe` process locked the executable. Replacement
+  verification without stopping the live server passed:
+  `cargo build -p authserver --target-dir target\codex-authserver-check`.
+- Environmental damage verification:
+  `cargo fmt --package wow-network --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network environmental --lib -- --nocapture`,
+  `cargo test -p wow-network map_runtime_ --lib -- --nocapture`, and
+  `$env:CARGO_TARGET_DIR='target\codex-env-damage-check'; .\scripts\test-rust.cmd`
+  passed. Latest regression coverage includes
+  `map_runtime_environmental_damage_interrupts_regen`, which proves drowning
+  damage interrupts consumable regen and prevents same-tick normal HP regen.
+  Full baseline included clippy, checks, workspace tests, doc-tests, and 469
+  `wow-network` tests.
 - Post item-query tooltip/stat fix: `cargo fmt --check`,
   `cargo test -p wow-network item_query_response_includes_cmangos_stats_damage_and_spells --lib`,
   and `cargo check -p wow-network` passed. `.\scripts\test-rust.cmd` passed
@@ -1199,12 +1350,227 @@ process locks `target\debug\authserver.exe`.
   and
   `cargo test -p wow-network charge_cast_fails_before_movement_when_navigation_is_blocked --lib -- --nocapture`
   passed.
+- Post Hearthstone item-cast fix: Rust now classifies item spell teleport
+  effects (`SPELL_EFFECT_TELEPORT_UNITS` and face-caster variant) as supported
+  item-use spells, so Hearthstone no longer returns item equip failure just
+  because spell `8690` was unsupported. The item-use path loads the player's
+  `character_homebind`, applies a same-map near teleport using the existing
+  movement acknowledgement/visibility refresh path, persists the new position,
+  and keeps the DB-backed item spell packet source/cast flag shape. Proof:
+  `cargo fmt --package wow-db --package wow-network --check`, `cargo check -p
+  wow-network`, focused spell/item tests for Hearthstone support, starter spell
+  support, item spell packet shape, starter spell packet shape, and use-item
+  parsing passed. Full baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-spell-hearth-check'; .\scripts\test-rust.cmd`,
+  including clippy, workspace tests, doc-tests, 473 `wow-network` tests, and
+  final authserver/auth-flow builds. One nearby dirty DB-script creature-display
+  helper needed a narrow clippy `too_many_arguments` allowance for the full
+  baseline to pass; behavior was unchanged.
+- Post spell-engine skeleton migration: first implementation slice of the full
+  CMaNGOS-parity spell plan added `world/spells/` engine boundary files for
+  effect dispatch, spell lifecycle, spell metadata/classification, target,
+  aura, cooldown, and packet phases. Existing Hearthstone, Fireball/starter
+  direct damage, Battle Shout/GCD, Rend, Charge, and item-use behavior is still
+  preserved; `supported_starter_spell` and `supported_item_use_spell` now route
+  through `SpellInfo`/`PreparedSpellCast`. Proof so far: `cargo fmt --package
+  wow-network --check`, `cargo check -p wow-network`, and focused spell tests
+  for starter shape classification, Hearthstone item teleport support, Battle
+  Shout/GCD, Rend, Charge, item spell packet shape, and starter spell packet
+  shape passed. Full baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-spell-engine-skeleton-check'; .\scripts\test-rust.cmd`,
+  including 474 `wow-network` tests and final authserver/auth-flow builds.
+- Post spell lifecycle entrypoint slice: `PreparedSpellCast` now owns lifecycle
+  state transitions for prepare/start/finish and builds `SMSG_SPELL_START` /
+  `SMSG_SPELL_GO` bodies for player and item cast sources. `CMSG_CAST_SPELL`
+  and `CMSG_USE_ITEM` still preserve the existing validated effect execution,
+  but their start/go packet source and item-cast flag decisions are now routed
+  through the new spell lifecycle boundary. Added
+  `prepared_spell_cast_builds_lifecycle_packets_for_player_and_item_sources`.
+  Proof: `cargo fmt --package wow-network --check`, `cargo check -p
+  wow-network`, focused spell lifecycle/Hearthstone/Battle Shout/Rend/Charge/
+  item packet/starter packet/starter classification tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-lifecycle-entry-check'; .\scripts\test-rust.cmd`
+  passed with 475 `wow-network` tests plus final authserver/auth-flow builds.
+- Post spell framework conversion slice: continued executing the 1-6 conversion
+  plan by moving packet builders to `spells/packets.rs`, starter/item cooldown
+  helpers to `spells/cooldowns.rs`, item-use effect execution for heal,
+  energize, aura application, and Hearthstone teleport to `spells/effects.rs`,
+  visible aura slot/duration helpers to `spells/auras.rs`, and player/item
+  target normalization to `spells/targets.rs`. This is a behavior-preserving
+  module ownership move; player direct damage/Rend/Charge effect bodies remain
+  in the current cast path for the next effect-dispatch slice. Proof: `cargo
+  fmt --package wow-network --check`, `cargo check -p wow-network`, focused
+  spell lifecycle/Hearthstone/Battle Shout/Rend/Charge/item packet/starter
+  packet/starter classification tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-framework-convert-check'; .\scripts\test-rust.cmd`
+  passed with 475 `wow-network` tests plus final authserver/auth-flow builds.
+- Post player-effect dispatch slice: `CMSG_CAST_SPELL` now delegates
+  non-queued player spell execution to `apply_player_spell_effects` in
+  `spells/effects.rs`. The moved behavior covers Charge movement/retaliation,
+  combat dummy and DB-creature direct damage, DB-creature death/reward
+  finalization, Battle Shout/Rend-style aura application, and the final
+  caster power update. This is still a behavior-preserving bridge; the next
+  spell-engine step is iterating `SpellInfo.effects` and dispatching by
+  `SpellEffectDispatch` instead of by the old `SupportedStarterSpell` shape.
+  Proof: `cargo fmt --package wow-network --check`, `cargo check -p
+  wow-network`, focused spell lifecycle/Hearthstone/Battle Shout/Rend/Charge/
+  item packet/starter packet/starter classification tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-player-effects-check'; .\scripts\test-rust.cmd`
+  passed with 475 `wow-network` tests plus final authserver/auth-flow builds.
+- Post generic effect-loop slice: `apply_player_spell_effects` and
+  `apply_item_use_spell_effects` now iterate `SpellInfo.effects` and dispatch
+  through `SpellEffectDispatch` for the families already supported in the Rust
+  slice: player Charge/direct damage/aura and item teleport/heal/energize/aura.
+  Damage/heal/energize families are coalesced where the old implementation
+  already summed effect slots, and aura families are coalesced to preserve the
+  current single-`ActiveAura` aggregate for multi-slot food/drink and stat
+  auras. `SpellInfo` direct-damage support now requires actual damage effect
+  ids instead of treating arbitrary positive base points as damage; the stale
+  instant-melee test fixture was corrected to use
+  `SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL`. Proof: `cargo fmt --package
+  wow-network --check`, `cargo check -p wow-network`, focused spell lifecycle/
+  Hearthstone/Battle Shout/Rend/Charge/item spell/item-use/consumable/melee
+  validity tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-effect-loop-check'; .\scripts\test-rust.cmd`
+  passed with 475 `wow-network` tests plus final authserver/auth-flow builds.
+- Post direct-damage effect-slot slice: player direct damage execution now
+  derives amount/school/melee requirement from the current `SpellInfoEffect`
+  slot and applies each school/weapon damage slot independently instead of
+  reading the old aggregate `SupportedStarterSpell.damage`. Added
+  `player_damage_spell_executes_each_damage_effect_slot`, which casts a
+  two-effect school damage spell and proves two separate damage log packets
+  with effect-derived 5 and 7 damage amounts. Combat dummy school-damage logs
+  now preserve the spell template school for the effect context; DB-creature
+  map damage still uses the existing map-owned spell damage event shape, whose
+  combat-log school field remains a follow-up. Proof: `cargo fmt --package
+  wow-network --check`, `cargo check -p wow-network`, focused damage-slot/
+  starter/Hearthstone/Battle Shout/Rend/Charge tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-damage-effects-check'; .\scripts\test-rust.cmd`
+  passed with 476 `wow-network` tests plus final authserver/auth-flow builds.
+- Post DB-creature spell school slice: map-owned `DbCreatureDamageRequest` now
+  carries `spell_school`, player spell effect execution passes the
+  effect-derived school into DB-creature damage, and
+  `MapRuntime::apply_db_creature_damage` writes that school into
+  `SMSG_SPELLNONMELEEDAMAGELOG` instead of hardcoding physical school. Existing
+  melee/GM/non-spell call sites pass `0` to preserve their current packet
+  shape. Strengthened
+  `map_runtime_db_creature_spell_damage_includes_combat_log_packet` to assert
+  the logged school byte. Proof: `cargo fmt --package wow-network --check`,
+  `cargo check -p wow-network`, focused DB-creature spell school/damage-slot/
+  Battle Shout/Rend/Charge/starter tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-damage-school-check'; .\scripts\test-rust.cmd`
+  passed with 476 `wow-network` tests plus final authserver/auth-flow builds.
+- Post spell migration pause slice: aura construction now uses
+  `SpellInfo.effects` directly instead of maintaining the parallel
+  `SpellEffectData`/`spell_effects(template)` raw-template helper. This keeps
+  `build_active_aura`, periodic damage, food/drink regen, stat modifiers,
+  passive aura bootstrap, and item refreshability on the same metadata path as
+  player/item effect dispatch. Behavior is intentionally still grouped into one
+  `ActiveAura` per spell where the existing Rust slice already grouped
+  multi-slot aura effects. Proof: `cargo fmt --package wow-network --check`,
+  `cargo check -p wow-network`, focused Battle Shout/Rend/consumable regen/
+  Human Spirit passive/damage-slot/DB-creature school/Hearthstone/item packet
+  tests, and full
+  `$env:CARGO_TARGET_DIR='target\codex-spell-migration-pause-check'; .\scripts\test-rust.cmd`
+  passed with 476 `wow-network` tests plus final authserver/auth-flow builds.
+  Recommended pause point for real-client testing: Hearthstone item use,
+  Fireball/direct spell damage, Battle Shout, Rend, Charge, Heroic Strike
+  queue/consume, food/drink refresh and movement/damage break, and passive stat
+  display after relog.
+- Post `SupportedStarterSpell` removal slice: removed the old starter-only
+  spell shape from production code and tests. `SpellInfo` now prepares a
+  generic owned `SpellCastProfile`, `PreparedSpellCast` stores that profile,
+  player/item target normalization, cooldowns, cast failures, and effect
+  dispatch all consume the generic profile, and session cooldown state was
+  renamed from starter-specific maps to generic spell cooldown maps. Tests now
+  assert CMaNGOS-derived player/item cast profiles instead of
+  `supported_starter_spell`/`supported_item_use_spell`. Proof: `cargo fmt
+  --package wow-network --check`, `cargo check -p wow-network`, focused
+  `cargo test -p wow-network spell --lib -- --nocapture`, `charge`, `rend`,
+  and `consumable` filters passed, and full
+  `$env:CARGO_TARGET_DIR='target\codex-remove-supported-starter-check';
+  .\scripts\test-rust.cmd` passed with 476 `wow-network` tests plus final
+  authserver/auth-flow builds. Remaining spell-engine follow-up: keep shrinking
+  `SpellCastProfile` as richer DB/DBC metadata lands, especially range/cast
+  time/LOS/power/cooldown ownership and per-effect aura instances.
+- Post real-client spell smoke slice: `spell_template.CastingTimeIndex` is now
+  loaded through `SpellTemplateQuery`, `SpellCastTimes.dbc` is parsed into
+  `WorldDataFiles`/`MapRuntimeManager`, and player/item spell starts send the
+  DBC-backed cast time in `SMSG_SPELL_START`. Non-queued player casts now
+  create map-owned `pending_player_spell_casts` in `MapRuntime` instead of
+  sleeping inside the packet handler or storing active cast lifecycle on
+  `WorldSessionState`; the session loop wakes at the cast due time to finish
+  `SMSG_CAST_RESULT`/`SMSG_SPELL_GO`/effects and movement-start/jump/swim or
+  `CMSG_CANCEL_CAST` interrupts with `SPELL_FAILED_INTERRUPTED` before power
+  spend/damage. Mixed direct-damage plus aura spells now execute both effect
+  families, so Fireball-style spells apply their direct school-damage hit and
+  their periodic aura. Added parser coverage plus
+  `cast_time_spell_sends_start_before_delayed_go_and_effects`,
+  `moving_during_cast_time_interrupts_spell_before_damage_or_power_spend`, and
+  `fireball_with_periodic_aura_applies_direct_damage_and_dot`. Latest cleanup
+  removed the legacy Rust Combat Dummy fixture entirely: no login create block,
+  creature query row, session health/loot state, melee/spell damage branch,
+  dummy loot path, packet builders, constants, or dummy-only tests remain; spell
+  damage/cast-time tests now target DB-creature runtimes. Proof: focused
+  cast-time/parser/spell/fireball/Hearthstone/Rend/Charge/combat/loot tests and
+  full
+  `$env:CARGO_TARGET_DIR='target\codex-remove-combat-dummy-check';
+  .\scripts\test-rust.cmd` passed with 472 `wow-network` tests plus final
+  authserver/auth-flow builds. Real-client smoke target: restart worldserver
+  with real DBCs present, cast Fireball or another known cast-time class spell,
+  verify the cast bar appears, movement cancels before mana/damage, and
+  mana/direct damage/DoT happen only after the bar completes.
+- Post map-owned spell-state slice: player spell cooldowns, start-recovery GCD,
+  and queued next-melee spell state now live on `PlayerRuntime` in
+  `MapRuntime`, not `WorldSessionState`. `CMSG_CAST_SPELL` and `CMSG_USE_ITEM`
+  validate/apply cooldowns through `MapRuntimeManager`, delayed cast completion
+  spends power from map player state, and Heroic Strike queue/consume/failure
+  checks read and clear the map-owned queued spell. The old session cooldown
+  maps and queued next-melee field were removed. Tests now seed spell power and
+  assert cooldown/queue state through map snapshots. Proof:
+  `$env:CARGO_TARGET_DIR='target\codex-map-owned-spell-state-check'; .\scripts\test-rust.cmd`
+  passed with 472 `wow-network` tests plus final authserver/auth-flow builds.
+  Remaining spell ownership follow-up: item heal/energize and player aura
+  mirrors still update session state for compatibility with older nearby
+  systems; move those consumers to map snapshots before deleting the session
+  aura/power mirrors.
+- Post Fireball real-client smoke fix: cast-time spell recovery now starts at
+  `SMSG_SPELL_START` time instead of cast completion, so Fireball does not stay
+  server-locked for an extra GCD after the cast bar finishes. School-damage
+  spell impacts suppress melee attacker-state packets, leaving only
+  `SMSG_SPELLNONMELEEDAMAGELOG`, so the client should no longer show both
+  "You hit" and "Fireball hits" for one spell. Missile school-damage spells
+  with positive `spell_template.Speed` now split into a map-owned pending
+  impact stage: cast completion sends `SMSG_CAST_RESULT`/`SMSG_SPELL_GO`, then
+  damage/aura effects apply after distance/speed travel time. Movement cancel
+  only interrupts the cast-complete stage, not an already launched impact.
+  Proof: `cargo test -p wow-network spell --lib -- --nocapture`, focused
+  heroic/raptor/fireball/combat-log filters, and full
+  `$env:CARGO_TARGET_DIR='target\codex-fireball-parity-check'; .\scripts\test-rust.cmd`
+  passed with 472 `wow-network` tests plus final authserver/auth-flow builds.
+- Post map-owned active-spell architecture fix: the old single
+  `pending_player_spell_casts` slot is gone. `MapRuntime` now stores active
+  player/item spell casts separately from independent scheduled spell events,
+  so a launched Fireball missile impact cannot be overwritten by a new cast.
+  Player and item casts with cast time both enter the same map-owned active
+  cast path; completion drains active casts first and then due impact events.
+  Interrupting an active cast clears the map-owned start-recovery/cooldown
+  state for that cast, while already-launched impacts are no longer
+  cancelable through movement. Strengthened cast-time tests to prove the real
+  client can start a second Fireball while the first missile is still
+  traveling, both impacts land, and movement interruption permits immediate
+  recast instead of leaving a hidden server lock. Proof:
+  `cargo check -p wow-network`, `cargo test -p wow-network spell --lib -- --nocapture`,
+  `cargo test -p wow-network cast_time --lib -- --nocapture`, and full
+  `$env:CARGO_TARGET_DIR='target\codex-map-spell-architecture-check'; .\scripts\test-rust.cmd`
+  passed with 472 `wow-network` tests plus final authserver/auth-flow builds.
 
 ## Known Follow-Ups
 
 - Continue environmental/world-ambience implementation after runtime event
   spawn refresh: add `game_event_creature_data` overlays, event pools,
-  `game_event_quest` and condition evaluator integration, CMaNGOS
+  `game_event_quest` relation wiring, broader condition evaluator integration
+  for loot/gossip/vendor/trainer condition sources, CMaNGOS
   `creature_conditional_spawn` dungeon-team entry selection, DB script waypoint
   `TALK`/`EMOTE` support, and liquid-status bridge for drowning/fatigue/lava.
 - Commit/push the local Codex Run action setup if it should be shared with
@@ -1245,6 +1611,31 @@ parity, and patrol runtime stability per `docs/playable_gate_board.md`.
   stats/name from persisted instance enchantments. Follow-up if needed:
   verify equipped random-property enchantments also contribute to derived
   character stats/combat calculations, not just item tooltip display.
+- Hearthstone follow-up: current item teleport uses the existing same-map
+  near-teleport path, which is enough for starter-zone homebind smoke. Full
+  CMaNGOS worldport parity still needs cross-map `SMSG_NEW_WORLD` /
+  `CMSG_MOVE_WORLDPORT_ACK` handling before Hearthstone can safely move a
+  character between continents or instances.
+- Spell cast-time follow-up: map-owned active casts and independent impact
+  events now cover player and item casts, including movement/cancel
+  interruption and Fireball-style travel time. Remaining parity gaps: damage
+  pushback, channel cancellation, auto-repeat/ranged special cases, broader
+  aura interrupt flags beyond movement-start opcodes, disconnect cleanup, and
+  moving completion dispatch from the current session-loop wakeup bridge into a
+  fuller `Spell::update`/map-update event drain once packet routing can support
+  it cleanly.
+- Spell class-coverage follow-up after the heals/Rogue sprint: real-client
+  smoke Priest/Paladin/Druid/Shaman heals and Rogue Sinister Strike. If that
+  holds, build the level 1-6 class acceptance matrix from DB/DBC rows and add
+  the next missing generic effect families: Seal/weapon buffs, Shaman weapon
+  imbues, Hunter ranged/auto-shot interactions, Warlock pet-adjacent starter
+  spell shapes, and broader friendly/hostile target legality.
+- Spell cleanup follow-up after the DoT death fix: stale DB-creature aura ticks
+  and pending impacts are generation-gated across creature death/respawn. Still
+  needed for production parity: player logout/disconnect/map-transfer active
+  cast cleanup, player aura cleanup on death/repop where Classic expects it,
+  and routing lethal periodic ticks through the full corpse loot/XP/quest-credit
+  finalization path tracked by GitHub issue #66.
 - Movement parity follow-ups after the Northshire pass: add liquid-aware
   endpoint height for creatures actually swimming in water, implement full
   spawn-group formation runtime, and real-client retest Defias/Northshire
@@ -1316,6 +1707,8 @@ chase/leash pathing.
 - `crates/wow-network/src/world/combat/runtime.rs`
 - `crates/wow-network/src/world/social/party.rs`
 - `crates/wow-network/src/world/chat.rs`
+- `crates/wow-network/src/world/spells.rs`
+- `crates/wow-network/src/world/spells/`
 - `crates/wow-network/src/world/gm_commands.rs`
 - `crates/wow-network/src/world/loot.rs`
 - `crates/wow-network/src/world/inventory.rs`

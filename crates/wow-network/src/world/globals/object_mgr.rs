@@ -14,6 +14,9 @@ struct ObjectMgr {
     quest_prev_quests: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<i32>>>,
     quest_prev_chain_quests: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
     exclusive_group_quests: tokio::sync::Mutex<std::collections::HashMap<i32, Vec<u32>>>,
+    condition_entries:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::ConditionQuery>>>,
+    game_event_schedules: tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
     creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     reference_loot_templates:
@@ -30,6 +33,7 @@ struct ObjectMgrCacheStats {
     quest_template_db_loads: std::sync::atomic::AtomicU64,
     quest_relation_db_loads: std::sync::atomic::AtomicU64,
     quest_chain_db_loads: std::sync::atomic::AtomicU64,
+    condition_db_loads: std::sync::atomic::AtomicU64,
     loot_template_db_loads: std::sync::atomic::AtomicU64,
     spell_template_db_loads: std::sync::atomic::AtomicU64,
 }
@@ -40,6 +44,7 @@ struct ObjectMgrCacheSnapshot {
     quest_template_db_loads: u64,
     quest_relation_db_loads: u64,
     quest_chain_db_loads: u64,
+    condition_db_loads: u64,
     loot_template_db_loads: u64,
     spell_template_db_loads: u64,
 }
@@ -53,6 +58,64 @@ enum QuestRelationKind {
 }
 
 impl ObjectMgr {
+    async fn load_conditions(&self, world_db_pool: &MySqlPool) -> anyhow::Result<()> {
+        let conditions = wow_db::get_conditions(world_db_pool).await?;
+        self.stats
+            .condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut cache = self.condition_entries.lock().await;
+        cache.clear();
+        for condition in conditions {
+            cache.insert(condition.condition_entry, Some(condition));
+        }
+        Ok(())
+    }
+
+    async fn set_game_event_schedules(&self, schedules: Vec<wow_db::GameEventScheduleQuery>) {
+        *self.game_event_schedules.lock().await = schedules;
+    }
+
+    async fn active_game_event_state(&self) -> GameEventState {
+        let schedules = self.game_event_schedules.lock().await.clone();
+        GameEventState::from_schedules_at(&schedules, current_unix_epoch_secs() as i64)
+    }
+
+    async fn active_holidays(&self) -> HashSet<u32> {
+        let schedules = self.game_event_schedules.lock().await.clone();
+        let active_events =
+            GameEventState::from_schedules_at(&schedules, current_unix_epoch_secs() as i64);
+        schedules
+            .iter()
+            .filter(|schedule| {
+                schedule.holiday != 0 && active_events.is_active(schedule.entry)
+            })
+            .map(|schedule| schedule.holiday)
+            .collect()
+    }
+
+    async fn condition_entry(
+        &self,
+        world_db_pool: &MySqlPool,
+        condition_entry: u32,
+    ) -> anyhow::Result<Option<wow_db::ConditionQuery>> {
+        {
+            let cache = self.condition_entries.lock().await;
+            if let Some(condition) = cache.get(&condition_entry) {
+                return Ok(condition.clone());
+            }
+        }
+
+        let condition = wow_db::get_condition(world_db_pool, condition_entry).await?;
+        self.stats
+            .condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.condition_entries
+            .lock()
+            .await
+            .insert(condition_entry, condition.clone());
+        Ok(condition)
+    }
+
     async fn quest_template(
         &self,
         world_db_pool: &MySqlPool,
@@ -431,6 +494,26 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    async fn prime_condition_for_test(
+        &self,
+        condition_entry: u32,
+        condition: Option<wow_db::ConditionQuery>,
+    ) {
+        self.condition_entries
+            .lock()
+            .await
+            .insert(condition_entry, condition);
+    }
+
+    #[cfg(test)]
+    async fn prime_game_event_schedules_for_test(
+        &self,
+        schedules: Vec<wow_db::GameEventScheduleQuery>,
+    ) {
+        self.set_game_event_schedules(schedules).await;
+    }
+
+    #[cfg(test)]
     async fn prime_creature_loot_template_for_test(
         &self,
         creature_entry: u32,
@@ -465,6 +548,10 @@ impl ObjectMgr {
             quest_chain_db_loads: self
                 .stats
                 .quest_chain_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            condition_db_loads: self
+                .stats
+                .condition_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
             loot_template_db_loads: self
                 .stats

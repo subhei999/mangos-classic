@@ -72,6 +72,35 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
             }
         }
         let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .advance_all_player_environment_ticks(now)
+            .await
+        {
+            Ok(packets) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerEnvironment,
+                    phase_started_at.elapsed(),
+                );
+                if !packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::PlayerEnvironmentDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerEnvironment,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime player environmental tick failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
         match runtime_state.maps.advance_all_player_regen_ticks(now).await {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(

@@ -3,8 +3,11 @@ struct MapRuntimeManager {
     maps: Mutex<MapRuntimeHandles>,
     static_world_cache: Arc<StaticWorldSpawnCache>,
     geometry: Arc<WorldGeometry>,
+    db_scripts: Arc<DbScriptRegistry>,
     creature_display_scales: HashMap<u32, f32>,
+    spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
+    spell_ranges: HashMap<u32, SpellRangeEntry>,
     faction_templates: FactionTemplateStore,
     next_gm_creature_guid: AtomicU64,
     creature_grid_load_ensure_calls: AtomicU64,
@@ -64,6 +67,7 @@ impl MapRuntimeManager {
             world_data_files,
             static_world_cache,
             1,
+            Arc::new(DbScriptRegistry::default()),
         )
     }
 
@@ -71,13 +75,17 @@ impl MapRuntimeManager {
         world_data_files: &WorldDataFiles,
         static_world_cache: Arc<StaticWorldSpawnCache>,
         next_gm_creature_guid: u64,
+        db_scripts: Arc<DbScriptRegistry>,
     ) -> Self {
         let world_data_files = Arc::new(world_data_files.clone());
         Self {
             static_world_cache,
             geometry: Arc::new(WorldGeometry::new(world_data_files.clone())),
+            db_scripts,
             creature_display_scales: world_data_files.creature_display_scales.clone(),
+            spell_cast_times: world_data_files.spell_cast_times.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
+            spell_ranges: world_data_files.spell_ranges.clone(),
             faction_templates: world_data_files.faction_templates.clone(),
             next_gm_creature_guid: AtomicU64::new(next_gm_creature_guid.max(1)),
             ..Self::default()
@@ -96,6 +104,141 @@ impl MapRuntimeManager {
         self.spell_durations.get(&duration_index).copied()
     }
 
+    fn spell_cast_time(&self, casting_time_index: u32) -> Option<SpellCastTimeEntry> {
+        self.spell_cast_times.get(&casting_time_index).copied()
+    }
+
+    fn spell_range(&self, range_index: u32) -> Option<SpellRangeEntry> {
+        self.spell_ranges.get(&range_index).copied()
+    }
+
+    async fn set_active_player_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        active_cast: ActivePlayerSpellCast,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        map.lock()
+            .await
+            .active_player_spell_casts
+            .insert(character_guid, active_cast);
+    }
+
+    async fn take_due_active_player_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> Option<ActivePlayerSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        if map
+            .active_player_spell_casts
+            .get(&character_guid)
+            .is_none_or(|active_cast| now < active_cast.due_at)
+        {
+            return None;
+        }
+        map.active_player_spell_casts.remove(&character_guid)
+    }
+
+    async fn cancel_active_player_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ActivePlayerSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let active_cast = map
+            .lock()
+            .await
+            .active_player_spell_casts
+            .remove(&character_guid);
+        active_cast
+    }
+
+    async fn push_pending_spell_event(
+        &self,
+        map_id: u32,
+        caster_character_guid: u32,
+        spell_id: u32,
+        targets: PendingSpellCastTargets,
+        due_at: Instant,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let mut map = map.lock().await;
+        let event_id = map.next_spell_event_id;
+        map.next_spell_event_id = map.next_spell_event_id.saturating_add(1).max(1);
+        let unit_target_generation = targets
+            .unit_target
+            .filter(|target| target.is_creature())
+            .and_then(|target| {
+                map.creatures
+                    .get(&target.raw())
+                    .map(|creature| (target, creature.life_generation))
+            });
+        map.pending_spell_events.push(PendingSpellEvent {
+            event_id,
+            caster_character_guid,
+            spell_id,
+            targets,
+            unit_target_generation,
+            due_at,
+        });
+    }
+
+    async fn take_due_pending_spell_event(
+        &self,
+        map_id: u32,
+        caster_character_guid: u32,
+        now: Instant,
+    ) -> Option<PendingSpellEvent> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        loop {
+            let event_index = map
+                .pending_spell_events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| {
+                    event.caster_character_guid == caster_character_guid && now >= event.due_at
+                })
+                .min_by_key(|(_, event)| (event.due_at, event.event_id))
+                .map(|(index, _)| index)?;
+            let event = map.pending_spell_events.remove(event_index);
+            let stale = event
+                .unit_target_generation
+                .is_some_and(|(target, generation)| {
+                    !map.creatures
+                        .get(&target.raw())
+                        .is_some_and(|creature| creature.is_alive() && creature.life_generation == generation)
+                });
+            if !stale {
+                return Some(event);
+            }
+        }
+    }
+
+    async fn next_pending_player_spell_cast_due_at(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<Instant> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let map = map.lock().await;
+        let active_due_at = map
+            .active_player_spell_casts
+            .get(&character_guid)
+            .map(|active_cast| active_cast.due_at);
+        let event_due_at = map
+            .pending_spell_events
+            .iter()
+            .filter(|event| event.caster_character_guid == character_guid)
+            .map(|event| event.due_at)
+            .min();
+        active_due_at.into_iter().chain(event_due_at).min()
+    }
+
     async fn add_player(
         &self,
         player: PlayerRuntime,
@@ -109,6 +252,7 @@ impl MapRuntimeManager {
                         map_key.0,
                         map_key.1,
                         self.geometry.clone(),
+                        self.db_scripts.clone(),
                     )))
                 })
                 .clone()
@@ -236,6 +380,23 @@ impl MapRuntimeManager {
             .await
             .update_player_health(character_guid, health);
         packets
+    }
+
+    async fn apply_player_heal(
+        &self,
+        map_id: u32,
+        target_character_guid: u32,
+        amount: u32,
+    ) -> anyhow::Result<Option<PlayerHealEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map
+            .lock()
+            .await
+            .apply_player_heal(target_character_guid, amount);
+        event
     }
 
     async fn sync_player_gameplay_state(
@@ -471,6 +632,141 @@ impl MapRuntimeManager {
             return;
         };
         map.lock().await.set_player_power2(character_guid, power2);
+    }
+
+    async fn player_selected_target(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let selected_target = map.lock().await.player_selected_target(character_guid);
+        selected_target
+    }
+
+    async fn player_spell_cast_failure(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+    ) -> Option<u8> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let failure = map
+            .lock()
+            .await
+            .player_spell_cast_failure(character_guid, spell_profile, now);
+        failure
+    }
+
+    async fn apply_player_spell_cooldowns(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        skip_spell_cooldown: bool,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .apply_player_spell_cooldowns(character_guid, spell_profile, now, skip_spell_cooldown);
+    }
+
+    async fn clear_player_spell_recovery(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .clear_player_spell_recovery(character_guid, spell_profile);
+    }
+
+    async fn spend_player_spell_power(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        blocks_mana_regen: bool,
+    ) -> Result<(), u8> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(());
+        };
+        let result = map
+            .lock()
+            .await
+            .spend_player_spell_power(character_guid, spell_profile, now, blocks_mana_regen);
+        result
+    }
+
+    async fn queue_player_next_melee_spell(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        queued: QueuedNextMeleeSpell,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .queue_player_next_melee_spell(character_guid, queued);
+    }
+
+    async fn queued_player_next_melee_spell(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: ObjectGuid,
+    ) -> Option<QueuedNextMeleeSpell> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let queued = map
+            .lock()
+            .await
+            .queued_player_next_melee_spell(character_guid, target);
+        queued
+    }
+
+    async fn clear_player_next_melee_spell(&self, map_id: u32, character_guid: u32) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .clear_player_next_melee_spell(character_guid);
+    }
+
+    async fn spend_queued_player_next_melee_spell_power(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        queued: QueuedNextMeleeSpell,
+    ) -> Result<(), u8> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(());
+        };
+        let result = map
+            .lock()
+            .await
+            .spend_queued_player_next_melee_spell_power(character_guid, queued);
+        result
     }
 
     async fn update_player_selection(
@@ -1263,6 +1559,27 @@ impl MapRuntimeManager {
         validation
     }
 
+    async fn validate_player_spell_against_db_creature(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        range: Option<SpellRangeEntry>,
+    ) -> PlayerSpellTargetValidation {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::MissingTarget,
+            };
+        };
+        let validation = map
+            .lock()
+            .await
+            .validate_player_spell_against_db_creature(character_guid, target, navigation, range);
+        validation
+    }
+
     #[allow(dead_code)]
     async fn update_db_creature_snapshot(&self, map_id: u32, creature: DbCreatureRuntime) {
         let map = self.get_or_create_map(map_id, 0).await;
@@ -1633,7 +1950,8 @@ impl MapRuntimeManager {
         let creature = map
             .lock()
             .await
-            .advance_db_creature_motion(creature_guid, now);
+            .advance_db_creature_motion(creature_guid, now)
+            .map(|(creature, _)| creature);
         creature
     }
 
@@ -1712,6 +2030,25 @@ impl MapRuntimeManager {
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_regen_tick(now)?);
+        }
+        Ok(packets)
+    }
+
+    async fn advance_all_player_environment_ticks(
+        &self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_player_environment_tick(now)?);
         }
         Ok(packets)
     }
@@ -1801,11 +2138,11 @@ impl MapRuntimeManager {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let motion = map
+        let (creature, motion, _script_ids) = map
             .lock()
             .await
-            .start_db_creature_idle_motion(navigation, creature_guid, now);
-        motion
+            .start_db_creature_idle_motion(navigation, creature_guid, now)?;
+        motion.map(|motion| (creature, motion))
     }
 
     async fn start_db_creature_chase_motion(
@@ -1916,6 +2253,7 @@ impl MapRuntimeManager {
                     map_key.0,
                     map_key.1,
                     self.geometry.clone(),
+                    self.db_scripts.clone(),
                 )))
             })
             .clone()

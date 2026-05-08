@@ -1,6 +1,207 @@
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
+const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
+const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
 
 impl MapRuntime {
+    fn advance_player_environment_tick(
+        &mut self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        self.advance_player_environment_tick_with_flags(now, |geometry, position| {
+            geometry.environment_flags(position)
+        })
+    }
+
+    fn advance_player_environment_tick_with_flags(
+        &mut self,
+        now: Instant,
+        mut flags_for: impl FnMut(&WorldGeometry, WorldPosition) -> u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let mut direct_packets = Vec::new();
+        let mut damage_events = Vec::new();
+        let mut aura_interrupt_events = Vec::new();
+        let geometry = self.geometry.clone();
+
+        for player in self.players.values_mut() {
+            let character_guid = player.guid;
+            let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+            let old_flags = player.environment.flags;
+            let new_flags = flags_for(&geometry, player.position);
+            direct_packets.extend(update_player_environment_flags(player, old_flags, new_flags)?);
+
+            let diff_millis = player
+                .environment
+                .last_tick_at
+                .map(|last| now.saturating_duration_since(last).as_millis().min(u128::from(u32::MAX)) as u32)
+                .unwrap_or(0);
+            player.environment.last_tick_at = Some(now);
+
+            let mut damage = Vec::new();
+            let fatigue_active = player_environment_timer_active(player, MIRROR_TIMER_FATIGUE);
+            let fatigue_deactivated =
+                player_environment_timer_deactivated(player, MIRROR_TIMER_FATIGUE);
+            if advance_environment_timer(
+                &mut player.environment.fatigue,
+                diff_millis,
+                fatigue_active,
+                fatigue_deactivated,
+                &mut direct_packets,
+                player.session_id,
+            )? {
+                damage.push((
+                    DAMAGE_EXHAUSTED,
+                    environmental_breath_or_fatigue_damage(player.max_health, player.level),
+                ));
+            }
+            let breath_active = player_environment_timer_active(player, MIRROR_TIMER_BREATH);
+            let breath_deactivated =
+                player_environment_timer_deactivated(player, MIRROR_TIMER_BREATH);
+            if advance_environment_timer(
+                &mut player.environment.breath,
+                diff_millis,
+                breath_active,
+                breath_deactivated,
+                &mut direct_packets,
+                player.session_id,
+            )? {
+                damage.push((
+                    DAMAGE_DROWNING,
+                    environmental_breath_or_fatigue_damage(player.max_health, player.level),
+                ));
+            }
+            let environmental_active =
+                player_environment_timer_active(player, MIRROR_TIMER_ENVIRONMENTAL);
+            let environmental_deactivated =
+                player_environment_timer_deactivated(player, MIRROR_TIMER_ENVIRONMENTAL);
+            if advance_environment_timer(
+                &mut player.environment.environmental,
+                diff_millis,
+                environmental_active,
+                environmental_deactivated,
+                &mut direct_packets,
+                player.session_id,
+            )? && player.environment.flags & ENVIRONMENT_FLAG_IN_MAGMA != 0
+            {
+                damage.push((DAMAGE_LAVA, environmental_lava_damage()));
+            }
+
+            if player.health == 0 || player.flags & PLAYER_FLAGS_GHOST != 0 {
+                continue;
+            }
+
+            for (damage_type, amount) in damage {
+                if amount == 0 || player.health == 0 {
+                    continue;
+                }
+                let applied = amount.min(player.health);
+                player.health = player.health.saturating_sub(applied);
+                player.environment.last_damage_at = Some(now);
+                if remove_active_auras_with_interrupt_flag(
+                    &mut player.active_auras,
+                    AURA_INTERRUPT_FLAG_DAMAGE,
+                ) {
+                    player.stand_state = PLAYER_STAND_STATE_STAND;
+                    let aura_packet = OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_aura_update_body(player_guid, &player.active_auras)?,
+                    };
+                    let stand_packet = OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_stand_state_update_body_for_class(
+                            character_guid,
+                            player.class,
+                            player.stand_state,
+                        )?,
+                    };
+                    direct_packets.push((player.session_id, aura_packet.clone()));
+                    direct_packets.push((player.session_id, stand_packet.clone()));
+                    aura_interrupt_events.push((
+                        character_guid,
+                        player.position,
+                        aura_packet,
+                        stand_packet,
+                    ));
+                }
+                let health_packet = if player.health == 0 {
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_death_update_body(
+                            player_guid,
+                            0,
+                            player.flags,
+                            PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                            player_unit_flags(false),
+                        )?,
+                    }
+                } else {
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_health_update_body(player_guid, player.health)?,
+                    }
+                };
+                damage_events.push((
+                    character_guid,
+                    player.position,
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_ENVIRONMENTALDAMAGELOG,
+                        body: build_environmental_damage_log_body(
+                            player_guid,
+                            damage_type,
+                            applied,
+                            0,
+                            0,
+                        )?,
+                    },
+                    health_packet,
+                ));
+            }
+        }
+
+        let mut packets = direct_packets;
+        for (character_guid, position, aura_packet, stand_packet) in aura_interrupt_events {
+            packets.extend(
+                self.nearby_player_guids(
+                    position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+                .into_iter()
+                .flat_map(|observer_guid| {
+                    self.players.get(&observer_guid).map(|observer| {
+                        vec![
+                            (observer.session_id, aura_packet.clone()),
+                            (observer.session_id, stand_packet.clone()),
+                        ]
+                    })
+                })
+                .flatten(),
+            );
+        }
+        for (character_guid, position, direct_session_id, damage_log, health_packet) in damage_events
+        {
+            packets.push((direct_session_id, damage_log.clone()));
+            packets.push((direct_session_id, health_packet.clone()));
+            packets.extend(self.nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .flat_map(|observer_guid| {
+                self.players.get(&observer_guid).map(|observer| {
+                    vec![
+                        (observer.session_id, damage_log.clone()),
+                        (observer.session_id, health_packet.clone()),
+                    ]
+                })
+            })
+            .flatten());
+        }
+
+        Ok(packets)
+    }
+
     fn advance_player_regen_tick(
         &mut self,
         now: Instant,
@@ -30,9 +231,14 @@ impl MapRuntime {
             if is_dead_or_ghost {
                 continue;
             }
+            let suppress_health_regen = player
+                .environment
+                .last_damage_at
+                .is_some_and(|damage_at| now.saturating_duration_since(damage_at) <= PLAYER_REGEN_TICK);
 
             let mut health_changed = false;
             let mut mana_changed = false;
+            let mut energy_changed = false;
             let mut rage_changed = false;
             let mut consumable_health_gain = 0u32;
             let mut consumable_mana_gain = 0u32;
@@ -49,7 +255,7 @@ impl MapRuntime {
                 }
             }
 
-            if consumable_health_gain > 0 && player.health < player.max_health {
+            if consumable_health_gain > 0 && !suppress_health_regen && player.health < player.max_health {
                 let new_health = player
                     .health
                     .saturating_add(consumable_health_gain)
@@ -67,7 +273,7 @@ impl MapRuntime {
                 player.power1 = new_mana;
             }
 
-            if !in_combat && player.health < player.max_health {
+            if !in_combat && !suppress_health_regen && player.health < player.max_health {
                 let regen = health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
                 let gained = (regen * 2.0).floor() as u32;
                 if gained > 0 {
@@ -77,7 +283,13 @@ impl MapRuntime {
                 }
             }
 
-            if player.max_power1 > 0 && player.power1 < player.max_power1 {
+            let mana_regen_blocked_by_recent_cast = player
+                .last_mana_use_at
+                .is_some_and(|last_mana_use_at| now.saturating_duration_since(last_mana_use_at) < PLAYER_MANA_REGEN_INTERRUPT);
+            if !mana_regen_blocked_by_recent_cast
+                && player.max_power1 > 0
+                && player.power1 < player.max_power1
+            {
                 let regen = mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
                 let gained = (regen * 2.0).floor() as u32;
                 if gained > 0 {
@@ -85,6 +297,15 @@ impl MapRuntime {
                     mana_changed = new_mana != player.power1;
                     player.power1 = new_mana;
                 }
+            }
+
+            if player.class == 4 && player.max_power4 > 0 && player.power4 < player.max_power4 {
+                let new_energy = player
+                    .power4
+                    .saturating_add(PLAYER_ENERGY_REGEN_PER_TICK)
+                    .min(player.max_power4);
+                energy_changed = new_energy != player.power4;
+                player.power4 = new_energy;
             }
 
             if !in_combat && player.class == 1 && player.power2 > 0 {
@@ -125,6 +346,17 @@ impl MapRuntime {
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_player_rage_update_body(player_guid, player.power2)?,
+                    },
+                ));
+            }
+            if energy_changed {
+                update_packets.push((
+                    character_guid,
+                    player.position,
+                    player.session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_energy_update_body(player_guid, player.power4)?,
                     },
                 ));
             }
@@ -469,6 +701,51 @@ impl MapRuntime {
             .collect())
     }
 
+    fn apply_player_heal(
+        &mut self,
+        target_character_guid: u32,
+        amount: u32,
+    ) -> anyhow::Result<Option<PlayerHealEvent>> {
+        let Some(player) = self.players.get_mut(&target_character_guid) else {
+            return Ok(None);
+        };
+        if player.health == 0 || amount == 0 {
+            return Ok(None);
+        }
+        player.health = player.health.saturating_add(amount).min(player.max_health);
+        let position = player.position;
+        let direct_session_id = player.session_id;
+        let health = player.health;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_health_update_body(
+                ObjectGuid::new(HighGuid::Player, 0, target_character_guid),
+                health,
+            )?,
+        };
+        let _ = player;
+        let observer_packets = self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(target_character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .map(|other| (other.session_id, packet.clone()))
+            })
+            .collect();
+        Ok(Some(PlayerHealEvent {
+            healed_character_guid: target_character_guid,
+            health,
+            direct_session_id,
+            direct_packets: vec![packet.clone()],
+            observer_packets,
+        }))
+    }
+
     fn sync_player_gameplay_state(&mut self, character_guid: u32, session: &WorldSessionState) {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
@@ -478,6 +755,8 @@ impl MapRuntime {
         player.health = session.player_health.min(player.max_health);
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
+        player.power4 = session.player_energy.min(player.max_power4);
+        player.stand_state = session.player_stand_state;
         player.active_spells = session.active_spells.clone();
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
@@ -517,11 +796,17 @@ impl MapRuntime {
             max_health: player.max_health,
             power1: player.power1,
             max_power1: player.max_power1,
+            last_mana_use_at: player.last_mana_use_at,
             power2: player.power2,
+            power4: player.power4,
+            max_power4: player.max_power4,
             active_spells: player.active_spells.clone(),
             inventory: player.inventory.clone(),
             quest_statuses: player.quest_statuses.clone(),
             active_auras: player.active_auras.clone(),
+            spell_global_cooldowns_until: player.spell_global_cooldowns_until.clone(),
+            spell_cooldowns_until: player.spell_cooldowns_until.clone(),
+            queued_next_melee_spell: player.queued_next_melee_spell,
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
             active_combat_target: player.active_combat_target,
@@ -558,6 +843,7 @@ impl MapRuntime {
         player.health = reward.health.min(player.max_health);
         player.power1 = reward.power1.min(player.max_power1);
         player.power2 = reward.power2.min(POWER_RAGE_DEFAULT);
+        player.power4 = player.power4.min(player.max_power4);
         player.quest_statuses = reward.quest_statuses;
     }
 
@@ -784,6 +1070,9 @@ impl MapRuntime {
     }
 
     fn player_auto_attack_due(&self, character_guid: u32, now: Instant) -> Option<ObjectGuid> {
+        if self.active_player_spell_casts.contains_key(&character_guid) {
+            return None;
+        }
         let player = self.players.get(&character_guid)?;
         let target = player.active_combat_target?;
         player
@@ -804,6 +1093,12 @@ impl MapRuntime {
         }
     }
 
+    fn player_selected_target(&self, character_guid: u32) -> Option<ObjectGuid> {
+        self.players
+            .get(&character_guid)
+            .and_then(|player| player.selected_target)
+    }
+
     fn set_player_position(&mut self, character_guid: u32, position: WorldPosition) {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
@@ -816,6 +1111,173 @@ impl MapRuntime {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.power2 = power2.min(POWER_RAGE_DEFAULT);
         }
+    }
+
+    fn player_spell_cast_failure(
+        &self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+    ) -> Option<u8> {
+        let player = self.players.get(&character_guid)?;
+        if self.active_player_spell_casts.contains_key(&character_guid) {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
+        if player
+            .spell_cooldowns_until
+            .get(&spell_profile.spell_id)
+            .is_some_and(|until| now < *until)
+        {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
+        if player
+            .spell_global_cooldowns_until
+            .get(&spell_profile.global_cooldown_category)
+            .is_some_and(|until| now < *until)
+        {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
+        match spell_profile.power {
+            SpellPowerCost::Rage { cost } if player.power2 < cost => {
+                return Some(SPELL_FAILED_NO_POWER);
+            }
+            SpellPowerCost::Mana { cost } if player.power1 < cost => {
+                return Some(SPELL_FAILED_NO_POWER);
+            }
+            SpellPowerCost::Energy { cost } if player.power4 < cost => {
+                return Some(SPELL_FAILED_NO_POWER);
+            }
+            _ => {}
+        }
+        if spell_profile.kind == SpellCastKind::NextMeleeSwing
+            && player
+                .queued_next_melee_spell
+                .is_some_and(|queued| queued.spell_id == spell_profile.spell_id)
+        {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
+        None
+    }
+
+    fn apply_player_spell_cooldowns(
+        &mut self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        skip_spell_cooldown: bool,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        if spell_profile.global_cooldown_millis > 0 {
+            player.spell_global_cooldowns_until.insert(
+                spell_profile.global_cooldown_category,
+                now + Duration::from_millis(spell_profile.global_cooldown_millis),
+            );
+        }
+        if !skip_spell_cooldown && spell_profile.cooldown_millis > 0 {
+            player.spell_cooldowns_until.insert(
+                spell_profile.spell_id,
+                now + Duration::from_millis(spell_profile.cooldown_millis),
+            );
+        }
+    }
+
+    fn spend_player_spell_power(
+        &mut self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        blocks_mana_regen: bool,
+    ) -> Result<(), u8> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(());
+        };
+        match spell_profile.power {
+            SpellPowerCost::Rage { cost } if player.power2 < cost => {
+                Err(SPELL_FAILED_NO_POWER)
+            }
+            SpellPowerCost::Mana { cost } if player.power1 < cost => {
+                Err(SPELL_FAILED_NO_POWER)
+            }
+            SpellPowerCost::Energy { cost } if player.power4 < cost => {
+                Err(SPELL_FAILED_NO_POWER)
+            }
+            SpellPowerCost::Rage { cost } => {
+                player.power2 = player.power2.saturating_sub(cost);
+                Ok(())
+            }
+            SpellPowerCost::Mana { cost } => {
+                player.power1 = player.power1.saturating_sub(cost);
+                if cost > 0 && blocks_mana_regen {
+                    player.last_mana_use_at = Some(now);
+                }
+                Ok(())
+            }
+            SpellPowerCost::Energy { cost } => {
+                player.power4 = player.power4.saturating_sub(cost);
+                Ok(())
+            }
+        }
+    }
+
+    fn clear_player_spell_recovery(
+        &mut self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        if spell_profile.global_cooldown_millis > 0 {
+            player
+                .spell_global_cooldowns_until
+                .remove(&spell_profile.global_cooldown_category);
+        }
+        if spell_profile.cooldown_millis > 0 {
+            player.spell_cooldowns_until.remove(&spell_profile.spell_id);
+        }
+    }
+
+    fn queue_player_next_melee_spell(&mut self, character_guid: u32, queued: QueuedNextMeleeSpell) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.queued_next_melee_spell = Some(queued);
+        }
+    }
+
+    fn queued_player_next_melee_spell(
+        &self,
+        character_guid: u32,
+        target: ObjectGuid,
+    ) -> Option<QueuedNextMeleeSpell> {
+        self.players
+            .get(&character_guid)
+            .and_then(|player| player.queued_next_melee_spell)
+            .filter(|queued| queued.target == target)
+    }
+
+    fn clear_player_next_melee_spell(&mut self, character_guid: u32) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.queued_next_melee_spell = None;
+        }
+    }
+
+    fn spend_queued_player_next_melee_spell_power(
+        &mut self,
+        character_guid: u32,
+        queued: QueuedNextMeleeSpell,
+    ) -> Result<(), u8> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(());
+        };
+        if player.power2 < queued.rage_cost || player.power1 < queued.mana_cost {
+            player.queued_next_melee_spell = None;
+            return Err(SPELL_FAILED_NO_POWER);
+        }
+        player.queued_next_melee_spell = None;
+        player.power2 = player.power2.saturating_sub(queued.rage_cost);
+        player.power1 = player.power1.saturating_sub(queued.mana_cost);
+        Ok(())
     }
 
     fn update_player_selection(
@@ -922,9 +1384,23 @@ impl MapRuntime {
 }
 
 const DAMAGE_FALL: u8 = 2;
+const DAMAGE_EXHAUSTED: u8 = 0;
+const DAMAGE_DROWNING: u8 = 1;
+const DAMAGE_LAVA: u8 = 3;
 const FALL_DAMAGE_MINIMUM_HEIGHT: f32 = 14.57;
 const FALL_DAMAGE_DISTANCE_MULTIPLIER: f32 = 0.018;
 const FALL_DAMAGE_BASE_PERCENT: f32 = 0.2426;
+const ENVIRONMENT_MASK_LIQUID_HAZARD: u32 =
+    ENVIRONMENT_FLAG_IN_MAGMA | ENVIRONMENT_FLAG_IN_SLIME;
+const MIRROR_TIMER_FATIGUE: u32 = 0;
+const MIRROR_TIMER_BREATH: u32 = 1;
+const MIRROR_TIMER_ENVIRONMENTAL: u32 = 3;
+const MIRROR_TIMER_FATIGUE_MAX_MILLIS: u32 = 60_000;
+const MIRROR_TIMER_BREATH_MAX_MILLIS: u32 = 60_000;
+const MIRROR_TIMER_ENVIRONMENTAL_MAX_MILLIS: u32 = 1_000;
+const MIRROR_TIMER_EXPIRED_PULSE_MILLIS: u32 = 2_000;
+const ENVIRONMENTAL_DAMAGE_MIN: u32 = 605;
+const ENVIRONMENTAL_DAMAGE_MAX: u32 = 610;
 
 #[derive(Debug, Clone, Copy)]
 struct PlayerFallUpdate {
@@ -994,6 +1470,236 @@ fn calculate_fall_damage(fall_start_z: f32, landing_z: f32, max_health: u32) -> 
     }
     let damage = ((max_health.max(1) as f32) * damage_percent).floor() as u32;
     Some(damage.max(1).min(max_health.max(1)))
+}
+
+fn environmental_breath_or_fatigue_damage(max_health: u32, level: u8) -> u32 {
+    let variance = if level <= 1 {
+        0
+    } else {
+        rand::thread_rng().gen_range(0..=u32::from(level - 1))
+    };
+    (max_health.max(1) / 5).saturating_add(variance).max(1)
+}
+
+fn environmental_lava_damage() -> u32 {
+    rand::thread_rng().gen_range(ENVIRONMENTAL_DAMAGE_MIN..=ENVIRONMENTAL_DAMAGE_MAX)
+}
+
+fn update_player_environment_flags(
+    player: &mut PlayerRuntime,
+    old_flags: u32,
+    new_flags: u32,
+) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+    if old_flags == new_flags {
+        return Ok(Vec::new());
+    }
+    player.environment.flags = new_flags;
+    if (old_flags ^ new_flags) & ENVIRONMENT_FLAG_HIGH_SEA != 0 {
+        player.environment.fatigue.scale = if new_flags & ENVIRONMENT_FLAG_HIGH_SEA != 0 {
+            -1
+        } else {
+            10
+        };
+    }
+    if (old_flags ^ new_flags) & ENVIRONMENT_FLAG_UNDERWATER != 0 {
+        player.environment.breath.scale = if new_flags & ENVIRONMENT_FLAG_UNDERWATER != 0 {
+            -1
+        } else {
+            10
+        };
+    }
+    if (old_flags ^ new_flags) & ENVIRONMENT_MASK_LIQUID_HAZARD != 0 {
+        player.environment.environmental.scale =
+            if new_flags & ENVIRONMENT_MASK_LIQUID_HAZARD != 0 {
+                -1
+            } else {
+                10
+            };
+    }
+
+    let mut packets = Vec::new();
+    for timer in [
+        player.environment.fatigue,
+        player.environment.breath,
+    ] {
+        if timer.active {
+            packets.push((
+                player.session_id,
+                OutboundWorldPacket {
+                    opcode: SMSG_START_MIRROR_TIMER,
+                    body: build_mirror_timer_start_body(
+                        timer.timer_type,
+                        timer.duration_millis.saturating_sub(timer.elapsed_millis),
+                        timer.duration_millis,
+                        timer.scale,
+                        false,
+                        0,
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(packets)
+}
+
+fn player_environment_timer_active(player: &PlayerRuntime, timer_type: u32) -> bool {
+    match timer_type {
+        MIRROR_TIMER_FATIGUE => player.environment.flags & ENVIRONMENT_FLAG_HIGH_SEA != 0,
+        MIRROR_TIMER_BREATH => player.environment.flags & ENVIRONMENT_FLAG_UNDERWATER != 0,
+        MIRROR_TIMER_ENVIRONMENTAL => {
+            player.environment.flags & ENVIRONMENT_MASK_LIQUID_HAZARD != 0
+        }
+        _ => false,
+    }
+}
+
+fn player_environment_timer_deactivated(player: &PlayerRuntime, timer_type: u32) -> bool {
+    if player.flags & PLAYER_FLAGS_GHOST != 0 {
+        return true;
+    }
+    match timer_type {
+        MIRROR_TIMER_FATIGUE => {
+            player.environment.flags & ENVIRONMENT_FLAG_LIQUID == 0 || player.health == 0
+        }
+        MIRROR_TIMER_BREATH | MIRROR_TIMER_ENVIRONMENTAL => {
+            player.environment.flags & ENVIRONMENT_FLAG_LIQUID == 0 || player.health == 0
+        }
+        _ => true,
+    }
+}
+
+fn advance_environment_timer(
+    timer: &mut MirrorTimerRuntime,
+    diff_millis: u32,
+    should_activate: bool,
+    should_deactivate: bool,
+    direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
+    session_id: SessionId,
+) -> anyhow::Result<bool> {
+    if timer.active || should_activate {
+        if should_deactivate {
+            stop_mirror_timer(timer, direct_packets, session_id);
+            return Ok(false);
+        }
+        if !timer.active {
+            start_mirror_timer(timer, direct_packets, session_id);
+        }
+    }
+    if !timer.active || diff_millis == 0 {
+        return Ok(false);
+    }
+
+    if timer.scale < 0 {
+        let scaled = diff_millis.saturating_mul(timer.scale.unsigned_abs());
+        if timer.elapsed_millis < timer.duration_millis {
+            timer.elapsed_millis = timer.elapsed_millis.saturating_add(scaled);
+            if timer.elapsed_millis >= timer.duration_millis {
+                timer.elapsed_millis = timer.duration_millis;
+                timer.pulse_millis = 0;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
+        timer.pulse_millis = timer.pulse_millis.saturating_add(scaled);
+        if timer.pulse_millis >= MIRROR_TIMER_EXPIRED_PULSE_MILLIS {
+            timer.pulse_millis %= MIRROR_TIMER_EXPIRED_PULSE_MILLIS;
+            return Ok(true);
+        }
+    } else if timer.scale > 0 {
+        let scaled = diff_millis.saturating_mul(timer.scale.unsigned_abs());
+        if scaled >= timer.elapsed_millis {
+            stop_mirror_timer(timer, direct_packets, session_id);
+        } else {
+            timer.elapsed_millis -= scaled;
+            if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
+                direct_packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_START_MIRROR_TIMER,
+                        body: build_mirror_timer_start_body(
+                            timer.timer_type,
+                            timer.duration_millis.saturating_sub(timer.elapsed_millis),
+                            timer.duration_millis,
+                            timer.scale,
+                            false,
+                            0,
+                        ),
+                    },
+                ));
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn start_mirror_timer(
+    timer: &mut MirrorTimerRuntime,
+    direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
+    session_id: SessionId,
+) {
+    if timer.scale >= 0 {
+        return;
+    }
+    timer.active = true;
+    timer.elapsed_millis = 0;
+    timer.pulse_millis = 0;
+    if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
+        direct_packets.push((
+            session_id,
+            OutboundWorldPacket {
+                opcode: SMSG_START_MIRROR_TIMER,
+                body: build_mirror_timer_start_body(
+                    timer.timer_type,
+                    timer.duration_millis,
+                    timer.duration_millis,
+                    timer.scale,
+                    false,
+                    0,
+                ),
+            },
+        ));
+    }
+}
+
+fn stop_mirror_timer(
+    timer: &mut MirrorTimerRuntime,
+    direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
+    session_id: SessionId,
+) {
+    if !timer.active {
+        return;
+    }
+    timer.active = false;
+    timer.elapsed_millis = 0;
+    timer.pulse_millis = 0;
+    if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
+        direct_packets.push((
+            session_id,
+            OutboundWorldPacket {
+                opcode: SMSG_STOP_MIRROR_TIMER,
+                body: timer.timer_type.to_le_bytes().to_vec(),
+            },
+        ));
+    }
+}
+
+fn build_mirror_timer_start_body(
+    timer_type: u32,
+    remaining_millis: u32,
+    duration_millis: u32,
+    scale: i32,
+    paused: bool,
+    spell_id: u32,
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(21);
+    body.extend_from_slice(&timer_type.to_le_bytes());
+    body.extend_from_slice(&remaining_millis.to_le_bytes());
+    body.extend_from_slice(&duration_millis.to_le_bytes());
+    body.extend_from_slice(&scale.to_le_bytes());
+    body.push(paused as u8);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body
 }
 
 fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {

@@ -26,7 +26,9 @@ use wow_db::{
 
 include!("opcodes.rs");
 include!("game_events.rs");
+include!("scripts.rs");
 include!("globals/object_mgr.rs");
+include!("globals/conditions.rs");
 include!("session.rs");
 include!("fixtures/legacy_npcs.rs");
 include!("server/world_session.rs");
@@ -79,6 +81,7 @@ impl WorldServer {
         let gameobject_cache_load_started_at = Instant::now();
         let gameobject_spawns = wow_db::get_all_static_gameobject_spawns(&world_db_pool).await?;
         let gameobject_cache_load_duration = gameobject_cache_load_started_at.elapsed();
+        let db_scripts = Arc::new(DbScriptRegistry::load(&world_db_pool).await?);
         let next_gm_creature_guid = creature_spawns
             .iter()
             .map(|spawn| spawn.guid as u64)
@@ -108,6 +111,7 @@ impl WorldServer {
                 &world_data_files,
                 static_world_cache,
                 next_gm_creature_guid,
+                db_scripts,
             ),
         );
         info!(
@@ -150,6 +154,11 @@ impl WorldServer {
                 "No compatible CMaNGOS VMAP_7.0 tiles found; DB creature line-of-sight will use the permissive fallback",
             );
         }
+        let object_mgr = Arc::new(ObjectMgr::default());
+        object_mgr.load_conditions(&world_db_pool).await?;
+        object_mgr
+            .set_game_event_schedules(game_event_schedules.clone())
+            .await;
         Ok(Self {
             bind_addr,
             login_db_pool,
@@ -165,7 +174,7 @@ impl WorldServer {
                 sessions: Arc::new(SessionRegistry::default()),
                 maps,
                 parties: Arc::new(PartyManager::default()),
-                object_mgr: Arc::new(ObjectMgr::default()),
+                object_mgr,
             },
         })
     }

@@ -13,6 +13,28 @@ async fn handle_repop_request(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    if session.player_death_state == PlayerDeathState::Alive {
+        if let Some(character) = session.active_character.as_ref() {
+            if deps
+                .maps
+                .player_runtime_snapshot(character.position.map_id, character.guid)
+                .await
+                .is_some_and(|snapshot| snapshot.health == 0)
+            {
+                let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+                kill_player_from_creature(
+                    stream,
+                    deps.character_db_pool,
+                    deps.maps,
+                    deps.account_id,
+                    session,
+                    player,
+                    header_crypto,
+                )
+                .await?;
+            }
+        }
+    }
     if session.player_death_state != PlayerDeathState::Corpse {
         return Ok(());
     }

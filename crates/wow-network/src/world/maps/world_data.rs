@@ -5,7 +5,9 @@ struct WorldDataFiles {
     maps_available: bool,
     vmaps_available: bool,
     creature_display_scales: HashMap<u32, f32>,
+    spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
+    spell_ranges: HashMap<u32, SpellRangeEntry>,
     faction_templates: FactionTemplateStore,
     item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
     mmap_headers: HashSet<u32>,
@@ -22,7 +24,9 @@ impl WorldDataFiles {
             maps_available: false,
             vmaps_available: false,
             creature_display_scales: HashMap::new(),
+            spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers: HashSet::new(),
@@ -38,7 +42,9 @@ impl WorldDataFiles {
         let vmaps_available = data_dir.join("vmaps").is_dir();
         let creature_display_scales =
             load_creature_display_info_scales(&data_dir.join("dbc").join("CreatureDisplayInfo.dbc"));
+        let spell_cast_times = load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
+        let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
         let faction_templates =
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let item_random_properties =
@@ -92,7 +98,9 @@ impl WorldDataFiles {
             maps_available,
             vmaps_available,
             creature_display_scales,
+            spell_cast_times,
             spell_durations,
+            spell_ranges,
             faction_templates,
             item_random_properties,
             mmap_headers,
@@ -120,10 +128,24 @@ impl WorldDataFiles {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpellCastTimeEntry {
+    cast_time_millis: i32,
+    cast_time_per_level_millis: i32,
+    min_cast_time_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SpellDurationEntry {
     duration_millis: i32,
     duration_per_level_millis: i32,
     max_duration_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SpellRangeEntry {
+    min_range: f32,
+    max_range: f32,
+    flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +527,103 @@ fn load_spell_durations(path: &std::path::Path) -> HashMap<u32, SpellDurationEnt
         return HashMap::new();
     };
     parse_spell_durations(&bytes)
+}
+
+fn load_spell_cast_times(path: &std::path::Path) -> HashMap<u32, SpellCastTimeEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_spell_cast_times(&bytes)
+}
+
+fn load_spell_ranges(path: &std::path::Path) -> HashMap<u32, SpellRangeEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_spell_ranges(&bytes)
+}
+
+fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SPELL_CAST_TIME_FIELD_COUNT: usize = 4;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count != SPELL_CAST_TIME_FIELD_COUNT || record_size < SPELL_CAST_TIME_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut cast_times = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let id =
+            u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let cast_time_millis =
+            i32::from_le_bytes(bytes[record_offset + 4..record_offset + 8].try_into().unwrap());
+        let cast_time_per_level_millis =
+            i32::from_le_bytes(bytes[record_offset + 8..record_offset + 12].try_into().unwrap());
+        let min_cast_time_millis =
+            i32::from_le_bytes(bytes[record_offset + 12..record_offset + 16].try_into().unwrap());
+        if id != 0 {
+            cast_times.insert(
+                id,
+                SpellCastTimeEntry {
+                    cast_time_millis,
+                    cast_time_per_level_millis,
+                    min_cast_time_millis,
+                },
+            );
+        }
+    }
+    cast_times
+}
+
+fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRangeEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SPELL_RANGE_FIELD_COUNT: usize = 22;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count != SPELL_RANGE_FIELD_COUNT || record_size < SPELL_RANGE_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut ranges = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let min_range =
+            f32::from_le_bytes(bytes[record_offset + 4..record_offset + 8].try_into().unwrap());
+        let max_range =
+            f32::from_le_bytes(bytes[record_offset + 8..record_offset + 12].try_into().unwrap());
+        let flags =
+            u32::from_le_bytes(bytes[record_offset + 12..record_offset + 16].try_into().unwrap());
+        if id != 0 {
+            ranges.insert(
+                id,
+                SpellRangeEntry {
+                    min_range,
+                    max_range,
+                    flags,
+                },
+            );
+        }
+    }
+    ranges
 }
 
 fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {

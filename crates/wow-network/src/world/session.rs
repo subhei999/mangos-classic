@@ -173,7 +173,6 @@ struct WorldSessionState {
     account_security: u8,
     gm_mode: bool,
     selected_target: Option<ObjectGuid>,
-    combat_dummy_health: u32,
     #[cfg(test)]
     active_combat_target: Option<ObjectGuid>,
     #[cfg(test)]
@@ -186,10 +185,6 @@ struct WorldSessionState {
     player_corpse: Option<PlayerCorpseRuntime>,
     player_visual: Option<PlayerVisualState>,
     player_flags: u32,
-    combat_dummy_lootable: bool,
-    combat_dummy_looting: bool,
-    combat_dummy_loot_money_available: bool,
-    combat_dummy_loot_item_available: bool,
     #[cfg(test)]
     db_creatures: HashMap<u64, DbCreatureRuntime>,
     #[cfg(test)]
@@ -197,11 +192,9 @@ struct WorldSessionState {
     player_health: u32,
     player_rage: u32,
     player_mana: u32,
+    player_energy: u32,
     player_stand_state: u8,
     movement_client_time_delay: Option<u32>,
-    starter_global_cooldowns_until: HashMap<u32, Instant>,
-    starter_spell_cooldowns_until: HashMap<u32, Instant>,
-    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     active_auras: Vec<ActiveAura>,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,

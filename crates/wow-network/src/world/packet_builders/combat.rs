@@ -168,17 +168,12 @@ fn build_spell_energize_log_body(
     Ok(body)
 }
 
-fn build_combat_dummy_state_update_body(
-    health: u32,
-    dynamic_flags: u32,
-) -> anyhow::Result<Vec<u8>> {
-    let guid = rust_combat_dummy_guid();
+fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
-    PackedGuid::write(&mut block, guid)?;
+    PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
-    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+    set_update_value(&mut values, UNIT_FIELD_POWER2, rage.min(POWER_RAGE_DEFAULT))?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());
@@ -188,12 +183,12 @@ fn build_combat_dummy_state_update_body(
     Ok(body)
 }
 
-fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
+fn build_player_energy_update_body(player: ObjectGuid, energy: u32) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_update_value(&mut values, UNIT_FIELD_POWER2, rage.min(POWER_RAGE_DEFAULT))?;
+    set_update_value(&mut values, UNIT_FIELD_POWER4, energy.min(POWER_ENERGY_DEFAULT))?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());

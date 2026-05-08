@@ -1889,11 +1889,30 @@ fn satisfies_required_skill(quest: &QuestTemplateQuery, character_skills: &[Char
     skill_value >= quest.required_skill_value
 }
 
-fn satisfies_required_condition(quest: &QuestTemplateQuery) -> bool {
-    // CMaNGOS gates RequiredCondition through ObjectMgr::IsConditionSatisfied.
-    // Rust does not have condition evaluation yet, so do not expose gated
-    // quests as available until the real condition system exists.
-    quest.required_condition == 0
+async fn satisfies_required_condition(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+    depth: u8,
+) -> anyhow::Result<bool> {
+    if quest.required_condition == 0 {
+        return Ok(true);
+    }
+    let context = ConditionEvaluationContext {
+        world_db_pool,
+        session,
+        source: ConditionSource::Quest,
+    };
+    if depth == 0 {
+        object_mgr
+            .is_condition_satisfied(quest.required_condition, context)
+            .await
+    } else {
+        object_mgr
+            .is_condition_satisfied_with_depth(quest.required_condition, context, depth)
+            .await
+    }
 }
 
 fn satisfies_required_reputation(
@@ -2039,6 +2058,16 @@ async fn can_take_start_quest(
     quest: &QuestTemplateQuery,
     session: &WorldSessionState,
 ) -> anyhow::Result<bool> {
+    can_take_start_quest_with_condition_depth(object_mgr, world_db_pool, quest, session, 0).await
+}
+
+async fn can_take_start_quest_with_condition_depth(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+    condition_depth: u8,
+) -> anyhow::Result<bool> {
     let Some(character) = session.active_character.as_ref() else {
         return Ok(false);
     };
@@ -2048,7 +2077,7 @@ async fn can_take_start_quest(
     if !satisfies_required_skill(quest, &session.character_skills) {
         return Ok(false);
     }
-    if !satisfies_required_condition(quest) {
+    if !satisfies_required_condition(object_mgr, world_db_pool, quest, session, condition_depth).await? {
         return Ok(false);
     }
     if !satisfies_required_reputation(quest, &session.character_reputations) {
@@ -2114,7 +2143,7 @@ async fn can_see_start_quest(
     if !satisfies_required_skill(quest, &session.character_skills) {
         return Ok(false);
     }
-    if !satisfies_required_condition(quest) {
+    if !satisfies_required_condition(object_mgr, world_db_pool, quest, session, 0).await? {
         return Ok(false);
     }
     if !satisfies_required_reputation(quest, &session.character_reputations) {

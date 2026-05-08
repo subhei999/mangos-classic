@@ -14,6 +14,7 @@ struct PlayerRuntime {
     fall_time: u32,
     last_fall_z: Option<f32>,
     last_fall_time: u32,
+    environment: PlayerEnvironmentRuntime,
     jump: JumpInfo,
     cell: CellCoord,
     visible_objects: HashSet<ObjectGuid>,
@@ -33,13 +34,20 @@ struct PlayerRuntime {
     xp: u32,
     power1: u32,
     max_power1: u32,
+    last_mana_use_at: Option<Instant>,
     power2: u32,
+    power4: u32,
+    max_power4: u32,
     player_bytes: u32,
     player_bytes2: u32,
+    stand_state: u8,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     active_auras: Vec<ActiveAura>,
+    spell_global_cooldowns_until: HashMap<u32, Instant>,
+    spell_cooldowns_until: HashMap<u32, Instant>,
+    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     base_combat_stats: PlayerCombatStats,
     combat_stats: PlayerCombatStats,
 }
@@ -57,11 +65,17 @@ struct PlayerRuntimeSnapshot {
     max_health: u32,
     power1: u32,
     max_power1: u32,
+    last_mana_use_at: Option<Instant>,
     power2: u32,
+    power4: u32,
+    max_power4: u32,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     active_auras: Vec<ActiveAura>,
+    spell_global_cooldowns_until: HashMap<u32, Instant>,
+    spell_cooldowns_until: HashMap<u32, Instant>,
+    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     base_combat_stats: PlayerCombatStats,
     combat_stats: PlayerCombatStats,
     active_combat_target: Option<ObjectGuid>,
@@ -81,11 +95,21 @@ struct PlayerRewardRuntimeUpdate {
 }
 
 #[derive(Debug)]
+struct PlayerHealEvent {
+    healed_character_guid: u32,
+    health: u32,
+    direct_session_id: SessionId,
+    direct_packets: Vec<OutboundWorldPacket>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug)]
 #[allow(dead_code)]
 struct MapRuntime {
     map_id: u32,
     instance_id: u32,
     geometry: Arc<WorldGeometry>,
+    db_scripts: Arc<DbScriptRegistry>,
     grids: HashMap<GridCoord, GridRuntime>,
     loaded_creature_grids: HashSet<GridCoord>,
     loaded_gameobject_grids: HashSet<GridCoord>,
@@ -102,7 +126,96 @@ struct MapRuntime {
     corpses: HashMap<u64, PlayerCorpseRuntime>,
     next_idle_motion_tick_at: Option<Instant>,
     next_idle_motion_start_check_at: Option<Instant>,
+    pending_db_scripts: Vec<PendingDbScriptAction>,
     next_player_regen_tick_at: Option<Instant>,
+    active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
+    pending_spell_events: Vec<PendingSpellEvent>,
+    next_spell_event_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ActivePlayerSpellCast {
+    spell_id: u32,
+    source: ActivePlayerSpellCastSource,
+    profile: SpellCastProfile,
+    targets: PendingSpellCastTargets,
+    due_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum ActivePlayerSpellCastSource {
+    Player,
+    Item {
+        item_guid: ObjectGuid,
+        source_item: CharacterInventoryItem,
+        spell_charges: i32,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PendingSpellEvent {
+    event_id: u64,
+    caster_character_guid: u32,
+    spell_id: u32,
+    targets: PendingSpellCastTargets,
+    unit_target_generation: Option<(ObjectGuid, u64)>,
+    due_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSpellCastTargets {
+    target_mask: u16,
+    unit_target: Option<ObjectGuid>,
+    gameobject_target: Option<ObjectGuid>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlayerEnvironmentRuntime {
+    flags: u32,
+    last_tick_at: Option<Instant>,
+    last_damage_at: Option<Instant>,
+    fatigue: MirrorTimerRuntime,
+    breath: MirrorTimerRuntime,
+    environmental: MirrorTimerRuntime,
+}
+
+impl Default for PlayerEnvironmentRuntime {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            last_tick_at: None,
+            last_damage_at: None,
+            fatigue: MirrorTimerRuntime::new(MIRROR_TIMER_FATIGUE, MIRROR_TIMER_FATIGUE_MAX_MILLIS),
+            breath: MirrorTimerRuntime::new(MIRROR_TIMER_BREATH, MIRROR_TIMER_BREATH_MAX_MILLIS),
+            environmental: MirrorTimerRuntime::new(
+                MIRROR_TIMER_ENVIRONMENTAL,
+                MIRROR_TIMER_ENVIRONMENTAL_MAX_MILLIS,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MirrorTimerRuntime {
+    timer_type: u32,
+    active: bool,
+    elapsed_millis: u32,
+    pulse_millis: u32,
+    duration_millis: u32,
+    scale: i32,
+}
+
+impl MirrorTimerRuntime {
+    const fn new(timer_type: u32, duration_millis: u32) -> Self {
+        Self {
+            timer_type,
+            active: false,
+            elapsed_millis: 0,
+            pulse_millis: 0,
+            duration_millis,
+            scale: -1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -149,6 +262,7 @@ struct DbCreatureDamageRequest {
     damage: u32,
     melee_outcome: Option<MeleeDamageOutcome>,
     spell_id: Option<u32>,
+    spell_school: u8,
     suppress_attacker_state: bool,
     now: Instant,
     now_epoch_secs: u64,
@@ -244,14 +358,25 @@ struct DbGameObjectLootState {
 impl MapRuntime {
     #[cfg(test)]
     fn new(map_id: u32, instance_id: u32) -> Self {
-        Self::with_geometry(map_id, instance_id, Arc::new(WorldGeometry::default()))
+        Self::with_geometry(
+            map_id,
+            instance_id,
+            Arc::new(WorldGeometry::default()),
+            Arc::new(DbScriptRegistry::default()),
+        )
     }
 
-    fn with_geometry(map_id: u32, instance_id: u32, geometry: Arc<WorldGeometry>) -> Self {
+    fn with_geometry(
+        map_id: u32,
+        instance_id: u32,
+        geometry: Arc<WorldGeometry>,
+        db_scripts: Arc<DbScriptRegistry>,
+    ) -> Self {
         Self {
             map_id,
             instance_id,
             geometry,
+            db_scripts,
             grids: HashMap::new(),
             loaded_creature_grids: HashSet::new(),
             loaded_gameobject_grids: HashSet::new(),
@@ -268,7 +393,11 @@ impl MapRuntime {
             corpses: HashMap::new(),
             next_idle_motion_tick_at: None,
             next_idle_motion_start_check_at: None,
+            pending_db_scripts: Vec::new(),
             next_player_regen_tick_at: None,
+            active_player_spell_casts: HashMap::new(),
+            pending_spell_events: Vec::new(),
+            next_spell_event_id: 1,
         }
     }
 

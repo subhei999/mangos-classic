@@ -279,13 +279,14 @@ impl MapRuntime {
         };
         let spell_non_melee_log_body = request
             .spell_id
+            .filter(|_| request.melee_outcome.is_none())
             .map(|spell_id| {
                 build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
                     attacker: request.killer,
                     target: creature_guid,
                     spell_id,
                     damage: requested_damage,
-                    school: 0,
+                    school: request.spell_school,
                     absorb: 0,
                     resist: 0,
                     periodic: false,

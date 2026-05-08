@@ -159,7 +159,7 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
         build_db_gameobject_create_blocks(update.nearby_gameobjects, update.quest_statuses)?;
     let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;
     let item_blocks = build_inventory_item_create_blocks(character, update.inventory)?;
-    let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 2 } else { 0 };
+    let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 1 } else { 0 };
     let mut blocks = Vec::with_capacity(
         1 + legacy_fixture_count
             + creature_blocks.len()
@@ -170,7 +170,6 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     blocks.push(block);
     if legacy_fixture_npcs_enabled() {
         blocks.push(build_rust_guide_create_block(character)?);
-        blocks.push(build_rust_combat_dummy_create_block(character)?);
     }
     blocks.extend(creature_blocks);
     blocks.extend(gameobject_blocks);

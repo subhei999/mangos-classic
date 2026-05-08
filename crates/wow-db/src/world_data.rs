@@ -118,6 +118,45 @@ pub struct CreatureWaypointQuery {
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct DbScriptCommandQuery {
+    pub id: u32,
+    pub delay: u32,
+    pub priority: u32,
+    pub command: u32,
+    pub datalong: u32,
+    pub datalong2: u32,
+    pub datalong3: u32,
+    pub data_flags: u32,
+    pub dataint: i32,
+    pub dataint2: i32,
+    pub dataint3: i32,
+    pub dataint4: i32,
+    pub condition_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct ScriptTextQuery {
+    pub entry: i32,
+    pub content_default: String,
+    pub sound: u32,
+    pub chat_type: u8,
+    pub language: u8,
+    pub emote: u32,
+    pub broadcast_text_id: i32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct BroadcastTextQuery {
+    pub id: i32,
+    pub text: Option<String>,
+    pub text1: Option<String>,
+    pub chat_type: u32,
+    pub language: u32,
+    pub sound: u32,
+    pub emote: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
 pub struct GraveyardQuery {
     pub id: u32,
     pub map: u32,
@@ -205,6 +244,17 @@ pub struct GameEventScheduleQuery {
     pub description: Option<String>,
     pub start_time_unix: Option<i64>,
     pub end_time_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConditionQuery {
+    pub condition_entry: u32,
+    pub condition_type: i16,
+    pub value1: u32,
+    pub value2: u32,
+    pub value3: u32,
+    pub value4: u32,
+    pub flags: u8,
 }
 
 const GAMEOBJECT_SPAWN_SELECT: &str =
@@ -383,6 +433,8 @@ pub struct SpellTemplateQuery {
     pub attributes_ex: u32,
     pub attributes_ex2: u32,
     pub attributes_ex3: u32,
+    pub casting_time_index: u32,
+    pub range_index: u32,
     pub speed: f32,
     pub recovery_time: u32,
     pub category: u32,
@@ -580,7 +632,9 @@ pub async fn get_spell_template_query(
     let _query_timer = crate::observability::DbQueryTimer::start("spell_template_load");
     sqlx::query_as::<_, SpellTemplateQuery>(
         "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, School AS school, \
-                Attributes AS attributes, AttributesEx AS attributes_ex, Speed AS speed, \
+                Attributes AS attributes, AttributesEx AS attributes_ex, CastingTimeIndex AS casting_time_index, \
+                RangeIndex AS range_index, \
+                Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
@@ -1274,6 +1328,89 @@ pub async fn get_game_event_schedules(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+pub async fn get_conditions(pool: &MySqlPool) -> Result<Vec<ConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("conditions_load");
+    sqlx::query_as::<_, ConditionQuery>(
+        "SELECT condition_entry, type AS condition_type, \
+                CAST(value1 AS UNSIGNED) AS value1, \
+                CAST(value2 AS UNSIGNED) AS value2, \
+                CAST(value3 AS UNSIGNED) AS value3, \
+                CAST(value4 AS UNSIGNED) AS value4, \
+                CAST(flags AS UNSIGNED) AS flags \
+         FROM conditions \
+         ORDER BY condition_entry ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_condition(
+    pool: &MySqlPool,
+    condition_entry: u32,
+) -> Result<Option<ConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("condition_load");
+    sqlx::query_as::<_, ConditionQuery>(
+        "SELECT condition_entry, type AS condition_type, \
+                CAST(value1 AS UNSIGNED) AS value1, \
+                CAST(value2 AS UNSIGNED) AS value2, \
+                CAST(value3 AS UNSIGNED) AS value3, \
+                CAST(value4 AS UNSIGNED) AS value4, \
+                CAST(flags AS UNSIGNED) AS flags \
+         FROM conditions \
+         WHERE condition_entry = ?",
+    )
+    .bind(condition_entry)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_dbscripts_on_creature_movement(
+    pool: &MySqlPool,
+) -> Result<Vec<DbScriptCommandQuery>, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("dbscripts_creature_movement_load");
+    sqlx::query_as::<_, DbScriptCommandQuery>(
+        "SELECT id, delay, priority, command, datalong, datalong2, datalong3, \
+                data_flags, dataint, dataint2, dataint3, dataint4, condition_id \
+         FROM dbscripts_on_creature_movement \
+         ORDER BY id ASC, delay ASC, priority ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_script_texts(pool: &MySqlPool) -> Result<Vec<ScriptTextQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("script_texts_load");
+    sqlx::query_as::<_, ScriptTextQuery>(
+        "SELECT entry, content_default, sound, type AS chat_type, language, emote, \
+                broadcast_text_id \
+         FROM script_texts \
+         ORDER BY entry ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_broadcast_texts(pool: &MySqlPool) -> Result<Vec<BroadcastTextQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("broadcast_texts_load");
+    sqlx::query_as::<_, BroadcastTextQuery>(
+        "SELECT Id AS id, Text AS text, Text1 AS text1, \
+                CAST(ChatTypeID AS UNSIGNED) AS chat_type, \
+                CAST(LanguageID AS UNSIGNED) AS language, \
+                CAST(SoundEntriesID1 AS UNSIGNED) AS sound, \
+                CAST(EmoteID1 AS UNSIGNED) AS emote \
+         FROM broadcast_text \
+         ORDER BY Id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_nearby_creature_spawns(

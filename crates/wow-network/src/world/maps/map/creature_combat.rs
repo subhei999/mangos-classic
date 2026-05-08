@@ -11,6 +11,11 @@ struct PlayerChargeValidation {
     check: PlayerChargeCheck,
 }
 
+#[derive(Debug, Clone)]
+struct PlayerSpellTargetValidation {
+    check: PlayerSpellTargetCheck,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerChargeCheck {
     Clear,
@@ -18,6 +23,17 @@ enum PlayerChargeCheck {
     MissingTarget,
     TargetNotAlive,
     NavigationBlocked(DbCreatureNavigationResult),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerSpellTargetCheck {
+    Clear,
+    NoActiveCharacter,
+    MissingTarget,
+    TargetNotAlive,
+    NavigationBlocked(DbCreatureNavigationResult),
+    OutOfRange,
+    BadFacing,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +132,74 @@ impl MapRuntime {
         }
         PlayerChargeValidation {
             check: PlayerChargeCheck::Clear,
+        }
+    }
+
+    fn validate_player_spell_against_db_creature(
+        &self,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        range: Option<SpellRangeEntry>,
+    ) -> PlayerSpellTargetValidation {
+        let Some(player) = self.players.get(&character_guid) else {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::NoActiveCharacter,
+            };
+        };
+        let Some(creature) = self.creatures.get(&target.raw()).cloned() else {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::MissingTarget,
+            };
+        };
+        if !creature.is_alive() || creature.is_evading_home() {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::TargetNotAlive,
+            };
+        }
+        let navigation_check =
+            db_creature_navigation_check(navigation, player.position, creature.current_position);
+        if !navigation_check.is_clear() {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::NavigationBlocked(navigation_check),
+            };
+        }
+        if let Some(range) = range {
+            let dx = player.position.x - creature.current_position.x;
+            let dy = player.position.y - creature.current_position.y;
+            let dz = player.position.z - creature.current_position.z;
+            let distance_squared = dx * dx + dy * dy + dz * dz;
+            let range_mod = PLAYER_COMBAT_REACH_YARDS + creature.combat_reach();
+            let min_range = if range.min_range > 0.0
+                && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
+            {
+                range.min_range + range_mod
+            } else {
+                range.min_range
+            };
+            let max_range = if range.max_range > 0.0 {
+                range.max_range + range_mod
+            } else {
+                range.max_range
+            };
+            if max_range > 0.0 && distance_squared > max_range * max_range {
+                return PlayerSpellTargetValidation {
+                    check: PlayerSpellTargetCheck::OutOfRange,
+                };
+            }
+            if min_range > 0.0 && distance_squared < min_range * min_range {
+                return PlayerSpellTargetValidation {
+                    check: PlayerSpellTargetCheck::OutOfRange,
+                };
+            }
+        }
+        if !has_in_arc(player.position, creature.current_position, SPELL_CAST_ARC_RADIANS) {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::BadFacing,
+            };
+        }
+        PlayerSpellTargetValidation {
+            check: PlayerSpellTargetCheck::Clear,
         }
     }
 

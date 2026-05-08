@@ -40,6 +40,23 @@ constexpr unsigned int MAP_MAGIC = fourcc("MAPS");
 constexpr unsigned int MAP_VERSION_MAGIC = fourcc("z1.4");
 constexpr unsigned int MAP_AREA_MAGIC = fourcc("AREA");
 constexpr unsigned int MAP_HEIGHT_MAGIC = fourcc("MHGT");
+constexpr unsigned int MAP_LIQUID_MAGIC = fourcc("MLIQ");
+
+constexpr unsigned int MAP_LIQUID_NO_TYPE = 0x01;
+constexpr unsigned int MAP_LIQUID_NO_HEIGHT = 0x02;
+constexpr unsigned int MAP_LIQUID_TYPE_MAGMA = 0x01;
+constexpr unsigned int MAP_LIQUID_TYPE_OCEAN = 0x02;
+constexpr unsigned int MAP_LIQUID_TYPE_SLIME = 0x04;
+constexpr unsigned int MAP_LIQUID_TYPE_WATER = 0x08;
+constexpr unsigned int MAP_LIQUID_TYPE_DEEP_WATER = 0x10;
+constexpr unsigned int MAP_ALL_LIQUIDS =
+    MAP_LIQUID_TYPE_WATER | MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_OCEAN | MAP_LIQUID_TYPE_SLIME;
+
+constexpr int LIQUID_MAP_NO_WATER = 0x00000000;
+constexpr int LIQUID_MAP_ABOVE_WATER = 0x00000001;
+constexpr int LIQUID_MAP_WATER_WALK = 0x00000002;
+constexpr int LIQUID_MAP_IN_WATER = 0x00000004;
+constexpr int LIQUID_MAP_UNDER_WATER = 0x00000008;
 
 struct GridMapFileHeader
 {
@@ -70,6 +87,28 @@ struct GridMapHeightHeader
     float gridMaxHeight;
 };
 
+struct GridMapLiquidHeader
+{
+    unsigned int fourcc;
+    unsigned char flags;
+    unsigned char liquidFlags;
+    unsigned short liquidType;
+    unsigned char offsetX;
+    unsigned char offsetY;
+    unsigned char width;
+    unsigned char height;
+    float liquidLevel;
+};
+
+struct NativeLiquidResult
+{
+    int status = LIQUID_MAP_NO_WATER;
+    unsigned int typeFlags = 0;
+    unsigned int entry = 0;
+    float level = INVALID_HEIGHT_VALUE;
+    float depthLevel = INVALID_HEIGHT_VALUE;
+};
+
 const unsigned short HOLE_TABLE_H[4] = {0x1111, 0x2222, 0x4444, 0x8888};
 const unsigned short HOLE_TABLE_V[4] = {0x000F, 0x00F0, 0x0F00, 0xF000};
 
@@ -94,6 +133,16 @@ struct CachedGridMap
     std::vector<unsigned short> uint16V8;
     std::vector<unsigned char> uint8V9;
     std::vector<unsigned char> uint8V8;
+    unsigned short liquidGlobalEntry = 0;
+    unsigned char liquidGlobalFlags = 0;
+    unsigned char liquidOffX = 0;
+    unsigned char liquidOffY = 0;
+    unsigned char liquidWidth = 0;
+    unsigned char liquidHeight = 0;
+    float liquidLevel = INVALID_HEIGHT_VALUE;
+    std::vector<unsigned short> liquidEntry;
+    std::vector<unsigned char> liquidFlags;
+    std::vector<float> liquidMap;
 
     bool isHole(int row, int col) const
     {
@@ -119,6 +168,67 @@ struct CachedGridMap
             default:
                 return gridHeight;
         }
+    }
+
+    float liquidLevelAt(float x, float y) const
+    {
+        if (liquidMap.empty())
+            return liquidLevel;
+
+        x = MAP_RESOLUTION * (32.0f - x / SIZE_OF_GRIDS);
+        y = MAP_RESOLUTION * (32.0f - y / SIZE_OF_GRIDS);
+
+        const int cxInt = (static_cast<int>(x) & 127) - liquidOffY;
+        const int cyInt = (static_cast<int>(y) & 127) - liquidOffX;
+        if (cxInt < 0 || cxInt >= liquidHeight || cyInt < 0 || cyInt >= liquidWidth)
+            return INVALID_HEIGHT_VALUE;
+        return liquidMap[cxInt * liquidWidth + cyInt];
+    }
+
+    NativeLiquidResult liquidStatus(float x, float y, float z, unsigned int requiredType, float collisionHeight) const
+    {
+        NativeLiquidResult result{};
+        if (liquidFlags.empty() && liquidGlobalFlags == 0)
+            return result;
+
+        const float cx = MAP_RESOLUTION * (32.0f - x / SIZE_OF_GRIDS);
+        const float cy = MAP_RESOLUTION * (32.0f - y / SIZE_OF_GRIDS);
+        const int xInt = static_cast<int>(cx) & 127;
+        const int yInt = static_cast<int>(cy) & 127;
+        const int idx = (xInt >> 3) * 16 + (yInt >> 3);
+
+        unsigned int type = liquidFlags.empty() ? liquidGlobalFlags : liquidFlags[idx];
+        const unsigned int entry = liquidEntry.empty() ? liquidGlobalEntry : liquidEntry[idx];
+        if (type == 0)
+            return result;
+        if (requiredType != 0 && (requiredType & type) == 0)
+            return result;
+
+        const int lxInt = xInt - liquidOffY;
+        const int lyInt = yInt - liquidOffX;
+        if (lxInt < 0 || lxInt >= liquidHeight || lyInt < 0 || lyInt >= liquidWidth)
+            return result;
+
+        const float level = liquidMap.empty() ? liquidLevel : liquidMap[lxInt * liquidWidth + lyInt];
+        const float ground = height(x, y);
+        if (level < ground || z < ground - 2.0f)
+            return result;
+
+        result.typeFlags = type;
+        result.entry = entry;
+        result.level = level;
+        result.depthLevel = ground;
+
+        const float delta = level - z;
+        if (delta > collisionHeight)
+            result.status = LIQUID_MAP_UNDER_WATER;
+        else if (delta > 0.0f)
+            result.status = LIQUID_MAP_IN_WATER;
+        else if (delta > -1.0f)
+            result.status = LIQUID_MAP_WATER_WALK;
+        else
+            result.status = LIQUID_MAP_ABOVE_WATER;
+        return result;
     }
 
     float heightFromFloat(float x, float y) const
@@ -436,6 +546,39 @@ bool loadHolesData(FILE* file, CachedGridMap& map, unsigned int offset)
            map.holes.size();
 }
 
+bool loadLiquidData(FILE* file, CachedGridMap& map, unsigned int offset)
+{
+    if (std::fseek(file, static_cast<long>(offset), SEEK_SET) != 0)
+        return false;
+
+    GridMapLiquidHeader header{};
+    if (!readExact(file, header) || header.fourcc != MAP_LIQUID_MAGIC)
+        return false;
+
+    map.liquidGlobalEntry = header.liquidType;
+    map.liquidGlobalFlags = header.liquidFlags;
+    map.liquidOffX = header.offsetX;
+    map.liquidOffY = header.offsetY;
+    map.liquidWidth = header.width;
+    map.liquidHeight = header.height;
+    map.liquidLevel = header.liquidLevel;
+
+    if ((header.flags & MAP_LIQUID_NO_TYPE) == 0)
+    {
+        if (!readVector(file, map.liquidEntry, 16 * 16) ||
+            !readVector(file, map.liquidFlags, 16 * 16))
+            return false;
+    }
+
+    if ((header.flags & MAP_LIQUID_NO_HEIGHT) == 0)
+    {
+        if (!readVector(file, map.liquidMap, map.liquidWidth * map.liquidHeight))
+            return false;
+    }
+
+    return true;
+}
+
 std::unique_ptr<CachedGridMap> loadGridMapFile(const char* dataDir, unsigned int mapId, unsigned int tileX, unsigned int tileY)
 {
     const std::string fileName = mapFileName(dataDir, mapId, tileX, tileY);
@@ -462,6 +605,11 @@ std::unique_ptr<CachedGridMap> loadGridMapFile(const char* dataDir, unsigned int
         return nullptr;
     }
     if (header.heightMapOffset && !loadHeightData(file, *map, header.heightMapOffset))
+    {
+        std::fclose(file);
+        return nullptr;
+    }
+    if (header.liquidMapOffset && !loadLiquidData(file, *map, header.liquidMapOffset))
     {
         std::fclose(file);
         return nullptr;
@@ -518,6 +666,98 @@ float vmapHeightLoaded(const char* dataDir, unsigned int mapId, unsigned int til
     if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
         return VMAP_INVALID_HEIGHT_VALUE;
     return manager->getHeight(mapId, x, y, z, search);
+}
+
+unsigned int vmapLiquidMask(unsigned int type)
+{
+    switch (type)
+    {
+        case 1:
+            return MAP_LIQUID_TYPE_WATER;
+        case 2:
+            return MAP_LIQUID_TYPE_OCEAN;
+        case 3:
+            return MAP_LIQUID_TYPE_MAGMA;
+        case 4:
+        case 21:
+            return MAP_LIQUID_TYPE_SLIME;
+        case 41:
+        case 61:
+            return MAP_LIQUID_TYPE_WATER;
+        default:
+            return 0;
+    }
+}
+
+NativeLiquidResult vmapLiquidStatusLoaded(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    float z,
+    unsigned int requiredType,
+    float collisionHeight)
+{
+    NativeLiquidResult result{};
+    VMAP::IVMapManager* manager = VMAP::VMapFactory::createOrGetVMapManager();
+    if (!manager)
+        return result;
+
+    const std::string basePath = vmapBasePath(dataDir);
+    const VMAP::VMAPLoadResult loadResult =
+        manager->loadMap(basePath.c_str(), mapId, static_cast<int>(tileX), static_cast<int>(tileY));
+    if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
+        return result;
+
+    float level = INVALID_HEIGHT_VALUE;
+    float floor = INVALID_HEIGHT_VALUE;
+    unsigned int type = 0;
+    if (!manager->GetLiquidLevel(mapId, x, y, z, static_cast<unsigned char>(requiredType), level, floor, type))
+        return result;
+    const unsigned int typeFlags = vmapLiquidMask(type);
+    if (typeFlags == 0 || (requiredType != 0 && (requiredType & typeFlags) == 0))
+        return result;
+    if (level <= floor || z <= floor - 2.0f)
+        return result;
+
+    result.typeFlags = typeFlags;
+    result.entry = type;
+    result.level = level;
+    result.depthLevel = floor;
+    const float delta = level - z;
+    if (delta > collisionHeight)
+        result.status = LIQUID_MAP_UNDER_WATER;
+    else if (delta > 0.0f)
+        result.status = LIQUID_MAP_IN_WATER;
+    else if (delta > -1.0f)
+        result.status = LIQUID_MAP_WATER_WALK;
+    else
+        result.status = LIQUID_MAP_ABOVE_WATER;
+    return result;
+}
+
+NativeLiquidResult terrainLiquidStatus(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    float z,
+    float collisionHeight)
+{
+    NativeLiquidResult vmap = vmapLiquidStatusLoaded(
+        dataDir, mapId, tileX, tileY, x, y, z, MAP_ALL_LIQUIDS, collisionHeight);
+    if (vmap.status != LIQUID_MAP_NO_WATER)
+        return vmap;
+
+    std::lock_guard<std::mutex> lock(g_gridMapsMutex);
+    CachedGridMap* map = loadGridMapLocked(dataDir, mapId, tileX, tileY);
+    if (!map)
+        return NativeLiquidResult{};
+    return map->liquidStatus(x, y, z, MAP_ALL_LIQUIDS, collisionHeight);
 }
 
 float terrainHeightStatic(const char* dataDir, unsigned int mapId, unsigned int tileX, unsigned int tileY, float x, float y, float z, float maxSearchDist)
@@ -656,6 +896,47 @@ int wow_map_height_in_range(
         if (!terrainHeightInRange(dataDir, mapId, tileX, tileY, x, y, height, maxSearchDist))
             return 0;
         *outHeight = height;
+        return 1;
+    }
+    catch (...)
+    {
+        return -100;
+    }
+}
+
+int wow_map_liquid_status(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    float z,
+    float collisionHeight,
+    int* outStatus,
+    unsigned int* outTypeFlags,
+    unsigned int* outEntry,
+    float* outLevel,
+    float* outDepthLevel) noexcept
+{
+    try
+    {
+        if (!dataDir || !outStatus || !outTypeFlags || !outEntry || !outLevel || !outDepthLevel)
+            return -1;
+        if (!tileIdIsValid(tileX) || !tileIdIsValid(tileY))
+            return -2;
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+            !std::isfinite(collisionHeight))
+            return -3;
+
+        std::lock_guard<std::mutex> lock(wow_vmap_bridge_mutex());
+        const NativeLiquidResult liquid =
+            terrainLiquidStatus(dataDir, mapId, tileX, tileY, x, y, z, collisionHeight);
+        *outStatus = liquid.status;
+        *outTypeFlags = liquid.typeFlags;
+        *outEntry = liquid.entry;
+        *outLevel = liquid.level;
+        *outDepthLevel = liquid.depthLevel;
         return 1;
     }
     catch (...)

@@ -11,11 +11,13 @@ async fn handle_attack_stop(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-    let victim = shared_world
+    let Some(victim) = shared_world
         .maps
         .player_auto_attack_target(map_id, character_guid)
         .await
-        .unwrap_or_else(rust_combat_dummy_guid);
+    else {
+        return Ok(());
+    };
     let next_swing_at = shared_world
         .maps
         .player_runtime_snapshot(map_id, character_guid)

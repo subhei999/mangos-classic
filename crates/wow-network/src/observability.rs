@@ -124,6 +124,8 @@ impl DurationStats {
 pub enum MapTickPhase {
     IdleMotion,
     IdleMotionDispatch,
+    PlayerEnvironment,
+    PlayerEnvironmentDispatch,
     PlayerRegen,
     PlayerRegenDispatch,
     AuraExpiration,
@@ -135,6 +137,8 @@ impl MapTickPhase {
         match self {
             Self::IdleMotion => "idle_motion",
             Self::IdleMotionDispatch => "idle_motion_dispatch",
+            Self::PlayerEnvironment => "player_environment",
+            Self::PlayerEnvironmentDispatch => "player_environment_dispatch",
             Self::PlayerRegen => "player_regen",
             Self::PlayerRegenDispatch => "player_regen_dispatch",
             Self::AuraExpiration => "aura_expiration",
@@ -143,9 +147,11 @@ impl MapTickPhase {
     }
 }
 
-const MAP_TICK_PHASES: [MapTickPhase; 6] = [
+const MAP_TICK_PHASES: [MapTickPhase; 8] = [
     MapTickPhase::IdleMotion,
     MapTickPhase::IdleMotionDispatch,
+    MapTickPhase::PlayerEnvironment,
+    MapTickPhase::PlayerEnvironmentDispatch,
     MapTickPhase::PlayerRegen,
     MapTickPhase::PlayerRegenDispatch,
     MapTickPhase::AuraExpiration,
@@ -156,6 +162,8 @@ const MAP_TICK_PHASES: [MapTickPhase; 6] = [
 struct MapPhaseDurations {
     idle_motion: Histogram,
     idle_motion_dispatch: Histogram,
+    player_environment: Histogram,
+    player_environment_dispatch: Histogram,
     player_regen: Histogram,
     player_regen_dispatch: Histogram,
     aura_expiration: Histogram,
@@ -167,6 +175,8 @@ impl MapPhaseDurations {
         match phase {
             MapTickPhase::IdleMotion => &self.idle_motion,
             MapTickPhase::IdleMotionDispatch => &self.idle_motion_dispatch,
+            MapTickPhase::PlayerEnvironment => &self.player_environment,
+            MapTickPhase::PlayerEnvironmentDispatch => &self.player_environment_dispatch,
             MapTickPhase::PlayerRegen => &self.player_regen,
             MapTickPhase::PlayerRegenDispatch => &self.player_regen_dispatch,
             MapTickPhase::AuraExpiration => &self.aura_expiration,

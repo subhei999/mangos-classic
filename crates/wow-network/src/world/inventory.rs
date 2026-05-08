@@ -780,14 +780,6 @@ fn build_rust_guide_vendor_inventory() -> Vec<u8> {
                 durability: 0,
                 buy_count: 1,
             },
-            VendorListItem {
-                item: RUST_COMBAT_DUMMY_LOOT_ITEM,
-                display: RUST_COMBAT_DUMMY_LOOT_ITEM_DISPLAY,
-                max_count: 0,
-                price: 0,
-                durability: 0,
-                buy_count: 1,
-            },
         ],
     )
 }
@@ -881,7 +873,6 @@ fn build_sell_item_error_body(vendor_guid: ObjectGuid, item_guid: ObjectGuid, re
 fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
     match item {
         RUST_VENDOR_BAG_ITEM => Some(1),
-        RUST_COMBAT_DUMMY_LOOT_ITEM => Some(2),
         _ => None,
     }
 }

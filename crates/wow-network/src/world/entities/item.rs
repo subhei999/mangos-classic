@@ -2,6 +2,13 @@
 // Owner for item instance state, visible equipment, inventory slot, stack,
 // durability, item dynamic flags, and item/container update fields.
 
+const ITEM_FIELD_ENCHANTMENT: usize = 0x016;
+const ITEM_FIELD_RANDOM_PROPERTIES_ID: usize = 0x02C;
+const MAX_ENCHANTMENT_SLOT: usize = 7;
+const MAX_ENCHANTMENT_OFFSET: usize = 3;
+const ITEM_ENCHANTMENT_FIELD_COUNT: usize = MAX_ENCHANTMENT_SLOT * MAX_ENCHANTMENT_OFFSET;
+const PROP_ENCHANTMENT_SLOT_0: usize = 3;
+
 fn set_visible_item_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
@@ -293,6 +300,25 @@ fn build_item_create_update_block(
     set_update_value(&mut values, 0x008, contained_guid.raw() as u32)?;
     set_update_value(&mut values, 0x009, (contained_guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x00E, item.count)?;
+    for (offset, enchantment_value) in parse_item_enchantment_fields(&item.enchantments)
+        .into_iter()
+        .enumerate()
+    {
+        if enchantment_value != 0 {
+            set_update_value(
+                &mut values,
+                ITEM_FIELD_ENCHANTMENT + offset,
+                enchantment_value,
+            )?;
+        }
+    }
+    if item.random_property_id != 0 {
+        set_update_value(
+            &mut values,
+            ITEM_FIELD_RANDOM_PROPERTIES_ID,
+            item.random_property_id as u32,
+        )?;
+    }
     set_update_value(&mut values, 0x02E, item.durability)?;
     set_update_value(&mut values, 0x02F, item.durability)?;
     if let Some(container_slots) = container_slots.filter(|slots| *slots > 0) {
@@ -301,6 +327,140 @@ fn build_item_create_update_block(
     write_update_values(&mut block, &values)?;
 
     Ok(block)
+}
+
+async fn generate_item_instance_random_properties(
+    world_db_pool: &MySqlPool,
+    world_data_files: &WorldDataFiles,
+    item_template: u32,
+) -> anyhow::Result<Option<wow_db::ItemInstanceRandomProperties>> {
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, item_template).await? else {
+        return Ok(None);
+    };
+    generate_item_instance_random_properties_for_template(world_db_pool, world_data_files, &template)
+        .await
+}
+
+async fn repair_missing_inventory_random_properties(
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    world_data_files: &WorldDataFiles,
+    owner_guid: u32,
+    inventory: &mut [CharacterInventoryItem],
+) -> anyhow::Result<()> {
+    for item in inventory.iter_mut() {
+        if item.random_property_id != 0 {
+            continue;
+        }
+        let Some(random_properties) =
+            generate_item_instance_random_properties(world_db_pool, world_data_files, item.item_template)
+                .await?
+        else {
+            continue;
+        };
+        if wow_db::update_character_inventory_item_random_properties(
+            character_db_pool,
+            owner_guid,
+            item.item,
+            &random_properties,
+        )
+        .await?
+        {
+            item.random_property_id = random_properties.random_property_id;
+            item.enchantments = random_properties.enchantments;
+        }
+    }
+    Ok(())
+}
+
+async fn generate_item_instance_random_properties_for_template(
+    world_db_pool: &MySqlPool,
+    world_data_files: &WorldDataFiles,
+    template: &ItemTemplateQuery,
+) -> anyhow::Result<Option<wow_db::ItemInstanceRandomProperties>> {
+    if template.random_property == 0 {
+        return Ok(None);
+    }
+    let rolls = wow_db::get_item_random_property_rolls(world_db_pool, template.random_property).await?;
+    let Some(random_property_id) = roll_item_random_property_id(&rolls) else {
+        warn!(
+            item = template.entry,
+            random_property = template.random_property,
+            "Item template references random property without item_enchantment_template rows"
+        );
+        return Ok(None);
+    };
+    let Some(random_property) = world_data_files
+        .item_random_properties
+        .get(&random_property_id)
+        .copied()
+    else {
+        warn!(
+            item = template.entry,
+            random_property = template.random_property,
+            random_property_id,
+            "Rolled item random property missing from ItemRandomProperties.dbc"
+        );
+        return Ok(None);
+    };
+    Ok(Some(wow_db::ItemInstanceRandomProperties {
+        random_property_id: random_property.id as i32,
+        enchantments: item_enchantments_for_random_property(random_property),
+    }))
+}
+
+fn roll_item_random_property_id(rolls: &[wow_db::ItemRandomPropertyRoll]) -> Option<u32> {
+    if rolls.is_empty() {
+        return None;
+    }
+    let roll = rand::thread_rng().gen_range(0.0..100.0);
+    roll_item_random_property_id_for_roll(rolls, roll).or_else(|| {
+        let chance_sum: f32 = rolls.iter().map(|roll| roll.chance).sum();
+        if chance_sum <= 0.0 {
+            return None;
+        }
+        let max_roll = (chance_sum * 100.0).floor() as u32 + 1;
+        let fallback_roll = rand::thread_rng().gen_range(0..=max_roll) as f32 / 100.0;
+        roll_item_random_property_id_for_roll(rolls, fallback_roll)
+    })
+}
+
+fn roll_item_random_property_id_for_roll(
+    rolls: &[wow_db::ItemRandomPropertyRoll],
+    roll: f32,
+) -> Option<u32> {
+    let mut chance = 0.0;
+    for property_roll in rolls {
+        chance += property_roll.chance;
+        if chance > roll {
+            return Some(property_roll.enchantment_id);
+        }
+    }
+    None
+}
+
+fn item_enchantments_for_random_property(random_property: ItemRandomPropertyEntry) -> String {
+    let mut enchantments = [0u32; ITEM_ENCHANTMENT_FIELD_COUNT];
+    for (index, enchant_id) in random_property.enchant_ids.into_iter().enumerate() {
+        enchantments[(PROP_ENCHANTMENT_SLOT_0 + index) * MAX_ENCHANTMENT_OFFSET] = enchant_id;
+    }
+    enchantments
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_item_enchantment_fields(enchantments: &str) -> [u32; ITEM_ENCHANTMENT_FIELD_COUNT] {
+    let mut fields = [0u32; ITEM_ENCHANTMENT_FIELD_COUNT];
+    for (index, value) in enchantments
+        .split_whitespace()
+        .take(ITEM_ENCHANTMENT_FIELD_COUNT)
+        .enumerate()
+    {
+        fields[index] = value.parse::<u32>().unwrap_or(0);
+    }
+    fields
 }
 
 fn build_item_contained_update_block(

@@ -72,18 +72,18 @@ fn build_item_query_single_response(
 
     write_u32(&mut body, template.container_slots);
 
-    for _ in 0..10 {
-        write_u32(&mut body, 0);
+    for stat in template.stats {
+        write_u32(&mut body, stat.stat_type);
 
-        write_u32(&mut body, 0);
+        write_i32(&mut body, stat.stat_value);
     }
 
-    for _ in 0..5 {
-        write_f32(&mut body, 0.0);
+    for damage in template.damage {
+        write_f32(&mut body, damage.damage_min);
 
-        write_f32(&mut body, 0.0);
+        write_f32(&mut body, damage.damage_max);
 
-        write_u32(&mut body, 0);
+        write_u32(&mut body, damage.damage_type);
     }
 
     write_u32(&mut body, template.armor);
@@ -106,18 +106,18 @@ fn build_item_query_single_response(
 
     write_f32(&mut body, template.ranged_mod_range);
 
-    for _ in 0..5 {
-        write_u32(&mut body, 0);
+    for spell in template.spells {
+        write_u32(&mut body, spell.spell_id);
 
-        write_u32(&mut body, 0);
+        write_u32(&mut body, spell.spell_trigger);
 
-        write_u32(&mut body, 0);
+        write_i32(&mut body, spell.spell_charges);
 
-        write_u32(&mut body, u32::MAX);
+        write_i32(&mut body, spell.spell_cooldown);
 
-        write_u32(&mut body, 0);
+        write_u32(&mut body, spell.spell_category);
 
-        write_u32(&mut body, u32::MAX);
+        write_i32(&mut body, spell.spell_category_cooldown);
     }
 
     write_u32(&mut body, template.bonding);

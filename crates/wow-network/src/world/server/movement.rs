@@ -97,7 +97,9 @@ async fn handle_movement(
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
     let server_time = synchronize_movement_server_time(session, movement.client_time);
+    let mut fatal_environmental_damage_player = None;
     if let Some(character) = &mut session.active_character {
+        let previous_player_health = session.player_health;
         character.position.x = movement.position.x;
         character.position.y = movement.position.y;
         character.position.z = movement.position.z;
@@ -132,6 +134,20 @@ async fn handle_movement(
                 )
                 .await?;
             deps.sessions.dispatch(packets).await;
+            if let Some(snapshot) = deps
+                .maps
+                .player_runtime_snapshot(character.position.map_id, character.guid)
+                .await
+            {
+                session.player_health = snapshot.health;
+                if previous_player_health > 0
+                    && session.player_health == 0
+                    && session.player_death_state == PlayerDeathState::Alive
+                {
+                    fatal_environmental_damage_player =
+                        Some(ObjectGuid::new(HighGuid::Player, 0, character.guid));
+                }
+            }
         }
         stream_newly_visible_db_creatures(
             stream,
@@ -175,10 +191,23 @@ async fn handle_movement(
             "Received movement packet before character login"
         );
     }
+    if let Some(player) = fatal_environmental_damage_player {
+        kill_player_from_creature(
+            stream,
+            deps.character_db_pool,
+            deps.maps,
+            deps.account_id,
+            session,
+            player,
+            header_crypto,
+        )
+        .await?;
+    }
     Ok(())
 }
 
 struct MovementDeps<'a> {
+    account_id: u32,
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     object_mgr: &'a ObjectMgr,

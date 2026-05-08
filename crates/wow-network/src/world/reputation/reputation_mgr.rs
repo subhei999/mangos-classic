@@ -52,9 +52,18 @@ fn reputation_faction_name(faction: u32) -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
 fn quest_reputation_rewards(
     player_level: u8,
     quest: &QuestTemplateQuery,
+) -> Vec<(u32, i32)> {
+    quest_reputation_rewards_with_bonus(player_level, quest, 0)
+}
+
+fn quest_reputation_rewards_with_bonus(
+    player_level: u8,
+    quest: &QuestTemplateQuery,
+    gain_bonus_percent: i32,
 ) -> Vec<(u32, i32)> {
     quest.rew_rep_faction
         .iter()
@@ -63,10 +72,24 @@ fn quest_reputation_rewards(
             if *faction == 0 || *value == 0 {
                 return None;
             }
-            let reward = calculate_quest_reputation_gain(player_level, quest, *value);
+            let reward = apply_reputation_gain_bonus(
+                calculate_quest_reputation_gain(player_level, quest, *value),
+                gain_bonus_percent,
+            );
             (reward != 0).then_some((*faction, reward))
         })
         .collect()
+}
+
+fn apply_reputation_gain_bonus(reward: i32, gain_bonus_percent: i32) -> i32 {
+    if reward == 0 || gain_bonus_percent == 0 {
+        return reward;
+    }
+    let multiplier = 100i64.saturating_add(i64::from(gain_bonus_percent));
+    if multiplier <= 0 {
+        return 0;
+    }
+    ((i64::from(reward) * multiplier) / 100).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 fn calculate_quest_reputation_gain(player_level: u8, quest: &QuestTemplateQuery, rep: i32) -> i32 {

@@ -192,6 +192,7 @@ impl MapRuntime {
         let old_grid = grid_coord_for_position(current_player.position);
         let new_cell = cell_coord_for_position(movement.position);
         let new_grid = grid_coord_for_position(movement.position);
+        let fall_update = player_fall_update(&current_player, opcode, movement);
 
         let old_visible = current_player
             .visible_objects
@@ -326,6 +327,8 @@ impl MapRuntime {
             player.client_time = movement.client_time;
             player.server_time = server_time;
             player.fall_time = movement.fall_time;
+            player.last_fall_z = fall_update.last_fall_z;
+            player.last_fall_time = fall_update.last_fall_time;
             player.jump = movement.jump.clone();
             player.cell = new_cell;
             player.visible_objects = retained_non_player_visible;
@@ -333,6 +336,34 @@ impl MapRuntime {
                 .iter()
                 .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid))
             );
+            if let Some(damage) = fall_update.damage {
+                player.health = player.health.saturating_sub(damage);
+            }
+        }
+
+        if let Some(damage) = fall_update.damage {
+            let health = self
+                .players
+                .get(&character_guid)
+                .map(|player| player.health)
+                .unwrap_or(current_player.health.saturating_sub(damage));
+            let damage_log = OutboundWorldPacket {
+                opcode: SMSG_ENVIRONMENTALDAMAGELOG,
+                body: build_environmental_damage_log_body(player_object, DAMAGE_FALL, damage, 0, 0)?,
+            };
+            let health_update = OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_player_health_update_body(player_object, health)?,
+            };
+            packets.push((current_player.session_id, damage_log.clone()));
+            packets.push((current_player.session_id, health_update.clone()));
+            for other_guid in &new_visible {
+                let Some(other) = self.players.get(other_guid) else {
+                    continue;
+                };
+                packets.push((other.session_id, damage_log.clone()));
+                packets.push((other.session_id, health_update.clone()));
+            }
         }
         self.invalidate_idle_motion_start_schedule();
 
@@ -741,6 +772,14 @@ impl MapRuntime {
         }
     }
 
+    fn set_player_position(&mut self, character_guid: u32, position: WorldPosition) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        player.position = position;
+        player.cell = cell_coord_for_position(position);
+    }
+
     fn set_player_power2(&mut self, character_guid: u32, power2: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.power2 = power2.min(POWER_RAGE_DEFAULT);
@@ -848,6 +887,81 @@ impl MapRuntime {
             player.visible_objects.remove(guid);
         }
     }
+}
+
+const DAMAGE_FALL: u8 = 2;
+const FALL_DAMAGE_MINIMUM_HEIGHT: f32 = 14.57;
+const FALL_DAMAGE_DISTANCE_MULTIPLIER: f32 = 0.018;
+const FALL_DAMAGE_BASE_PERCENT: f32 = 0.2426;
+
+#[derive(Debug, Clone, Copy)]
+struct PlayerFallUpdate {
+    last_fall_z: Option<f32>,
+    last_fall_time: u32,
+    damage: Option<u32>,
+}
+
+fn player_fall_update(
+    player: &PlayerRuntime,
+    opcode: u16,
+    movement: &MovementInfo,
+) -> PlayerFallUpdate {
+    if player.health == 0 || player.flags & PLAYER_FLAGS_GHOST != 0 {
+        return PlayerFallUpdate {
+            last_fall_z: None,
+            last_fall_time: 0,
+            damage: None,
+        };
+    }
+
+    if opcode == MSG_MOVE_FALL_LAND as u16 {
+        let fall_start_z = player.last_fall_z.unwrap_or(player.position.z);
+        return PlayerFallUpdate {
+            last_fall_z: None,
+            last_fall_time: 0,
+            damage: calculate_fall_damage(fall_start_z, movement.position.z, player.max_health),
+        };
+    }
+
+    if movement.fall_time == 0 {
+        return PlayerFallUpdate {
+            last_fall_z: None,
+            last_fall_time: 0,
+            damage: None,
+        };
+    }
+
+    let mut last_fall_z = player.last_fall_z;
+    let mut last_fall_time = player.last_fall_time;
+    if movement.fall_time > player.fall_time || movement.fall_time > player.last_fall_time {
+        let highest_z = player
+            .last_fall_z
+            .unwrap_or(player.position.z)
+            .max(player.position.z);
+        if highest_z > movement.position.z {
+            last_fall_z = Some(highest_z);
+            last_fall_time = movement.fall_time;
+        }
+    }
+
+    PlayerFallUpdate {
+        last_fall_z,
+        last_fall_time,
+        damage: None,
+    }
+}
+
+fn calculate_fall_damage(fall_start_z: f32, landing_z: f32, max_health: u32) -> Option<u32> {
+    let fall_height = fall_start_z - landing_z;
+    if fall_height <= FALL_DAMAGE_MINIMUM_HEIGHT {
+        return None;
+    }
+    let damage_percent = FALL_DAMAGE_DISTANCE_MULTIPLIER * fall_height - FALL_DAMAGE_BASE_PERCENT;
+    if damage_percent <= 0.0 {
+        return None;
+    }
+    let damage = ((max_health.max(1) as f32) * damage_percent).floor() as u32;
+    Some(damage.max(1).min(max_health.max(1)))
 }
 
 fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {

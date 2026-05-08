@@ -403,10 +403,15 @@ fn player_melee_defense_input(
     character: &ActiveCharacter,
     combat_stats: &PlayerCombatStats,
     character_skills: &[CharacterSkill],
+    active_auras: &[ActiveAura],
 ) -> PlayerMeleeDefenseInput {
     PlayerMeleeDefenseInput {
         level: character.level.max(1),
-        defense_skill: current_skill_value(character_skills, SKILL_DEFENSE),
+        defense_skill: current_skill_value_with_active_auras(
+            character_skills,
+            active_auras,
+            SKILL_DEFENSE,
+        ),
         armor: combat_stats.armor,
         block_value: combat_stats.shield_block_value,
         dodge_percent: combat_stats.dodge_percent,

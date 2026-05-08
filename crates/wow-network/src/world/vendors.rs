@@ -104,15 +104,22 @@ async fn handle_buy_item(
             }
         }
     };
-    wow_db::add_character_inventory_item(
-        character_db_pool,
-        character_guid,
-        INVENTORY_SLOT_BAG_0 as u32,
-        dst_slot,
-        buy.item,
-        total_count,
-        0,
-    )
+    let random_properties =
+        generate_item_instance_random_properties(
+            world_db_pool,
+            &session.db_creature_navigation.world_data_files,
+            buy.item,
+        )
+        .await?;
+    wow_db::add_character_inventory_item_with_random_properties(character_db_pool, wow_db::AddCharacterInventoryItemRequest {
+        guid: character_guid,
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: dst_slot,
+        item_template: buy.item,
+        count: total_count,
+        durability: 0,
+        random_properties: random_properties.as_ref(),
+    })
     .await?;
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let Some(new_item) = session

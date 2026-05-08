@@ -446,6 +446,8 @@ int wow_mmap_find_path(
     float targetX,
     float targetY,
     float targetZ,
+    unsigned short includeFlags,
+    unsigned short excludeFlags,
     WowMmapPathPoint* outPoints,
     int maxPoints) noexcept
 {
@@ -479,8 +481,8 @@ int wow_mmap_find_path(
         }
 
         dtQueryFilter filter;
-        filter.setIncludeFlags(NAV_GROUND);
-        filter.setExcludeFlags(0);
+        filter.setIncludeFlags(includeFlags);
+        filter.setExcludeFlags(excludeFlags);
 
         const float startPoint[3] = { startY, startZ, startX };
         const float targetPoint[3] = { targetY, targetZ, targetX };

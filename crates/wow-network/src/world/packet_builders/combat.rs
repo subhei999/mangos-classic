@@ -103,6 +103,22 @@ fn build_spell_non_melee_damage_log_body(
     Ok(body)
 }
 
+fn build_environmental_damage_log_body(
+    player: ObjectGuid,
+    damage_type: u8,
+    damage: u32,
+    absorbed: u32,
+    resisted: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(18);
+    PackedGuid::write(&mut body, player)?;
+    body.push(damage_type);
+    body.extend_from_slice(&damage.to_le_bytes());
+    body.extend_from_slice(&absorbed.to_le_bytes());
+    body.extend_from_slice(&resisted.to_le_bytes());
+    Ok(body)
+}
+
 #[allow(dead_code)]
 fn build_spell_log_miss_body(
     caster: ObjectGuid,
@@ -218,6 +234,7 @@ fn build_db_creature_death_update_body(
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_NPC_FLAGS, 0)?;
+    set_unit_aura_update_values(&mut values, &[])?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))

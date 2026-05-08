@@ -64,20 +64,135 @@ the local game stack and observability dashboard:
   a destroy packet, but deliberately does not delete world DB rows. `.npc add`
   persistence to the world `creature` table is not implemented yet; GitHub
   issue #65 tracks the CMaNGOS `Creature::SaveToDB` parity gap.
+- Current uncommitted Northshire polish fixes user-reported demo blockers:
+  CMaNGOS rest-state initialization is now sent on login and normalized in
+  `PLAYER_BYTES_2`, unavailable-but-visible start quests no longer appear in
+  clickable quest lists, quest-log accept/reward/abandon paths now keep
+  stable session-owned quest-log slots instead of deriving slots from sorted
+  quest ids, and item turn-in completion follows CMaNGOS'
+  request-items-before-final-reward packet flow.
+- Current uncommitted warrior spell parity fix makes Heroic Strike queue as a
+  CMaNGOS next-swing spell before melee range/facing is valid, while preserving
+  melee validity checks for instant melee damage spells. The queue path still
+  sends `SMSG_SPELL_START` with the unit target so the real client can show the
+  queued-state indication before the swing fires; unlike normal instant spells,
+  the queue-success path deliberately does not send `SMSG_CAST_RESULT` until
+  the queued spell later executes or fails. On successful execution, the swing
+  path sends `SMSG_CAST_RESULT` OK before `SMSG_SPELL_GO` so the real client
+  releases the queued action-button state. The swing consume path now rechecks
+  rage/mana before applying queued next-swing damage, sends the same failure
+  packets as a failed spell cast, clears the queue, and falls through to the
+  normal white swing when another ability spent the rage first.
+- Current uncommitted Battle Shout/GCD lifecycle fix makes all supported
+  starter spells send CMaNGOS' `SMSG_SPELL_START` before instant
+  `SMSG_CAST_RESULT`/`SMSG_SPELL_GO`, not just queued Heroic Strike. Starter
+  GCD state is now keyed by `StartRecoveryCategory` and added only when
+  `StartRecoveryTime` is non-zero, matching CMaNGOS `WorldObject::AddGCD` /
+  `HasGCD` behavior. Immediate Battle Shout recasts now fail during GCD without
+  spending rage, replaying `SMSG_SPELL_START`, or reapplying `SMSG_SPELL_GO`.
+- Current uncommitted passive-spell bootstrap fix applies active known passive
+  spells on login using `spell_template` aura effects instead of Human-specific
+  hardcoding. Human Spirit now modifies effective Spirit before self-spawn,
+  runtime regen, combat stat derivation, and `PLAYER_FIELD_POSSTAT4` so the
+  character stat pane can show the positive Spirit bonus in green; these stat
+  deltas are serialized as CMaNGOS-style integer update values, not raw float
+  bits, to avoid giant tooltip numbers. Sword/Mace specialization-style
+  `SPELL_AURA_MOD_SKILL_TALENT` bonuses remain
+  non-persistent skill bonuses, are packed into the permanent/high half of
+  `PLAYER_SKILL_BONUS_INDEX` like CMaNGOS, and feed melee/defense skill checks.
+  Diplomacy-style reputation gain bonuses are applied to quest reputation
+  rewards. Passive modifier auras are kept hidden from the visible aura bar.
+- Current uncommitted item tooltip/random-property fix makes
+  `SMSG_ITEM_QUERY_SINGLE_RESPONSE` send DB-backed template stats, damage, and
+  spells, and makes newly-created random-property items roll CMaNGOS-style
+  suffix/property enchantments from `item_enchantment_template` plus
+  `ItemRandomProperties.dbc`. Existing bad random-property inventory rows with
+  `randomPropertyId = 0` are repaired on login.
+- Current uncommitted item restriction/use slice adds CMaNGOS-style item
+  `CanUseItem`/equip result codes for level, class/race, skill, required spell,
+  rank, reputation, proficiency, and wrong-slot feedback. It also wires
+  `CMSG_USE_ITEM` for DB-backed on-use/no-delay item spells, sending the normal
+  spell start/result/go lifecycle, applying supported self aura/direct
+  heal/energize effects, and consuming negative-charge item stacks.
+- Current uncommitted warrior debuff/charge fix makes starter hostile aura
+  spells target DB creatures instead of the caster, serializes harmful aura
+  flags on creature unit fields, advances periodic damage from the map update
+  loop through a generic periodic-damage tick calculation/log shape, and treats
+  Charge as movement/opening-auto-attack instead of remote direct damage. Rend
+  Rank 1 now uses the CMaNGOS DB `EffectBasePoints1 = 4` value, which becomes
+  a 5-damage tick through the generic base-points-plus-one effect amount rule.
+  Follow-up correction packs hostile auras into CMaNGOS negative aura slots
+  `32..47`, processes the final periodic tick at the aura expiry boundary, and
+  runs a Charge pre-cast vmap LOS plus Detour mmap path gate before spending
+  power or sending movement packets. Deeper target-debuff timer investigation
+  confirmed this is a 1.12 client UI/API limitation, not a remaining creature
+  aura scheduler issue: stock vanilla target debuffs expose icon/expiry through
+  aura fields but do not expose real duration data to the target frame. The
+  failed server-side duration-packet/flag experiments were removed back to
+  CMaNGOS' harmful aura flag shape (`0x08`). A local playtest addon now lives
+  at `C:\World of Warcraft Classic\Interface\AddOns\NorthshireAuraTimers` to
+  draw cooldown swipes for known finite target debuffs such as Rend.
+- Current read-only Northshire combat/movement investigation found four
+  user-observed parity gaps and likely owners:
+  - Critter one-shot rage: fixed in the current uncommitted work. CMaNGOS
+    awards attacker rage from the raw direct melee hit before health/death
+    clamping; Rust now carries a separate pre-clamp `attacker_rage_damage`
+    for DB-creature melee outcomes and uses raw hit damage for lethal combat
+    dummy white swings. Critter/no-XP type is not a CMaNGOS rage gate.
+  - Creek/water crossing: fixed in the current uncommitted work. Rust now loads
+    `creature_template.InhabitType`, normalizes invalid values like CMaNGOS,
+    and passes per-creature walk/swim nav include flags into the native Detour
+    mmap bridge instead of hardcoding `NAV_GROUND`.
+  - Patrol return after evade: fixed in the current uncommitted work. Waypoint
+    creatures now remember the interrupted patrol/reset position when chase
+    starts, return there after evade, and re-arm waypoint movement instead of
+    falling into random idle at spawn/home.
+  - Creature clumping: improved in the current uncommitted work. Map-owned
+    chase start now chooses target-relative near-points and fans out from
+    already occupied same-victim chase slots/destinations, matching the main
+    CMaNGOS `TargetedMovementGenerator::FanOut` behavior rather than adding a
+    generic relocation declumper.
+- Current uncommitted mob-death evade fix routes lethal player deaths through
+  the same map-owned DB-creature evade/return-home path used by leash evade.
+  Creatures that kill the player now reset health/combat state, send
+  attack-stop/state packets, and start run-speed return-home motion instead of
+  staying at the player's corpse.
+- Current uncommitted environmental/world-ambience work now covers four
+  CMaNGOS-shaped first slices:
+  - Holiday/event spawn gating at startup/grid-load time: Rust loads
+    `game_event`/`game_event_time`, preserves signed
+    `game_event_creature`/`game_event_gameobject` bindings on static creature
+    and gameobject spawns, computes the active event set from DB schedules,
+    and filters positive event spawns in only while active and negative event
+    spawns out while active.
+  - Static ambient NPC emote state: Rust loads
+    `creature_addon.emote`/`creature_template_addon.emote` with per-spawn
+    addon precedence and writes `UNIT_NPC_EMOTESTATE` in DB-creature create
+    blocks.
+  - Per-viewer ghost visibility foundation: Rust loads
+    `creature_template.CreatureTypeFlags`, sends those type flags in
+    `SMSG_CREATURE_QUERY_RESPONSE` like CMaNGOS, ghost players only stage
+    DB-creatures marked CMaNGOS `VISIBLE_TO_GHOSTS` or known spirit healers,
+    and alive players destroy/skip spirit healers so they disappear after
+    resurrection.
+  - Fall environmental damage: map-owned player movement tracks fall start
+    height and applies the CMaNGOS fall-damage formula on
+    `MSG_MOVE_FALL_LAND`, sends `SMSG_ENVIRONMENTALDAMAGELOG` plus health
+    updates, and hands fatal falls to the existing player death path.
+  Runtime event start/stop create/destroy diffs, `game_event_creature_data`
+  overlays, event pools, event quests/conditions, DB script actions, and
+  liquid/drowning/lava/fire damage remain follow-ups.
 
 Run `git status --short --branch` before editing.
 
 ## Current Goal
 
 Current milestone remains **Checkpoint 2 Northshire Human Warrior playable
-slice with shared multiplayer state**, but the user has now called out broader
-starter-zone playability: hostile mobs in regions such as Teldrassil must aggro
-and be attackable because the real mmap coverage exists locally. Do not add or
-preserve permissive aggro movement for missing mmaps. Keep the active priority
-order from `docs/playable_gate_board.md`: quest availability restrictions,
-quest loot drops, gameobject quest pickup, warrior level 1-6
-spell/resource/skill behavior, combat log feedback, CMaNGOS-like aggro/leash,
-and patrol stability.
+slice with shared multiplayer state**, but the user has now called out a broader
+environmental/world-ambience update track: environmental damage, NPC scripted
+ambient behavior, event/holiday conditional spawning, and per-player/death/quest
+conditional visibility. Keep the existing CP2 gates green while implementing
+these as CMaNGOS-shaped world/map-owned slices.
 
 Important scope rule: stay focused on the current goal, but fix blockers and
 safety/data-integrity guardrails when practical. Do not make tiny symptom
@@ -90,8 +205,167 @@ follow-up.
 
 ## Recently Changed
 
+- Item restriction/use parity: equip moves now send
+  `SMSG_INVENTORY_CHANGE_FAILURE` with CMaNGOS inventory result codes instead
+  of silently ignoring wrong level/class/skill/proficiency/slot cases; level
+  failures include the required level field in the packet. `CMSG_USE_ITEM`
+  now parses bag/slot/spell-index/targets, validates against DB
+  `item_template` restrictions, selects real item on-use spells from the
+  template, sends `SMSG_SPELL_START`/`SMSG_CAST_RESULT`/`SMSG_SPELL_GO`, applies
+  supported self aura/direct heal/energize effects, syncs map-owned player
+  state, and consumes negative-charge stacks. Proof:
+  `cargo fmt --package wow-network --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network --lib inventory_ -- --nocapture`,
+  `cargo test -p wow-network --lib use_item -- --nocapture`, and
+  `cargo test -p wow-network --lib item_use -- --nocapture` passed. Full
+  `$env:CARGO_TARGET_DIR='target\codex-item-use-check'; .\scripts\test-rust.cmd`
+  reached compilation/tests but failed because the disk filled while writing
+  target artifacts; the throwaway target directory was removed.
+- Environmental/world-event planning: four read-only subagent investigations
+  mapped CMaNGOS references for environmental damage, DB scripts/ambient NPC
+  behavior, game-event spawns, and dead/quest/player-dependent visibility.
+  Implemented slices now include event-bound static spawn gating, static
+  addon emote create fields, ghost-only viewer filtering for non-ghost-visible
+  DB creatures, and CMaNGOS-formula fall damage. Proof:
+  `cargo fmt --package wow-db --package wow-network --check`,
+  `cargo check -p wow-db`, `cargo check -p wow-network`, focused tests for
+  `static_world_cache_filters_game_event_bound_spawns`,
+  `db_creature_create_block_uses_addon_emote_state`,
+  `map_runtime_ghost_player_only_stages_creatures_visible_to_ghosts`, and
+  `map_runtime_fall_land_applies_cmangos_fall_damage_and_log`, plus
+  `$env:CARGO_TARGET_DIR='target\codex-env-update-check'; .\scripts\test-rust.cmd`
+  passed with 446 `wow-network` tests.
+- Spirit Healer alive-visibility correction: CMaNGOS DB row 6491 has
+  `CreatureTypeFlags=2` and CMaNGOS `QueryHandler.cpp` writes `ci->TypeFlags`
+  into `SMSG_CREATURE_QUERY_RESPONSE`; Rust was incorrectly hardcoding that
+  field to zero, making the client treat Spirit Healers like normal visible
+  creatures. Rust now sends DB type flags and the map visibility stage removes
+  spirit healers for alive viewers while still staging them for ghosts. Proof:
+  `cargo fmt --package wow-network --check`, focused
+  `creature_query_response`/`spirit_healer` tests, `cargo check -p wow-network`,
+  and `$env:CARGO_TARGET_DIR='target\codex-spirit-healer-full'; .\scripts\test-rust.cmd`
+  passed with 448 `wow-network` tests.
+- Item tooltip/stat root cause: Rust's `SMSG_ITEM_QUERY_SINGLE_RESPONSE`
+  packet matched CMaNGOS' outer item-query shape but zero-filled the 10
+  `ItemStat` pairs, all 5 damage triples, and all 5 item spell blocks instead
+  of reading them from `item_template`. This made names/basic metadata work
+  while Militia Shortsword-style weapon damage/swing/DPS and statted item
+  bonuses disappeared in the real client. Rust now projects those DB fields
+  through `ItemTemplateQuery` and serializes them in the CMaNGOS order. Janos
+  Hammerknuckle's vendor rows have valid DB damage/delay values, but the
+  client did not requery those item ids because they were already present in
+  the local WDB item cache; `C:\World of Warcraft Classic\WDB\itemcache.wdb`,
+  `itemnamecache.wdb`, and `itemtextcache.wdb` were moved into
+  `C:\World of Warcraft Classic\WDB\codex-item-cache-backup-20260506-153336`
+  to force fresh item-template queries on the next client launch. Opal
+  Ring-style random-property items have a separate root cause: CMaNGOS rolls
+  `item_template.RandomProperty` through `item_enchantment_template`, looks up
+  the rolled id in `ItemRandomProperties.dbc`, stores `item_instance.randomPropertyId`,
+  and writes the DBC enchant ids into `ITEM_FIELD_ENCHANTMENT` property slots.
+  Rust now follows that flow for vendor buys, loot grants, quest source items,
+  and quest rewards, serializes the item create update fields, and repairs
+  existing zero-random-property inventory rows at login.
 - Added the 1.12.1 / CMaNGOS `SMSG_QUESTLOG_FULL` opcode (`0x0195`) and made
 quest accept reject full quest logs before creating hidden DB quest rows.
+- Added the CMaNGOS login rest-state bootstrap (`SMSG_SET_REST_START` plus
+  `REST_STATE_NORMAL` in `PLAYER_BYTES_2`) so vanilla FrameXML `GetRestState`
+  returns a real state on login, kill XP, and quest-reward XP updates.
+- Questgiver clickable lists now mirror CMaNGOS `PrepareQuestMenu`: start
+  quests are listed only when `CanTakeQuest` passes. `CanSeeStartQuest` remains
+  for gray/unavailable questgiver status markers.
+- Quest-log mutation root cause for the Eagan/Kobold accept sequence was
+  sorted-slot derivation: accepting Kobold after Eagan sorted quest `7` before
+  quest `5261`, so the client's stable slot model was overwritten. Rust now
+  tracks `WorldSessionState::quest_log_slots`, appends accepted quests to the
+  first free slot, clears that same slot on reward/abandon, and no longer uses
+  a full refresh in normal accept/reward paths. Confidence: high for the
+  duplicate "Quest accepted: Eagan Peltskinner" chat symptom.
+- Quest completion screen root cause was twofold: reward completion packets
+  were sent before the CMaNGOS reward-side state updates, and
+  `CMSG_QUESTGIVER_COMPLETE_QUEST` jumped directly to
+  `SMSG_QUESTGIVER_OFFER_REWARD` for ready item turn-ins instead of sending
+  the completable `SMSG_QUESTGIVER_REQUEST_ITEMS` page with required item rows
+  when the quest has request-items text. Rust now sends the item turn-in
+  completion page first for delivery quests and sends
+  `SMSG_QUESTGIVER_QUEST_COMPLETE` after reward grants, XP/money/reputation,
+  quest-log clear, and questgiver status refresh. Confidence: medium-high;
+  real-client retest should confirm the pane advances/closes cleanly.
+- Heroic Strike queueing now follows CMaNGOS' `CURRENT_MELEE_SPELL` shape more
+  closely: out-of-range casts queue the next-swing spell and send
+  `SMSG_SPELL_START` immediately without an immediate success
+  `SMSG_CAST_RESULT`; CMaNGOS only sends the cast result when the queued spell
+  later executes or fails. The actual damage still waits for the later melee
+  swing range check. When the queued spell executes successfully, Rust now sends
+  CMaNGOS' `SendCastResult(SPELL_CAST_OK)` before `SMSG_SPELL_GO`, which should
+  clear the client's queued action-button highlight. At swing execution, Rust
+  also mirrors CMaNGOS' `Spell::cast() -> CheckCast(false)` power revalidation:
+  if rage was spent before the queued swing fires, Heroic Strike fails with
+  `SPELL_FAILED_NO_POWER`, clears the queue, and the underlying white swing
+  proceeds normally. Focused unit coverage proves far-target queueing,
+  start-packet/no-success-result shape, execution-time success-result release,
+  duplicate-queue rejection, execution-time rage failure, and instant melee
+  range/facing failures.
+- Starter spell GCD lifecycle now follows the CMaNGOS start/cast split for
+  instant spells: successful casts send `SMSG_SPELL_START` first, then instant
+  `SMSG_CAST_RESULT`/`SMSG_SPELL_GO`, and server-side GCD is tracked per
+  `StartRecoveryCategory`. The likely reason Battle Shout could appear to
+  bypass GCD on first cast was that Rust skipped the generic spell-start packet,
+  so the real client did not see the same action lifecycle CMaNGOS sends for
+  Battle Shout and other instant spells. Focused coverage now proves first
+  Battle Shout starts the lifecycle, sets category `133` GCD, applies the aura,
+  and an immediate recast is rejected without spending more rage or sending
+  start/go packets.
+- Basic passive racial/class spell root cause was missing CMaNGOS
+  `addSpell/_LoadSpells -> CastSpell(triggered)` parity. Rust already seeded
+  `playercreateinfo_spell` rows into `character_spell` and sent the spellbook,
+  but never converted active passive known spells into runtime aura modifiers.
+  The passive bootstrap now reads `EffectMiscValue*`, extracts supported
+  `SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE`, `SPELL_AURA_MOD_SKILL`,
+  `SPELL_AURA_MOD_SKILL_TALENT`, `SPELL_AURA_MOD_ATTACK_POWER`, and
+  `SPELL_AURA_MOD_REPUTATION_GAIN` effects, and applies them before initial
+  self-spawn/map registration. Focused coverage proves Human Spirit Spirit
+  rounding plus positive stat delta fields, Sword Specialization permanent
+  skill-bonus packing/effective combat skill, and Diplomacy quest reputation
+  bonus.
+- Rend/hostile aura root cause was that the starter spell path treated aura
+  spells as caster-only buffs and did not own periodic creature aura ticking in
+  the map runtime. Rust now derives caster-vs-unit aura target from
+  `EffectImplicitTargetA*`, marks hostile/periodic auras with negative unit
+  aura flags, stores active DB-creature auras on the map-owned creature, and
+  advances periodic damage ticks from the map update loop with a generic
+  `PeriodicDamageAura -> PeriodicDamageTick` path that carries school,
+  absorb/resist slots, threat, and `SMSG_PERIODICAURALOG` payload fields.
+  Rank 1 Rend's fixture is corrected to the CMaNGOS DB value
+  `EffectBasePoints1 = 4`, producing 5 damage per tick via the shared effect
+  amount calculation. A later correction matches CMaNGOS' visible slot split:
+  positive auras start at slots `0..31`, hostile auras start at `32..47`, so
+  the real 1.12 target frame can see Rend as a target debuff. Periodic ticking
+  now allows a due tick whose `next_tick_at` is exactly the aura expiry time,
+  then removes the aura, giving Rank 1 Rend its expected three 5-damage ticks
+  over 9 seconds. A further cleanup sends expiry as one combined creature
+  values update containing both aura clears and health/dynamic-flag state,
+  instead of two same-guid update blocks in one packet; creature death updates
+  also clear visible aura fields so killed debuffed targets cannot leave stale
+  target-frame icons. Deeper timer investigation confirmed that the real 1.12.1
+  client does not provide target-debuff duration/expiration through the stock
+  aura API; `SMSG_UPDATE_AURA_DURATION` is CMaNGOS-sent only when the aura
+  target is the player, and trying to send it for a creature target did not
+  drive the target-frame cooldown swipe. Rust is back to CMaNGOS' harmful aura
+  flag shape (`0x08`); the local client-side `NorthshireAuraTimers` addon is
+  the playtest helper for the dark cooldown overlay. Charge is now classified
+  from `SPELL_EFFECT_CHARGE`,
+  runs a pre-cast navigation check against the charge collision destination,
+  moves the player near the target only after that check passes, updates both
+  session and map-owned player position, starts auto-attack/retaliation, and
+  no longer applies remote spell damage.
+- Read-only GPT-5.4 subagent investigation covered four newly reported
+  Northshire differences: critter rage, water crossing, patrol resume after
+  evade, and mob clumping. Raw-hit rage accounting, `InhabitType`-backed
+  walk/swim mmap path filters, waypoint resume after return-home, and
+  same-victim chase slot fan-out are now implemented with focused regressions.
+  Remaining movement fidelity follow-ups are liquid-aware endpoint height for
+  true swim-in-water destinations, full spawn-group formation runtime, and
+  real-client retests around Northshire creek/pathing/clumping.
 - Quest marker visibility and acceptance now apply CMaNGOS-shaped level,
 race/class, skill, reputation, prerequisite, repeatability, and negative
 exclusive-group rules using DB-backed quest template fields.
@@ -327,6 +601,17 @@ extended with Webwood-specific hardcoding.
 
 ## Tests Run
 
+- Post item-query tooltip/stat fix: `cargo fmt --check`,
+  `cargo test -p wow-network item_query_response_includes_cmangos_stats_damage_and_spells --lib`,
+  and `cargo check -p wow-network` passed. `.\scripts\test-rust.cmd` passed
+  fmt, clippy/checks, workspace tests, doc-tests, and 431 `wow-network`
+  tests, then failed only at the final `cargo build -p authserver` because
+  the live local `authserver.exe` locked `target\debug\authserver.exe`.
+  Replacement verification passed: `cargo build -p authserver --target-dir
+  target/codex-verify` and `cargo build -p worldserver --target-dir
+  target/codex-verify`. Follow-up Janos cache investigation reran
+  `cargo test -p wow-network item_query_response_includes_cmangos_stats_damage_and_spells --lib`
+  and `cargo check -p worldserver`; both passed.
 - Baseline before the latest `RequiredCondition` edits:
 `.\scripts\test-rust.cmd` passed.
 - `cargo fmt --check` passed.
@@ -626,9 +911,226 @@ process locks `target\debug\authserver.exe`.
 - Replacement verification after that lock passed:
 `cargo build -p authserver --target-dir target/codex-verify` and
 `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Northshire quest/rest polish: `cargo fmt --check`, `cargo check -p
+  wow-network`, `cargo check -p starter-zone-flow-test`, and focused tests
+  `cargo test -p wow-network questgiver_list_hides_visible_but_untakeable_start_quests --lib`,
+  `cargo test -p wow-network quest_log_refresh_rewrites_shifted_slots_after_sorted_insert --lib`,
+  `cargo test -p wow-network self_spawn_update_includes_cmangos_player_vitals_and_defaults --lib`,
+  and `cargo test -p wow-network set_rest_start_packet_matches_cmangos_zero_payload --lib`
+  passed. Latest `.\scripts\test-rust.cmd` passed fmt, clippy/checks,
+  workspace tests, doc-tests, and 419 `wow-network` tests, then failed only at
+  the final `cargo build -p authserver` because the live local
+  `authserver.exe` locked `target\debug\authserver.exe`. Replacement
+  verification passed: `cargo build -p authserver --target-dir
+  target/codex-verify` and `cargo build -p worldserver --target-dir
+  target/codex-verify`.
+- Post Northshire quest completion/slot follow-up: `cargo fmt --check`,
+  `cargo check -p wow-network`, `cargo check -p starter-zone-flow-test`, and
+  focused tests `cargo test -p wow-network quest_log_slots_append_new_quests_without_sorted_shift --lib`,
+  `cargo test -p wow-network quest_accept_requires_free_quest_log_slot --lib`,
+  `cargo test -p wow-network quest_log_refresh_rewrites_shifted_slots_after_sorted_insert --lib`,
+  `cargo test -p wow-network quest_complete_packet_matches_vanilla_reward_shape --lib`,
+  `cargo test -p wow-network quest_request_items_packet_includes_required_items_and_complete_flags --lib`,
+  `cargo test -p wow-network completable_item_turnins_use_request_items_before_offer_reward --lib`,
+  and `cargo test -p wow-network questgiver_list_hides_visible_but_untakeable_start_quests --lib`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 422 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Heroic Strike next-swing queue fix: `cargo fmt --check`, `cargo check
+  -p wow-network`, focused tests
+  `cargo test -p wow-network heroic_strike_can_queue_before_target_is_in_melee_range -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing -- --nocapture`,
+  `cargo test -p wow-network starter_melee_spell_failure_uses_melee_validity_before_damage -- --nocapture`,
+  and `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 424 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Heroic Strike execution-time power recheck: `cargo fmt --check`,
+  `cargo check -p wow-network`, focused tests
+  `cargo test -p wow-network heroic_strike_queue_rechecks_rage_when_next_swing_fires -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_queue_consumes_on_next_swing_only_once -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_can_queue_before_target_is_in_melee_range -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing -- --nocapture`,
+  `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue -- --nocapture`,
+  and `cargo test -p wow-network starter_melee_spell_failure_uses_melee_validity_before_damage -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 425 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Heroic Strike queue UI packet-shape fix: `cargo fmt --check`, `cargo
+  check -p wow-network`, focused tests
+  `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_can_queue_before_target_is_in_melee_range -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_queue_rechecks_rage_when_next_swing_fires -- --nocapture`,
+  `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot -- --nocapture`,
+  and `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue -- --nocapture`
+  passed.
+- Post Heroic Strike queued-action release fix: `cargo fmt --check`, `cargo
+  check -p wow-network`, focused tests
+  `cargo test -p wow-network heroic_strike_queue_consumes_on_next_swing_only_once -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_cast_sends_spell_start_until_next_swing -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_queue_rechecks_rage_when_next_swing_fires -- --nocapture`,
+  `cargo test -p wow-network heroic_strike_can_queue_before_target_is_in_melee_range -- --nocapture`,
+  and `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 425 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post raw-hit rage fix: `cargo fmt --check`, `cargo check -p wow-network`,
+  focused tests
+  `cargo test -p wow-network map_runtime_db_creature_melee_rage_damage_uses_preclamp_hit_for_critter -- --nocapture`,
+  `cargo test -p wow-network combat_dummy_lethal_white_swing_grants_rage_from_raw_hit -- --nocapture`,
+  `cargo test -p wow-network map_runtime_db_creature_damage_preserves_attacker_state_overkill_damage -- --nocapture`,
+  and `cargo test -p wow-network heroic_strike_queue_rechecks_rage_when_next_swing_fires -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 427 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Northshire movement parity fixes: `cargo fmt --check`, `cargo check -p
+  wow-network`, focused tests
+  `cargo test -p wow-network db_creature_mmap_path_filter_uses_cmangos_inhabit_type -- --nocapture`,
+  `cargo test -p wow-network waypoint_creature_return_home_resumes_patrol_after_evade -- --nocapture`,
+  `cargo test -p wow-network map_runtime_chase_destination_fans_out_same_victim_attackers -- --nocapture`,
+  `cargo test -p wow-network db_creature_chase_motion_advances_position_over_time_before_reach -- --nocapture`,
+  and `cargo test -p wow-network db_creature_mmap_path_corner_uses_local_detour_data_when_available -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 430 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post player-death mob evade fix: `cargo fmt --check -p wow-network`,
+  `cargo check -p wow-network`, focused regression
+  `cargo test -p wow-network player_death_evades_active_db_creature_and_starts_return_home --lib -- --nocapture`,
+  and focused return-home suite
+  `cargo test -p wow-network return_home --lib -- --nocapture` passed. Full
+  baseline also passed with
+  `$env:CARGO_TARGET_DIR='target\codex-evade-check'; .\scripts\test-rust.cmd`,
+  including 442 `wow-network` tests and final authserver/worldserver builds.
+- Post Battle Shout/GCD lifecycle fix: `cargo fmt --check`,
+  `cargo check -p wow-network`, focused tests
+  `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot -- --nocapture`,
+  `cargo test -p wow-network starter_spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue -- --nocapture`,
+  and `cargo test -p wow-network starter_spell_support_is_derived_from_cmangos_spell_template_fields -- --nocapture`
+  passed. Latest `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 430 `wow-network` tests, then failed only at the
+  final `cargo build -p authserver` because the live local `authserver.exe`
+  locked `target\debug\authserver.exe`. Replacement verification passed:
+  `cargo build -p authserver --target-dir target/codex-verify` and
+  `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post passive-spell bootstrap fix: `cargo fmt --check`,
+  `cargo check -p wow-network`, and `cargo test -p wow-network passive`
+  passed. A normal `.\scripts\test-rust.cmd` passed clippy/checks, workspace
+  tests, doc-tests, and 434 `wow-network` tests, then failed only at final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`. Replacement full baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-passive-check'; .\scripts\test-rust.cmd`.
+- Post passive UI-field correction: verified CMaNGOS packs
+  `SPELL_AURA_MOD_SKILL_TALENT` as permanent skill bonus in the high half of
+  `PLAYER_SKILL_BONUS_INDEX` and exposes positive stat modifiers via
+  `PLAYER_FIELD_POSSTAT*` as integer update values, not float bit patterns.
+  Updated Rust accordingly. `cargo fmt --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network passive`, and
+  `$env:CARGO_TARGET_DIR='target\codex-passive-check'; .\scripts\test-rust.cmd`
+  passed, including 437 `wow-network` tests.
+- Post item tooltip/random-property fix: `cargo fmt --check`, `cargo check -p
+  wow-db`, `cargo check -p wow-network`, focused tests `cargo test -p
+  wow-network item_random_properties --lib` and `cargo test -p wow-network
+  random_property --lib`, and full `cargo test -p wow-network --lib` passed
+  with 439 tests after the nearby dirty spell/aura test fixtures were brought
+  back into sync. Full baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-random-item-final-check'; .\scripts\test-rust.cmd`.
+  During final verification, the already-started DB-creature aura slice in the
+  dirty tree needed a small map bridge/borrow/lint/test-fixture cleanup before
+  clippy and all-target tests would pass; that cleanup is compile hygiene, not
+  part of the item tooltip behavior.
+- Post Rend/Charge fix: pre-change focused starter-spell tests passed; after
+  the fix, `cargo fmt --check`, `cargo check -p wow-network`,
+  `cargo test -p wow-network starter_spell --lib -- --nocapture`,
+  `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`,
+  and `cargo test -p wow-network charge_moves_player_to_target_instead_of_dealing_remote_damage --lib -- --nocapture`
+  passed. Full baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-rend-charge-check'; .\scripts\test-rust.cmd`,
+  including clippy/checks, workspace tests, doc-tests, and 439 `wow-network`
+  tests.
+- Post generic Rend periodic-damage tick correction: `cargo fmt --package
+  wow-network`, `cargo check -p wow-network`, `cargo test -p wow-network
+  periodic_damage_tick_uses_aura_amount_without_armor_reduction --lib --
+  --nocapture`, `cargo test -p wow-network
+  rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`, and
+  `cargo test -p wow-network starter_spell --lib -- --nocapture` passed.
+- Post Rend target-frame/final-tick and Charge navigation correction:
+  `cargo fmt --package wow-network`, `cargo fmt --check -p wow-network`,
+  `cargo check -p wow-network`, focused tests
+  `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`,
+  `cargo test -p wow-network charge_moves_player_to_target_instead_of_dealing_remote_damage --lib -- --nocapture`,
+  `cargo test -p wow-network charge_cast_fails_before_movement_when_navigation_is_blocked --lib -- --nocapture`,
+  `cargo test -p wow-network starter_spell --lib -- --nocapture`, and
+  `cargo test -p wow-network periodic_damage_tick_uses_aura_amount_without_armor_reduction --lib -- --nocapture`
+  passed. `.\scripts\test-rust.cmd` passed clippy/checks, workspace tests,
+  doc-tests, and 441 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`; replacement builds passed with
+  `cargo build -p authserver --target-dir target/codex-rend-charge-verify` and
+  `cargo build -p worldserver --target-dir target/codex-rend-charge-verify`.
+- Post Rend stuck-icon cleanup: `cargo fmt --check -p wow-network`,
+  `cargo check -p wow-network`, focused tests
+  `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`
+  and
+  `cargo test -p wow-network db_creature_death_update_clears_cmangos_death_fields --lib -- --nocapture`
+  passed. `.\scripts\test-rust.cmd` passed clippy/checks, workspace tests,
+  doc-tests, and 442 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`; replacement builds passed with
+  `cargo build -p authserver --target-dir target/codex-rend-charge-verify` and
+  `cargo build -p worldserver --target-dir target/codex-rend-charge-verify`.
+- Post Rend target debuff timer cleanup: `cargo fmt --package wow-network`,
+  `cargo fmt --check -p wow-network`, `cargo check -p wow-network`, focused
+  tests
+  `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`,
+  `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot --lib -- --nocapture`,
+  `cargo test -p wow-network starter_spell --lib -- --nocapture`, and
+  `cargo test -p wow-network charge_cast_fails_before_movement_when_navigation_is_blocked --lib -- --nocapture`
+  passed. `.\scripts\test-rust.cmd` passed clippy/checks, workspace tests,
+  doc-tests, and 442 `wow-network` tests, then failed only at the final
+  `cargo build -p authserver` because the live local `authserver.exe` locked
+  `target\debug\authserver.exe`; replacement builds passed with
+  `cargo build -p authserver --target-dir target/codex-rend-charge-verify` and
+  `cargo build -p worldserver --target-dir target/codex-rend-charge-verify`.
+- Post target-debuff timer deep dive: reverted the ineffective creature-target
+  `SMSG_UPDATE_AURA_DURATION`/timed-flag server workaround back to CMaNGOS'
+  harmful aura flag shape, and added local client addon
+  `C:\World of Warcraft Classic\Interface\AddOns\NorthshireAuraTimers` for
+  cooldown swipes on known finite target debuffs. Retest after `/reload` or
+  client restart. Rust verification after the revert: `cargo fmt --package
+  wow-network`, `cargo fmt --check -p wow-network`, `cargo check -p
+  wow-network`, focused tests
+  `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib -- --nocapture`,
+  `cargo test -p wow-network battle_shout_uses_spell_template_gcd_cost_and_aura_slot --lib -- --nocapture`,
+  and
+  `cargo test -p wow-network charge_cast_fails_before_movement_when_navigation_is_blocked --lib -- --nocapture`
+  passed.
 
 ## Known Follow-Ups
 
+- Continue environmental/world-ambience implementation after event spawn
+  gating: add runtime game-event start/stop create/destroy diffs for loaded
+  grids, `game_event_creature_data` overlays, event pools, `game_event_quest`
+  and condition evaluator integration, DB script waypoint `TALK`/`EMOTE`
+  support, creature addon ambient emote state, fall damage, liquid-status bridge
+  for drowning/fatigue/lava, and DB/type-flag-driven ghost visibility proof.
 - Commit/push the local Codex Run action setup if it should be shared with
 future checkouts.
 - Continue quest availability parity from CMaNGOS `CanTakeQuest` /
@@ -645,6 +1147,32 @@ semantics are not all wired yet.
 after the dynamic-flag refresh lands.
 - Continue warrior level 1-6 spell/GCD/resource/skill behavior, aggro/leash
 parity, and patrol runtime stability per `docs/playable_gate_board.md`.
+- GitHub issue #66 tracks the remaining DoT lethal outcome gap: periodic
+  DB-creature aura ticks can now kill a creature and broadcast the death
+  update, but the map tick path does not yet run the full DB creature corpse
+  loot/reward preparation that direct player damage uses. If Rend/DoT kills
+  need loot/XP/quest credit in real-client playtesting, wire lethal aura ticks
+  through the same map-owned death/corpse reward owner.
+- GitHub issue #67 tracks remaining Charge path validation parity: Rust now
+  runs a pre-cast vmap LOS plus Detour mmap path gate to the collision
+  destination before movement, but does not yet wire `spell_template.rangeIndex`
+  / `SpellRange.dbc` to enforce CMaNGOS' `range * 1.5f` path-length limit or
+  `PATHFIND_SHORT` distinction exactly.
+- Real-client passive smoke: login as Human Warrior and verify The Human Spirit
+  changes Spirit/regen, Sword/Mace specialization show as +5 skill bonuses
+  without changing base skill rows after relog, and Diplomacy reputation reward
+  gains are increased.
+- Real-client item smoke: restart worldserver, relaunch the client after the
+  WDB cache rotation, buy Janos Hammerknuckle weapons and an Opal Ring-style
+  random-property item, then relog once. Expected: weapon damage/DPS/swing
+  timer show from template data, and random-property items show their suffix
+  stats/name from persisted instance enchantments. Follow-up if needed:
+  verify equipped random-property enchantments also contribute to derived
+  character stats/combat calculations, not just item tooltip display.
+- Movement parity follow-ups after the Northshire pass: add liquid-aware
+  endpoint height for creatures actually swimming in water, implement full
+  spawn-group formation runtime, and real-client retest Defias/Northshire
+  creek crossing plus same-victim chase spacing.
 - Real-client smoke Teldrassil or another non-map-0 starter region after the
 fresh mmap generation: confirm hostile spiders aggro, player right-click
 melee no longer reports false out-of-range, and vmap LOS does not introduce a
@@ -658,12 +1186,16 @@ no configured missing-mmap fallback, no false melee out-of-range, and no
 visible hover/sink/snap on Northshire/Teldrassil slopes, WMO floors, caves,
 ramps, or return-home arrival.
 - Real-client neutral-mob combat check: attack a neutral creature from melee
-edge and while slightly behind/side-on. Expected result is one chase/approach
-that keeps facing the player, no rapid facing flicker, no backward slide, and
-normal melee swings once in range.
+  edge and while slightly behind/side-on. Expected result is one chase/approach
+  that keeps facing the player, no rapid facing flicker, no backward slide, and
+  normal melee swings once in range.
+- Real-client player-death evade smoke: let one or more hostile mobs kill the
+  player, then watch from the corpse/release view. Expected result: mobs stop
+  attacking, reset, and run back to their home or interrupted waypoint resume
+  point at normal CMaNGOS run-home speed instead of staring at the body.
 - Real-client hostile-faction smoke: retest Teldrassil Webwood Spider/Lurker
-and another non-map-0 hostile creature. Expected result is automatic sight
-aggro from real DBC faction reaction, followed by the existing mmap-backed
+  and another non-map-0 hostile creature. Expected result is automatic sight
+  aggro from real DBC faction reaction, followed by the existing mmap-backed
 chase/leash pathing.
 - Multiplayer party follow-ups: persist group rows or intentionally document
   runtime-only party scope, add timed/auto-pass handling for mid-roll
@@ -711,6 +1243,8 @@ chase/leash pathing.
 - `crates/wow-network/src/world/gm_commands.rs`
 - `crates/wow-network/src/world/loot.rs`
 - `crates/wow-network/src/world/inventory.rs`
+- `crates/wow-network/src/world/entities/item.rs`
+- `crates/wow-network/src/world/packet_builders/item_query.rs`
 - `crates/wow-network/src/world/vendors.rs`
 - `crates/wow-network/src/world/packet_builders/loot.rs`
 - `crates/wow-network/src/world/maps/map/creature_loot.rs`
@@ -718,6 +1252,7 @@ chase/leash pathing.
 - `crates/wow-network/src/world/tests.rs`
 - `crates/wow-db/src/character/state.rs`
 - `crates/wow-network/src/world/globals/object_mgr.rs`
+- `crates/wow-db/src/character/inventory.rs`
 - `crates/wow-db/src/world_data.rs`
 - `docs/playable_gate_board.md`
 - `docs/playable_execution_roadmap.md`

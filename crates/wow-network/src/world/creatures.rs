@@ -51,7 +51,7 @@ fn build_creature_query_response(entry: u32, db_template: Option<&CreatureTempla
     body.push(0);
     body.push(0);
     write_c_string(&mut body, template.subname);
-    body.extend_from_slice(&0u32.to_le_bytes()); // type flags
+    body.extend_from_slice(&template.creature_type_flags.to_le_bytes());
     body.extend_from_slice(&template.creature_type.to_le_bytes());
     body.extend_from_slice(&(template.family as u32).to_le_bytes());
     body.extend_from_slice(&template.rank.to_le_bytes());
@@ -71,6 +71,7 @@ struct FixtureCreatureTemplate {
 struct CreatureQueryTemplate<'a> {
     name: &'a str,
     subname: &'a str,
+    creature_type_flags: u32,
     creature_type: u32,
     family: i32,
     rank: u32,
@@ -87,6 +88,7 @@ fn creature_query_template<'a>(
         return Some(CreatureQueryTemplate {
             name: &template.name,
             subname: template.subname.as_deref().unwrap_or(""),
+            creature_type_flags: template.creature_type_flags,
             creature_type: template.creature_type,
             family: template.family,
             rank: template.rank,
@@ -100,6 +102,7 @@ fn creature_query_template<'a>(
     Some(CreatureQueryTemplate {
         name: template.name,
         subname: template.subname,
+        creature_type_flags: 0,
         creature_type: 7,
         family: 0,
         rank: 0,

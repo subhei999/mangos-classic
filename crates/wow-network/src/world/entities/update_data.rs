@@ -29,10 +29,12 @@ async fn send_self_spawn_update(
 struct SelfSpawnUpdate<'a> {
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
+    base_world_stats: &'a PlayerWorldStats,
     world_stats: &'a PlayerWorldStats,
     skills: &'a [CharacterSkill],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &'a [EquippedItemTemplate],
+    active_auras: &'a [ActiveAura],
     nearby_creatures: &'a [DbCreatureRuntime],
     nearby_gameobjects: &'a [DbGameObjectRuntime],
     nearby_player_corpses: &'a [PlayerCorpseRuntime],
@@ -144,10 +146,12 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
         guid,
         character,
         update.inventory,
+        update.base_world_stats,
         update.world_stats,
         update.skills,
         update.quest_statuses,
         update.equipped_templates,
+        update.active_auras,
     )?;
 
     let creature_blocks = build_db_creature_create_blocks(update.nearby_creatures)?;

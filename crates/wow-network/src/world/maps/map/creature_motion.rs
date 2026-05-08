@@ -260,6 +260,8 @@ impl MapRuntime {
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
+        let chase_destination =
+            self.db_creature_chase_slot_destination(creature_guid, target, target_position);
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
@@ -270,6 +272,7 @@ impl MapRuntime {
             creature,
             target,
             target_position,
+            chase_destination,
             now,
         )?;
         let snapshot = creature.clone();
@@ -480,5 +483,73 @@ impl MapRuntime {
             self.refresh_grid_state(old_grid);
         }
         self.refresh_grid_state(new_grid);
+    }
+
+    fn db_creature_chase_slot_destination(
+        &self,
+        creature_guid: ObjectGuid,
+        target: ObjectGuid,
+        target_position: WorldPosition,
+    ) -> Option<WorldPosition> {
+        let creature = self.creatures.get(&creature_guid.raw())?;
+        let stop_distance = db_creature_chase_stop_distance(creature);
+        let base_angle = db_creature_chase_angle_from_target(creature.current_position, target_position);
+        let fan_angle = self.db_creature_chase_fan_angle(
+            creature_guid,
+            target,
+            target_position,
+            stop_distance,
+            base_angle,
+        );
+        Some(db_creature_chase_near_point(
+            target_position,
+            stop_distance,
+            fan_angle,
+        ))
+    }
+
+    fn db_creature_chase_fan_angle(
+        &self,
+        creature_guid: ObjectGuid,
+        target: ObjectGuid,
+        target_position: WorldPosition,
+        stop_distance: f32,
+        base_angle: f32,
+    ) -> f32 {
+        const FAN_OUT_RADIUS_YARDS: f32 = 1.0;
+        const FAN_ANGLE_STEP: f32 = std::f32::consts::PI / 5.0;
+        let mut angle = base_angle;
+        for step in 1..=6 {
+            let candidate = db_creature_chase_near_point(target_position, stop_distance, angle);
+            let collides = self.creatures.values().any(|other| {
+                if other.guid() == creature_guid {
+                    return false;
+                }
+                let Some(combat) = self.active_creature_combats.get(&other.guid().raw()) else {
+                    return false;
+                };
+                if combat.victim != target {
+                    return false;
+                }
+                let occupied_position = match &other.motion {
+                    CreatureMotionState::Idle => other.current_position,
+                    CreatureMotionState::Chase(chase) if chase.target == target => chase.destination,
+                    _ => return false,
+                };
+                distance_2d(
+                    occupied_position.x,
+                    occupied_position.y,
+                    candidate.x,
+                    candidate.y,
+                ) <= FAN_OUT_RADIUS_YARDS
+            });
+            if !collides {
+                return angle;
+            }
+            let direction = if step % 2 == 0 { -1.0 } else { 1.0 };
+            let magnitude = ((step + 1) / 2) as f32;
+            angle = normalize_orientation(base_angle + direction * FAN_ANGLE_STEP * magnitude);
+        }
+        angle
     }
 }

@@ -13,6 +13,7 @@
             next_waypoint_move_at,
             waypoint_next_index: 0,
             waypoint_forward: true,
+            waypoint_resume_position: None,
             already_called_assistance: false,
             next_spline_id: 0,
             health,
@@ -33,6 +34,7 @@
             loot_current_looter: None,
             loot_allowed_players: HashSet::new(),
             loot_method: None,
+            active_auras: Vec::new(),
         }
     }
 
@@ -87,6 +89,7 @@
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_waypoint_move_at = None;
+                creature.waypoint_resume_position = None;
             }
         }
         creature
@@ -289,6 +292,7 @@
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
         self.next_waypoint_move_at = None;
+        self.waypoint_resume_position = None;
         self.already_called_assistance = false;
     }
 
@@ -337,6 +341,7 @@
         self.next_waypoint_move_at = None;
         self.waypoint_next_index = 0;
         self.waypoint_forward = true;
+        self.waypoint_resume_position = None;
         self.already_called_assistance = false;
     }
 
@@ -370,6 +375,7 @@
         self.next_waypoint_move_at = Self::initial_waypoint_move_at(&self.spawn);
         self.waypoint_next_index = 0;
         self.waypoint_forward = true;
+        self.waypoint_resume_position = None;
         self.already_called_assistance = false;
     }
 

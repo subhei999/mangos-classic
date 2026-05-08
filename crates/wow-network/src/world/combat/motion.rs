@@ -104,12 +104,20 @@ fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Ins
                 creature.current_position = return_home.destination;
                 creature.motion = CreatureMotionState::Idle;
                 creature.already_called_assistance = false;
-                creature.next_random_move_at = Some(
-                    now + Duration::from_millis(db_creature_random_pause_millis(
-                        creature.guid().raw(),
-                        creature.next_spline_id,
-                    )),
-                );
+                creature.waypoint_resume_position = None;
+                if creature.has_waypoint_movement() {
+                    creature.next_random_move_at = None;
+                    creature.next_waypoint_move_at = Some(now);
+                } else {
+                    creature.next_random_move_at = Some(
+                        now + Duration::from_millis(db_creature_random_pause_millis(
+                            creature.guid().raw(),
+                            creature.next_spline_id,
+                        )),
+                    );
+                    creature.next_waypoint_move_at =
+                        DbCreatureRuntime::initial_waypoint_move_at(&creature.spawn);
+                }
                 return;
             };
             creature.current_position = position;
@@ -193,6 +201,7 @@ fn start_db_creature_random_motion_runtime(
     let Some(path_result) = db_creature_path_to_destination(
         navigation,
         geometry,
+        creature,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -345,6 +354,7 @@ fn db_creature_waypoint_buffered_path(
         let path_result = db_creature_path_to_destination(
             navigation,
             geometry,
+            creature,
             current_start,
             raw_destination,
             CreaturePathMode::Full,
@@ -391,6 +401,7 @@ fn start_db_creature_chase_motion(
         creature,
         target,
         target_position,
+        None,
         now,
     )
 }
@@ -401,17 +412,33 @@ fn start_db_creature_chase_motion_runtime(
     creature: &mut DbCreatureRuntime,
     target: ObjectGuid,
     target_position: WorldPosition,
+    chase_destination: Option<WorldPosition>,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let start = creature.current_position;
     let stop_distance = db_creature_chase_stop_distance(creature);
-    let path_result = db_creature_chase_path(
-        navigation,
-        geometry,
-        start,
-        target_position,
-        stop_distance,
-    )?;
+    if creature.has_waypoint_movement() && creature.waypoint_resume_position.is_none() {
+        creature.waypoint_resume_position = Some(start);
+    }
+    let path_result = if let Some(chase_destination) = chase_destination {
+        db_creature_path_to_destination(
+            navigation,
+            geometry,
+            creature,
+            start,
+            chase_destination,
+            CreaturePathMode::Full,
+        )?
+    } else {
+        db_creature_chase_path(
+            navigation,
+            geometry,
+            creature,
+            start,
+            target_position,
+            stop_distance,
+        )?
+    };
     let path = path_result.points;
     let destination = *path.last()?;
     if let CreatureMotionState::Chase(chase) = &creature.motion {
@@ -474,18 +501,27 @@ fn start_db_creature_return_home_motion_runtime(
         return None;
     }
     let start = creature.current_position;
-    let raw_destination = creature.home_position;
+    let raw_destination = creature
+        .waypoint_resume_position
+        .filter(|_| creature.has_waypoint_movement())
+        .unwrap_or(creature.home_position);
     if start.map_id != raw_destination.map_id
         || !world_position_is_finite(start)
         || !world_position_is_finite(raw_destination)
     {
         creature.current_position = raw_destination;
         creature.motion = CreatureMotionState::Idle;
+        creature.waypoint_resume_position = None;
+        if creature.has_waypoint_movement() {
+            creature.next_random_move_at = None;
+            creature.next_waypoint_move_at = Some(now);
+        }
         return None;
     }
     let path_result = db_creature_path_to_destination(
         navigation,
         geometry,
+        creature,
         start,
         raw_destination,
         CreaturePathMode::Full,
@@ -496,6 +532,11 @@ fn start_db_creature_return_home_motion_runtime(
     if move_distance <= f32::EPSILON {
         creature.current_position = destination;
         creature.motion = CreatureMotionState::Idle;
+        creature.waypoint_resume_position = None;
+        if creature.has_waypoint_movement() {
+            creature.next_random_move_at = None;
+            creature.next_waypoint_move_at = Some(now);
+        }
         return None;
     }
     let duration = db_creature_path_motion_duration(start, &path, creature.run_speed());
@@ -567,6 +608,7 @@ enum DbCreaturePathBuild {
 fn db_creature_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
+    creature: &DbCreatureRuntime,
     start: WorldPosition,
     target_position: WorldPosition,
     stop_distance: f32,
@@ -590,6 +632,7 @@ fn db_creature_chase_path(
     let mut path = db_creature_path_to_destination(
         navigation,
         geometry,
+        creature,
         start,
         target_position,
         CreaturePathMode::Full,
@@ -605,6 +648,33 @@ fn db_creature_chase_path(
 fn db_creature_chase_stop_distance(creature: &DbCreatureRuntime) -> f32 {
     combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS)
         * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
+}
+
+fn db_creature_chase_angle_from_target(
+    creature_position: WorldPosition,
+    target_position: WorldPosition,
+) -> f32 {
+    let dx = creature_position.x - target_position.x;
+    let dy = creature_position.y - target_position.y;
+    if dx.abs() <= f32::EPSILON && dy.abs() <= f32::EPSILON {
+        target_position.orientation
+    } else {
+        dy.atan2(dx)
+    }
+}
+
+fn db_creature_chase_near_point(
+    target_position: WorldPosition,
+    distance: f32,
+    angle: f32,
+) -> WorldPosition {
+    WorldPosition::new(
+        target_position.map_id,
+        target_position.x + angle.cos() * distance,
+        target_position.y + angle.sin() * distance,
+        target_position.z,
+        normalize_orientation(angle + std::f32::consts::PI),
+    )
 }
 
 fn db_creature_can_use_straight_chase_path(
@@ -654,12 +724,13 @@ fn db_creature_cut_chase_path(
 fn db_creature_path_to_destination(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
+    creature: &DbCreatureRuntime,
     start: WorldPosition,
     target_position: WorldPosition,
     mode: CreaturePathMode,
 ) -> Option<DbCreaturePath> {
     let target_position = db_creature_ground_destination(geometry, target_position)?;
-    match db_creature_mmap_path(navigation, start, target_position, mode) {
+    match db_creature_mmap_path(navigation, creature, start, target_position, mode) {
         DbCreaturePathBuild::Path(path) => {
             debug_assert!(!path.flags.contains(DbCreaturePathFlags::NOPATH));
             Some(path)
@@ -781,11 +852,79 @@ fn db_creature_pathing_check(
     DbCreatureNavigationResult::Clear
 }
 
+fn player_charge_navigation_check(
+    navigation: &DbCreatureNavigationGuardrail,
+    start: WorldPosition,
+    destination: WorldPosition,
+) -> DbCreatureNavigationResult {
+    if start.map_id != destination.map_id {
+        return DbCreatureNavigationResult::MapMismatch;
+    }
+    if !world_position_is_finite(start) || !world_position_is_finite(destination) {
+        return DbCreatureNavigationResult::InvalidCoordinate;
+    }
+    if !navigation.line_of_sight_clear || !db_creature_has_line_of_sight(navigation, start, destination)
+    {
+        return DbCreatureNavigationResult::LineOfSightBlocked;
+    }
+    if !navigation.path_available || !player_charge_has_valid_path(navigation, start, destination) {
+        return DbCreatureNavigationResult::PathUnavailable;
+    }
+    DbCreatureNavigationResult::Clear
+}
+
 fn world_position_is_finite(position: WorldPosition) -> bool {
     position.x.is_finite()
         && position.y.is_finite()
         && position.z.is_finite()
         && position.orientation.is_finite()
+}
+
+fn player_charge_has_valid_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    start: WorldPosition,
+    destination: WorldPosition,
+) -> bool {
+    if navigation.world_data_files.mmap_tiles.is_empty() {
+        return navigation.world_data_files.data_dir_for_native.is_none()
+            && !navigation.world_data_files.maps_available;
+    }
+
+    let Some(data_dir) = navigation.world_data_files.data_dir_for_native.as_ref() else {
+        return false;
+    };
+    let map_id = start.map_id;
+    let Some(start_tile) = mmap_tile_for_position(start) else {
+        return false;
+    };
+    let Some(destination_tile) = mmap_tile_for_position(destination) else {
+        return false;
+    };
+    if !navigation.world_data_files.has_mmap_support_for_map(map_id)
+        || !navigation
+            .world_data_files
+            .has_mmap_tile(map_id, start_tile.0, start_tile.1)
+        || !navigation.world_data_files.has_mmap_tile(
+            map_id,
+            destination_tile.0,
+            destination_tile.1,
+        )
+    {
+        return false;
+    }
+
+    let path = native_mmap_find_path(
+        data_dir,
+        start,
+        destination,
+        start_tile,
+        destination_tile,
+        NativeMmapPathFilter::ground(),
+    );
+    matches!(
+        path.status,
+        NativeMmapPathStatus::Normal | NativeMmapPathStatus::Incomplete
+    ) && path.points.len() >= 2
 }
 
 fn db_creature_has_line_of_sight(
@@ -902,10 +1041,12 @@ fn mmap_tile_for_position(position: WorldPosition) -> Option<(u32, u32)> {
 #[cfg(test)]
 fn db_creature_mmap_next_path_corner(
     navigation: &DbCreatureNavigationGuardrail,
+    creature: &DbCreatureRuntime,
     start: WorldPosition,
     target_position: WorldPosition,
 ) -> Option<WorldPosition> {
-    match db_creature_mmap_path(navigation, start, target_position, CreaturePathMode::Full) {
+    match db_creature_mmap_path(navigation, creature, start, target_position, CreaturePathMode::Full)
+    {
         DbCreaturePathBuild::Path(path) => path.points.into_iter().next(),
         DbCreaturePathBuild::NoPath(_) | DbCreaturePathBuild::Unavailable => None,
     }
@@ -913,6 +1054,7 @@ fn db_creature_mmap_next_path_corner(
 
 fn db_creature_mmap_path(
     navigation: &DbCreatureNavigationGuardrail,
+    creature: &DbCreatureRuntime,
     start: WorldPosition,
     target_position: WorldPosition,
     mode: CreaturePathMode,
@@ -943,6 +1085,7 @@ fn db_creature_mmap_path(
         target_position,
         (start_tile_x, start_tile_y),
         (target_tile_x, target_tile_y),
+        db_creature_mmap_path_filter(creature),
     );
     let flags = match native_path.status {
         NativeMmapPathStatus::Normal => DbCreaturePathFlags::NORMAL,
@@ -968,6 +1111,37 @@ fn db_creature_mmap_path(
             points: path,
         }),
         None => DbCreaturePathBuild::NoPath(DbCreaturePathFlags::NOPATH),
+    }
+}
+
+const INHABIT_GROUND: u32 = 0x01;
+const INHABIT_WATER: u32 = 0x02;
+const INHABIT_AIR: u32 = 0x04;
+const INHABIT_ANYWHERE: u32 = INHABIT_GROUND | INHABIT_WATER | INHABIT_AIR;
+
+fn db_creature_mmap_path_filter(creature: &DbCreatureRuntime) -> NativeMmapPathFilter {
+    let inhabit_type = db_creature_normalized_inhabit_type(creature.spawn.template.inhabit_type);
+    let mut include_flags = 0;
+    if inhabit_type & INHABIT_GROUND != 0 {
+        include_flags |= NativeMmapPathFilter::NAV_GROUND;
+    }
+    if inhabit_type & INHABIT_WATER != 0 {
+        include_flags |= NativeMmapPathFilter::NAV_WATER | NativeMmapPathFilter::NAV_MAGMA_SLIME;
+    }
+    if include_flags == 0 {
+        include_flags = NativeMmapPathFilter::NAV_GROUND;
+    }
+    NativeMmapPathFilter {
+        include_flags,
+        exclude_flags: 0,
+    }
+}
+
+fn db_creature_normalized_inhabit_type(inhabit_type: u32) -> u32 {
+    if inhabit_type == 0 || inhabit_type > INHABIT_ANYWHERE {
+        INHABIT_ANYWHERE
+    } else {
+        inhabit_type
     }
 }
 

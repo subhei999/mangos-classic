@@ -1,6 +1,162 @@
 // Shared DB-creature damage authority and observer packet production.
 
 impl MapRuntime {
+    fn apply_db_creature_aura(
+        &mut self,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(None);
+        };
+        if !creature.is_alive() {
+            return Ok(None);
+        }
+        apply_active_aura(&mut creature.active_auras, aura);
+        let active_auras = creature.active_auras.clone();
+        let position = creature.current_position;
+        let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
+        let observer_packets = self
+            .nearby_player_guids(
+                position,
+                CREATURE_SPAWN_RADIUS_YARDS,
+                Some(caster_character_guid),
+            )
+            .into_iter()
+            .filter_map(|player_guid| {
+                self.players
+                    .get(&player_guid)
+                    .map(|player| (player.session_id, OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: update_body.clone(),
+                    }))
+            })
+            .collect();
+        Ok(Some(DbCreatureAuraUpdateEvent {
+            update_body,
+            observer_packets,
+        }))
+    }
+
+    fn advance_db_creature_auras(
+        &mut self,
+        now: Instant,
+        now_epoch_secs: u64,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let creature_guids = self.creatures.keys().copied().collect::<Vec<_>>();
+        let mut packets = Vec::new();
+        let mut threat_updates = Vec::new();
+        for raw_guid in creature_guids {
+            let creature_guid = ObjectGuid::from_raw(raw_guid);
+            let Some(creature) = self.creatures.get_mut(&raw_guid) else {
+                continue;
+            };
+            if !creature.is_alive() {
+                continue;
+            }
+
+            let before = creature.active_auras.len();
+            let mut aura_changed = false;
+
+            let mut tick_packets = Vec::new();
+            for aura in &mut creature.active_auras {
+                let Some(periodic) = aura.periodic_damage.as_mut() else {
+                    continue;
+                };
+                if aura
+                    .expires_at
+                    .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
+                {
+                    continue;
+                }
+                if now < periodic.next_tick_at {
+                    continue;
+                }
+                while periodic.next_tick_at <= now {
+                    periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
+                }
+                let tick = calculate_periodic_damage_tick(periodic, creature.health);
+                if tick.dealt_damage == 0 {
+                    continue;
+                }
+                creature.health = creature.health.saturating_sub(tick.dealt_damage);
+                if creature.health > 0 {
+                    threat_updates.push((creature_guid, aura.caster, tick.threat));
+                }
+                tick_packets.push((
+                    aura.caster,
+                    build_periodic_aura_log_body(PeriodicAuraLog {
+                        creature_guid,
+                        caster: aura.caster,
+                        spell_id: aura.spell_id,
+                        aura_name: periodic.aura_name,
+                        tick,
+                    })?,
+                ));
+                if creature.health == 0 {
+                    creature.begin_corpse(now, now_epoch_secs);
+                    self.active_creature_combats.remove(&raw_guid);
+                    self.creature_combat_leash.remove(&raw_guid);
+                    self.creature_threats.remove(&raw_guid);
+                    break;
+                }
+            }
+            creature
+                .active_auras
+                .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+            aura_changed |= creature.active_auras.len() != before;
+
+            if aura_changed || !tick_packets.is_empty() {
+                let update_body = if creature.health == 0 {
+                    build_db_creature_death_update_body(
+                        creature_guid,
+                        creature.dynamic_flags(),
+                        db_creature_unit_flags(creature, false),
+                    )?
+                } else {
+                    build_db_creature_aura_state_update_body(
+                        creature_guid,
+                        &creature.active_auras,
+                        creature.health,
+                        creature.dynamic_flags(),
+                    )?
+                };
+                let position = creature.current_position;
+                let nearby = self
+                    .nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+                    .into_iter()
+                    .filter_map(|player_guid| self.players.get(&player_guid).map(|player| player.session_id))
+                    .collect::<Vec<_>>();
+                for session_id in nearby {
+                    for (_, log_body) in &tick_packets {
+                        packets.push((
+                            session_id,
+                            OutboundWorldPacket {
+                                opcode: SMSG_PERIODICAURALOG,
+                                body: log_body.clone(),
+                            },
+                        ));
+                    }
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: update_body.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        for (creature_guid, victim, threat) in threat_updates {
+            self.add_db_creature_threat(creature_guid, victim, threat);
+            if self.active_creature_combats.contains_key(&creature_guid.raw()) {
+                self.refresh_db_creature_combat_leash(creature_guid, now);
+            }
+        }
+        Ok(packets)
+    }
+
     fn apply_db_creature_damage(
         &mut self,
         request: DbCreatureDamageRequest,
@@ -16,6 +172,11 @@ impl MapRuntime {
             .melee_outcome
             .map(|outcome| outcome.total_damage)
             .unwrap_or_else(|| request.damage.max(1));
+        let attacker_rage_damage = if request.melee_outcome.is_some() {
+            requested_damage
+        } else {
+            0
+        };
         let damage = creature.health.min(requested_damage);
         creature.health = creature.health.saturating_sub(damage);
         let is_dead = creature.health == 0;
@@ -222,6 +383,7 @@ impl MapRuntime {
         };
         Ok(Some(DbCreatureDamageEvent {
             damage,
+            attacker_rage_damage,
             creature,
             attacker_state_body,
             spell_non_melee_log_body,
@@ -231,4 +393,76 @@ impl MapRuntime {
             observer_packets,
         }))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PeriodicDamageTick {
+    school: u32,
+    requested_damage: u32,
+    dealt_damage: u32,
+    absorb: u32,
+    resist: i32,
+    threat: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PeriodicAuraLog {
+    creature_guid: ObjectGuid,
+    caster: ObjectGuid,
+    spell_id: u32,
+    aura_name: u32,
+    tick: PeriodicDamageTick,
+}
+
+fn calculate_periodic_damage_tick(
+    periodic: &PeriodicDamageAura,
+    target_health: u32,
+) -> PeriodicDamageTick {
+    let requested_damage = periodic.amount.max(1);
+    let absorb = 0;
+    let resist = 0;
+    let effective_damage = requested_damage.saturating_sub(absorb);
+    let dealt_damage = target_health.min(effective_damage);
+    let threat = dealt_damage as f32;
+    PeriodicDamageTick {
+        school: periodic.school,
+        requested_damage,
+        dealt_damage,
+        absorb,
+        resist,
+        threat,
+    }
+}
+
+fn build_periodic_aura_log_body(log: PeriodicAuraLog) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(40);
+    PackedGuid::write(&mut body, log.creature_guid)?;
+    PackedGuid::write(&mut body, log.caster)?;
+    body.extend_from_slice(&log.spell_id.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.extend_from_slice(&log.aura_name.to_le_bytes());
+    body.extend_from_slice(&log.tick.dealt_damage.to_le_bytes());
+    body.extend_from_slice(&log.tick.school.to_le_bytes());
+    body.extend_from_slice(&log.tick.absorb.to_le_bytes());
+    body.extend_from_slice(&log.tick.resist.to_le_bytes());
+    Ok(body)
+}
+
+fn build_db_creature_aura_state_update_body(
+    creature: ObjectGuid,
+    active_auras: &[ActiveAura],
+    health: u32,
+    dynamic_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, creature)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_unit_aura_update_values(&mut values, active_auras)?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
+    set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
 }

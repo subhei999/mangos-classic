@@ -44,6 +44,7 @@ const REAL_BROTHER_PAXTON_ENTRY: u32 = 951;
 const REAL_LLANE_BESHERE_ENTRY: u32 = 911;
 const REAL_YOUNG_WOLF_ENTRY: u32 = 299;
 const REAL_KOBOLD_VERMIN_ENTRY: u32 = 6;
+const REAL_A_THREAT_WITHIN_QUEST: u32 = 783;
 const REAL_NORTHSHIRE_VISIBLE_RADIUS_YARDS: f32 = 100.0;
 const REAL_NORTHSHIRE_VISIBLE_LIMIT: u32 = 128;
 const FIXTURE_PREFIX: u32 = 910_000;
@@ -2191,6 +2192,7 @@ impl WorldClient {
     }
 
     fn complete_kobold_camp_cleanup(&mut self, content: &StarterZoneContent) -> anyhow::Result<()> {
+        self.complete_real_a_threat_within_if_needed(content)?;
         let giver = ObjectGuid::new(
             HighGuid::Unit,
             content.quest_giver.entry,
@@ -2205,7 +2207,7 @@ impl WorldClient {
             &giver.raw().to_le_bytes(),
             Some(&mut self.crypto),
         )?;
-        let status = self.read_until(SMSG_QUESTGIVER_STATUS, 8)?;
+        let status = self.read_questgiver_status_for(giver)?;
         assert_questgiver_status(&status, giver, DIALOG_STATUS_AVAILABLE)?;
 
         write_client_packet(
@@ -2353,7 +2355,7 @@ impl WorldClient {
             Some(&mut self.crypto),
         )?;
         let status =
-            self.read_until_observing_xp(SMSG_QUESTGIVER_STATUS, 8, player, &mut xp_evidence)?;
+            self.read_questgiver_status_for_observing_xp(giver, player, &mut xp_evidence)?;
         assert_questgiver_status(&status, giver, DIALOG_STATUS_REWARD2)?;
 
         write_client_packet(
@@ -2364,7 +2366,7 @@ impl WorldClient {
         )?;
         let offer = self.read_until_observing_xp(
             SMSG_QUESTGIVER_OFFER_REWARD,
-            8,
+            32,
             player,
             &mut xp_evidence,
         )?;
@@ -2385,7 +2387,7 @@ impl WorldClient {
         )?;
         let complete = self.read_until_observing_xp(
             SMSG_QUESTGIVER_QUEST_COMPLETE,
-            8,
+            32,
             player,
             &mut xp_evidence,
         )?;
@@ -2393,7 +2395,11 @@ impl WorldClient {
             u32::from_le_bytes(complete[0..4].try_into()?) == content.kobold_quest,
             "quest reward completion packet used wrong quest id"
         );
-        let reward_xp = u32::from_le_bytes(complete[4..8].try_into()?);
+        ensure!(
+            u32::from_le_bytes(complete[4..8].try_into()?) == 3,
+            "quest reward completion packet used wrong completion flags"
+        );
+        let reward_xp = u32::from_le_bytes(complete[8..12].try_into()?);
         ensure!(
             reward_xp > 0,
             "quest reward completion packet did not include XP"
@@ -2431,6 +2437,114 @@ impl WorldClient {
         ensure!(
             xp_evidence.saw_progression_update,
             "Kobold Camp Cleanup flow did not send level/next-XP player update"
+        );
+        Ok(())
+    }
+
+    fn complete_real_a_threat_within_if_needed(
+        &mut self,
+        content: &StarterZoneContent,
+    ) -> anyhow::Result<()> {
+        if content.source != StarterZoneSource::RealClassicDb {
+            return Ok(());
+        }
+        let deputy = content
+            .visible_creatures
+            .iter()
+            .find(|creature| creature.entry == REAL_DEPUTY_WILLEM_ENTRY)
+            .context("real ClassicDB Deputy Willem was not visible for A Threat Within")?;
+        let deputy = ObjectGuid::new(HighGuid::Unit, deputy.entry, deputy.counter);
+        let mcbride = ObjectGuid::new(
+            HighGuid::Unit,
+            content.quest_giver.entry,
+            content.quest_giver.counter,
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_STATUS_QUERY,
+            &deputy.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let status = self.read_questgiver_status_for(deputy)?;
+        assert_questgiver_status(&status, deputy, DIALOG_STATUS_AVAILABLE)?;
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &deputy.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let quest_list = self.read_until(SMSG_QUESTGIVER_QUEST_LIST, 8)?;
+        ensure!(
+            quest_list
+                .windows(4)
+                .any(|window| window == REAL_A_THREAT_WITHIN_QUEST.to_le_bytes()),
+            "A Threat Within was missing from Deputy Willem's quest list"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_QUERY_QUEST,
+            &questgiver_request_body(deputy, REAL_A_THREAT_WITHIN_QUEST),
+            Some(&mut self.crypto),
+        )?;
+        let details = self.read_until(SMSG_QUESTGIVER_QUEST_DETAILS, 8)?;
+        ensure!(
+            details
+                .windows(4)
+                .any(|window| window == REAL_A_THREAT_WITHIN_QUEST.to_le_bytes()),
+            "A Threat Within details did not reference the quest id"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_ACCEPT_QUEST,
+            &questgiver_request_body(deputy, REAL_A_THREAT_WITHIN_QUEST),
+            Some(&mut self.crypto),
+        )?;
+        let accept_update = self.read_until(SMSG_UPDATE_OBJECT, 8)?;
+        ensure!(
+            update_packet_has_values(&accept_update, ObjectGuid::new(HighGuid::Player, 0, 0), &[],)
+                .is_ok(),
+            "A Threat Within accept update was not parseable"
+        );
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_STATUS_QUERY,
+            &mcbride.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let status = self.read_questgiver_status_for(mcbride)?;
+        assert_questgiver_status(&status, mcbride, DIALOG_STATUS_REWARD2)?;
+
+        write_client_packet(
+            &mut self.stream,
+            CMSG_GOSSIP_HELLO,
+            &mcbride.raw().to_le_bytes(),
+            Some(&mut self.crypto),
+        )?;
+        let offer = self.read_until(SMSG_QUESTGIVER_OFFER_REWARD, 32)?;
+        ensure!(
+            offer
+                .windows(4)
+                .any(|window| window == REAL_A_THREAT_WITHIN_QUEST.to_le_bytes()),
+            "A Threat Within offer reward did not reference the quest id"
+        );
+
+        let mut reward_body = questgiver_request_body(mcbride, REAL_A_THREAT_WITHIN_QUEST);
+        reward_body.extend_from_slice(&0u32.to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_QUESTGIVER_CHOOSE_REWARD,
+            &reward_body,
+            Some(&mut self.crypto),
+        )?;
+        let complete = self.read_until(SMSG_QUESTGIVER_QUEST_COMPLETE, 32)?;
+        ensure!(
+            u32::from_le_bytes(complete[0..4].try_into()?) == REAL_A_THREAT_WITHIN_QUEST,
+            "A Threat Within completion packet used wrong quest id"
         );
         Ok(())
     }
@@ -2721,6 +2835,37 @@ impl WorldClient {
             }
         }
         anyhow::bail!("did not receive expected opcode 0x{expected_opcode:04X}");
+    }
+
+    fn read_questgiver_status_for(&mut self, giver: ObjectGuid) -> anyhow::Result<Vec<u8>> {
+        for _ in 0..16 {
+            let body = self.read_until(SMSG_QUESTGIVER_STATUS, 8)?;
+            if body.len() >= 8 && u64::from_le_bytes(body[0..8].try_into()?) == giver.raw() {
+                return Ok(body);
+            }
+        }
+        anyhow::bail!(
+            "did not receive questgiver status for guid 0x{:016X}",
+            giver.raw()
+        );
+    }
+
+    fn read_questgiver_status_for_observing_xp(
+        &mut self,
+        giver: ObjectGuid,
+        player: ObjectGuid,
+        evidence: &mut XpProgressionEvidence,
+    ) -> anyhow::Result<Vec<u8>> {
+        for _ in 0..16 {
+            let body = self.read_until_observing_xp(SMSG_QUESTGIVER_STATUS, 8, player, evidence)?;
+            if body.len() >= 8 && u64::from_le_bytes(body[0..8].try_into()?) == giver.raw() {
+                return Ok(body);
+            }
+        }
+        anyhow::bail!(
+            "did not receive questgiver status for guid 0x{:016X}",
+            giver.raw()
+        );
     }
 
     fn drain_immediate_packets(&mut self) -> anyhow::Result<()> {

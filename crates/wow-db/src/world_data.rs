@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
 use sqlx::{FromRow, MySql, QueryBuilder};
 
+use crate::character::ItemRandomPropertyRoll;
 use crate::pool::DbError;
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -29,6 +30,8 @@ pub struct CreatureTemplateQuery {
     pub leash: u32,
     pub family: i32,
     pub creature_type: u32,
+    pub creature_type_flags: u32,
+    pub inhabit_type: u32,
     pub npc_flags: u32,
     pub unit_flags: u32,
     pub dynamic_flags: u32,
@@ -88,6 +91,8 @@ pub struct CreatureSpawnQuery {
     pub guid: u32,
     pub entry: u32,
     pub map: u32,
+    pub game_event: Option<i16>,
+    pub addon_emote: u32,
     pub position_x: f32,
     pub position_y: f32,
     pub position_z: f32,
@@ -173,6 +178,7 @@ pub struct GameObjectSpawnQuery {
     pub guid: u32,
     pub entry: u32,
     pub map: u32,
+    pub game_event: Option<i16>,
     pub position_x: f32,
     pub position_y: f32,
     pub position_z: f32,
@@ -188,8 +194,22 @@ pub struct GameObjectSpawnQuery {
     pub template: GameObjectTemplateQuery,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct GameEventScheduleQuery {
+    pub entry: u16,
+    pub schedule_type: u32,
+    pub occurrence: u32,
+    pub length: u32,
+    pub holiday: u32,
+    pub linked_to: u16,
+    pub description: Option<String>,
+    pub start_time_unix: Option<i64>,
+    pub end_time_unix: Option<i64>,
+}
+
 const GAMEOBJECT_SPAWN_SELECT: &str =
     "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+                CAST(game_event_gameobject.event AS SIGNED) AS game_event, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
                 CAST(gameobject.position_y AS DOUBLE) AS position_y, \
                 CAST(gameobject.position_z AS DOUBLE) AS position_z, \
@@ -236,9 +256,12 @@ const GAMEOBJECT_SPAWN_SELECT: &str =
                 CAST(gameobject_template.data23 AS SIGNED) AS template_data23 \
          FROM gameobject \
          JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
-         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid";
+         LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
+         LEFT JOIN game_event_gameobject ON gameobject.guid = game_event_gameobject.guid";
 
 const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry, creature.map, \
+                CAST(game_event_creature.event AS SIGNED) AS game_event, \
+                CAST(COALESCE(creature_addon.emote, creature_template_addon.emote, 0) AS UNSIGNED) AS addon_emote, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
                 CAST(creature.position_z AS DOUBLE) AS position_z, \
@@ -267,6 +290,8 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.Leash AS template_leash, \
                 creature_template.Family AS template_family, \
                 creature_template.CreatureType AS template_creature_type, \
+                creature_template.CreatureTypeFlags AS template_creature_type_flags, \
+                creature_template.InhabitType AS template_inhabit_type, \
                 creature_template.NpcFlags AS template_npc_flags, \
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
@@ -321,6 +346,9 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
+         LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
+         LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
@@ -350,10 +378,12 @@ pub struct SpellTemplateQuery {
     pub id: u32,
     pub spell_name: String,
     pub rank: Option<String>,
+    pub school: u32,
     pub attributes: u32,
     pub attributes_ex: u32,
     pub attributes_ex2: u32,
     pub attributes_ex3: u32,
+    pub speed: f32,
     pub recovery_time: u32,
     pub category_recovery_time: u32,
     pub start_recovery_category: u32,
@@ -367,9 +397,15 @@ pub struct SpellTemplateQuery {
     pub effect_base_points1: i32,
     pub effect_base_points2: i32,
     pub effect_base_points3: i32,
+    pub effect_misc_value1: i32,
+    pub effect_misc_value2: i32,
+    pub effect_misc_value3: i32,
     pub effect_apply_aura_name1: u32,
     pub effect_apply_aura_name2: u32,
     pub effect_apply_aura_name3: u32,
+    pub effect_amplitude1: u32,
+    pub effect_amplitude2: u32,
+    pub effect_amplitude3: u32,
     pub effect_implicit_target_a1: u32,
     pub effect_implicit_target_a2: u32,
     pub effect_implicit_target_a3: u32,
@@ -476,7 +512,10 @@ pub async fn get_creature_template_query(
                 creature_template.Detection AS detection_range, \
                 creature_template.CallForHelp AS call_for_help, creature_template.Pursuit AS pursuit, creature_template.Leash AS leash, \
                 creature_template.Family AS family, \
-                creature_template.CreatureType AS creature_type, creature_template.NpcFlags AS npc_flags, \
+                creature_template.CreatureType AS creature_type, \
+                creature_template.CreatureTypeFlags AS creature_type_flags, \
+                creature_template.InhabitType AS inhabit_type, \
+                creature_template.NpcFlags AS npc_flags, \
                 creature_template.UnitFlags AS unit_flags, creature_template.DynamicFlags AS dynamic_flags, \
                 creature_template.UnitClass AS unit_class, creature_template.Rank AS rank, \
                 creature_template.HealthMultiplier AS health_multiplier, creature_template.PowerMultiplier AS power_multiplier, \
@@ -537,8 +576,8 @@ pub async fn get_spell_template_query(
 ) -> Result<Option<SpellTemplateQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("spell_template_load");
     sqlx::query_as::<_, SpellTemplateQuery>(
-        "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, \
-                Attributes AS attributes, AttributesEx AS attributes_ex, \
+        "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, School AS school, \
+                Attributes AS attributes, AttributesEx AS attributes_ex, Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
                 RecoveryTime AS recovery_time, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
@@ -546,9 +585,13 @@ pub async fn get_spell_template_query(
                 Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
                 EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
                 EffectBasePoints3 AS effect_base_points3, \
+                EffectMiscValue1 AS effect_misc_value1, EffectMiscValue2 AS effect_misc_value2, \
+                EffectMiscValue3 AS effect_misc_value3, \
                 EffectApplyAuraName1 AS effect_apply_aura_name1, \
                 EffectApplyAuraName2 AS effect_apply_aura_name2, \
                 EffectApplyAuraName3 AS effect_apply_aura_name3, \
+                EffectAmplitude1 AS effect_amplitude1, EffectAmplitude2 AS effect_amplitude2, \
+                EffectAmplitude3 AS effect_amplitude3, \
                 EffectImplicitTargetA1 AS effect_implicit_target_a1, \
                 EffectImplicitTargetA2 AS effect_implicit_target_a2, \
                 EffectImplicitTargetA3 AS effect_implicit_target_a3, \
@@ -1113,6 +1156,28 @@ pub async fn get_vendor_items(
     Ok(rows.into_iter().map(VendorItemRow::into_query).collect())
 }
 
+pub async fn get_item_random_property_rolls(
+    pool: &MySqlPool,
+    random_property: u32,
+) -> Result<Vec<ItemRandomPropertyRoll>, DbError> {
+    let rows = sqlx::query_as::<_, (u32, f32)>(
+        "SELECT ench, chance FROM item_enchantment_template \
+         WHERE entry = ? AND chance > 0 AND chance <= 100 \
+         ORDER BY ench",
+    )
+    .bind(random_property)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(enchantment_id, chance)| ItemRandomPropertyRoll {
+            enchantment_id,
+            chance,
+        })
+        .collect())
+}
+
 pub async fn get_trainer_spells(
     pool: &MySqlPool,
     creature_entry: u32,
@@ -1165,6 +1230,47 @@ pub async fn get_trainer_greeting(
         .map_err(Into::into)
 }
 
+async fn table_has_column(pool: &MySqlPool, table: &str, column: &str) -> Result<bool, DbError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS \
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn get_game_event_schedules(
+    pool: &MySqlPool,
+) -> Result<Vec<GameEventScheduleQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("game_event_schedule_load");
+    let schedule_type_expr = if table_has_column(pool, "game_event", "schedule_type").await? {
+        "game_event.schedule_type"
+    } else {
+        "1"
+    };
+    let sql = format!(
+        "SELECT game_event.entry, \
+                CAST({schedule_type_expr} AS UNSIGNED) AS schedule_type, \
+                CAST(game_event.occurence AS UNSIGNED) AS occurrence, \
+                CAST(game_event.length AS UNSIGNED) AS length, \
+                CAST(game_event.holiday AS UNSIGNED) AS holiday, \
+                CAST(game_event.linkedTo AS UNSIGNED) AS linked_to, \
+                game_event.description, \
+                CAST(UNIX_TIMESTAMP(game_event_time.start_time) AS SIGNED) AS start_time_unix, \
+                CAST(UNIX_TIMESTAMP(game_event_time.end_time) AS SIGNED) AS end_time_unix \
+         FROM game_event \
+         LEFT JOIN game_event_time ON game_event_time.entry = game_event.entry \
+         ORDER BY game_event.entry ASC"
+    );
+    sqlx::query_as::<_, GameEventScheduleQuery>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn get_nearby_creature_spawns(
     pool: &MySqlPool,
     map: u32,
@@ -1176,6 +1282,8 @@ pub async fn get_nearby_creature_spawns(
     let _query_timer = crate::observability::DbQueryTimer::start("creature_nearby_load");
     let rows = sqlx::query_as::<_, CreatureSpawnRow>(
         "SELECT creature.guid, creature.id AS entry, creature.map, \
+                CAST(game_event_creature.event AS SIGNED) AS game_event, \
+                CAST(COALESCE(creature_addon.emote, creature_template_addon.emote, 0) AS UNSIGNED) AS addon_emote, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
                 CAST(creature.position_z AS DOUBLE) AS position_z, \
@@ -1204,6 +1312,8 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.Leash AS template_leash, \
                 creature_template.Family AS template_family, \
                 creature_template.CreatureType AS template_creature_type, \
+                creature_template.CreatureTypeFlags AS template_creature_type_flags, \
+                creature_template.InhabitType AS template_inhabit_type, \
                 creature_template.NpcFlags AS template_npc_flags, \
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
@@ -1258,6 +1368,9 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
+         LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
+         LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
@@ -1328,6 +1441,7 @@ pub async fn get_nearby_gameobject_spawns(
     let _query_timer = crate::observability::DbQueryTimer::start("gameobject_nearby_load");
     let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
         "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+                CAST(game_event_gameobject.event AS SIGNED) AS game_event, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
                 CAST(gameobject.position_y AS DOUBLE) AS position_y, \
                 CAST(gameobject.position_z AS DOUBLE) AS position_z, \
@@ -1375,6 +1489,7 @@ pub async fn get_nearby_gameobject_spawns(
          FROM gameobject \
          JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
          LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
+         LEFT JOIN game_event_gameobject ON gameobject.guid = game_event_gameobject.guid \
          WHERE gameobject.map = ? \
            AND gameobject.position_x BETWEEN ? AND ? \
            AND gameobject.position_y BETWEEN ? AND ? \
@@ -2009,6 +2124,8 @@ mod world_data_tests {
             guid,
             entry,
             map: 0,
+            game_event: None,
+            addon_emote: 0,
             position_x: 0.0,
             position_y: 0.0,
             position_z: 0.0,
@@ -2040,6 +2157,8 @@ mod world_data_tests {
                 leash: 0,
                 family: 0,
                 creature_type: 0,
+                creature_type_flags: 0,
+                inhabit_type: 3,
                 npc_flags: 0,
                 unit_flags: 0,
                 dynamic_flags: 0,
@@ -2524,6 +2643,7 @@ struct GameObjectSpawnRow {
     guid: u32,
     entry: u32,
     map: u32,
+    game_event: Option<i16>,
     position_x: f64,
     position_y: f64,
     position_z: f64,
@@ -2672,6 +2792,8 @@ struct CreatureSpawnRow {
     guid: u32,
     entry: u32,
     map: u32,
+    game_event: Option<i16>,
+    addon_emote: u32,
     position_x: f64,
     position_y: f64,
     position_z: f64,
@@ -2703,6 +2825,8 @@ struct CreatureSpawnRow {
     template_leash: u32,
     template_family: i32,
     template_creature_type: u32,
+    template_creature_type_flags: u32,
+    template_inhabit_type: u32,
     template_npc_flags: u32,
     template_unit_flags: u32,
     template_dynamic_flags: u32,
@@ -2763,6 +2887,8 @@ impl CreatureSpawnRow {
             guid: self.guid,
             entry: self.entry,
             map: self.map,
+            game_event: self.game_event,
+            addon_emote: self.addon_emote,
             position_x: self.position_x as f32,
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,
@@ -2794,6 +2920,8 @@ impl CreatureSpawnRow {
                 leash: self.template_leash,
                 family: self.template_family,
                 creature_type: self.template_creature_type,
+                creature_type_flags: self.template_creature_type_flags,
+                inhabit_type: self.template_inhabit_type,
                 npc_flags: self.template_npc_flags,
                 unit_flags: self.template_unit_flags,
                 dynamic_flags: self.template_dynamic_flags,
@@ -2858,6 +2986,7 @@ impl GameObjectSpawnRow {
             guid: self.guid,
             entry: self.entry,
             map: self.map,
+            game_event: self.game_event,
             position_x: self.position_x as f32,
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,

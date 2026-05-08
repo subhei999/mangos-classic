@@ -7,6 +7,7 @@ struct WorldDataFiles {
     creature_display_scales: HashMap<u32, f32>,
     spell_durations: HashMap<u32, SpellDurationEntry>,
     faction_templates: FactionTemplateStore,
+    item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
     mmap_headers: HashSet<u32>,
     mmap_tiles: HashSet<(u32, u32, u32)>,
     vmap_trees: HashSet<u32>,
@@ -23,6 +24,7 @@ impl WorldDataFiles {
             creature_display_scales: HashMap::new(),
             spell_durations: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
+            item_random_properties: HashMap::new(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::new(),
@@ -39,6 +41,8 @@ impl WorldDataFiles {
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
         let faction_templates =
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
+        let item_random_properties =
+            load_item_random_properties(&data_dir.join("dbc").join("ItemRandomProperties.dbc"));
         let mut mmap_headers = HashSet::new();
         let mut mmap_tiles = HashSet::new();
         let mut vmap_trees = HashSet::new();
@@ -90,6 +94,7 @@ impl WorldDataFiles {
             creature_display_scales,
             spell_durations,
             faction_templates,
+            item_random_properties,
             mmap_headers,
             mmap_tiles,
             vmap_trees,
@@ -119,6 +124,12 @@ struct SpellDurationEntry {
     duration_millis: i32,
     duration_per_level_millis: i32,
     max_duration_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ItemRandomPropertyEntry {
+    id: u32,
+    enchant_ids: [u32; 3],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -401,6 +412,54 @@ fn parse_faction_templates(bytes: &[u8]) -> HashMap<u32, FactionTemplateEntry> {
         );
     }
     templates
+}
+
+fn load_item_random_properties(path: &std::path::Path) -> HashMap<u32, ItemRandomPropertyEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_item_random_properties(&bytes)
+}
+
+fn parse_item_random_properties(bytes: &[u8]) -> HashMap<u32, ItemRandomPropertyEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const MIN_ITEM_RANDOM_PROPERTY_FIELDS: usize = 5;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < MIN_ITEM_RANDOM_PROPERTY_FIELDS
+        || record_size < MIN_ITEM_RANDOM_PROPERTY_FIELDS * 4
+    {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut properties = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        if id == 0 {
+            continue;
+        }
+        properties.insert(
+            id,
+            ItemRandomPropertyEntry {
+                id,
+                enchant_ids: [field(2), field(3), field(4)],
+            },
+        );
+    }
+    properties
 }
 
 fn load_creature_display_info_scales(path: &std::path::Path) -> HashMap<u32, f32> {

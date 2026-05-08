@@ -14,10 +14,31 @@ struct StaticWorldSpawnCache {
 }
 
 impl StaticWorldSpawnCache {
+    #[cfg(test)]
     fn from_spawns(
         creature_spawns: Vec<CreatureSpawnQuery>,
         gameobject_spawns: Vec<wow_db::GameObjectSpawnQuery>,
     ) -> Self {
+        Self::from_spawns_for_game_events(
+            creature_spawns,
+            gameobject_spawns,
+            &GameEventState::default(),
+        )
+    }
+
+    fn from_spawns_for_game_events(
+        creature_spawns: Vec<CreatureSpawnQuery>,
+        gameobject_spawns: Vec<wow_db::GameObjectSpawnQuery>,
+        game_events: &GameEventState,
+    ) -> Self {
+        let creature_spawns = creature_spawns
+            .into_iter()
+            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+            .collect::<Vec<_>>();
+        let gameobject_spawns = gameobject_spawns
+            .into_iter()
+            .filter(|spawn| game_events.spawn_is_active(spawn.game_event))
+            .collect::<Vec<_>>();
         let creature_spawn_count = creature_spawns.len() as u64;
         let gameobject_spawn_count = gameobject_spawns.len() as u64;
         let mut creature_spawns_by_grid: HashMap<(u32, GridCoord), Vec<CreatureSpawnQuery>> =

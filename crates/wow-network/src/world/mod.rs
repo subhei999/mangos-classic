@@ -25,6 +25,7 @@ use wow_db::{
 };
 
 include!("opcodes.rs");
+include!("game_events.rs");
 include!("globals/object_mgr.rs");
 include!("session.rs");
 include!("fixtures/legacy_npcs.rs");
@@ -62,6 +63,12 @@ impl WorldServer {
             anyhow::bail!("world tick interval must be greater than 0");
         }
         let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
+        let game_event_schedules = wow_db::get_game_event_schedules(&world_db_pool).await?;
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let game_events = GameEventState::from_schedules_at(&game_event_schedules, now_unix);
         let creature_cache_load_started_at = Instant::now();
         let mut creature_spawns = wow_db::get_all_static_creature_spawns(&world_db_pool).await?;
         apply_creature_display_scale_fallbacks(
@@ -78,9 +85,10 @@ impl WorldServer {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        let static_world_cache = Arc::new(StaticWorldSpawnCache::from_spawns(
+        let static_world_cache = Arc::new(StaticWorldSpawnCache::from_spawns_for_game_events(
             creature_spawns,
             gameobject_spawns,
+            &game_events,
         ));
         let static_cache_counts = static_world_cache.counts();
         crate::observability::record_static_world_cache_load(
@@ -109,10 +117,13 @@ impl WorldServer {
             creature_display_scales = world_data_files.creature_display_scales.len(),
             faction_templates = world_data_files.faction_templates.len(),
             faction_templates_dbc_backed = world_data_files.faction_templates.is_dbc_backed(),
+            item_random_properties = world_data_files.item_random_properties.len(),
             mmap_maps = world_data_files.mmap_headers.len(),
             mmap_tiles = world_data_files.mmap_tiles.len(),
             vmap_maps = world_data_files.vmap_trees.len(),
             vmap_tiles = world_data_files.vmap_tiles.len(),
+            game_event_schedules = game_event_schedules.len(),
+            active_game_events = game_events.active_count(),
             static_creature_spawns = static_cache_counts.creature_spawns,
             static_creature_grids = static_cache_counts.creature_grids,
             static_gameobject_spawns = static_cache_counts.gameobject_spawns,

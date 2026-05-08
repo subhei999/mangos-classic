@@ -97,7 +97,7 @@ async fn handle_player_login(
     session.player_visual = Some(PlayerVisualState {
         gender: character.gender,
         player_bytes: character.player_bytes,
-        player_bytes2: character.player_bytes2,
+        player_bytes2: player_bytes2_with_rest_state(character.player_bytes2),
         equipment_cache: character.equipment_cache.clone(),
         guildid: character.guildid,
     });
@@ -196,6 +196,14 @@ async fn handle_player_login(
     session.player_mana = character.power1;
     session.inventory =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
+    repair_missing_inventory_random_properties(
+        deps.character_db_pool,
+        deps.world_db_pool,
+        &session.db_creature_navigation.world_data_files,
+        character.guid,
+        &mut session.inventory,
+    )
+    .await?;
     session.character_skills =
         wow_db::get_character_skills(deps.character_db_pool, character.guid).await?;
     session.character_reputations =
@@ -206,6 +214,7 @@ async fn handle_player_login(
             .into_iter()
             .map(|status| (status.quest, status))
             .collect();
+    session.quest_log_slots = quest_log_slots_from_statuses(&session.quest_statuses);
     let world_stats = wow_db::get_player_world_stats(
         deps.world_db_pool,
         character.race,
@@ -213,29 +222,43 @@ async fn handle_player_login(
         character.level,
     )
     .await?;
-    if session.player_mana == 0 {
-        session.player_mana = world_stats.max_mana();
-    }
-    if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
-        session.player_health = world_stats.max_health().max(1);
-    }
-    let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
-    let combat_stats = player_combat_stats_for_values(
-        character.class,
-        character.level,
-        &world_stats,
-        &equipped_templates,
-    );
-    let mut bootstrap_character = character.clone();
-    bootstrap_character.health = session.player_health;
-    bootstrap_character.power1 = session.player_mana;
-    bootstrap_character.power2 = session.player_rage;
     let spells = wow_db::get_character_spells(deps.character_db_pool, character.guid).await?;
     session.active_spells = spells
         .iter()
         .filter(|spell| spell.active != 0 && spell.disabled == 0)
         .map(|spell| spell.spell)
         .collect();
+    session.active_auras.clear();
+    apply_known_passive_spell_auras(
+        deps.world_db_pool,
+        deps.maps,
+        &spells,
+        character.guid,
+        character.level,
+        session,
+    )
+    .await?;
+    let effective_world_stats =
+        player_world_stats_with_active_auras(world_stats, &session.active_auras);
+    if session.player_mana == 0 {
+        session.player_mana = effective_world_stats.max_mana();
+    }
+    if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
+        session.player_health = effective_world_stats.max_health().max(1);
+    }
+    let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+    let base_combat_stats = player_combat_stats_for_values(
+        character.class,
+        character.level,
+        &effective_world_stats,
+        &equipped_templates,
+    );
+    let combat_stats = combat_stats_with_active_auras(base_combat_stats, &session.active_auras);
+    let mut bootstrap_character = character.clone();
+    bootstrap_character.health = session.player_health;
+    bootstrap_character.power1 = session.player_mana;
+    bootstrap_character.power2 = session.player_rage;
+    bootstrap_character.player_bytes2 = player_bytes2_with_rest_state(character.player_bytes2);
     let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
     let cinematic_sequence = if character.cinematic == 0 {
         cinematic_sequence_for_race(character.race)
@@ -264,12 +287,14 @@ async fn handle_player_login(
             character_db_pool: deps.character_db_pool,
             character: &bootstrap_character,
             inventory: &session.inventory,
-            world_stats: &world_stats,
+            base_world_stats: &world_stats,
+            world_stats: &effective_world_stats,
             equipped_templates: &equipped_templates,
             spells: &spells,
             skills: &session.character_skills,
             reputations: &session.character_reputations,
             quest_statuses: &session.quest_statuses,
+            active_auras: &session.active_auras,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
             nearby_creatures: &visible_nearby_creatures,
@@ -316,6 +341,8 @@ async fn handle_player_login(
         client_time: 0,
         server_time: 0,
         fall_time: 0,
+        last_fall_z: None,
+        last_fall_time: 0,
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(login_position),
         visible_objects,
@@ -334,21 +361,21 @@ async fn handle_player_login(
         level: character.level,
         race: character.race,
         class: character.class,
-        spirit: world_stats.stats[4],
+        spirit: effective_world_stats.stats[4],
         gender: character.gender,
         health: session.player_health,
-        max_health: world_stats.max_health().max(1),
+        max_health: effective_world_stats.max_health().max(1),
         xp: character.xp,
         power1: session.player_mana,
-        max_power1: world_stats.max_mana(),
+        max_power1: effective_world_stats.max_mana(),
         power2: session.player_rage,
         player_bytes: character.player_bytes,
-        player_bytes2: character.player_bytes2,
+        player_bytes2: player_bytes2_with_rest_state(character.player_bytes2),
         active_spells: session.active_spells.clone(),
         inventory: session.inventory.clone(),
         quest_statuses: session.quest_statuses.clone(),
         active_auras: session.active_auras.clone(),
-        base_combat_stats: combat_stats,
+        base_combat_stats,
         combat_stats,
     };
     let packets = deps.maps.add_player(player_runtime).await?;
@@ -365,5 +392,33 @@ struct PlayerLoginDeps<'a> {
     sessions: &'a Arc<SessionRegistry>,
     parties: &'a Arc<PartyManager>,
     session_id: SessionId,
+}
+
+async fn apply_known_passive_spell_auras(
+    world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
+    spells: &[CharacterSpell],
+    character_guid: u32,
+    character_level: u8,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let now = Instant::now();
+    for spell in spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+    {
+        let Some(template) = wow_db::get_spell_template_query(world_db_pool, spell.spell).await?
+        else {
+            continue;
+        };
+        let duration = maps.spell_duration(template.duration_index);
+        if let Some(aura) =
+            passive_spell_active_aura(&template, caster, character_level, now, duration)
+        {
+            apply_player_aura(session, aura);
+        }
+    }
+    Ok(())
 }
 

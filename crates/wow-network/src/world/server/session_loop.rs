@@ -456,6 +456,25 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_USE_ITEM => {
+                            handle_use_item(
+                                &mut stream,
+                                SpellCastDeps {
+                                    character_db_pool: &character_db_pool,
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                    parties: runtime_state.parties.as_ref(),
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
                         CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
                             handle_inventory_swap(
                                 &mut stream,
@@ -907,6 +926,7 @@ async fn handle_client(
                             handle_movement(
                                 &mut stream,
                                 MovementDeps {
+                                    account_id: account.id,
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     object_mgr: runtime_state.object_mgr.as_ref(),

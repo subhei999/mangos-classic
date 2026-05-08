@@ -3,12 +3,14 @@ struct EnterWorldBootstrap<'a> {
     character_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
+    base_world_stats: &'a PlayerWorldStats,
     world_stats: &'a PlayerWorldStats,
     equipped_templates: &'a [EquippedItemTemplate],
     spells: &'a [CharacterSpell],
     skills: &'a [CharacterSkill],
     reputations: &'a [CharacterReputation],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
+    active_auras: &'a [ActiveAura],
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
     nearby_creatures: &'a [DbCreatureRuntime],
@@ -24,6 +26,7 @@ async fn send_enter_world_bootstrap(
     let mut header_crypto = header_crypto;
     send_login_verify_world(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
+    send_set_rest_start(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     send_tutorial_flags(
         stream,
@@ -47,10 +50,12 @@ async fn send_enter_world_bootstrap(
         SelfSpawnUpdate {
             character: bootstrap.character,
             inventory: bootstrap.inventory,
+            base_world_stats: bootstrap.base_world_stats,
             world_stats: bootstrap.world_stats,
             skills: bootstrap.skills,
             quest_statuses: bootstrap.quest_statuses,
             equipped_templates: bootstrap.equipped_templates,
+            active_auras: bootstrap.active_auras,
             nearby_creatures: bootstrap.nearby_creatures,
             nearby_gameobjects: bootstrap.nearby_gameobjects,
             nearby_player_corpses: bootstrap.nearby_player_corpses,
@@ -59,6 +64,17 @@ async fn send_enter_world_bootstrap(
     )
     .await?;
     Ok(())
+}
+
+async fn send_set_rest_start(
+    stream: &mut WorldPacketSink,
+    header_crypto: Option<&mut HeaderCrypto>,
+) -> anyhow::Result<()> {
+    send_packet(stream, SMSG_SET_REST_START, &build_set_rest_start_body(), header_crypto).await
+}
+
+fn build_set_rest_start_body() -> Vec<u8> {
+    0u32.to_le_bytes().to_vec()
 }
 
 async fn send_login_verify_world(

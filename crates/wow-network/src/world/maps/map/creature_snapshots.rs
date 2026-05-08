@@ -240,6 +240,7 @@ impl MapRuntime {
             .filter(|guid| guid.is_creature())
             .map(|guid| guid.raw())
             .collect::<HashSet<_>>();
+        let player_is_ghost = player.flags & PLAYER_FLAGS_GHOST != 0;
         let nearby_by_guid = nearby_creatures
             .iter()
             .map(|creature| (creature.guid().raw(), creature))
@@ -265,7 +266,11 @@ impl MapRuntime {
                     return false;
                 }
                 if let Some(creature) = nearby_by_guid.get(guid) {
-                    return creature.life_state == DbCreatureLifeState::Dead;
+                    return creature.life_state == DbCreatureLifeState::Dead
+                        || !Self::db_creature_visible_for_player_death_state(
+                            creature,
+                            player_is_ghost,
+                        );
                 }
                 !self
                     .creatures
@@ -280,6 +285,7 @@ impl MapRuntime {
             .iter()
             .filter(|creature| {
                 creature.life_state != DbCreatureLifeState::Dead
+                    && Self::db_creature_visible_for_player_death_state(creature, player_is_ghost)
                     && !previously_visible.contains(&creature.guid().raw())
             })
             .map(|creature| creature.guid())
@@ -300,6 +306,17 @@ impl MapRuntime {
             create_guids,
             destroy_guids,
         }
+    }
+
+    fn db_creature_visible_for_player_death_state(
+        creature: &DbCreatureRuntime,
+        player_is_ghost: bool,
+    ) -> bool {
+        if is_spirit_healer_creature(creature) {
+            return player_is_ghost;
+        }
+
+        !player_is_ghost || db_creature_visible_to_ghosts(creature)
     }
 
     #[allow(dead_code)]

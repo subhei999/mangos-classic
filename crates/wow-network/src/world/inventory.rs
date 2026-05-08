@@ -87,17 +87,27 @@ async fn handle_inventory_swap(
                 dst_slot = move_request.dst_slot,
                 "Rejected inventory move for incompatible equipment/bag slot"
             );
-            return Ok(());
+            return send_inventory_change_failure(
+                stream,
+                EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT,
+                Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+                None,
+                header_crypto,
+            )
+            .await;
         }
         if move_request.dst_slot < EQUIPMENT_SLOT_END {
             let skills = wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
-            let can_equip = character_can_equip_item_template(
+            let equip_result = character_can_equip_item_template(
+                character.level,
                 character.race,
                 character.class,
                 &template,
                 &skills,
+                &session.active_spells,
+                &session.character_reputations,
             );
-            if !can_equip {
+            if equip_result != 0 {
                 info!(
                     opcode = inventory_opcode_name(opcode),
                     guid = character_guid,
@@ -108,7 +118,15 @@ async fn handle_inventory_swap(
                     item_subclass = template.subclass,
                     "Rejected inventory move due to class/race/proficiency requirements"
                 );
-                return Ok(());
+                return send_inventory_change_failure_with_required_level(
+                    stream,
+                    equip_result,
+                    Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+                    None,
+                    (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I).then_some(template.required_level),
+                    header_crypto,
+                )
+                .await;
             }
         }
     }
@@ -915,38 +933,100 @@ fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
 }
 
 fn character_can_equip_item_template(
+    level: u8,
     race: u8,
     class: u8,
     template: &ItemTemplateQuery,
     skills: &[CharacterSkill],
-) -> bool {
+    active_spells: &HashSet<u32>,
+    reputations: &[CharacterReputation],
+) -> u8 {
+    if template.inventory_type == 0 {
+        return EQUIP_ERR_ITEM_CANT_BE_EQUIPPED;
+    }
+    let use_result =
+        character_can_use_item_template(level, race, class, template, skills, active_spells, reputations);
+    if use_result != 0 {
+        return use_result;
+    }
+    if item_proficiency_skill(template).is_some_and(|skill| {
+        !skills
+            .iter()
+            .any(|known| u32::from(known.skill) == skill && known.value > 0)
+    }) {
+        return EQUIP_ERR_NO_REQUIRED_PROFICIENCY;
+    }
+    0
+}
+
+fn character_can_use_item_template(
+    level: u8,
+    race: u8,
+    class: u8,
+    template: &ItemTemplateQuery,
+    skills: &[CharacterSkill],
+    active_spells: &HashSet<u32>,
+    reputations: &[CharacterReputation],
+) -> u8 {
     if template.allowable_class != -1 {
         let class_mask = quest_race_or_class_mask(class);
         if class_mask == 0 || (template.allowable_class as u32 & class_mask) == 0 {
-            return false;
+            return EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM;
         }
     }
     if template.allowable_race != -1 {
         let race_mask = quest_race_or_class_mask(race);
         if race_mask == 0 || (template.allowable_race as u32 & race_mask) == 0 {
-            return false;
+            return EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM;
         }
     }
-    if template.required_skill != 0
-        && !skills
+    if template.required_skill != 0 {
+        let skill_value = skills
             .iter()
-            .any(|skill| u32::from(skill.skill) == template.required_skill
-                && u32::from(skill.value) >= template.required_skill_rank)
-    {
-        return false;
+            .find(|skill| u32::from(skill.skill) == template.required_skill)
+            .map(|skill| u32::from(skill.value))
+            .unwrap_or(0);
+        if skill_value == 0 {
+            return EQUIP_ERR_NO_REQUIRED_PROFICIENCY;
+        }
+        if skill_value < template.required_skill_rank {
+            return EQUIP_ERR_CANT_EQUIP_SKILL;
+        }
+    }
+    if template.required_spell != 0 && !active_spells.contains(&template.required_spell) {
+        return EQUIP_ERR_NO_REQUIRED_PROFICIENCY;
+    }
+    if template.required_honor_rank != 0 || template.required_city_rank != 0 {
+        return EQUIP_ERR_CANT_EQUIP_RANK;
+    }
+    if u32::from(level) < template.required_level {
+        return EQUIP_ERR_CANT_EQUIP_LEVEL_I;
+    }
+    if template.required_reputation_faction != 0 {
+        let rank = reputations
+            .iter()
+            .find(|reputation| reputation.faction == template.required_reputation_faction)
+            .map(|reputation| reputation_rank_from_standing(reputation.standing))
+            .unwrap_or(3);
+        if rank < template.required_reputation_rank {
+            return EQUIP_ERR_CANT_EQUIP_REPUTATION;
+        }
     }
 
-    let Some(proficiency_skill) = item_proficiency_skill(template) else {
-        return true;
-    };
-    skills
-        .iter()
-        .any(|skill| u32::from(skill.skill) == proficiency_skill && skill.value > 0)
+    0
+}
+
+fn reputation_rank_from_standing(standing: i32) -> u32 {
+    match standing {
+        i32::MIN..=-6001 => 0,
+        -6000..=-3001 => 1,
+        -3000..=-1 => 2,
+        0..=2999 => 3,
+        3000..=8999 => 4,
+        9000..=20999 => 5,
+        21000..=41999 => 6,
+        _ => 7,
+    }
 }
 
 fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
@@ -1002,11 +1082,26 @@ async fn send_inventory_change_failure(
     item2: Option<ObjectGuid>,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(18);
-    body.push(result);
-    body.extend_from_slice(&item.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
-    body.extend_from_slice(&item2.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
-    body.push(0);
+    send_inventory_change_failure_with_required_level(
+        stream,
+        result,
+        item,
+        item2,
+        None,
+        header_crypto,
+    )
+    .await
+}
+
+async fn send_inventory_change_failure_with_required_level(
+    stream: &mut WorldPacketSink,
+    result: u8,
+    item: Option<ObjectGuid>,
+    item2: Option<ObjectGuid>,
+    required_level: Option<u32>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let body = build_inventory_change_failure_body(result, item, item2, required_level);
     send_packet(
         stream,
         SMSG_INVENTORY_CHANGE_FAILURE,
@@ -1014,4 +1109,25 @@ async fn send_inventory_change_failure(
         Some(header_crypto),
     )
     .await
+}
+
+fn build_inventory_change_failure_body(
+    result: u8,
+    item: Option<ObjectGuid>,
+    item2: Option<ObjectGuid>,
+    required_level: Option<u32>,
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(if result == EQUIP_ERR_CANT_EQUIP_LEVEL_I {
+        22
+    } else {
+        18
+    });
+    body.push(result);
+    if result == EQUIP_ERR_CANT_EQUIP_LEVEL_I {
+        body.extend_from_slice(&required_level.unwrap_or(0).to_le_bytes());
+    }
+    body.extend_from_slice(&item.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
+    body.extend_from_slice(&item2.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
+    body.push(0);
+    body
 }

@@ -105,6 +105,61 @@ struct CombatRewardDeps<'a> {
     parties: &'a PartyManager,
 }
 
+fn queued_next_melee_spell_power_failure(
+    session: &WorldSessionState,
+    queued: QueuedNextMeleeSpell,
+) -> Option<u8> {
+    if session.player_rage < queued.rage_cost || session.player_mana < queued.mana_cost {
+        Some(SPELL_FAILED_NO_POWER)
+    } else {
+        None
+    }
+}
+
+async fn send_queued_next_melee_spell_cast_failure(
+    stream: &mut WorldPacketSink,
+    header_crypto: &mut HeaderCrypto,
+    caster: ObjectGuid,
+    queued: QueuedNextMeleeSpell,
+    failure: u8,
+) -> anyhow::Result<()> {
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_failure_body(queued.spell_id, failure),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILURE,
+        &build_spell_failure_body(caster, queued.spell_id, failure)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILED_OTHER,
+        &build_spell_failed_other_body(caster, queued.spell_id),
+        Some(header_crypto),
+    )
+    .await
+}
+
+async fn send_queued_next_melee_spell_cast_success(
+    stream: &mut WorldPacketSink,
+    header_crypto: &mut HeaderCrypto,
+    queued: QueuedNextMeleeSpell,
+) -> anyhow::Result<()> {
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_ok_body(queued.spell_id),
+        Some(header_crypto),
+    )
+    .await
+}
+
 async fn advance_db_creature_lifecycle(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
@@ -431,7 +486,13 @@ async fn send_db_creature_swing(
     };
     let weapon_skill_id = main_hand_weapon_skill_id(world_db_pool, &session.inventory).await?;
     let attacker_skill = weapon_skill_id
-        .map(|skill_id| current_skill_value(&session.character_skills, skill_id))
+        .map(|skill_id| {
+            current_skill_value_with_active_auras(
+                &session.character_skills,
+                &session.active_auras,
+                skill_id,
+            )
+        })
         .unwrap_or(0);
     let mut melee_outcome = player_main_hand_melee_outcome_against_db_creature(
         &combat_stats,
@@ -439,9 +500,23 @@ async fn send_db_creature_swing(
         attacker_skill,
         &target_creature,
     );
-    let queued_spell = session
+    let mut queued_spell = session
         .queued_next_melee_spell
         .filter(|queued| queued.target == target);
+    if let Some(queued) = queued_spell {
+        if let Some(failure) = queued_next_melee_spell_power_failure(session, queued) {
+            session.queued_next_melee_spell = None;
+            send_queued_next_melee_spell_cast_failure(
+                stream,
+                header_crypto,
+                attacker,
+                queued,
+                failure,
+            )
+            .await?;
+            queued_spell = None;
+        }
+    }
     if let Some(queued) = queued_spell {
         melee_outcome.total_damage = melee_outcome.total_damage.saturating_add(queued.bonus_damage);
     }
@@ -539,7 +614,7 @@ async fn send_db_creature_swing(
     let rage_gain = if queued_spell.is_some() {
         0
     } else {
-        rage_gain_from_damage(event.damage, character_snapshot.level, true)
+        rage_gain_from_damage(event.attacker_rage_damage, character_snapshot.level, true)
     };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
@@ -566,6 +641,7 @@ async fn send_db_creature_swing(
             gameobject_target: None,
         };
         let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
+        send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
         send_packet(
             stream,
             SMSG_SPELL_GO,
@@ -634,7 +710,11 @@ async fn send_db_creature_swing(
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
-            &build_player_skill_update_body(character_snapshot.guid, updated)?,
+            &build_player_skill_update_body(
+                character_snapshot.guid,
+                updated,
+                &session.active_auras,
+            )?,
             Some(&mut *header_crypto),
         )
         .await?;
@@ -843,13 +923,15 @@ fn item_weapon_skill_from_template(template: &ItemTemplateQuery) -> Option<u16> 
 fn build_player_skill_update_body(
     character_guid: u32,
     updated: SkillProgressionUpdate,
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
-    build_player_skill_updates_body(character_guid, &[updated])
+    build_player_skill_updates_body(character_guid, &[updated], active_auras)
 }
 
 fn build_player_skill_updates_body(
     character_guid: u32,
     updates: &[SkillProgressionUpdate],
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
@@ -865,7 +947,11 @@ fn build_player_skill_updates_body(
             field + 1,
             make_pair32(updated.value, updated.max),
         )?;
-        set_update_value(&mut values, field + 2, 0)?;
+        set_update_value(
+            &mut values,
+            field + 2,
+            active_aura_skill_bonus_pair(active_auras, updated.skill),
+        )?;
     }
     write_update_values(&mut block, &values)?;
     Ok(build_update_object_body(&[block]))
@@ -1621,7 +1707,7 @@ async fn award_character_xp(
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
-            &build_player_skill_updates_body(guid, &skill_cap_updates)?,
+            &build_player_skill_updates_body(guid, &skill_cap_updates, &session.active_auras)?,
             Some(header_crypto),
         )
         .await?;
@@ -1746,9 +1832,23 @@ async fn send_combat_dummy_swing(
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = rust_combat_dummy_guid();
 
-    let queued_spell = session
+    let mut queued_spell = session
         .queued_next_melee_spell
         .filter(|queued| queued.target == target);
+    if let Some(queued) = queued_spell {
+        if let Some(failure) = queued_next_melee_spell_power_failure(session, queued) {
+            session.queued_next_melee_spell = None;
+            send_queued_next_melee_spell_cast_failure(
+                stream,
+                header_crypto,
+                attacker,
+                queued,
+                failure,
+            )
+            .await?;
+            queued_spell = None;
+        }
+    }
     let hit_damage = queued_spell
         .map(|queued| RUST_COMBAT_DUMMY_HIT_DAMAGE.saturating_add(queued.bonus_damage))
         .unwrap_or(RUST_COMBAT_DUMMY_HIT_DAMAGE);
@@ -1757,7 +1857,7 @@ async fn send_combat_dummy_swing(
     let rage_gain = if queued_spell.is_some() {
         0
     } else {
-        rage_gain_from_damage(damage, character.level, true)
+        rage_gain_from_damage(hit_damage, character.level, true)
     };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     if let Some(queued) = queued_spell {
@@ -1777,6 +1877,7 @@ async fn send_combat_dummy_swing(
             gameobject_target: None,
         };
         let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
+        send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
         send_packet(
             stream,
             SMSG_SPELL_GO,

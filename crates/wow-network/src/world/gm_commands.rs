@@ -141,6 +141,8 @@ async fn spawn_gm_creature_from_template(
         guid: 0,
         entry,
         map: character.position.map_id,
+        game_event: None,
+        addon_emote: 0,
         position_x: character.position.x,
         position_y: character.position.y,
         position_z: character.position.z,

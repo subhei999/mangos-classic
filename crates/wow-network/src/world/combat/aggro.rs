@@ -295,8 +295,12 @@ async fn send_single_active_db_creature_attack(
                 character_snapshot.guid
             )
         })?;
-    let defense_input =
-        player_melee_defense_input(&character_snapshot, &combat_stats, &session.character_skills);
+    let defense_input = player_melee_defense_input(
+        &character_snapshot,
+        &combat_stats,
+        &session.character_skills,
+        &session.active_auras,
+    );
     let outcome = active.creature.melee_outcome_against_player(defense_input);
     let Some(event) = shared_world
         .maps
@@ -360,7 +364,11 @@ async fn send_single_active_db_creature_attack(
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
-            &build_player_skill_update_body(character_snapshot.guid, updated)?,
+            &build_player_skill_update_body(
+                character_snapshot.guid,
+                updated,
+                &session.active_auras,
+            )?,
             Some(&mut *header_crypto),
         )
         .await?;
@@ -375,6 +383,7 @@ async fn send_single_active_db_creature_attack(
         .await?;
     }
     if session.player_health == 0 {
+        let death_time = Instant::now();
         kill_player_from_creature(
             stream,
             character_db_pool,
@@ -385,10 +394,52 @@ async fn send_single_active_db_creature_attack(
             header_crypto,
         )
         .await?;
-        shared_world
-            .maps
-            .clear_db_creature_combats_for_victim(map_id, player)
-            .await;
+        send_db_creature_victim_death_evades(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            player,
+            death_time,
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn send_db_creature_victim_death_evades(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    session: &mut WorldSessionState,
+    player: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let active_combats = shared_world
+        .maps
+        .active_db_creature_combats_for_victim(map_id, player)
+        .await;
+    if active_combats.is_empty() {
+        clear_session_active_creature_combats(session);
+        return Ok(());
+    }
+    let broadcast = CreatureCombatBroadcast {
+        shared_world,
+        map_id,
+        player,
+    };
+    for combat in active_combats {
+        send_db_creature_evade_and_return_home(
+            stream,
+            broadcast,
+            session,
+            combat.attacker,
+            now,
+            header_crypto,
+        )
+        .await?;
     }
     Ok(())
 }

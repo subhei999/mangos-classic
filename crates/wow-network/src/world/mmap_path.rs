@@ -40,6 +40,8 @@ extern "C" {
         target_x: f32,
         target_y: f32,
         target_z: f32,
+        include_flags: u16,
+        exclude_flags: u16,
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
     ) -> i32;
@@ -53,7 +55,14 @@ fn native_mmap_find_path_points(
     start_tile: (u32, u32),
     target_tile: (u32, u32),
 ) -> Option<Vec<WorldPosition>> {
-    let path = native_mmap_find_path(data_dir, start, target, start_tile, target_tile);
+    let path = native_mmap_find_path(
+        data_dir,
+        start,
+        target,
+        start_tile,
+        target_tile,
+        NativeMmapPathFilter::ground(),
+    );
     matches!(
         path.status,
         NativeMmapPathStatus::Normal | NativeMmapPathStatus::Incomplete
@@ -67,6 +76,7 @@ fn native_mmap_find_path(
     target: WorldPosition,
     start_tile: (u32, u32),
     target_tile: (u32, u32),
+    filter: NativeMmapPathFilter,
 ) -> NativeMmapPath {
     if start.map_id != target.map_id
         || !native_mmap_world_position_is_finite(start)
@@ -105,6 +115,8 @@ fn native_mmap_find_path(
             target.x,
             target.y,
             target.z,
+            filter.include_flags,
+            filter.exclude_flags,
             points.as_mut_ptr(),
             MAX_NATIVE_MMAP_PATH_POINTS as i32,
         )
@@ -152,6 +164,25 @@ fn native_mmap_find_path(
             NativeMmapPathStatus::Normal
         },
         points: path,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeMmapPathFilter {
+    include_flags: u16,
+    exclude_flags: u16,
+}
+
+impl NativeMmapPathFilter {
+    const NAV_GROUND: u16 = 0x01;
+    const NAV_WATER: u16 = 0x04;
+    const NAV_MAGMA_SLIME: u16 = 0x08;
+
+    fn ground() -> Self {
+        Self {
+            include_flags: Self::NAV_GROUND,
+            exclude_flags: 0,
+        }
     }
 }
 

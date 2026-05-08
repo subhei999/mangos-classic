@@ -211,11 +211,16 @@ async fn handle_questgiver_accept_quest(
         .await?;
         return Ok(());
     }
+    let Some(slot) = assign_quest_log_slot(session, request.quest) else {
+        warn!(quest = request.quest, "Quest log slot disappeared before accept");
+        return Ok(());
+    };
     let mut status = wow_db::accept_character_quest(character_db_pool, character_guid, request.quest)
         .await?;
     session.quest_statuses.insert(request.quest, status.clone());
     let source_item = grant_quest_source_item_if_needed(
         character_db_pool,
+        world_db_pool,
         character_guid,
         source_item_storage,
         session,
@@ -226,10 +231,6 @@ async fn handle_questgiver_accept_quest(
             .await?;
         session.quest_statuses.insert(request.quest, status.clone());
     }
-    let Some(slot) = quest_log_slot_for_quest(session, request.quest) else {
-        warn!(quest = request.quest, "Accepted quest but no quest-log slot was available");
-        return Ok(());
-    };
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
@@ -374,21 +375,50 @@ async fn handle_questgiver_complete_quest(
         false
     };
     if reward_ready {
-        let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
-        let response = build_quest_offer_reward_body(request.guid, &quest, &displays);
+        send_questgiver_completion_response(
+            stream,
+            world_db_pool,
+            request.guid,
+            &quest,
+            true,
+            header_crypto,
+        )
+        .await
+    } else {
+        send_questgiver_completion_response(
+            stream,
+            world_db_pool,
+            request.guid,
+            &quest,
+            false,
+            header_crypto,
+        )
+        .await
+    }
+}
+
+async fn send_questgiver_completion_response(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    guid: ObjectGuid,
+    quest: &QuestTemplateQuery,
+    complete: bool,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let displays = quest_reward_item_displays(world_db_pool, quest).await?;
+    if quest_request_items_skips_to_offer_reward(quest, complete) {
         send_packet(
             stream,
             SMSG_QUESTGIVER_OFFER_REWARD,
-            &response,
+            &build_quest_offer_reward_body(guid, quest, &displays),
             Some(header_crypto),
         )
         .await
     } else {
-        let response = build_quest_request_items_body(request.guid, &quest, false);
         send_packet(
             stream,
             SMSG_QUESTGIVER_REQUEST_ITEMS,
-            &response,
+            &build_quest_request_items_body(guid, quest, &displays, complete),
             Some(header_crypto),
         )
         .await
@@ -425,7 +455,11 @@ async fn handle_questgiver_choose_reward(
     };
     let reward_money = quest.rew_or_req_money.max(0) as u32;
     let reward_xp = quest_xp_reward(character_level, &quest);
-    let reputation_rewards = quest_reputation_rewards(character_level, &quest);
+    let reputation_rewards = quest_reputation_rewards_with_bonus(
+        character_level,
+        &quest,
+        reputation_gain_percent_from_active_auras(&session.active_auras),
+    );
     let slot = quest_log_slot_for_quest(session, request.quest);
     let Some(reward_items) = selected_quest_reward_items(&quest, request.reward) else {
         warn!(quest = request.quest, reward = request.reward, "Ignoring invalid quest reward item choice");
@@ -506,6 +540,7 @@ async fn handle_questgiver_choose_reward(
     .await?;
     let reward_update_blocks = grant_quest_reward_items(
         character_db_pool,
+        world_db_pool,
         character_guid,
         &reward_grants,
         session,
@@ -540,13 +575,6 @@ async fn handle_questgiver_choose_reward(
     }
     send_packet(
         stream,
-        SMSG_QUESTGIVER_QUEST_COMPLETE,
-        &build_questgiver_quest_complete_body_with_xp(&quest, reward_xp, reward_money),
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(
-        stream,
         SMSG_UPDATE_OBJECT,
         &build_player_money_update_body(character_guid, reward_result.money)?,
         Some(&mut *header_crypto),
@@ -573,13 +601,16 @@ async fn handle_questgiver_choose_reward(
         header_crypto,
     )
     .await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_quest_log_clear_body(character_guid, slot.unwrap_or(0))?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
+    if let Some(slot) = slot {
+        clear_quest_log_slot(session, request.quest);
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_quest_log_clear_body(character_guid, slot)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     send_visible_questgiver_status_updates(
         stream,
         object_mgr,
@@ -587,7 +618,14 @@ async fn handle_questgiver_choose_reward(
         deps.shared_world,
         session,
         &[request.guid],
-        header_crypto,
+        &mut *header_crypto,
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_QUESTGIVER_QUEST_COMPLETE,
+        &build_questgiver_quest_complete_body_with_xp(&quest, reward_xp, reward_money),
+        Some(header_crypto),
     )
     .await
 }
@@ -658,11 +696,11 @@ async fn handle_questlog_remove_quest(
     if slot >= MAX_QUEST_LOG_SIZE {
         return Ok(());
     }
-    let Some(status) = active_quest_statuses_sorted(&session.quest_statuses)
-        .into_iter()
-        .nth(slot)
-        .cloned()
-    else {
+    let quest = session.quest_log_slots[slot];
+    if quest == 0 {
+        return Ok(());
+    }
+    let Some(status) = session.quest_statuses.get(&quest).cloned() else {
         return Ok(());
     };
     if wow_db::abandon_character_quest(character_db_pool, character_guid, status.quest)
@@ -677,6 +715,7 @@ async fn handle_questlog_remove_quest(
             local_status.mobcount3 = 0;
             local_status.mobcount4 = 0;
         }
+        session.quest_log_slots[slot] = 0;
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
@@ -955,12 +994,10 @@ async fn questgiver_visible_quests(
         if seen.contains(&quest.entry) {
             continue;
         }
-        if let Some(start_status) =
-            quest_start_dialog_status(object_mgr, world_db_pool, &quest, session).await?
-        {
+        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
             visible.push(QuestListItem {
                 quest,
-                dialog_status: start_status,
+                dialog_status: DIALOG_STATUS_AVAILABLE,
             });
         }
     }
@@ -1078,6 +1115,7 @@ fn active_quest_statuses_sorted(
 
 async fn grant_quest_source_item_if_needed(
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     character_guid: u32,
     storage: QuestSourceItemStorage,
     session: &mut WorldSessionState,
@@ -1110,14 +1148,23 @@ async fn grant_quest_source_item_if_needed(
                 granted.push((item_guid, grant_count, false));
             }
             QuestSourceItemDestination::NewStack { slot, count } => {
-                let item = wow_db::add_character_inventory_item(
-                    character_db_pool,
-                    character_guid,
-                    INVENTORY_SLOT_BAG_0 as u32,
-                    slot,
+                let random_properties = generate_item_instance_random_properties(
+                    world_db_pool,
+                    &session.db_creature_navigation.world_data_files,
                     plan.item_id,
-                    count,
-                    plan.max_durability,
+                )
+                .await?;
+                let item = wow_db::add_character_inventory_item_with_random_properties(
+                    character_db_pool,
+                    wow_db::AddCharacterInventoryItemRequest {
+                        guid: character_guid,
+                        bag: INVENTORY_SLOT_BAG_0 as u32,
+                        slot,
+                        item_template: plan.item_id,
+                        count,
+                        durability: plan.max_durability,
+                        random_properties: random_properties.as_ref(),
+                    },
                 )
                 .await?;
                 granted.push((item.item, count, true));
@@ -1274,6 +1321,12 @@ async fn quest_reward_item_displays(
     quest: &QuestTemplateQuery,
 ) -> anyhow::Result<QuestRewardItemDisplays> {
     let mut displays = QuestRewardItemDisplays::default();
+    for (index, item) in quest.req_item_id.iter().enumerate() {
+        if *item != 0 {
+            displays.required[index] =
+                wow_db::get_item_display_id(world_db_pool, *item).await?.unwrap_or(0);
+        }
+    }
     for (index, item) in quest.rew_choice_item_id.iter().enumerate() {
         if *item != 0 {
             displays.choice[index] =
@@ -1287,6 +1340,11 @@ async fn quest_reward_item_displays(
         }
     }
     Ok(displays)
+}
+
+fn quest_request_items_skips_to_offer_reward(quest: &QuestTemplateQuery, complete: bool) -> bool {
+    quest.request_items_text.is_empty()
+        || (complete && quest.req_item_id.iter().all(|item| *item == 0))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1355,6 +1413,7 @@ async fn load_quest_reward_grants(
 
 async fn grant_quest_reward_items(
     character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     character_guid: u32,
     rewards: &[QuestRewardGrant],
     session: &mut WorldSessionState,
@@ -1364,14 +1423,23 @@ async fn grant_quest_reward_items(
         let Some(slot) = first_empty_backpack_slot(&session.inventory) else {
             anyhow::bail!("Quest reward inventory space check passed but no slot was available");
         };
-        let item = wow_db::add_character_inventory_item(
-            character_db_pool,
-            character_guid,
-            INVENTORY_SLOT_BAG_0 as u32,
-            slot,
+        let random_properties = generate_item_instance_random_properties(
+            world_db_pool,
+            &session.db_creature_navigation.world_data_files,
             reward.item,
-            reward.count,
-            reward.max_durability,
+        )
+        .await?;
+        let item = wow_db::add_character_inventory_item_with_random_properties(
+            character_db_pool,
+            wow_db::AddCharacterInventoryItemRequest {
+                guid: character_guid,
+                bag: INVENTORY_SLOT_BAG_0 as u32,
+                slot,
+                item_template: reward.item,
+                count: reward.count,
+                durability: reward.max_durability,
+                random_properties: random_properties.as_ref(),
+            },
         )
         .await?;
         session.inventory =
@@ -1770,7 +1838,7 @@ fn quest_race_or_class_mask(id: u8) -> u32 {
 const QUEST_HIGH_LEVEL_HIDE_DIFF: u8 = 7;
 
 fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
-    if character.level < quest.min_level || character.level > quest.max_level {
+    if character.level < quest.min_level || (quest.max_level != 0 && character.level > quest.max_level) {
         return false;
     }
 
@@ -1788,7 +1856,7 @@ fn satisfies_race_class_level(quest: &QuestTemplateQuery, character: &ActiveChar
 }
 
 fn satisfies_quest_visibility_level(quest: &QuestTemplateQuery, character: &ActiveCharacter) -> bool {
-    if character.level > quest.max_level {
+    if quest.max_level != 0 && character.level > quest.max_level {
         return false;
     }
 
@@ -2120,7 +2188,10 @@ fn start_quest_dialog_status(can_take: bool, can_see: bool) -> Option<u32> {
 }
 
 fn quest_log_slot_for_quest(session: &WorldSessionState, quest: u32) -> Option<usize> {
-    quest_log_slot_for_statuses(&session.quest_statuses, quest)
+    session
+        .quest_log_slots
+        .iter()
+        .position(|slot_quest| *slot_quest == quest)
 }
 
 fn quest_log_slot_for_statuses(
@@ -2134,7 +2205,36 @@ fn quest_log_slot_for_statuses(
 }
 
 fn quest_log_has_free_slot(session: &WorldSessionState) -> bool {
-    active_quest_statuses_sorted(&session.quest_statuses).len() < MAX_QUEST_LOG_SIZE
+    session.quest_log_slots.contains(&0)
+}
+
+fn assign_quest_log_slot(session: &mut WorldSessionState, quest: u32) -> Option<usize> {
+    if let Some(slot) = quest_log_slot_for_quest(session, quest) {
+        return Some(slot);
+    }
+    let slot = session.quest_log_slots.iter().position(|quest| *quest == 0)?;
+    session.quest_log_slots[slot] = quest;
+    Some(slot)
+}
+
+fn clear_quest_log_slot(session: &mut WorldSessionState, quest: u32) -> Option<usize> {
+    let slot = quest_log_slot_for_quest(session, quest)?;
+    session.quest_log_slots[slot] = 0;
+    Some(slot)
+}
+
+fn quest_log_slots_from_statuses(
+    statuses: &HashMap<u32, CharacterQuestStatus>,
+) -> [u32; MAX_QUEST_LOG_SIZE] {
+    let mut slots = [0; MAX_QUEST_LOG_SIZE];
+    for (slot, status) in active_quest_statuses_sorted(statuses)
+        .into_iter()
+        .take(MAX_QUEST_LOG_SIZE)
+        .enumerate()
+    {
+        slots[slot] = status.quest;
+    }
+    slots
 }
 
 async fn grant_db_creature_kill_credit(

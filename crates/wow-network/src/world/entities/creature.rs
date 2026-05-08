@@ -21,6 +21,7 @@ struct Creature {
     next_waypoint_move_at: Option<Instant>,
     waypoint_next_index: usize,
     waypoint_forward: bool,
+    waypoint_resume_position: Option<WorldPosition>,
     already_called_assistance: bool,
     next_spline_id: u32,
     health: u32,
@@ -41,6 +42,7 @@ struct Creature {
     loot_current_looter: Option<u32>,
     loot_allowed_players: HashSet<u32>,
     loot_method: Option<CreatureLootMethod>,
+    active_auras: Vec<ActiveAura>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,7 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
         creature.template.dynamic_flags,
         creature.template.unit_flags,
         creature.template.npc_flags,
+        &[],
     )
 }
 
@@ -106,6 +109,7 @@ fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyho
         } else {
             db_creature_npc_flags(creature)
         },
+        &creature.active_auras,
     )
 }
 
@@ -116,6 +120,7 @@ fn build_db_creature_create_block_inner(
     dynamic_flags: u32,
     unit_flags: u32,
     npc_flags: u32,
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
     let guid = creature_spawn_guid(creature);
     let mut block = Vec::new();
@@ -148,10 +153,12 @@ fn build_db_creature_create_block_inner(
         dynamic_flags,
         unit_flags,
         npc_flags,
+        active_auras,
     )?;
     Ok(block)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_db_creature_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
@@ -160,6 +167,7 @@ fn write_db_creature_update_values(
     dynamic_flags: u32,
     unit_flags: u32,
     npc_flags: u32,
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
@@ -269,8 +277,25 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    set_update_value(&mut values, UNIT_NPC_EMOTESTATE, creature.addon_emote)?;
     set_update_value(&mut values, UNIT_NPC_FLAGS, npc_flags)?;
+    set_unit_aura_update_values(&mut values, active_auras)?;
     write_update_values(body, &values)
+}
+
+fn build_db_creature_aura_update_body(
+    creature: ObjectGuid,
+    active_auras: &[ActiveAura],
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, creature)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_unit_aura_update_values(&mut values, active_auras)?;
+
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
 }
 
 fn packed_virtual_item_info0(class: u32, subclass: u32, material: i32, inventory_type: u32) -> u32 {
@@ -300,6 +325,13 @@ fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
     } else {
         creature.spawn.template.npc_flags
     }
+}
+
+const CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x0000_0002;
+
+fn db_creature_visible_to_ghosts(creature: &DbCreatureRuntime) -> bool {
+    creature.spawn.template.creature_type_flags & CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS != 0
+        || is_spirit_healer_creature(creature)
 }
 
 fn creature_health(template: &CreatureTemplateQuery) -> u32 {

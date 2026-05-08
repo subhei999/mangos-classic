@@ -7,6 +7,20 @@ struct DbCreaturePlayerMeleeValidation {
 }
 
 #[derive(Debug, Clone)]
+struct PlayerChargeValidation {
+    check: PlayerChargeCheck,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerChargeCheck {
+    Clear,
+    NoActiveCharacter,
+    MissingTarget,
+    TargetNotAlive,
+    NavigationBlocked(DbCreatureNavigationResult),
+}
+
+#[derive(Debug, Clone)]
 struct ActiveDbCreatureCombatSnapshot {
     combat: CreatureCombatState,
     creature: DbCreatureRuntime,
@@ -68,6 +82,40 @@ impl MapRuntime {
         }
         DbCreaturePlayerMeleeValidation {
             check: PlayerMeleeCheck::Clear,
+        }
+    }
+
+    fn validate_player_charge_against_db_creature(
+        &self,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+    ) -> PlayerChargeValidation {
+        let Some(player) = self.players.get(&character_guid) else {
+            return PlayerChargeValidation {
+                check: PlayerChargeCheck::NoActiveCharacter,
+            };
+        };
+        let Some(creature) = self.creatures.get(&target.raw()).cloned() else {
+            return PlayerChargeValidation {
+                check: PlayerChargeCheck::MissingTarget,
+            };
+        };
+        if !creature.is_alive() || creature.is_evading_home() {
+            return PlayerChargeValidation {
+                check: PlayerChargeCheck::TargetNotAlive,
+            };
+        }
+        let destination = charge_destination(player.position, &creature);
+        let navigation_check =
+            player_charge_navigation_check(navigation, player.position, destination);
+        if !navigation_check.is_clear() {
+            return PlayerChargeValidation {
+                check: PlayerChargeCheck::NavigationBlocked(navigation_check),
+            };
+        }
+        PlayerChargeValidation {
+            check: PlayerChargeCheck::Clear,
         }
     }
 

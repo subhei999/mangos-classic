@@ -963,14 +963,23 @@ async fn handle_autostore_loot_item(
         return Ok(());
     };
 
-    wow_db::add_character_inventory_item(
-        character_db_pool,
-        character_guid,
-        INVENTORY_SLOT_BAG_0 as u32,
-        dst_slot,
+    let random_properties = generate_item_instance_random_properties(
+        world_db_pool,
+        &session.db_creature_navigation.world_data_files,
         RUST_COMBAT_DUMMY_LOOT_ITEM,
-        remaining_count,
-        0,
+    )
+    .await?;
+    wow_db::add_character_inventory_item_with_random_properties(
+        character_db_pool,
+        wow_db::AddCharacterInventoryItemRequest {
+            guid: character_guid,
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: dst_slot,
+            item_template: RUST_COMBAT_DUMMY_LOOT_ITEM,
+            count: remaining_count,
+            durability: 0,
+            random_properties: random_properties.as_ref(),
+        },
     )
     .await?;
     session.combat_dummy_loot_item_available = false;
@@ -1390,14 +1399,23 @@ async fn grant_loot_item_to_character(
             }
             return Ok(false);
         };
-        wow_db::add_character_inventory_item(
-            character_db_pool,
-            target_guid,
-            INVENTORY_SLOT_BAG_0 as u32,
-            dst_slot,
+        let random_properties = generate_item_instance_random_properties(
+            world_db_pool,
+            &session.db_creature_navigation.world_data_files,
             loot.item,
-            loot.count,
-            0,
+        )
+        .await?;
+        wow_db::add_character_inventory_item_with_random_properties(
+            character_db_pool,
+            wow_db::AddCharacterInventoryItemRequest {
+                guid: target_guid,
+                bag: INVENTORY_SLOT_BAG_0 as u32,
+                slot: dst_slot,
+                item_template: loot.item,
+                count: loot.count,
+                durability: 0,
+                random_properties: random_properties.as_ref(),
+            },
         )
         .await?;
         changed_slot = Some(dst_slot);

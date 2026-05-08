@@ -1,3 +1,5 @@
+const REST_STATE_NORMAL: u8 = 2;
+
 pub async fn create_character(
     character_pool: &MySqlPool,
     world_pool: &MySqlPool,
@@ -13,7 +15,7 @@ pub async fn create_character(
         character.hair_style,
         character.hair_color,
     );
-    let player_bytes2 = character.facial_hair as u32;
+    let player_bytes2 = character.facial_hair as u32 | ((REST_STATE_NORMAL as u32) << 24);
     let mut tx = character_pool.begin().await?;
 
     sqlx::query(

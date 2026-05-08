@@ -20,6 +20,7 @@ struct QuestListItem {
 struct QuestRewardItemDisplays {
     choice: [u32; 6],
     reward: [u32; 4],
+    required: [u32; 4],
 }
 
 fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestListItem]) -> Vec<u8> {
@@ -195,6 +196,8 @@ fn build_quest_request_items_body(
 
     quest: &QuestTemplateQuery,
 
+    displays: &QuestRewardItemDisplays,
+
     complete: bool,
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(128);
@@ -219,9 +222,14 @@ fn build_quest_request_items_body(
 
     body.extend_from_slice(&0u32.to_le_bytes()); // close on cancel
 
-    body.extend_from_slice(&0u32.to_le_bytes()); // required money
+    body.extend_from_slice(&(quest.rew_or_req_money.min(0).unsigned_abs()).to_le_bytes());
 
-    body.extend_from_slice(&0u32.to_le_bytes()); // required item count
+    write_quest_reward_items(
+        &mut body,
+        &quest.req_item_id,
+        &quest.req_item_count,
+        &displays.required,
+    );
 
     body.extend_from_slice(&2u32.to_le_bytes());
 
@@ -299,7 +307,7 @@ fn build_questgiver_quest_complete_body_with_xp(
         .rew_item_id
         .iter()
         .zip(quest.rew_item_count.iter())
-        .filter(|(id, count)| **id != 0 && **count != 0)
+        .filter(|(id, _count)| **id != 0)
         .collect();
 
     let mut body = Vec::with_capacity(20 + reward_items.len() * 8);
@@ -400,10 +408,49 @@ fn build_player_quest_log_clear_body(character_guid: u32, slot: usize) -> anyhow
     let base = PLAYER_QUEST_LOG_1_1 + slot * MAX_QUEST_OFFSET;
 
     set_update_value(&mut values, base + QUEST_LOG_QUEST_ID_OFFSET, 0)?;
-
     set_update_value(&mut values, base + QUEST_LOG_COUNT_STATE_OFFSET, 0)?;
-
     set_update_value(&mut values, base + QUEST_LOG_TIME_OFFSET, 0)?;
+
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+#[cfg(test)]
+fn build_player_quest_log_refresh_body(
+    character_guid: u32,
+    statuses: &HashMap<u32, CharacterQuestStatus>,
+    slots: &[u32; MAX_QUEST_LOG_SIZE],
+) -> anyhow::Result<Vec<u8>> {
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+
+    let mut block = Vec::new();
+
+    block.push(UPDATE_TYPE_VALUES);
+
+    PackedGuid::write(&mut block, player)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+
+    for (slot, quest) in slots.iter().enumerate().take(MAX_QUEST_LOG_SIZE) {
+        let base = PLAYER_QUEST_LOG_1_1 + slot * MAX_QUEST_OFFSET;
+        if let Some(status) = (*quest != 0)
+            .then_some(*quest)
+            .and_then(|quest| statuses.get(&quest))
+            .filter(|status| quest_status_is_current(status))
+        {
+            set_update_value(&mut values, base + QUEST_LOG_QUEST_ID_OFFSET, status.quest)?;
+            set_update_value(
+                &mut values,
+                base + QUEST_LOG_COUNT_STATE_OFFSET,
+                quest_log_count_state(status),
+            )?;
+        } else {
+            set_update_value(&mut values, base + QUEST_LOG_QUEST_ID_OFFSET, 0)?;
+            set_update_value(&mut values, base + QUEST_LOG_COUNT_STATE_OFFSET, 0)?;
+        }
+        set_update_value(&mut values, base + QUEST_LOG_TIME_OFFSET, 0)?;
+    }
 
     write_update_values(&mut block, &values)?;
 

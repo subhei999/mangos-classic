@@ -12,6 +12,8 @@ struct PlayerRuntime {
     client_time: u32,
     server_time: u32,
     fall_time: u32,
+    last_fall_z: Option<f32>,
+    last_fall_time: u32,
     jump: JumpInfo,
     cell: CellCoord,
     visible_objects: HashSet<ObjectGuid>,
@@ -124,12 +126,19 @@ struct CreatureCombatLeashState {
 struct DbCreatureDamageEvent {
     #[allow(dead_code)]
     damage: u32,
+    attacker_rage_damage: u32,
     creature: DbCreatureRuntime,
     attacker_state_body: Option<Vec<u8>>,
     spell_non_melee_log_body: Option<Vec<u8>>,
     update_body: Vec<u8>,
     death_finalization: Option<DbCreatureDeathFinalizationEvent>,
     target_switch: Option<DbCreatureThreatTargetSwitchEvent>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug)]
+struct DbCreatureAuraUpdateEvent {
+    update_body: Vec<u8>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 

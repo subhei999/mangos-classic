@@ -139,6 +139,9 @@ pub struct CharacterInventoryItem {
     pub item: u32,
     pub item_template: u32,
     pub count: u32,
+    #[sqlx(rename = "randomPropertyId")]
+    pub random_property_id: i32,
+    pub enchantments: String,
     pub durability: u32,
 }
 
@@ -201,6 +204,8 @@ pub struct ItemTemplateQuery {
     pub max_count: u32,
     pub stackable: u32,
     pub container_slots: u32,
+    pub stats: [ItemTemplateStat; 10],
+    pub damage: [ItemTemplateDamage; 5],
     pub dmg_min1: f32,
     pub dmg_max1: f32,
     pub dmg_type1: u32,
@@ -214,6 +219,7 @@ pub struct ItemTemplateQuery {
     pub delay: u32,
     pub ammo_type: u32,
     pub ranged_mod_range: f32,
+    pub spells: [ItemTemplateSpell; 5],
     pub bonding: u32,
     pub description: String,
     pub page_text: u32,
@@ -230,6 +236,41 @@ pub struct ItemTemplateQuery {
     pub area: u32,
     pub map: i32,
     pub bag_family: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemInstanceRandomProperties {
+    pub random_property_id: i32,
+    pub enchantments: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemRandomPropertyRoll {
+    pub enchantment_id: u32,
+    pub chance: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ItemTemplateStat {
+    pub stat_type: u32,
+    pub stat_value: i32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ItemTemplateDamage {
+    pub damage_min: f32,
+    pub damage_max: f32,
+    pub damage_type: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemTemplateSpell {
+    pub spell_id: u32,
+    pub spell_trigger: u32,
+    pub spell_charges: i32,
+    pub spell_cooldown: i32,
+    pub spell_category: u32,
+    pub spell_category_cooldown: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

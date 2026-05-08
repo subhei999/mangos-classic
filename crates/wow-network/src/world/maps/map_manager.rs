@@ -627,6 +627,37 @@ impl MapRuntimeManager {
         event
     }
 
+    async fn apply_db_creature_aura(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = {
+            let mut map = map.lock().await;
+            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura)
+        };
+        event
+    }
+
+    async fn set_player_position(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock().await.set_player_position(character_guid, position);
+    }
+
     #[cfg(test)]
     async fn ensure_db_creature_grids_loaded_for_test(
         &self,
@@ -1161,6 +1192,26 @@ impl MapRuntimeManager {
         validation
     }
 
+    async fn validate_player_charge_against_db_creature(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+    ) -> PlayerChargeValidation {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return PlayerChargeValidation {
+                check: PlayerChargeCheck::MissingTarget,
+            };
+        };
+        let validation = map
+            .lock()
+            .await
+            .validate_player_charge_against_db_creature(character_guid, target, navigation);
+        validation
+    }
+
     #[allow(dead_code)]
     async fn update_db_creature_snapshot(&self, map_id: u32, creature: DbCreatureRuntime) {
         let map = self.get_or_create_map(map_id, 0).await;
@@ -1629,6 +1680,26 @@ impl MapRuntimeManager {
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_aura_expirations(now)?);
+        }
+        Ok(packets)
+    }
+
+    async fn advance_all_db_creature_auras(
+        &self,
+        now: Instant,
+        now_epoch_secs: u64,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_db_creature_auras(now, now_epoch_secs)?);
         }
         Ok(packets)
     }

@@ -196,7 +196,7 @@ struct WorldSessionState {
     player_rage: u32,
     player_mana: u32,
     movement_client_time_delay: Option<u32>,
-    starter_global_cooldown_until: Option<Instant>,
+    starter_global_cooldowns_until: HashMap<u32, Instant>,
     starter_spell_cooldowns_until: HashMap<u32, Instant>,
     queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     active_auras: Vec<ActiveAura>,
@@ -205,6 +205,7 @@ struct WorldSessionState {
     character_skills: Vec<CharacterSkill>,
     character_reputations: Vec<CharacterReputation>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    quest_log_slots: [u32; MAX_QUEST_LOG_SIZE],
     #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,
     #[cfg(test)]
@@ -221,8 +222,10 @@ struct ActiveAura {
     caster: ObjectGuid,
     level: u8,
     positive: bool,
+    visible: bool,
     duration_millis: Option<u32>,
     expires_at: Option<Instant>,
+    periodic_damage: Option<PeriodicDamageAura>,
     stat_modifiers: Vec<AuraStatModifier>,
 }
 
@@ -234,8 +237,25 @@ impl ActiveAura {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeriodicDamageAura {
+    aura_name: u32,
+    school: u32,
+    damage_class: u32,
+    amount: u32,
+    tick_millis: u32,
+    next_tick_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuraStatModifier {
     AttackPower { amount: i32 },
+    Skill {
+        skill_id: u16,
+        amount: i16,
+        permanent: bool,
+    },
+    TotalStatPercent { stat: usize, percent: i32 },
+    ReputationGainPercent { percent: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

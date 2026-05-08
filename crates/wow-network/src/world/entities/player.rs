@@ -119,7 +119,11 @@ fn write_other_player_update_values(
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, player.flags)?;
     set_update_value(&mut values, PLAYER_BYTES, player.player_bytes)?;
-    set_update_value(&mut values, PLAYER_BYTES_2, player.player_bytes2)?;
+    set_update_value(
+        &mut values,
+        PLAYER_BYTES_2,
+        player_bytes2_with_rest_state(player.player_bytes2),
+    )?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values_from_equipment(&mut values, &player.visible_equipment)?;
     set_player_aura_update_values(&mut values, &player.active_auras)?;
@@ -156,10 +160,12 @@ fn write_minimal_player_update_values(
     guid: ObjectGuid,
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    base_world_stats: &PlayerWorldStats,
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
@@ -297,18 +303,22 @@ fn write_minimal_player_update_values(
     }
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, character.player_flags)?;
     set_update_value(&mut values, PLAYER_BYTES, character.player_bytes)?;
-    set_update_value(&mut values, PLAYER_BYTES_2, character.player_bytes2)?;
+    set_update_value(
+        &mut values,
+        PLAYER_BYTES_2,
+        player_bytes2_with_rest_state(character.player_bytes2),
+    )?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values(&mut values, character, inventory)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, PLAYER_XP, character.xp)?;
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
     set_player_quest_log_update_values(&mut values, quest_statuses)?;
-    set_player_skill_update_values(&mut values, skills)?;
+    set_player_skill_update_values(&mut values, skills, active_auras)?;
     set_player_secondary_stat_update_values(&mut values, &combat_stats)?;
     set_player_explored_zone_update_values(&mut values, character)?;
     set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
-    set_player_stat_mod_update_values(&mut values)?;
+    set_player_stat_mod_update_values(&mut values, base_world_stats, world_stats)?;
     set_player_damage_mod_update_values(&mut values)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
     set_update_value(&mut values, PLAYER_AMMO_ID, 0)?;
@@ -418,6 +428,14 @@ fn set_player_vital_update_values(
     Ok(())
 }
 
+fn player_bytes2_with_rest_state(player_bytes2: u32) -> u32 {
+    if (player_bytes2 >> 24) & 0xFF == 0 {
+        player_bytes2 | ((REST_STATE_NORMAL as u32) << 24)
+    } else {
+        player_bytes2
+    }
+}
+
 fn set_object_guid_update_values(
     values: &mut [Option<u32>],
     field: usize,
@@ -459,12 +477,17 @@ fn set_player_stat_update_values(
 fn set_player_skill_update_values(
     values: &mut [Option<u32>],
     skills: &[CharacterSkill],
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
     for (slot, skill) in skills.iter().take(PLAYER_MAX_SKILLS).enumerate() {
         let field = PLAYER_SKILL_INFO_1_1 + slot * 3;
         set_update_value(values, field, make_pair32(skill.skill, 0))?;
         set_update_value(values, field + 1, make_pair32(skill.value, skill.max))?;
-        set_update_value(values, field + 2, 0)?;
+        set_update_value(
+            values,
+            field + 2,
+            active_aura_skill_bonus_pair(active_auras, skill.skill),
+        )?;
     }
 
     Ok(())
@@ -550,10 +573,23 @@ fn parse_explored_zones(explored_zones: Option<&str>) -> [u32; PLAYER_EXPLORED_Z
     fields
 }
 
-fn set_player_stat_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Result<()> {
-    for offset in 0..MAX_STATS {
-        set_update_value(values, PLAYER_FIELD_POSSTAT0 + offset, 0.0f32.to_bits())?;
-        set_update_value(values, PLAYER_FIELD_NEGSTAT0 + offset, 0.0f32.to_bits())?;
+fn set_player_stat_mod_update_values(
+    values: &mut [Option<u32>],
+    base_world_stats: &PlayerWorldStats,
+    effective_world_stats: &PlayerWorldStats,
+) -> anyhow::Result<()> {
+    let stat_deltas = player_stat_mod_deltas(base_world_stats, effective_world_stats);
+    for (offset, delta) in stat_deltas.iter().copied().enumerate() {
+        set_update_value(
+            values,
+            PLAYER_FIELD_POSSTAT0 + offset,
+            delta.max(0) as u32,
+        )?;
+        set_update_value(
+            values,
+            PLAYER_FIELD_NEGSTAT0 + offset,
+            delta.min(0).unsigned_abs(),
+        )?;
     }
     for offset in 0..MAX_SPELL_SCHOOL {
         set_update_value(
@@ -854,6 +890,7 @@ fn combat_stats_with_active_auras(
         .flat_map(|aura| aura.stat_modifiers.iter())
         .map(|modifier| match modifier {
             AuraStatModifier::AttackPower { amount } => *amount,
+            _ => 0,
         })
         .sum::<i32>();
 

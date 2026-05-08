@@ -614,7 +614,12 @@ async fn send_db_creature_swing(
     let rage_gain = if queued_spell.is_some() {
         0
     } else {
-        rage_gain_from_damage(event.attacker_rage_damage, character_snapshot.level, true)
+        rage_gain_from_main_hand_white_damage(
+            event.attacker_rage_damage,
+            character_snapshot.level,
+            combat_stats.main_attack_time_ms,
+            melee_outcome.outcome,
+        )
     };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     shared_world
@@ -993,20 +998,48 @@ fn player_main_hand_next_swing_at(now: Instant, combat_stats: &PlayerCombatStats
     now + Duration::from_millis(combat_stats.main_attack_time_ms.max(1) as u64)
 }
 
-fn rage_gain_from_damage(damage: u32, level: u8, attacker: bool) -> u32 {
-    // CMaNGOS reference: src/game/Entities/Player.cpp Player::RewardRage
+fn rage_gain_from_main_hand_white_damage(
+    damage: u32,
+    level: u8,
+    attack_time_ms: u32,
+    outcome: MeleeHitOutcome,
+) -> u32 {
+    // Classic Era white-hit rage includes a weapon-speed hit factor. This is
+    // especially visible at starter levels where raw damage is small.
     if damage == 0 {
         return 0;
     }
-    let level = level as f64;
-    let rage_conversion =
-        0.0091107836_f64 * level * level + 3.225598133_f64 * level + 4.2652911_f64;
+    let conversion = rage_conversion_for_level(level);
+    if conversion <= 0.0 {
+        return 0;
+    }
+    let speed = attack_time_ms.max(1) as f64 / 1000.0;
+    let hit_factor = if outcome == MeleeHitOutcome::Crit {
+        7.0_f64
+    } else {
+        3.5_f64
+    };
+    let damage = damage as f64;
+    let rage = ((15.0 * damage) / (4.0 * conversion)) + ((hit_factor * speed) / 2.0);
+    let cap = (15.0 * damage) / conversion;
+    (rage.min(cap).max(0.0) * 10.0) as u32
+}
+
+fn rage_gain_from_damage_taken(damage: u32, level: u8) -> u32 {
+    if damage == 0 {
+        return 0;
+    }
+    let rage_conversion = rage_conversion_for_level(level);
     if rage_conversion <= 0.0 {
         return 0;
     }
-    let base = if attacker { 7.5_f64 } else { 2.5_f64 };
-    let rage = (damage as f64 / rage_conversion) * base;
+    let rage = (damage as f64 / rage_conversion) * 2.5_f64;
     (rage.max(0.0) * 10.0) as u32
+}
+
+fn rage_conversion_for_level(level: u8) -> f64 {
+    let level = level as f64;
+    0.0091107836_f64 * level * level + 3.225598133_f64 * level + 4.2652911_f64
 }
 
 async fn send_player_melee_swing_error_if_changed(
@@ -1857,7 +1890,12 @@ async fn send_combat_dummy_swing(
     let rage_gain = if queued_spell.is_some() {
         0
     } else {
-        rage_gain_from_damage(hit_damage, character.level, true)
+        rage_gain_from_main_hand_white_damage(
+            hit_damage,
+            character.level,
+            BASE_ATTACK_TIME_MS,
+            MeleeHitOutcome::Normal,
+        )
     };
     session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
     if let Some(queued) = queued_spell {

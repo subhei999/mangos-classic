@@ -336,7 +336,7 @@ async fn send_single_active_db_creature_attack(
         )
         .await?;
     }
-    let rage_gain = rage_gain_from_damage(event.damage, character_snapshot.level, false);
+    let rage_gain = rage_gain_from_damage_taken(event.damage, character_snapshot.level);
     if rage_gain > 0 {
         session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
         shared_world

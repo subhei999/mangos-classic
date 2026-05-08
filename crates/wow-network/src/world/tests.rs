@@ -7848,7 +7848,14 @@ fn map_runtime_db_creature_melee_rage_damage_uses_preclamp_hit_for_critter() {
         "CMaNGOS awards attacker rage from the raw melee hit, not remaining hp"
     );
     assert_eq!(event.creature.health, 0);
-    assert!(rage_gain_from_damage(event.attacker_rage_damage, 1, true) > 0);
+    assert!(
+        rage_gain_from_main_hand_white_damage(
+            event.attacker_rage_damage,
+            1,
+            BASE_ATTACK_TIME_MS,
+            MeleeHitOutcome::Normal,
+        ) > 0
+    );
 }
 
 #[test]
@@ -9959,11 +9966,30 @@ fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
 }
 
 #[test]
-fn rage_gain_from_damage_matches_cmangos_reward_rage_formula() {
-    // CMaNGOS: src/game/Entities/Player.cpp Player::RewardRage
-    assert_eq!(rage_gain_from_damage(0, 1, true), 0);
-    assert_eq!(rage_gain_from_damage(100, 1, true), 999);
-    assert_eq!(rage_gain_from_damage(100, 1, false), 333);
+fn rage_gain_from_damage_matches_classic_era_white_hit_and_damage_taken_formulas() {
+    assert_eq!(
+        rage_gain_from_main_hand_white_damage(0, 1, BASE_ATTACK_TIME_MS, MeleeHitOutcome::Normal),
+        0
+    );
+    assert_eq!(
+        rage_gain_from_main_hand_white_damage(3, 1, BASE_ATTACK_TIME_MS, MeleeHitOutcome::Normal),
+        49,
+        "low starter white hits get the Classic main-hand speed component"
+    );
+    assert_eq!(
+        rage_gain_from_main_hand_white_damage(1, 1, BASE_ATTACK_TIME_MS, MeleeHitOutcome::Normal),
+        19,
+        "the Classic cap prevents tiny hits from generating more than 15 * damage / conversion"
+    );
+    assert_eq!(
+        rage_gain_from_main_hand_white_damage(100, 1, BASE_ATTACK_TIME_MS, MeleeHitOutcome::Normal),
+        534
+    );
+    assert_eq!(
+        rage_gain_from_main_hand_white_damage(100, 1, BASE_ATTACK_TIME_MS, MeleeHitOutcome::Crit),
+        569
+    );
+    assert_eq!(rage_gain_from_damage_taken(100, 1), 333);
 }
 
 #[test]
@@ -13577,7 +13603,12 @@ async fn heroic_strike_queue_rechecks_rage_when_next_swing_fires() {
     assert!(session.queued_next_melee_spell.is_none());
     assert_eq!(
         session.player_rage,
-        rage_gain_from_damage(RUST_COMBAT_DUMMY_HIT_DAMAGE, character.level, true)
+        rage_gain_from_main_hand_white_damage(
+            RUST_COMBAT_DUMMY_HIT_DAMAGE,
+            character.level,
+            BASE_ATTACK_TIME_MS,
+            MeleeHitOutcome::Normal,
+        )
     );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
@@ -13647,7 +13678,12 @@ async fn combat_dummy_lethal_white_swing_grants_rage_from_raw_hit() {
     assert_eq!(session.combat_dummy_health, 0);
     assert_eq!(
         session.player_rage,
-        rage_gain_from_damage(RUST_COMBAT_DUMMY_HIT_DAMAGE, character.level, true)
+        rage_gain_from_main_hand_white_damage(
+            RUST_COMBAT_DUMMY_HIT_DAMAGE,
+            character.level,
+            BASE_ATTACK_TIME_MS,
+            MeleeHitOutcome::Normal,
+        )
     );
 }
 

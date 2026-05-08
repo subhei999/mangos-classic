@@ -148,11 +148,13 @@ the local game stack and observability dashboard:
   draw cooldown swipes for known finite target debuffs such as Rend.
 - Current read-only Northshire combat/movement investigation found four
   user-observed parity gaps and likely owners:
-  - Critter one-shot rage: fixed in the current uncommitted work. CMaNGOS
-    awards attacker rage from the raw direct melee hit before health/death
-    clamping; Rust now carries a separate pre-clamp `attacker_rage_damage`
-    for DB-creature melee outcomes and uses raw hit damage for lethal combat
-    dummy white swings. Critter/no-XP type is not a CMaNGOS rage gate.
+  - Low-level/critters rage: fixed in the current uncommitted work. Rust now
+    carries a separate pre-clamp `attacker_rage_damage` for DB-creature melee
+    outcomes and uses raw hit damage for lethal combat dummy white swings.
+    Outgoing main-hand white-hit rage follows the Classic Era speed-factor
+    formula so tiny level 1-6 hits no longer feel about half-rate; incoming
+    damage-taken rage stays on the CMaNGOS `damage / conversion * 2.5` path.
+    Critter/no-XP type is not a CMaNGOS rage gate.
   - Creek/water crossing: fixed in the current uncommitted work. Rust now loads
     `creature_template.InhabitType`, normalizes invalid values like CMaNGOS,
     and passes per-creature walk/swim nav include flags into the native Detour
@@ -1064,6 +1066,15 @@ process locks `target\debug\authserver.exe`.
   locked `target\debug\authserver.exe`. Replacement verification passed:
   `cargo build -p authserver --target-dir target/codex-verify` and
   `cargo build -p worldserver --target-dir target/codex-verify`.
+- Post Classic Era low-level rage correction: outgoing main-hand white-hit rage
+  now includes the Classic speed-factor component and cap, while damage-taken
+  rage keeps the CMaNGOS formula. Proof: `cargo fmt --package wow-network
+  --check`, `cargo check -p wow-network`, focused `rage`, `starter_spell`,
+  `combat_dummy_lethal_white_swing_grants_rage_from_raw_hit`, and
+  `heroic_strike_queue_consumes_on_next_swing_only_once` tests passed. Full
+  baseline passed with
+  `$env:CARGO_TARGET_DIR='target\codex-rage-check'; .\scripts\test-rust.cmd`,
+  including 469 `wow-network` tests and final authserver/auth-flow builds.
 - Post Northshire movement parity fixes: `cargo fmt --check`, `cargo check -p
   wow-network`, focused tests
   `cargo test -p wow-network db_creature_mmap_path_filter_uses_cmangos_inhabit_type -- --nocapture`,

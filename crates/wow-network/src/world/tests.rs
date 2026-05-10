@@ -18295,6 +18295,15 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
     assert!(packets
         .iter()
         .any(|packet| packet.opcode == SMSG_STANDSTATE_UPDATE && packet.body == [0]));
+    assert!(packets.iter().any(|packet| {
+        if packet.opcode != SMSG_UPDATE_OBJECT {
+            return false;
+        }
+        let (values, _) =
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
+        values[UNIT_FIELD_BYTES_1]
+            == Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_STAND))
+    }));
     assert!(packets
         .iter()
         .any(|packet| packet.opcode == SMSG_SPELL_START));

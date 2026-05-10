@@ -959,6 +959,13 @@ async fn stand_player_for_spell_cast(
     };
     send_packet(
         stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_stand_state_update_body(character, PLAYER_STAND_STATE_STAND)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
         SMSG_STANDSTATE_UPDATE,
         &[PLAYER_STAND_STATE_STAND],
         Some(&mut *header_crypto),

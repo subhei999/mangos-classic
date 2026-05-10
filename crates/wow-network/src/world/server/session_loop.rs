@@ -469,6 +469,7 @@ async fn handle_client(
                         }
                         CMSG_STANDSTATECHANGE => {
                             handle_stand_state_change(
+                                &mut stream,
                                 SharedWorldDeps {
                                     object_mgr: runtime_state.object_mgr.as_ref(),
                                     maps: &runtime_state.maps,
@@ -476,6 +477,7 @@ async fn handle_client(
                                 },
                                 &body,
                                 &mut session,
+                                &mut header_crypto,
                             )
                             .await?;
                         }

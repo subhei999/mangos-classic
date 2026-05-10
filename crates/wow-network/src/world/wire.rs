@@ -152,9 +152,11 @@ async fn handle_set_target_obsolete(
 }
 
 async fn handle_stand_state_change(
+    stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     body: &[u8],
     session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     if body.len() < 4 {
         anyhow::bail!("CMSG_STANDSTATECHANGE payload must include a stand state");
@@ -182,6 +184,13 @@ async fn handle_stand_state_change(
         .maps
         .set_player_stand_state(character.position.map_id, character.guid, stand_state)
         .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_stand_state_update_body(character, stand_state)?,
+        Some(header_crypto),
+    )
+    .await?;
     shared_world.sessions.dispatch(packets).await;
     Ok(())
 }

@@ -18,10 +18,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   issues found by real-client testing, using CMaNGOS as the behavior reference
   and keeping shared world authority in `MapRuntime`.
 - Latest work addresses the current real-client feedback slice: spell casts
-  from sitting now force the player to stand before cast validation, spell
-  pushback now sends the CMaNGOS-shaped cast-bar delay packet, and equipped bag
-  containers are created with container fields during login so clients can open
-  them after equip/relog.
+  from sitting now force the player to stand before cast validation and send
+  both the standstate acknowledgement and the acting client's authoritative
+  `UNIT_FIELD_BYTES_1` update, spell pushback now sends the CMaNGOS-shaped
+  cast-bar delay packet, and equipped bag containers are created with container
+  fields during login so clients can open them after equip/relog.
 
 ## Recent Implemented Work
 
@@ -39,10 +40,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   movement/cancel so lingering hand/fireball animations clear.
 - Current real-client feedback slice fixes three follow-up issues from testing:
   cast-from-sitting now performs the stand transition before spell/item cast
-  failure checks, `SMSG_SPELL_DELAYED` now serializes a full 8-byte caster guid
-  plus `uint32` delay like CMaNGOS `Spell::Delayed`, and login inventory create
-  blocks now build equipped bag objects as `TYPEID_CONTAINER` with slot fields
-  for visible contained items.
+  failure checks and now sends the self `SMSG_UPDATE_OBJECT` stand-state field
+  update that the client needs to stop treating the caster as seated,
+  `SMSG_SPELL_DELAYED` now serializes a full 8-byte caster guid plus `uint32`
+  delay like CMaNGOS `Spell::Delayed`, and login inventory create blocks now
+  build equipped bag objects as `TYPEID_CONTAINER` with slot fields for visible
+  contained items.
 - Current spell proc slice loads DB-backed proc trigger metadata from
   `spell_template` and applies triggered aura spells from successful creature
   melee hits against players. Frost Armor-style `SPELL_AURA_PROC_TRIGGER_SPELL`
@@ -75,6 +78,7 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - `cargo fmt --package wow-db --package wow-network --check`
 - `cargo check -p wow-network`
+- `cargo fmt --package wow-network --check`
 - `cargo check -p wow-db`
 - `cargo test -p wow-network inventory --lib`
 - `cargo test -p wow-network spell --lib`
@@ -96,10 +100,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Follow-Ups
 
-- Real-client smoke the newest fixes: cast a spell from sitting and from using
-  an item while sitting, get hit while casting and confirm the cast bar extends
-  instead of hanging at 100%, and equip/relog with a secondary bag then open it
-  and verify contained items are visible.
+- Real-client smoke the newest fixes after the latest restart: cast a spell
+  from sitting and from using an item while sitting, get hit while casting and
+  confirm the cast bar extends instead of hanging at 100%, and equip/relog with
+  a secondary bag then open it and verify contained items are visible.
 - Continue real-client smoke from the prior slices: buy duplicate bread stacks,
   drag equipped gear onto a bag icon, cancel/move during a cast while another
   player watches, and test Frost Armor or another proc-on-hit aura against a

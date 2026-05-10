@@ -184,7 +184,7 @@ fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
 
 fn build_spell_delayed_body(caster: ObjectGuid, delay_millis: u32) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(12);
-    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&caster.raw().to_le_bytes());
     body.extend_from_slice(&delay_millis.to_le_bytes());
     Ok(body)
 }

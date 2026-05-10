@@ -82,13 +82,15 @@ async fn handle_cast_spell(
         spell_profile.kind,
     )
     .await;
+    let now = Instant::now();
+    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     if let Some(failure) = spell_cast_failure(
         deps.shared_world,
         session,
         &spell_template,
         &spell_profile,
         &targets,
-        Instant::now(),
+        now,
     )
     .await
     {
@@ -114,8 +116,6 @@ async fn handle_cast_spell(
         )
         .await;
     }
-    let now = Instant::now();
-    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
@@ -337,6 +337,7 @@ async fn handle_use_item(
     );
 
     let now = Instant::now();
+    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let targets = normalize_item_use_targets(request.targets, &item_spell_profile, caster);
     let spell_info = SpellInfo::from_template(&spell_template);
     let refreshable_consumable_regen = item_spell_profile.kind == SpellCastKind::AuraApplication
@@ -383,7 +384,6 @@ async fn handle_use_item(
         refreshable_consumable_regen,
     )
     .await;
-    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,

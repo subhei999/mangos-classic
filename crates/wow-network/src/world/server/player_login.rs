@@ -247,6 +247,8 @@ async fn handle_player_login(
         session.player_health = effective_world_stats.max_health().max(1);
     }
     let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+    let inventory_container_slots =
+        load_inventory_container_slots(deps.world_db_pool, &session.inventory).await?;
     let base_combat_stats = player_combat_stats_for_values(
         character.class,
         character.level,
@@ -289,6 +291,7 @@ async fn handle_player_login(
             world_db_pool: deps.world_db_pool,
             character: &bootstrap_character,
             inventory: &session.inventory,
+            inventory_container_slots: &inventory_container_slots,
             base_world_stats: &world_stats,
             world_stats: &effective_world_stats,
             equipped_templates: &equipped_templates,

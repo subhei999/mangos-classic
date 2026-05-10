@@ -1293,6 +1293,7 @@ fn self_spawn_update_chunks_without_legacy_fixture_blocks() {
     let update = SelfSpawnUpdate {
         character: &character,
         inventory: &[],
+        inventory_container_slots: &HashMap::new(),
         base_world_stats: &world_stats,
         world_stats: &world_stats,
         skills: &[],
@@ -14302,6 +14303,16 @@ async fn map_owned_active_cast_damage_pushback_extends_remaining_cast_time() {
     );
 }
 
+#[test]
+fn spell_delayed_packet_uses_full_caster_guid_for_client_cast_bar() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_spell_delayed_body(caster, 500).unwrap();
+
+    assert_eq!(body.len(), 12);
+    assert_eq!(&body[0..8], &caster.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &500u32.to_le_bytes());
+}
+
 #[tokio::test]
 async fn killing_blow_target_clear_preserves_weapon_swing_cooldown_for_retarget() {
     let maps = Arc::new(MapRuntimeManager::default());
@@ -21638,7 +21649,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         },
     ];
 
-    let blocks = build_inventory_item_create_blocks(&character, &items).unwrap();
+    let blocks = build_inventory_item_create_blocks(&character, &items, &HashMap::new()).unwrap();
 
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0][0], UPDATE_TYPE_CREATE_OBJECT);
@@ -21647,6 +21658,53 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
     assert_eq!(blocks[1][0], UPDATE_TYPE_CREATE_OBJECT);
     assert_eq!(blocks[1][4], TYPEID_ITEM);
     assert_eq!(blocks[1][5], UPDATEFLAG_ALL);
+}
+
+#[test]
+fn login_create_blocks_make_equipped_bags_openable_containers() {
+    let character = test_character(1, 1);
+    let bag_item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 41,
+        item_template: 5571,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    };
+    let contained_item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_START as u32,
+        slot: 2,
+        item: 42,
+        item_template: 117,
+        count: 4,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    };
+    let inventory = [bag_item, contained_item];
+    let container_slots = HashMap::from([(41, 6)]);
+
+    let blocks =
+        build_inventory_item_create_blocks(&character, &inventory, &container_slots).unwrap();
+
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 41);
+    let contained_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let (bag_values, _) = decode_create_update_block(&blocks[0], bag_guid, TYPEID_CONTAINER);
+    assert_eq!(bag_values[CONTAINER_FIELD_NUM_SLOTS], Some(6));
+    assert!(blocks.iter().any(|block| {
+        if block[0] != UPDATE_TYPE_VALUES {
+            return false;
+        }
+        let (values, _) = decode_values_update_block(block, bag_guid);
+        let field = CONTAINER_FIELD_SLOT_1 + 2 * 2;
+        values[field] == Some(contained_guid.raw() as u32)
+            && values[field + 1] == Some((contained_guid.raw() >> 32) as u32)
+    }));
+    let (contained_values, _) = decode_create_update_block(&blocks[2], contained_guid, TYPEID_ITEM);
+    assert_eq!(contained_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(contained_values[0x009], Some((bag_guid.raw() >> 32) as u32));
 }
 
 #[test]

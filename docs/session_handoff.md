@@ -17,14 +17,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: finish Northshire multiplayer/gameplay parity
   issues found by real-client testing, using CMaNGOS as the behavior reference
   and keeping shared world authority in `MapRuntime`.
-- Latest committed work adds the first architecture-correct spell outcome slice:
-  DB-backed creature resistances, CMaNGOS-shaped spell crit/full-resist/partial
-  resist rolls for player direct spell damage against DB creatures, spell miss
-  logs for full resists, spell damage log resist/crit fields, and finite proc
-  trigger charge consumption.
-- Current startup hotfix casts creature model/gender `COALESCE` query outputs to
-  concrete SQL integer/double types so MySQL does not return `DECIMAL` for the
-  full static creature cache load.
+- Latest work addresses the current real-client feedback slice: spell casts
+  from sitting now force the player to stand before cast validation, spell
+  pushback now sends the CMaNGOS-shaped cast-bar delay packet, and equipped bag
+  containers are created with container fields during login so clients can open
+  them after equip/relog.
 
 ## Recent Implemented Work
 
@@ -40,6 +37,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   melee hits (`SMSG_SPELL_DELAYED`), auto-standing when casting from sit/sleep,
   and nearby observer cleanup packets when an active cast is interrupted by
   movement/cancel so lingering hand/fireball animations clear.
+- Current real-client feedback slice fixes three follow-up issues from testing:
+  cast-from-sitting now performs the stand transition before spell/item cast
+  failure checks, `SMSG_SPELL_DELAYED` now serializes a full 8-byte caster guid
+  plus `uint32` delay like CMaNGOS `Spell::Delayed`, and login inventory create
+  blocks now build equipped bag objects as `TYPEID_CONTAINER` with slot fields
+  for visible contained items.
 - Current spell proc slice loads DB-backed proc trigger metadata from
   `spell_template` and applies triggered aura spells from successful creature
   melee hits against players. Frost Armor-style `SPELL_AURA_PROC_TRIGGER_SPELL`
@@ -79,6 +82,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network creature --lib`
 - `cargo test -p wow-network proc_trigger --lib`
 - `cargo test -p wow-network spell_damage_outcome --lib`
+- `cargo test -p wow-network spell_delayed_packet_uses_full_caster_guid_for_client_cast_bar --lib`
+- `cargo test -p wow-network map_owned_active_cast_damage_pushback_extends_remaining_cast_time --lib`
+- `cargo test -p wow-network login_create_blocks_make_equipped_bags_openable_containers --lib`
+- `cargo test -p wow-network spell_cast_from_sitting_auto_stands_player_and_observers --lib`
+- `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network inventory --lib`
+- `cargo test -p wow-network --lib`
 - `cargo test -p wow-db world_data --lib`
 - `.\scripts\restart-game-stack.cmd`
 - `git diff --check`
@@ -86,10 +96,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Follow-Ups
 
-- Real-client smoke the new fixes: equip a bag, buy duplicate bread stacks,
-  drag equipped gear onto a bag icon, cast while sitting, get hit while casting,
-  cancel/move during a cast while another player watches, and test Frost Armor
-  or another proc-on-hit aura against a creature.
+- Real-client smoke the newest fixes: cast a spell from sitting and from using
+  an item while sitting, get hit while casting and confirm the cast bar extends
+  instead of hanging at 100%, and equip/relog with a secondary bag then open it
+  and verify contained items are visible.
+- Continue real-client smoke from the prior slices: buy duplicate bread stacks,
+  drag equipped gear onto a bag icon, cancel/move during a cast while another
+  player watches, and test Frost Armor or another proc-on-hit aura against a
+  creature.
 - Debuff timers on hostile creature target portraits remain unimplemented or
   client-limited until proven otherwise. CMaNGOS sends aura duration updates to
   player aura targets; do not fake hostile portrait timers with an addon.

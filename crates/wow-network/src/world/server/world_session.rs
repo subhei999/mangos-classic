@@ -4,6 +4,7 @@ struct EnterWorldBootstrap<'a> {
     world_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
+    inventory_container_slots: &'a HashMap<u32, u32>,
     base_world_stats: &'a PlayerWorldStats,
     world_stats: &'a PlayerWorldStats,
     equipped_templates: &'a [EquippedItemTemplate],
@@ -58,6 +59,7 @@ async fn send_enter_world_bootstrap(
         SelfSpawnUpdate {
             character: bootstrap.character,
             inventory: bootstrap.inventory,
+            inventory_container_slots: bootstrap.inventory_container_slots,
             base_world_stats: bootstrap.base_world_stats,
             world_stats: bootstrap.world_stats,
             skills: bootstrap.skills,

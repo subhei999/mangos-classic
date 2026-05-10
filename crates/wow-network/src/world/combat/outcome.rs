@@ -128,6 +128,364 @@ impl MeleeDamageOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpellDamageOutcome {
+    original_damage: u32,
+    final_damage: u32,
+    absorb: u32,
+    resist: i32,
+    blocked: u32,
+    hit_info: u32,
+    miss_info: Option<u8>,
+}
+
+impl SpellDamageOutcome {
+    fn normal_hit(damage: u32) -> Self {
+        Self {
+            original_damage: damage,
+            final_damage: damage,
+            absorb: 0,
+            resist: 0,
+            blocked: 0,
+            hit_info: 0,
+            miss_info: None,
+        }
+    }
+
+    fn full_resist(damage: u32) -> Self {
+        Self {
+            original_damage: damage,
+            final_damage: 0,
+            absorb: 0,
+            resist: damage as i32,
+            blocked: 0,
+            hit_info: 0,
+            miss_info: Some(SPELL_MISS_RESIST),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpellDamageOutcomeInput {
+    damage: u32,
+    school: u8,
+    dmg_class: u32,
+    attributes_ex2: u32,
+    attributes_ex3: u32,
+    caster_class: u8,
+    caster_level: u8,
+    caster_intellect: u32,
+    target_level: u8,
+    target_resistances: [i16; MAX_SPELL_SCHOOL],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpellDamageOutcomeRolls {
+    hit_roll: u32,
+    crit_roll: u32,
+    partial_resist_roll: u32,
+}
+
+const SPELL_DAMAGE_CLASS_NONE: u32 = 0;
+const SPELL_DAMAGE_CLASS_MAGIC: u32 = 1;
+const SPELL_DAMAGE_CLASS_MELEE: u32 = 2;
+const SPELL_ATTR_EX2_CANT_CRIT: u32 = 0x2000_0000;
+const SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
+const SPELL_ATTR_EX3_IGNORE_CASTER_MODIFIERS: u32 = 0x2000_0000;
+const PARTIAL_RESIST_DISTRIBUTION: [[u32; 5]; 101] = [
+    [10000, 0, 0, 0, 0],
+    [9700, 200, 100, 0, 0],
+    [9400, 400, 200, 0, 0],
+    [9000, 800, 200, 0, 0],
+    [8700, 1000, 300, 0, 0],
+    [8400, 1200, 400, 0, 0],
+    [8200, 1300, 400, 100, 0],
+    [7900, 1500, 500, 100, 0],
+    [7600, 1700, 600, 100, 0],
+    [7300, 1900, 700, 100, 0],
+    [6900, 2300, 700, 100, 0],
+    [6600, 2500, 800, 100, 0],
+    [6300, 2700, 900, 100, 0],
+    [6000, 2900, 1000, 100, 0],
+    [5800, 3000, 1000, 200, 0],
+    [5400, 3300, 1100, 200, 0],
+    [5100, 3600, 1100, 200, 0],
+    [4800, 3800, 1200, 200, 0],
+    [4400, 4200, 1200, 200, 0],
+    [4100, 4400, 1300, 200, 0],
+    [3700, 4800, 1300, 200, 0],
+    [3400, 5000, 1400, 200, 0],
+    [3100, 5200, 1500, 200, 0],
+    [3000, 5200, 1500, 200, 100],
+    [2800, 5300, 1500, 300, 100],
+    [2500, 5500, 1600, 300, 100],
+    [2400, 5400, 1700, 400, 100],
+    [2300, 5300, 1800, 500, 100],
+    [2200, 5100, 2100, 500, 100],
+    [2100, 5000, 2200, 600, 100],
+    [2000, 4900, 2400, 600, 100],
+    [1900, 4700, 2600, 700, 100],
+    [1800, 4600, 2700, 800, 100],
+    [1700, 4400, 3000, 800, 100],
+    [1600, 4300, 3100, 900, 100],
+    [1500, 4200, 3200, 1000, 100],
+    [1400, 4100, 3300, 1100, 100],
+    [1300, 3900, 3600, 1100, 100],
+    [1300, 3600, 3800, 1200, 100],
+    [1200, 3500, 3900, 1300, 100],
+    [1100, 3400, 4000, 1400, 100],
+    [1000, 3300, 4100, 1500, 100],
+    [900, 3100, 4400, 1500, 100],
+    [800, 3000, 4500, 1600, 100],
+    [800, 2700, 4700, 1700, 100],
+    [700, 2600, 4800, 1800, 100],
+    [600, 2500, 4900, 1900, 100],
+    [600, 2300, 5000, 1900, 200],
+    [500, 2200, 5100, 2000, 200],
+    [300, 2200, 5300, 2000, 200],
+    [200, 2100, 5400, 2100, 200],
+    [200, 2000, 5300, 2200, 300],
+    [200, 2000, 5100, 2200, 500],
+    [200, 1900, 5000, 2300, 600],
+    [100, 1900, 4900, 2500, 600],
+    [100, 1800, 4800, 2600, 700],
+    [100, 1700, 4700, 2700, 800],
+    [100, 1600, 4500, 3000, 800],
+    [100, 1500, 4400, 3100, 900],
+    [100, 1500, 4100, 3300, 1000],
+    [100, 1400, 4000, 3400, 1100],
+    [100, 1300, 3900, 3500, 1200],
+    [100, 1200, 3800, 3600, 1300],
+    [100, 1100, 3600, 3900, 1300],
+    [100, 1100, 3300, 4100, 1400],
+    [100, 1000, 3200, 4200, 1500],
+    [100, 900, 3100, 4300, 1600],
+    [100, 800, 3000, 4400, 1700],
+    [100, 800, 2700, 4600, 1800],
+    [100, 700, 2600, 4700, 1900],
+    [100, 600, 2400, 4900, 2000],
+    [100, 600, 2200, 5000, 2100],
+    [100, 500, 2100, 5100, 2200],
+    [100, 500, 1800, 5300, 2300],
+    [100, 400, 1700, 5400, 2400],
+    [100, 300, 1600, 5500, 2500],
+    [100, 300, 1500, 5300, 2800],
+    [100, 200, 1500, 5200, 3000],
+    [0, 200, 1500, 5200, 3100],
+    [0, 200, 1400, 5000, 3400],
+    [0, 200, 1300, 4800, 3700],
+    [0, 200, 1300, 4400, 4100],
+    [0, 200, 1200, 4200, 4400],
+    [0, 200, 1200, 3800, 4800],
+    [0, 200, 1100, 3600, 5100],
+    [0, 200, 1100, 3300, 5400],
+    [0, 200, 1000, 3000, 5800],
+    [0, 100, 1000, 2900, 6000],
+    [0, 100, 900, 2700, 6300],
+    [0, 100, 800, 2500, 6600],
+    [0, 100, 700, 2300, 6900],
+    [0, 100, 700, 1900, 7300],
+    [0, 100, 600, 1700, 7600],
+    [0, 100, 500, 1500, 7900],
+    [0, 100, 400, 1300, 8200],
+    [0, 0, 400, 1200, 8400],
+    [0, 0, 300, 1000, 8700],
+    [0, 0, 200, 800, 9000],
+    [0, 0, 200, 400, 9400],
+    [0, 0, 100, 200, 9700],
+    [0, 0, 0, 0, 10000],
+];
+
+fn roll_spell_damage_outcome(input: SpellDamageOutcomeInput) -> SpellDamageOutcome {
+    let mut rng = rand::thread_rng();
+    calculate_spell_damage_outcome(
+        input,
+        SpellDamageOutcomeRolls {
+            hit_roll: rng.gen_range(1..=10_000),
+            crit_roll: rng.gen_range(1..=10_000),
+            partial_resist_roll: rng.gen_range(1..=10_000),
+        },
+    )
+}
+
+fn calculate_spell_damage_outcome(
+    input: SpellDamageOutcomeInput,
+    rolls: SpellDamageOutcomeRolls,
+) -> SpellDamageOutcome {
+    if input.damage == 0 {
+        return SpellDamageOutcome::normal_hit(0);
+    }
+    if spell_full_resist_succeeds(input, rolls.hit_roll) {
+        return SpellDamageOutcome::full_resist(input.damage);
+    }
+
+    let mut damage = input.damage;
+    let mut hit_info = 0;
+    if spell_crit_succeeds(input, rolls.crit_roll) {
+        hit_info |= SPELL_HIT_TYPE_CRIT;
+        damage = spell_crit_amount(input, damage);
+    }
+
+    let resist = spell_partial_resist_amount(input, damage, rolls.partial_resist_roll);
+    let final_damage = damage.saturating_sub(resist);
+    SpellDamageOutcome {
+        original_damage: input.damage,
+        final_damage,
+        absorb: 0,
+        resist: resist as i32,
+        blocked: 0,
+        hit_info,
+        miss_info: None,
+    }
+}
+
+fn spell_full_resist_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool {
+    if input.attributes_ex3 & SPELL_ATTR_EX3_ALWAYS_HIT != 0 {
+        return false;
+    }
+    if !matches!(
+        input.dmg_class,
+        SPELL_DAMAGE_CLASS_MAGIC | SPELL_DAMAGE_CLASS_NONE
+    ) {
+        return false;
+    }
+    let mut chance = spell_miss_chance_percent(input);
+    if input.dmg_class == SPELL_DAMAGE_CLASS_MAGIC && is_resistable_spell_school(input.school) {
+        let percent = effective_magic_resistance_percent(input);
+        if percent > 0.0 {
+            let full_resist_chance = partial_resist_chances(percent)[4] as f32 * 0.01;
+            chance += full_resist_chance;
+        }
+    }
+    roll <= chance_to_basis_points(chance)
+}
+
+fn spell_miss_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
+    let difference = input.target_level as i32 - input.caster_level as i32;
+    let chance = if difference > 2 {
+        2 + (difference - 2) * 11
+    } else {
+        difference
+    };
+    (chance as f32).clamp(1.0, 100.0)
+}
+
+fn spell_crit_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool {
+    if input.attributes_ex2 & SPELL_ATTR_EX2_CANT_CRIT != 0 {
+        return false;
+    }
+    if !matches!(input.dmg_class, SPELL_DAMAGE_CLASS_MAGIC | SPELL_DAMAGE_CLASS_NONE) {
+        return false;
+    }
+    roll <= chance_to_basis_points(spell_crit_chance_percent(input))
+}
+
+fn spell_crit_amount(input: SpellDamageOutcomeInput, damage: u32) -> u32 {
+    if input.attributes_ex3 & SPELL_ATTR_EX3_IGNORE_CASTER_MODIFIERS != 0 {
+        damage
+    } else {
+        damage.saturating_add(damage / 2).max(1)
+    }
+}
+
+fn spell_crit_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
+    spell_crit_from_intellect(input.caster_class, input.caster_level, input.caster_intellect)
+        .clamp(0.0, 100.0)
+}
+
+fn spell_crit_from_intellect(class: u8, level: u8, intellect: u32) -> f32 {
+    let (base, rate0, rate1) = match class {
+        2 => (3.70, 14.77, 0.65),
+        5 => (2.97, 10.03, 0.82),
+        7 => (3.54, 11.51, 0.80),
+        8 => (3.70, 14.77, 0.65),
+        9 => (3.18, 11.30, 0.82),
+        11 => (3.33, 12.41, 0.79),
+        _ => return 0.0,
+    };
+    let ratio = rate0 + rate1 * level.max(1) as f32;
+    if ratio <= 0.0 {
+        0.0
+    } else {
+        base + intellect as f32 / ratio
+    }
+}
+
+fn spell_partial_resist_amount(
+    input: SpellDamageOutcomeInput,
+    damage: u32,
+    roll: u32,
+) -> u32 {
+    if input.dmg_class != SPELL_DAMAGE_CLASS_MAGIC || !is_resistable_spell_school(input.school) {
+        return 0;
+    }
+    let percent = effective_magic_resistance_percent(input);
+    if percent <= 0.0 {
+        return 0;
+    }
+    let chances = partial_resist_chances(percent);
+    let mut threshold = 0u32;
+    for (portion, chance) in chances.into_iter().enumerate() {
+        threshold = threshold.saturating_add(chance);
+        if roll <= threshold {
+            let portion = portion.min(4) as u32;
+            return damage.saturating_mul(portion) / 5;
+        }
+    }
+    0
+}
+
+fn effective_magic_resistance_percent(input: SpellDamageOutcomeInput) -> f32 {
+    if input.school as usize >= MAX_SPELL_SCHOOL || input.school == 0 || input.school == 1 {
+        return 0.0;
+    }
+    let resistance = input.target_resistances[input.school as usize].max(0) as f32;
+    if resistance <= 0.0 {
+        return 0.0;
+    }
+    let caster_skill = (input.caster_level.max(1) as f32 * 5.0).max(100.0);
+    let target_skill = (input.target_level.max(1) as f32 * 5.0).max(100.0);
+    let mut percent = (resistance / caster_skill) * 100.0 * 0.75;
+    if input.dmg_class == SPELL_DAMAGE_CLASS_MAGIC {
+        percent += 0.4 * (target_skill - caster_skill).max(0.0);
+    }
+    percent.clamp(0.0, 75.0)
+}
+
+fn is_resistable_spell_school(school: u8) -> bool {
+    school != 0 && school != 1
+}
+
+fn creature_spell_resistances(template: &CreatureTemplateQuery) -> [i16; MAX_SPELL_SCHOOL] {
+    [
+        template.armor.min(i16::MAX as u32) as i16,
+        template.resistance_holy,
+        template.resistance_fire,
+        template.resistance_nature,
+        template.resistance_frost,
+        template.resistance_shadow,
+        template.resistance_arcane,
+    ]
+}
+
+fn partial_resist_chances(percent: f32) -> [u32; 5] {
+    let basis = (percent.clamp(0.0, 100.0) * 100.0).round() as usize;
+    let row = (basis / 100).min(PARTIAL_RESIST_DISTRIBUTION.len() - 1);
+    let intermediate = basis % 100;
+    if row + 1 >= PARTIAL_RESIST_DISTRIBUTION.len() || intermediate == 0 {
+        return PARTIAL_RESIST_DISTRIBUTION[row];
+    }
+    let base = PARTIAL_RESIST_DISTRIBUTION[row];
+    let next = PARTIAL_RESIST_DISTRIBUTION[row + 1];
+    let mut values = [0; 5];
+    for index in 0..5 {
+        let diff = next[index] as i64 - base[index] as i64;
+        values[index] = (base[index] as i64 + ((diff as f64 * intermediate as f64 / 100.0).round() as i64))
+            .max(0) as u32;
+    }
+    values
+}
+
 fn roll_melee_damage(input: MeleeDamageInput) -> MeleeDamageOutcome {
     let mut rng = rand::thread_rng();
     let damage_roll = rng.gen_range(1..=10_000);

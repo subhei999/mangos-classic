@@ -17,9 +17,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: finish Northshire multiplayer/gameplay parity
   issues found by real-client testing, using CMaNGOS as the behavior reference
   and keeping shared world authority in `MapRuntime`.
-- Current local work implements a parallel issue sweep across inventory,
-  spell lifecycle, spell proc/aura behavior, creature display gender, and local
-  addon cleanup. It is tested and ready to commit.
+- Current local work adds the first architecture-correct spell outcome slice:
+  DB-backed creature resistances, CMaNGOS-shaped spell crit/full-resist/partial
+  resist rolls for player direct spell damage against DB creatures, spell miss
+  logs for full resists, spell damage log resist/crit fields, and finite proc
+  trigger charge consumption. It is tested and ready to commit.
 
 ## Recent Implemented Work
 
@@ -46,6 +48,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Local addon cleanup removed
   `C:\World of Warcraft Classic\Interface\AddOns\NorthshireAuraTimers`. No repo
   commit is needed for that file-system-only cleanup.
+- Current spell outcome slice ports the CMaNGOS low-level formulas that matter
+  for Northshire spell damage: `Unit::CalculateSpellMissChance`,
+  `Unit::CalculateEffectiveMagicResistancePercent`,
+  `SPELL_PARTIAL_RESIST_DISTRIBUTION`, and
+  `Player::GetSpellCritFromIntellect`. The Rust path currently applies this to
+  non-weapon direct player spell damage against shared DB creatures; melee
+  ability damage still uses the existing melee outcome path.
+- Current proc slice now treats `proc_charges = 0` as unlimited and decrements
+  finite `proc_charges` only after a proc successfully fires.
 - Full `.\scripts\test-rust.cmd` passed after stopping stale local
   `authserver.exe`/`worldserver.exe` processes that had locked target binaries.
 
@@ -58,6 +69,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network creature --lib`
+- `cargo test -p wow-network proc_trigger --lib`
+- `cargo test -p wow-network spell_damage_outcome --lib`
 - `git diff --check`
 - `.\scripts\test-rust.cmd`
 
@@ -70,10 +83,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Debuff timers on hostile creature target portraits remain unimplemented or
   client-limited until proven otherwise. CMaNGOS sends aura duration updates to
   player aura targets; do not fake hostile portrait timers with an addon.
-- Full spell outcome infrastructure is still needed: spell crit, full resist,
-  partial resist, absorb, and miss result structs should be added before
-  `apply_player_direct_damage_effect` and `MapRuntime::apply_db_creature_damage`
-  branch further.
+- Spell outcome follow-ups: wire the outcome layer into creature-cast spells,
+  player-vs-player spell damage, periodic damage, binary spell full-resist
+  behavior, absorbs/vulnerabilities, spell hit/crit aura modifiers, and broader
+  proc event metadata (`spell_proc_event`, procEx, cooldowns, PPM, equipment
+  requirements). Do not branch more ad hoc spell damage paths before extending
+  the shared outcome structs.
 - Creature radius/reach still mostly use first-display template fallback. A
   later visual-size slice should derive radius/reach from the selected model row
   where CMaNGOS does.

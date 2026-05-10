@@ -179,6 +179,7 @@ impl MapRuntime {
         let requested_damage = request
             .melee_outcome
             .map(|outcome| outcome.total_damage)
+            .or_else(|| request.spell_damage_outcome.map(|outcome| outcome.final_damage))
             .unwrap_or_else(|| request.damage.max(1));
         let attacker_rage_damage = if request.melee_outcome.is_some() {
             requested_damage
@@ -297,29 +298,43 @@ impl MapRuntime {
         let spell_non_melee_log_body = request
             .spell_id
             .filter(|_| {
-                request.melee_outcome.is_none()
-                    || (request.suppress_attacker_state && requested_damage > 0)
+                if let Some(outcome) = request.spell_damage_outcome {
+                    outcome.miss_info.is_none()
+                } else {
+                    request.melee_outcome.is_none()
+                        || (request.suppress_attacker_state && requested_damage > 0)
+                }
             })
             .map(|spell_id| {
-                let (blocked, hit_info) = request
-                    .melee_outcome
+                let (absorb, resist, blocked, hit_info) = request
+                    .spell_damage_outcome
                     .map(|outcome| {
-                        let hit_info = if outcome.hit_info & HITINFO_CRITICALHIT != 0 {
-                            SPELL_HIT_TYPE_CRIT
-                        } else {
-                            0
-                        };
-                        (outcome.blocked, hit_info)
+                        (
+                            outcome.absorb,
+                            outcome.resist,
+                            outcome.blocked,
+                            outcome.hit_info,
+                        )
                     })
-                    .unwrap_or((0, 0));
+                    .or_else(|| {
+                        request.melee_outcome.map(|outcome| {
+                            let hit_info = if outcome.hit_info & HITINFO_CRITICALHIT != 0 {
+                                SPELL_HIT_TYPE_CRIT
+                            } else {
+                                0
+                            };
+                            (outcome.absorbed, outcome.resisted, outcome.blocked, hit_info)
+                        })
+                    })
+                    .unwrap_or((0, 0, 0, 0));
                 build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
                     attacker: request.killer,
                     target: creature_guid,
                     spell_id,
                     damage: requested_damage,
                     school: request.spell_school,
-                    absorb: 0,
-                    resist: 0,
+                    absorb,
+                    resist,
                     periodic: false,
                     blocked,
                     hit_info,
@@ -328,7 +343,12 @@ impl MapRuntime {
             .transpose()?;
         let spell_miss_log_body = request
             .spell_id
-            .zip(request.melee_outcome.and_then(|outcome| outcome.spell_miss_info()))
+            .zip(
+                request
+                    .spell_damage_outcome
+                    .and_then(|outcome| outcome.miss_info)
+                    .or_else(|| request.melee_outcome.and_then(|outcome| outcome.spell_miss_info())),
+            )
             .map(|(spell_id, miss_info)| {
                 build_spell_log_miss_body(request.killer, creature_guid, spell_id, miss_info)
             })

@@ -288,6 +288,12 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         min_ranged_dmg: 0.0,
         max_ranged_dmg: 0.0,
         armor: 0,
+        resistance_holy: 0,
+        resistance_fire: 0,
+        resistance_nature: 0,
+        resistance_frost: 0,
+        resistance_shadow: 0,
+        resistance_arcane: 0,
         melee_attack_power: 0,
         ranged_attack_power: 0,
         min_loot_gold: 2,
@@ -2004,6 +2010,65 @@ fn next_melee_spell_bonus_does_not_turn_avoids_into_damage() {
         MeleeDamageOutcome::normal_hit(8).with_next_melee_spell_bonus(HEROIC_STRIKE_FIXTURE_DAMAGE);
     assert_eq!(landed.total_damage, 8 + HEROIC_STRIKE_FIXTURE_DAMAGE);
     assert_eq!(landed.school_damage, 8 + HEROIC_STRIKE_FIXTURE_DAMAGE);
+}
+
+#[test]
+fn spell_damage_outcome_carries_crit_resist_and_full_resist() {
+    let mut target_resistances = [0i16; MAX_SPELL_SCHOOL];
+    let base = SpellDamageOutcomeInput {
+        damage: 100,
+        school: 2,
+        dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+        attributes_ex2: 0,
+        attributes_ex3: 0,
+        caster_class: 8,
+        caster_level: 10,
+        caster_intellect: 100,
+        target_level: 10,
+        target_resistances,
+    };
+
+    let crit = calculate_spell_damage_outcome(
+        base,
+        SpellDamageOutcomeRolls {
+            hit_roll: 10_000,
+            crit_roll: 1,
+            partial_resist_roll: 1,
+        },
+    );
+    assert_eq!(crit.final_damage, 150);
+    assert_eq!(crit.hit_info, SPELL_HIT_TYPE_CRIT);
+    assert_eq!(crit.miss_info, None);
+
+    target_resistances[2] = 1_000;
+    let high_resistance = SpellDamageOutcomeInput {
+        target_resistances,
+        attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+        ..base
+    };
+    let partial = calculate_spell_damage_outcome(
+        high_resistance,
+        SpellDamageOutcomeRolls {
+            hit_roll: 10_000,
+            crit_roll: 1,
+            partial_resist_roll: 10_000,
+        },
+    );
+    assert_eq!(partial.final_damage, 20);
+    assert_eq!(partial.resist, 80);
+    assert_eq!(partial.hit_info, 0);
+    assert_eq!(partial.miss_info, None);
+
+    let resisted = calculate_spell_damage_outcome(
+        high_resistance,
+        SpellDamageOutcomeRolls {
+            hit_roll: 1,
+            crit_roll: 10_000,
+            partial_resist_roll: 1,
+        },
+    );
+    assert_eq!(resisted.final_damage, 0);
+    assert_eq!(resisted.miss_info, Some(SPELL_MISS_RESIST));
 }
 
 #[test]
@@ -9885,6 +9950,7 @@ fn map_runtime_db_creature_damage_switches_active_target_from_threat() {
             killer: new_victim,
             damage: 140,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10064,6 +10130,7 @@ fn map_runtime_db_creature_damage_preserves_attacker_state_overkill_damage() {
             killer: player,
             damage: 30,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10108,6 +10175,7 @@ fn map_runtime_db_creature_melee_rage_damage_uses_preclamp_hit_for_critter() {
             killer: player,
             damage: 30,
             melee_outcome: Some(MeleeDamageOutcome::normal_hit(30)),
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10178,6 +10246,7 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
         killer: victim,
         damage: 1,
         melee_outcome: None,
+        spell_damage_outcome: None,
         spell_id: None,
         spell_school: 0,
         suppress_attacker_state: false,
@@ -10276,8 +10345,17 @@ fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
         .apply_db_creature_damage(DbCreatureDamageRequest {
             creature_guid,
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
-            damage: 11,
+            damage: 30,
             melee_outcome: None,
+            spell_damage_outcome: Some(SpellDamageOutcome {
+                original_damage: 30,
+                final_damage: 11,
+                absorb: 0,
+                resist: 19,
+                blocked: 0,
+                hit_info: SPELL_HIT_TYPE_CRIT,
+                miss_info: None,
+            }),
             spell_id: Some(WARRIOR_HEROIC_STRIKE_RANK_1),
             spell_school: 4,
             suppress_attacker_state: false,
@@ -10310,6 +10388,15 @@ fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
     assert_eq!(
         spell_log[cursor], 4,
         "map-owned spell damage logs should preserve the spell/effect school"
+    );
+    cursor += 1;
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap() as i32, 19);
+    cursor += 2;
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap(), 0);
+    assert_eq!(
+        read_u32(spell_log, &mut cursor).unwrap(),
+        SPELL_HIT_TYPE_CRIT
     );
     assert_eq!(event.observer_packets.len(), 3);
     assert!(event
@@ -10362,6 +10449,7 @@ fn map_runtime_weapon_spell_avoid_sends_spell_miss_log_without_damage_log() {
                 resisted: 0,
                 blocked: 0,
             }),
+            spell_damage_outcome: None,
             spell_id: Some(1752),
             spell_school: 0,
             suppress_attacker_state: true,
@@ -10422,6 +10510,7 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
             damage: 9_999,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10484,6 +10573,7 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 2),
             damage: 9_999,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10518,6 +10608,7 @@ fn map_runtime_death_update_uses_corpse_created_group_loot_rights() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
             damage: 10,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10600,6 +10691,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             killer: player_a,
             damage: 10,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10624,6 +10716,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             killer: player_b,
             damage: 15,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10660,6 +10753,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             killer: player_a,
             damage: 99,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10697,6 +10791,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             killer: player_b,
             damage: 99,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -10935,6 +11030,7 @@ fn gm_instakill_suppresses_damage_packet_but_keeps_killer_loot_rights() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
             damage: 10,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: true,
@@ -10997,6 +11093,7 @@ fn gm_instakill_can_reclaim_existing_loot_owner_before_death() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
             damage: 10,
             melee_outcome: None,
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: true,
@@ -11063,6 +11160,7 @@ fn map_runtime_db_creature_damage_preserves_melee_miss_outcome() {
             killer: ObjectGuid::new(HighGuid::Player, 0, 1),
             damage: 99,
             melee_outcome: Some(miss),
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,
@@ -11111,6 +11209,7 @@ fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
         killer: ObjectGuid::new(HighGuid::Player, 0, 1),
         damage: 9_999,
         melee_outcome: None,
+        spell_damage_outcome: None,
         spell_id: None,
         spell_school: 0,
         suppress_attacker_state: false,
@@ -11867,7 +11966,7 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
             triggered_spell_id: 6136,
             proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
             proc_chance: 100,
-            proc_charges: 0,
+            remaining_charges: None,
         }]
     );
 }
@@ -11890,7 +11989,7 @@ fn active_aura_proc_trigger_spell_ids_filter_flags_and_expiration() {
             triggered_spell_id: 6136,
             proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
             proc_chance: 100,
-            proc_charges: 0,
+            remaining_charges: None,
         }],
     };
     let expired = ActiveAura {
@@ -11898,14 +11997,31 @@ fn active_aura_proc_trigger_spell_ids_filter_flags_and_expiration() {
         ..active.clone()
     };
 
+    let mut active_auras = vec![active];
     assert_eq!(
-        active_aura_proc_trigger_spell_ids(&[active], PROC_FLAG_TAKE_MELEE_SWING, now),
+        active_aura_proc_trigger_spell_ids(&mut active_auras, PROC_FLAG_TAKE_MELEE_SWING, now),
         vec![6136]
     );
-    assert!(
-        active_aura_proc_trigger_spell_ids(&[expired], PROC_FLAG_TAKE_MELEE_SWING, now).is_empty()
+    active_auras[0].proc_triggers[0].remaining_charges = Some(1);
+    assert_eq!(
+        active_aura_proc_trigger_spell_ids(&mut active_auras, PROC_FLAG_TAKE_MELEE_SWING, now),
+        vec![6136]
     );
-    assert!(active_aura_proc_trigger_spell_ids(&[], PROC_FLAG_TAKE_MELEE_SWING, now).is_empty());
+    assert_eq!(active_auras[0].proc_triggers[0].remaining_charges, Some(0));
+    assert!(
+        active_aura_proc_trigger_spell_ids(&mut active_auras, PROC_FLAG_TAKE_MELEE_SWING, now)
+            .is_empty()
+    );
+    let mut expired_auras = vec![expired];
+    assert!(active_aura_proc_trigger_spell_ids(
+        &mut expired_auras,
+        PROC_FLAG_TAKE_MELEE_SWING,
+        now
+    )
+    .is_empty());
+    assert!(
+        active_aura_proc_trigger_spell_ids(&mut [], PROC_FLAG_TAKE_MELEE_SWING, now).is_empty()
+    );
 }
 
 #[test]
@@ -16526,6 +16642,8 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
     }
 }
 
+const TEST_SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
+
 fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(WARRIOR_HEROIC_STRIKE_RANK_1);
     template.spell_name = "Heroic Strike".to_string();
@@ -16681,6 +16799,7 @@ fn two_school_damage_effects_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(999_011);
     template.spell_name = "Two Bolts".to_string();
     template.school = 4;
+    template.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
     template.power_type = POWER_TYPE_MANA;
     template.mana_cost = 0;
     template.effect1 = 2;
@@ -17815,6 +17934,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
     let mut fireball = fireball_spell_template();
+    fireball.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
     fireball.speed = 10.0;
     fireball.start_recovery_time = 25;
     object_mgr
@@ -19038,6 +19158,7 @@ async fn db_creature_death_clears_queued_next_melee_spell_for_target() {
                 killer: ObjectGuid::new(HighGuid::Player, 0, 7),
                 damage: 20,
                 melee_outcome: None,
+                spell_damage_outcome: None,
                 spell_id: None,
                 spell_school: 0,
                 suppress_attacker_state: false,

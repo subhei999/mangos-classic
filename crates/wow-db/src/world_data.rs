@@ -67,6 +67,12 @@ pub struct CreatureTemplateQuery {
     pub min_ranged_dmg: f32,
     pub max_ranged_dmg: f32,
     pub armor: u32,
+    pub resistance_holy: i16,
+    pub resistance_fire: i16,
+    pub resistance_nature: i16,
+    pub resistance_frost: i16,
+    pub resistance_shadow: i16,
+    pub resistance_arcane: i16,
     pub melee_attack_power: u32,
     pub ranged_attack_power: u32,
     pub min_loot_gold: u32,
@@ -393,6 +399,12 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.MinRangedDmg AS template_min_ranged_dmg, \
                 creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
                 creature_template.Armor AS template_armor, \
+                creature_template.ResistanceHoly AS template_resistance_holy, \
+                creature_template.ResistanceFire AS template_resistance_fire, \
+                creature_template.ResistanceNature AS template_resistance_nature, \
+                creature_template.ResistanceFrost AS template_resistance_frost, \
+                creature_template.ResistanceShadow AS template_resistance_shadow, \
+                creature_template.ResistanceArcane AS template_resistance_arcane, \
                 creature_template.MeleeAttackPower AS template_melee_attack_power, \
                 creature_template.RangedAttackPower AS template_ranged_attack_power, \
                 creature_template.MinLootGold AS template_min_loot_gold, \
@@ -653,7 +665,14 @@ pub async fn get_creature_template_query(
                 creature_template.MinLevelMana AS min_level_mana, creature_template.MaxLevelMana AS max_level_mana, \
                 creature_template.MinMeleeDmg AS min_melee_dmg, creature_template.MaxMeleeDmg AS max_melee_dmg, \
                 creature_template.MinRangedDmg AS min_ranged_dmg, creature_template.MaxRangedDmg AS max_ranged_dmg, \
-                creature_template.Armor AS armor, creature_template.MeleeAttackPower AS melee_attack_power, \
+                creature_template.Armor AS armor, \
+                creature_template.ResistanceHoly AS resistance_holy, \
+                creature_template.ResistanceFire AS resistance_fire, \
+                creature_template.ResistanceNature AS resistance_nature, \
+                creature_template.ResistanceFrost AS resistance_frost, \
+                creature_template.ResistanceShadow AS resistance_shadow, \
+                creature_template.ResistanceArcane AS resistance_arcane, \
+                creature_template.MeleeAttackPower AS melee_attack_power, \
                 creature_template.RangedAttackPower AS ranged_attack_power, \
                 creature_template.MinLootGold AS min_loot_gold, creature_template.MaxLootGold AS max_loot_gold, \
                 creature_template.MeleeBaseAttackTime AS melee_base_attack_time, \
@@ -1585,6 +1604,12 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.MinRangedDmg AS template_min_ranged_dmg, \
                 creature_template.MaxRangedDmg AS template_max_ranged_dmg, \
                 creature_template.Armor AS template_armor, \
+                creature_template.ResistanceHoly AS template_resistance_holy, \
+                creature_template.ResistanceFire AS template_resistance_fire, \
+                creature_template.ResistanceNature AS template_resistance_nature, \
+                creature_template.ResistanceFrost AS template_resistance_frost, \
+                creature_template.ResistanceShadow AS template_resistance_shadow, \
+                creature_template.ResistanceArcane AS template_resistance_arcane, \
                 creature_template.MeleeAttackPower AS template_melee_attack_power, \
                 creature_template.RangedAttackPower AS template_ranged_attack_power, \
                 creature_template.MinLootGold AS template_min_loot_gold, \
@@ -2454,6 +2479,12 @@ mod world_data_tests {
                 min_ranged_dmg: 0.0,
                 max_ranged_dmg: 0.0,
                 armor: 0,
+                resistance_holy: 0,
+                resistance_fire: 0,
+                resistance_nature: 0,
+                resistance_frost: 0,
+                resistance_shadow: 0,
+                resistance_arcane: 0,
                 melee_attack_power: 0,
                 ranged_attack_power: 0,
                 min_loot_gold: 0,
@@ -3138,6 +3169,12 @@ struct CreatureSpawnRow {
     template_min_ranged_dmg: f32,
     template_max_ranged_dmg: f32,
     template_armor: u32,
+    template_resistance_holy: i16,
+    template_resistance_fire: i16,
+    template_resistance_nature: i16,
+    template_resistance_frost: i16,
+    template_resistance_shadow: i16,
+    template_resistance_arcane: i16,
     template_melee_attack_power: u32,
     template_ranged_attack_power: u32,
     template_min_loot_gold: u32,
@@ -3249,6 +3286,12 @@ impl CreatureSpawnRow {
                 min_ranged_dmg: self.template_min_ranged_dmg,
                 max_ranged_dmg: self.template_max_ranged_dmg,
                 armor: self.template_armor,
+                resistance_holy: self.template_resistance_holy,
+                resistance_fire: self.template_resistance_fire,
+                resistance_nature: self.template_resistance_nature,
+                resistance_frost: self.template_resistance_frost,
+                resistance_shadow: self.template_resistance_shadow,
+                resistance_arcane: self.template_resistance_arcane,
                 melee_attack_power: self.template_melee_attack_power,
                 ranged_attack_power: self.template_ranged_attack_power,
                 min_loot_gold: self.template_min_loot_gold,

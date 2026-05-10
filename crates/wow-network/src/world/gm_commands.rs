@@ -227,6 +227,7 @@ async fn kill_selected_db_creature(
                 killer,
                 damage: target_creature.health,
                 melee_outcome: None,
+                spell_damage_outcome: None,
                 spell_id: None,
                 spell_school: 0,
                 suppress_attacker_state: true,

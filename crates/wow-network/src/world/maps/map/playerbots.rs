@@ -851,6 +851,7 @@ impl MapRuntime {
             killer: bot_object,
             damage: melee_outcome.total_damage,
             melee_outcome: Some(melee_outcome),
+            spell_damage_outcome: None,
             spell_id: None,
             spell_school: 0,
             suppress_attacker_state: false,

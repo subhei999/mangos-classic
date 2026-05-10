@@ -1990,24 +1990,39 @@ fn spell_aura_proc_triggers(spell_info: &SpellInfo<'_>) -> Vec<AuraProcTrigger> 
             triggered_spell_id: effect.trigger_spell,
             proc_flags: spell_info.template.proc_flags,
             proc_chance: spell_info.template.proc_chance,
-            proc_charges: spell_info.template.proc_charges,
+            remaining_charges: (spell_info.template.proc_charges > 0)
+                .then_some(spell_info.template.proc_charges),
         })
         .collect()
 }
 
 fn active_aura_proc_trigger_spell_ids(
-    active_auras: &[ActiveAura],
+    active_auras: &mut [ActiveAura],
     proc_flag: u32,
     now: Instant,
 ) -> Vec<u32> {
-    active_auras
-        .iter()
+    let mut triggered_spell_ids = Vec::new();
+    for aura in active_auras
+        .iter_mut()
         .filter(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at))
-        .flat_map(|aura| aura.proc_triggers.iter())
-        .filter(|trigger| trigger.proc_flags & proc_flag != 0)
-        .filter(|trigger| aura_proc_roll_succeeds(trigger.proc_chance))
-        .map(|trigger| trigger.triggered_spell_id)
-        .collect()
+    {
+        for trigger in &mut aura.proc_triggers {
+            if trigger.proc_flags & proc_flag == 0 {
+                continue;
+            }
+            if trigger.remaining_charges == Some(0) {
+                continue;
+            }
+            if !aura_proc_roll_succeeds(trigger.proc_chance) {
+                continue;
+            }
+            if let Some(remaining_charges) = trigger.remaining_charges.as_mut() {
+                *remaining_charges = remaining_charges.saturating_sub(1);
+            }
+            triggered_spell_ids.push(trigger.triggered_spell_id);
+        }
+    }
+    triggered_spell_ids
 }
 
 fn aura_proc_roll_succeeds(proc_chance: u32) -> bool {

@@ -394,6 +394,7 @@ struct DbCreatureDamageRequest {
     killer: ObjectGuid,
     damage: u32,
     melee_outcome: Option<MeleeDamageOutcome>,
+    spell_damage_outcome: Option<SpellDamageOutcome>,
     spell_id: Option<u32>,
     spell_school: u8,
     suppress_attacker_state: bool,

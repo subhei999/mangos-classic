@@ -461,8 +461,11 @@ async fn apply_player_taken_melee_proc_auras(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let trigger_spell_ids =
-        active_aura_proc_trigger_spell_ids(&session.active_auras, PROC_FLAG_TAKE_MELEE_SWING, now);
+    let trigger_spell_ids = active_aura_proc_trigger_spell_ids(
+        &mut session.active_auras,
+        PROC_FLAG_TAKE_MELEE_SWING,
+        now,
+    );
     if trigger_spell_ids.is_empty() {
         return Ok(());
     }

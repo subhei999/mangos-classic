@@ -266,7 +266,7 @@ struct AuraProcTrigger {
     triggered_spell_id: u32,
     proc_flags: u32,
     proc_chance: u32,
-    proc_charges: u32,
+    remaining_charges: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

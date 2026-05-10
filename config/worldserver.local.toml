@@ -32,11 +32,14 @@ char_delete_method = 0
 char_delete_min_level = 0
 
 [playerbots]
-enabled = true
+# Disabled for normal local starts so real-client multiplayer testing is not
+# polluted by synthetic player actors. Use restart-game-stack.ps1
+# -EnablePlayerbots for explicit bot load tests.
+enabled = false
 
 [playerbots.random]
-enabled = true
-count = 63
+enabled = false
+count = 0
 start_guid = 9010000
 name_prefix = "Loadbot"
 race = 1

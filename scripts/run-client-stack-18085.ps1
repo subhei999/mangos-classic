@@ -6,6 +6,8 @@ param(
     [switch]$ResetCharacters,
     [switch]$NoAutoRestart,
     [switch]$SeedLegacyRustFixtures,
+    [switch]$EnablePlayerbots,
+    [int]$PlayerbotRandomCount = -1,
     [int]$RestartDelaySeconds = 2
 )
 
@@ -370,6 +372,17 @@ Remove-Item $authLog, $worldLog -ErrorAction SilentlyContinue
 
 $authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml >> `"$authLog`" 2>&1"
 $worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`""
+if ($EnablePlayerbots -or $PlayerbotRandomCount -ge 0) {
+    $worldCmd += " && set `"WORLD_PLAYERBOTS__ENABLED=true`""
+    if ($PlayerbotRandomCount -ge 0) {
+        $worldCmd += " && set `"WORLD_PLAYERBOTS__RANDOM__ENABLED=true`""
+        $worldCmd += " && set `"WORLD_PLAYERBOTS__RANDOM__COUNT=$PlayerbotRandomCount`""
+    }
+} else {
+    $worldCmd += " && set `"WORLD_PLAYERBOTS__ENABLED=false`""
+    $worldCmd += " && set `"WORLD_PLAYERBOTS__RANDOM__ENABLED=false`""
+    $worldCmd += " && set `"WORLD_PLAYERBOTS__RANDOM__COUNT=0`""
+}
 if ($SeedLegacyRustFixtures) {
     $worldCmd += " && set `"WORLD_ENABLE_LEGACY_FIXTURE_NPCS=1`""
 }

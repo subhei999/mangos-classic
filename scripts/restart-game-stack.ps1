@@ -5,6 +5,8 @@ param(
     [switch]$ResetWorldDatabase,
     [switch]$ResetCharacters,
     [switch]$SeedLegacyRustFixtures,
+    [switch]$EnablePlayerbots,
+    [int]$PlayerbotRandomCount = -1,
     [switch]$Help
 )
 
@@ -22,6 +24,8 @@ function Show-Usage {
     Write-Host "  -ResetWorldDatabase           Recreate the local mangos world database"
     Write-Host "  -ResetCharacters              Recreate the RUSTAUTH starter character"
     Write-Host "  -SeedLegacyRustFixtures       Add old Rust fixture NPCs for debugging"
+    Write-Host "  -EnablePlayerbots             Opt into configured local playerbots"
+    Write-Host "  -PlayerbotRandomCount <count> Enable generated random playerbots with this count"
     Write-Host "  -Help                         Show this help"
 }
 
@@ -94,6 +98,12 @@ if ($ResetCharacters) {
 }
 if ($SeedLegacyRustFixtures) {
     $stackArgs += "-SeedLegacyRustFixtures"
+}
+if ($EnablePlayerbots) {
+    $stackArgs += "-EnablePlayerbots"
+}
+if ($PlayerbotRandomCount -ge 0) {
+    $stackArgs += @("-PlayerbotRandomCount", $PlayerbotRandomCount)
 }
 
 Write-Host "Restarting Rust game stack from $repoRoot"

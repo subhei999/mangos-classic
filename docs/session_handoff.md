@@ -36,6 +36,12 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   restarted with `WORLD_PLAYERBOTS__RANDOM__COUNT=511`; with no real client
   connected, 512 bots idle at ~0.94ms 1m map tick average. Recheck once a real
   client is observing Northshire to measure the harsh path.
+- Current local restart default is multiplayer-clean: `config/worldserver.local.toml`
+  has `[playerbots] enabled = false` and `[playerbots.random] enabled = false`,
+  and the stack launcher explicitly sets `WORLD_PLAYERBOTS__ENABLED=false`
+  unless `-EnablePlayerbots` or `-PlayerbotRandomCount <count>` is passed.
+  This keeps normal Northshire multiplayer testing free of synthetic players
+  while preserving an opt-in path for later bot load tests.
 - Recent committed spell bugfix revalidates delayed hostile casts at
   completion: if the caster turns away or LOS becomes blocked during a cast
   time, Rust sends the spell failure before power spend, `SMSG_SPELL_GO`, or

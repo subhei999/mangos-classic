@@ -1,9 +1,103 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+struct BotId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum PlayerController {
+    Client { session_id: SessionId },
+    Bot { bot_id: BotId },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PlayerbotRuntimeState {
+    bot_id: BotId,
+    home_position: WorldPosition,
+    next_think_at: Instant,
+    next_combat_think_at: Instant,
+    active_leg: Option<PlayerbotMovementLeg>,
+    route: Vec<WorldPosition>,
+    travel_destination: Option<WorldPosition>,
+    engage_target: Option<ObjectGuid>,
+    movement_start_retries_remaining: u8,
+    roam_step: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct PlayerbotMovementLeg {
+    start_position: WorldPosition,
+    destination: WorldPosition,
+    start_time: Instant,
+    arrival_time: Instant,
+    speed_yards_per_second: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+struct PlayerbotQueuedIntents {
+    movement: Option<PlayerbotMovementIntent>,
+    combat: Option<PlayerbotCombatIntent>,
+}
+
+impl PlayerbotQueuedIntents {
+    fn is_empty(&self) -> bool {
+        self.movement.is_none() && self.combat.is_none()
+    }
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum PlayerbotMovementIntent {
+    Defer,
+    Route { route: Option<Vec<WorldPosition>> },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum PlayerbotCombatIntent {
+    Target {
+        target: ObjectGuid,
+        route: Option<Vec<WorldPosition>>,
+    },
+    NoTarget,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PlayerbotPlanInput {
+    map_id: u32,
+    instance_id: u32,
+    bot_guid: u32,
+    position: WorldPosition,
+    home_position: WorldPosition,
+    travel_destination: Option<WorldPosition>,
+    roam_step: u8,
+    player_race: u8,
+    movement_due_at: Option<Instant>,
+    combat_due_at: Option<Instant>,
+    engage_target: Option<ObjectGuid>,
+    engage_target_creature: Option<DbCreatureRuntime>,
+    nearby_creatures: Vec<DbCreatureRuntime>,
+    geometry: Arc<WorldGeometry>,
+}
+
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+struct PlayerbotPlanningTick {
+    planned_bots: u32,
+    route_budget_exhausted: bool,
+    combat_budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct PlayerRuntime {
     guid: u32,
-    account_id: u32,
-    session_id: SessionId,
+    account_id: Option<u32>,
+    controller: PlayerController,
+    bot_runtime: Option<PlayerbotRuntimeState>,
     selected_target: Option<ObjectGuid>,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,
@@ -50,6 +144,26 @@ struct PlayerRuntime {
     queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     base_combat_stats: PlayerCombatStats,
     combat_stats: PlayerCombatStats,
+}
+
+impl PlayerRuntime {
+    fn is_client_controlled(&self) -> bool {
+        matches!(self.controller, PlayerController::Client { .. })
+    }
+
+    fn client_session_id(&self) -> Option<SessionId> {
+        match self.controller {
+            PlayerController::Client { session_id } => Some(session_id),
+            PlayerController::Bot { .. } => None,
+        }
+    }
+
+    fn packet_to_client(
+        &self,
+        packet: OutboundWorldPacket,
+    ) -> Option<(SessionId, OutboundWorldPacket)> {
+        self.client_session_id().map(|session_id| (session_id, packet))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +238,7 @@ struct MapRuntime {
     creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
+    playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
     next_idle_motion_tick_at: Option<Instant>,
     next_idle_motion_start_check_at: Option<Instant>,
     pending_db_scripts: Vec<PendingDbScriptAction>,
@@ -391,6 +506,7 @@ impl MapRuntime {
             creature_combat_leash: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
+            playerbot_intents: HashMap::new(),
             next_idle_motion_tick_at: None,
             next_idle_motion_start_check_at: None,
             pending_db_scripts: Vec::new(),
@@ -414,6 +530,11 @@ impl MapRuntime {
             loaded_player_corpse_grids: self.loaded_player_corpse_grids.len() as u64,
             active_creature_combats: self.active_creature_combats.len() as u64,
             corpses: self.corpses.len() as u64,
+            active_playerbots: self
+                .players
+                .values()
+                .filter(|player| matches!(player.controller, PlayerController::Bot { .. }))
+                .count() as u64,
         }
     }
 }
@@ -428,4 +549,5 @@ include!("map/creature_loot.rs");
 include!("map/gameobject_loot.rs");
 include!("map/creature_combat.rs");
 include!("map/creature_motion.rs");
+include!("map/playerbots.rs");
 include!("map/spatial.rs");

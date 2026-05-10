@@ -71,13 +71,6 @@ impl MapRuntime {
                 check: PlayerMeleeCheck::TargetNotAlive,
             };
         }
-        let navigation_check =
-            db_creature_navigation_check(navigation, player.position, creature.current_position);
-        if !navigation_check.is_clear() {
-            return DbCreaturePlayerMeleeValidation {
-                check: PlayerMeleeCheck::NavigationBlocked(navigation_check),
-            };
-        }
         let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, creature.combat_reach());
         let dx = player.position.x - creature.current_position.x;
         let dy = player.position.y - creature.current_position.y;
@@ -85,6 +78,13 @@ impl MapRuntime {
         if dx * dx + dy * dy + dz * dz > reach * reach {
             return DbCreaturePlayerMeleeValidation {
                 check: PlayerMeleeCheck::OutOfRange,
+            };
+        }
+        let navigation_check =
+            db_creature_navigation_check(navigation, player.position, creature.current_position);
+        if !navigation_check.is_clear() {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::NavigationBlocked(navigation_check),
             };
         }
         if !has_in_arc(
@@ -379,8 +379,12 @@ impl MapRuntime {
             let Some(player) = self.players.get(&player_guid) else {
                 continue;
             };
-            observer_packets.push((player.session_id, attacker_state.clone()));
-            observer_packets.push((player.session_id, health_update.clone()));
+            if let Some(packet) = player.packet_to_client(attacker_state.clone()) {
+                observer_packets.push(packet);
+            }
+            if let Some(packet) = player.packet_to_client(health_update.clone()) {
+                observer_packets.push(packet);
+            }
         }
         Ok(Some(DbCreaturePlayerDamageEvent {
             damage,
@@ -576,7 +580,7 @@ impl MapRuntime {
                     packets
                         .iter()
                         .cloned()
-                        .map(|packet| (player.session_id, packet))
+                        .filter_map(|packet| player.packet_to_client(packet))
                         .collect::<Vec<_>>()
                 })
             })

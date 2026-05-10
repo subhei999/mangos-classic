@@ -40,14 +40,11 @@ impl MapRuntime {
         self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
             .into_iter()
             .filter_map(|player_guid| {
-                self.players.get(&player_guid).map(|player| {
-                    (
-                        player.session_id,
-                        OutboundWorldPacket {
-                            opcode: SMSG_UPDATE_OBJECT,
-                            body: create_body.clone(),
-                        },
-                    )
+                self.players.get(&player_guid).and_then(|player| {
+                    player.packet_to_client(OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: create_body.clone(),
+                    })
                 })
             })
             .collect()
@@ -113,7 +110,7 @@ impl MapRuntime {
             .filter_map(|player_guid| {
                 self.players
                     .get(&player_guid)
-                    .map(|player| (player.session_id, packet.clone()))
+                    .and_then(|player| player.packet_to_client(packet.clone()))
             })
             .collect();
         Ok(Some(DbCreatureDeleteEvent {
@@ -232,13 +229,12 @@ impl MapRuntime {
                     continue;
                 };
                 if player.visible_objects.insert(guid) {
-                    packets.push((
-                        player.session_id,
-                        OutboundWorldPacket {
+                    if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                             opcode: SMSG_UPDATE_OBJECT,
                             body: body.clone(),
-                        },
-                    ));
+                    }) {
+                        packets.push(packet);
+                    }
                 }
             }
         }
@@ -442,7 +438,7 @@ impl MapRuntime {
         .filter_map(|player_guid| {
             self.players
                 .get(&player_guid)
-                .map(|player| (player.session_id, packet.clone()))
+                .and_then(|player| player.packet_to_client(packet.clone()))
         })
         .collect()
     }
@@ -452,7 +448,13 @@ impl MapRuntime {
             return;
         };
         let state = if grid.active_player_count > 0
-            || grid.cells.values().any(|cell| !cell.players.is_empty())
+            || grid.cells.values().any(|cell| {
+                cell.players.iter().any(|guid| {
+                    self.players
+                        .get(guid)
+                        .is_some_and(PlayerRuntime::is_client_controlled)
+                })
+            })
         {
             GridState::Active
         } else if let Some(blocker) = self.grid_unload_blocker(grid_coord) {
@@ -577,6 +579,9 @@ impl MapRuntime {
 
     fn is_grid_near_player_interest(&self, grid_coord: GridCoord) -> bool {
         self.players.values().any(|player| {
+            if !player.is_client_controlled() {
+                return false;
+            }
             calculate_cell_area(player.position, CREATURE_SPAWN_RADIUS_YARDS)
                 .into_iter()
                 .any(|(near_grid, _)| near_grid == grid_coord)

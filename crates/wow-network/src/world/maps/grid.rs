@@ -30,6 +30,7 @@ enum GridUnloadBlocker {
 #[allow(dead_code)]
 struct CellRuntime {
     players: HashSet<u32>,
+    client_players: HashSet<u32>,
     creatures: HashSet<u64>,
     gameobjects: HashSet<u64>,
     corpses: HashSet<u64>,

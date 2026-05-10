@@ -6706,8 +6706,11 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
     let observer_session = SessionId::next();
     maps.add_player(PlayerRuntime {
         guid: 99,
-        account_id: 1,
-        session_id: observer_session,
+        account_id: Some(1),
+        controller: PlayerController::Client {
+            session_id: observer_session,
+        },
+        bot_runtime: None,
         selected_target: None,
         active_combat_target: None,
         active_combat_next_swing_at: None,
@@ -7296,6 +7299,7 @@ fn map_runtime_nearby_players_use_cell_candidates_then_distance_filter() {
     let mut map = MapRuntime::new(0, 0);
     let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let nearby = WorldPosition::new(0, -8950.0, -160.0, 83.5, 0.0);
+    let nearby_bot = WorldPosition::new(0, -8952.0, -160.0, 83.5, 0.0);
     let same_area_but_outside_radius = WorldPosition::new(
         0,
         -8950.0 - PLAYER_VISIBILITY_RADIUS_YARDS - 5.0,
@@ -7309,11 +7313,1484 @@ fn map_runtime_nearby_players_use_cell_candidates_then_distance_filter() {
     insert_map_runtime_player_for_test(&mut map, 2, nearby);
     insert_map_runtime_player_for_test(&mut map, 3, same_area_but_outside_radius);
     insert_map_runtime_player_for_test(&mut map, 4, far);
+    map.add_player(test_bot_player_runtime(5, BotId(5), nearby_bot))
+        .unwrap();
 
     assert_eq!(
         map.nearby_player_guids(center, PLAYER_VISIBILITY_RADIUS_YARDS, Some(1)),
+        vec![2, 5]
+    );
+    assert_eq!(
+        map.nearby_client_player_guids(center, PLAYER_VISIBILITY_RADIUS_YARDS, Some(1)),
         vec![2]
     );
+}
+
+#[test]
+fn map_runtime_bot_controlled_player_is_visible_without_direct_session() {
+    let mut map = MapRuntime::new(0, 0);
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -150.0, 83.5, 0.0);
+    let client_session = SessionId(77);
+
+    map.add_player(test_player_runtime(1, client_session, client_position))
+        .unwrap();
+    let packets = map
+        .add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+
+    assert!(!packets.is_empty());
+    assert!(packets
+        .iter()
+        .all(|(session_id, _)| *session_id == client_session));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(!map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
+    assert_eq!(map.players.get(&2).unwrap().client_session_id(), None);
+}
+
+#[test]
+fn map_runtime_client_sees_existing_bot_player_on_enter() {
+    let mut map = MapRuntime::new(0, 0);
+    let bot_position = WorldPosition::new(0, -8950.0, -150.0, 83.5, 0.0);
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let client_session = SessionId(78);
+
+    assert!(map
+        .add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap()
+        .is_empty());
+    {
+        let bot = map.players.get_mut(&2).unwrap();
+        bot.movement_flags = MOVEFLAG_FORWARD;
+        bot.bot_runtime.as_mut().unwrap().active_leg = Some(playerbot_movement_leg(
+            bot_position,
+            playerbot_roam_destination(bot_position, 2, 0),
+            Instant::now(),
+        ));
+    }
+    let packets = map
+        .add_player(test_player_runtime(1, client_session, client_position))
+        .unwrap();
+
+    assert!(!packets.is_empty());
+    assert!(packets
+        .iter()
+        .all(|(session_id, _)| *session_id == client_session));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == MSG_MOVE_START_FORWARD as u16));
+}
+
+#[test]
+fn map_runtime_bot_player_does_not_keep_grid_active_without_client_interest() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -150.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(position);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), position))
+        .unwrap();
+
+    assert_eq!(map.grids.get(&grid).unwrap().active_player_count, 0);
+    assert!(!matches!(
+        map.grids.get(&grid).unwrap().state,
+        GridState::Active
+    ));
+}
+
+#[test]
+fn map_runtime_playerbot_spawn_is_grounded_before_visibility_and_melee() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.maps_available && !data.vmaps_available {
+        return;
+    }
+    let geometry = Arc::new(WorldGeometry::new(data));
+    let ground_probe = WorldPosition::new(0, -8939.74, -72.41, 120.0, 0.0);
+    let Some(grounded) = geometry.ground_position(ground_probe) else {
+        return;
+    };
+    let mut map = MapRuntime::with_geometry(0, 0, geometry, Arc::new(DbScriptRegistry::default()));
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), ground_probe))
+        .unwrap();
+
+    let player = map.players.get(&2).unwrap();
+    let bot = player.bot_runtime.as_ref().unwrap();
+    assert!((player.position.z - grounded.z).abs() <= 0.01);
+    assert!((bot.home_position.z - grounded.z).abs() <= 0.01);
+    assert_eq!(player.cell, cell_coord_for_position(grounded));
+}
+
+#[test]
+fn map_runtime_playerbot_stop_commit_is_grounded_after_high_route_point() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    if !data.maps_available && !data.vmaps_available {
+        return;
+    }
+    let geometry = Arc::new(WorldGeometry::new(data));
+    let start_probe = WorldPosition::new(0, -8939.74, -72.41, 120.0, 0.0);
+    let Some(start) = geometry.ground_position(start_probe) else {
+        return;
+    };
+    let high_destination = WorldPosition::new(0, start.x + 5.0, start.y, start.z + 20.0, 0.0);
+    let Some(grounded_destination) = geometry.ground_position(high_destination) else {
+        return;
+    };
+    let now = Instant::now();
+    let mut map = MapRuntime::with_geometry(0, 0, geometry, Arc::new(DbScriptRegistry::default()));
+    map.add_player(test_player_runtime(1, SessionId(77), start))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), start))
+        .unwrap();
+    {
+        let bot = map
+            .players
+            .get_mut(&2)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap();
+        bot.next_think_at = now;
+        bot.route = vec![high_destination];
+    }
+
+    let start_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(start_tick.advanced_bots, 1);
+    let stop_tick = map
+        .advance_playerbot_movement_tick(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_secs(2),
+        )
+        .unwrap();
+
+    assert_eq!(stop_tick.advanced_bots, 1);
+    let player = map.players.get(&2).unwrap();
+    assert!((player.position.z - grounded_destination.z).abs() <= 0.01);
+    assert_eq!(player.cell, cell_coord_for_position(grounded_destination));
+}
+
+#[test]
+fn map_runtime_playerbot_far_melee_rejects_before_navigation() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8900.0, -132.0, 83.5, 0.0);
+    map.add_player(test_bot_player_runtime(2, BotId(1), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7010;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let navigation = DbCreatureNavigationGuardrail {
+        line_of_sight_clear: false,
+        path_available: false,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    let validation = map.validate_player_melee_against_db_creature(2, target, &navigation);
+
+    assert_eq!(validation.check, PlayerMeleeCheck::OutOfRange);
+}
+
+#[test]
+fn map_runtime_playerbot_combat_budgets_idle_thinks_without_starving_active_swings() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8947.0, -132.0, 83.5, std::f32::consts::PI);
+    let active_bot_guid = 2;
+    map.add_player(test_player_runtime(1, SessionId(77), bot_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(
+        active_bot_guid,
+        BotId(1),
+        bot_position,
+    ))
+    .unwrap();
+    let mut active_spawn = test_creature_spawn(6);
+    active_spawn.guid = 7011;
+    active_spawn.position_x = creature_position.x;
+    active_spawn.position_y = creature_position.y;
+    active_spawn.position_z = creature_position.z;
+    active_spawn.orientation = creature_position.orientation;
+    active_spawn.template.faction = 14;
+    let active_target = creature_spawn_guid(&active_spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(active_spawn)]);
+    map.start_playerbot_attack(active_bot_guid, active_target, now)
+        .unwrap();
+    map.set_player_next_swing_at(active_bot_guid, Some(now));
+
+    let first_idle_guid = 10_000;
+    for offset in 0..(PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK as u32 + 3) {
+        let guid = first_idle_guid + offset;
+        map.add_player(test_bot_player_runtime(
+            guid,
+            BotId(guid as u64),
+            WorldPosition::new(
+                0,
+                bot_position.x + 40.0 + offset as f32,
+                bot_position.y,
+                bot_position.z,
+                0.0,
+            ),
+        ))
+        .unwrap();
+        map.players
+            .get_mut(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap()
+            .next_combat_think_at = now;
+    }
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .unwrap();
+
+    assert!(tick.budget_exhausted);
+    assert!(
+        map.players
+            .get(&active_bot_guid)
+            .unwrap()
+            .active_combat_next_swing_at
+            .is_some_and(|next| next > now),
+        "active swings should be serviced even when idle combat thinking is over budget"
+    );
+    for guid in first_idle_guid..(first_idle_guid + PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK as u32)
+    {
+        assert!(
+            map.players
+                .get(&guid)
+                .unwrap()
+                .bot_runtime
+                .as_ref()
+                .unwrap()
+                .next_combat_think_at
+                > now,
+            "admitted idle bot {guid} should receive a new combat think delay"
+        );
+    }
+    for guid in (first_idle_guid + PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK as u32)
+        ..(first_idle_guid + PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK as u32 + 3)
+    {
+        assert_eq!(
+            map.players
+                .get(&guid)
+                .unwrap()
+                .bot_runtime
+                .as_ref()
+                .unwrap()
+                .next_combat_think_at,
+            now,
+            "over-budget idle bot {guid} should wait for a later tick"
+        );
+    }
+}
+
+#[test]
+fn map_runtime_playerbot_movement_tick_broadcasts_normal_player_movement() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let client_session = SessionId(77);
+    map.add_player(test_player_runtime(1, client_session, client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_think_at = now;
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .route = vec![WorldPosition::new(0, -8940.0, -132.0, 83.5, 0.0)];
+
+    let start_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(start_tick.advanced_bots, 1);
+    assert!(!start_tick.budget_exhausted);
+    assert_eq!(start_tick.packets.len(), 1);
+    assert_eq!(start_tick.packets[0].0, client_session);
+    assert_eq!(
+        start_tick.packets[0].1.opcode,
+        MSG_MOVE_START_FORWARD as u16
+    );
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 2);
+    let movement_start = PackedGuid::packed_size(player_guid);
+    let start_movement =
+        MovementInfo::read(&start_tick.packets[0].1.body[movement_start..]).unwrap();
+    assert_eq!(start_movement.position.map_id, bot_position.map_id);
+    assert_eq!(start_movement.position.x, bot_position.x);
+    assert!(start_movement.flags & MOVEFLAG_FORWARD != 0);
+    assert_eq!(
+        map.players.get(&2).unwrap().position,
+        start_movement.position
+    );
+
+    let mid_leg_tick = map
+        .advance_playerbot_movement_tick(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(500),
+        )
+        .unwrap();
+
+    assert_eq!(mid_leg_tick.advanced_bots, 0);
+    assert!(mid_leg_tick.packets.is_empty());
+    assert_eq!(
+        map.players.get(&2).unwrap().position,
+        start_movement.position
+    );
+    assert!(map.players.get(&2).unwrap().client_session_id().is_none());
+
+    let mut stop_tick = None;
+    for step in 2..=20 {
+        let tick = map
+            .advance_playerbot_movement_tick(
+                &DbCreatureNavigationGuardrail::default(),
+                now + Duration::from_millis(step * 100),
+            )
+            .unwrap();
+        if tick
+            .packets
+            .first()
+            .is_some_and(|(_, packet)| packet.opcode == MSG_MOVE_STOP as u16)
+        {
+            stop_tick = Some(tick);
+            break;
+        }
+    }
+    let stop_tick = stop_tick.expect("playerbot should send stop when it reaches the route point");
+    assert_eq!(stop_tick.packets.len(), 1);
+    let stop_movement = MovementInfo::read(&stop_tick.packets[0].1.body[movement_start..]).unwrap();
+    assert_eq!(stop_movement.flags, 0);
+}
+
+#[test]
+fn map_runtime_playerbot_combat_starts_against_nearby_hostile_creature() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8947.0, -132.0, 83.5, std::f32::consts::PI);
+    let client_session = SessionId(77);
+    map.add_player(test_player_runtime(1, client_session, client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_combat_think_at = now;
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7001;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    spawn.orientation = creature_position.orientation;
+    spawn.template.faction = 14;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 1);
+    assert!(!tick.budget_exhausted);
+    assert_eq!(
+        map.players.get(&2).unwrap().active_combat_target,
+        Some(target)
+    );
+    assert!(map
+        .active_creature_combats
+        .get(&target.raw())
+        .is_some_and(|combat| combat.victim == ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(tick
+        .packets
+        .iter()
+        .all(|(session_id, _)| *session_id == client_session));
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTART));
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_moving_playerbot_plants_and_attacks_when_hostile_enters_melee() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let destination = WorldPosition::new(0, -8940.0, -132.0, 83.5, 0.0);
+    let client_session = SessionId(77);
+    map.add_player(test_player_runtime(1, client_session, client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    {
+        let bot_player = map.players.get_mut(&2).unwrap();
+        let bot = bot_player.bot_runtime.as_mut().unwrap();
+        bot.active_leg = Some(playerbot_movement_leg(bot_position, destination, now));
+        bot.next_combat_think_at = now + Duration::from_millis(500);
+        bot_player.movement_flags = MOVEFLAG_FORWARD;
+    }
+    let stop_position = playerbot_position_on_leg(
+        map.players
+            .get(&2)
+            .unwrap()
+            .bot_runtime
+            .as_ref()
+            .unwrap()
+            .active_leg
+            .unwrap(),
+        now + Duration::from_millis(500),
+    );
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7004;
+    spawn.position_x = stop_position.x + 2.0;
+    spawn.position_y = stop_position.y;
+    spawn.position_z = stop_position.z;
+    spawn.orientation = std::f32::consts::PI;
+    spawn.template.faction = 14;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(500),
+        )
+        .unwrap();
+
+    let bot_player = map.players.get(&2).unwrap();
+    assert_eq!(tick.advanced_bots, 1);
+    assert_eq!(bot_player.active_combat_target, Some(target));
+    assert_eq!(bot_player.movement_flags, 0);
+    assert!(bot_player
+        .bot_runtime
+        .as_ref()
+        .unwrap()
+        .active_leg
+        .is_none());
+    assert!(bot_player.position.distance_2d(&stop_position) <= 0.01);
+    assert!(tick.packets.iter().any(|(session_id, packet)| {
+        *session_id == client_session && packet.opcode == MSG_MOVE_STOP as u16
+    }));
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTART));
+}
+
+#[test]
+fn map_runtime_playerbot_targets_neutral_and_routes_into_melee() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_session = SessionId(77);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8925.0, -132.0, 83.5, std::f32::consts::PI);
+
+    map.add_player(test_player_runtime(
+        1,
+        client_session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_combat_think_at = now;
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7005;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    spawn.orientation = creature_position.orientation;
+    spawn.template.faction = 25;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let acquire_tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .unwrap();
+
+    let bot_player = map.players.get(&2).unwrap();
+    assert_eq!(acquire_tick.advanced_bots, 1);
+    assert_eq!(bot_player.selected_target, Some(target));
+    assert_eq!(bot_player.active_combat_target, None);
+    assert_eq!(
+        bot_player.bot_runtime.as_ref().unwrap().engage_target,
+        Some(target)
+    );
+    assert!(!acquire_tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTART));
+
+    let move_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(move_tick.advanced_bots, 1);
+    assert!(move_tick.packets.iter().any(|(session_id, packet)| {
+        *session_id == client_session && packet.opcode == MSG_MOVE_START_FORWARD as u16
+    }));
+    let arrival_time = map
+        .players
+        .get(&2)
+        .unwrap()
+        .bot_runtime
+        .as_ref()
+        .unwrap()
+        .active_leg
+        .unwrap()
+        .arrival_time;
+
+    map.advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), arrival_time)
+        .unwrap();
+    let attack_tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            arrival_time + Duration::from_millis(1),
+        )
+        .unwrap();
+
+    assert_eq!(attack_tick.advanced_bots, 1);
+    assert_eq!(
+        map.players.get(&2).unwrap().active_combat_target,
+        Some(target)
+    );
+    assert!(attack_tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTART));
+}
+
+#[test]
+fn map_runtime_playerbot_can_attack_critter_even_with_friendly_faction() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8948.0, -132.0, 83.5, std::f32::consts::PI);
+
+    map.add_player(test_player_runtime(
+        1,
+        SessionId(77),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_combat_think_at = now;
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7006;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    spawn.orientation = creature_position.orientation;
+    spawn.template.faction = 35;
+    spawn.template.civilian = 1;
+    spawn.template.creature_type = CREATURE_TYPE_CRITTER;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 1);
+    assert_eq!(
+        map.players.get(&2).unwrap().active_combat_target,
+        Some(target)
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_auto_attack_uses_shared_creature_damage_packets() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8947.0, -132.0, 83.5, std::f32::consts::PI);
+    map.add_player(test_player_runtime(1, SessionId(77), client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_combat_think_at = now;
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7002;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    spawn.orientation = creature_position.orientation;
+    spawn.template.faction = 14;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.advance_playerbot_combat_tick(
+        &FactionTemplateStore::fallback_bridge(),
+        &DbCreatureNavigationGuardrail::default(),
+        now,
+    )
+    .unwrap();
+    map.active_creature_combats
+        .get_mut(&target.raw())
+        .unwrap()
+        .next_swing_at = now + Duration::from_secs(10);
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(1),
+        )
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 1);
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKERSTATEUPDATE));
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(map
+        .players
+        .get(&2)
+        .unwrap()
+        .active_combat_next_swing_at
+        .is_some_and(|next| next > now));
+}
+
+#[test]
+fn map_runtime_playerbot_creature_retaliation_damages_bot_runtime() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let creature_position = WorldPosition::new(0, -8947.0, -132.0, 83.5, std::f32::consts::PI);
+    map.add_player(test_player_runtime(1, SessionId(77), client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_combat_think_at = now;
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7003;
+    spawn.position_x = creature_position.x;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    spawn.orientation = creature_position.orientation;
+    spawn.template.faction = 14;
+    spawn.template.npc_flags = 0;
+    let target = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.advance_playerbot_combat_tick(
+        &FactionTemplateStore::fallback_bridge(),
+        &DbCreatureNavigationGuardrail::default(),
+        now,
+    )
+    .unwrap();
+    map.set_player_next_swing_at(2, Some(now + Duration::from_secs(10)));
+    map.active_creature_combats
+        .get_mut(&target.raw())
+        .unwrap()
+        .next_swing_at = now;
+
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(1),
+        )
+        .unwrap();
+
+    assert_eq!(tick.creature_swings, 1);
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKERSTATEUPDATE));
+    assert!(map.players.get(&2).unwrap().health <= 20);
+}
+
+#[test]
+fn map_runtime_playerbot_travel_uses_navigation_path_destination() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let travel_destination = WorldPosition::new(0, -8940.0, -110.0, 83.5, 0.0);
+
+    map.add_player(test_player_runtime(1, SessionId(77), client_position))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    {
+        let bot = map
+            .players
+            .get_mut(&2)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap();
+        bot.next_think_at = now;
+        bot.travel_destination = Some(travel_destination);
+    }
+
+    let start_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(start_tick.advanced_bots, 1);
+    let bot = map.players.get(&2).unwrap().bot_runtime.as_ref().unwrap();
+    let active_leg = bot.active_leg.expect("travel should start a path leg");
+    assert!(
+        bot.route
+            .last()
+            .is_some_and(|point| point.distance_2d(&travel_destination) <= 0.01)
+            || active_leg.destination.distance_2d(&travel_destination) <= 0.01,
+        "remaining route or active leg should be aimed at travel destination"
+    );
+    assert_ne!(
+        active_leg.destination,
+        playerbot_roam_destination(bot_position, 2, 0),
+        "travel mode should not use the square roam target"
+    );
+}
+
+#[test]
+fn playerbot_travel_uses_local_nav_leg_toward_stormwind_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let start = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let stormwind = WorldPosition::new(0, -9095.620, 422.026, 92.0445, 0.0);
+    let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(start) else {
+        panic!("Northshire bot position should resolve to a mmap tile");
+    };
+    let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(stormwind) else {
+        panic!("Stormwind travel target should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(0, start_tile_x, start_tile_y)
+        || !data.has_mmap_tile(0, target_tile_x, target_tile_y)
+    {
+        return;
+    }
+    let geometry = WorldGeometry::new(data.clone());
+    let navigation = DbCreatureNavigationGuardrail {
+        path_available: true,
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    let route = playerbot_route_points(
+        &navigation,
+        Some(&geometry),
+        start,
+        Some(stormwind),
+        start,
+        0,
+        2,
+    )
+    .expect("local playerbot should build a bounded nav leg toward Stormwind");
+
+    assert!(
+        route
+            .last()
+            .is_some_and(|point| point.distance_2d(&stormwind) < start.distance_2d(&stormwind)),
+        "route should make progress toward the configured Stormwind travel target"
+    );
+}
+
+#[test]
+fn playerbot_roam_destination_uses_seeded_far_wander_points() {
+    let home = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let first = playerbot_roam_destination(home, 9010000, 0);
+    let second = playerbot_roam_destination(home, 9010000, 1);
+    let other_bot = playerbot_roam_destination(home, 9010001, 0);
+
+    for destination in [first, second, other_bot] {
+        let distance = home.distance_2d(&destination);
+        assert!(
+            (PLAYERBOT_WANDER_MIN_RADIUS_YARDS..=PLAYERBOT_WANDER_MAX_RADIUS_YARDS)
+                .contains(&distance),
+            "wander destination should be far enough to spread bots without leaving the configured band"
+        );
+    }
+    assert!(first.distance_2d(&second) > PLAYERBOT_DESTINATION_EPSILON_YARDS);
+    assert!(first.distance_2d(&other_bot) > PLAYERBOT_DESTINATION_EPSILON_YARDS);
+}
+
+#[test]
+fn playerbot_travel_recovers_from_observed_nav_edge_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let stuck_position = WorldPosition::new(0, -9046.40, -106.67, 90.96, 0.0);
+    let stormwind = WorldPosition::new(0, -9095.35, 412.33, 92.04, 0.0);
+    let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(stuck_position) else {
+        panic!("observed stuck bot position should resolve to a mmap tile");
+    };
+    let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(stormwind) else {
+        panic!("Stormwind travel target should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(0, start_tile_x, start_tile_y)
+        || !data.has_mmap_tile(0, target_tile_x, target_tile_y)
+    {
+        return;
+    }
+    let geometry = WorldGeometry::new(data.clone());
+    let navigation = DbCreatureNavigationGuardrail {
+        path_available: true,
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    let route = playerbot_route_points(
+        &navigation,
+        Some(&geometry),
+        stuck_position,
+        Some(stormwind),
+        stuck_position,
+        0,
+        2,
+    )
+    .expect("observed nav-edge position should recover a follow-up route");
+
+    assert!(
+        route.last().is_some_and(
+            |point| point.distance_2d(&stormwind) < stuck_position.distance_2d(&stormwind)
+        ),
+        "recovered route should continue making progress toward Stormwind"
+    );
+}
+
+#[test]
+fn playerbot_travel_recovers_from_observed_spawn_edge_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let stuck_position = WorldPosition::new(0, -8955.61, -132.80, 83.50, 0.0);
+    let stormwind = WorldPosition::new(0, -9095.35, 412.33, 92.04, 0.0);
+    let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(stuck_position) else {
+        panic!("observed stuck bot spawn should resolve to a mmap tile");
+    };
+    let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(stormwind) else {
+        panic!("Stormwind travel target should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(0, start_tile_x, start_tile_y)
+        || !data.has_mmap_tile(0, target_tile_x, target_tile_y)
+    {
+        return;
+    }
+    let geometry = WorldGeometry::new(data.clone());
+    let navigation = DbCreatureNavigationGuardrail {
+        path_available: true,
+        world_data_files: data,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    let route = playerbot_route_points(
+        &navigation,
+        Some(&geometry),
+        stuck_position,
+        Some(stormwind),
+        stuck_position,
+        0,
+        2,
+    )
+    .expect("observed spawn-edge position should recover a follow-up route");
+
+    assert!(
+        route.last().is_some_and(
+            |point| point.distance_2d(&stormwind) < stuck_position.distance_2d(&stormwind)
+        ),
+        "recovered spawn route should continue making progress toward Stormwind"
+    );
+}
+
+#[test]
+fn playerbot_travel_recovers_from_observed_stormwind_route_edges_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let samples = [
+        (
+            WorldPosition::new(0, -9110.27, 67.45, 83.25, 0.0),
+            WorldPosition::new(0, -9101.79, 416.26, 92.04, 0.0),
+        ),
+        (
+            WorldPosition::new(0, -9139.19, 324.60, 92.89, 0.0),
+            WorldPosition::new(0, -9098.91, 414.84, 92.04, 0.0),
+        ),
+        (
+            WorldPosition::new(0, -9112.54, 384.51, 93.27, 0.0),
+            WorldPosition::new(0, -9094.55, 421.59, 92.04, 0.0),
+        ),
+    ];
+    let navigation = DbCreatureNavigationGuardrail {
+        path_available: true,
+        world_data_files: data.clone(),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let geometry = WorldGeometry::new(data.clone());
+
+    for (start, stormwind) in samples {
+        let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(start) else {
+            panic!("observed route-edge position should resolve to a mmap tile");
+        };
+        let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(stormwind) else {
+            panic!("Stormwind travel target should resolve to a mmap tile");
+        };
+        if !data.has_mmap_tile(0, start_tile_x, start_tile_y)
+            || !data.has_mmap_tile(0, target_tile_x, target_tile_y)
+        {
+            continue;
+        }
+
+        let route = playerbot_route_points(
+            &navigation,
+            Some(&geometry),
+            start,
+            Some(stormwind),
+            start,
+            0,
+            2,
+        )
+        .expect("observed route-edge position should recover a follow-up route");
+
+        assert!(
+            route
+                .last()
+                .is_some_and(|point| point.distance_2d(&stormwind) < start.distance_2d(&stormwind)),
+            "recovered route from {start:?} should continue making progress toward {stormwind:?}"
+        );
+    }
+}
+
+#[test]
+fn map_runtime_playerbot_stormwind_travel_broadcasts_visible_movement_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let stormwind = WorldPosition::new(0, -9095.620, 422.026, 92.0445, 0.0);
+    let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(bot_position) else {
+        panic!("Northshire bot position should resolve to a mmap tile");
+    };
+    let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(stormwind) else {
+        panic!("Stormwind travel target should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(0, start_tile_x, start_tile_y)
+        || !data.has_mmap_tile(0, target_tile_x, target_tile_y)
+    {
+        return;
+    }
+
+    let navigation = DbCreatureNavigationGuardrail {
+        path_available: true,
+        world_data_files: data.clone(),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let mut map = MapRuntime::with_geometry(
+        0,
+        0,
+        Arc::new(WorldGeometry::new(data)),
+        Arc::new(DbScriptRegistry::default()),
+    );
+    let client_session = SessionId(77);
+    map.add_player(test_player_runtime(
+        1,
+        client_session,
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    {
+        let bot = map
+            .players
+            .get_mut(&2)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap();
+        bot.next_think_at = Instant::now();
+        bot.travel_destination = Some(stormwind);
+    }
+
+    let tick = map
+        .advance_playerbot_movement_tick(&navigation, Instant::now())
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 1);
+    assert!(
+        tick.packets.iter().any(|(session_id, packet)| {
+            *session_id == client_session && packet.opcode == MSG_MOVE_START_FORWARD as u16
+        }),
+        "visible Stormwind travel should broadcast a client movement start"
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_movement_budget_is_fair_to_later_bot_guids() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_player_runtime(1, SessionId(77), client_position))
+        .unwrap();
+    for offset in 0..(PLAYERBOT_MAX_MOVES_PER_MAP_TICK as u32 + 4) {
+        let guid = 10_000 + offset;
+        map.add_player(test_bot_player_runtime(
+            guid,
+            BotId(guid as u64),
+            bot_position,
+        ))
+        .unwrap();
+        map.players
+            .get_mut(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap()
+            .next_think_at = now;
+        map.players
+            .get_mut(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap()
+            .route = vec![playerbot_roam_destination(bot_position, guid, 0)];
+    }
+
+    let first_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(
+        first_tick.advanced_bots as usize,
+        PLAYERBOT_MAX_MOVES_PER_MAP_TICK
+    );
+    assert!(first_tick.budget_exhausted);
+
+    let second_tick = map
+        .advance_playerbot_movement_tick(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(100),
+        )
+        .unwrap();
+    assert!(second_tick.advanced_bots >= 4);
+
+    for guid in (10_000 + PLAYERBOT_MAX_MOVES_PER_MAP_TICK as u32)
+        ..(10_000 + PLAYERBOT_MAX_MOVES_PER_MAP_TICK as u32 + 4)
+    {
+        assert!(
+            map.players
+                .get(&guid)
+                .unwrap()
+                .bot_runtime
+                .as_ref()
+                .unwrap()
+                .active_leg
+                .is_some(),
+            "later bot guid {guid} should receive movement time on the next tick"
+        );
+    }
+}
+
+#[test]
+fn map_runtime_playerbot_route_planning_is_budgeted() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let travel_destination = WorldPosition::new(0, -8940.0, -110.0, 83.5, 0.0);
+
+    for offset in 0..(PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32 + 3) {
+        let guid = 20_000 + offset;
+        map.add_player(test_bot_player_runtime(
+            guid,
+            BotId(guid as u64),
+            bot_position,
+        ))
+        .unwrap();
+        let bot = map
+            .players
+            .get_mut(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap();
+        bot.next_think_at = now;
+        bot.travel_destination = Some(travel_destination);
+    }
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(
+        tick.advanced_bots as usize,
+        PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK
+    );
+    assert!(!tick.budget_exhausted);
+
+    for guid in 20_000..(20_000 + PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32) {
+        assert!(
+            map.players
+                .get(&guid)
+                .unwrap()
+                .bot_runtime
+                .as_ref()
+                .unwrap()
+                .active_leg
+                .is_some(),
+            "route-planning budget should admit lower due/guid bot {guid}"
+        );
+    }
+    for guid in (20_000 + PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32)
+        ..(20_000 + PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32 + 3)
+    {
+        let bot = map
+            .players
+            .get(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_ref()
+            .unwrap();
+        assert!(bot.active_leg.is_none());
+        assert!(bot.route.is_empty());
+        assert!(bot.next_think_at > now);
+    }
+}
+
+#[test]
+fn map_runtime_playerbot_route_failure_backs_off() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let unreachable_destination = WorldPosition::new(1, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.next_think_at = now;
+    bot.travel_destination = Some(unreachable_destination);
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    let bot = map.players.get(&2).unwrap().bot_runtime.as_ref().unwrap();
+
+    assert_eq!(tick.advanced_bots, 0);
+    assert!(tick.packets.is_empty());
+    assert!(bot.active_leg.is_none());
+    assert!(bot.route.is_empty());
+    assert!(
+        bot.next_think_at >= now + Duration::from_millis(PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS)
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_travel_arrival_sleeps_without_route_failure() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.next_think_at = now;
+    bot.travel_destination = Some(bot_position);
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    let bot = map.players.get(&2).unwrap().bot_runtime.as_ref().unwrap();
+
+    assert_eq!(tick.advanced_bots, 0);
+    assert!(tick.packets.is_empty());
+    assert!(bot.active_leg.is_none());
+    assert!(bot.route.is_empty());
+    assert!(
+        bot.next_think_at >= now + PLAYERBOT_TRAVEL_ARRIVED_RECHECK_INTERVAL,
+        "arrived travel bots should not compete with active travelers for route-planning budget"
+    );
+}
+
+#[test]
+fn playerbot_route_compaction_preserves_turns_and_final_destination() {
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let points = vec![
+        WorldPosition::new(0, 2.0, 0.0, 0.0, 0.0),
+        WorldPosition::new(0, 8.0, 0.0, 0.0, 0.0),
+        WorldPosition::new(0, 12.0, 0.0, 0.0, 0.0),
+        WorldPosition::new(0, 12.0, 8.0, 0.0, 0.0),
+        WorldPosition::new(0, 12.0, 20.0, 0.0, 0.0),
+    ];
+
+    let compact = playerbot_compact_route_points(start, points);
+
+    assert!(
+        compact.iter().any(
+            |point| point.distance_2d(&WorldPosition::new(0, 12.0, 0.0, 0.0, 0.0))
+                <= PLAYERBOT_DESTINATION_EPSILON_YARDS
+        ),
+        "the right-angle path corner should stay in the compacted route"
+    );
+    assert_eq!(
+        compact.last().copied(),
+        Some(WorldPosition::new(0, 12.0, 20.0, 0.0, 0.0))
+    );
+    assert!(
+        compact.len() < 5,
+        "dense straight intermediate points should be folded into longer movement legs"
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_travel_advances_without_real_client_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let destination = WorldPosition::new(0, -8940.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.next_think_at = now;
+    bot.travel_destination = Some(destination);
+    bot.route = vec![destination];
+
+    let start_tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(start_tick.advanced_bots, 1);
+    assert!(start_tick.packets.is_empty());
+
+    let stop_tick = map
+        .advance_playerbot_movement_tick(
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_secs(2),
+        )
+        .unwrap();
+    assert_eq!(stop_tick.advanced_bots, 1);
+    assert!(stop_tick.packets.is_empty());
+    assert_eq!(map.players.get(&2).unwrap().position, destination);
+}
+
+#[test]
+fn map_runtime_playerbot_movement_updates_cell_bucket_without_grid_interest() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let home = find_position_with_playerbot_roam_cell_change();
+    let old_cell = cell_coord_for_position(home);
+    let old_grid = grid_coord_for_position(home);
+    let client_session = SessionId(99);
+    map.add_player(test_player_runtime(1, client_session, home))
+        .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), home))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_think_at = now;
+    let destination = playerbot_roam_destination(home, 2, 0);
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .route = vec![destination];
+    let active_count_before = map.grids.get(&old_grid).unwrap().active_player_count;
+
+    let mut tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    let mut moved = map.players.get(&2).unwrap().position;
+    for step in 1..=300 {
+        if cell_coord_for_position(moved) != old_cell {
+            break;
+        }
+        tick = map
+            .advance_playerbot_movement_tick(
+                &DbCreatureNavigationGuardrail::default(),
+                now + Duration::from_millis(step * 100),
+            )
+            .unwrap();
+        moved = map.players.get(&2).unwrap().position;
+    }
+    let new_cell = cell_coord_for_position(moved);
+    let new_grid = grid_coord_for_position(moved);
+
+    assert!(tick.advanced_bots >= 1);
+    assert_ne!(old_cell, new_cell);
+    assert!(!map
+        .grids
+        .get(&old_grid)
+        .and_then(|grid| grid.cells.get(&old_cell))
+        .is_some_and(|cell| cell.players.contains(&2)));
+    assert!(map
+        .grids
+        .get(&new_grid)
+        .and_then(|grid| grid.cells.get(&new_cell))
+        .is_some_and(|cell| cell.players.contains(&2)));
+    assert_eq!(
+        map.grids.get(&new_grid).unwrap().active_player_count,
+        active_count_before
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_movement_sleeps_without_client_grid_interest() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    map.add_player(test_bot_player_runtime(2, BotId(1), position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_think_at = now;
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 0);
+    assert!(tick.packets.is_empty());
+    assert_eq!(map.players.get(&2).unwrap().position, position);
+}
+
+#[test]
+fn playerbot_roster_answers_name_query() {
+    let mut roster = PlayerbotRoster::default();
+    roster.insert(PlayerbotRosterEntry {
+        guid: 9000001,
+        name: "Northshirebot".to_string(),
+        race: 1,
+        gender: 0,
+        class: 1,
+    });
+
+    let query = roster.name_query(9000001).expect("bot name query");
+    assert_eq!(query.name, "Northshirebot");
+    assert_eq!(query.race, 1);
+    assert_eq!(query.class, 1);
+    assert!(roster.name_query(42).is_none());
+}
+
+fn find_position_with_playerbot_roam_cell_change() -> WorldPosition {
+    let base = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    (0..200)
+        .map(|step| WorldPosition::new(0, base.x + step as f32 * 0.25, base.y, base.z, 0.0))
+        .find(|position| {
+            let destination = playerbot_roam_destination(*position, 2, 0);
+            grid_coord_for_position(*position) == grid_coord_for_position(destination)
+                && cell_coord_for_position(*position) != cell_coord_for_position(destination)
+        })
+        .expect("test should find a nearby position crossing a cell boundary")
 }
 
 #[test]
@@ -9156,6 +10633,14 @@ fn insert_map_runtime_player_for_test(map: &mut MapRuntime, guid: u32, position:
         .or_default()
         .players
         .insert(guid);
+    map.grids
+        .entry(grid)
+        .or_default()
+        .cells
+        .entry(cell)
+        .or_default()
+        .client_players
+        .insert(guid);
     map.players.insert(
         guid,
         test_player_runtime(guid, SessionId(guid as u64), position),
@@ -9345,10 +10830,38 @@ fn db_creature_movement_scripts_run_for_zero_distance_waypoint_nodes() {
 }
 
 fn test_player_runtime(guid: u32, session_id: SessionId, position: WorldPosition) -> PlayerRuntime {
+    test_player_runtime_with_controller(guid, PlayerController::Client { session_id }, position)
+}
+
+fn test_bot_player_runtime(guid: u32, bot_id: BotId, position: WorldPosition) -> PlayerRuntime {
+    let mut player =
+        test_player_runtime_with_controller(guid, PlayerController::Bot { bot_id }, position);
+    player.account_id = None;
+    player.bot_runtime = Some(PlayerbotRuntimeState {
+        bot_id,
+        home_position: position,
+        next_think_at: Instant::now() + PLAYERBOT_ROAM_THINK_INTERVAL,
+        next_combat_think_at: Instant::now() + playerbot_next_combat_think_delay(guid),
+        active_leg: None,
+        route: Vec::new(),
+        travel_destination: None,
+        engage_target: None,
+        movement_start_retries_remaining: 0,
+        roam_step: 0,
+    });
+    player
+}
+
+fn test_player_runtime_with_controller(
+    guid: u32,
+    controller: PlayerController,
+    position: WorldPosition,
+) -> PlayerRuntime {
     PlayerRuntime {
         guid,
-        account_id: guid,
-        session_id,
+        account_id: Some(guid),
+        controller,
+        bot_runtime: None,
         selected_target: None,
         active_combat_target: None,
         active_combat_next_swing_at: None,

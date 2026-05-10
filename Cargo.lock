@@ -2068,9 +2068,11 @@ name = "worldserver"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "figment",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wow-common",
  "wow-config",
  "wow-db",
  "wow-network",

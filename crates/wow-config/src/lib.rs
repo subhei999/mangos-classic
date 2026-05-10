@@ -72,6 +72,118 @@ pub struct ObservabilityConfig {
     pub bind_port: u16,
 }
 
+// ---------------------------------------------------------------------------
+// PlayerbotsConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlayerbotsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub random: PlayerbotRandomConfig,
+    #[serde(default)]
+    pub travel: PlayerbotTravelConfig,
+    #[serde(default)]
+    pub bots: Vec<PlayerbotConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlayerbotTravelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub map: u32,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+    #[serde(default)]
+    pub z: f32,
+    #[serde(default)]
+    pub radius: f32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlayerbotRandomConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default = "default_playerbot_random_start_guid")]
+    pub start_guid: u32,
+    #[serde(default = "default_playerbot_random_name_prefix")]
+    pub name_prefix: String,
+    #[serde(default = "default_playerbot_race")]
+    pub race: u8,
+    #[serde(default = "default_playerbot_class")]
+    pub class: u8,
+    #[serde(default)]
+    pub gender: u8,
+    #[serde(default = "default_playerbot_level")]
+    pub level: u8,
+    #[serde(default)]
+    pub map: u32,
+    #[serde(default)]
+    pub center_x: f32,
+    #[serde(default)]
+    pub center_y: f32,
+    #[serde(default)]
+    pub center_z: f32,
+    #[serde(default)]
+    pub radius: f32,
+    #[serde(default = "default_playerbot_random_seed")]
+    pub seed: u64,
+    #[serde(default)]
+    pub player_bytes: u32,
+    #[serde(default)]
+    pub player_bytes2: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayerbotConfig {
+    pub guid: u32,
+    pub name: String,
+    #[serde(default = "default_playerbot_race")]
+    pub race: u8,
+    #[serde(default = "default_playerbot_class")]
+    pub class: u8,
+    #[serde(default)]
+    pub gender: u8,
+    #[serde(default = "default_playerbot_level")]
+    pub level: u8,
+    #[serde(default)]
+    pub map: u32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    #[serde(default)]
+    pub orientation: f32,
+    #[serde(default)]
+    pub player_bytes: u32,
+    #[serde(default)]
+    pub player_bytes2: u32,
+}
+
+fn default_playerbot_race() -> u8 {
+    1
+}
+fn default_playerbot_class() -> u8 {
+    1
+}
+fn default_playerbot_level() -> u8 {
+    1
+}
+fn default_playerbot_random_start_guid() -> u32 {
+    9_010_000
+}
+fn default_playerbot_random_name_prefix() -> String {
+    "Loadbot".to_string()
+}
+fn default_playerbot_random_seed() -> u64 {
+    1
+}
+
 fn default_observability_enabled() -> bool {
     true
 }
@@ -153,6 +265,8 @@ pub struct WorldServerConfig {
     pub world: WorldConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub playerbots: PlayerbotsConfig,
 }
 
 fn default_world_port() -> u16 {
@@ -273,5 +387,70 @@ MapUpdateInterval = 75
         assert!(config.enabled);
         assert_eq!(config.bind_address, "127.0.0.1");
         assert_eq!(config.bind_port, 9091);
+    }
+
+    #[test]
+    fn world_config_accepts_playerbot_roster() {
+        let toml_content = r#"
+bind_address = "127.0.0.1"
+
+[login_database]
+database = "realmd"
+
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[playerbots]
+enabled = true
+
+[playerbots.random]
+enabled = true
+count = 511
+start_guid = 9010000
+name_prefix = "Loadbot"
+map = 0
+center_x = -8949.0
+center_y = -132.0
+center_z = 83.5
+radius = 80.0
+seed = 42
+
+[playerbots.travel]
+enabled = true
+map = 0
+x = -9095.620
+y = 422.026
+z = 92.0445
+radius = 10.0
+
+[[playerbots.bots]]
+guid = 9000001
+name = "Scoutbot"
+x = -8949.0
+y = -132.0
+z = 83.5
+"#;
+        let config: WorldServerConfig = Figment::new()
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("should parse playerbot roster");
+
+        assert!(config.playerbots.enabled);
+        assert!(config.playerbots.random.enabled);
+        assert_eq!(config.playerbots.random.count, 511);
+        assert_eq!(config.playerbots.random.start_guid, 9_010_000);
+        assert_eq!(config.playerbots.random.name_prefix, "Loadbot");
+        assert!((config.playerbots.random.radius - 80.0).abs() < f32::EPSILON);
+        assert!(config.playerbots.travel.enabled);
+        assert!((config.playerbots.travel.x + 9095.620).abs() < f32::EPSILON);
+        assert!((config.playerbots.travel.radius - 10.0).abs() < f32::EPSILON);
+        assert_eq!(config.playerbots.bots.len(), 1);
+        assert_eq!(config.playerbots.bots[0].name, "Scoutbot");
+        assert_eq!(config.playerbots.bots[0].race, 1);
+        assert_eq!(config.playerbots.bots[0].class, 1);
+        assert_eq!(config.playerbots.bots[0].level, 1);
     }
 }

@@ -7,12 +7,17 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/rusty-mangos`.
+- Branch: `codex/playerbots-map-actor-foundation`.
 - Base branch: `origin/codex/rusty-mangos`.
-- Current HEAD: `4c8a40881`.
-- Current state: pushed integration branch includes the DB-backed quest
-availability/source-item loot/gameobject refresh/player regen broadcast work
-from `Tighten DB-backed quest availability gates`.
+- Current HEAD: `Add map-owned playerbot foundation`, rebased onto
+  `codex/rusty-mangos` at `3c2743e10`.
+- Current state: this worktree carries the reconciled map-owned playerbot
+  foundation on a separate branch. Playerbots remain server-side player-like
+  map actors: `MapRuntime` owns visibility, movement commits, combat
+  validation, creature retaliation, and observer packets, while the background
+  playerbot planner queues route and target intents off the map update loop.
+  The original pre-rebase playerbot commit is preserved on
+  `codex/playerbots-map-actor-foundation-backup`.
 - Current uncommitted gameplay/data work fixes the local missing-mmaps root
 cause for cross-zone DB-creature aggro/melee. Rust still requires mmap header
 and endpoint tile coverage before aggro/melee path validation clears; the
@@ -786,6 +791,12 @@ extended with Webwood-specific hardcoding.
 
 ## Tests Run
 
+- Playerbot branch reconciliation after rebasing onto `codex/rusty-mangos`:
+  `cargo fmt --check`, `cargo test -p wow-network playerbot --lib`,
+  `cargo test -p wow-network map_runtime_player_environment --lib` (0 tests
+  matched), `cargo test -p wow-network --lib` (513 tests), and
+  `cargo build -p worldserver --target-dir target\codex-playerbot-rebase-check`
+  passed.
 - Post spell bugfix follow-up:
   `cargo fmt --package wow-network --check`, `cargo check -p wow-network`,
   `cargo test -p wow-network spell --lib -- --nocapture`,

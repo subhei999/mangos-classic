@@ -158,6 +158,7 @@ struct WorldRuntimeState {
     maps: Arc<MapRuntimeManager>,
     parties: Arc<PartyManager>,
     object_mgr: Arc<ObjectMgr>,
+    playerbots: Arc<PlayerbotRoster>,
 }
 
 #[derive(Clone, Copy)]

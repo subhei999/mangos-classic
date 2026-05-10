@@ -420,7 +420,7 @@ dtStatus findSmoothPath(
     }
 
     *smoothPathCount = static_cast<int>(smoothCount);
-    return smoothCount < MAX_PATH_POLYS ? DT_SUCCESS : DT_FAILURE;
+    return DT_SUCCESS;
 }
 }
 

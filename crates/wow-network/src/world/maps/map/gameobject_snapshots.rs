@@ -114,13 +114,12 @@ impl MapRuntime {
                     &gameobject,
                     &player.quest_statuses,
                 )?;
-                packets.push((
-                    player.session_id,
-                    OutboundWorldPacket {
+                if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_update_object_body(&[create_block]),
-                    },
-                ));
+                }) {
+                    packets.push(packet);
+                }
             }
         }
         Ok(packets)
@@ -161,7 +160,7 @@ impl MapRuntime {
                 .filter_map(|player_guid| {
                     self.players
                         .get(&player_guid)
-                        .map(|player| (player.session_id, packet.clone()))
+                        .and_then(|player| player.packet_to_client(packet.clone()))
                 })
                 .collect(),
         )
@@ -308,7 +307,7 @@ impl MapRuntime {
             .filter_map(|player_guid| {
                 self.players
                     .get(&player_guid)
-                    .map(|player| (player.session_id, destroy_packet.clone()))
+                    .and_then(|player| player.packet_to_client(destroy_packet.clone()))
             })
             .collect();
         Some((snapshot, packets))

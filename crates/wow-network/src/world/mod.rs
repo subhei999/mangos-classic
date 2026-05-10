@@ -4,6 +4,7 @@ use sqlx::mysql::MySqlPool;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,6 +43,7 @@ include!("server/logout.rs");
 include!("server/movement.rs");
 include!("server/visibility.rs");
 include!("server/action_buttons.rs");
+include!("playerbots.rs");
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -51,6 +53,12 @@ pub struct WorldServer {
     runtime_state: WorldRuntimeState,
 }
 
+pub struct WorldServerOptions {
+    pub data_dir: PathBuf,
+    pub world_tick_interval: Duration,
+    pub playerbots: Vec<PlayerbotSpawnConfig>,
+}
+
 impl WorldServer {
     pub async fn new(
         bind_addr: SocketAddr,
@@ -58,9 +66,13 @@ impl WorldServer {
         character_db_pool: MySqlPool,
         world_db_pool: MySqlPool,
         delete_options: CharacterDeleteOptions,
-        data_dir: impl Into<std::path::PathBuf>,
-        world_tick_interval: Duration,
+        options: WorldServerOptions,
     ) -> anyhow::Result<Self> {
+        let WorldServerOptions {
+            data_dir,
+            world_tick_interval,
+            playerbots,
+        } = options;
         if world_tick_interval.is_zero() {
             anyhow::bail!("world tick interval must be greater than 0");
         }
@@ -114,6 +126,7 @@ impl WorldServer {
                 db_scripts,
             ),
         );
+        let playerbots = Arc::new(initialize_playerbots(&maps, &world_db_pool, &playerbots).await?);
         info!(
             data_dir = %world_data_files.data_dir.display(),
             maps = world_data_files.maps_available,
@@ -175,6 +188,7 @@ impl WorldServer {
                 maps,
                 parties: Arc::new(PartyManager::default()),
                 object_mgr,
+                playerbots,
             },
         })
     }
@@ -182,6 +196,10 @@ impl WorldServer {
     pub async fn run(&self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(self.bind_addr).await?;
         info!("World server listening on {}", self.bind_addr);
+        let playerbot_planner_state = self.runtime_state.clone();
+        tokio::spawn(async move {
+            run_playerbot_planner_loop(playerbot_planner_state).await;
+        });
         let map_update_state = self.runtime_state.clone();
         tokio::spawn(async move {
             run_map_runtime_update_loop(map_update_state).await;

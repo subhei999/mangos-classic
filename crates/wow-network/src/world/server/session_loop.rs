@@ -214,6 +214,7 @@ async fn handle_client(
                             handle_name_query(
                                 &mut stream,
                                 &character_db_pool,
+                                &runtime_state.playerbots,
                                 &body,
                                 &mut header_crypto,
                             )

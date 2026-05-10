@@ -24,6 +24,29 @@ impl MapRuntime {
         players
     }
 
+    fn nearby_client_player_guids(
+        &self,
+        position: WorldPosition,
+        radius: f32,
+        exclude_guid: Option<u32>,
+    ) -> Vec<u32> {
+        let mut players = HashSet::new();
+        self.visit_nearby_cells(position, radius, |cell| {
+            players.extend(cell.client_players.iter().copied());
+        });
+        let mut players = players
+            .into_iter()
+            .filter(|guid| Some(*guid) != exclude_guid)
+            .filter(|guid| {
+                self.players.get(guid).is_some_and(|player| {
+                    is_position_inside_radius(player.position, position, radius)
+                })
+            })
+            .collect::<Vec<_>>();
+        players.sort_unstable();
+        players
+    }
+
     fn visit_nearby_cells(
         &self,
         position: WorldPosition,

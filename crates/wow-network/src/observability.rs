@@ -32,6 +32,8 @@ struct MetricsRegistry {
     map_tick_lag: Histogram,
     map_phase_duration: MapPhaseDurations,
     map_runtime_snapshots: Mutex<HashMap<(u32, u32), MapRuntimeSnapshot>>,
+    playerbot_names: Mutex<HashMap<u32, String>>,
+    playerbot_debug_snapshots: Mutex<HashMap<u32, PlayerbotDebugSnapshot>>,
     static_world_cache_loads: Mutex<HashMap<&'static str, StaticWorldCacheLoadStats>>,
     static_world_cache_lookups: Mutex<HashMap<&'static str, DurationStats>>,
     static_world_cache_instantiations: Mutex<HashMap<&'static str, DurationStats>>,
@@ -47,6 +49,7 @@ pub struct MapRuntimeSnapshot {
     pub map_id: u32,
     pub instance_id: u32,
     pub active_players: u64,
+    pub active_playerbots: u64,
     pub active_creatures: u64,
     pub active_gameobjects: u64,
     pub loaded_grids: u64,
@@ -55,6 +58,28 @@ pub struct MapRuntimeSnapshot {
     pub loaded_player_corpse_grids: u64,
     pub active_creature_combats: u64,
     pub corpses: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerbotDebugSnapshot {
+    pub guid: u32,
+    pub map_id: u32,
+    pub instance_id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub travel_x: Option<f32>,
+    pub travel_y: Option<f32>,
+    pub travel_z: Option<f32>,
+    pub distance_to_travel: Option<f32>,
+    pub active_leg_destination_x: Option<f32>,
+    pub active_leg_destination_y: Option<f32>,
+    pub active_leg_destination_z: Option<f32>,
+    pub active_leg_remaining_millis: Option<u64>,
+    pub route_len: usize,
+    pub next_think_in_millis: u64,
+    pub movement_flags: u32,
+    pub state: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +151,11 @@ pub enum MapTickPhase {
     IdleMotionDispatch,
     PlayerEnvironment,
     PlayerEnvironmentDispatch,
+    PlayerbotPlanner,
+    PlayerbotMovement,
+    PlayerbotMovementDispatch,
+    PlayerbotCombat,
+    PlayerbotCombatDispatch,
     PlayerRegen,
     PlayerRegenDispatch,
     AuraExpiration,
@@ -139,6 +169,11 @@ impl MapTickPhase {
             Self::IdleMotionDispatch => "idle_motion_dispatch",
             Self::PlayerEnvironment => "player_environment",
             Self::PlayerEnvironmentDispatch => "player_environment_dispatch",
+            Self::PlayerbotPlanner => "playerbot_planner",
+            Self::PlayerbotMovement => "playerbot_movement",
+            Self::PlayerbotMovementDispatch => "playerbot_movement_dispatch",
+            Self::PlayerbotCombat => "playerbot_combat",
+            Self::PlayerbotCombatDispatch => "playerbot_combat_dispatch",
             Self::PlayerRegen => "player_regen",
             Self::PlayerRegenDispatch => "player_regen_dispatch",
             Self::AuraExpiration => "aura_expiration",
@@ -147,11 +182,16 @@ impl MapTickPhase {
     }
 }
 
-const MAP_TICK_PHASES: [MapTickPhase; 8] = [
+const MAP_TICK_PHASES: [MapTickPhase; 13] = [
     MapTickPhase::IdleMotion,
     MapTickPhase::IdleMotionDispatch,
     MapTickPhase::PlayerEnvironment,
     MapTickPhase::PlayerEnvironmentDispatch,
+    MapTickPhase::PlayerbotPlanner,
+    MapTickPhase::PlayerbotMovement,
+    MapTickPhase::PlayerbotMovementDispatch,
+    MapTickPhase::PlayerbotCombat,
+    MapTickPhase::PlayerbotCombatDispatch,
     MapTickPhase::PlayerRegen,
     MapTickPhase::PlayerRegenDispatch,
     MapTickPhase::AuraExpiration,
@@ -164,6 +204,11 @@ struct MapPhaseDurations {
     idle_motion_dispatch: Histogram,
     player_environment: Histogram,
     player_environment_dispatch: Histogram,
+    playerbot_planner: Histogram,
+    playerbot_movement: Histogram,
+    playerbot_movement_dispatch: Histogram,
+    playerbot_combat: Histogram,
+    playerbot_combat_dispatch: Histogram,
     player_regen: Histogram,
     player_regen_dispatch: Histogram,
     aura_expiration: Histogram,
@@ -177,6 +222,11 @@ impl MapPhaseDurations {
             MapTickPhase::IdleMotionDispatch => &self.idle_motion_dispatch,
             MapTickPhase::PlayerEnvironment => &self.player_environment,
             MapTickPhase::PlayerEnvironmentDispatch => &self.player_environment_dispatch,
+            MapTickPhase::PlayerbotPlanner => &self.playerbot_planner,
+            MapTickPhase::PlayerbotMovement => &self.playerbot_movement,
+            MapTickPhase::PlayerbotMovementDispatch => &self.playerbot_movement_dispatch,
+            MapTickPhase::PlayerbotCombat => &self.playerbot_combat,
+            MapTickPhase::PlayerbotCombatDispatch => &self.playerbot_combat_dispatch,
             MapTickPhase::PlayerRegen => &self.player_regen,
             MapTickPhase::PlayerRegenDispatch => &self.player_regen_dispatch,
             MapTickPhase::AuraExpiration => &self.aura_expiration,
@@ -351,6 +401,27 @@ pub fn record_map_runtime_snapshots(snapshots: impl IntoIterator<Item = MapRunti
     gauges.clear();
     for snapshot in snapshots {
         gauges.insert((snapshot.map_id, snapshot.instance_id), snapshot);
+    }
+}
+
+pub fn record_playerbot_name(guid: u32, name: impl Into<String>) {
+    registry()
+        .playerbot_names
+        .lock()
+        .expect("metrics playerbot names poisoned")
+        .insert(guid, name.into());
+}
+
+pub fn record_playerbot_debug_snapshots(
+    snapshots: impl IntoIterator<Item = PlayerbotDebugSnapshot>,
+) {
+    let mut gauges = registry()
+        .playerbot_debug_snapshots
+        .lock()
+        .expect("metrics playerbot debug snapshots poisoned");
+    gauges.clear();
+    for snapshot in snapshots {
+        gauges.insert(snapshot.guid, snapshot);
     }
 }
 
@@ -787,6 +858,13 @@ fn write_map_runtime_gauges(
     );
     write_map_runtime_gauge_family(
         body,
+        "wow_map_active_playerbots",
+        "Currently active playerbot actors by map runtime.",
+        &values,
+        |snapshot| snapshot.active_playerbots,
+    );
+    write_map_runtime_gauge_family(
+        body,
         "wow_map_active_creatures",
         "Currently active DB creatures by map runtime.",
         &values,
@@ -1144,6 +1222,158 @@ fn format_bucket(bucket: f64) -> String {
 
 fn format_opcode(opcode: u32) -> String {
     format!("0x{opcode:04X}")
+}
+
+fn render_playerbot_diagnostics_from_request(first_line: &str) -> String {
+    let path = first_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/playerbots");
+    let requested_names = playerbot_diagnostic_requested_names(path);
+    render_playerbot_diagnostics(requested_names.as_deref())
+}
+
+fn playerbot_diagnostic_requested_names(path: &str) -> Option<Vec<String>> {
+    let query = path.split_once('?')?.1;
+    for part in query.split('&') {
+        let (key, value) = part.split_once('=')?;
+        if key != "names" {
+            continue;
+        }
+        let names = value
+            .split(',')
+            .map(percent_decode_query_component)
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        return Some(names);
+    }
+    None
+}
+
+fn percent_decode_query_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = &value[index + 1..index + 3];
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    index += 3;
+                } else {
+                    out.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn render_playerbot_diagnostics(requested_names: Option<&[String]>) -> String {
+    let metrics = registry();
+    let names = metrics
+        .playerbot_names
+        .lock()
+        .expect("metrics playerbot names poisoned");
+    let snapshots = metrics
+        .playerbot_debug_snapshots
+        .lock()
+        .expect("metrics playerbot debug snapshots poisoned");
+
+    let mut name_to_guid = names
+        .iter()
+        .map(|(guid, name)| (name.to_ascii_lowercase(), *guid))
+        .collect::<HashMap<_, _>>();
+    let mut rows = Vec::new();
+    match requested_names {
+        Some(requested_names) => {
+            for name in requested_names {
+                let key = name.to_ascii_lowercase();
+                let Some(guid) = name_to_guid.remove(&key) else {
+                    rows.push(format!("{name}: not found"));
+                    continue;
+                };
+                match snapshots.get(&guid) {
+                    Some(snapshot) => rows.push(format_playerbot_debug_row(
+                        names.get(&guid).map(String::as_str).unwrap_or(name),
+                        snapshot,
+                    )),
+                    None => rows.push(format!("{name} ({guid}): no runtime snapshot")),
+                }
+            }
+        }
+        None => {
+            let mut entries = snapshots
+                .iter()
+                .map(|(guid, snapshot)| {
+                    (
+                        names.get(guid).map(String::as_str).unwrap_or("<unnamed>"),
+                        snapshot,
+                    )
+                })
+                .collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            for (name, snapshot) in entries {
+                rows.push(format_playerbot_debug_row(name, snapshot));
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        return "no playerbot diagnostics available\n".to_string();
+    }
+    rows.join("\n") + "\n"
+}
+
+fn format_playerbot_debug_row(name: &str, snapshot: &PlayerbotDebugSnapshot) -> String {
+    let travel = match (
+        snapshot.travel_x,
+        snapshot.travel_y,
+        snapshot.travel_z,
+        snapshot.distance_to_travel,
+    ) {
+        (Some(x), Some(y), Some(z), Some(distance)) => {
+            format!(" target=({x:.2},{y:.2},{z:.2}) target_dist={distance:.1}yd")
+        }
+        _ => " target=<none>".to_string(),
+    };
+    let leg = match (
+        snapshot.active_leg_destination_x,
+        snapshot.active_leg_destination_y,
+        snapshot.active_leg_destination_z,
+        snapshot.active_leg_remaining_millis,
+    ) {
+        (Some(x), Some(y), Some(z), Some(remaining)) => {
+            format!(" leg_dest=({x:.2},{y:.2},{z:.2}) leg_remaining={remaining}ms")
+        }
+        _ => " leg_dest=<none>".to_string(),
+    };
+    format!(
+        "{} ({}) state={} map={} pos=({:.2},{:.2},{:.2}){}{} route_len={} next_think={}ms flags=0x{:X}",
+        name,
+        snapshot.guid,
+        snapshot.state,
+        snapshot.map_id,
+        snapshot.x,
+        snapshot.y,
+        snapshot.z,
+        travel,
+        leg,
+        snapshot.route_len,
+        snapshot.next_think_in_millis,
+        snapshot.movement_flags,
+    )
 }
 
 pub fn render_dashboard_html() -> &'static str {
@@ -1800,6 +2030,14 @@ pub async fn run_metrics_endpoint(bind_addr: SocketAddr) -> anyhow::Result<()> {
                     "text/plain; version=0.0.4; charset=utf-8",
                     render_prometheus(),
                 )
+            } else if first_line.starts_with("GET /playerbots")
+                || first_line.starts_with("GET /playerbot")
+            {
+                (
+                    "200 OK",
+                    "text/plain; charset=utf-8",
+                    render_playerbot_diagnostics_from_request(first_line),
+                )
             } else if first_line.starts_with("GET /dashboard ") || first_line.starts_with("GET / ")
             {
                 (
@@ -1850,6 +2088,7 @@ mod tests {
             map_id: 0,
             instance_id: 0,
             active_players: 1,
+            active_playerbots: 1,
             active_creatures: 42,
             active_gameobjects: 3,
             loaded_grids: 4,
@@ -1904,6 +2143,7 @@ mod tests {
         assert!(rendered.contains("wow_monitoring_session_started_unix_seconds "));
         assert!(rendered.contains("wow_monitoring_session_marks_total "));
         assert!(rendered.contains("wow_map_active_players{map_id=\"0\",instance_id=\"0\"} 1"));
+        assert!(rendered.contains("wow_map_active_playerbots{map_id=\"0\",instance_id=\"0\"} 1"));
         assert!(rendered.contains("wow_map_active_creatures{map_id=\"0\",instance_id=\"0\"} 42"));
         assert!(
             rendered.contains("wow_map_active_creature_combats{map_id=\"0\",instance_id=\"0\"} 2")
@@ -1944,5 +2184,37 @@ mod tests {
         assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds"));
         assert!(rendered.contains("wow_static_world_cache_load_spawns"));
         assert!(rendered.contains("wow_db_query_duration_max_milliseconds"));
+    }
+
+    #[test]
+    fn playerbot_diagnostics_can_filter_by_name() {
+        record_playerbot_name(42_424_242, "Diagbot");
+        record_playerbot_debug_snapshots([PlayerbotDebugSnapshot {
+            guid: 42_424_242,
+            map_id: 0,
+            instance_id: 0,
+            x: -1.0,
+            y: 2.0,
+            z: 3.0,
+            travel_x: Some(4.0),
+            travel_y: Some(5.0),
+            travel_z: Some(6.0),
+            distance_to_travel: Some(7.0),
+            active_leg_destination_x: None,
+            active_leg_destination_y: None,
+            active_leg_destination_z: None,
+            active_leg_remaining_millis: None,
+            route_len: 0,
+            next_think_in_millis: 5000,
+            movement_flags: 0,
+            state: "waiting_retry_or_budget",
+        }]);
+
+        let rendered =
+            render_playerbot_diagnostics_from_request("GET /playerbots?names=Diagbot HTTP/1.1");
+
+        assert!(rendered.contains("Diagbot (42424242)"));
+        assert!(rendered.contains("state=waiting_retry_or_budget"));
+        assert!(rendered.contains("target_dist=7.0yd"));
     }
 }

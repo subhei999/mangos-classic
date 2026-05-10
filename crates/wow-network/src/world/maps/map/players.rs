@@ -28,6 +28,7 @@ impl MapRuntime {
             let old_flags = player.environment.flags;
             let new_flags = flags_for(&geometry, player.position);
             direct_packets.extend(update_player_environment_flags(player, old_flags, new_flags)?);
+            let player_session_id = player.client_session_id();
 
             let diff_millis = player
                 .environment
@@ -46,7 +47,7 @@ impl MapRuntime {
                 fatigue_active,
                 fatigue_deactivated,
                 &mut direct_packets,
-                player.session_id,
+                player_session_id,
             )? {
                 damage.push((
                     DAMAGE_EXHAUSTED,
@@ -62,7 +63,7 @@ impl MapRuntime {
                 breath_active,
                 breath_deactivated,
                 &mut direct_packets,
-                player.session_id,
+                player_session_id,
             )? {
                 damage.push((
                     DAMAGE_DROWNING,
@@ -79,7 +80,7 @@ impl MapRuntime {
                 environmental_active,
                 environmental_deactivated,
                 &mut direct_packets,
-                player.session_id,
+                player_session_id,
             )? && player.environment.flags & ENVIRONMENT_FLAG_IN_MAGMA != 0
             {
                 damage.push((DAMAGE_LAVA, environmental_lava_damage()));
@@ -113,8 +114,12 @@ impl MapRuntime {
                             player.stand_state,
                         )?,
                     };
-                    direct_packets.push((player.session_id, aura_packet.clone()));
-                    direct_packets.push((player.session_id, stand_packet.clone()));
+                    if let Some(packet) = player.packet_to_client(aura_packet.clone()) {
+                        direct_packets.push(packet);
+                    }
+                    if let Some(packet) = player.packet_to_client(stand_packet.clone()) {
+                        direct_packets.push(packet);
+                    }
                     aura_interrupt_events.push((
                         character_guid,
                         player.position,
@@ -142,7 +147,7 @@ impl MapRuntime {
                 damage_events.push((
                     character_guid,
                     player.position,
-                    player.session_id,
+                    player_session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                         body: build_environmental_damage_log_body(
@@ -169,10 +174,13 @@ impl MapRuntime {
                 .into_iter()
                 .flat_map(|observer_guid| {
                     self.players.get(&observer_guid).map(|observer| {
-                        vec![
-                            (observer.session_id, aura_packet.clone()),
-                            (observer.session_id, stand_packet.clone()),
+                        [
+                            observer.packet_to_client(aura_packet.clone()),
+                            observer.packet_to_client(stand_packet.clone()),
                         ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
                     })
                 })
                 .flatten(),
@@ -180,8 +188,10 @@ impl MapRuntime {
         }
         for (character_guid, position, direct_session_id, damage_log, health_packet) in damage_events
         {
-            packets.push((direct_session_id, damage_log.clone()));
-            packets.push((direct_session_id, health_packet.clone()));
+            if let Some(direct_session_id) = direct_session_id {
+                packets.push((direct_session_id, damage_log.clone()));
+                packets.push((direct_session_id, health_packet.clone()));
+            }
             packets.extend(self.nearby_player_guids(
                 position,
                 PLAYER_VISIBILITY_RADIUS_YARDS,
@@ -190,10 +200,13 @@ impl MapRuntime {
             .into_iter()
             .flat_map(|observer_guid| {
                 self.players.get(&observer_guid).map(|observer| {
-                    vec![
-                        (observer.session_id, damage_log.clone()),
-                        (observer.session_id, health_packet.clone()),
+                    [
+                        observer.packet_to_client(damage_log.clone()),
+                        observer.packet_to_client(health_packet.clone()),
                     ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
                 })
             })
             .flatten());
@@ -320,7 +333,7 @@ impl MapRuntime {
                 update_packets.push((
                     character_guid,
                     player.position,
-                    player.session_id,
+                    player.client_session_id(),
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_player_health_update_body(player_guid, player.health)?,
@@ -331,7 +344,7 @@ impl MapRuntime {
                 update_packets.push((
                     character_guid,
                     player.position,
-                    player.session_id,
+                    player.client_session_id(),
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_player_mana_update_body(player_guid, player.power1)?,
@@ -342,7 +355,7 @@ impl MapRuntime {
                 update_packets.push((
                     character_guid,
                     player.position,
-                    player.session_id,
+                    player.client_session_id(),
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_player_rage_update_body(player_guid, player.power2)?,
@@ -353,7 +366,7 @@ impl MapRuntime {
                 update_packets.push((
                     character_guid,
                     player.position,
-                    player.session_id,
+                    player.client_session_id(),
                     OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: build_player_energy_update_body(player_guid, player.power4)?,
@@ -364,7 +377,9 @@ impl MapRuntime {
 
         let mut packets = Vec::new();
         for (character_guid, position, direct_session_id, packet) in update_packets {
-            packets.push((direct_session_id, packet.clone()));
+            if let Some(direct_session_id) = direct_session_id {
+                packets.push((direct_session_id, packet.clone()));
+            }
             packets.extend(self.nearby_player_guids(
                 position,
                 PLAYER_VISIBILITY_RADIUS_YARDS,
@@ -374,7 +389,7 @@ impl MapRuntime {
             .filter_map(|observer_guid| {
                 self.players
                     .get(&observer_guid)
-                    .map(|observer| (observer.session_id, packet.clone()))
+                    .and_then(|observer| observer.packet_to_client(packet.clone()))
             }));
         }
 
@@ -386,6 +401,14 @@ impl MapRuntime {
         player: PlayerRuntime,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let mut player = player;
+        if player.bot_runtime.is_some() {
+            if let Some(grounded_position) = self.geometry.ground_position(player.position) {
+                player.position = grounded_position;
+                if let Some(bot) = player.bot_runtime.as_mut() {
+                    bot.home_position = grounded_position;
+                }
+            }
+        }
         let player_guid = player.guid;
         let player_grid = grid_coord_for_position(player.position);
         let player_cell = cell_coord_for_position(player.position);
@@ -408,33 +431,56 @@ impl MapRuntime {
             };
 
             visible_others.push(other.guid);
-            packets.push((
-                player.session_id,
-                OutboundWorldPacket {
+            if player.is_client_controlled() {
+                if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_UPDATE_OBJECT,
                     body: build_update_object_body(&[build_other_player_create_block(other)?]),
-                },
-            ));
-            packets.push((other.session_id, new_player_packet.clone()));
+                }) {
+                    packets.push(packet);
+                }
+                if let Some(start_packet) = moving_bot_start_packet(other)? {
+                    if let Some(packet) = player.packet_to_client(start_packet) {
+                        packets.push(packet);
+                    }
+                }
+            }
+            if let Some(packet) = other.packet_to_client(new_player_packet.clone()) {
+                packets.push(packet);
+            }
+        }
+        if player.is_client_controlled() {
+            for other_guid in &visible_others {
+                player
+                    .visible_objects
+                    .insert(ObjectGuid::new(HighGuid::Player, 0, *other_guid));
+            }
         }
         for other_guid in &visible_others {
-            player
-                .visible_objects
-                .insert(ObjectGuid::new(HighGuid::Player, 0, *other_guid));
             if let Some(other) = self.players.get_mut(other_guid) {
-                other.visible_objects.insert(player_object);
+                if other.is_client_controlled() {
+                    other.visible_objects.insert(player_object);
+                }
             }
         }
 
         let grid = self.grids.entry(player_grid).or_default();
-        grid.state = GridState::Active;
-        grid.active_player_count = grid.active_player_count.saturating_add(1);
+        if player.is_client_controlled() {
+            grid.state = GridState::Active;
+            grid.active_player_count = grid.active_player_count.saturating_add(1);
+        }
         grid.last_touched = Instant::now();
         grid.cells
             .entry(player_cell)
             .or_default()
             .players
             .insert(player_guid);
+        if player.is_client_controlled() {
+            grid.cells
+                .entry(player_cell)
+                .or_default()
+                .client_players
+                .insert(player_guid);
+        }
         self.players.insert(player_guid, player);
         self.invalidate_idle_motion_start_schedule();
 
@@ -457,32 +503,54 @@ impl MapRuntime {
         let new_cell = cell_coord_for_position(movement.position);
         let new_grid = grid_coord_for_position(movement.position);
         let fall_update = player_fall_update(&current_player, opcode, movement);
+        let mover_is_client_controlled = current_player.is_client_controlled();
 
-        let old_visible = current_player
-            .visible_objects
-            .iter()
-            .filter_map(|guid| {
-                if guid.is_player() {
-                    Some(guid.counter())
-                } else {
-                    None
-                }
+        let old_visible = if mover_is_client_controlled {
+            current_player
+                .visible_objects
+                .iter()
+                .filter_map(|guid| {
+                    if guid.is_player() {
+                        Some(guid.counter())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<HashSet<_>>()
+        } else {
+            self.nearby_client_player_guids(
+                current_player.position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter(|observer_guid| {
+                self.players
+                    .get(observer_guid)
+                    .is_some_and(|observer| observer.visible_objects.contains(&player_object))
             })
-            .collect::<HashSet<_>>();
+            .collect::<HashSet<_>>()
+        };
         let retained_non_player_visible = current_player
             .visible_objects
             .iter()
             .filter(|guid| !guid.is_player())
             .copied()
             .collect::<HashSet<_>>();
-        let new_visible = self
-            .nearby_player_guids(
+        let nearby_visible = if mover_is_client_controlled {
+            self.nearby_player_guids(
                 movement.position,
                 PLAYER_VISIBILITY_RADIUS_YARDS,
                 Some(character_guid),
             )
-            .into_iter()
-            .collect::<HashSet<_>>();
+        } else {
+            self.nearby_client_player_guids(
+                movement.position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+        };
+        let new_visible = nearby_visible.into_iter().collect::<HashSet<_>>();
 
         let mut packets = Vec::new();
         for other_guid in old_visible
@@ -494,20 +562,18 @@ impl MapRuntime {
                 continue;
             };
             other.visible_objects.remove(&player_object);
-            packets.push((
-                current_player.session_id,
-                OutboundWorldPacket {
+            if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_DESTROY_OBJECT,
                     body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
-                },
-            ));
-            packets.push((
-                other.session_id,
-                OutboundWorldPacket {
+            }) {
+                packets.push(packet);
+            }
+            if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_DESTROY_OBJECT,
                     body: build_destroy_guid_body(player_object),
-                },
-            ));
+            }) {
+                packets.push(packet);
+            }
         }
 
         let entering = new_visible
@@ -532,23 +598,26 @@ impl MapRuntime {
             };
             other.visible_objects.insert(player_object);
             entering_for_mover.push(other_guid);
-            packets.push((
-                other.session_id,
-                OutboundWorldPacket {
+            if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_UPDATE_OBJECT,
                     body: build_update_object_body(std::slice::from_ref(&moving_player_create)),
-                },
-            ));
+            }) {
+                packets.push(packet);
+            }
         }
         for other_guid in &entering_for_mover {
             if let Some(other) = self.players.get(other_guid) {
-                packets.push((
-                    current_player.session_id,
-                    OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_update_object_body(&[build_other_player_create_block(other)?]),
-                    },
-                ));
+                if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_update_object_body(&[build_other_player_create_block(other)?]),
+                }) {
+                    packets.push(packet);
+                }
+                if let Some(start_packet) = moving_bot_start_packet(other)? {
+                    if let Some(packet) = current_player.packet_to_client(start_packet) {
+                        packets.push(packet);
+                    }
+                }
             }
         }
 
@@ -560,24 +629,44 @@ impl MapRuntime {
             let Some(other) = self.players.get(other_guid) else {
                 continue;
             };
-            packets.push((other.session_id, movement_packet.clone()));
+            if let Some(packet) = other.packet_to_client(movement_packet.clone()) {
+                packets.push(packet);
+            }
         }
 
         if old_grid != new_grid || old_cell != new_cell {
             if let Some(grid) = self.grids.get_mut(&old_grid) {
+                if old_grid != new_grid && mover_is_client_controlled {
+                    grid.active_player_count = grid.active_player_count.saturating_sub(1);
+                }
                 if let Some(cell) = grid.cells.get_mut(&old_cell) {
                     cell.players.remove(&character_guid);
+                    if mover_is_client_controlled {
+                        cell.client_players.remove(&character_guid);
+                    }
                 }
                 grid.last_touched = Instant::now();
             }
             let grid = self.grids.entry(new_grid).or_default();
-            grid.state = GridState::Active;
+            if mover_is_client_controlled {
+                if old_grid != new_grid {
+                    grid.active_player_count = grid.active_player_count.saturating_add(1);
+                }
+                grid.state = GridState::Active;
+            }
             grid.last_touched = Instant::now();
             grid.cells
                 .entry(new_cell)
                 .or_default()
                 .players
                 .insert(character_guid);
+            if mover_is_client_controlled {
+                grid.cells
+                    .entry(new_cell)
+                    .or_default()
+                    .client_players
+                    .insert(character_guid);
+            }
             if old_grid != new_grid {
                 self.refresh_grid_state(old_grid);
             }
@@ -595,11 +684,16 @@ impl MapRuntime {
             player.last_fall_time = fall_update.last_fall_time;
             player.jump = movement.jump.clone();
             player.cell = new_cell;
-            player.visible_objects = retained_non_player_visible;
-            player.visible_objects.extend(new_visible
-                .iter()
-                .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid))
-            );
+            if mover_is_client_controlled {
+                player.visible_objects = retained_non_player_visible;
+                player.visible_objects.extend(
+                    new_visible
+                        .iter()
+                        .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid)),
+                );
+            } else {
+                player.visible_objects = retained_non_player_visible;
+            }
             if let Some(damage) = fall_update.damage {
                 player.health = player.health.saturating_sub(damage);
             }
@@ -619,14 +713,22 @@ impl MapRuntime {
                 opcode: SMSG_UPDATE_OBJECT,
                 body: build_player_health_update_body(player_object, health)?,
             };
-            packets.push((current_player.session_id, damage_log.clone()));
-            packets.push((current_player.session_id, health_update.clone()));
+            if let Some(packet) = current_player.packet_to_client(damage_log.clone()) {
+                packets.push(packet);
+            }
+            if let Some(packet) = current_player.packet_to_client(health_update.clone()) {
+                packets.push(packet);
+            }
             for other_guid in &new_visible {
                 let Some(other) = self.players.get(other_guid) else {
                     continue;
                 };
-                packets.push((other.session_id, damage_log.clone()));
-                packets.push((other.session_id, health_update.clone()));
+                if let Some(packet) = other.packet_to_client(damage_log.clone()) {
+                    packets.push(packet);
+                }
+                if let Some(packet) = other.packet_to_client(health_update.clone()) {
+                    packets.push(packet);
+                }
             }
         }
         self.invalidate_idle_motion_start_schedule();
@@ -663,7 +765,7 @@ impl MapRuntime {
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
-                    .map(|other| (other.session_id, packet.clone()))
+                    .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect())
     }
@@ -696,7 +798,7 @@ impl MapRuntime {
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
-                    .map(|other| (other.session_id, packet.clone()))
+                    .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect())
     }
@@ -714,7 +816,9 @@ impl MapRuntime {
         }
         player.health = player.health.saturating_add(amount).min(player.max_health);
         let position = player.position;
-        let direct_session_id = player.session_id;
+        let Some(direct_session_id) = player.client_session_id() else {
+            return Ok(None);
+        };
         let health = player.health;
         let packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
@@ -734,7 +838,7 @@ impl MapRuntime {
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
-                    .map(|other| (other.session_id, packet.clone()))
+                    .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect();
         Ok(Some(PlayerHealEvent {
@@ -952,7 +1056,7 @@ impl MapRuntime {
             .filter_map(|observer_guid| {
                 self.players
                     .get(&observer_guid)
-                    .map(|observer| (observer.session_id, packet.clone()))
+                    .and_then(|observer| observer.packet_to_client(packet.clone()))
             })
             .collect())
     }
@@ -1005,7 +1109,7 @@ impl MapRuntime {
                 event
                     .direct_packets
                     .into_iter()
-                    .map(|packet| (player.session_id, packet)),
+                    .filter_map(|packet| player.packet_to_client(packet)),
             );
             packets.extend(event.observer_packets);
         }
@@ -1041,8 +1145,12 @@ impl MapRuntime {
             let Some(observer) = self.players.get(&observer_guid) else {
                 continue;
             };
-            observer_packets.push((observer.session_id, aura_packet.clone()));
-            observer_packets.push((observer.session_id, combat_stats_packet.clone()));
+            if let Some(packet) = observer.packet_to_client(aura_packet.clone()) {
+                observer_packets.push(packet);
+            }
+            if let Some(packet) = observer.packet_to_client(combat_stats_packet.clone()) {
+                observer_packets.push(packet);
+            }
         }
 
         let mut direct_packets = vec![aura_packet, combat_stats_packet];
@@ -1305,7 +1413,7 @@ impl MapRuntime {
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
-                    .map(|other| (other.session_id, packet.clone()))
+                    .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect())
     }
@@ -1318,10 +1426,15 @@ impl MapRuntime {
 
         let player_grid = grid_coord_for_position(player.position);
         if let Some(grid) = self.grids.get_mut(&player_grid) {
-            grid.active_player_count = grid.active_player_count.saturating_sub(1);
+            if player.is_client_controlled() {
+                grid.active_player_count = grid.active_player_count.saturating_sub(1);
+            }
             grid.last_touched = Instant::now();
             if let Some(cell) = grid.cells.get_mut(&player.cell) {
                 cell.players.remove(&character_guid);
+                if player.is_client_controlled() {
+                    cell.client_players.remove(&character_guid);
+                }
             }
         }
 
@@ -1340,7 +1453,7 @@ impl MapRuntime {
         .filter_map(|other_guid| {
             self.players
                 .get(&other_guid)
-                .map(|other| (other.session_id, destroy.clone()))
+                .and_then(|other| other.packet_to_client(destroy.clone()))
         })
         .collect()
     }
@@ -1359,7 +1472,7 @@ impl MapRuntime {
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
-                    .map(|other| (other.session_id, packet.clone()))
+                    .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect()
     }
@@ -1523,9 +1636,7 @@ fn update_player_environment_flags(
         player.environment.breath,
     ] {
         if timer.active {
-            packets.push((
-                player.session_id,
-                OutboundWorldPacket {
+            if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_START_MIRROR_TIMER,
                     body: build_mirror_timer_start_body(
                         timer.timer_type,
@@ -1535,8 +1646,9 @@ fn update_player_environment_flags(
                         false,
                         0,
                     ),
-                },
-            ));
+            }) {
+                packets.push(packet);
+            }
         }
     }
     Ok(packets)
@@ -1574,7 +1686,7 @@ fn advance_environment_timer(
     should_activate: bool,
     should_deactivate: bool,
     direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
-    session_id: SessionId,
+    session_id: Option<SessionId>,
 ) -> anyhow::Result<bool> {
     if timer.active || should_activate {
         if should_deactivate {
@@ -1613,9 +1725,10 @@ fn advance_environment_timer(
         } else {
             timer.elapsed_millis -= scaled;
             if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
-                direct_packets.push((
-                    session_id,
-                    OutboundWorldPacket {
+                if let Some(session_id) = session_id {
+                    direct_packets.push((
+                        session_id,
+                        OutboundWorldPacket {
                         opcode: SMSG_START_MIRROR_TIMER,
                         body: build_mirror_timer_start_body(
                             timer.timer_type,
@@ -1625,8 +1738,9 @@ fn advance_environment_timer(
                             false,
                             0,
                         ),
-                    },
-                ));
+                        },
+                    ));
+                }
             }
         }
     }
@@ -1636,7 +1750,7 @@ fn advance_environment_timer(
 fn start_mirror_timer(
     timer: &mut MirrorTimerRuntime,
     direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
-    session_id: SessionId,
+    session_id: Option<SessionId>,
 ) {
     if timer.scale >= 0 {
         return;
@@ -1645,9 +1759,10 @@ fn start_mirror_timer(
     timer.elapsed_millis = 0;
     timer.pulse_millis = 0;
     if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
-        direct_packets.push((
-            session_id,
-            OutboundWorldPacket {
+        if let Some(session_id) = session_id {
+            direct_packets.push((
+                session_id,
+                OutboundWorldPacket {
                 opcode: SMSG_START_MIRROR_TIMER,
                 body: build_mirror_timer_start_body(
                     timer.timer_type,
@@ -1657,15 +1772,16 @@ fn start_mirror_timer(
                     false,
                     0,
                 ),
-            },
-        ));
+                },
+            ));
+        }
     }
 }
 
 fn stop_mirror_timer(
     timer: &mut MirrorTimerRuntime,
     direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
-    session_id: SessionId,
+    session_id: Option<SessionId>,
 ) {
     if !timer.active {
         return;
@@ -1674,13 +1790,15 @@ fn stop_mirror_timer(
     timer.elapsed_millis = 0;
     timer.pulse_millis = 0;
     if timer.timer_type < MIRROR_TIMER_ENVIRONMENTAL {
-        direct_packets.push((
-            session_id,
-            OutboundWorldPacket {
+        if let Some(session_id) = session_id {
+            direct_packets.push((
+                session_id,
+                OutboundWorldPacket {
                 opcode: SMSG_STOP_MIRROR_TIMER,
                 body: timer.timer_type.to_le_bytes().to_vec(),
-            },
-        ));
+                },
+            ));
+        }
     }
 }
 
@@ -1742,4 +1860,27 @@ fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: Worl
     }
     distance_squared_2d(previous.x, previous.y, position.x, position.y)
         >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
+}
+
+fn moving_bot_start_packet(player: &PlayerRuntime) -> anyhow::Result<Option<OutboundWorldPacket>> {
+    let Some(bot) = player.bot_runtime.as_ref() else {
+        return Ok(None);
+    };
+    if bot.active_leg.is_none() || player.movement_flags & MOVEFLAG_FORWARD == 0 {
+        return Ok(None);
+    }
+    Ok(Some(OutboundWorldPacket {
+        opcode: MSG_MOVE_START_FORWARD as u16,
+        body: build_player_movement_broadcast_body(
+            player.guid,
+            &MovementInfo {
+                flags: player.movement_flags,
+                client_time: player.client_time,
+                position: player.position,
+                fall_time: player.fall_time,
+                jump: player.jump.clone(),
+            },
+            player.server_time,
+        )?,
+    }))
 }

@@ -91,9 +91,13 @@ impl MapRuntime {
                     if let Some(player) = self.players.get_mut(&player_guid) {
                         if !player.visible_objects.contains(&creature_guid) {
                             player.visible_objects.insert(creature_guid);
-                            packets.push((player.session_id, create_packet.clone()));
+                            if let Some(packet) = player.packet_to_client(create_packet.clone()) {
+                                packets.push(packet);
+                            }
                         }
-                        packets.push((player.session_id, move_packet.clone()));
+                        if let Some(packet) = player.packet_to_client(move_packet.clone()) {
+                            packets.push(packet);
+                        }
                     }
                 }
                 creatures.push(creature);
@@ -301,7 +305,7 @@ impl MapRuntime {
                 radius.is_infinite()
                     || is_position_inside_radius(position, player.position, radius)
             })
-            .map(|player| player.session_id)
+            .filter_map(PlayerRuntime::client_session_id)
             .collect()
     }
 
@@ -322,11 +326,11 @@ impl MapRuntime {
     }
 
     fn db_creatures_in_player_interest_radius(&self) -> Vec<(u64, &DbCreatureRuntime)> {
-        if self.players.is_empty() {
+        if !self.players.values().any(PlayerRuntime::is_client_controlled) {
             return Vec::new();
         }
         let mut guids = HashSet::new();
-        for player in self.players.values() {
+        for player in self.players.values().filter(|player| player.is_client_controlled()) {
             self.visit_nearby_cells(player.position, CREATURE_SPAWN_RADIUS_YARDS, |cell| {
                 guids.extend(cell.creatures.iter().copied());
             });
@@ -336,6 +340,7 @@ impl MapRuntime {
                 let creature = self.creatures.get(&guid)?;
                 self.players
                     .values()
+                    .filter(|player| player.is_client_controlled())
                     .any(|player| {
                         is_position_inside_radius(
                             creature.current_position,

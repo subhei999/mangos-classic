@@ -211,13 +211,10 @@ impl MapRuntime {
                     creature.dynamic_flags_for_player(Some(player_guid)),
                 )
                 .ok()?;
-                Some((
-                    player.session_id,
-                    OutboundWorldPacket {
+                player.packet_to_client(OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body,
-                    },
-                ))
+                })
             })
             .collect();
         Ok(Some(DbCreatureLootReleaseEvent {

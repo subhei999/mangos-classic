@@ -2053,6 +2053,111 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
+    async fn advance_all_playerbot_movement_ticks(
+        &self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<PlayerbotMovementTick> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut aggregate = PlayerbotMovementTick::default();
+        for map in maps {
+            let tick = map
+                .lock()
+                .await
+                .advance_playerbot_movement_tick(navigation, now)?;
+            aggregate.advanced_bots += tick.advanced_bots;
+            aggregate.budget_exhausted |= tick.budget_exhausted;
+            aggregate.packets.extend(tick.packets);
+        }
+        Ok(aggregate)
+    }
+
+    async fn plan_all_playerbot_intents(
+        &self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<PlayerbotPlanningTick> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .iter()
+                .map(|(key, map)| (*key, map.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut inputs = Vec::new();
+        for (_, map) in &maps {
+            inputs.extend(map.lock().await.collect_playerbot_plan_inputs(now));
+        }
+
+        let map_count = maps.len().max(1);
+        let mut budget = PlayerbotPlannerBudget {
+            route_plans_remaining: PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK * map_count,
+            combat_thinks_remaining: PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK * map_count,
+            ..PlayerbotPlannerBudget::default()
+        };
+        let planned = plan_playerbot_intents(
+            inputs,
+            &self.faction_templates,
+            navigation,
+            &mut budget,
+        );
+        let planned_bots = planned.len() as u32;
+
+        let mut by_map: HashMap<(u32, u32), Vec<(u32, PlayerbotQueuedIntents)>> = HashMap::new();
+        for (map_key, bot_guid, intent) in planned {
+            by_map.entry(map_key).or_default().push((bot_guid, intent));
+        }
+
+        for (map_key, map) in maps {
+            let Some(intents) = by_map.remove(&map_key) else {
+                continue;
+            };
+            map.lock().await.queue_playerbot_intents(intents);
+        }
+
+        Ok(PlayerbotPlanningTick {
+            planned_bots,
+            route_budget_exhausted: budget.route_budget_exhausted,
+            combat_budget_exhausted: budget.combat_budget_exhausted,
+        })
+    }
+
+    async fn advance_all_playerbot_combat_ticks(
+        &self,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<PlayerbotCombatTick> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut aggregate = PlayerbotCombatTick::default();
+        for map in maps {
+            let tick = map.lock().await.advance_playerbot_combat_tick(
+                &self.faction_templates,
+                navigation,
+                now,
+            )?;
+            aggregate.advanced_bots += tick.advanced_bots;
+            aggregate.creature_swings += tick.creature_swings;
+            aggregate.budget_exhausted |= tick.budget_exhausted;
+            aggregate.packets.extend(tick.packets);
+        }
+        Ok(aggregate)
+    }
+
     async fn advance_all_player_aura_expirations(
         &self,
         now: Instant,
@@ -2102,10 +2207,15 @@ impl MapRuntimeManager {
                 .collect::<Vec<_>>()
         };
         let mut snapshots = Vec::with_capacity(maps.len());
+        let mut playerbot_snapshots = Vec::new();
+        let now = Instant::now();
         for map in maps {
-            snapshots.push(map.lock().await.observability_snapshot());
+            let map = map.lock().await;
+            snapshots.push(map.observability_snapshot());
+            playerbot_snapshots.extend(map.playerbot_debug_snapshots(now));
         }
         crate::observability::record_map_runtime_snapshots(snapshots);
+        crate::observability::record_playerbot_debug_snapshots(playerbot_snapshots);
     }
 
     #[allow(dead_code)]

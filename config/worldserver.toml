@@ -55,6 +55,56 @@ char_delete_method = 0
 char_delete_min_level = 0
 
 # --------------------------------------------------------------------------
+# Server-side playerbots
+# --------------------------------------------------------------------------
+[playerbots]
+enabled = false
+
+# Optional deterministic local load-test swarm. These generated bots are
+# appended to any explicit [[playerbots.bots]] entries when playerbots are
+# enabled. Keep disabled in shared/default config.
+# [playerbots.random]
+# enabled = false
+# count = 1027
+# start_guid = 9010000
+# name_prefix = "Loadbot"
+# race = 1
+# class = 1
+# gender = 0
+# level = 1
+# map = 0
+# center_x = -8949.0
+# center_y = -132.0
+# center_z = 83.5
+# radius = 80.0
+# seed = 42
+
+# Optional shared travel destination for all configured/generated bots. The
+# local load-test config points Northshire bots at a Stormwind City Guard
+# coordinate from the local world DB.
+# [playerbots.travel]
+# enabled = false
+# map = 0
+# x = -9095.620
+# y = 422.026
+# z = 92.0445
+# radius = 0.0
+
+# Example:
+# [[playerbots.bots]]
+# guid = 9000001
+# name = "Northshirebot"
+# race = 1
+# class = 1
+# gender = 0
+# level = 1
+# map = 0
+# x = -8949.0
+# y = -132.0
+# z = 83.5
+# orientation = 0.0
+
+# --------------------------------------------------------------------------
 # Observability
 # --------------------------------------------------------------------------
 [observability]

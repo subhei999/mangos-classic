@@ -9,9 +9,13 @@ path = "src/main.rs"
 
 [dependencies]
 wow-config = { path = "../../crates/wow-config" }
+wow-common = { path = "../../crates/wow-common" }
 wow-db = { path = "../../crates/wow-db" }
 wow-network = { path = "../../crates/wow-network" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true }

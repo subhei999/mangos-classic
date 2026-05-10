@@ -25,12 +25,12 @@ impl MapRuntime {
             )
             .into_iter()
             .filter_map(|player_guid| {
-                self.players
-                    .get(&player_guid)
-                    .map(|player| (player.session_id, OutboundWorldPacket {
+                self.players.get(&player_guid).and_then(|player| {
+                    player.packet_to_client(OutboundWorldPacket {
                         opcode: SMSG_UPDATE_OBJECT,
                         body: update_body.clone(),
-                    }))
+                    })
+                })
             })
             .collect();
         Ok(Some(DbCreatureAuraUpdateEvent {
@@ -126,7 +126,11 @@ impl MapRuntime {
                 let nearby = self
                     .nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
                     .into_iter()
-                    .filter_map(|player_guid| self.players.get(&player_guid).map(|player| player.session_id))
+                    .filter_map(|player_guid| {
+                        self.players
+                            .get(&player_guid)
+                            .and_then(PlayerRuntime::client_session_id)
+                    })
                     .collect::<Vec<_>>();
                 for session_id in nearby {
                     for (_, log_body) in &tick_packets {
@@ -247,7 +251,8 @@ impl MapRuntime {
             .filter_map(|player_guid| {
                 self.players
                     .get(&player_guid)
-                    .map(|player| (player_guid, player.session_id))
+                    .and_then(PlayerRuntime::client_session_id)
+                    .map(|session_id| (player_guid, session_id))
             })
             .collect::<Vec<_>>();
         let attacker_state_body = if request.suppress_attacker_state {

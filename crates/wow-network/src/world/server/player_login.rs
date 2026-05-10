@@ -333,8 +333,11 @@ async fn handle_player_login(
 
     let player_runtime = PlayerRuntime {
         guid: character.guid,
-        account_id,
-        session_id: deps.session_id,
+        account_id: Some(account_id),
+        controller: PlayerController::Client {
+            session_id: deps.session_id,
+        },
+        bot_runtime: None,
         selected_target: session.selected_target,
         active_combat_target: None,
         active_combat_next_swing_at: None,

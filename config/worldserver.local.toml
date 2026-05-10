@@ -31,6 +31,46 @@ MapUpdateInterval = 100
 char_delete_method = 0
 char_delete_min_level = 0
 
+[playerbots]
+enabled = true
+
+[playerbots.random]
+enabled = true
+count = 63
+start_guid = 9010000
+name_prefix = "Loadbot"
+race = 1
+class = 1
+gender = 0
+level = 1
+map = 0
+center_x = -8949.0
+center_y = -132.0
+center_z = 83.5
+radius = 80.0
+seed = 42
+
+[playerbots.travel]
+enabled = false
+map = 0
+x = -9095.620
+y = 422.026
+z = 92.0445
+radius = 10.0
+
+[[playerbots.bots]]
+guid = 9000001
+name = "Northshirebot"
+race = 1
+class = 1
+gender = 0
+level = 1
+map = 0
+x = -8949.0
+y = -132.0
+z = 83.5
+orientation = 0.0
+
 [observability]
 enabled = true
 bind_address = "127.0.0.1"

@@ -1,5 +1,48 @@
 // CMaNGOS reference: src/game/Maps/Map.cpp map-owned object update loop.
 
+async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
+    let navigation = DbCreatureNavigationGuardrail {
+        world_data_files: runtime_state.world_data_files.clone(),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    let mut ticker = tokio::time::interval(PLAYERBOT_PLANNER_TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+        let now = Instant::now();
+        let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .plan_all_playerbot_intents(&navigation, now)
+            .await
+        {
+            Ok(tick) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotPlanner,
+                    phase_started_at.elapsed(),
+                );
+                if tick.route_budget_exhausted || tick.combat_budget_exhausted {
+                    debug!(
+                        planned_bots = tick.planned_bots,
+                        route_budget_exhausted = tick.route_budget_exhausted,
+                        combat_budget_exhausted = tick.combat_budget_exhausted,
+                        "Playerbot planner reached per-pass planning budget"
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotPlanner,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Playerbot planner tick failed: {error}");
+            }
+        }
+    }
+}
+
 async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
     let navigation = DbCreatureNavigationGuardrail {
         world_data_files: runtime_state.world_data_files.clone(),
@@ -72,11 +115,7 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
             }
         }
         let phase_started_at = Instant::now();
-        match runtime_state
-            .maps
-            .advance_all_player_environment_ticks(now)
-            .await
-        {
+        match runtime_state.maps.advance_all_player_environment_ticks(now).await {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
                     crate::observability::MapTickPhase::PlayerEnvironment,
@@ -98,6 +137,77 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
                 );
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime player environmental tick failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .advance_all_playerbot_movement_ticks(&navigation, now)
+            .await
+        {
+            Ok(tick) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotMovement,
+                    phase_started_at.elapsed(),
+                );
+                if tick.budget_exhausted {
+                    debug!(
+                        advanced_bots = tick.advanced_bots,
+                        "Playerbot movement tick reached per-map movement budget"
+                    );
+                }
+                if !tick.packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(tick.packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::PlayerbotMovementDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotMovement,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime playerbot movement tick failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .advance_all_playerbot_combat_ticks(&navigation, now)
+            .await
+        {
+            Ok(tick) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotCombat,
+                    phase_started_at.elapsed(),
+                );
+                if tick.budget_exhausted {
+                    debug!(
+                        advanced_bots = tick.advanced_bots,
+                        creature_swings = tick.creature_swings,
+                        "Playerbot combat tick reached per-map action budget"
+                    );
+                }
+                if !tick.packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(tick.packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::PlayerbotCombatDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::PlayerbotCombat,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime playerbot combat tick failed: {error}");
             }
         }
         let phase_started_at = Instant::now();

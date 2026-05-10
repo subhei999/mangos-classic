@@ -37,7 +37,7 @@ impl MapRuntime {
                     .filter_map(|player_guid| {
                         self.players
                             .get(&player_guid)
-                            .map(|player| (player.session_id, packet.clone()))
+                            .and_then(|player| player.packet_to_client(packet.clone()))
                     })
                     .collect();
                 events.push(DbCreatureLifecycleEvent {
@@ -87,7 +87,7 @@ impl MapRuntime {
                     .filter_map(|player_guid| {
                         self.players
                             .get(&player_guid)
-                            .map(|player| (player.session_id, observer_packet.clone()))
+                            .and_then(|player| player.packet_to_client(observer_packet.clone()))
                     })
                     .collect();
                 events.push(DbCreatureLifecycleEvent {

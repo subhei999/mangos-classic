@@ -14,6 +14,7 @@ async fn handle_ping(
 async fn handle_name_query(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    playerbots: &PlayerbotRoster,
     body: &[u8],
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -28,7 +29,16 @@ async fn handle_name_query(
     let guid = ObjectGuid::from_raw(raw_guid);
     let character_guid = guid.counter();
     let character = wow_db::get_character_name_query(character_db_pool, character_guid).await?;
+    let bot_character = character
+        .is_none()
+        .then(|| playerbots.name_query(character_guid))
+        .flatten();
     let response = build_name_query_response(raw_guid, character.as_ref());
+    let response = if character.is_some() {
+        response
+    } else {
+        build_name_query_response(raw_guid, bot_character.as_ref())
+    };
     send_packet(
         stream,
         SMSG_NAME_QUERY_RESPONSE,

@@ -6814,8 +6814,10 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         },
         bot_runtime: None,
         selected_target: None,
+        unit_target: None,
         active_combat_target: None,
         active_combat_next_swing_at: None,
+        looting: false,
         position: center,
         movement_flags: 0,
         client_time: 0,
@@ -8334,7 +8336,7 @@ fn map_runtime_playerbot_travel_uses_navigation_path_destination() {
 fn playerbot_travel_uses_local_nav_leg_toward_stormwind_when_available() {
     let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
     let start = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
-    let stormwind = WorldPosition::new(0, -9095.620, 422.026, 92.0445, 0.0);
+    let stormwind = WorldPosition::new(0, -9_095.62, 422.026, 92.0445, 0.0);
     let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(start) else {
         panic!("Northshire bot position should resolve to a mmap tile");
     };
@@ -8536,7 +8538,7 @@ fn playerbot_travel_recovers_from_observed_stormwind_route_edges_when_available(
 fn map_runtime_playerbot_stormwind_travel_broadcasts_visible_movement_when_available() {
     let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
     let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
-    let stormwind = WorldPosition::new(0, -9095.620, 422.026, 92.0445, 0.0);
+    let stormwind = WorldPosition::new(0, -9_095.62, 422.026, 92.0445, 0.0);
     let Some((start_tile_x, start_tile_y)) = mmap_tile_for_position(bot_position) else {
         panic!("Northshire bot position should resolve to a mmap tile");
     };
@@ -9211,6 +9213,134 @@ async fn unauthorized_creature_loot_request_sends_cmangos_loot_error() {
         .db_creature_loot_guid_for_character(0, 2)
         .await
         .is_none());
+}
+
+#[tokio::test]
+async fn creature_loot_open_and_release_toggle_player_looting_for_observers() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let parties = PartyManager::default();
+    let looter_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    let observer_session = SessionId(2);
+    maps.add_player(test_player_runtime(1, SessionId(1), looter_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(2, observer_session, observer_position))
+        .await
+        .unwrap();
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            observer_session,
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                character_name: Some("Bert".to_string()),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 46;
+    spawn.position_x = looter_position.x + 3.0;
+    spawn.position_y = looter_position.y;
+    let target = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.begin_corpse(Instant::now(), 1_000);
+    creature.loot_owner = Some(CreatureLootOwner::Player(1));
+    creature.loot_items_generated = true;
+    creature.loot_money_available = false;
+    creature.loot_items = vec![DbCreatureLootRuntime {
+        slot: 0,
+        item: 117,
+        count: 1,
+        display_id: 641,
+        quality: 1,
+        free_for_all: false,
+        quest_drop: false,
+    }];
+    maps.share_db_creature_snapshots(0, vec![creature]).await;
+    let mut body = Vec::new();
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: looter_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_loot(
+        &mut stream,
+        &world_db_pool,
+        shared_world,
+        &parties,
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let self_open = rx.try_recv().unwrap();
+    assert_eq!(self_open.opcode, SMSG_UPDATE_OBJECT);
+    let (values, trailing) = decode_values_update_block(&self_open.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
+    );
+    assert_eq!(rx.try_recv().unwrap().opcode, SMSG_LOOT_RESPONSE);
+    let observer_open = observer_rx.try_recv().unwrap();
+    let (values, trailing) = decode_values_update_block(&observer_open.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
+    );
+
+    handle_loot_release(
+        &mut stream,
+        shared_world,
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let self_close = rx.try_recv().unwrap();
+    assert_eq!(self_close.opcode, SMSG_UPDATE_OBJECT);
+    let (values, trailing) = decode_values_update_block(&self_close.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+    assert_eq!(rx.try_recv().unwrap().opcode, SMSG_LOOT_RELEASE_RESPONSE);
+    assert_eq!(rx.try_recv().unwrap().opcode, SMSG_UPDATE_OBJECT);
+    let observer_close = observer_rx.try_recv().unwrap();
+    let (values, trailing) = decode_values_update_block(&observer_close.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
 }
 
 #[test]
@@ -10248,6 +10378,11 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
     assert_eq!(finalization.respawn_epoch_secs, Some(2_007));
     assert_eq!(finalization.combat_flag_packet.opcode, SMSG_UPDATE_OBJECT);
     assert_eq!(finalization.attack_stop_packet.opcode, SMSG_ATTACKSTOP);
+    assert_eq!(
+        &finalization.attack_stop_packet.body[finalization.attack_stop_packet.body.len() - 4..],
+        &0u32.to_le_bytes(),
+        "CMaNGOS writes attacker IsDead() in SMSG_ATTACKSTOP; living player killers must send 0"
+    );
     assert_eq!(finalization.observer_packets.len(), 2);
     assert!(finalization
         .observer_packets
@@ -11237,8 +11372,10 @@ fn test_player_runtime_with_controller(
         controller,
         bot_runtime: None,
         selected_target: None,
+        unit_target: None,
         active_combat_target: None,
         active_combat_next_swing_at: None,
+        looting: false,
         position,
         movement_flags: 0,
         client_time: 0,
@@ -11810,12 +11947,93 @@ fn player_movement_broadcast_body_preserves_jump_launch_state() {
 }
 
 #[test]
-fn other_player_create_block_includes_selected_target() {
+fn map_runtime_broadcasts_turning_movement_to_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1234,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 2.25),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    for opcode in [
+        MSG_MOVE_START_TURN_LEFT,
+        MSG_MOVE_START_TURN_RIGHT,
+        MSG_MOVE_STOP_TURN,
+        MSG_MOVE_SET_FACING,
+    ] {
+        let packets = map
+            .update_player_position(1, opcode as u16, &movement, 5678)
+            .unwrap();
+
+        let packet = packets
+            .iter()
+            .find(|(session, packet)| *session == SessionId(2) && packet.opcode == opcode as u16)
+            .unwrap_or_else(|| panic!("observer should receive {}", movement_opcode_name(opcode)));
+        let guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+        let broadcast =
+            MovementInfo::read(&packet.1.body[PackedGuid::packed_size(guid)..]).unwrap();
+        assert_eq!(broadcast.client_time, 5678);
+        assert_eq!(broadcast.position.orientation, 2.25);
+    }
+}
+
+#[test]
+fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1234,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 2.25),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    let packets = map
+        .update_player_position(1, MSG_MOVE_STOP as u16, &movement, 5678)
+        .unwrap();
+
+    let packet = packets
+        .iter()
+        .find(|(session, packet)| *session == SessionId(2) && packet.opcode == MSG_MOVE_STOP as u16)
+        .expect("observer should receive final stop movement");
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let broadcast = MovementInfo::read(&packet.1.body[PackedGuid::packed_size(guid)..]).unwrap();
+    assert_eq!(broadcast.flags, 0);
+    assert_eq!(broadcast.client_time, 5678);
+    assert_eq!(broadcast.position.orientation, 2.25);
+    let stored = map.players.get(&1).unwrap();
+    assert_eq!(stored.movement_flags, 0);
+    assert_eq!(stored.position.orientation, 2.25);
+
+    let block = build_other_player_create_block(stored).unwrap();
+    let movement_start = 1 + PackedGuid::packed_size(guid) + 2;
+    let late_visible = MovementInfo::read(&block[movement_start..]).unwrap();
+    assert_eq!(late_visible.flags, 0);
+    assert_eq!(late_visible.position.orientation, 2.25);
+}
+
+#[test]
+fn other_player_create_block_includes_public_unit_target() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let selected = ObjectGuid::new(HighGuid::Unit, 0, 99);
     let mut player =
         test_player_runtime(7, SessionId(7), WorldPosition::new(0, 1.0, 2.0, 3.0, 0.0));
-    player.selected_target = Some(selected);
+    player.selected_target = None;
+    player.unit_target = Some(selected);
 
     let values =
         decode_other_player_create_values(&build_other_player_create_block(&player).unwrap(), guid);
@@ -11823,6 +12041,40 @@ fn other_player_create_block_includes_selected_target() {
     assert_eq!(
         values[UNIT_FIELD_TARGET + 1],
         Some((selected.raw() >> 32) as u32)
+    );
+}
+
+#[test]
+fn player_looting_state_sets_unit_flag_for_observers_and_late_visibility() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let packets = map.set_player_looting_state(1, true).unwrap();
+
+    let packet = packets
+        .iter()
+        .find(|(session, packet)| *session == SessionId(2) && packet.opcode == SMSG_UPDATE_OBJECT)
+        .expect("observer should receive player looting flag update");
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let (values, trailing) = decode_values_update_block(&packet.1.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
+    );
+
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        player,
+    );
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
     );
 }
 
@@ -13074,6 +13326,87 @@ fn map_runtime_player_selection_update_refreshes_shared_state_and_observers() {
         Some((selected.raw() >> 32) as u32)
     );
     assert_eq!(map.players.get(&1).unwrap().selected_target, Some(selected));
+    assert_eq!(map.players.get(&1).unwrap().unit_target, Some(selected));
+}
+
+#[test]
+fn map_runtime_player_target_obsolete_update_does_not_change_logical_selection() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    let selected = ObjectGuid::new(HighGuid::Unit, 0, 77);
+    let public_target = ObjectGuid::new(HighGuid::Unit, 0, 88);
+    let mut player = test_player_runtime(1, SessionId(1), player_position);
+    player.selected_target = Some(selected);
+    player.unit_target = Some(selected);
+    map.add_player(player).unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let packets = map.update_player_target(1, Some(public_target)).unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].0, SessionId(2));
+    assert_eq!(packets[0].1.opcode, SMSG_UPDATE_OBJECT);
+    let (values, trailing) = decode_values_update_block(
+        &packets[0].1.body[5..],
+        ObjectGuid::new(HighGuid::Player, 0, 1),
+    );
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_TARGET], Some(public_target.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_TARGET + 1],
+        Some((public_target.raw() >> 32) as u32)
+    );
+    assert_eq!(map.players.get(&1).unwrap().selected_target, Some(selected));
+    assert_eq!(
+        map.players.get(&1).unwrap().unit_target,
+        Some(public_target)
+    );
+
+    map.update_player_target(1, None).unwrap();
+    assert_eq!(map.players.get(&1).unwrap().selected_target, Some(selected));
+    assert_eq!(map.players.get(&1).unwrap().unit_target, None);
+}
+
+#[test]
+fn map_runtime_player_stand_state_update_refreshes_observers_and_late_visibility() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let packets = map
+        .set_player_stand_state(1, PLAYER_STAND_STATE_SLEEP)
+        .unwrap();
+
+    let packet = packets
+        .iter()
+        .find(|(session, packet)| *session == SessionId(2) && packet.opcode == SMSG_UPDATE_OBJECT)
+        .expect("observer should receive player stand-state update");
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let (values, trailing) = decode_values_update_block(&packet.1.body[5..], player_guid);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_SLEEP))
+    );
+    assert_eq!(
+        map.players.get(&1).unwrap().stand_state,
+        PLAYER_STAND_STATE_SLEEP
+    );
+
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        player_guid,
+    );
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_SLEEP))
+    );
 }
 
 #[tokio::test]
@@ -18376,25 +18709,26 @@ async fn db_creature_death_clears_queued_next_melee_spell_for_target() {
     maps.set_player_auto_attack(map_id, 8, Some(target), Some(now))
         .await;
 
-    maps.apply_db_creature_damage(
-        map_id,
-        DbCreatureDamageRequest {
-            creature_guid: target,
-            killer: ObjectGuid::new(HighGuid::Player, 0, 7),
-            damage: 20,
-            melee_outcome: None,
-            spell_id: None,
-            spell_school: 0,
-            suppress_attacker_state: false,
-            now,
-            now_epoch_secs: 0,
-            exclude_character_guid: Some(7),
-            corpse_loot: None,
-        },
-    )
-    .await
-    .unwrap()
-    .expect("damage should kill the target");
+    let event = maps
+        .apply_db_creature_damage(
+            map_id,
+            DbCreatureDamageRequest {
+                creature_guid: target,
+                killer: ObjectGuid::new(HighGuid::Player, 0, 7),
+                damage: 20,
+                melee_outcome: None,
+                spell_id: None,
+                spell_school: 0,
+                suppress_attacker_state: false,
+                now,
+                now_epoch_secs: 0,
+                exclude_character_guid: Some(7),
+                corpse_loot: None,
+            },
+        )
+        .await
+        .unwrap()
+        .expect("damage should kill the target");
 
     let without_auto_attack = maps.player_runtime_snapshot(map_id, 7).await.unwrap();
     assert!(without_auto_attack.queued_next_melee_spell.is_none());
@@ -18402,6 +18736,38 @@ async fn db_creature_death_clears_queued_next_melee_spell_for_target() {
     assert!(with_auto_attack.queued_next_melee_spell.is_none());
     assert_eq!(with_auto_attack.active_combat_target, None);
     assert_eq!(with_auto_attack.active_combat_next_swing_at, None);
+
+    let other_attacker = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let attack_stop = event
+        .observer_packets
+        .iter()
+        .find(|(session, packet)| *session == SessionId(8) && packet.opcode == SMSG_ATTACKSTOP)
+        .expect("other attacker should receive attack stop for the dead target");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&attack_stop.1.body, &mut cursor).unwrap(),
+        other_attacker
+    );
+    assert_eq!(
+        read_packed_guid(&attack_stop.1.body, &mut cursor).unwrap(),
+        target
+    );
+    assert_eq!(
+        u32::from_le_bytes(attack_stop.1.body[cursor..cursor + 4].try_into().unwrap()),
+        0
+    );
+    let combat_flag = event
+        .observer_packets
+        .iter()
+        .find(|(session, packet)| {
+            if *session != SessionId(8) || packet.opcode != SMSG_UPDATE_OBJECT {
+                return false;
+            }
+            let (values, trailing) = decode_values_update_block(&packet.body[5..], other_attacker);
+            trailing.is_empty() && values[UNIT_FIELD_FLAGS] == Some(UNIT_FLAG_PLAYER_CONTROLLED)
+        })
+        .expect("other attacker should receive player in-combat flag clear");
+    assert_eq!(combat_flag.0, SessionId(8));
 }
 
 #[tokio::test]
@@ -22466,7 +22832,7 @@ fn text_emote_body_matches_cmangos_empty_target_shape() {
         fall_time: 0,
         jump: JumpInfo::default(),
     };
-    let body = build_text_emote_body(&character, 12, 33);
+    let body = build_text_emote_body(&character, 12, 33, None);
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7).raw();
 
     assert_eq!(&body[0..8], &guid.to_le_bytes());
@@ -22474,6 +22840,27 @@ fn text_emote_body_matches_cmangos_empty_target_shape() {
     assert_eq!(&body[12..16], &33u32.to_le_bytes());
     assert_eq!(&body[16..20], &1u32.to_le_bytes());
     assert_eq!(body[20], 0);
+}
+
+#[test]
+fn text_emote_body_includes_target_name_when_known() {
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 1.0, 2.0, 3.0, 4.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let body = build_text_emote_body(&character, 12, 33, Some("Bert"));
+
+    assert_eq!(&body[16..20], &5u32.to_le_bytes());
+    assert_eq!(&body[20..], b"Bert\0");
 }
 
 #[test]
@@ -22544,6 +22931,183 @@ fn emote_state_update_sets_unit_emote_state() {
     assert_eq!(values[UNIT_NPC_EMOTESTATE], Some(EMOTE_STATE_DANCE));
 }
 
+#[tokio::test]
+async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let actor_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8950.0, -140.0, 83.5, 0.0);
+    let far_position = WorldPosition::new(0, -8950.0, -200.0, 83.5, 0.0);
+    let observer_session = SessionId(2);
+    let far_session = SessionId(3);
+
+    maps.add_player(test_player_runtime(1, SessionId(1), actor_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(2, observer_session, observer_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(3, far_session, far_position))
+        .await
+        .unwrap();
+
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            observer_session,
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                character_name: Some("Bert".to_string()),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+    let (far_tx, mut far_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            far_session,
+            SessionHandle {
+                account_id: 3,
+                character_guid: Some(3),
+                character_name: Some("Clio".to_string()),
+                outbound: far_tx,
+            },
+        )
+        .await;
+
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: actor_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&TEXTEMOTE_WAVE.to_le_bytes());
+    body.extend_from_slice(&66u32.to_le_bytes());
+    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, 0, 2).raw().to_le_bytes());
+
+    let (self_tx, mut self_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(self_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_text_emote(
+        &mut sink,
+        TextEmoteDeps {
+            maps: &maps,
+            sessions: &sessions,
+        },
+        &body,
+        &session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let self_animation = self_rx.try_recv().unwrap();
+    let self_text = self_rx.try_recv().unwrap();
+    assert_eq!(self_animation.opcode, SMSG_EMOTE);
+    assert_eq!(self_text.opcode, SMSG_TEXT_EMOTE);
+    assert!(self_text.body.ends_with(b"Bert\0"));
+
+    let observer_animation = observer_rx.try_recv().unwrap();
+    let observer_text = observer_rx.try_recv().unwrap();
+    assert_eq!(observer_animation.opcode, SMSG_EMOTE);
+    assert_eq!(observer_animation.body, self_animation.body);
+    assert_eq!(observer_text.opcode, SMSG_TEXT_EMOTE);
+    assert_eq!(observer_text.body, self_text.body);
+    assert!(far_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let actor_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8950.0, -140.0, 83.5, 0.0);
+    let observer_session = SessionId(2);
+
+    maps.add_player(test_player_runtime(1, SessionId(1), actor_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(2, observer_session, observer_position))
+        .await
+        .unwrap();
+
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            observer_session,
+            SessionHandle {
+                account_id: 2,
+                character_guid: Some(2),
+                character_name: Some("Bert".to_string()),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: actor_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&TEXTEMOTE_DANCE.to_le_bytes());
+    body.extend_from_slice(&66u32.to_le_bytes());
+    body.extend_from_slice(&0u64.to_le_bytes());
+
+    let (self_tx, mut self_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(self_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_text_emote(
+        &mut sink,
+        TextEmoteDeps {
+            maps: &maps,
+            sessions: &sessions,
+        },
+        &body,
+        &session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let self_state = self_rx.try_recv().unwrap();
+    let self_text = self_rx.try_recv().unwrap();
+    assert_eq!(self_state.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(self_text.opcode, SMSG_TEXT_EMOTE);
+
+    let observer_state = observer_rx.try_recv().unwrap();
+    let observer_text = observer_rx.try_recv().unwrap();
+    assert_eq!(observer_state.opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(observer_state.body, self_state.body);
+    assert_eq!(observer_text.opcode, SMSG_TEXT_EMOTE);
+    assert_eq!(observer_text.body, self_text.body);
+}
+
 #[test]
 fn recognizes_observed_movement_opcodes() {
     for opcode in [
@@ -22571,7 +23135,9 @@ fn recognizes_expected_world_bootstrap_noise() {
         CMSG_TUTORIAL_CLEAR,
         CMSG_TUTORIAL_RESET,
         CMSG_JOIN_CHANNEL,
+        CMSG_STANDSTATECHANGE,
         CMSG_SET_SELECTION,
+        CMSG_SET_TARGET_OBSOLETE,
     ] {
         assert!(
             !is_expected_noop_opcode(opcode),

@@ -144,10 +144,10 @@ impl MapRuntime {
     fn queue_playerbot_intents(&mut self, intents: Vec<(u32, PlayerbotQueuedIntents)>) {
         for (bot_guid, intent) in intents {
             if intent.is_empty()
-                || !self
+                || self
                     .players
                     .get(&bot_guid)
-                    .is_some_and(|player| player.bot_runtime.is_some())
+                    .is_none_or(|player| player.bot_runtime.is_none())
             {
                 continue;
             }
@@ -422,7 +422,7 @@ impl MapRuntime {
             return Ok(Vec::new());
         };
         if player.health == 0 {
-            return Ok(self.clear_playerbot_auto_attack(bot_guid, false)?);
+            return self.clear_playerbot_auto_attack(bot_guid);
         }
         if let Some(target) = player.active_combat_target {
             return self.advance_playerbot_auto_attack(bot_guid, target, navigation, now);
@@ -806,10 +806,10 @@ impl MapRuntime {
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let Some(target_creature) = self.db_creature_snapshot(target) else {
-            return Ok(self.clear_playerbot_auto_attack(bot_guid, false)?);
+            return self.clear_playerbot_auto_attack(bot_guid);
         };
         if !target_creature.is_alive() {
-            return Ok(self.clear_playerbot_auto_attack(bot_guid, true)?);
+            return self.clear_playerbot_auto_attack(bot_guid);
         }
 
         self.face_playerbot_toward(bot_guid, target_creature.current_position);
@@ -819,7 +819,7 @@ impl MapRuntime {
                 validation.check,
                 PlayerMeleeCheck::MissingTarget | PlayerMeleeCheck::TargetNotAlive
             ) {
-                return Ok(self.clear_playerbot_auto_attack(bot_guid, false)?);
+                return self.clear_playerbot_auto_attack(bot_guid);
             }
             if let Some(bot) = self
                 .players
@@ -860,7 +860,7 @@ impl MapRuntime {
             corpse_loot: None,
         })?
         else {
-            return Ok(self.clear_playerbot_auto_attack(bot_guid, false)?);
+            return self.clear_playerbot_auto_attack(bot_guid);
         };
 
         let is_dead = event.death_finalization.is_some();
@@ -1003,7 +1003,7 @@ impl MapRuntime {
             ));
         }
         if event.victim_health == 0 {
-            packets.extend(self.clear_playerbot_auto_attack(bot_guid, false)?);
+            packets.extend(self.clear_playerbot_auto_attack(bot_guid)?);
             self.clear_db_creature_combats_for_victim(combat.victim);
         }
         Ok(packets)
@@ -1012,7 +1012,6 @@ impl MapRuntime {
     fn clear_playerbot_auto_attack(
         &mut self,
         bot_guid: u32,
-        target_dead: bool,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let Some(target) = self
             .players
@@ -1037,7 +1036,7 @@ impl MapRuntime {
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
                 opcode: SMSG_ATTACKSTOP,
-                body: build_attack_stop_body(bot_object, target, target_dead)?,
+                body: build_attack_stop_body(bot_object, target, false)?,
             },
         ));
         packets.extend(self.broadcast_nearby_player_packet(

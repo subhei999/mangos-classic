@@ -229,6 +229,7 @@ fn chat_radius_yards(chat_type: u32) -> f32 {
 
 async fn handle_text_emote(
     stream: &mut WorldPacketSink,
+    deps: TextEmoteDeps<'_>,
     body: &[u8],
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -241,17 +242,79 @@ async fn handle_text_emote(
         );
         return Ok(());
     };
+    let target_name = text_emote_target_name(deps, character.position.map_id, emote.target_guid)
+        .await
+        .unwrap_or_default();
     if let Some(animation) = animation_emote_for_text_emote(emote.text_emote) {
         if matches!(emote.text_emote, TEXTEMOTE_DANCE | TEXTEMOTE_SLEEP) {
             let body = build_emote_state_update_body(character, animation)?;
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+            dispatch_nearby_text_emote_packet(
+                deps,
+                character,
+                SMSG_UPDATE_OBJECT,
+                body,
+            )
+            .await;
         } else {
             let body = build_emote_body(character, animation);
             send_packet(stream, SMSG_EMOTE, &body, Some(header_crypto)).await?;
+            dispatch_nearby_text_emote_packet(deps, character, SMSG_EMOTE, body).await;
         }
     }
-    let body = build_text_emote_body(character, emote.text_emote, emote.emote_num);
-    send_packet(stream, SMSG_TEXT_EMOTE, &body, Some(header_crypto)).await
+    let body = build_text_emote_body(
+        character,
+        emote.text_emote,
+        emote.emote_num,
+        (!target_name.is_empty()).then_some(target_name.as_str()),
+    );
+    send_packet(stream, SMSG_TEXT_EMOTE, &body, Some(header_crypto)).await?;
+    dispatch_nearby_text_emote_packet(deps, character, SMSG_TEXT_EMOTE, body).await;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct TextEmoteDeps<'a> {
+    maps: &'a Arc<MapRuntimeManager>,
+    sessions: &'a Arc<SessionRegistry>,
+}
+
+async fn dispatch_nearby_text_emote_packet(
+    deps: TextEmoteDeps<'_>,
+    character: &ActiveCharacter,
+    opcode: u16,
+    body: Vec<u8>,
+) {
+    let packets = deps
+        .maps
+        .broadcast_nearby_player_packet(
+            character.position.map_id,
+            character.guid,
+            CHAT_EMOTE_RADIUS_YARDS,
+            OutboundWorldPacket { opcode, body },
+        )
+        .await;
+    deps.sessions.dispatch(packets).await;
+}
+
+async fn text_emote_target_name(
+    deps: TextEmoteDeps<'_>,
+    map_id: u32,
+    target_guid: u64,
+) -> Option<String> {
+    if target_guid == ObjectGuid::EMPTY.raw() {
+        return None;
+    }
+    let target = ObjectGuid::from_raw(target_guid);
+    match target.high_type() {
+        Some(HighGuid::Player) => deps.sessions.character_name_for_guid(target.counter()).await,
+        Some(HighGuid::Unit) => deps
+            .maps
+            .db_creature_snapshot(map_id, target)
+            .await
+            .map(|creature| creature.spawn.template.name),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,14 +397,21 @@ impl SpellCastTargets {
     }
 }
 
-fn build_text_emote_body(character: &ActiveCharacter, text_emote: u32, emote_num: u32) -> Vec<u8> {
+fn build_text_emote_body(
+    character: &ActiveCharacter,
+    text_emote: u32,
+    emote_num: u32,
+    target_name: Option<&str>,
+) -> Vec<u8> {
     let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + 1);
+    let target_name = target_name.unwrap_or("");
+    let target_name_len = target_name.len() + 1;
+    let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + target_name_len);
     body.extend_from_slice(&sender.raw().to_le_bytes());
     body.extend_from_slice(&text_emote.to_le_bytes());
     body.extend_from_slice(&emote_num.to_le_bytes());
-    body.extend_from_slice(&1u32.to_le_bytes());
-    body.push(0);
+    body.extend_from_slice(&(target_name_len as u32).to_le_bytes());
+    write_c_string(&mut body, target_name);
     body
 }
 

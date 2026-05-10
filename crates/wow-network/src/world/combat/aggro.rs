@@ -696,7 +696,13 @@ async fn send_player_combat_flag_if_changed(
 }
 
 fn player_unit_flags(in_combat: bool) -> u32 {
-    UNIT_FLAG_PLAYER_CONTROLLED | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+    player_unit_flags_with_looting(in_combat, false)
+}
+
+fn player_unit_flags_with_looting(in_combat: bool, looting: bool) -> u32 {
+    UNIT_FLAG_PLAYER_CONTROLLED
+        | (if looting { UNIT_FLAG_LOOTING } else { 0 })
+        | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
 }
 
 fn db_creature_unit_flags(creature: &DbCreatureRuntime, in_combat: bool) -> u32 {

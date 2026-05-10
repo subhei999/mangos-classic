@@ -106,6 +106,7 @@ impl MapRuntime {
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
             aura_changed |= creature.active_auras.len() != before;
+            let died_from_aura = creature.health == 0;
 
             if aura_changed || !tick_packets.is_empty() {
                 let update_body = if creature.health == 0 {
@@ -150,6 +151,9 @@ impl MapRuntime {
                         },
                     ));
                 }
+            }
+            if died_from_aura {
+                packets.extend(self.clear_player_melee_state_for_dead_target(creature_guid, None)?);
             }
         }
         for (creature_guid, victim, threat) in threat_updates {
@@ -214,9 +218,6 @@ impl MapRuntime {
             }
         }
         let creature = creature.clone();
-        if is_dead {
-            self.clear_player_melee_state_for_target(creature_guid);
-        }
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.active_creature_combats.remove(&creature_guid.raw());
@@ -225,6 +226,14 @@ impl MapRuntime {
         } else if self.active_creature_combats.contains_key(&creature_guid.raw()) {
             self.refresh_db_creature_combat_leash(creature_guid, request.now);
         }
+        let player_melee_cleanup_packets = if is_dead {
+            self.clear_player_melee_state_for_dead_target(
+                creature_guid,
+                request.exclude_character_guid,
+            )?
+        } else {
+            Vec::new()
+        };
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let update_body = if is_dead {
             build_db_creature_death_update_body(
@@ -324,7 +333,7 @@ impl MapRuntime {
                 build_spell_log_miss_body(request.killer, creature_guid, spell_id, miss_info)
             })
             .transpose()?;
-        let observer_packets = nearby_observers
+        let mut observer_packets: Vec<(SessionId, OutboundWorldPacket)> = nearby_observers
             .iter()
             .copied()
             .flat_map(|(player_guid, session_id)| {
@@ -376,6 +385,7 @@ impl MapRuntime {
                 packets
             })
             .collect();
+        observer_packets.extend(player_melee_cleanup_packets);
         let death_finalization = if is_dead {
             let combat_flag_packet = OutboundWorldPacket {
                 opcode: SMSG_UPDATE_OBJECT,
@@ -386,7 +396,7 @@ impl MapRuntime {
             };
             let attack_stop_packet = OutboundWorldPacket {
                 opcode: SMSG_ATTACKSTOP,
-                body: build_attack_stop_body(request.killer, creature_guid, true)?,
+                body: build_attack_stop_body(request.killer, creature_guid, false)?,
             };
             let observer_packets = nearby_observers
                 .into_iter()

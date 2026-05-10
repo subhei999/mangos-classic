@@ -10,12 +10,12 @@ fn build_attack_start_body(attacker: ObjectGuid, victim: ObjectGuid) -> Vec<u8> 
 fn build_attack_stop_body(
     attacker: ObjectGuid,
     victim: ObjectGuid,
-    dead: bool,
+    attacker_dead: bool,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(20);
     PackedGuid::write(&mut body, attacker)?;
     PackedGuid::write(&mut body, victim)?;
-    body.extend_from_slice(&(dead as u32).to_le_bytes());
+    body.extend_from_slice(&(attacker_dead as u32).to_le_bytes());
     Ok(body)
 }
 

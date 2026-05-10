@@ -124,6 +124,14 @@ impl SessionRegistry {
         })
     }
 
+    async fn character_name_for_guid(&self, character_guid: u32) -> Option<String> {
+        self.sessions.lock().await.iter().find_map(|(_, handle)| {
+            (handle.character_guid == Some(character_guid))
+                .then(|| handle.character_name.clone())
+                .flatten()
+        })
+    }
+
     async fn send_packet(&self, session_id: SessionId, packet: OutboundWorldPacket) {
         let outbound = {
             self.sessions

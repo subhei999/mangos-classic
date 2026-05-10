@@ -128,6 +128,64 @@ async fn handle_set_selection(
     Ok(())
 }
 
+async fn handle_set_target_obsolete(
+    shared_world: SharedWorldDeps<'_>,
+    body: &[u8],
+    session: &WorldSessionState,
+) -> anyhow::Result<()> {
+    let unit_target = read_packet_guid(body, "CMSG_SET_TARGET_OBSOLETE")?;
+    let unit_target = if unit_target == ObjectGuid::EMPTY {
+        None
+    } else {
+        Some(unit_target)
+    };
+
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let packets = shared_world
+        .maps
+        .update_player_target(character.position.map_id, character.guid, unit_target)
+        .await?;
+    shared_world.sessions.dispatch(packets).await;
+    Ok(())
+}
+
+async fn handle_stand_state_change(
+    shared_world: SharedWorldDeps<'_>,
+    body: &[u8],
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    if body.len() < 4 {
+        anyhow::bail!("CMSG_STANDSTATECHANGE payload must include a stand state");
+    }
+    let mut cursor = 0;
+    let stand_state = read_u32(body, &mut cursor)?;
+    let Ok(stand_state) = u8::try_from(stand_state) else {
+        return Ok(());
+    };
+    if !matches!(
+        stand_state,
+        PLAYER_STAND_STATE_STAND
+            | PLAYER_STAND_STATE_SIT
+            | PLAYER_STAND_STATE_SLEEP
+            | PLAYER_STAND_STATE_KNEEL
+    ) {
+        return Ok(());
+    }
+    session.player_stand_state = stand_state;
+
+    let Some(character) = &session.active_character else {
+        return Ok(());
+    };
+    let packets = shared_world
+        .maps
+        .set_player_stand_state(character.position.map_id, character.guid, stand_state)
+        .await?;
+    shared_world.sessions.dispatch(packets).await;
+    Ok(())
+}
+
 async fn handle_query_next_mail_time(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,

@@ -467,9 +467,30 @@ async fn handle_client(
                         CMSG_TUTORIAL_RESET => {
                             handle_tutorial_reset(&character_db_pool, account.id).await?;
                         }
+                        CMSG_STANDSTATECHANGE => {
+                            handle_stand_state_change(
+                                SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &mut session,
+                            )
+                            .await?;
+                        }
                         CMSG_TEXT_EMOTE => {
-                            handle_text_emote(&mut stream, &body, &session, &mut header_crypto)
-                                .await?;
+                            handle_text_emote(
+                                &mut stream,
+                                TextEmoteDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_CAST_SPELL => {
                             handle_cast_spell(
@@ -542,6 +563,18 @@ async fn handle_client(
                                 },
                                 &body,
                                 &mut session,
+                            )
+                            .await?;
+                        }
+                        CMSG_SET_TARGET_OBSOLETE => {
+                            handle_set_target_obsolete(
+                                SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &session,
                             )
                             .await?;
                         }

@@ -94,8 +94,10 @@ fn write_other_player_update_values(
             | ((player.gender as u32) << 16)
             | (u32::from(player.class == 1) << 24),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
-    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.selected_target)?;
+    let unit_flags =
+        UNIT_FLAG_PLAYER_CONTROLLED | (if player.looting { UNIT_FLAG_LOOTING } else { 0 });
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.unit_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, BASE_ATTACK_TIME_MS)?;
@@ -459,13 +461,20 @@ fn build_player_selection_update_body(
     player_guid: u32,
     selected_target: Option<ObjectGuid>,
 ) -> anyhow::Result<Vec<u8>> {
+    build_player_target_update_body(player_guid, selected_target)
+}
+
+fn build_player_target_update_body(
+    player_guid: u32,
+    unit_target: Option<ObjectGuid>,
+) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, player_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player_guid)?;
 
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, selected_target)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, unit_target)?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))

@@ -1491,19 +1491,82 @@ impl MapRuntime {
         }
     }
 
-    fn clear_player_melee_state_for_target(&mut self, target: ObjectGuid) {
-        for player in self.players.values_mut() {
+    fn clear_player_melee_state_for_dead_target(
+        &mut self,
+        target: ObjectGuid,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let in_combat_victims = self
+            .active_creature_combats
+            .values()
+            .map(|combat| combat.victim)
+            .collect::<HashSet<_>>();
+        let affected = self
+            .players
+            .iter()
+            .filter_map(|(character_guid, player)| {
+                (player.active_combat_target == Some(target)
+                    || player
+                        .queued_next_melee_spell
+                        .is_some_and(|queued| queued.target == target))
+                .then_some(*character_guid)
+            })
+            .collect::<Vec<_>>();
+        let mut packets = Vec::new();
+        for character_guid in affected {
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                continue;
+            };
+            let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+            let had_active_auto_attack = player.active_combat_target == Some(target);
             if player
                 .queued_next_melee_spell
                 .is_some_and(|queued| queued.target == target)
             {
                 player.queued_next_melee_spell = None;
             }
-            if player.active_combat_target == Some(target) {
+            if had_active_auto_attack {
                 player.active_combat_target = None;
                 player.active_combat_next_swing_at = None;
             }
+            if exclude_character_guid == Some(character_guid) {
+                continue;
+            }
+            let still_in_combat =
+                player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
+            let position = player.position;
+            let looting = player.looting;
+            let mut player_packets = Vec::with_capacity(2);
+            if had_active_auto_attack {
+                player_packets.push(OutboundWorldPacket {
+                    opcode: SMSG_ATTACKSTOP,
+                    body: build_attack_stop_body(player_guid, target, false)?,
+                });
+            }
+            if !still_in_combat {
+                player_packets.push(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_unit_flags_update_body(
+                        player_guid,
+                        player_unit_flags_with_looting(false, looting),
+                    )?,
+                });
+            }
+            for recipient_guid in
+                self.nearby_player_guids(position, PLAYER_VISIBILITY_RADIUS_YARDS, None)
+            {
+                let Some(recipient) = self.players.get(&recipient_guid) else {
+                    continue;
+                };
+                packets.extend(
+                    player_packets
+                        .iter()
+                        .cloned()
+                        .filter_map(|packet| recipient.packet_to_client(packet)),
+                );
+            }
         }
+        Ok(packets)
     }
 
     fn spend_queued_player_next_melee_spell_power(
@@ -1533,10 +1596,41 @@ impl MapRuntime {
             return Ok(Vec::new());
         };
         player.selected_target = selected_target;
+        player.unit_target = selected_target;
         let position = player.position;
         let packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_player_selection_update_body(character_guid, selected_target)?,
+        };
+
+        Ok(self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(packet.clone()))
+            })
+            .collect())
+    }
+
+    fn update_player_target(
+        &mut self,
+        character_guid: u32,
+        unit_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.unit_target = unit_target;
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_target_update_body(character_guid, unit_target)?,
         };
 
         Ok(self
@@ -1611,6 +1705,72 @@ impl MapRuntime {
                     .and_then(|other| other.packet_to_client(packet.clone()))
             })
             .collect()
+    }
+
+    fn set_player_looting_state(
+        &mut self,
+        character_guid: u32,
+        looting: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.looting = looting;
+        let player_position = player.position;
+        let in_combat = player.active_combat_target.is_some();
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_unit_flags_update_body(
+                ObjectGuid::new(HighGuid::Player, 0, character_guid),
+                player_unit_flags_with_looting(in_combat, looting),
+            )?,
+        };
+        Ok(self
+            .nearby_player_guids(
+                player_position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(packet.clone()))
+            })
+            .collect())
+    }
+
+    fn set_player_stand_state(
+        &mut self,
+        character_guid: u32,
+        stand_state: u8,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.stand_state = stand_state;
+        let player_position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_stand_state_update_body_for_class(
+                character_guid,
+                player.class,
+                stand_state,
+            )?,
+        };
+        Ok(self
+            .nearby_player_guids(
+                player_position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(packet.clone()))
+            })
+            .collect())
     }
 
     #[cfg(test)]

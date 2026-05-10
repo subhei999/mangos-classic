@@ -786,6 +786,23 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn update_player_target(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        unit_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .update_player_target(character_guid, unit_target);
+        packets
+    }
+
     async fn add_player_combo_points(
         &self,
         map_id: u32,
@@ -848,6 +865,40 @@ impl MapRuntimeManager {
             .await
             .broadcast_nearby_player_packet(character_guid, radius, packet);
         packets
+    }
+
+    async fn set_player_looting_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        looting: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .set_player_looting_state(character_guid, looting)?;
+        Ok(packets)
+    }
+
+    async fn set_player_stand_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        stand_state: u8,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .set_player_stand_state(character_guid, stand_state)?;
+        Ok(packets)
     }
 
     #[allow(dead_code)]

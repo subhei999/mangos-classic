@@ -7,10 +7,56 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/rusty-mangos`.
+- Branch: `codex/multiplayer-cross-action-parity`, branched from
+  `codex/rusty-mangos`.
 - Base branch: `origin/codex/rusty-mangos`.
 - Current HEAD: latest `codex/rusty-mangos` commit after the playerbot
-  fast-forward and spell/combat follow-up commit.
+  fast-forward and spell/combat follow-up commit, plus current uncommitted
+  multiplayer cross-player parity work.
+- Current uncommitted multiplayer work adds
+  `docs/multiplayer_cross_action_parity.md`, fixes `CMSG_TEXT_EMOTE` so
+  nearby players receive `SMSG_TEXT_EMOTE` plus the visible emote animation or
+  emote-state update through `MapRuntime`/`SessionRegistry`, includes known
+  target names for online player targets and DB creature targets where
+  available, adds map-owned player looting visual state so loot open/release
+  toggles `UNIT_FLAG_LOOTING` for the looter and nearby observers, proves turn
+  and stop movement opcodes carry the final orientation to observers and
+  late-visible create blocks, splits logical player selection from public
+  `UNIT_FIELD_TARGET`, and handles CMaNGOS' `CMSG_SET_TARGET_OBSOLETE` so stale
+  public targets can be cleared without corrupting spell/combat selection. It
+  also extends the starter-zone two-client flow to require observer `/wave`,
+  facing-change, and looting flag visibility. Latest posture follow-up handles
+  CMaNGOS' `CMSG_STANDSTATECHANGE` and updates map-owned `UNIT_FIELD_BYTES_1`
+  stand state so nearby players and late-visible create blocks see sit, sleep,
+  kneel, and stand transitions. Follow-up in the same worktree
+  fixes stale auto-attack/combat cleanup on creature death: `MapRuntime` now
+  clears every player targeting a dead DB creature and fans out
+  `SMSG_ATTACKSTOP` plus player unit-flag clears for affected clients that are
+  no longer in combat. Latest follow-up fixes the real-client idle-facing
+  repro after mob death by matching CMaNGOS `Unit::SendMeleeAttackStop`: the
+  trailing `SMSG_ATTACKSTOP` flag is the attacker's `IsDead()` state, so living
+  player and playerbot attackers now send `0` even when their victim died.
+- Proof for the current uncommitted multiplayer work:
+  `cargo test -p wow-network text_emote --lib -- --nocapture`,
+  `cargo test -p wow-network loot --lib -- --nocapture`,
+  `cargo test -p wow-network movement --lib -- --nocapture`,
+  `cargo test -p wow-network map_runtime_broadcasts_stop_with_final_idle_orientation --lib -- --nocapture`,
+  `cargo test -p wow-network map_runtime_player_target_obsolete_update_does_not_change_logical_selection --lib -- --nocapture`,
+  `cargo test -p wow-network map_runtime_player_stand_state_update_refreshes_observers_and_late_visibility --lib -- --nocapture`,
+  `cargo test -p wow-network db_creature_death_uses_db_respawn_and_cmangos_corpse_timers --lib -- --nocapture`,
+  `cargo test -p wow-network db_creature_death_clears_queued_next_melee_spell_for_target --lib -- --nocapture`,
+  `cargo test -p wow-network combat --lib -- --nocapture`,
+  `cargo test -p wow-network death --lib -- --nocapture`,
+  `cargo test -p wow-network party --lib -- --nocapture`,
+  `cargo check -p starter-zone-flow-test`, and isolated
+  `$env:CARGO_TARGET_DIR='target\codex-death-attackstop-check'; .\scripts\test-rust.cmd`
+  pass. Earlier isolated
+  `$env:CARGO_TARGET_DIR='target\codex-idle-facing-check'; .\scripts\test-rust.cmd`
+  and
+  `$env:CARGO_TARGET_DIR='target\codex-multiplayer-parity-check'; .\scripts\test-rust.cmd`
+  also passed; plain `.\scripts\test-rust.cmd` previously passed clippy/tests
+  but failed at final `cargo build -p authserver` because Windows had
+  `target\debug\authserver.exe` locked.
 - Current state: integration branch includes the broad map-owned spell and
   world parity work from `Advance map-owned spell and world parity`, the
   reconciled map-owned playerbot foundation, and the follow-up starter

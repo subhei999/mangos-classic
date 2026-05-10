@@ -20,6 +20,11 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   planner queues route and target intents off the map update loop. The original
   pre-rebase playerbot commit is preserved on
   `codex/playerbots-map-actor-foundation-backup`.
+- Recent playerbot load-test fix keeps bot-only actors out of the real-client
+  environment/mirror-timer tick and lets random Northshire roam use cheap
+  grounded local route legs instead of consuming the scarce full-nav route
+  planning budget. Travel-to-Stormwind and combat approach still use the mmap
+  routing path.
 - Recent committed spell bugfix revalidates delayed hostile casts at
   completion: if the caster turns away or LOS becomes blocked during a cast
   time, Rust sends the spell failure before power spend, `SMSG_SPELL_GO`, or
@@ -857,6 +862,14 @@ extended with Webwood-specific hardcoding.
 
 ## Tests Run
 
+- Post 512-playerbot random-roam fix:
+  `cargo fmt --check`,
+  `cargo test -p wow-network playerbot_random_roam --lib`,
+  `cargo test -p wow-network player_environment_tick_skips_playerbots --lib`,
+  `cargo test -p wow-network playerbot --lib` (30 tests), and
+  `cargo test -p wow-network --lib` (531 tests) passed. Restarted the local
+  stack with `WORLD_PLAYERBOTS__RANDOM__COUNT=511`; metrics showed 512 active
+  playerbots and map tick average around 0.9ms with no real client connected.
 - Post playerbot merge spell/combat follow-up commit:
   `cargo fmt --check`, `cargo test -p wow-network --lib` (529 tests), and
   `cargo build -p worldserver --target-dir target\codex-dirty-commit-check`

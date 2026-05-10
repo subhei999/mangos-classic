@@ -1266,11 +1266,13 @@ fn plan_playerbot_intents(
     for input in inputs {
         let mut intents = PlayerbotQueuedIntents::default();
         if input.movement_due_at.is_some() {
-            if budget.route_plans_remaining == 0 {
+            if playerbot_movement_route_uses_budget(&input) && budget.route_plans_remaining == 0 {
                 budget.route_budget_exhausted = true;
                 intents.movement = Some(PlayerbotMovementIntent::Defer);
             } else {
-                budget.route_plans_remaining -= 1;
+                if playerbot_movement_route_uses_budget(&input) {
+                    budget.route_plans_remaining -= 1;
+                }
                 intents.movement = Some(PlayerbotMovementIntent::Route {
                     route: plan_playerbot_movement_route(&input, navigation),
                 });
@@ -1298,6 +1300,10 @@ fn plan_playerbot_intents(
     planned
 }
 
+fn playerbot_movement_route_uses_budget(input: &PlayerbotPlanInput) -> bool {
+    input.travel_destination.is_some() || input.engage_target_creature.is_some()
+}
+
 fn plan_playerbot_movement_route(
     input: &PlayerbotPlanInput,
     navigation: &DbCreatureNavigationGuardrail,
@@ -1316,6 +1322,9 @@ fn plan_playerbot_movement_route(
             false,
         );
     }
+    if input.travel_destination.is_none() {
+        return playerbot_roam_route_points(geometry, input.position, input.home_position, input.roam_step, input.bot_guid);
+    }
     playerbot_route_points(
         navigation,
         geometry,
@@ -1325,6 +1334,43 @@ fn plan_playerbot_movement_route(
         input.roam_step,
         input.bot_guid,
     )
+}
+
+fn playerbot_roam_route_points(
+    geometry: Option<&WorldGeometry>,
+    start: WorldPosition,
+    home_position: WorldPosition,
+    roam_step: u8,
+    bot_guid: u32,
+) -> Option<Vec<WorldPosition>> {
+    let target = playerbot_route_target(bot_guid, None, home_position, roam_step);
+    let target = playerbot_grounded_position(geometry, target);
+    if start.distance_2d(&target) <= PLAYERBOT_DESTINATION_EPSILON_YARDS {
+        return Some(Vec::new());
+    }
+    Some(playerbot_local_grounded_route_points(geometry, start, target))
+}
+
+fn playerbot_local_grounded_route_points(
+    geometry: Option<&WorldGeometry>,
+    start: WorldPosition,
+    target: WorldPosition,
+) -> Vec<WorldPosition> {
+    let distance = start.distance_2d(&target);
+    let steps = (distance / PLAYERBOT_ROUTE_MIN_SEGMENT_YARDS).ceil().max(1.0) as u32;
+    let mut points = Vec::new();
+    for step in 1..=steps {
+        let ratio = step as f32 / steps as f32;
+        let candidate = WorldPosition::new(
+            start.map_id,
+            start.x + (target.x - start.x) * ratio,
+            start.y + (target.y - start.y) * ratio,
+            start.z + (target.z - start.z) * ratio,
+            playerbot_orientation_toward(start, target),
+        );
+        push_playerbot_route_point(&mut points, playerbot_grounded_position(geometry, candidate));
+    }
+    points
 }
 
 fn plan_playerbot_combat_intent(

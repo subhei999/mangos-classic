@@ -8645,6 +8645,56 @@ fn map_runtime_playerbot_route_planning_is_budgeted() {
 }
 
 #[test]
+fn map_runtime_playerbot_random_roam_planning_is_not_nav_budget_limited() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let client_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_player_runtime(1, SessionId(77), client_position))
+        .unwrap();
+    for offset in 0..(PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32 + 16) {
+        let guid = 30_000 + offset;
+        map.add_player(test_bot_player_runtime(
+            guid,
+            BotId(guid as u64),
+            bot_position,
+        ))
+        .unwrap();
+        map.players
+            .get_mut(&guid)
+            .unwrap()
+            .bot_runtime
+            .as_mut()
+            .unwrap()
+            .next_think_at = now;
+    }
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(
+        tick.advanced_bots,
+        PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32 + 16
+    );
+    assert!(!tick.budget_exhausted);
+    for guid in 30_000..(30_000 + PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK as u32 + 16) {
+        assert!(
+            map.players
+                .get(&guid)
+                .unwrap()
+                .bot_runtime
+                .as_ref()
+                .unwrap()
+                .active_leg
+                .is_some(),
+            "random roam bot {guid} should start moving without consuming scarce nav budget"
+        );
+    }
+}
+
+#[test]
 fn map_runtime_playerbot_route_failure_backs_off() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();
@@ -12170,6 +12220,39 @@ fn map_runtime_underwater_breath_timer_applies_drowning_damage_and_log() {
                 0,
                 1
             ))) == Some(&DAMAGE_DROWNING)));
+}
+
+#[test]
+fn map_runtime_player_environment_tick_skips_playerbots() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), position))
+        .unwrap();
+    for guid in 2..18 {
+        map.add_player(test_bot_player_runtime(
+            guid,
+            BotId(u64::from(guid)),
+            position,
+        ))
+        .unwrap();
+    }
+    let mut environment_checks = 0usize;
+
+    let packets = map
+        .advance_player_environment_tick_with_flags(Instant::now(), |_geometry, _position| {
+            environment_checks += 1;
+            ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+        })
+        .unwrap();
+
+    assert_eq!(environment_checks, 1);
+    assert!(packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1)
+            && packet.opcode == SMSG_START_MIRROR_TIMER));
+    for guid in 2..18 {
+        assert_eq!(map.players.get(&guid).unwrap().environment.flags, 0);
+    }
 }
 
 #[test]

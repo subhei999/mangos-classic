@@ -23,6 +23,9 @@ impl MapRuntime {
         let geometry = self.geometry.clone();
 
         for player in self.players.values_mut() {
+            if player.bot_runtime.is_some() {
+                continue;
+            }
             let character_guid = player.guid;
             let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
             let old_flags = player.environment.flags;

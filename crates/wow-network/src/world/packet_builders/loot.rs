@@ -359,6 +359,14 @@ fn build_loot_master_list_body(members: &[u32]) -> Vec<u8> {
     body
 }
 
+fn build_loot_error_response_body(target: ObjectGuid, error: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(10);
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.push(0);
+    body.push(error);
+    body
+}
+
 fn build_loot_release_response_body(target: ObjectGuid, released: bool) -> Vec<u8> {
     let mut body = Vec::with_capacity(9);
 

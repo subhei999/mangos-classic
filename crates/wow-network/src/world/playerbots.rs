@@ -122,6 +122,8 @@ fn build_playerbot_runtime(
         selected_target: None,
         active_combat_target: None,
         active_combat_next_swing_at: None,
+        combo_target: None,
+        combo_points: 0,
         position: config.position,
         movement_flags: 0,
         client_time: 0,

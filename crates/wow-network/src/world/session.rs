@@ -255,11 +255,13 @@ struct PeriodicRegenAura {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuraStatModifier {
     AttackPower { amount: i32 },
+    Resistance { school_mask: u32, amount: i32 },
     Skill {
         skill_id: u16,
         amount: i16,
         permanent: bool,
     },
+    Stat { stat: Option<usize>, amount: i32 },
     TotalStatPercent { stat: usize, percent: i32 },
     ReputationGainPercent { percent: i32 },
 }

@@ -119,7 +119,6 @@ fn build_environmental_damage_log_body(
     Ok(body)
 }
 
-#[allow(dead_code)]
 fn build_spell_log_miss_body(
     caster: ObjectGuid,
     target: ObjectGuid,
@@ -136,22 +135,22 @@ fn build_spell_log_miss_body(
     Ok(body)
 }
 
-fn build_spell_failure_body(caster: ObjectGuid, spell_id: u32, result: u8) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(13);
+fn build_spell_heal_log_body(
+    caster: ObjectGuid,
+    target: ObjectGuid,
+    spell_id: u32,
+    heal: u32,
+    critical: bool,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(26);
+    PackedGuid::write(&mut body, target)?;
     PackedGuid::write(&mut body, caster)?;
     body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(result);
+    body.extend_from_slice(&heal.to_le_bytes());
+    body.push(critical as u8);
     Ok(body)
 }
 
-fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&caster.raw().to_le_bytes());
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body
-}
-
-#[allow(dead_code)]
 fn build_spell_energize_log_body(
     caster: ObjectGuid,
     target: ObjectGuid,
@@ -166,6 +165,21 @@ fn build_spell_energize_log_body(
     body.extend_from_slice(&power_type.to_le_bytes());
     body.extend_from_slice(&amount.to_le_bytes());
     Ok(body)
+}
+
+fn build_spell_failure_body(caster: ObjectGuid, spell_id: u32, result: u8) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(13);
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.push(result);
+    Ok(body)
+}
+
+fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&caster.raw().to_le_bytes());
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body
 }
 
 fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
@@ -189,6 +203,38 @@ fn build_player_energy_update_body(player: ObjectGuid, energy: u32) -> anyhow::R
     PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, UNIT_FIELD_POWER4, energy.min(POWER_ENERGY_DEFAULT))?;
+    write_update_values(&mut block, &values)?;
+
+    let mut body = Vec::with_capacity(5 + block.len());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(0);
+    body.extend_from_slice(&block);
+    Ok(body)
+}
+
+fn build_player_combo_points_update_body(
+    player: ObjectGuid,
+    combo_target: ObjectGuid,
+    combo_points: u8,
+    player_bytes: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_COMBO_TARGET,
+        combo_target.raw() as u32,
+    )?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_COMBO_TARGET + 1,
+        (combo_target.raw() >> 32) as u32,
+    )?;
+    let player_bytes_with_combo =
+        (player_bytes & !0x0000_FF00) | ((combo_points.min(5) as u32) << 8);
+    set_update_value(&mut values, PLAYER_FIELD_BYTES, player_bytes_with_combo)?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());

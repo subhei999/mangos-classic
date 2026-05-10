@@ -974,13 +974,23 @@ fn db_creature_has_line_of_sight(
 
     native_vmap_line_of_sight(
         data_dir,
-        start,
-        target_position,
+        unit_line_of_sight_position(start),
+        unit_line_of_sight_position(target_position),
         (start_tile_x, start_tile_y),
         (target_tile_x, target_tile_y),
         false,
     )
     .unwrap_or(true)
+}
+
+fn unit_line_of_sight_position(position: WorldPosition) -> WorldPosition {
+    WorldPosition::new(
+        position.map_id,
+        position.x,
+        position.y,
+        position.z + DEFAULT_COLLISION_HEIGHT,
+        position.orientation,
+    )
 }
 
 fn db_creature_has_native_los_data_for_positions(

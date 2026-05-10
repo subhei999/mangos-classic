@@ -786,6 +786,33 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn add_player_combo_points(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: ObjectGuid,
+        points: u8,
+    ) -> Option<PlayerComboPointsEvent> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let event = map
+            .lock()
+            .await
+            .add_player_combo_points(character_guid, target, points);
+        event
+    }
+
+    async fn clear_player_combo_points(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<PlayerComboPointsEvent> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let event = map.lock().await.clear_player_combo_points(character_guid);
+        event
+    }
+
     #[cfg(test)]
     async fn update_player_db_creature_visibility(
         &self,

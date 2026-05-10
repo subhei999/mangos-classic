@@ -214,6 +214,9 @@ impl MapRuntime {
             }
         }
         let creature = creature.clone();
+        if is_dead {
+            self.clear_player_melee_state_for_target(creature_guid);
+        }
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.active_creature_combats.remove(&creature_guid.raw());
@@ -284,8 +287,22 @@ impl MapRuntime {
         };
         let spell_non_melee_log_body = request
             .spell_id
-            .filter(|_| request.melee_outcome.is_none())
+            .filter(|_| {
+                request.melee_outcome.is_none()
+                    || (request.suppress_attacker_state && requested_damage > 0)
+            })
             .map(|spell_id| {
+                let (blocked, hit_info) = request
+                    .melee_outcome
+                    .map(|outcome| {
+                        let hit_info = if outcome.hit_info & HITINFO_CRITICALHIT != 0 {
+                            SPELL_HIT_TYPE_CRIT
+                        } else {
+                            0
+                        };
+                        (outcome.blocked, hit_info)
+                    })
+                    .unwrap_or((0, 0));
                 build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
                     attacker: request.killer,
                     target: creature_guid,
@@ -295,9 +312,16 @@ impl MapRuntime {
                     absorb: 0,
                     resist: 0,
                     periodic: false,
-                    blocked: 0,
-                    hit_info: 0,
+                    blocked,
+                    hit_info,
                 })
+            })
+            .transpose()?;
+        let spell_miss_log_body = request
+            .spell_id
+            .zip(request.melee_outcome.and_then(|outcome| outcome.spell_miss_info()))
+            .map(|(spell_id, miss_info)| {
+                build_spell_log_miss_body(request.killer, creature_guid, spell_id, miss_info)
             })
             .transpose()?;
         let observer_packets = nearby_observers
@@ -305,6 +329,15 @@ impl MapRuntime {
             .copied()
             .flat_map(|(player_guid, session_id)| {
                 let mut packets = Vec::with_capacity(3);
+                if let Some(spell_miss_log_body) = &spell_miss_log_body {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_SPELLLOGMISS,
+                            body: spell_miss_log_body.clone(),
+                        },
+                    ));
+                }
                 if let Some(spell_non_melee_log_body) = &spell_non_melee_log_body {
                     packets.push((
                         session_id,
@@ -393,6 +426,7 @@ impl MapRuntime {
             creature,
             attacker_state_body,
             spell_non_melee_log_body,
+            spell_miss_log_body,
             update_body,
             death_finalization,
             target_switch,

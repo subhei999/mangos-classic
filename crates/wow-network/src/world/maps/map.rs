@@ -134,6 +134,8 @@ struct PlayerRuntime {
     max_power4: u32,
     player_bytes: u32,
     player_bytes2: u32,
+    combo_target: Option<ObjectGuid>,
+    combo_points: u8,
     stand_state: u8,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
@@ -183,6 +185,8 @@ struct PlayerRuntimeSnapshot {
     power2: u32,
     power4: u32,
     max_power4: u32,
+    combo_target: Option<ObjectGuid>,
+    combo_points: u8,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
@@ -208,9 +212,17 @@ struct PlayerRewardRuntimeUpdate {
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlayerComboPointsEvent {
+    combo_target: ObjectGuid,
+    combo_points: u8,
+    player_bytes: u32,
+}
+
 #[derive(Debug)]
 struct PlayerHealEvent {
     healed_character_guid: u32,
+    amount_healed: u32,
     health: u32,
     direct_session_id: SessionId,
     direct_packets: Vec<OutboundWorldPacket>,
@@ -358,6 +370,7 @@ struct DbCreatureDamageEvent {
     creature: DbCreatureRuntime,
     attacker_state_body: Option<Vec<u8>>,
     spell_non_melee_log_body: Option<Vec<u8>>,
+    spell_miss_log_body: Option<Vec<u8>>,
     update_body: Vec<u8>,
     death_finalization: Option<DbCreatureDeathFinalizationEvent>,
     target_switch: Option<DbCreatureThreatTargetSwitchEvent>,

@@ -3,6 +3,7 @@ enum SpellEffectDispatch {
     Empty,
     SchoolDamage,
     WeaponDamage,
+    WeaponPercentDamage,
     ApplyAura,
     Heal,
     Energize,
@@ -12,6 +13,7 @@ enum SpellEffectDispatch {
     LearnSpell,
     LearnSkill,
     TriggerSpell,
+    AddComboPoints,
     Unsupported(u32),
 }
 
@@ -20,9 +22,10 @@ impl SpellEffectDispatch {
         match effect_id {
             0 => Self::Empty,
             2 => Self::SchoolDamage,
-            SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL | SPELL_EFFECT_WEAPON_PERCENT_DAMAGE => {
-                Self::WeaponDamage
-            }
+            SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
+            | SPELL_EFFECT_WEAPON_DAMAGE
+            | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => Self::WeaponDamage,
+            SPELL_EFFECT_WEAPON_PERCENT_DAMAGE => Self::WeaponPercentDamage,
             SPELL_EFFECT_APPLY_AURA => Self::ApplyAura,
             SPELL_EFFECT_HEAL => Self::Heal,
             SPELL_EFFECT_ENERGIZE => Self::Energize,
@@ -34,6 +37,7 @@ impl SpellEffectDispatch {
             36 => Self::LearnSpell,
             44 => Self::LearnSkill,
             64 => Self::TriggerSpell,
+            SPELL_EFFECT_ADD_COMBO_POINTS => Self::AddComboPoints,
             other => Self::Unsupported(other),
         }
     }
@@ -58,6 +62,17 @@ async fn apply_player_spell_effects(
     let mut charge_applied = false;
     let mut direct_heal_applied = false;
     let mut aura_applied = false;
+    let mut weapon_damage_applied = false;
+    let mut landed_damage = false;
+    let combo_points_for_effects = spell_combo_points_for_effects(
+        deps.shared_world,
+        caster,
+        character_guid,
+        map_id,
+        spell_profile,
+        targets,
+    )
+    .await;
 
     for effect in spell_info.effects {
         match effect.dispatch {
@@ -79,14 +94,19 @@ async fn apply_player_spell_effects(
                 .await?;
                 charge_applied = true;
             }
-            SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::WeaponDamage
+            SpellEffectDispatch::SchoolDamage
                 if spell_profile.kind != SpellCastKind::Charge
                     && spell_profile.kind != SpellCastKind::NextMeleeSwing =>
             {
                 if let Some(damage_effect) =
-                    player_direct_damage_effect(spell_template, spell_profile, effect)
+                    player_direct_damage_effect(
+                        spell_template,
+                        spell_profile,
+                        effect,
+                        combo_points_for_effects,
+                    )
                 {
-                    apply_player_direct_damage_effect(
+                    landed_damage |= apply_player_direct_damage_effect(
                         stream,
                         deps,
                         session,
@@ -99,6 +119,38 @@ async fn apply_player_spell_effects(
                     )
                     .await?;
                 }
+            }
+            SpellEffectDispatch::WeaponDamage | SpellEffectDispatch::WeaponPercentDamage
+                if spell_profile.kind != SpellCastKind::Charge
+                    && spell_profile.kind != SpellCastKind::NextMeleeSwing
+                    && !weapon_damage_applied =>
+            {
+                landed_damage |= apply_player_direct_damage_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    player_weapon_damage_effect(spell_profile),
+                    targets,
+                    header_crypto,
+                )
+                .await?;
+                weapon_damage_applied = true;
+            }
+            SpellEffectDispatch::AddComboPoints if landed_damage => {
+                apply_player_combo_points_effect(
+                    stream,
+                    deps.shared_world,
+                    caster,
+                    character_guid,
+                    map_id,
+                    effect,
+                    targets,
+                    header_crypto,
+                )
+                .await?;
             }
             SpellEffectDispatch::Heal
                 if spell_profile.kind == SpellCastKind::DirectHeal && !direct_heal_applied =>
@@ -143,6 +195,18 @@ async fn apply_player_spell_effects(
         }
     }
 
+    if spell_profile.needs_combo_points && landed_damage {
+        clear_player_combo_points_after_finisher(
+            stream,
+            deps.shared_world,
+            caster,
+            character_guid,
+            map_id,
+            header_crypto,
+        )
+        .await?;
+    }
+
     let power_update = match spell_profile.power {
         SpellPowerCost::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
         SpellPowerCost::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
@@ -157,8 +221,10 @@ async fn apply_player_spell_effects(
 struct PlayerDirectDamageEffect {
     spell_id: u32,
     damage: u32,
+    weapon_damage_percent: u32,
     school: u8,
     requires_melee: bool,
+    uses_weapon_outcome: bool,
     suppress_attacker_state: bool,
 }
 
@@ -166,20 +232,78 @@ fn player_direct_damage_effect(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     effect: SpellInfoEffect,
+    combo_points: u8,
 ) -> Option<PlayerDirectDamageEffect> {
-    let damage = spell_effect_simple_value(effect.base_points)?;
+    let damage = spell_effect_roll_value(effect, combo_points)?;
     let school = match effect.dispatch {
         SpellEffectDispatch::SchoolDamage => spell_template.school as u8,
-        SpellEffectDispatch::WeaponDamage => 0,
         _ => return None,
     };
     Some(PlayerDirectDamageEffect {
         spell_id: spell_profile.spell_id,
         damage,
+        weapon_damage_percent: 100,
         school,
         requires_melee: spell_profile.requires_melee,
+        uses_weapon_outcome: false,
         suppress_attacker_state: effect.dispatch == SpellEffectDispatch::SchoolDamage,
     })
+}
+
+fn player_weapon_damage_effect(spell_profile: &SpellCastProfile) -> PlayerDirectDamageEffect {
+    PlayerDirectDamageEffect {
+        spell_id: spell_profile.spell_id,
+        damage: spell_profile.bonus_damage,
+        weapon_damage_percent: spell_profile.weapon_damage_percent,
+        school: 0,
+        requires_melee: spell_profile.requires_melee,
+        uses_weapon_outcome: true,
+        suppress_attacker_state: true,
+    }
+}
+
+async fn spell_combo_points_for_effects(
+    shared_world: SharedWorldDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> u8 {
+    if !spell_profile.needs_combo_points {
+        return 0;
+    }
+    let Some(target) = targets.unit_target else {
+        return 0;
+    };
+    shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .filter(|snapshot| snapshot.combo_target == Some(target) || target == caster)
+        .map(|snapshot| snapshot.combo_points)
+        .unwrap_or(0)
+}
+
+fn spell_effect_roll_value(effect: SpellInfoEffect, combo_points: u8) -> Option<u32> {
+    let base_dice = effect.base_dice as i32;
+    let mut value = effect.base_points;
+    match effect.die_sides {
+        0 | 1 => {
+            value = value.saturating_add(base_dice);
+        }
+        die_sides => {
+            let low = die_sides.min(base_dice);
+            let high = die_sides.max(base_dice);
+            value = value.saturating_add(rand::thread_rng().gen_range(low..=high));
+        }
+    }
+    if effect.points_per_combo_point != 0.0 && combo_points > 0 {
+        value = value.saturating_add(
+            (effect.points_per_combo_point * f32::from(combo_points)).trunc() as i32,
+        );
+    }
+    (value >= 0).then_some(value as u32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -231,7 +355,7 @@ async fn apply_player_direct_damage_effect(
     damage_effect: PlayerDirectDamageEffect,
     targets: &SpellCastTargets,
     header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     apply_db_creature_spell_damage(
         stream,
         deps,
@@ -272,6 +396,26 @@ async fn apply_player_direct_heal_effect(
     else {
         return Ok(());
     };
+    send_player_spell_log_to_target_set(
+        stream,
+        deps.shared_world,
+        character_guid_from_caster(caster),
+        event.healed_character_guid,
+        event.direct_session_id,
+        &event.observer_packets,
+        OutboundWorldPacket {
+            opcode: SMSG_SPELLHEALLOG,
+            body: build_spell_heal_log_body(
+                caster,
+                target,
+                spell_info.template.id,
+                event.amount_healed,
+                false,
+            )?,
+        },
+        header_crypto,
+    )
+    .await?;
     if event.healed_character_guid == caster.counter() {
         session.player_health = event.health;
         for packet in event.direct_packets {
@@ -292,6 +436,43 @@ async fn apply_player_direct_heal_effect(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn send_player_spell_log_to_target_set(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    caster_character_guid: u32,
+    target_character_guid: u32,
+    target_session_id: SessionId,
+    observer_packets: &[(SessionId, OutboundWorldPacket)],
+    packet: OutboundWorldPacket,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
+
+    let caster_session_id = shared_world
+        .sessions
+        .session_for_character(caster_character_guid)
+        .await;
+    let mut dispatch = Vec::new();
+    let mut seen = HashSet::new();
+    if Some(target_session_id) != caster_session_id || target_character_guid != caster_character_guid {
+        seen.insert(target_session_id);
+        dispatch.push((target_session_id, packet.clone()));
+    }
+    for (session_id, _) in observer_packets {
+        if Some(*session_id) == caster_session_id || !seen.insert(*session_id) {
+            continue;
+        }
+        dispatch.push((*session_id, packet.clone()));
+    }
+    shared_world.sessions.dispatch(dispatch).await;
+    Ok(())
+}
+
+fn character_guid_from_caster(caster: ObjectGuid) -> u32 {
+    caster.counter()
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn apply_db_creature_spell_damage(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
@@ -302,9 +483,9 @@ async fn apply_db_creature_spell_damage(
     damage_effect: PlayerDirectDamageEffect,
     targets: &SpellCastTargets,
     header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let Some(target) = targets.unit_target else {
-        return Ok(());
+        return Ok(false);
     };
     let can_apply_damage = if damage_effect.requires_melee {
         db_creature_player_melee_check_from_map(deps.shared_world, session, target).await
@@ -313,7 +494,7 @@ async fn apply_db_creature_spell_damage(
         true
     };
     if !can_apply_damage {
-        return Ok(());
+        return Ok(false);
     }
 
     let Some(target_creature) = deps
@@ -322,9 +503,9 @@ async fn apply_db_creature_spell_damage(
         .db_creature_snapshot(map_id, target)
         .await
     else {
-        return Ok(());
+        return Ok(false);
     };
-    let melee_outcome = if damage_effect.requires_melee && !damage_effect.suppress_attacker_state {
+    let melee_outcome = if damage_effect.uses_weapon_outcome {
         let combat_stats = deps
             .shared_world
             .maps
@@ -358,7 +539,7 @@ async fn apply_db_creature_spell_damage(
                 attacker_skill,
                 &target_creature,
             )
-            .with_next_melee_spell_bonus(damage_effect.damage),
+            .with_weapon_spell_modifier(damage_effect.damage, damage_effect.weapon_damage_percent),
         )
     } else {
         None
@@ -424,6 +605,15 @@ async fn apply_db_creature_spell_damage(
             )
             .await?;
         }
+        if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
+            send_packet(
+                stream,
+                SMSG_SPELLLOGMISS,
+                spell_miss_log_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
         if let Some(attacker_state_body) = &event.attacker_state_body {
             send_packet(
                 stream,
@@ -479,8 +669,66 @@ async fn apply_db_creature_spell_damage(
             )
             .await;
         }
+        return Ok(requested_damage > 0);
     }
-    Ok(())
+    Ok(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_combo_points_effect(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    effect: SpellInfoEffect,
+    targets: &SpellCastTargets,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target else {
+        return Ok(());
+    };
+    let Some(points) = spell_effect_simple_value(effect.base_points) else {
+        return Ok(());
+    };
+    let Some(event) = shared_world
+        .maps
+        .add_player_combo_points(map_id, character_guid, target, points as u8)
+        .await
+    else {
+        return Ok(());
+    };
+    let body = build_player_combo_points_update_body(
+        caster,
+        event.combo_target,
+        event.combo_points,
+        event.player_bytes,
+    )?;
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
+async fn clear_player_combo_points_after_finisher(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(event) = shared_world
+        .maps
+        .clear_player_combo_points(map_id, character_guid)
+        .await
+    else {
+        return Ok(());
+    };
+    let body = build_player_combo_points_update_body(
+        caster,
+        event.combo_target,
+        event.combo_points,
+        event.player_bytes,
+    )?;
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -648,7 +896,25 @@ async fn apply_item_use_spell_effects(
             SpellEffectDispatch::Heal if !direct_heal_applied => {
                 let heal = spell_direct_heal(&spell_info);
                 if heal != 0 {
+                    let old_health = session.player_health;
                     session.player_health = session.player_health.saturating_add(heal).min(max_health);
+                    let amount_healed = session.player_health.saturating_sub(old_health);
+                    if amount_healed > 0 {
+                        let log = build_spell_heal_log_body(
+                            caster,
+                            caster,
+                            spell_template.id,
+                            amount_healed,
+                            false,
+                        )?;
+                        send_packet(
+                            stream,
+                            SMSG_SPELLHEALLOG,
+                            &log,
+                            Some(&mut *header_crypto),
+                        )
+                        .await?;
+                    }
                     update_bodies.push(build_player_health_update_body(caster, session.player_health)?);
                 }
                 direct_heal_applied = true;
@@ -656,7 +922,25 @@ async fn apply_item_use_spell_effects(
             SpellEffectDispatch::Energize if !direct_energize_applied => {
                 let energize = spell_direct_energize(&spell_info);
                 if energize != 0 && max_mana != 0 {
+                    let old_mana = session.player_mana;
                     session.player_mana = session.player_mana.saturating_add(energize).min(max_mana);
+                    let amount_energized = session.player_mana.saturating_sub(old_mana);
+                    if amount_energized > 0 {
+                        let log = build_spell_energize_log_body(
+                            caster,
+                            caster,
+                            spell_template.id,
+                            POWER_TYPE_MANA,
+                            amount_energized,
+                        )?;
+                        send_packet(
+                            stream,
+                            SMSG_SPELLENERGIZELOG,
+                            &log,
+                            Some(&mut *header_crypto),
+                        )
+                        .await?;
+                    }
                     update_bodies.push(build_player_mana_update_body(caster, session.player_mana)?);
                 }
                 direct_energize_applied = true;

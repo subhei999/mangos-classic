@@ -255,6 +255,7 @@ impl MapRuntime {
             let mut rage_changed = false;
             let mut consumable_health_gain = 0u32;
             let mut consumable_mana_gain = 0u32;
+            let mut periodic_regen_events = Vec::new();
 
             for aura in &mut player.active_auras {
                 let Some(regen) = aura.periodic_regen.as_mut() else {
@@ -264,26 +265,38 @@ impl MapRuntime {
                     consumable_health_gain =
                         consumable_health_gain.saturating_add(regen.health_amount);
                     consumable_mana_gain = consumable_mana_gain.saturating_add(regen.mana_amount);
+                    periodic_regen_events.push((
+                        aura.caster,
+                        aura.spell_id,
+                        regen.health_amount,
+                        regen.mana_amount,
+                    ));
                     regen.next_tick_at += Duration::from_millis(regen.tick_millis as u64);
                 }
             }
 
+            let mut periodic_health_applied = 0u32;
             if consumable_health_gain > 0 && !suppress_health_regen && player.health < player.max_health {
+                let old_health = player.health;
                 let new_health = player
                     .health
                     .saturating_add(consumable_health_gain)
                     .min(player.max_health);
                 health_changed = new_health != player.health;
                 player.health = new_health;
+                periodic_health_applied = player.health.saturating_sub(old_health);
             }
 
+            let mut periodic_mana_applied = 0u32;
             if consumable_mana_gain > 0 && player.max_power1 > 0 && player.power1 < player.max_power1 {
+                let old_mana = player.power1;
                 let new_mana = player
                     .power1
                     .saturating_add(consumable_mana_gain)
                     .min(player.max_power1);
                 mana_changed = new_mana != player.power1;
                 player.power1 = new_mana;
+                periodic_mana_applied = player.power1.saturating_sub(old_mana);
             }
 
             if !in_combat && !suppress_health_regen && player.health < player.max_health {
@@ -339,6 +352,32 @@ impl MapRuntime {
                         body: build_player_health_update_body(player_guid, player.health)?,
                     },
                 ));
+                let mut remaining = periodic_health_applied;
+                for (caster, spell_id, health_amount, _) in &periodic_regen_events {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let logged = (*health_amount).min(remaining);
+                    if logged == 0 {
+                        continue;
+                    }
+                    remaining = remaining.saturating_sub(logged);
+                    update_packets.push((
+                        character_guid,
+                        player.position,
+                        player.client_session_id(),
+                        OutboundWorldPacket {
+                            opcode: SMSG_SPELLHEALLOG,
+                            body: build_spell_heal_log_body(
+                                *caster,
+                                player_guid,
+                                *spell_id,
+                                logged,
+                                false,
+                            )?,
+                        },
+                    ));
+                }
             }
             if mana_changed {
                 update_packets.push((
@@ -350,6 +389,32 @@ impl MapRuntime {
                         body: build_player_mana_update_body(player_guid, player.power1)?,
                     },
                 ));
+                let mut remaining = periodic_mana_applied;
+                for (caster, spell_id, _, mana_amount) in &periodic_regen_events {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let logged = (*mana_amount).min(remaining);
+                    if logged == 0 {
+                        continue;
+                    }
+                    remaining = remaining.saturating_sub(logged);
+                    update_packets.push((
+                        character_guid,
+                        player.position,
+                        player.client_session_id(),
+                        OutboundWorldPacket {
+                            opcode: SMSG_SPELLENERGIZELOG,
+                            body: build_spell_energize_log_body(
+                                *caster,
+                                player_guid,
+                                *spell_id,
+                                POWER_TYPE_MANA,
+                                logged,
+                            )?,
+                        },
+                    ));
+                }
             }
             if rage_changed {
                 update_packets.push((
@@ -814,7 +879,12 @@ impl MapRuntime {
         if player.health == 0 || amount == 0 {
             return Ok(None);
         }
+        let previous_health = player.health;
         player.health = player.health.saturating_add(amount).min(player.max_health);
+        let amount_healed = player.health.saturating_sub(previous_health);
+        if amount_healed == 0 {
+            return Ok(None);
+        }
         let position = player.position;
         let Some(direct_session_id) = player.client_session_id() else {
             return Ok(None);
@@ -843,11 +913,50 @@ impl MapRuntime {
             .collect();
         Ok(Some(PlayerHealEvent {
             healed_character_guid: target_character_guid,
+            amount_healed,
             health,
             direct_session_id,
             direct_packets: vec![packet.clone()],
             observer_packets,
         }))
+    }
+
+    fn add_player_combo_points(
+        &mut self,
+        character_guid: u32,
+        target: ObjectGuid,
+        points: u8,
+    ) -> Option<PlayerComboPointsEvent> {
+        let player = self.players.get_mut(&character_guid)?;
+        if points == 0 {
+            return None;
+        }
+        if player.combo_target == Some(target) {
+            player.combo_points = player.combo_points.saturating_add(points).min(5);
+        } else {
+            player.combo_target = Some(target);
+            player.combo_points = points.min(5);
+        }
+        Some(PlayerComboPointsEvent {
+            combo_target: target,
+            combo_points: player.combo_points,
+            player_bytes: player.player_bytes,
+        })
+    }
+
+    fn clear_player_combo_points(
+        &mut self,
+        character_guid: u32,
+    ) -> Option<PlayerComboPointsEvent> {
+        let player = self.players.get_mut(&character_guid)?;
+        let target = player.combo_target?;
+        player.combo_points = 0;
+        player.combo_target = None;
+        Some(PlayerComboPointsEvent {
+            combo_target: target,
+            combo_points: 0,
+            player_bytes: player.player_bytes,
+        })
     }
 
     fn sync_player_gameplay_state(&mut self, character_guid: u32, session: &WorldSessionState) {
@@ -904,6 +1013,8 @@ impl MapRuntime {
             power2: player.power2,
             power4: player.power4,
             max_power4: player.max_power4,
+            combo_target: player.combo_target,
+            combo_points: player.combo_points,
             active_spells: player.active_spells.clone(),
             inventory: player.inventory.clone(),
             quest_statuses: player.quest_statuses.clone(),
@@ -1172,6 +1283,13 @@ impl MapRuntime {
         next_swing_at: Option<Instant>,
     ) {
         if let Some(player) = self.players.get_mut(&character_guid) {
+            if target.is_none()
+                || player
+                    .queued_next_melee_spell
+                    .is_some_and(|queued| Some(queued.target) != target)
+            {
+                player.queued_next_melee_spell = None;
+            }
             player.active_combat_target = target;
             player.active_combat_next_swing_at = next_swing_at;
         }
@@ -1367,6 +1485,21 @@ impl MapRuntime {
     fn clear_player_next_melee_spell(&mut self, character_guid: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.queued_next_melee_spell = None;
+        }
+    }
+
+    fn clear_player_melee_state_for_target(&mut self, target: ObjectGuid) {
+        for player in self.players.values_mut() {
+            if player
+                .queued_next_melee_spell
+                .is_some_and(|queued| queued.target == target)
+            {
+                player.queued_next_melee_spell = None;
+            }
+            if player.active_combat_target == Some(target) {
+                player.active_combat_target = None;
+                player.active_combat_next_swing_at = None;
+            }
         }
     }
 

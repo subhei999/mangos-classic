@@ -69,6 +69,20 @@ async fn handle_loot(
         warn!("Ignoring loot request for DB creature before it is lootable");
         return Ok(());
     }
+    if !creature.can_loot_for_player(Some(character.guid)) {
+        warn!(
+            character_guid = character.guid,
+            target = format_args!("0x{:016X}", target.raw()),
+            "Rejecting loot request for DB creature owned by another player or party"
+        );
+        return send_packet(
+            stream,
+            SMSG_LOOT_RESPONSE,
+            &build_loot_error_response_body(target, LOOT_ERROR_DIDNT_KILL),
+            Some(header_crypto),
+        )
+        .await;
+    }
     let needs_loot_item = shared_world
         .maps
         .db_creature_needs_loot_item(character.position.map_id, target.raw())
@@ -103,8 +117,18 @@ async fn handle_loot(
         )
         .await
     else {
-        warn!("Ignoring loot request for DB creature before it is lootable");
-        return Ok(());
+        warn!(
+            character_guid = character.guid,
+            target = format_args!("0x{:016X}", target.raw()),
+            "Rejecting loot request for unavailable or unauthorized DB creature"
+        );
+        return send_packet(
+            stream,
+            SMSG_LOOT_RESPONSE,
+            &build_loot_error_response_body(target, LOOT_ERROR_DIDNT_KILL),
+            Some(header_crypto),
+        )
+        .await;
     };
     let response = build_db_creature_loot_response_body_for_player(
         target,

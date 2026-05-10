@@ -11,6 +11,10 @@ async fn handle_attack_stop(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    shared_world
+        .maps
+        .clear_player_next_melee_spell(map_id, character_guid)
+        .await;
     let Some(victim) = shared_world
         .maps
         .player_auto_attack_target(map_id, character_guid)

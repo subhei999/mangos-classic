@@ -749,6 +749,25 @@ async fn complete_player_spell_cast(
     let map_id = character.position.map_id;
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
+    if let Some(failure) = spell_target_cast_failure(
+        deps.shared_world,
+        session,
+        &spell_template,
+        &spell_profile,
+        &targets,
+    )
+    .await
+    {
+        return send_spell_cast_failure(
+            stream,
+            caster,
+            prepared_spell.spell_id,
+            failure,
+            header_crypto,
+        )
+        .await;
+    }
+
     if let Err(failure) = deps
         .shared_world
         .maps
@@ -761,7 +780,14 @@ async fn complete_player_spell_cast(
         )
         .await
     {
-        return send_spell_cast_failure(stream, caster, prepared_spell.spell_id, failure, header_crypto).await;
+        return send_spell_cast_failure(
+            stream,
+            caster,
+            prepared_spell.spell_id,
+            failure,
+            header_crypto,
+        )
+        .await;
     }
     sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid).await;
     send_packet(
@@ -1157,13 +1183,50 @@ async fn spell_melee_cast_failure(
     }
     let target = targets.unit_target?;
     match db_creature_player_melee_check_from_map(shared_world, session, target).await {
-        PlayerMeleeCheck::Clear => None,
+        PlayerMeleeCheck::Clear => {
+            if spell_profile.requires_behind
+                && !spell_target_is_behind_victim(shared_world, session, target).await
+            {
+                Some(SPELL_FAILED_NOT_BEHIND)
+            } else {
+                None
+            }
+        }
         PlayerMeleeCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
         PlayerMeleeCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
             Some(SPELL_FAILED_LINE_OF_SIGHT)
         }
         _ => Some(SPELL_FAILED_OUT_OF_RANGE),
     }
+}
+
+async fn spell_target_is_behind_victim(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    target: ObjectGuid,
+) -> bool {
+    let Some(character) = session.active_character.as_ref() else {
+        return false;
+    };
+    let Some(player) = shared_world
+        .maps
+        .player_runtime_snapshot(character.position.map_id, character.guid)
+        .await
+    else {
+        return false;
+    };
+    let Some(creature) = shared_world
+        .maps
+        .db_creature_snapshot(character.position.map_id, target)
+        .await
+    else {
+        return false;
+    };
+    !has_in_arc(
+        creature.current_position,
+        player.position,
+        std::f32::consts::PI,
+    )
 }
 
 async fn spell_charge_cast_failure(
@@ -1335,19 +1398,61 @@ async fn spell_cast_failure(
             return Some(failure);
         }
     }
+    spell_target_cast_failure(shared_world, session, spell_template, spell_profile, targets).await
+}
+
+async fn spell_target_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
     if spell_profile.kind == SpellCastKind::Charge {
         return spell_charge_cast_failure(shared_world, session, targets).await;
     }
     if spell_profile.kind == SpellCastKind::DirectHeal {
         return spell_heal_cast_failure(shared_world, session, spell_template, targets).await;
     }
+    if let Some(failure) = spell_unit_target_cast_failure(
+        shared_world,
+        session,
+        spell_template,
+        spell_profile,
+        targets,
+    )
+    .await
+    {
+        return Some(failure);
+    }
     if let Some(failure) =
-        spell_unit_target_cast_failure(shared_world, session, spell_template, spell_profile, targets)
-            .await
+        spell_combo_point_cast_failure(shared_world, session, spell_profile, targets).await
     {
         return Some(failure);
     }
     spell_melee_cast_failure(shared_world, session, spell_profile, targets).await
+}
+
+async fn spell_combo_point_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    if !spell_profile.needs_combo_points {
+        return None;
+    }
+    let target = targets.unit_target?;
+    let character = session.active_character.as_ref()?;
+    let snapshot = shared_world
+        .maps
+        .player_runtime_snapshot(character.position.map_id, character.guid)
+        .await?;
+    if snapshot.combo_points == 0 || snapshot.combo_target != Some(target) {
+        Some(SPELL_FAILED_NO_COMBO_POINTS)
+    } else {
+        None
+    }
 }
 
 async fn spell_heal_cast_failure(
@@ -1525,9 +1630,12 @@ struct SpellCastProfile {
     kind: SpellCastKind,
     aura_target: SpellAuraTarget,
     bonus_damage: u32,
+    weapon_damage_percent: u32,
     damage: u32,
     power: SpellPowerCost,
     requires_melee: bool,
+    requires_behind: bool,
+    needs_combo_points: bool,
     global_cooldown_category: u32,
     global_cooldown_millis: u64,
     cooldown_millis: u64,
@@ -1576,8 +1684,13 @@ enum SpellPowerCost {
 const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
 const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
+const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
 const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
-const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 58;
+const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
+const SPELL_EFFECT_WEAPON_DAMAGE: u32 = 58;
+const SPELL_EFFECT_ADD_COMBO_POINTS: u32 = 80;
+const SPELL_EFFECT_NORMALIZED_WEAPON_DMG: u32 = 121;
 const SPELL_EFFECT_APPLY_AURA: u32 = 6;
 const SPELL_EFFECT_TELEPORT_UNITS: u32 = 5;
 const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
@@ -1588,6 +1701,8 @@ const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
 const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
 const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
 const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
+const SPELL_AURA_MOD_STAT: u32 = 29;
+const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
 const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 const SPELL_AURA_MOD_SKILL: u32 = 30;
 const SPELL_AURA_MOD_REGEN: u32 = 84;
@@ -1611,6 +1726,7 @@ const TARGET_UNIT: u32 = 25;
 const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
 const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
+const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
 const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
 const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
 const BASE_CHARGE_SPEED: f32 = 27.0;
@@ -1793,6 +1909,17 @@ fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier
             SPELL_AURA_MOD_ATTACK_POWER => Some(AuraStatModifier::AttackPower {
                 amount: spell_effect_simple_i32(effect.base_points),
             }),
+            SPELL_AURA_MOD_RESISTANCE => Some(AuraStatModifier::Resistance {
+                school_mask: u32::try_from(effect.misc_value).ok()?,
+                amount: spell_effect_simple_i32(effect.base_points),
+            }),
+            SPELL_AURA_MOD_STAT => {
+                let stat = usize::try_from(effect.misc_value).ok();
+                Some(AuraStatModifier::Stat {
+                    stat: stat.filter(|stat| *stat < MAX_STATS),
+                    amount: spell_effect_simple_i32(effect.base_points),
+                })
+            }
             SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE => {
                 let stat = usize::try_from(effect.misc_value).ok()?;
                 (stat < MAX_STATS).then_some(AuraStatModifier::TotalStatPercent {
@@ -1876,6 +2003,22 @@ fn player_world_stats_with_active_auras(
     mut world_stats: PlayerWorldStats,
     active_auras: &[ActiveAura],
 ) -> PlayerWorldStats {
+    for modifier in active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+    {
+        let AuraStatModifier::Stat { stat, amount } = modifier else {
+            continue;
+        };
+        if let Some(stat) = stat {
+            world_stats.stats[*stat] = apply_flat_modifier(world_stats.stats[*stat], *amount);
+        } else {
+            for stat_value in &mut world_stats.stats {
+                *stat_value = apply_flat_modifier(*stat_value, *amount);
+            }
+        }
+    }
+
     for stat in 0..MAX_STATS {
         let percent = active_auras
             .iter()
@@ -1905,6 +2048,12 @@ fn player_stat_mod_deltas(
             effective_world_stats.stats[offset] as i32 - base_world_stats.stats[offset] as i32;
     }
     deltas
+}
+
+fn apply_flat_modifier(value: u32, amount: i32) -> u32 {
+    (value as i64)
+        .saturating_add(i64::from(amount))
+        .clamp(0, u32::MAX as i64) as u32
 }
 
 fn apply_percent_modifier(value: u32, percent: i32) -> u32 {

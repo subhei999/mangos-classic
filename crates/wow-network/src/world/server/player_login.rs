@@ -380,6 +380,8 @@ async fn handle_player_login(
         max_power4: create_power_for_class_power(character.class, POWER_ENERGY),
         player_bytes: character.player_bytes,
         player_bytes2: player_bytes2_with_rest_state(character.player_bytes2),
+        combo_target: None,
+        combo_points: 0,
         stand_state: session.player_stand_state,
         active_spells: session.active_spells.clone(),
         inventory: session.inventory.clone(),

@@ -79,11 +79,13 @@ struct CreatureLoot {
     quest_drop: bool,
 }
 
-// CMaNGOS reference: src/game/Entities/Creature.* DB creature update builders.
-fn build_db_creature_create_blocks(creatures: &[DbCreatureRuntime]) -> anyhow::Result<Vec<Vec<u8>>> {
+fn build_db_creature_create_blocks_for_player(
+    creatures: &[DbCreatureRuntime],
+    character_guid: Option<u32>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
     creatures
         .iter()
-        .map(build_db_creature_runtime_create_block)
+        .map(|creature| build_db_creature_runtime_create_block_for_player(creature, character_guid))
         .collect()
 }
 
@@ -102,11 +104,18 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
 }
 
 fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyhow::Result<Vec<u8>> {
+    build_db_creature_runtime_create_block_for_player(creature, None)
+}
+
+fn build_db_creature_runtime_create_block_for_player(
+    creature: &DbCreatureRuntime,
+    character_guid: Option<u32>,
+) -> anyhow::Result<Vec<u8>> {
     build_db_creature_create_block_inner(
         &creature.spawn,
         creature.current_position,
         creature.health,
-        creature.dynamic_flags(),
+        creature.dynamic_flags_for_player(character_guid),
         db_creature_unit_flags(creature, false),
         if creature.life_state == DbCreatureLifeState::Corpse {
             0

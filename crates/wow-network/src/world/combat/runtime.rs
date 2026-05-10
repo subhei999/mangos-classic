@@ -213,14 +213,17 @@
         if self.life_state != DbCreatureLifeState::Corpse || !self.lootable {
             return false;
         }
-        if !self.loot_items_generated {
-            return true;
-        }
         let Some(character_guid) = character_guid else {
+            if !self.loot_items_generated {
+                return true;
+            }
             return self.loot_money_available || !self.loot_items.is_empty();
         };
         if !self.loot_owner_allows_character(character_guid) {
             return false;
+        }
+        if !self.loot_items_generated {
+            return true;
         }
         if self.loot_money_available {
             return true;

@@ -97,6 +97,35 @@ impl MeleeDamageOutcome {
         }
         self
     }
+
+    fn with_weapon_spell_modifier(mut self, bonus_damage: u32, weapon_damage_percent: u32) -> Self {
+        if self.total_damage > 0 {
+            self.total_damage = self
+                .total_damage
+                .saturating_mul(weapon_damage_percent)
+                / 100;
+            self.school_damage = self
+                .school_damage
+                .saturating_mul(weapon_damage_percent)
+                / 100;
+            self.total_damage = self.total_damage.saturating_add(bonus_damage);
+            self.school_damage = self.school_damage.saturating_add(bonus_damage);
+        }
+        self
+    }
+
+    fn spell_miss_info(self) -> Option<u8> {
+        if self.total_damage > 0 {
+            return None;
+        }
+        match self.outcome {
+            MeleeHitOutcome::Miss => Some(SPELL_MISS_MISS),
+            MeleeHitOutcome::Dodge => Some(SPELL_MISS_DODGE),
+            MeleeHitOutcome::Parry => Some(SPELL_MISS_PARRY),
+            MeleeHitOutcome::Block => Some(SPELL_MISS_BLOCK),
+            _ => None,
+        }
+    }
 }
 
 fn roll_melee_damage(input: MeleeDamageInput) -> MeleeDamageOutcome {

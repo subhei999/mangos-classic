@@ -154,7 +154,8 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
         update.active_auras,
     )?;
 
-    let creature_blocks = build_db_creature_create_blocks(update.nearby_creatures)?;
+    let creature_blocks =
+        build_db_creature_create_blocks_for_player(update.nearby_creatures, Some(character.guid))?;
     let gameobject_blocks =
         build_db_gameobject_create_blocks(update.nearby_gameobjects, update.quest_statuses)?;
     let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;

@@ -93,6 +93,12 @@ impl MapRuntime {
             if player.selected_target == Some(guid) {
                 player.selected_target = None;
             }
+            if player
+                .queued_next_melee_spell
+                .is_some_and(|queued| queued.target == guid)
+            {
+                player.queued_next_melee_spell = None;
+            }
             if player.active_combat_target == Some(guid) {
                 player.active_combat_target = None;
                 player.active_combat_next_swing_at = None;

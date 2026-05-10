@@ -247,18 +247,22 @@ fn stage_db_creature_visibility_updates(
         .active_creature_combats
         .retain(|guid, _| !destroy_guids.contains(guid));
 
+    let character_guid = session.active_character.as_ref().map(|character| character.guid);
     let mut create_blocks = Vec::new();
     let mut create_guids = Vec::new();
     for runtime in nearby_creatures {
-        let guid = runtime.guid().raw();
-        if let Some(creature) = session.db_creatures.get_mut(&guid) {
+        let creature_raw_guid = runtime.guid().raw();
+        if let Some(creature) = session.db_creatures.get_mut(&creature_raw_guid) {
             if creature.life_state != DbCreatureLifeState::Alive
                 && runtime.life_state == DbCreatureLifeState::Alive
             {
                 if !creature.client_visible && creature.life_state != DbCreatureLifeState::Dead {
                     creature.client_visible = true;
                     create_guids.push(creature.guid());
-                    create_blocks.push(build_db_creature_runtime_create_block(creature)?);
+                    create_blocks.push(build_db_creature_runtime_create_block_for_player(
+                        creature,
+                        character_guid,
+                    )?);
                 }
                 continue;
             }
@@ -267,23 +271,29 @@ fn stage_db_creature_visibility_updates(
             *creature = runtime;
             creature.client_visible = was_visible && !became_dead;
             if became_dead {
-                if !destroy_guids.contains(&guid) {
-                    destroy_guids.push(guid);
+                if !destroy_guids.contains(&creature_raw_guid) {
+                    destroy_guids.push(creature_raw_guid);
                 }
                 continue;
             }
             if !was_visible && creature.life_state != DbCreatureLifeState::Dead {
                 creature.client_visible = true;
                 create_guids.push(creature.guid());
-                create_blocks.push(build_db_creature_runtime_create_block(creature)?);
+                create_blocks.push(build_db_creature_runtime_create_block_for_player(
+                    creature,
+                    character_guid,
+                )?);
             }
             continue;
         }
         if runtime.life_state != DbCreatureLifeState::Dead {
             create_guids.push(runtime.guid());
-            create_blocks.push(build_db_creature_runtime_create_block(&runtime)?);
+            create_blocks.push(build_db_creature_runtime_create_block_for_player(
+                &runtime,
+                character_guid,
+            )?);
         }
-        session.db_creatures.insert(guid, runtime);
+        session.db_creatures.insert(creature_raw_guid, runtime);
     }
 
     let create_count = create_blocks.len();
@@ -366,16 +376,20 @@ fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {
 }
 
 fn mirror_db_creature_visibility_stage(
-    _session: &mut WorldSessionState,
+    session: &mut WorldSessionState,
     stage: MapDbCreatureVisibilityStage,
 ) -> anyhow::Result<DbCreatureVisibilityUpdates> {
     let create_guids = stage.create_guids.iter().map(|guid| guid.raw()).collect::<HashSet<_>>();
+    let character_guid = session.active_character.as_ref().map(|character| character.guid);
 
     let mut create_blocks = Vec::new();
     for runtime in &stage.nearby_creatures {
         let guid = runtime.guid().raw();
         if create_guids.contains(&guid) {
-            create_blocks.push(build_db_creature_runtime_create_block(runtime)?);
+            create_blocks.push(build_db_creature_runtime_create_block_for_player(
+                runtime,
+                character_guid,
+            )?);
         }
     }
 

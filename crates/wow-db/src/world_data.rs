@@ -433,6 +433,7 @@ pub struct SpellTemplateQuery {
     pub attributes_ex: u32,
     pub attributes_ex2: u32,
     pub attributes_ex3: u32,
+    pub attributes_serverside: u32,
     pub casting_time_index: u32,
     pub range_index: u32,
     pub speed: f32,
@@ -450,6 +451,15 @@ pub struct SpellTemplateQuery {
     pub effect_base_points1: i32,
     pub effect_base_points2: i32,
     pub effect_base_points3: i32,
+    pub effect_die_sides1: i32,
+    pub effect_die_sides2: i32,
+    pub effect_die_sides3: i32,
+    pub effect_base_dice1: u32,
+    pub effect_base_dice2: u32,
+    pub effect_base_dice3: u32,
+    pub effect_points_per_combo_point1: f32,
+    pub effect_points_per_combo_point2: f32,
+    pub effect_points_per_combo_point3: f32,
     pub effect_misc_value1: i32,
     pub effect_misc_value2: i32,
     pub effect_misc_value3: i32,
@@ -636,12 +646,20 @@ pub async fn get_spell_template_query(
                 RangeIndex AS range_index, \
                 Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
+                AttributesServerside AS attributes_serverside, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
                 Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
                 EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
                 EffectBasePoints3 AS effect_base_points3, \
+                EffectDieSides1 AS effect_die_sides1, EffectDieSides2 AS effect_die_sides2, \
+                EffectDieSides3 AS effect_die_sides3, \
+                EffectBaseDice1 AS effect_base_dice1, EffectBaseDice2 AS effect_base_dice2, \
+                EffectBaseDice3 AS effect_base_dice3, \
+                EffectPointsPerComboPoint1 AS effect_points_per_combo_point1, \
+                EffectPointsPerComboPoint2 AS effect_points_per_combo_point2, \
+                EffectPointsPerComboPoint3 AS effect_points_per_combo_point3, \
                 EffectMiscValue1 AS effect_misc_value1, EffectMiscValue2 AS effect_misc_value2, \
                 EffectMiscValue3 AS effect_misc_value3, \
                 EffectApplyAuraName1 AS effect_apply_aura_name1, \

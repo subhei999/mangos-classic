@@ -10,6 +10,9 @@ struct SpellInfoEffect {
     effect_id: u32,
     aura_name: u32,
     base_points: i32,
+    die_sides: i32,
+    base_dice: u32,
+    points_per_combo_point: f32,
     amplitude: u32,
     implicit_target_a: u32,
     misc_value: i32,
@@ -23,6 +26,11 @@ impl<'a> SpellInfo<'a> {
                 template.effect1,
                 template.effect_apply_aura_name1,
                 template.effect_base_points1,
+                (
+                    template.effect_die_sides1,
+                    template.effect_base_dice1,
+                    template.effect_points_per_combo_point1,
+                ),
                 template.effect_amplitude1,
                 template.effect_implicit_target_a1,
                 template.effect_misc_value1,
@@ -31,6 +39,11 @@ impl<'a> SpellInfo<'a> {
                 template.effect2,
                 template.effect_apply_aura_name2,
                 template.effect_base_points2,
+                (
+                    template.effect_die_sides2,
+                    template.effect_base_dice2,
+                    template.effect_points_per_combo_point2,
+                ),
                 template.effect_amplitude2,
                 template.effect_implicit_target_a2,
                 template.effect_misc_value2,
@@ -39,6 +52,11 @@ impl<'a> SpellInfo<'a> {
                 template.effect3,
                 template.effect_apply_aura_name3,
                 template.effect_base_points3,
+                (
+                    template.effect_die_sides3,
+                    template.effect_base_dice3,
+                    template.effect_points_per_combo_point3,
+                ),
                 template.effect_amplitude3,
                 template.effect_implicit_target_a3,
                 template.effect_misc_value3,
@@ -103,6 +121,7 @@ impl<'a> SpellInfo<'a> {
             kind,
             aura_target: self.aura_target(),
             bonus_damage: self.bonus_damage(),
+            weapon_damage_percent: self.weapon_damage_percent(),
             damage: if matches!(
                 kind,
                 SpellCastKind::NextMeleeSwing | SpellCastKind::Charge
@@ -114,6 +133,8 @@ impl<'a> SpellInfo<'a> {
             power: self.power(),
             requires_melee: kind == SpellCastKind::NextMeleeSwing
                 || (self.template.dmg_class == 2 && kind != SpellCastKind::Charge),
+            requires_behind: self.requires_behind_target(),
+            needs_combo_points: self.needs_combo_points(),
             global_cooldown_category: self.template.start_recovery_category,
             global_cooldown_millis: self.template.start_recovery_time as u64,
             cooldown_millis: self
@@ -147,7 +168,9 @@ impl<'a> SpellInfo<'a> {
         self.effects.iter().any(|effect| {
             matches!(
                 effect.dispatch,
-                SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::WeaponDamage
+                SpellEffectDispatch::SchoolDamage
+                    | SpellEffectDispatch::WeaponDamage
+                    | SpellEffectDispatch::WeaponPercentDamage
             ) && spell_effect_simple_value(effect.base_points).is_some()
         })
     }
@@ -208,7 +231,9 @@ impl<'a> SpellInfo<'a> {
                 if self.effects.iter().any(|effect| {
                     matches!(
                         effect.dispatch,
-                        SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::WeaponDamage
+                        SpellEffectDispatch::SchoolDamage
+                            | SpellEffectDispatch::WeaponDamage
+                            | SpellEffectDispatch::WeaponPercentDamage
                     ) && effect.implicit_target_a == TARGET_UNIT_CASTER
                 }) {
                     SpellTargetKind::Caster
@@ -221,28 +246,52 @@ impl<'a> SpellInfo<'a> {
     }
 
     fn bonus_damage(&self) -> u32 {
-        self.effects
+        let fixed_bonus: u32 = self
+            .effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::WeaponDamage)
             .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-            .max()
-            .unwrap_or(0)
+            .sum();
+        fixed_bonus.saturating_mul(self.weapon_damage_percent()) / 100
+    }
+
+    fn weapon_damage_percent(&self) -> u32 {
+        self.effects
+            .iter()
+            .filter(|effect| effect.dispatch == SpellEffectDispatch::WeaponPercentDamage)
+            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .fold(100u32, |percent, effect_percent| {
+                percent.saturating_mul(effect_percent) / 100
+            })
     }
 
     fn direct_damage(&self) -> u32 {
         if self.has_on_next_swing_attribute() || self.has_effect(SpellEffectDispatch::Charge) {
             return 0;
         }
-        self.effects
+        let school_damage: u32 = self
+            .effects
             .iter()
             .filter(|effect| {
-                matches!(
-                    effect.dispatch,
-                    SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::WeaponDamage
-                )
+                matches!(effect.dispatch, SpellEffectDispatch::SchoolDamage)
             })
             .filter_map(|effect| spell_effect_simple_value(effect.base_points))
-            .sum()
+            .sum();
+        let weapon_damage = if self.has_effect(SpellEffectDispatch::WeaponDamage) {
+            self.bonus_damage()
+        } else {
+            0
+        };
+        school_damage.saturating_add(weapon_damage)
+    }
+
+    fn requires_behind_target(&self) -> bool {
+        (self.template.attributes_serverside & SPELL_ATTR_SS_FACING_BACK) != 0
+    }
+
+    fn needs_combo_points(&self) -> bool {
+        (self.template.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE) != 0
+            || (self.template.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DURATION) != 0
     }
 
     fn power(&self) -> SpellPowerCost {
@@ -268,6 +317,7 @@ impl SpellInfoEffect {
         effect_id: u32,
         aura_name: u32,
         base_points: i32,
+        roll: (i32, u32, f32),
         amplitude: u32,
         implicit_target_a: u32,
         misc_value: i32,
@@ -276,6 +326,9 @@ impl SpellInfoEffect {
             effect_id,
             aura_name,
             base_points,
+            die_sides: roll.0,
+            base_dice: roll.1,
+            points_per_combo_point: roll.2,
             amplitude,
             implicit_target_a,
             misc_value,

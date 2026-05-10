@@ -186,7 +186,10 @@ fn write_minimal_player_update_values(
     set_update_value(&mut values, UNIT_FIELD_BYTES_0, unit_bytes_0(character))?;
     set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, None)?;
-    let combat_stats = player_combat_stats(character, world_stats, equipped_templates);
+    let combat_stats = combat_stats_with_active_auras(
+        player_combat_stats(character, world_stats, equipped_templates),
+        active_auras,
+    );
     set_update_value(
         &mut values,
         UNIT_FIELD_BASEATTACKTIME,
@@ -323,6 +326,7 @@ fn write_minimal_player_update_values(
     set_player_explored_zone_update_values(&mut values, character)?;
     set_update_value(&mut values, PLAYER_FIELD_COINAGE, character.money)?;
     set_player_stat_mod_update_values(&mut values, base_world_stats, world_stats)?;
+    set_player_resistance_buff_mod_update_values(&mut values, &combat_stats)?;
     set_player_damage_mod_update_values(&mut values)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
     set_update_value(&mut values, PLAYER_AMMO_ID, 0)?;
@@ -623,16 +627,23 @@ fn set_player_stat_mod_update_values(
             delta.min(0).unsigned_abs(),
         )?;
     }
+    Ok(())
+}
+
+fn set_player_resistance_buff_mod_update_values(
+    values: &mut [Option<u32>],
+    combat_stats: &PlayerCombatStats,
+) -> anyhow::Result<()> {
     for offset in 0..MAX_SPELL_SCHOOL {
         set_update_value(
             values,
             PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE + offset,
-            0.0f32.to_bits(),
+            combat_stats.resistance_buff_mod_positive[offset] as u32,
         )?;
         set_update_value(
             values,
             PLAYER_FIELD_RESISTANCEBUFFMODSNEGATIVE + offset,
-            0.0f32.to_bits(),
+            combat_stats.resistance_buff_mod_negative[offset].unsigned_abs(),
         )?;
     }
 
@@ -668,6 +679,8 @@ struct PlayerCombatStats {
     armor: u32,
     shield_block_value: u32,
     resistances: [u32; MAX_SPELL_SCHOOL],
+    resistance_buff_mod_positive: [i32; MAX_SPELL_SCHOOL],
+    resistance_buff_mod_negative: [i32; MAX_SPELL_SCHOOL],
     main_attack_time_ms: u32,
     off_attack_time_ms: u32,
     ranged_attack_time_ms: u32,
@@ -741,6 +754,8 @@ fn player_combat_stats_for_values(
         armor: player_armor(world_stats, equipped_templates),
         shield_block_value: player_shield_block_value(world_stats, equipped_templates),
         resistances: equipment_resistances(world_stats, equipped_templates),
+        resistance_buff_mod_positive: [0; MAX_SPELL_SCHOOL],
+        resistance_buff_mod_negative: [0; MAX_SPELL_SCHOOL],
         main_attack_time_ms,
         off_attack_time_ms,
         ranged_attack_time_ms,
@@ -861,6 +876,7 @@ fn build_player_combat_stats_update_body(
         combat_stats.ranged_max_damage.to_bits(),
     )?;
     set_player_secondary_stat_update_values(&mut values, combat_stats)?;
+    set_player_resistance_buff_mod_update_values(&mut values, combat_stats)?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))
@@ -917,6 +933,7 @@ fn combat_stats_with_active_auras(
     base_stats: PlayerCombatStats,
     active_auras: &[ActiveAura],
 ) -> PlayerCombatStats {
+    let mut stats = base_stats;
     let attack_power_delta = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -926,7 +943,40 @@ fn combat_stats_with_active_auras(
         })
         .sum::<i32>();
 
-    apply_attack_power_delta(base_stats, attack_power_delta, 0)
+    for modifier in active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+    {
+        let AuraStatModifier::Resistance {
+            school_mask,
+            amount,
+        } = modifier
+        else {
+            continue;
+        };
+        apply_resistance_delta(&mut stats, *school_mask, *amount);
+    }
+
+    apply_attack_power_delta(stats, attack_power_delta, 0)
+}
+
+fn apply_resistance_delta(stats: &mut PlayerCombatStats, school_mask: u32, amount: i32) {
+    for school in 0..MAX_SPELL_SCHOOL {
+        if school_mask & (1u32 << school) == 0 {
+            continue;
+        }
+        let adjusted = (i64::from(stats.resistances[school]) + i64::from(amount))
+            .clamp(0, u32::MAX as i64) as u32;
+        stats.resistances[school] = adjusted;
+        if amount >= 0 {
+            stats.resistance_buff_mod_positive[school] =
+                stats.resistance_buff_mod_positive[school].saturating_add(amount);
+        } else {
+            stats.resistance_buff_mod_negative[school] =
+                stats.resistance_buff_mod_negative[school].saturating_add(amount);
+        }
+    }
+    stats.armor = stats.resistances[0];
 }
 
 fn apply_attack_power_delta(

@@ -686,6 +686,15 @@ async fn send_db_creature_swing(
             )
             .await?;
         }
+        if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
+            send_packet(
+                stream,
+                SMSG_SPELLLOGMISS,
+                spell_miss_log_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
     } else if let Some(attacker_state_body) = &event.attacker_state_body {
         send_packet(
             stream,

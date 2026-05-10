@@ -115,6 +115,7 @@ async fn handle_cast_spell(
         .await;
     }
     let now = Instant::now();
+    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
@@ -176,6 +177,9 @@ async fn handle_cast_spell(
                         profile: spell_profile,
                         targets: PendingSpellCastTargets::from_spell_targets(&targets),
                         due_at: now + Duration::from_millis(cast_time_ms as u64),
+                        cast_time_millis: cast_time_ms,
+                        interrupt_flags: spell_template.interrupt_flags,
+                        damage_pushback_count: 0,
                     },
                 )
                 .await;
@@ -379,6 +383,7 @@ async fn handle_use_item(
         refreshable_consumable_regen,
     )
     .await;
+    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
@@ -420,6 +425,9 @@ async fn handle_use_item(
                     profile: item_spell_profile,
                     targets: PendingSpellCastTargets::from_spell_targets(&targets),
                     due_at: now + Duration::from_millis(cast_time_ms as u64),
+                    cast_time_millis: cast_time_ms,
+                    interrupt_flags: spell_template.interrupt_flags,
+                    damage_pushback_count: 0,
                 },
             )
             .await;
@@ -936,9 +944,42 @@ async fn apply_player_spell_impact(
     .await
 }
 
+async fn stand_player_for_spell_cast(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if session.player_stand_state == PLAYER_STAND_STATE_STAND {
+        return Ok(());
+    }
+    session.player_stand_state = PLAYER_STAND_STATE_STAND;
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    send_packet(
+        stream,
+        SMSG_STANDSTATE_UPDATE,
+        &[PLAYER_STAND_STATE_STAND],
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let packets = shared_world
+        .maps
+        .set_player_stand_state(
+            character.position.map_id,
+            character.guid,
+            PLAYER_STAND_STATE_STAND,
+        )
+        .await?;
+    shared_world.sessions.dispatch(packets).await;
+    Ok(())
+}
+
 async fn cancel_pending_player_spell_cast(
     stream: &mut WorldPacketSink,
     maps: &MapRuntimeManager,
+    sessions: &SessionRegistry,
     session: &mut WorldSessionState,
     failure: u8,
     header_crypto: &mut HeaderCrypto,
@@ -958,7 +999,56 @@ async fn cancel_pending_player_spell_cast(
         .await;
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_spell_cast_failure(stream, caster, active_cast.spell_id, failure, header_crypto).await?;
+    broadcast_spell_interrupt_to_observers(
+        maps,
+        sessions,
+        session,
+        caster,
+        active_cast.spell_id,
+        failure,
+    )
+    .await?;
     Ok(true)
+}
+
+async fn broadcast_spell_interrupt_to_observers(
+    maps: &MapRuntimeManager,
+    sessions: &SessionRegistry,
+    session: &WorldSessionState,
+    caster: ObjectGuid,
+    spell_id: u32,
+    failure: u8,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let failure_packet = OutboundWorldPacket {
+        opcode: SMSG_SPELL_FAILURE,
+        body: build_spell_failure_body(caster, spell_id, failure)?,
+    };
+    let failed_other_packet = OutboundWorldPacket {
+        opcode: SMSG_SPELL_FAILED_OTHER,
+        body: build_spell_failed_other_body(caster, spell_id),
+    };
+    let mut observer_packets = maps
+        .broadcast_nearby_player_packet(
+            character.position.map_id,
+            character.guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            failure_packet,
+        )
+        .await;
+    observer_packets.extend(
+        maps.broadcast_nearby_player_packet(
+            character.position.map_id,
+            character.guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            failed_other_packet,
+        )
+        .await,
+    );
+    sessions.dispatch(observer_packets).await;
+    Ok(())
 }
 
 async fn send_spell_cast_failure(
@@ -1684,6 +1774,7 @@ enum SpellPowerCost {
 const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
 const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
 const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
 const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
 const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
@@ -1703,6 +1794,7 @@ const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
 const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
 const SPELL_AURA_MOD_STAT: u32 = 29;
 const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
+const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
 const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 const SPELL_AURA_MOD_SKILL: u32 = 30;
 const SPELL_AURA_MOD_REGEN: u32 = 84;
@@ -1725,6 +1817,7 @@ const NEGATIVE_AURA_FLAGS: u32 = 0x08;
 const TARGET_UNIT_CASTER: u32 = 1;
 const TARGET_UNIT_ENEMY: u32 = 6;
 const TARGET_UNIT: u32 = 25;
+const PROC_FLAG_TAKE_MELEE_SWING: u32 = 0x0000_0008;
 const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
 const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
@@ -1735,6 +1828,16 @@ const BASE_CHARGE_SPEED: f32 = 27.0;
 const MAX_AURA_SLOTS: usize = 48;
 const MAX_POSITIVE_AURA_SLOTS: usize = 32;
 const MAX_AURA_FLAG_FIELDS: usize = 6;
+
+fn spell_damage_pushback_delay_millis(pushback_count: u8) -> u32 {
+    match pushback_count {
+        0 => 1000,
+        1 => 800,
+        2 => 600,
+        3 => 400,
+        _ => 200,
+    }
+}
 const MAX_AURA_LEVEL_FIELDS: usize = 12;
 
 include!("spells/effects.rs");
@@ -1799,6 +1902,7 @@ fn build_active_aura(
         periodic_damage: spell_periodic_damage_aura(&spell_info, now),
         periodic_regen: spell_periodic_regen_aura(&spell_info, now),
         stat_modifiers: spell_aura_stat_modifiers(&spell_info),
+        proc_triggers: spell_aura_proc_triggers(&spell_info),
     }
 }
 
@@ -1871,6 +1975,49 @@ fn spell_periodic_regen_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option
         tick_millis,
         next_tick_at: now + Duration::from_millis(tick_millis as u64),
     })
+}
+
+fn spell_aura_proc_triggers(spell_info: &SpellInfo<'_>) -> Vec<AuraProcTrigger> {
+    spell_info
+        .effects
+        .into_iter()
+        .filter(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect.aura_name == SPELL_AURA_PROC_TRIGGER_SPELL
+                && effect.trigger_spell != 0
+        })
+        .map(|effect| AuraProcTrigger {
+            triggered_spell_id: effect.trigger_spell,
+            proc_flags: spell_info.template.proc_flags,
+            proc_chance: spell_info.template.proc_chance,
+            proc_charges: spell_info.template.proc_charges,
+        })
+        .collect()
+}
+
+fn active_aura_proc_trigger_spell_ids(
+    active_auras: &[ActiveAura],
+    proc_flag: u32,
+    now: Instant,
+) -> Vec<u32> {
+    active_auras
+        .iter()
+        .filter(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at))
+        .flat_map(|aura| aura.proc_triggers.iter())
+        .filter(|trigger| trigger.proc_flags & proc_flag != 0)
+        .filter(|trigger| aura_proc_roll_succeeds(trigger.proc_chance))
+        .map(|trigger| trigger.triggered_spell_id)
+        .collect()
+}
+
+fn aura_proc_roll_succeeds(proc_chance: u32) -> bool {
+    if proc_chance >= 100 {
+        return true;
+    }
+    if proc_chance == 0 {
+        return false;
+    }
+    rand::thread_rng().gen_range(1..=10_000) <= proc_chance.saturating_mul(100).min(10_000)
 }
 
 fn passive_spell_active_aura(

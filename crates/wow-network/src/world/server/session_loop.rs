@@ -532,7 +532,10 @@ async fn handle_client(
                             )
                             .await?;
                         }
-                        CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
+                        CMSG_AUTOEQUIP_ITEM
+                        | CMSG_AUTOSTORE_BAG_ITEM
+                        | CMSG_SWAP_ITEM
+                        | CMSG_SWAP_INV_ITEM => {
                             handle_inventory_swap(
                                 &mut stream,
                                 InventoryDeps {
@@ -611,6 +614,7 @@ async fn handle_client(
                             if !cancel_pending_player_spell_cast(
                                 &mut stream,
                                 runtime_state.maps.as_ref(),
+                                runtime_state.sessions.as_ref(),
                                 &mut session,
                                 SPELL_FAILED_INTERRUPTED,
                                 &mut header_crypto,

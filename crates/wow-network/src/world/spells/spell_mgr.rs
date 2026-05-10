@@ -16,51 +16,67 @@ struct SpellInfoEffect {
     amplitude: u32,
     implicit_target_a: u32,
     misc_value: i32,
+    trigger_spell: u32,
     dispatch: SpellEffectDispatch,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpellInfoEffectSlot {
+    effect_id: u32,
+    aura_name: u32,
+    base_points: i32,
+    roll: (i32, u32, f32),
+    amplitude: u32,
+    implicit_target_a: u32,
+    misc_value: i32,
+    trigger_spell: u32,
 }
 
 impl<'a> SpellInfo<'a> {
     fn from_template(template: &'a wow_db::SpellTemplateQuery) -> Self {
         let effects = [
-            SpellInfoEffect::from_template_slot(
-                template.effect1,
-                template.effect_apply_aura_name1,
-                template.effect_base_points1,
-                (
+            SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                effect_id: template.effect1,
+                aura_name: template.effect_apply_aura_name1,
+                base_points: template.effect_base_points1,
+                roll: (
                     template.effect_die_sides1,
                     template.effect_base_dice1,
                     template.effect_points_per_combo_point1,
                 ),
-                template.effect_amplitude1,
-                template.effect_implicit_target_a1,
-                template.effect_misc_value1,
-            ),
-            SpellInfoEffect::from_template_slot(
-                template.effect2,
-                template.effect_apply_aura_name2,
-                template.effect_base_points2,
-                (
+                amplitude: template.effect_amplitude1,
+                implicit_target_a: template.effect_implicit_target_a1,
+                misc_value: template.effect_misc_value1,
+                trigger_spell: template.effect_trigger_spell1,
+            }),
+            SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                effect_id: template.effect2,
+                aura_name: template.effect_apply_aura_name2,
+                base_points: template.effect_base_points2,
+                roll: (
                     template.effect_die_sides2,
                     template.effect_base_dice2,
                     template.effect_points_per_combo_point2,
                 ),
-                template.effect_amplitude2,
-                template.effect_implicit_target_a2,
-                template.effect_misc_value2,
-            ),
-            SpellInfoEffect::from_template_slot(
-                template.effect3,
-                template.effect_apply_aura_name3,
-                template.effect_base_points3,
-                (
+                amplitude: template.effect_amplitude2,
+                implicit_target_a: template.effect_implicit_target_a2,
+                misc_value: template.effect_misc_value2,
+                trigger_spell: template.effect_trigger_spell2,
+            }),
+            SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                effect_id: template.effect3,
+                aura_name: template.effect_apply_aura_name3,
+                base_points: template.effect_base_points3,
+                roll: (
                     template.effect_die_sides3,
                     template.effect_base_dice3,
                     template.effect_points_per_combo_point3,
                 ),
-                template.effect_amplitude3,
-                template.effect_implicit_target_a3,
-                template.effect_misc_value3,
-            ),
+                amplitude: template.effect_amplitude3,
+                implicit_target_a: template.effect_implicit_target_a3,
+                misc_value: template.effect_misc_value3,
+                trigger_spell: template.effect_trigger_spell3,
+            }),
         ];
         Self { template, effects }
     }
@@ -313,26 +329,19 @@ impl<'a> SpellInfo<'a> {
 }
 
 impl SpellInfoEffect {
-    fn from_template_slot(
-        effect_id: u32,
-        aura_name: u32,
-        base_points: i32,
-        roll: (i32, u32, f32),
-        amplitude: u32,
-        implicit_target_a: u32,
-        misc_value: i32,
-    ) -> Self {
+    fn from_template_slot(slot: SpellInfoEffectSlot) -> Self {
         Self {
-            effect_id,
-            aura_name,
-            base_points,
-            die_sides: roll.0,
-            base_dice: roll.1,
-            points_per_combo_point: roll.2,
-            amplitude,
-            implicit_target_a,
-            misc_value,
-            dispatch: SpellEffectDispatch::from_effect_id(effect_id),
+            effect_id: slot.effect_id,
+            aura_name: slot.aura_name,
+            base_points: slot.base_points,
+            die_sides: slot.roll.0,
+            base_dice: slot.roll.1,
+            points_per_combo_point: slot.roll.2,
+            amplitude: slot.amplitude,
+            implicit_target_a: slot.implicit_target_a,
+            misc_value: slot.misc_value,
+            trigger_spell: slot.trigger_spell,
+            dispatch: SpellEffectDispatch::from_effect_id(slot.effect_id),
         }
     }
 }

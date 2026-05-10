@@ -100,6 +100,7 @@ async fn handle_movement(
         cancel_pending_player_spell_cast(
             stream,
             deps.maps,
+            deps.sessions,
             session,
             SPELL_FAILED_INTERRUPTED,
             header_crypto,

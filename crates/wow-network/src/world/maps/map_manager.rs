@@ -157,6 +157,37 @@ impl MapRuntimeManager {
         active_cast
     }
 
+    async fn delay_active_player_spell_cast_for_damage(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> Option<u32> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        let active_cast = map.active_player_spell_casts.get_mut(&character_guid)?;
+        if active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK == 0 {
+            return None;
+        }
+        if active_cast.cast_time_millis == 0 || now >= active_cast.due_at {
+            return None;
+        }
+
+        let next_delay = spell_damage_pushback_delay_millis(active_cast.damage_pushback_count);
+        active_cast.damage_pushback_count = active_cast.damage_pushback_count.saturating_add(1);
+        let remaining = active_cast
+            .due_at
+            .saturating_duration_since(now)
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        let delay = next_delay.min(active_cast.cast_time_millis.saturating_sub(remaining));
+        if delay == 0 {
+            return None;
+        }
+        active_cast.due_at += Duration::from_millis(delay as u64);
+        Some(delay)
+    }
+
     async fn push_pending_spell_event(
         &self,
         map_id: u32,

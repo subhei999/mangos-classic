@@ -4,6 +4,7 @@
         let home_position = db_creature_spawn_position(&spawn);
         let next_random_move_at = Self::initial_random_move_at(&spawn);
         let next_waypoint_move_at = Self::initial_waypoint_move_at(&spawn);
+        let native_display = choose_creature_display(&spawn.template);
         Self {
             spawn,
             home_position,
@@ -36,6 +37,7 @@
             loot_allowed_players: HashSet::new(),
             loot_method: None,
             active_auras: Vec::new(),
+            native_display,
             display_id_override: None,
             pending_movement_scripts: Vec::new(),
         }
@@ -344,6 +346,8 @@
         self.loot_current_looter = None;
         self.loot_allowed_players.clear();
         self.loot_method = None;
+        self.native_display = choose_creature_display(&self.spawn.template);
+        self.display_id_override = None;
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;

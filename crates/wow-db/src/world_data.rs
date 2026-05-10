@@ -18,6 +18,22 @@ pub struct CreatureTemplateQuery {
     pub display_id2: u32,
     pub display_id3: u32,
     pub display_id4: u32,
+    pub display_id_probability1: u32,
+    pub display_id_probability2: u32,
+    pub display_id_probability3: u32,
+    pub display_id_probability4: u32,
+    pub model_gender1: u8,
+    pub model_gender2: u8,
+    pub model_gender3: u8,
+    pub model_gender4: u8,
+    pub model_other_gender1: u32,
+    pub model_other_gender2: u32,
+    pub model_other_gender3: u32,
+    pub model_other_gender4: u32,
+    pub model_other_gender_gender1: u8,
+    pub model_other_gender_gender2: u8,
+    pub model_other_gender_gender3: u8,
+    pub model_other_gender_gender4: u8,
     pub model_bounding_radius: f32,
     pub model_combat_reach: f32,
     pub faction: u32,
@@ -330,6 +346,22 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.DisplayId2 AS template_display_id2, \
                 creature_template.DisplayId3 AS template_display_id3, \
                 creature_template.DisplayId4 AS template_display_id4, \
+                creature_template.DisplayIdProbability1 AS template_display_id_probability1, \
+                creature_template.DisplayIdProbability2 AS template_display_id_probability2, \
+                creature_template.DisplayIdProbability3 AS template_display_id_probability3, \
+                creature_template.DisplayIdProbability4 AS template_display_id_probability4, \
+                COALESCE(cmi1.gender, 2) AS template_model_gender1, \
+                COALESCE(cmi2.gender, 2) AS template_model_gender2, \
+                COALESCE(cmi3.gender, 2) AS template_model_gender3, \
+                COALESCE(cmi4.gender, 2) AS template_model_gender4, \
+                COALESCE(cmi1.modelid_other_gender, 0) AS template_model_other_gender1, \
+                COALESCE(cmi2.modelid_other_gender, 0) AS template_model_other_gender2, \
+                COALESCE(cmi3.modelid_other_gender, 0) AS template_model_other_gender3, \
+                COALESCE(cmi4.modelid_other_gender, 0) AS template_model_other_gender4, \
+                COALESCE(cmi1_other.gender, 2) AS template_model_other_gender_gender1, \
+                COALESCE(cmi2_other.gender, 2) AS template_model_other_gender_gender2, \
+                COALESCE(cmi3_other.gender, 2) AS template_model_other_gender_gender3, \
+                COALESCE(cmi4_other.gender, 2) AS template_model_other_gender_gender4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
@@ -401,6 +433,14 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
          LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
+         LEFT JOIN creature_model_info AS cmi2 ON cmi2.modelid = creature_template.DisplayId2 \
+         LEFT JOIN creature_model_info AS cmi3 ON cmi3.modelid = creature_template.DisplayId3 \
+         LEFT JOIN creature_model_info AS cmi4 ON cmi4.modelid = creature_template.DisplayId4 \
+         LEFT JOIN creature_model_info AS cmi1_other ON cmi1_other.modelid = cmi1.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi2_other ON cmi2_other.modelid = cmi2.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi3_other ON cmi3_other.modelid = cmi3.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi4_other ON cmi4_other.modelid = cmi4.modelid_other_gender \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
          LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
          LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
@@ -434,6 +474,7 @@ pub struct SpellTemplateQuery {
     pub attributes_ex2: u32,
     pub attributes_ex3: u32,
     pub attributes_serverside: u32,
+    pub interrupt_flags: u32,
     pub casting_time_index: u32,
     pub range_index: u32,
     pub speed: f32,
@@ -463,6 +504,9 @@ pub struct SpellTemplateQuery {
     pub effect_misc_value1: i32,
     pub effect_misc_value2: i32,
     pub effect_misc_value3: i32,
+    pub effect_trigger_spell1: u32,
+    pub effect_trigger_spell2: u32,
+    pub effect_trigger_spell3: u32,
     pub effect_apply_aura_name1: u32,
     pub effect_apply_aura_name2: u32,
     pub effect_apply_aura_name3: u32,
@@ -477,6 +521,9 @@ pub struct SpellTemplateQuery {
     pub spell_family_name: u32,
     pub spell_family_flags: u64,
     pub dmg_class: u32,
+    pub proc_flags: u32,
+    pub proc_chance: u32,
+    pub proc_charges: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -570,6 +617,22 @@ pub async fn get_creature_template_query(
                 creature_template.MinLevel AS min_level, creature_template.MaxLevel AS max_level, \
                 creature_template.DisplayId1 AS display_id1, creature_template.DisplayId2 AS display_id2, \
                 creature_template.DisplayId3 AS display_id3, creature_template.DisplayId4 AS display_id4, \
+                creature_template.DisplayIdProbability1 AS display_id_probability1, \
+                creature_template.DisplayIdProbability2 AS display_id_probability2, \
+                creature_template.DisplayIdProbability3 AS display_id_probability3, \
+                creature_template.DisplayIdProbability4 AS display_id_probability4, \
+                COALESCE(cmi1.gender, 2) AS model_gender1, \
+                COALESCE(cmi2.gender, 2) AS model_gender2, \
+                COALESCE(cmi3.gender, 2) AS model_gender3, \
+                COALESCE(cmi4.gender, 2) AS model_gender4, \
+                COALESCE(cmi1.modelid_other_gender, 0) AS model_other_gender1, \
+                COALESCE(cmi2.modelid_other_gender, 0) AS model_other_gender2, \
+                COALESCE(cmi3.modelid_other_gender, 0) AS model_other_gender3, \
+                COALESCE(cmi4.modelid_other_gender, 0) AS model_other_gender4, \
+                COALESCE(cmi1_other.gender, 2) AS model_other_gender_gender1, \
+                COALESCE(cmi2_other.gender, 2) AS model_other_gender_gender2, \
+                COALESCE(cmi3_other.gender, 2) AS model_other_gender_gender3, \
+                COALESCE(cmi4_other.gender, 2) AS model_other_gender_gender4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
                 creature_template.Faction AS faction, creature_template.Scale AS scale, \
@@ -622,6 +685,14 @@ pub async fn get_creature_template_query(
          FROM creature_template \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
+         LEFT JOIN creature_model_info AS cmi2 ON cmi2.modelid = creature_template.DisplayId2 \
+         LEFT JOIN creature_model_info AS cmi3 ON cmi3.modelid = creature_template.DisplayId3 \
+         LEFT JOIN creature_model_info AS cmi4 ON cmi4.modelid = creature_template.DisplayId4 \
+         LEFT JOIN creature_model_info AS cmi1_other ON cmi1_other.modelid = cmi1.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi2_other ON cmi2_other.modelid = cmi2.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi3_other ON cmi3_other.modelid = cmi3.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi4_other ON cmi4_other.modelid = cmi4.modelid_other_gender \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
          LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
          LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
@@ -647,6 +718,7 @@ pub async fn get_spell_template_query(
                 Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
                 AttributesServerside AS attributes_serverside, \
+                InterruptFlags AS interrupt_flags, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
@@ -662,6 +734,9 @@ pub async fn get_spell_template_query(
                 EffectPointsPerComboPoint3 AS effect_points_per_combo_point3, \
                 EffectMiscValue1 AS effect_misc_value1, EffectMiscValue2 AS effect_misc_value2, \
                 EffectMiscValue3 AS effect_misc_value3, \
+                EffectTriggerSpell1 AS effect_trigger_spell1, \
+                EffectTriggerSpell2 AS effect_trigger_spell2, \
+                EffectTriggerSpell3 AS effect_trigger_spell3, \
                 EffectApplyAuraName1 AS effect_apply_aura_name1, \
                 EffectApplyAuraName2 AS effect_apply_aura_name2, \
                 EffectApplyAuraName3 AS effect_apply_aura_name3, \
@@ -673,7 +748,8 @@ pub async fn get_spell_template_query(
                 EquippedItemClass AS equipped_item_class, \
                 EquippedItemSubClassMask AS equipped_item_subclass_mask, \
                 SpellFamilyName AS spell_family_name, SpellFamilyFlags AS spell_family_flags, \
-                DmgClass AS dmg_class \
+                DmgClass AS dmg_class, procFlags AS proc_flags, procChance AS proc_chance, \
+                procCharges AS proc_charges \
          FROM spell_template WHERE Id = ?",
     )
     .bind(spell)
@@ -1462,6 +1538,22 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.DisplayId2 AS template_display_id2, \
                 creature_template.DisplayId3 AS template_display_id3, \
                 creature_template.DisplayId4 AS template_display_id4, \
+                creature_template.DisplayIdProbability1 AS template_display_id_probability1, \
+                creature_template.DisplayIdProbability2 AS template_display_id_probability2, \
+                creature_template.DisplayIdProbability3 AS template_display_id_probability3, \
+                creature_template.DisplayIdProbability4 AS template_display_id_probability4, \
+                COALESCE(cmi1.gender, 2) AS template_model_gender1, \
+                COALESCE(cmi2.gender, 2) AS template_model_gender2, \
+                COALESCE(cmi3.gender, 2) AS template_model_gender3, \
+                COALESCE(cmi4.gender, 2) AS template_model_gender4, \
+                COALESCE(cmi1.modelid_other_gender, 0) AS template_model_other_gender1, \
+                COALESCE(cmi2.modelid_other_gender, 0) AS template_model_other_gender2, \
+                COALESCE(cmi3.modelid_other_gender, 0) AS template_model_other_gender3, \
+                COALESCE(cmi4.modelid_other_gender, 0) AS template_model_other_gender4, \
+                COALESCE(cmi1_other.gender, 2) AS template_model_other_gender_gender1, \
+                COALESCE(cmi2_other.gender, 2) AS template_model_other_gender_gender2, \
+                COALESCE(cmi3_other.gender, 2) AS template_model_other_gender_gender3, \
+                COALESCE(cmi4_other.gender, 2) AS template_model_other_gender_gender4, \
                 COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
                 COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
@@ -1533,6 +1625,14 @@ pub async fn get_nearby_creature_spawns(
          LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
+         LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
+         LEFT JOIN creature_model_info AS cmi2 ON cmi2.modelid = creature_template.DisplayId2 \
+         LEFT JOIN creature_model_info AS cmi3 ON cmi3.modelid = creature_template.DisplayId3 \
+         LEFT JOIN creature_model_info AS cmi4 ON cmi4.modelid = creature_template.DisplayId4 \
+         LEFT JOIN creature_model_info AS cmi1_other ON cmi1_other.modelid = cmi1.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi2_other ON cmi2_other.modelid = cmi2.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi3_other ON cmi3_other.modelid = cmi3.modelid_other_gender \
+         LEFT JOIN creature_model_info AS cmi4_other ON cmi4_other.modelid = cmi4.modelid_other_gender \
          LEFT JOIN creature_equip_template ON creature_equip_template.entry = creature_template.EquipmentTemplateId \
          LEFT JOIN item_template AS equip_1 ON equip_1.entry = creature_equip_template.equipentry1 \
          LEFT JOIN item_template AS equip_2 ON equip_2.entry = creature_equip_template.equipentry2 \
@@ -2305,6 +2405,22 @@ mod world_data_tests {
                 display_id2: 0,
                 display_id3: 0,
                 display_id4: 0,
+                display_id_probability1: 0,
+                display_id_probability2: 0,
+                display_id_probability3: 0,
+                display_id_probability4: 0,
+                model_gender1: 2,
+                model_gender2: 2,
+                model_gender3: 2,
+                model_gender4: 2,
+                model_other_gender1: 0,
+                model_other_gender2: 0,
+                model_other_gender3: 0,
+                model_other_gender4: 0,
+                model_other_gender_gender1: 2,
+                model_other_gender_gender2: 2,
+                model_other_gender_gender3: 2,
+                model_other_gender_gender4: 2,
                 model_bounding_radius: 0.0,
                 model_combat_reach: 0.0,
                 faction: 0,
@@ -2973,6 +3089,22 @@ struct CreatureSpawnRow {
     template_display_id2: u32,
     template_display_id3: u32,
     template_display_id4: u32,
+    template_display_id_probability1: u32,
+    template_display_id_probability2: u32,
+    template_display_id_probability3: u32,
+    template_display_id_probability4: u32,
+    template_model_gender1: u8,
+    template_model_gender2: u8,
+    template_model_gender3: u8,
+    template_model_gender4: u8,
+    template_model_other_gender1: u32,
+    template_model_other_gender2: u32,
+    template_model_other_gender3: u32,
+    template_model_other_gender4: u32,
+    template_model_other_gender_gender1: u8,
+    template_model_other_gender_gender2: u8,
+    template_model_other_gender_gender3: u8,
+    template_model_other_gender_gender4: u8,
     template_model_bounding_radius: f32,
     template_model_combat_reach: f32,
     template_faction: u32,
@@ -3068,6 +3200,22 @@ impl CreatureSpawnRow {
                 display_id2: self.template_display_id2,
                 display_id3: self.template_display_id3,
                 display_id4: self.template_display_id4,
+                display_id_probability1: self.template_display_id_probability1,
+                display_id_probability2: self.template_display_id_probability2,
+                display_id_probability3: self.template_display_id_probability3,
+                display_id_probability4: self.template_display_id_probability4,
+                model_gender1: self.template_model_gender1,
+                model_gender2: self.template_model_gender2,
+                model_gender3: self.template_model_gender3,
+                model_gender4: self.template_model_gender4,
+                model_other_gender1: self.template_model_other_gender1,
+                model_other_gender2: self.template_model_other_gender2,
+                model_other_gender3: self.template_model_other_gender3,
+                model_other_gender4: self.template_model_other_gender4,
+                model_other_gender_gender1: self.template_model_other_gender_gender1,
+                model_other_gender_gender2: self.template_model_other_gender_gender2,
+                model_other_gender_gender3: self.template_model_other_gender_gender3,
+                model_other_gender_gender4: self.template_model_other_gender_gender4,
                 model_bounding_radius: self.template_model_bounding_radius,
                 model_combat_reach: self.template_model_combat_reach,
                 faction: self.template_faction,

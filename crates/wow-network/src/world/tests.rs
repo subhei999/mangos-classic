@@ -239,6 +239,22 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         display_id2: 0,
         display_id3: 0,
         display_id4: 0,
+        display_id_probability1: 100,
+        display_id_probability2: 0,
+        display_id_probability3: 0,
+        display_id_probability4: 0,
+        model_gender1: 0,
+        model_gender2: 2,
+        model_gender3: 2,
+        model_gender4: 2,
+        model_other_gender1: 0,
+        model_other_gender2: 0,
+        model_other_gender3: 0,
+        model_other_gender4: 0,
+        model_other_gender_gender1: 2,
+        model_other_gender_gender2: 2,
+        model_other_gender_gender3: 2,
+        model_other_gender_gender4: 2,
         model_bounding_radius: DEFAULT_WORLD_OBJECT_SIZE,
         model_combat_reach: PLAYER_COMBAT_REACH_YARDS,
         faction: 35,
@@ -797,9 +813,56 @@ fn db_creature_create_block_uses_spawn_and_template_fields() {
     assert_eq!(values[UNIT_FIELD_MAXHEALTH], Some(120));
     assert_eq!(values[UNIT_FIELD_LEVEL], Some(4));
     assert_eq!(values[UNIT_FIELD_FACTIONTEMPLATE], Some(35));
+    assert_eq!(values[UNIT_FIELD_BYTES_0], Some(0x0100_0100));
     assert_eq!(values[UNIT_FIELD_FLAGS], Some(0x20));
     assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(123));
     assert_eq!(values[UNIT_NPC_FLAGS], Some(UNIT_NPC_FLAG_GOSSIP));
+}
+
+#[test]
+fn db_creature_create_block_serializes_selected_model_gender() {
+    let mut creature = test_creature_spawn(42);
+    creature.template.display_id1 = 111;
+    creature.template.display_id2 = 222;
+    creature.template.display_id_probability1 = 0;
+    creature.template.display_id_probability2 = 100;
+    creature.template.model_gender1 = 0;
+    creature.template.model_gender2 = 1;
+
+    let block = build_db_creature_create_block(&creature).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_DISPLAYID], Some(222));
+    assert_eq!(values[UNIT_FIELD_NATIVEDISPLAYID], Some(222));
+    assert_eq!(values[UNIT_FIELD_BYTES_0], Some(0x0101_0100));
+}
+
+#[test]
+fn creature_model_selection_uses_model_info_other_gender_row() {
+    let mut template = test_creature_template(38);
+    template.display_id1 = 111;
+    template.display_id_probability1 = 100;
+    template.model_gender1 = 0;
+    template.model_other_gender1 = 222;
+    template.model_other_gender_gender1 = 1;
+
+    assert_eq!(
+        choose_creature_display_for_roll(&template, 0, false),
+        CreatureDisplaySelection {
+            display_id: 111,
+            gender: 0,
+        }
+    );
+    assert_eq!(
+        choose_creature_display_for_roll(&template, 0, true),
+        CreatureDisplaySelection {
+            display_id: 222,
+            gender: 1,
+        }
+    );
 }
 
 #[test]
@@ -11553,6 +11616,7 @@ fn creature_dot_death_clears_auras_before_respawn() {
         }),
         periodic_regen: None,
         stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
     });
     map.creatures.insert(creature_guid.raw(), creature);
 
@@ -11638,6 +11702,7 @@ fn map_owned_player_aura_applies_attack_power_mod_and_expires() {
         periodic_damage: None,
         periodic_regen: None,
         stat_modifiers: vec![AuraStatModifier::AttackPower { amount: 15 }],
+        proc_triggers: Vec::new(),
     };
 
     let event = map.apply_player_aura(7, aura).unwrap().unwrap();
@@ -11690,6 +11755,7 @@ fn map_owned_resistance_aura_updates_character_panel_fields() {
             school_mask: (1 << 0) | (1 << 4),
             amount: 30,
         }],
+        proc_triggers: Vec::new(),
     };
 
     let event = map.apply_player_aura(7, aura).unwrap().unwrap();
@@ -11777,6 +11843,69 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
             amount: 20
         }]
     );
+
+    let mut proc_template = test_spell_template(168);
+    proc_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    proc_template.effect_apply_aura_name1 = SPELL_AURA_MOD_RESISTANCE;
+    proc_template.effect_base_points1 = 29;
+    proc_template.effect_misc_value1 = 1;
+    proc_template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    proc_template.effect_apply_aura_name2 = SPELL_AURA_PROC_TRIGGER_SPELL;
+    proc_template.effect_trigger_spell2 = 6136;
+    proc_template.proc_flags = PROC_FLAG_TAKE_MELEE_SWING;
+    proc_template.proc_chance = 100;
+    let proc_aura = build_active_aura(
+        &proc_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        Instant::now(),
+        None,
+    );
+    assert_eq!(
+        proc_aura.proc_triggers,
+        vec![AuraProcTrigger {
+            triggered_spell_id: 6136,
+            proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
+            proc_chance: 100,
+            proc_charges: 0,
+        }]
+    );
+}
+
+#[test]
+fn active_aura_proc_trigger_spell_ids_filter_flags_and_expiration() {
+    let now = Instant::now();
+    let active = ActiveAura {
+        spell_id: 168,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: vec![AuraProcTrigger {
+            triggered_spell_id: 6136,
+            proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
+            proc_chance: 100,
+            proc_charges: 0,
+        }],
+    };
+    let expired = ActiveAura {
+        expires_at: Some(now - Duration::from_secs(1)),
+        ..active.clone()
+    };
+
+    assert_eq!(
+        active_aura_proc_trigger_spell_ids(&[active], PROC_FLAG_TAKE_MELEE_SWING, now),
+        vec![6136]
+    );
+    assert!(
+        active_aura_proc_trigger_spell_ids(&[expired], PROC_FLAG_TAKE_MELEE_SWING, now).is_empty()
+    );
+    assert!(active_aura_proc_trigger_spell_ids(&[], PROC_FLAG_TAKE_MELEE_SWING, now).is_empty());
 }
 
 #[test]
@@ -11809,6 +11938,7 @@ fn map_owned_consumable_regen_aura_ticks_health_and_mana() {
                 next_tick_at: now,
             }),
             stat_modifiers: Vec::new(),
+            proc_triggers: Vec::new(),
         });
     }
     map.next_player_regen_tick_at = Some(now);
@@ -12614,6 +12744,7 @@ fn map_runtime_environmental_damage_interrupts_regen() {
             next_tick_at: now + Duration::from_secs(60),
         }),
         stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
     });
     map.add_player(player).unwrap();
     map.advance_player_regen_tick(now).unwrap();
@@ -13967,6 +14098,9 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
                 gameobject_target: None,
             },
             due_at: now + Duration::from_secs(3),
+            cast_time_millis: 3_000,
+            interrupt_flags: SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK,
+            damage_pushback_count: 0,
         },
     )
     .await;
@@ -14002,6 +14136,54 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     );
 
     session.active_character = None;
+}
+
+#[tokio::test]
+async fn map_owned_active_cast_damage_pushback_extends_remaining_cast_time() {
+    let maps = MapRuntimeManager::default();
+    let map_id = 0;
+    let character_guid = 7;
+    let now = Instant::now();
+    let mut fireball = fireball_spell_template();
+    fireball.interrupt_flags = SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK;
+    maps.set_active_player_spell_cast(
+        map_id,
+        character_guid,
+        ActivePlayerSpellCast {
+            spell_id: 133,
+            source: ActivePlayerSpellCastSource::Player,
+            profile: player_spell_cast_profile(&fireball).unwrap(),
+            targets: PendingSpellCastTargets {
+                target_mask: 0,
+                unit_target: None,
+                gameobject_target: None,
+            },
+            due_at: now + Duration::from_millis(1_500),
+            cast_time_millis: 1_500,
+            interrupt_flags: fireball.interrupt_flags,
+            damage_pushback_count: 0,
+        },
+    )
+    .await;
+
+    let delay = maps
+        .delay_active_player_spell_cast_for_damage(
+            map_id,
+            character_guid,
+            now + Duration::from_millis(500),
+        )
+        .await;
+
+    assert_eq!(
+        delay,
+        Some(500),
+        "CMaNGOS caps damage pushback so remaining cast time never exceeds original cast time"
+    );
+    assert_eq!(
+        maps.next_pending_player_spell_cast_due_at(map_id, character_guid)
+            .await,
+        Some(now + Duration::from_millis(2_000))
+    );
 }
 
 #[tokio::test]
@@ -16291,6 +16473,7 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         attributes_ex2: 0,
         attributes_ex3: 0,
         attributes_serverside: 0,
+        interrupt_flags: 0,
         casting_time_index: 0,
         range_index: 0,
         speed: 0.0,
@@ -16320,6 +16503,9 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         effect_misc_value1: 0,
         effect_misc_value2: 0,
         effect_misc_value3: 0,
+        effect_trigger_spell1: 0,
+        effect_trigger_spell2: 0,
+        effect_trigger_spell3: 0,
         effect_apply_aura_name1: 0,
         effect_apply_aura_name2: 0,
         effect_apply_aura_name3: 0,
@@ -16334,6 +16520,9 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         spell_family_name: 0,
         spell_family_flags: 0,
         dmg_class: 0,
+        proc_flags: 0,
+        proc_chance: 0,
+        proc_charges: 0,
     }
 }
 
@@ -16386,6 +16575,7 @@ fn lesser_heal_spell_template() -> wow_db::SpellTemplateQuery {
     template.casting_time_index = 7;
     template.power_type = POWER_TYPE_MANA;
     template.mana_cost = 25;
+    template.interrupt_flags = SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK;
     template.start_recovery_category = 133;
     template.start_recovery_time = 1_500;
     template.effect1 = SPELL_EFFECT_HEAL;
@@ -16679,6 +16869,7 @@ fn diplomacy_passive_modifies_quest_reputation_gain() {
         periodic_damage: None,
         periodic_regen: None,
         stat_modifiers: vec![AuraStatModifier::ReputationGainPercent { percent: 10 }],
+        proc_triggers: Vec::new(),
     };
     let mut quest = test_quest_template(3901);
     quest.rew_rep_faction[0] = 72;
@@ -16727,6 +16918,7 @@ async fn item_use_spell_failure_allows_refreshing_existing_aura_during_cooldown(
             next_tick_at: now + Duration::from_secs(2),
         }),
         stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
     });
     maps.add_player(player).await.unwrap();
     let item_spell = SpellCastProfile {
@@ -17883,6 +18075,107 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
 }
 
 #[tokio::test]
+async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            SessionId(8),
+            SessionHandle {
+                account_id: 8,
+                character_guid: Some(8),
+                character_name: Some("Babbage".to_string()),
+                outbound: observer_tx,
+            },
+        )
+        .await;
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(6673, Some(battle_shout_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let position = WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.stand_state = PLAYER_STAND_STATE_SIT;
+    player.power2 = 100;
+    maps.add_player(player).await.unwrap();
+    maps.add_player(test_player_runtime(
+        8,
+        SessionId(8),
+        WorldPosition::new(0, -8950.5, -132.493, 83.5312, 0.0),
+    ))
+    .await
+    .unwrap();
+
+    let mut active_spells = HashSet::new();
+    active_spells.insert(6673);
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_rage: 100,
+        player_stand_state: PLAYER_STAND_STATE_SIT,
+        active_spells,
+        ..WorldSessionState::default()
+    };
+    let mut cast_body = Vec::new();
+    cast_body.extend_from_slice(&6673u32.to_le_bytes());
+    cast_body.extend_from_slice(&0u32.to_le_bytes());
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        &cast_body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_STAND);
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_STANDSTATE_UPDATE && packet.body == [0]));
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_START));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_START));
+}
+
+#[tokio::test]
 async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut stream = WorldPacketSink::new(tx);
@@ -17913,6 +18206,18 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         vmap_tiles: HashSet::new(),
     }));
     let sessions = Arc::new(SessionRegistry::default());
+    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+    sessions
+        .register(
+            SessionId(8),
+            SessionHandle {
+                account_id: 8,
+                character_guid: Some(8),
+                character_name: Some("Babbage".to_string()),
+                outbound: observer_tx,
+            },
+        )
+        .await;
     let object_mgr = ObjectMgr::default();
     object_mgr
         .prime_spell_template_for_test(133, Some(fireball_spell_template()))
@@ -17927,6 +18232,13 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     player.power1 = 100;
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
+    maps.add_player(test_player_runtime(
+        8,
+        SessionId(8),
+        WorldPosition::new(0, -8950.5, -132.493, 83.5312, 0.0),
+    ))
+    .await
+    .unwrap();
     let mut kobold = test_creature_spawn(6);
     kobold.guid = 45;
     kobold.position_x = -8947.0;
@@ -17980,6 +18292,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         .await
         .is_some());
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let _ = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
 
     assert!(movement_opcode_interrupts_spell_cast(
         MSG_MOVE_START_FORWARD
@@ -17987,6 +18300,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     cancel_pending_player_spell_cast(
         &mut stream,
         maps.as_ref(),
+        sessions.as_ref(),
         &mut session,
         SPELL_FAILED_INTERRUPTED,
         &mut header_crypto,
@@ -18004,10 +18318,17 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         120
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(packets
         .iter()
         .any(|packet| packet.opcode == SMSG_CAST_RESULT
             && packet.body[5] == SPELL_FAILED_INTERRUPTED));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_FAILURE));
+    assert!(observer_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_FAILED_OTHER));
     assert!(!packets.iter().any(|packet| packet.opcode == SMSG_SPELL_GO));
     assert!(!packets
         .iter()
@@ -20549,6 +20870,170 @@ fn parses_bag_container_inventory_move_packets() {
         }
     );
     assert!(within_bag.is_supported_inventory_move());
+}
+
+#[test]
+fn parses_autostore_bag_item_packet_shape() {
+    let body = [CLIENT_INVENTORY_SLOT_BAG_0, 3, 19];
+    assert_eq!(normalize_client_bag(body[0]), INVENTORY_SLOT_BAG_0);
+    assert_eq!(body[1], 3);
+    assert_eq!(body[2], 19);
+}
+
+#[test]
+fn autoequip_bag_prefers_first_empty_bag_slot() {
+    let mut bag = test_item_template(
+        RUST_VENDOR_BAG_ITEM,
+        ITEM_CLASS_CONTAINER,
+        INVTYPE_BAG,
+        0.0,
+        0.0,
+        0,
+    );
+    bag.container_slots = 6;
+    let inventory = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    }];
+
+    assert_eq!(
+        preferred_equipment_slot_for_inventory(&bag, &inventory),
+        Some(INVENTORY_SLOT_BAG_START + 1)
+    );
+}
+
+#[test]
+fn inventory_store_plan_merges_stack_before_empty_slots() {
+    let mut bread = test_item_template(4540, 0, 0, 0.0, 0.0, 0);
+    bread.stackable = 20;
+    let inventory = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 90,
+        item_template: 4540,
+        count: 5,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    }];
+
+    let plan = plan_store_item(&inventory, &bread, 5, &[], None, None).unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_0,
+            slot: INVENTORY_SLOT_ITEM_START,
+            count: 5,
+            existing_item: Some(90),
+        }]
+    );
+}
+
+#[test]
+fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
+    let mut bread = test_item_template(4540, 0, 0, 0.0, 0.0, 0);
+    bread.stackable = 20;
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+
+    let plan = plan_store_item(&inventory, &bread, 5, &bags, None, None).unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_START,
+            slot: 0,
+            count: 5,
+            existing_item: None,
+        }]
+    );
+}
+
+#[test]
+fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
+    let chest = test_item_template(38, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 12);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_BAG_START,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_START as u32,
+            slot: 0,
+            item: 88,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: 4,
+            item: 99,
+            item_template: 38,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        },
+    ];
+    let bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+
+    assert_eq!(
+        first_autostore_destination(
+            &inventory,
+            &inventory[2],
+            &chest,
+            &bags,
+            INVENTORY_SLOT_BAG_START
+        ),
+        Some((INVENTORY_SLOT_BAG_START, 1))
+    );
 }
 
 #[test]

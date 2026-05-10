@@ -233,6 +233,7 @@ struct ActiveAura {
     periodic_damage: Option<PeriodicDamageAura>,
     periodic_regen: Option<PeriodicRegenAura>,
     stat_modifiers: Vec<AuraStatModifier>,
+    proc_triggers: Vec<AuraProcTrigger>,
 }
 
 impl ActiveAura {
@@ -258,6 +259,14 @@ struct PeriodicRegenAura {
     mana_amount: u32,
     tick_millis: u32,
     next_tick_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuraProcTrigger {
+    triggered_spell_id: u32,
+    proc_flags: u32,
+    proc_chance: u32,
+    proc_charges: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

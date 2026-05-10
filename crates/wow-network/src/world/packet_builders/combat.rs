@@ -182,6 +182,13 @@ fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
     body
 }
 
+fn build_spell_delayed_body(caster: ObjectGuid, delay_millis: u32) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(12);
+    PackedGuid::write(&mut body, caster)?;
+    body.extend_from_slice(&delay_millis.to_le_bytes());
+    Ok(body)
+}
+
 fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);

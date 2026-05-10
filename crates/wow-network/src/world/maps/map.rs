@@ -269,6 +269,9 @@ struct ActivePlayerSpellCast {
     profile: SpellCastProfile,
     targets: PendingSpellCastTargets,
     due_at: Instant,
+    cast_time_millis: u32,
+    interrupt_flags: u32,
+    damage_pushback_count: u8,
 }
 
 #[derive(Debug, Clone)]

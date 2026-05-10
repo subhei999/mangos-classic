@@ -17,11 +17,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: finish Northshire multiplayer/gameplay parity
   issues found by real-client testing, using CMaNGOS as the behavior reference
   and keeping shared world authority in `MapRuntime`.
-- Current local work adds the first architecture-correct spell outcome slice:
+- Latest committed work adds the first architecture-correct spell outcome slice:
   DB-backed creature resistances, CMaNGOS-shaped spell crit/full-resist/partial
   resist rolls for player direct spell damage against DB creatures, spell miss
   logs for full resists, spell damage log resist/crit fields, and finite proc
-  trigger charge consumption. It is tested and ready to commit.
+  trigger charge consumption.
+- Current startup hotfix casts creature model/gender `COALESCE` query outputs to
+  concrete SQL integer/double types so MySQL does not return `DECIMAL` for the
+  full static creature cache load.
 
 ## Recent Implemented Work
 
@@ -57,6 +60,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   ability damage still uses the existing melee outcome path.
 - Current proc slice now treats `proc_charges = 0` as unlimited and decrements
   finite `proc_charges` only after a proc successfully fires.
+- Server-start hotfix: `CREATURE_SPAWN_SELECT`,
+  `get_creature_template_query`, and `get_nearby_creature_spawns` now cast
+  creature model gender, other-gender model id, and fallback radius/reach
+  expressions. This fixes the real startup failure:
+  `template_model_gender1` decoded as `DECIMAL` instead of `u8`.
 - Full `.\scripts\test-rust.cmd` passed after stopping stale local
   `authserver.exe`/`worldserver.exe` processes that had locked target binaries.
 
@@ -71,6 +79,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network creature --lib`
 - `cargo test -p wow-network proc_trigger --lib`
 - `cargo test -p wow-network spell_damage_outcome --lib`
+- `cargo test -p wow-db world_data --lib`
+- `.\scripts\restart-game-stack.cmd`
 - `git diff --check`
 - `.\scripts\test-rust.cmd`
 

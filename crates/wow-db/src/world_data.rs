@@ -356,20 +356,20 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.DisplayIdProbability2 AS template_display_id_probability2, \
                 creature_template.DisplayIdProbability3 AS template_display_id_probability3, \
                 creature_template.DisplayIdProbability4 AS template_display_id_probability4, \
-                COALESCE(cmi1.gender, 2) AS template_model_gender1, \
-                COALESCE(cmi2.gender, 2) AS template_model_gender2, \
-                COALESCE(cmi3.gender, 2) AS template_model_gender3, \
-                COALESCE(cmi4.gender, 2) AS template_model_gender4, \
-                COALESCE(cmi1.modelid_other_gender, 0) AS template_model_other_gender1, \
-                COALESCE(cmi2.modelid_other_gender, 0) AS template_model_other_gender2, \
-                COALESCE(cmi3.modelid_other_gender, 0) AS template_model_other_gender3, \
-                COALESCE(cmi4.modelid_other_gender, 0) AS template_model_other_gender4, \
-                COALESCE(cmi1_other.gender, 2) AS template_model_other_gender_gender1, \
-                COALESCE(cmi2_other.gender, 2) AS template_model_other_gender_gender2, \
-                COALESCE(cmi3_other.gender, 2) AS template_model_other_gender_gender3, \
-                COALESCE(cmi4_other.gender, 2) AS template_model_other_gender_gender4, \
-                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
-                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
+                CAST(COALESCE(cmi1.gender, 2) AS UNSIGNED) AS template_model_gender1, \
+                CAST(COALESCE(cmi2.gender, 2) AS UNSIGNED) AS template_model_gender2, \
+                CAST(COALESCE(cmi3.gender, 2) AS UNSIGNED) AS template_model_gender3, \
+                CAST(COALESCE(cmi4.gender, 2) AS UNSIGNED) AS template_model_gender4, \
+                CAST(COALESCE(cmi1.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender1, \
+                CAST(COALESCE(cmi2.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender2, \
+                CAST(COALESCE(cmi3.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender3, \
+                CAST(COALESCE(cmi4.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender4, \
+                CAST(COALESCE(cmi1_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender1, \
+                CAST(COALESCE(cmi2_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender2, \
+                CAST(COALESCE(cmi3_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender3, \
+                CAST(COALESCE(cmi4_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender4, \
+                CAST(COALESCE(creature_model_info.bounding_radius, 0) AS DOUBLE) AS template_model_bounding_radius, \
+                CAST(COALESCE(creature_model_info.combat_reach, 0) AS DOUBLE) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
                 creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \
@@ -633,20 +633,20 @@ pub async fn get_creature_template_query(
                 creature_template.DisplayIdProbability2 AS display_id_probability2, \
                 creature_template.DisplayIdProbability3 AS display_id_probability3, \
                 creature_template.DisplayIdProbability4 AS display_id_probability4, \
-                COALESCE(cmi1.gender, 2) AS model_gender1, \
-                COALESCE(cmi2.gender, 2) AS model_gender2, \
-                COALESCE(cmi3.gender, 2) AS model_gender3, \
-                COALESCE(cmi4.gender, 2) AS model_gender4, \
-                COALESCE(cmi1.modelid_other_gender, 0) AS model_other_gender1, \
-                COALESCE(cmi2.modelid_other_gender, 0) AS model_other_gender2, \
-                COALESCE(cmi3.modelid_other_gender, 0) AS model_other_gender3, \
-                COALESCE(cmi4.modelid_other_gender, 0) AS model_other_gender4, \
-                COALESCE(cmi1_other.gender, 2) AS model_other_gender_gender1, \
-                COALESCE(cmi2_other.gender, 2) AS model_other_gender_gender2, \
-                COALESCE(cmi3_other.gender, 2) AS model_other_gender_gender3, \
-                COALESCE(cmi4_other.gender, 2) AS model_other_gender_gender4, \
-                COALESCE(creature_model_info.bounding_radius, 0) AS model_bounding_radius, \
-                COALESCE(creature_model_info.combat_reach, 0) AS model_combat_reach, \
+                CAST(COALESCE(cmi1.gender, 2) AS UNSIGNED) AS model_gender1, \
+                CAST(COALESCE(cmi2.gender, 2) AS UNSIGNED) AS model_gender2, \
+                CAST(COALESCE(cmi3.gender, 2) AS UNSIGNED) AS model_gender3, \
+                CAST(COALESCE(cmi4.gender, 2) AS UNSIGNED) AS model_gender4, \
+                CAST(COALESCE(cmi1.modelid_other_gender, 0) AS UNSIGNED) AS model_other_gender1, \
+                CAST(COALESCE(cmi2.modelid_other_gender, 0) AS UNSIGNED) AS model_other_gender2, \
+                CAST(COALESCE(cmi3.modelid_other_gender, 0) AS UNSIGNED) AS model_other_gender3, \
+                CAST(COALESCE(cmi4.modelid_other_gender, 0) AS UNSIGNED) AS model_other_gender4, \
+                CAST(COALESCE(cmi1_other.gender, 2) AS UNSIGNED) AS model_other_gender_gender1, \
+                CAST(COALESCE(cmi2_other.gender, 2) AS UNSIGNED) AS model_other_gender_gender2, \
+                CAST(COALESCE(cmi3_other.gender, 2) AS UNSIGNED) AS model_other_gender_gender3, \
+                CAST(COALESCE(cmi4_other.gender, 2) AS UNSIGNED) AS model_other_gender_gender4, \
+                CAST(COALESCE(creature_model_info.bounding_radius, 0) AS DOUBLE) AS model_bounding_radius, \
+                CAST(COALESCE(creature_model_info.combat_reach, 0) AS DOUBLE) AS model_combat_reach, \
                 creature_template.Faction AS faction, creature_template.Scale AS scale, \
                 creature_template.SpeedWalk AS speed_walk, creature_template.SpeedRun AS speed_run, \
                 creature_template.Detection AS detection_range, \
@@ -1561,20 +1561,20 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.DisplayIdProbability2 AS template_display_id_probability2, \
                 creature_template.DisplayIdProbability3 AS template_display_id_probability3, \
                 creature_template.DisplayIdProbability4 AS template_display_id_probability4, \
-                COALESCE(cmi1.gender, 2) AS template_model_gender1, \
-                COALESCE(cmi2.gender, 2) AS template_model_gender2, \
-                COALESCE(cmi3.gender, 2) AS template_model_gender3, \
-                COALESCE(cmi4.gender, 2) AS template_model_gender4, \
-                COALESCE(cmi1.modelid_other_gender, 0) AS template_model_other_gender1, \
-                COALESCE(cmi2.modelid_other_gender, 0) AS template_model_other_gender2, \
-                COALESCE(cmi3.modelid_other_gender, 0) AS template_model_other_gender3, \
-                COALESCE(cmi4.modelid_other_gender, 0) AS template_model_other_gender4, \
-                COALESCE(cmi1_other.gender, 2) AS template_model_other_gender_gender1, \
-                COALESCE(cmi2_other.gender, 2) AS template_model_other_gender_gender2, \
-                COALESCE(cmi3_other.gender, 2) AS template_model_other_gender_gender3, \
-                COALESCE(cmi4_other.gender, 2) AS template_model_other_gender_gender4, \
-                COALESCE(creature_model_info.bounding_radius, 0) AS template_model_bounding_radius, \
-                COALESCE(creature_model_info.combat_reach, 0) AS template_model_combat_reach, \
+                CAST(COALESCE(cmi1.gender, 2) AS UNSIGNED) AS template_model_gender1, \
+                CAST(COALESCE(cmi2.gender, 2) AS UNSIGNED) AS template_model_gender2, \
+                CAST(COALESCE(cmi3.gender, 2) AS UNSIGNED) AS template_model_gender3, \
+                CAST(COALESCE(cmi4.gender, 2) AS UNSIGNED) AS template_model_gender4, \
+                CAST(COALESCE(cmi1.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender1, \
+                CAST(COALESCE(cmi2.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender2, \
+                CAST(COALESCE(cmi3.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender3, \
+                CAST(COALESCE(cmi4.modelid_other_gender, 0) AS UNSIGNED) AS template_model_other_gender4, \
+                CAST(COALESCE(cmi1_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender1, \
+                CAST(COALESCE(cmi2_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender2, \
+                CAST(COALESCE(cmi3_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender3, \
+                CAST(COALESCE(cmi4_other.gender, 2) AS UNSIGNED) AS template_model_other_gender_gender4, \
+                CAST(COALESCE(creature_model_info.bounding_radius, 0) AS DOUBLE) AS template_model_bounding_radius, \
+                CAST(COALESCE(creature_model_info.combat_reach, 0) AS DOUBLE) AS template_model_combat_reach, \
                 creature_template.Faction AS template_faction, creature_template.Scale AS template_scale, \
                 creature_template.SpeedWalk AS template_speed_walk, creature_template.SpeedRun AS template_speed_run, \
                 creature_template.Detection AS template_detection_range, \

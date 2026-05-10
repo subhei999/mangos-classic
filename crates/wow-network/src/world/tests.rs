@@ -7807,6 +7807,87 @@ fn map_runtime_playerbot_movement_tick_broadcasts_normal_player_movement() {
 }
 
 #[test]
+fn map_runtime_playerbot_missing_movement_intent_defers_due_bot() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(
+        1,
+        SessionId(77),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap()
+        .next_think_at = now;
+
+    let update = map.prepare_playerbot_roam_movement(2, now);
+
+    assert!(update.is_none());
+    assert!(
+        map.players
+            .get(&2)
+            .unwrap()
+            .bot_runtime
+            .as_ref()
+            .unwrap()
+            .next_think_at
+            > now,
+        "a due bot with no queued planner result should not stay due forever"
+    );
+}
+
+#[test]
+fn map_runtime_playerbot_failed_engage_route_clears_target_and_backs_off() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(
+        1,
+        SessionId(77),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 0, 7007);
+    {
+        let bot_player = map.players.get_mut(&2).unwrap();
+        let bot = bot_player.bot_runtime.as_mut().unwrap();
+        bot.engage_target = Some(target);
+        bot.next_think_at = now;
+        bot.next_combat_think_at = now;
+        bot_player.selected_target = Some(target);
+    }
+    map.queue_playerbot_intents(vec![(
+        2,
+        PlayerbotQueuedIntents {
+            movement: Some(PlayerbotMovementIntent::Route { route: None }),
+            combat: None,
+        },
+    )]);
+
+    let update = map.prepare_playerbot_roam_movement(2, now);
+
+    assert!(update.is_none());
+    let bot = map.players.get(&2).unwrap().bot_runtime.as_ref().unwrap();
+    assert_eq!(bot.engage_target, None);
+    assert!(bot.route.is_empty());
+    assert!(bot.next_think_at > now);
+    assert!(
+        bot.next_combat_think_at
+            >= now + Duration::from_millis(PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS),
+        "failed engagement routes should not immediately re-enter target search"
+    );
+}
+
+#[test]
 fn map_runtime_playerbot_combat_starts_against_nearby_hostile_creature() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();

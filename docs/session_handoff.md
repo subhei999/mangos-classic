@@ -25,6 +25,17 @@ durable roadmap details belong in `docs/rust_migration_plan.md`, gate status in
   grounded local route legs instead of consuming the scarce full-nav route
   planning budget. Travel-to-Stormwind and combat approach still use the mmap
   routing path.
+- Latest playerbot scheduler fix prevents failed engagement/movement planning
+  from keeping bots immediately due every tick. A due bot with no queued
+  planner result now sleeps on a short staggered defer, and a bot whose
+  engagement route fails clears that engagement and backs off combat search
+  before retrying. Added `wow_playerbot_events_total{kind=...}` counters for
+  these scheduler events. Proof: `cargo fmt --check`,
+  `cargo test -p wow-network playerbot --lib`, and
+  `cargo test -p wow-network --lib` passed with 533 tests. The local stack was
+  restarted with `WORLD_PLAYERBOTS__RANDOM__COUNT=511`; with no real client
+  connected, 512 bots idle at ~0.94ms 1m map tick average. Recheck once a real
+  client is observing Northshire to measure the harsh path.
 - Recent committed spell bugfix revalidates delayed hostile casts at
   completion: if the caster turns away or LOS becomes blocked during a cast
   time, Rust sends the spell failure before power spend, `SMSG_SPELL_GO`, or

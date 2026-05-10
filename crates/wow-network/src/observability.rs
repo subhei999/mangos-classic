@@ -34,6 +34,7 @@ struct MetricsRegistry {
     map_runtime_snapshots: Mutex<HashMap<(u32, u32), MapRuntimeSnapshot>>,
     playerbot_names: Mutex<HashMap<u32, String>>,
     playerbot_debug_snapshots: Mutex<HashMap<u32, PlayerbotDebugSnapshot>>,
+    playerbot_events: Mutex<HashMap<&'static str, u64>>,
     static_world_cache_loads: Mutex<HashMap<&'static str, StaticWorldCacheLoadStats>>,
     static_world_cache_lookups: Mutex<HashMap<&'static str, DurationStats>>,
     static_world_cache_instantiations: Mutex<HashMap<&'static str, DurationStats>>,
@@ -425,6 +426,14 @@ pub fn record_playerbot_debug_snapshots(
     }
 }
 
+pub fn record_playerbot_event(kind: &'static str) {
+    let mut counters = registry()
+        .playerbot_events
+        .lock()
+        .expect("metrics playerbot event counters poisoned");
+    *counters.entry(kind).or_insert(0) += 1;
+}
+
 pub fn record_static_world_cache_load(
     kind: StaticWorldCacheKind,
     spawns: u64,
@@ -636,6 +645,7 @@ pub fn render_prometheus() -> String {
     );
     write_map_phase_duration_summaries(&mut body, &metrics.map_phase_duration);
     write_map_runtime_gauges(&mut body, &metrics.map_runtime_snapshots);
+    write_playerbot_event_counters(&mut body, &metrics.playerbot_events);
     write_static_world_cache_metrics(
         &mut body,
         &metrics.static_world_cache_loads,
@@ -663,6 +673,23 @@ pub fn render_prometheus() -> String {
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
     body
+}
+
+fn write_playerbot_event_counters(body: &mut String, counters: &Mutex<HashMap<&'static str, u64>>) {
+    let values = counters
+        .lock()
+        .expect("metrics playerbot event counter registry poisoned");
+    body.push_str("# HELP wow_playerbot_events_total Total playerbot runtime events by kind.\n");
+    body.push_str("# TYPE wow_playerbot_events_total counter\n");
+    let mut rows = values.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for (kind, value) in rows {
+        body.push_str("wow_playerbot_events_total{kind=\"");
+        body.push_str(kind);
+        body.push_str("\"} ");
+        body.push_str(&value.to_string());
+        body.push('\n');
+    }
 }
 
 fn write_counter(body: &mut String, name: &str, help: &str, value: u64) {

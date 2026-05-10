@@ -52,6 +52,8 @@ const PLAYERBOT_ROUTE_REANCHOR_YARDS: f32 = 4.0;
 const PLAYERBOT_TRAVEL_ARRIVED_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 const PLAYERBOT_ROUTE_PLAN_DEFER_BASE_MILLIS: u64 = 100;
 const PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS: u64 = 5_000;
+const PLAYERBOT_MISSING_INTENT_DEFER_BASE_MILLIS: u64 = 150;
+const PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS: u64 = 7_500;
 
 impl MapRuntime {
     #[cfg(test)]
@@ -1141,17 +1143,29 @@ impl MapRuntime {
         if now >= bot.next_think_at {
             if bot.route.is_empty() {
                 let Some(movement_intent) = movement_intent else {
+                    bot.next_think_at = now + playerbot_missing_intent_defer_delay(bot_guid);
+                    crate::observability::record_playerbot_event("missing_movement_intent_defer");
                     return None;
                 };
                 let route = match movement_intent {
                     PlayerbotMovementIntent::Defer => {
                         bot.next_think_at = now + playerbot_route_plan_defer_delay(bot_guid);
+                        crate::observability::record_playerbot_event("route_budget_defer");
                         return None;
                     }
                     PlayerbotMovementIntent::Route { route } => route,
                 };
                 let Some(route) = route else {
-                    bot.next_think_at = now + playerbot_failed_route_retry_delay(bot_guid);
+                    if bot.engage_target.is_some() {
+                        bot.engage_target = None;
+                        bot.route.clear();
+                        bot.next_think_at = now + playerbot_next_roam_delay(bot_guid, bot.roam_step);
+                        bot.next_combat_think_at = now + playerbot_failed_engage_backoff_delay(bot_guid);
+                        crate::observability::record_playerbot_event("engage_route_failed_backoff");
+                    } else {
+                        bot.next_think_at = now + playerbot_failed_route_retry_delay(bot_guid);
+                        crate::observability::record_playerbot_event("route_failed_retry");
+                    }
                     return None;
                 };
                 if route.is_empty() {
@@ -1753,10 +1767,24 @@ fn playerbot_route_plan_defer_delay(bot_guid: u32) -> Duration {
     )
 }
 
+fn playerbot_missing_intent_defer_delay(bot_guid: u32) -> Duration {
+    Duration::from_millis(
+        PLAYERBOT_MISSING_INTENT_DEFER_BASE_MILLIS
+            + (u64::from(bot_guid).wrapping_mul(23) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+    )
+}
+
 fn playerbot_failed_route_retry_delay(bot_guid: u32) -> Duration {
     Duration::from_millis(
         PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS
             + (u64::from(bot_guid).wrapping_mul(37) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+    )
+}
+
+fn playerbot_failed_engage_backoff_delay(bot_guid: u32) -> Duration {
+    Duration::from_millis(
+        PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS
+            + (u64::from(bot_guid).wrapping_mul(41) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
     )
 }
 

@@ -73,10 +73,28 @@ async fn handle_buy_item(
         );
         return Ok(());
     };
-    let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, buy.item).await? else {
+        warn!(
+            item = buy.item,
+            vendor = format_args!("0x{:016X}", buy.vendor_guid.raw()),
+            "Ignoring vendor buy for missing item template"
+        );
+        return Ok(());
+    };
+    let count = buy.count.max(1);
+    let total_count = vendor_item.buy_count.max(1).saturating_mul(count as u32);
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let Some(store_plan) = plan_store_item(
+        &session.inventory,
+        &template,
+        total_count,
+        &equipped_bags,
+        None,
+        None,
+    ) else {
         send_inventory_change_failure(
             stream,
-            EQUIP_ERR_COULDNT_SPLIT_ITEMS,
+            EQUIP_ERR_INVENTORY_FULL,
             None,
             None,
             header_crypto,
@@ -85,8 +103,6 @@ async fn handle_buy_item(
         return Ok(());
     };
 
-    let count = buy.count.max(1);
-    let total_count = vendor_item.buy_count.max(1).saturating_mul(count as u32);
     let price = vendor_item.price.saturating_mul(count as u32);
     let money = if price == 0 {
         None
@@ -111,24 +127,38 @@ async fn handle_buy_item(
             buy.item,
         )
         .await?;
-    wow_db::add_character_inventory_item_with_random_properties(character_db_pool, wow_db::AddCharacterInventoryItemRequest {
-        guid: character_guid,
-        bag: INVENTORY_SLOT_BAG_0 as u32,
-        slot: dst_slot,
-        item_template: buy.item,
-        count: total_count,
-        durability: 0,
-        random_properties: random_properties.as_ref(),
-    })
-    .await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = session
+                .inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                character_guid,
+                item_guid,
+                existing_count.saturating_add(slot.count),
+            )
+            .await?;
+        } else {
+            wow_db::add_character_inventory_item_with_random_properties(
+                character_db_pool,
+                wow_db::AddCharacterInventoryItemRequest {
+                    guid: character_guid,
+                    bag: slot.bag as u32,
+                    slot: slot.slot,
+                    item_template: buy.item,
+                    count: slot.count,
+                    durability: 0,
+                    random_properties: random_properties.as_ref(),
+                },
+            )
+            .await?;
+        }
+    }
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
-    let Some(new_item) = session
-        .inventory
-        .iter()
-        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == dst_slot)
-    else {
-        return Ok(());
-    };
 
     send_packet(
         stream,
@@ -143,10 +173,35 @@ async fn handle_buy_item(
     } else {
         None
     };
-    let create_block =
-        build_item_create_update_block(owner_guid, owner_guid, new_item, container_slots)?;
-    let slot_block = build_inventory_slots_update_block(character_guid, &session.inventory, &[dst_slot])?;
-    let body = build_update_object_body(&[create_block, slot_block]);
+    let mut update_blocks = Vec::new();
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+            }
+            continue;
+        }
+        if let Some(new_item) = session
+            .inventory
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
+            update_blocks.push(build_item_create_update_block(
+                owner_guid,
+                contained_guid,
+                new_item,
+                (new_item.item_template == buy.item).then_some(container_slots).flatten(),
+            )?);
+            update_blocks.extend(build_inventory_position_update_blocks(
+                character_guid,
+                &session.inventory,
+                slot.bag,
+                slot.slot,
+            )?);
+        }
+    }
+    let body = build_update_object_body(&update_blocks);
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
     if let Some(money) = money {
         send_packet(

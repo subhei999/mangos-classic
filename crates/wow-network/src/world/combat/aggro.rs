@@ -137,7 +137,7 @@ async fn send_db_creature_combat_start(
 async fn send_active_db_creature_attack(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
-    _world_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
     account_id: u32,
     session: &mut WorldSessionState,
@@ -169,6 +169,7 @@ async fn send_active_db_creature_attack(
     mirror_session_active_creature_combats(session, &active_combats);
     let context = ActiveDbCreatureAttackContext {
         character_db_pool,
+        world_db_pool,
         shared_world,
         account_id,
     };
@@ -188,6 +189,7 @@ async fn send_active_db_creature_attack(
 #[derive(Clone, Copy)]
 struct ActiveDbCreatureAttackContext<'a> {
     character_db_pool: &'a MySqlPool,
+    world_db_pool: &'a MySqlPool,
     shared_world: SharedWorldDeps<'a>,
     account_id: u32,
 }
@@ -201,6 +203,7 @@ async fn send_single_active_db_creature_attack(
 ) -> anyhow::Result<()> {
     let ActiveDbCreatureAttackContext {
         character_db_pool,
+        world_db_pool,
         shared_world,
         account_id,
     } = context;
@@ -353,6 +356,34 @@ async fn send_single_active_db_creature_attack(
         header_crypto,
     )
     .await?;
+    if event.damage > 0 {
+        apply_player_taken_melee_proc_auras(
+            stream,
+            world_db_pool,
+            shared_world,
+            session,
+            map_id,
+            character_snapshot.guid,
+            player,
+            attacker,
+            now,
+            header_crypto,
+        )
+        .await?;
+        if let Some(delay_millis) = shared_world
+            .maps
+            .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
+            .await
+        {
+            send_packet(
+                stream,
+                SMSG_SPELL_DELAYED,
+                &build_spell_delayed_body(player, delay_millis)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
     mirror_session_active_creature_combat(session, event.combat);
     shared_world.sessions.dispatch(event.observer_packets).await;
     send_packet(
@@ -414,6 +445,79 @@ async fn send_single_active_db_creature_attack(
         )
         .await?;
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_taken_melee_proc_auras(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    map_id: u32,
+    character_guid: u32,
+    player: ObjectGuid,
+    attacker: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let trigger_spell_ids = active_aura_proc_trigger_spell_ids(
+        &mut session.active_auras,
+        PROC_FLAG_TAKE_MELEE_SWING,
+        now,
+    );
+    if trigger_spell_ids.is_empty() {
+        return Ok(());
+    }
+
+    for spell_id in trigger_spell_ids {
+        let Some(template) = shared_world
+            .object_mgr
+            .spell_template(world_db_pool, spell_id)
+            .await?
+        else {
+            warn!(
+                spell_id,
+                "Skipping aura proc because triggered spell_template row is missing"
+            );
+            continue;
+        };
+        let aura = build_active_aura(
+            &template,
+            player,
+            session
+                .active_character
+                .as_ref()
+                .map(|character| character.level)
+                .unwrap_or(1),
+            now,
+            shared_world.maps.spell_duration(template.duration_index),
+        );
+        if let Some(event) = shared_world
+            .maps
+            .apply_db_creature_aura(map_id, attacker, character_guid, aura, now)
+            .await?
+        {
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &event.update_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            for packet in event.direct_packets {
+                send_packet(
+                    stream,
+                    packet.opcode,
+                    &packet.body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
+            shared_world.sessions.dispatch(event.observer_packets).await;
+        }
+    }
+
     Ok(())
 }
 
@@ -696,7 +800,13 @@ async fn send_player_combat_flag_if_changed(
 }
 
 fn player_unit_flags(in_combat: bool) -> u32 {
-    UNIT_FLAG_PLAYER_CONTROLLED | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+    player_unit_flags_with_looting(in_combat, false)
+}
+
+fn player_unit_flags_with_looting(in_combat: bool, looting: bool) -> u32 {
+    UNIT_FLAG_PLAYER_CONTROLLED
+        | (if looting { UNIT_FLAG_LOOTING } else { 0 })
+        | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
 }
 
 fn db_creature_unit_flags(creature: &DbCreatureRuntime, in_combat: bool) -> u32 {

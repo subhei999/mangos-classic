@@ -93,6 +93,9 @@ impl MapRuntime {
             if player.selected_target == Some(guid) {
                 player.selected_target = None;
             }
+            if player.unit_target == Some(guid) {
+                player.unit_target = None;
+            }
             if player
                 .queued_next_melee_spell
                 .is_some_and(|queued| queued.target == guid)

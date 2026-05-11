@@ -2125,6 +2125,8 @@ dependencies = [
  "byteorder",
  "bytes",
  "cc",
+ "flate2",
+ "md-5",
  "rand",
  "sha1",
  "sqlx",

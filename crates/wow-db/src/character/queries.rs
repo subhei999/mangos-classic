@@ -74,3 +74,83 @@ pub async fn is_guild_leader(pool: &MySqlPool, guid: u32) -> Result<bool, DbErro
     Ok(count > 0)
 }
 
+pub async fn get_global_account_data(
+    pool: &MySqlPool,
+    account_id: u32,
+) -> Result<Vec<AccountDataEntry>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_data_global");
+    let rows = sqlx::query_as::<_, AccountDataEntry>(
+        "SELECT type, time, data FROM account_data WHERE account = ?",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_account_data(
+    pool: &MySqlPool,
+    character_guid: u32,
+) -> Result<Vec<AccountDataEntry>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_data_character");
+    let rows = sqlx::query_as::<_, AccountDataEntry>(
+        "SELECT type, time, data FROM character_account_data WHERE guid = ?",
+    )
+    .bind(character_guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn replace_global_account_data(
+    pool: &MySqlPool,
+    account_id: u32,
+    data_type: u32,
+    data: &[u8],
+) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_data_global_replace");
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM account_data WHERE account = ? AND type = ?")
+        .bind(account_id)
+        .bind(data_type)
+        .execute(&mut *tx)
+        .await?;
+    if !data.is_empty() {
+        sqlx::query("INSERT INTO account_data (account, type, time, data) VALUES (?, ?, UNIX_TIMESTAMP(), ?)")
+            .bind(account_id)
+            .bind(data_type)
+            .bind(data)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn replace_character_account_data(
+    pool: &MySqlPool,
+    character_guid: u32,
+    data_type: u32,
+    data: &[u8],
+) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("account_data_character_replace");
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM character_account_data WHERE guid = ? AND type = ?")
+        .bind(character_guid)
+        .bind(data_type)
+        .execute(&mut *tx)
+        .await?;
+    if !data.is_empty() {
+        sqlx::query("INSERT INTO character_account_data (guid, type, time, data) VALUES (?, ?, UNIX_TIMESTAMP(), ?)")
+            .bind(character_guid)
+            .bind(data_type)
+            .bind(data)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+

@@ -157,6 +157,37 @@ impl MapRuntimeManager {
         active_cast
     }
 
+    async fn delay_active_player_spell_cast_for_damage(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> Option<u32> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        let active_cast = map.active_player_spell_casts.get_mut(&character_guid)?;
+        if active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK == 0 {
+            return None;
+        }
+        if active_cast.cast_time_millis == 0 || now >= active_cast.due_at {
+            return None;
+        }
+
+        let next_delay = spell_damage_pushback_delay_millis(active_cast.damage_pushback_count);
+        active_cast.damage_pushback_count = active_cast.damage_pushback_count.saturating_add(1);
+        let remaining = active_cast
+            .due_at
+            .saturating_duration_since(now)
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        let delay = next_delay.min(active_cast.cast_time_millis.saturating_sub(remaining));
+        if delay == 0 {
+            return None;
+        }
+        active_cast.due_at += Duration::from_millis(delay as u64);
+        Some(delay)
+    }
+
     async fn push_pending_spell_event(
         &self,
         map_id: u32,
@@ -786,6 +817,23 @@ impl MapRuntimeManager {
         packets
     }
 
+    async fn update_player_target(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        unit_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .update_player_target(character_guid, unit_target);
+        packets
+    }
+
     async fn add_player_combo_points(
         &self,
         map_id: u32,
@@ -848,6 +896,40 @@ impl MapRuntimeManager {
             .await
             .broadcast_nearby_player_packet(character_guid, radius, packet);
         packets
+    }
+
+    async fn set_player_looting_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        looting: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .set_player_looting_state(character_guid, looting)?;
+        Ok(packets)
+    }
+
+    async fn set_player_stand_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        stand_state: u8,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .set_player_stand_state(character_guid, stand_state)?;
+        Ok(packets)
     }
 
     #[allow(dead_code)]
@@ -1007,6 +1089,7 @@ impl MapRuntimeManager {
         creature_guid: ObjectGuid,
         caster_character_guid: u32,
         aura: ActiveAura,
+        now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -1014,7 +1097,7 @@ impl MapRuntimeManager {
         };
         let event = {
             let mut map = map.lock().await;
-            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura)
+            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura, now)
         };
         event
     }

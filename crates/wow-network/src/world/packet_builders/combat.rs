@@ -10,12 +10,12 @@ fn build_attack_start_body(attacker: ObjectGuid, victim: ObjectGuid) -> Vec<u8> 
 fn build_attack_stop_body(
     attacker: ObjectGuid,
     victim: ObjectGuid,
-    dead: bool,
+    attacker_dead: bool,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(20);
     PackedGuid::write(&mut body, attacker)?;
     PackedGuid::write(&mut body, victim)?;
-    body.extend_from_slice(&(dead as u32).to_le_bytes());
+    body.extend_from_slice(&(attacker_dead as u32).to_le_bytes());
     Ok(body)
 }
 
@@ -180,6 +180,13 @@ fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
     body.extend_from_slice(&caster.raw().to_le_bytes());
     body.extend_from_slice(&spell_id.to_le_bytes());
     body
+}
+
+fn build_spell_delayed_body(caster: ObjectGuid, delay_millis: u32) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(12);
+    body.extend_from_slice(&caster.raw().to_le_bytes());
+    body.extend_from_slice(&delay_millis.to_le_bytes());
+    Ok(body)
 }
 
 fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {

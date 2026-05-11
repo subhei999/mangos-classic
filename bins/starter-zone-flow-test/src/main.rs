@@ -63,6 +63,7 @@ const FIXTURE_GRAVEYARD_ID: u32 = FIXTURE_PREFIX + 301;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_MESSAGECHAT: u32 = 0x0095;
+const CMSG_TEXT_EMOTE: u32 = 0x0104;
 const CMSG_CAST_SPELL: u32 = 0x012E;
 const CMSG_GOSSIP_HELLO: u32 = 0x017B;
 const CMSG_QUESTGIVER_STATUS_QUERY: u32 = 0x0182;
@@ -80,11 +81,14 @@ const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x0108;
 const CMSG_AUTH_SESSION: u32 = 0x01ED;
 const CMSG_RECLAIM_CORPSE: u32 = 0x01D2;
 const CMSG_MOVE_HEARTBEAT: u32 = 0x00EE;
+const MSG_MOVE_SET_FACING: u32 = 0x00DA;
 const MSG_CORPSE_QUERY: u32 = 0x0216;
 const SMSG_CHAR_ENUM: u32 = 0x003B;
 const SMSG_MESSAGECHAT: u32 = 0x0096;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_DESTROY_OBJECT: u32 = 0x00AA;
+const SMSG_EMOTE: u32 = 0x0103;
+const SMSG_TEXT_EMOTE: u32 = 0x0105;
 const SMSG_QUESTGIVER_STATUS: u32 = 0x0183;
 const SMSG_QUESTGIVER_QUEST_LIST: u32 = 0x0185;
 const SMSG_QUESTGIVER_QUEST_DETAILS: u32 = 0x0188;
@@ -109,13 +113,17 @@ const MSG_MOVE_TELEPORT_ACK: u32 = 0x00C7;
 const AUTH_OK: u8 = 0x0C;
 const CHAT_MSG_SAY: u32 = 0x00;
 const LANG_UNIVERSAL: u32 = 0x00;
+const TEXTEMOTE_WAVE: u32 = 101;
 const UNIT_FIELD_HEALTH: usize = 0x016;
 const UNIT_FIELD_LEVEL: usize = 0x022;
+const UNIT_FIELD_FLAGS: usize = 0x02E;
 const UNIT_DYNAMIC_FLAGS: usize = 0x08F;
 const PLAYER_FLAGS_FIELD: usize = 0x0BE;
 const PLAYER_NEXT_LEVEL_XP: usize = 0x2CD;
 const CORPSE_FIELD_FLAGS: usize = 0x023;
 const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
+const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
+const UNIT_FLAG_LOOTING: u32 = 0x0000_0400;
 const PLAYER_FLAGS_GHOST: u32 = 0x0000_0010;
 const CORPSE_FLAG_BONES: u32 = 0x01;
 const DIALOG_STATUS_AVAILABLE: u32 = 5;
@@ -1652,8 +1660,20 @@ fn prove_two_client_shared_wolf_state(
     );
     observer.send_movement(observer_move)?;
     ensure!(
-        primary.read_until_movement_for_player(observer_guid, 16)?,
+        primary.read_until_movement_for_player(observer_guid, CMSG_MOVE_HEARTBEAT, 16)?,
         "primary did not receive observer movement"
+    );
+    let observer_facing = WorldPosition::new(
+        EASTERN_KINGDOMS_MAP,
+        HUMAN_START_X + 1.5,
+        HUMAN_START_Y,
+        83.5312,
+        2.25,
+    );
+    observer.send_facing(observer_facing)?;
+    ensure!(
+        primary.read_until_movement_for_player(observer_guid, MSG_MOVE_SET_FACING, 16)?,
+        "primary did not receive observer facing change"
     );
 
     let message = "shared northshire wolf";
@@ -1661,6 +1681,15 @@ fn prove_two_client_shared_wolf_state(
     ensure!(
         observer.read_until_chat_message(message, 16)?,
         "observer did not receive nearby /say"
+    );
+    primary.send_text_emote(
+        TEXTEMOTE_WAVE,
+        0,
+        ObjectGuid::new(HighGuid::Player, 0, observer_guid),
+    )?;
+    ensure!(
+        observer.read_until_text_emote(TEXTEMOTE_WAVE, primary_guid, OTHER_CHARACTER_NAME, 16)?,
+        "observer did not receive nearby /wave text emote and animation"
     );
 
     primary.drain_immediate_packets()?;
@@ -1783,11 +1812,38 @@ impl WorldClient {
         )
     }
 
+    fn send_facing(&mut self, position: WorldPosition) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            MSG_MOVE_SET_FACING,
+            &movement_body(position),
+            Some(&mut self.crypto),
+        )
+    }
+
     fn send_say(&mut self, message: &str) -> anyhow::Result<()> {
         write_client_packet(
             &mut self.stream,
             CMSG_MESSAGECHAT,
             &chat_message_body(CHAT_MSG_SAY, LANG_UNIVERSAL, message),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn send_text_emote(
+        &mut self,
+        text_emote: u32,
+        emote_num: u32,
+        target: ObjectGuid,
+    ) -> anyhow::Result<()> {
+        let mut body = Vec::with_capacity(16);
+        body.extend_from_slice(&text_emote.to_le_bytes());
+        body.extend_from_slice(&emote_num.to_le_bytes());
+        body.extend_from_slice(&target.raw().to_le_bytes());
+        write_client_packet(
+            &mut self.stream,
+            CMSG_TEXT_EMOTE,
+            &body,
             Some(&mut self.crypto),
         )
     }
@@ -1800,6 +1856,40 @@ impl WorldClient {
         for _ in 0..max_packets {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
             if opcode == SMSG_MESSAGECHAT && packet_body_contains_text(&body, message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_until_text_emote(
+        &mut self,
+        text_emote: u32,
+        sender_guid: u32,
+        target_name: &str,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let sender = ObjectGuid::new(HighGuid::Player, 0, sender_guid);
+        let sender_bytes = sender.raw().to_le_bytes();
+        let target_bytes = target_name.as_bytes();
+        let mut saw_animation = false;
+        let mut saw_text = false;
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode == SMSG_EMOTE && body.len() >= 12 && &body[4..12] == sender_bytes.as_slice() {
+                saw_animation = true;
+            }
+            if opcode == SMSG_TEXT_EMOTE
+                && body.len() >= 20
+                && &body[0..8] == sender_bytes.as_slice()
+                && u32::from_le_bytes(body[8..12].try_into()?) == text_emote
+                && body
+                    .windows(target_bytes.len())
+                    .any(|window| window == target_bytes)
+            {
+                saw_text = true;
+            }
+            if saw_animation && saw_text {
                 return Ok(true);
             }
         }
@@ -1826,15 +1916,32 @@ impl WorldClient {
         Ok(false)
     }
 
-    fn read_until_movement_for_player(
+    fn read_until_update_for_player_values(
         &mut self,
         character_guid: u32,
+        expected: &[(usize, u32)],
         max_packets: usize,
     ) -> anyhow::Result<bool> {
         let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         for _ in 0..max_packets {
             let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
-            if opcode != CMSG_MOVE_HEARTBEAT {
+            if opcode == SMSG_UPDATE_OBJECT && update_packet_has_values(&body, player, expected)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn read_until_movement_for_player(
+        &mut self,
+        character_guid: u32,
+        expected_opcode: u32,
+        max_packets: usize,
+    ) -> anyhow::Result<bool> {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        for _ in 0..max_packets {
+            let (opcode, body) = read_server_packet(&mut self.stream, Some(&mut self.crypto))?;
+            if opcode != expected_opcode {
                 continue;
             }
             let mut cursor = 0;
@@ -2070,6 +2177,17 @@ impl WorldClient {
             content.wolf_loot_money,
             content.wolf_loot_item,
         )?;
+        ensure!(
+            observer.read_until_update_for_player_values(
+                self.character_guid,
+                &[(
+                    UNIT_FIELD_FLAGS,
+                    UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING
+                )],
+                8,
+            )?,
+            "observer did not receive primary player's looting unit flag"
+        );
 
         write_client_packet(
             &mut self.stream,

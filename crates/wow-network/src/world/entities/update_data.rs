@@ -29,6 +29,7 @@ async fn send_self_spawn_update(
 struct SelfSpawnUpdate<'a> {
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
+    inventory_container_slots: &'a HashMap<u32, u32>,
     base_world_stats: &'a PlayerWorldStats,
     world_stats: &'a PlayerWorldStats,
     skills: &'a [CharacterSkill],
@@ -159,7 +160,11 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     let gameobject_blocks =
         build_db_gameobject_create_blocks(update.nearby_gameobjects, update.quest_statuses)?;
     let corpse_blocks = build_player_corpse_create_blocks(update.nearby_player_corpses)?;
-    let item_blocks = build_inventory_item_create_blocks(character, update.inventory)?;
+    let item_blocks = build_inventory_item_create_blocks(
+        character,
+        update.inventory,
+        update.inventory_container_slots,
+    )?;
     let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 1 } else { 0 };
     let mut blocks = Vec::with_capacity(
         1 + legacy_fixture_count

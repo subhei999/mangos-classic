@@ -1,3 +1,20 @@
+const INVTYPE_BAG: u32 = 18;
+const ITEM_CLASS_CONTAINER: u32 = 1;
+const ITEM_CLASS_QUIVER: u32 = 11;
+const ITEM_SUBCLASS_CONTAINER: u32 = 0;
+const ITEM_SUBCLASS_SOUL_CONTAINER: u32 = 1;
+const ITEM_SUBCLASS_HERB_CONTAINER: u32 = 2;
+const ITEM_SUBCLASS_ENCHANTING_CONTAINER: u32 = 3;
+const ITEM_SUBCLASS_ENGINEERING_CONTAINER: u32 = 4;
+const ITEM_SUBCLASS_QUIVER: u32 = 2;
+const ITEM_SUBCLASS_AMMO_POUCH: u32 = 3;
+const BAG_FAMILY_ARROWS: i32 = 1;
+const BAG_FAMILY_BULLETS: i32 = 2;
+const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
+const BAG_FAMILY_HERBS: i32 = 6;
+const BAG_FAMILY_ENCHANTING_SUPP: i32 = 7;
+const BAG_FAMILY_ENGINEERING_SUPP: i32 = 8;
+
 async fn handle_inventory_swap(
     stream: &mut WorldPacketSink,
     deps: InventoryDeps<'_>,
@@ -14,14 +31,18 @@ async fn handle_inventory_swap(
         return Ok(());
     };
     let character_guid = character.guid;
-    let Some(move_request) = (if opcode == CMSG_AUTOEQUIP_ITEM {
-        InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?
-    } else {
-        Some(InventoryMoveRequest::read(opcode, body)?)
+    let Some(move_request) = (match opcode {
+        CMSG_AUTOEQUIP_ITEM => {
+            InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?
+        }
+        CMSG_AUTOSTORE_BAG_ITEM => {
+            InventoryMoveRequest::read_auto_store_bag(body, deps.world_db_pool, session).await?
+        }
+        _ => Some(InventoryMoveRequest::read(opcode, body)?),
     }) else {
         info!(
             opcode = inventory_opcode_name(opcode),
-            "Ignoring unsupported inventory auto-equip source"
+            "Ignoring unsupported inventory auto move source or destination"
         );
         return Ok(());
     };
@@ -36,6 +57,26 @@ async fn handle_inventory_swap(
             "Ignoring unsupported inventory move outside bag-0 or equipped bag storage"
         );
         return Ok(());
+    }
+
+    let equipped_bags = load_equipped_bag_infos(deps.world_db_pool, &session.inventory).await?;
+    if !move_request.uses_existing_storage(&equipped_bags) {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            src_bag = move_request.src_bag,
+            src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
+            dst_slot = move_request.dst_slot,
+            "Rejected inventory move outside equipped bag capacity"
+        );
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
     }
 
     if move_request.src_bag == move_request.dst_bag && move_request.src_slot == move_request.dst_slot {
@@ -540,7 +581,8 @@ impl InventoryMoveRequest {
         else {
             return Ok(None);
         };
-        let Some(dst_slot) = preferred_equipment_slot(template.inventory_type) else {
+        let Some(dst_slot) = preferred_equipment_slot_for_inventory(&template, &session.inventory)
+        else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -551,9 +593,54 @@ impl InventoryMoveRequest {
         }))
     }
 
+    async fn read_auto_store_bag(
+        body: &[u8],
+        world_db_pool: &MySqlPool,
+        session: &WorldSessionState,
+    ) -> anyhow::Result<Option<Self>> {
+        if body.len() < 3 {
+            anyhow::bail!(
+                "CMSG_AUTOSTORE_BAG_ITEM payload too short: {} bytes",
+                body.len()
+            );
+        }
+        let src_bag = normalize_client_bag(body[0]);
+        let src_slot = body[1];
+        let dst_bag = normalize_client_bag(body[2]);
+        let Some(src_item) = session
+            .inventory
+            .iter()
+            .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+        else {
+            return Ok(None);
+        };
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, src_item.item_template).await?
+        else {
+            return Ok(None);
+        };
+        let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+        let Some((dst_bag, dst_slot)) =
+            first_autostore_destination(&session.inventory, src_item, &template, &equipped_bags, dst_bag)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            src_bag,
+            src_slot,
+            dst_bag,
+            dst_slot,
+        }))
+    }
+
     fn is_supported_inventory_move(&self) -> bool {
         is_supported_move_position(self.src_bag, self.src_slot)
             && is_supported_move_position(self.dst_bag, self.dst_slot)
+    }
+
+    fn uses_existing_storage(&self, equipped_bags: &[EquippedBagInfo]) -> bool {
+        move_position_exists(self.src_bag, self.src_slot, equipped_bags)
+            && move_position_exists(self.dst_bag, self.dst_slot, equipped_bags)
     }
 }
 
@@ -649,6 +736,255 @@ impl SellItemRequest {
             count: body[16],
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EquippedBagInfo {
+    slot: u8,
+    container_slots: u8,
+    class: u32,
+    subclass: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoreSlot {
+    bag: u8,
+    slot: u8,
+    count: u32,
+    existing_item: Option<u32>,
+}
+
+async fn load_equipped_bag_infos(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Vec<EquippedBagInfo>> {
+    let mut bags = Vec::new();
+    for slot in INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END {
+        let Some(item) = inventory
+            .iter()
+            .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == slot)
+        else {
+            continue;
+        };
+        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        else {
+            continue;
+        };
+        if template.container_slots == 0 {
+            continue;
+        }
+        bags.push(EquippedBagInfo {
+            slot,
+            container_slots: template.container_slots.min(MAX_BAG_SIZE as u32) as u8,
+            class: template.class,
+            subclass: template.subclass,
+        });
+    }
+    Ok(bags)
+}
+
+fn preferred_equipment_slot_for_inventory(
+    template: &ItemTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> Option<u8> {
+    if template.inventory_type == INVTYPE_BAG && template.container_slots > 0 {
+        return (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).find(|slot| {
+            inventory
+                .iter()
+                .all(|item| item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != *slot)
+        });
+    }
+    preferred_equipment_slot(template.inventory_type)
+}
+
+fn move_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo]) -> bool {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot);
+    }
+    equipped_bags
+        .iter()
+        .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
+}
+
+fn storage_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo]) -> bool {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return is_backpack_item_slot(slot);
+    }
+    equipped_bags
+        .iter()
+        .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
+}
+
+fn item_can_go_into_bag(item: &ItemTemplateQuery, bag: &EquippedBagInfo) -> bool {
+    match bag.class {
+        ITEM_CLASS_CONTAINER => match bag.subclass {
+            ITEM_SUBCLASS_CONTAINER => true,
+            ITEM_SUBCLASS_SOUL_CONTAINER => item.bag_family == BAG_FAMILY_SOUL_SHARDS,
+            ITEM_SUBCLASS_HERB_CONTAINER => item.bag_family == BAG_FAMILY_HERBS,
+            ITEM_SUBCLASS_ENCHANTING_CONTAINER => item.bag_family == BAG_FAMILY_ENCHANTING_SUPP,
+            ITEM_SUBCLASS_ENGINEERING_CONTAINER => item.bag_family == BAG_FAMILY_ENGINEERING_SUPP,
+            _ => false,
+        },
+        ITEM_CLASS_QUIVER => match bag.subclass {
+            ITEM_SUBCLASS_QUIVER => item.bag_family == BAG_FAMILY_ARROWS,
+            ITEM_SUBCLASS_AMMO_POUCH => item.bag_family == BAG_FAMILY_BULLETS,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn bag_accepts_item(bag: u8, template: &ItemTemplateQuery, equipped_bags: &[EquippedBagInfo]) -> bool {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return true;
+    }
+    equipped_bags
+        .iter()
+        .find(|equipped| equipped.slot == bag)
+        .is_some_and(|equipped| item_can_go_into_bag(template, equipped))
+}
+
+fn is_normal_container_bag(bag: &EquippedBagInfo) -> bool {
+    bag.class == ITEM_CLASS_CONTAINER && bag.subclass == ITEM_SUBCLASS_CONTAINER
+}
+
+fn storage_slot_range(bag: u8, equipped_bags: &[EquippedBagInfo]) -> Option<(u8, u8)> {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return Some((INVENTORY_SLOT_ITEM_START, INVENTORY_SLOT_ITEM_END));
+    }
+    equipped_bags
+        .iter()
+        .find(|equipped| equipped.slot == bag)
+        .map(|equipped| (0, equipped.container_slots))
+}
+
+fn inventory_store_bag_order(
+    template: &ItemTemplateQuery,
+    equipped_bags: &[EquippedBagInfo],
+    specific_bag: Option<u8>,
+) -> Vec<u8> {
+    if let Some(bag) = specific_bag {
+        return if bag_accepts_item(bag, template, equipped_bags) {
+            vec![bag]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let mut bags = vec![INVENTORY_SLOT_BAG_0];
+    if template.bag_family != 0 {
+        bags.extend(
+            equipped_bags
+                .iter()
+                .filter(|bag| !is_normal_container_bag(bag) && item_can_go_into_bag(template, bag))
+                .map(|bag| bag.slot),
+        );
+    }
+    bags.extend(
+        equipped_bags
+            .iter()
+            .filter(|bag| is_normal_container_bag(bag) && item_can_go_into_bag(template, bag))
+            .map(|bag| bag.slot),
+    );
+    bags
+}
+
+fn plan_store_item(
+    inventory: &[CharacterInventoryItem],
+    template: &ItemTemplateQuery,
+    count: u32,
+    equipped_bags: &[EquippedBagInfo],
+    specific_bag: Option<u8>,
+    skip_item: Option<u32>,
+) -> Option<Vec<StoreSlot>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+
+    let max_stack = template.stackable.max(1);
+    let mut remaining = count;
+    let mut dest = Vec::new();
+    let bags = inventory_store_bag_order(template, equipped_bags, specific_bag);
+
+    if max_stack > 1 {
+        for bag in &bags {
+            for item in inventory
+                .iter()
+                .filter(|item| {
+                    item.bag == *bag as u32
+                        && item.item_template == template.entry
+                        && Some(item.item) != skip_item
+                        && item.count < max_stack
+                        && storage_position_exists(*bag, item.slot, equipped_bags)
+                })
+            {
+                let move_count = remaining.min(max_stack - item.count);
+                if move_count == 0 {
+                    continue;
+                }
+                dest.push(StoreSlot {
+                    bag: *bag,
+                    slot: item.slot,
+                    count: move_count,
+                    existing_item: Some(item.item),
+                });
+                remaining -= move_count;
+                if remaining == 0 {
+                    return Some(dest);
+                }
+            }
+        }
+    }
+
+    for bag in &bags {
+        let Some((start, end)) = storage_slot_range(*bag, equipped_bags) else {
+            continue;
+        };
+        for slot in start..end {
+            if inventory.iter().any(|item| {
+                item.bag == *bag as u32 && item.slot == slot && Some(item.item) != skip_item
+            }) {
+                continue;
+            }
+            let move_count = remaining.min(max_stack);
+            dest.push(StoreSlot {
+                bag: *bag,
+                slot,
+                count: move_count,
+                existing_item: None,
+            });
+            remaining -= move_count;
+            if remaining == 0 {
+                return Some(dest);
+            }
+        }
+    }
+
+    None
+}
+
+fn first_autostore_destination(
+    inventory: &[CharacterInventoryItem],
+    source: &CharacterInventoryItem,
+    template: &ItemTemplateQuery,
+    equipped_bags: &[EquippedBagInfo],
+    dst_bag: u8,
+) -> Option<(u8, u8)> {
+    plan_store_item(
+        inventory,
+        template,
+        source.count,
+        equipped_bags,
+        Some(dst_bag),
+        Some(source.item),
+    )
+    .and_then(|dest| {
+        if dest.len() == 1 {
+            dest.first().map(|slot| (slot.bag, slot.slot))
+        } else {
+            None
+        }
+    })
 }
 
 fn normalize_client_bag(bag: u8) -> u8 {
@@ -894,6 +1230,7 @@ fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
         13 | 17 | 21 => Some(15), // one-hand/two-hand/main-hand weapon
         14 | 22 | 23 => Some(16), // shield/offhand/held-in-offhand
         15 | 25 | 26 => Some(17), // ranged/thrown/ranged right
+        18 => Some(19), // INVTYPE_BAG
         16 => Some(14), // INVTYPE_CLOAK
         19 => Some(18), // INVTYPE_TABARD
         _ => None,
@@ -919,6 +1256,7 @@ fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
         16 => matches!(inventory_type, 14 | 22 | 23),
         17 => matches!(inventory_type, 15 | 25 | 26),
         18 => inventory_type == 19,
+        19..=22 => inventory_type == INVTYPE_BAG,
         _ => false,
     }
 }
@@ -1058,6 +1396,7 @@ fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
 fn inventory_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
+        CMSG_AUTOSTORE_BAG_ITEM => "CMSG_AUTOSTORE_BAG_ITEM",
         CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
         CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
         CMSG_SPLIT_ITEM => "CMSG_SPLIT_ITEM",

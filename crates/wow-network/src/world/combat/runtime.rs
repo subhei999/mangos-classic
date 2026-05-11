@@ -4,6 +4,8 @@
         let home_position = db_creature_spawn_position(&spawn);
         let next_random_move_at = Self::initial_random_move_at(&spawn);
         let next_waypoint_move_at = Self::initial_waypoint_move_at(&spawn);
+        let native_display = choose_creature_display(&spawn.template);
+        let move_speeds = db_creature_move_speeds(&spawn.template, &[]);
         Self {
             spawn,
             home_position,
@@ -16,6 +18,7 @@
             waypoint_resume_position: None,
             already_called_assistance: false,
             next_spline_id: 0,
+            move_speeds,
             health,
             life_state: DbCreatureLifeState::Alive,
             corpse_expires_at: None,
@@ -36,6 +39,7 @@
             loot_allowed_players: HashSet::new(),
             loot_method: None,
             active_auras: Vec::new(),
+            native_display,
             display_id_override: None,
             pending_movement_scripts: Vec::new(),
         }
@@ -156,7 +160,9 @@
     }
 
     fn base_attack_duration(&self) -> Duration {
-        Duration::from_millis(self.spawn.template.melee_base_attack_time.max(1) as u64)
+        let base_millis = self.spawn.template.melee_base_attack_time.max(1) as f32;
+        let multiplier = active_aura_melee_attack_time_multiplier(&self.active_auras);
+        Duration::from_millis((base_millis * multiplier).round().max(1.0) as u64)
     }
 
     fn combat_reach(&self) -> f32 {
@@ -164,19 +170,17 @@
     }
 
     fn walk_speed(&self) -> f32 {
-        if self.spawn.template.speed_walk > 0.0 {
-            DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * self.spawn.template.speed_walk
-        } else {
-            DB_CREATURE_WALK_SPEED_YARDS_PER_SEC
-        }
+        self.move_speeds.walk
     }
 
     fn run_speed(&self) -> f32 {
-        if self.spawn.template.speed_run > 0.0 {
-            DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * self.spawn.template.speed_run
-        } else {
-            DB_CREATURE_RUN_SPEED_YARDS_PER_SEC
-        }
+        self.move_speeds.run
+    }
+
+    fn refresh_move_speeds(&mut self) -> UnitMoveSpeeds {
+        let previous = self.move_speeds;
+        self.move_speeds = db_creature_move_speeds(&self.spawn.template, &self.active_auras);
+        previous
     }
 
     fn loot_money(&self) -> u32 {
@@ -282,6 +286,7 @@
         self.life_state = DbCreatureLifeState::Corpse;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();
+        self.refresh_move_speeds();
         self.corpse_expires_at = Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
         self.respawn_at = Some(now + respawn_delay);
         self.respawn_epoch_secs = Some(now_epoch_secs + respawn_delay.as_secs());
@@ -329,6 +334,7 @@
     fn remove_corpse(&mut self) {
         self.life_state = DbCreatureLifeState::Dead;
         self.active_auras.clear();
+        self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
         self.client_visible = false;
@@ -344,6 +350,8 @@
         self.loot_current_looter = None;
         self.loot_allowed_players.clear();
         self.loot_method = None;
+        self.native_display = choose_creature_display(&self.spawn.template);
+        self.display_id_override = None;
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
@@ -364,6 +372,7 @@
         self.life_state = DbCreatureLifeState::Alive;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();
+        self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.respawn_at = None;
         self.respawn_epoch_secs = None;
@@ -414,6 +423,30 @@
             let dy = self.current_position.y - character.position.y;
             dx * dx + dy * dy
         })
+    }
+}
+
+fn db_creature_move_speeds(
+    template: &CreatureTemplateQuery,
+    active_auras: &[ActiveAura],
+) -> UnitMoveSpeeds {
+    let walk_base = if template.speed_walk > 0.0 {
+        DB_CREATURE_WALK_SPEED_YARDS_PER_SEC * template.speed_walk
+    } else {
+        DB_CREATURE_WALK_SPEED_YARDS_PER_SEC
+    };
+    let run_base = if template.speed_run > 0.0 {
+        DB_CREATURE_RUN_SPEED_YARDS_PER_SEC * template.speed_run
+    } else {
+        DB_CREATURE_RUN_SPEED_YARDS_PER_SEC
+    };
+    let slow = active_aura_movement_speed_multiplier(active_auras);
+    UnitMoveSpeeds {
+        walk: walk_base.max(f32::EPSILON),
+        run: (run_base * slow).max(f32::EPSILON),
+        run_back: (DB_CREATURE_RUN_BACK_SPEED_YARDS_PER_SEC * slow).max(f32::EPSILON),
+        swim: (DB_CREATURE_SWIM_SPEED_YARDS_PER_SEC * slow).max(f32::EPSILON),
+        swim_back: DB_CREATURE_SWIM_BACK_SPEED_YARDS_PER_SEC,
     }
 }
 

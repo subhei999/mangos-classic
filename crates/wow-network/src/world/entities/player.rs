@@ -94,8 +94,10 @@ fn write_other_player_update_values(
             | ((player.gender as u32) << 16)
             | (u32::from(player.class == 1) << 24),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
-    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.selected_target)?;
+    let unit_flags =
+        UNIT_FLAG_PLAYER_CONTROLLED | (if player.looting { UNIT_FLAG_LOOTING } else { 0 });
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.unit_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, BASE_ATTACK_TIME_MS)?;
     set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, BASE_ATTACK_TIME_MS)?;
@@ -459,13 +461,20 @@ fn build_player_selection_update_body(
     player_guid: u32,
     selected_target: Option<ObjectGuid>,
 ) -> anyhow::Result<Vec<u8>> {
+    build_player_target_update_body(player_guid, selected_target)
+}
+
+fn build_player_target_update_body(
+    player_guid: u32,
+    unit_target: Option<ObjectGuid>,
+) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, player_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player_guid)?;
 
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, selected_target)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, unit_target)?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))
@@ -882,6 +891,38 @@ fn build_player_combat_stats_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_player_world_stats_update_body(
+    character_guid: u32,
+    base_world_stats: &PlayerWorldStats,
+    effective_world_stats: &PlayerWorldStats,
+    health: u32,
+    power1: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let max_health = effective_world_stats.max_health().max(1);
+    let max_mana = effective_world_stats.max_mana();
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health.max(1).min(max_health))?;
+    set_update_value(&mut values, UNIT_FIELD_POWER1, power1.min(max_mana))?;
+    set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
+    set_update_value(&mut values, UNIT_FIELD_MAXPOWER1, max_mana)?;
+    set_update_value(&mut values, UNIT_FIELD_BASE_MANA, effective_world_stats.base_mana)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASE_HEALTH,
+        effective_world_stats.base_health,
+    )?;
+    set_player_stat_update_values(&mut values, effective_world_stats)?;
+    set_player_stat_mod_update_values(&mut values, base_world_stats, effective_world_stats)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
 fn class_melee_attack_power(class: u8, level: u32, strength: u32, agility: u32) -> u32 {
     let value = match class {
         1 | 2 => level as i32 * 3 + strength as i32 * 2 - 20,
@@ -934,6 +975,32 @@ fn combat_stats_with_active_auras(
     active_auras: &[ActiveAura],
 ) -> PlayerCombatStats {
     let mut stats = base_stats;
+    let intellect_delta = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::Stat {
+                stat: Some(3),
+                amount,
+            }
+            | AuraStatModifier::Stat { stat: None, amount } => *amount,
+            _ => 0,
+        })
+        .sum::<i32>();
+    stats.intellect = apply_flat_modifier(stats.intellect, intellect_delta);
+
+    let intellect_percent = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::TotalStatPercent { stat: 3, percent } => Some(*percent),
+            _ => None,
+        })
+        .sum::<i32>();
+    if intellect_percent != 0 {
+        stats.intellect = apply_percent_modifier(stats.intellect, intellect_percent);
+    }
+
     let attack_power_delta = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -957,7 +1024,19 @@ fn combat_stats_with_active_auras(
         apply_resistance_delta(&mut stats, *school_mask, *amount);
     }
 
+    let melee_attack_time_multiplier = active_aura_melee_attack_time_multiplier(active_auras);
+    if (melee_attack_time_multiplier - 1.0).abs() > f32::EPSILON {
+        stats.main_attack_time_ms =
+            multiply_attack_time(stats.main_attack_time_ms, melee_attack_time_multiplier);
+        stats.off_attack_time_ms =
+            multiply_attack_time(stats.off_attack_time_ms, melee_attack_time_multiplier);
+    }
+
     apply_attack_power_delta(stats, attack_power_delta, 0)
+}
+
+fn multiply_attack_time(attack_time_ms: u32, multiplier: f32) -> u32 {
+    ((attack_time_ms.max(1) as f32 * multiplier).round() as u32).max(1)
 }
 
 fn apply_resistance_delta(stats: &mut PlayerCombatStats, school_mask: u32, amount: i32) {

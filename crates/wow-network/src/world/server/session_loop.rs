@@ -91,6 +91,7 @@ async fn handle_client(
         },
         ..WorldSessionState::default()
     };
+    load_global_account_data_into_session(&character_db_pool, account.id, &mut session).await?;
     let world_tick_interval = runtime_state.world_tick_interval;
     let mut next_world_tick_at = Instant::now() + world_tick_interval;
 
@@ -452,11 +453,22 @@ async fn handle_client(
                             handle_query_time(&mut stream, &mut header_crypto).await?;
                         }
                         CMSG_REQUEST_ACCOUNT_DATA => {
-                            handle_request_account_data(&mut stream, &body, &mut header_crypto)
-                                .await?;
+                            handle_request_account_data(
+                                &mut stream,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_UPDATE_ACCOUNT_DATA => {
-                            handle_update_account_data(&body);
+                            handle_update_account_data(
+                                &character_db_pool,
+                                account.id,
+                                &body,
+                                &mut session,
+                            )
+                            .await?;
                         }
                         CMSG_TUTORIAL_FLAG => {
                             handle_tutorial_flag(&character_db_pool, account.id, &body).await?;
@@ -467,9 +479,32 @@ async fn handle_client(
                         CMSG_TUTORIAL_RESET => {
                             handle_tutorial_reset(&character_db_pool, account.id).await?;
                         }
+                        CMSG_STANDSTATECHANGE => {
+                            handle_stand_state_change(
+                                &mut stream,
+                                SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
                         CMSG_TEXT_EMOTE => {
-                            handle_text_emote(&mut stream, &body, &session, &mut header_crypto)
-                                .await?;
+                            handle_text_emote(
+                                &mut stream,
+                                TextEmoteDeps {
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_CAST_SPELL => {
                             handle_cast_spell(
@@ -511,7 +546,10 @@ async fn handle_client(
                             )
                             .await?;
                         }
-                        CMSG_AUTOEQUIP_ITEM | CMSG_SWAP_ITEM | CMSG_SWAP_INV_ITEM => {
+                        CMSG_AUTOEQUIP_ITEM
+                        | CMSG_AUTOSTORE_BAG_ITEM
+                        | CMSG_SWAP_ITEM
+                        | CMSG_SWAP_INV_ITEM => {
                             handle_inventory_swap(
                                 &mut stream,
                                 InventoryDeps {
@@ -542,6 +580,18 @@ async fn handle_client(
                                 },
                                 &body,
                                 &mut session,
+                            )
+                            .await?;
+                        }
+                        CMSG_SET_TARGET_OBSOLETE => {
+                            handle_set_target_obsolete(
+                                SharedWorldDeps {
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    maps: &runtime_state.maps,
+                                    sessions: &runtime_state.sessions,
+                                },
+                                &body,
+                                &session,
                             )
                             .await?;
                         }
@@ -578,6 +628,7 @@ async fn handle_client(
                             if !cancel_pending_player_spell_cast(
                                 &mut stream,
                                 runtime_state.maps.as_ref(),
+                                runtime_state.sessions.as_ref(),
                                 &mut session,
                                 SPELL_FAILED_INTERRUPTED,
                                 &mut header_crypto,

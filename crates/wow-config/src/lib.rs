@@ -445,7 +445,7 @@ z = 83.5
         assert_eq!(config.playerbots.random.name_prefix, "Loadbot");
         assert!((config.playerbots.random.radius - 80.0).abs() < f32::EPSILON);
         assert!(config.playerbots.travel.enabled);
-        assert!((config.playerbots.travel.x + 9095.620).abs() < f32::EPSILON);
+        assert!((config.playerbots.travel.x + 9_095.62).abs() < f32::EPSILON);
         assert!((config.playerbots.travel.radius - 10.0).abs() < f32::EPSILON);
         assert_eq!(config.playerbots.bots.len(), 1);
         assert_eq!(config.playerbots.bots[0].name, "Scoutbot");

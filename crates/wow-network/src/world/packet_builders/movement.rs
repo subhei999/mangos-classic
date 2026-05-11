@@ -38,6 +38,20 @@ fn build_monster_move_walk_path_body(
     build_monster_move_path_body_inner(guid, start, path, spline_id, duration_ms, None, false)
 }
 
+fn build_monster_move_run_path_body(
+    guid: ObjectGuid,
+
+    start: WorldPosition,
+
+    path: &[WorldPosition],
+
+    spline_id: u32,
+
+    duration_ms: u32,
+) -> anyhow::Result<Vec<u8>> {
+    build_monster_move_path_body_inner(guid, start, path, spline_id, duration_ms, None, true)
+}
+
 fn build_monster_move_facing_target_body(
     guid: ObjectGuid,
 
@@ -82,6 +96,13 @@ fn build_monster_move_stop_body(
 
     body.push(MONSTER_MOVE_TYPE_STOP);
 
+    Ok(body)
+}
+
+fn build_spline_set_speed_body(guid: ObjectGuid, speed: f32) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(16);
+    PackedGuid::write(&mut body, guid)?;
+    body.extend_from_slice(&speed.to_le_bytes());
     Ok(body)
 }
 

@@ -124,6 +124,14 @@ impl SessionRegistry {
         })
     }
 
+    async fn character_name_for_guid(&self, character_guid: u32) -> Option<String> {
+        self.sessions.lock().await.iter().find_map(|(_, handle)| {
+            (handle.character_guid == Some(character_guid))
+                .then(|| handle.character_name.clone())
+                .flatten()
+        })
+    }
+
     async fn send_packet(&self, session_id: SessionId, packet: OutboundWorldPacket) {
         let outbound = {
             self.sessions
@@ -203,6 +211,7 @@ struct WorldSessionState {
     character_reputations: Vec<CharacterReputation>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
     quest_log_slots: [u32; MAX_QUEST_LOG_SIZE],
+    account_data: HashMap<u32, AccountDataCache>,
     #[cfg(test)]
     last_creature_visibility_position: Option<WorldPosition>,
     #[cfg(test)]
@@ -225,6 +234,13 @@ struct ActiveAura {
     periodic_damage: Option<PeriodicDamageAura>,
     periodic_regen: Option<PeriodicRegenAura>,
     stat_modifiers: Vec<AuraStatModifier>,
+    proc_triggers: Vec<AuraProcTrigger>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AccountDataCache {
+    time: u64,
+    data: Vec<u8>,
 }
 
 impl ActiveAura {
@@ -253,6 +269,14 @@ struct PeriodicRegenAura {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuraProcTrigger {
+    triggered_spell_id: u32,
+    proc_flags: u32,
+    proc_chance: u32,
+    remaining_charges: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuraStatModifier {
     AttackPower { amount: i32 },
     Resistance { school_mask: u32, amount: i32 },
@@ -261,9 +285,20 @@ enum AuraStatModifier {
         amount: i16,
         permanent: bool,
     },
+    MoveSpeedPercent { percent: i32 },
+    MeleeAttackTimePercent { percent: i32 },
     Stat { stat: Option<usize>, amount: i32 },
     TotalStatPercent { stat: usize, percent: i32 },
     ReputationGainPercent { percent: i32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UnitMoveSpeeds {
+    walk: f32,
+    run: f32,
+    run_back: f32,
+    swim: f32,
+    swim_back: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

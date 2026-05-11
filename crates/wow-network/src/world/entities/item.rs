@@ -242,24 +242,75 @@ fn inventory_slot_update_field(slot: u8) -> Option<usize> {
 fn build_inventory_item_create_blocks(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
+    container_slots_by_item: &HashMap<u32, u32>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut blocks = Vec::new();
 
     for item in inventory {
-        if item.bag != INVENTORY_SLOT_BAG_0 as u32 {
-            continue;
-        }
-
-        if item.slot >= INVENTORY_SLOT_ITEM_END {
+        if !login_inventory_position_is_visible(item, inventory) {
             continue;
         }
 
         let contained_guid = item_contained_guid(owner_guid, inventory, item);
-        blocks.push(build_item_create_update_block(owner_guid, contained_guid, item, None)?);
+        let container_slots = container_slots_by_item.get(&item.item).copied();
+        blocks.push(build_item_create_update_block(
+            owner_guid,
+            contained_guid,
+            item,
+            container_slots,
+        )?);
+        if container_slots.is_some_and(|slots| slots > 0) && item.bag == INVENTORY_SLOT_BAG_0 as u32
+        {
+            for contained in inventory
+                .iter()
+                .filter(|contained| contained.bag == item.slot as u32)
+            {
+                if let Some(block) = build_container_slot_update_block(inventory, item.slot, contained.slot)? {
+                    blocks.push(block);
+                }
+            }
+        }
     }
 
     Ok(blocks)
+}
+
+fn login_inventory_position_is_visible(
+    item: &CharacterInventoryItem,
+    inventory: &[CharacterInventoryItem],
+) -> bool {
+    if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
+        return item.slot < INVENTORY_SLOT_ITEM_END;
+    }
+    let Ok(bag_slot) = u8::try_from(item.bag) else {
+        return false;
+    };
+    is_bag_slot(bag_slot)
+        && item.slot < MAX_BAG_SIZE
+        && inventory
+            .iter()
+            .any(|container| container.bag == INVENTORY_SLOT_BAG_0 as u32 && container.slot == bag_slot)
+}
+
+async fn load_inventory_container_slots(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<HashMap<u32, u32>> {
+    let mut slots = HashMap::new();
+    for item in inventory {
+        if slots.contains_key(&item.item) {
+            continue;
+        }
+        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        else {
+            continue;
+        };
+        if template.container_slots > 0 {
+            slots.insert(item.item, template.container_slots.min(MAX_BAG_SIZE as u32));
+        }
+    }
+    Ok(slots)
 }
 
 fn build_item_create_update_block(

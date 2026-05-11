@@ -223,6 +223,9 @@ struct PlayerDirectDamageEffect {
     damage: u32,
     weapon_damage_percent: u32,
     school: u8,
+    dmg_class: u32,
+    attributes_ex2: u32,
+    attributes_ex3: u32,
     requires_melee: bool,
     uses_weapon_outcome: bool,
     suppress_attacker_state: bool,
@@ -244,6 +247,9 @@ fn player_direct_damage_effect(
         damage,
         weapon_damage_percent: 100,
         school,
+        dmg_class: spell_template.dmg_class,
+        attributes_ex2: spell_template.attributes_ex2,
+        attributes_ex3: spell_template.attributes_ex3,
         requires_melee: spell_profile.requires_melee,
         uses_weapon_outcome: false,
         suppress_attacker_state: effect.dispatch == SpellEffectDispatch::SchoolDamage,
@@ -256,6 +262,9 @@ fn player_weapon_damage_effect(spell_profile: &SpellCastProfile) -> PlayerDirect
         damage: spell_profile.bonus_damage,
         weapon_damage_percent: spell_profile.weapon_damage_percent,
         school: 0,
+        dmg_class: SPELL_DAMAGE_CLASS_MELEE,
+        attributes_ex2: 0,
+        attributes_ex3: 0,
         requires_melee: spell_profile.requires_melee,
         uses_weapon_outcome: true,
         suppress_attacker_state: true,
@@ -544,8 +553,37 @@ async fn apply_db_creature_spell_damage(
     } else {
         None
     };
+    let spell_damage_outcome = if melee_outcome.is_none() {
+        let combat_stats = deps
+            .shared_world
+            .maps
+            .player_combat_stats(map_id, character_guid)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "map-owned player combat stats missing for character {}",
+                    character_guid
+                )
+            })?;
+        let character = session.active_character.as_ref();
+        Some(roll_spell_damage_outcome(SpellDamageOutcomeInput {
+            damage: damage_effect.damage,
+            school: damage_effect.school,
+            dmg_class: damage_effect.dmg_class,
+            attributes_ex2: damage_effect.attributes_ex2,
+            attributes_ex3: damage_effect.attributes_ex3,
+            caster_class: character.map(|character| character.class).unwrap_or(1),
+            caster_level: character.map(|character| character.level).unwrap_or(1),
+            caster_intellect: combat_stats.intellect,
+            target_level: target_creature.spawn.template.max_level,
+            target_resistances: creature_spell_resistances(&target_creature.spawn.template),
+        }))
+    } else {
+        None
+    };
     let requested_damage = melee_outcome
         .map(|outcome| outcome.total_damage)
+        .or_else(|| spell_damage_outcome.map(|outcome| outcome.final_damage))
         .unwrap_or(damage_effect.damage);
 
     let corpse_loot = if requested_damage >= target_creature.health {
@@ -573,6 +611,7 @@ async fn apply_db_creature_spell_damage(
                 killer: caster,
                 damage: requested_damage,
                 melee_outcome,
+                spell_damage_outcome,
                 spell_id: Some(damage_effect.spell_id),
                 spell_school: damage_effect.school,
                 suppress_attacker_state: damage_effect.suppress_attacker_state,
@@ -788,7 +827,7 @@ async fn apply_player_spell_aura(
                     if let Some(event) = deps
                         .shared_world
                         .maps
-                        .apply_db_creature_aura(map_id, target, character_guid, aura)
+                        .apply_db_creature_aura(map_id, target, character_guid, aura, now)
                         .await?
                     {
                         send_packet(
@@ -798,6 +837,15 @@ async fn apply_player_spell_aura(
                             Some(&mut *header_crypto),
                         )
                         .await?;
+                        for packet in event.direct_packets {
+                            send_packet(
+                                stream,
+                                packet.opcode,
+                                &packet.body,
+                                Some(&mut *header_crypto),
+                            )
+                            .await?;
+                        }
                         deps.shared_world.sessions.dispatch(event.observer_packets).await;
                     }
                     begin_db_creature_retaliation_if_needed(

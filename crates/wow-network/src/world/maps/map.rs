@@ -99,8 +99,10 @@ struct PlayerRuntime {
     controller: PlayerController,
     bot_runtime: Option<PlayerbotRuntimeState>,
     selected_target: Option<ObjectGuid>,
+    unit_target: Option<ObjectGuid>,
     active_combat_target: Option<ObjectGuid>,
     active_combat_next_swing_at: Option<Instant>,
+    looting: bool,
     position: WorldPosition,
     movement_flags: u32,
     client_time: u32,
@@ -123,6 +125,8 @@ struct PlayerRuntime {
     class: u8,
     spirit: u32,
     gender: u8,
+    base_world_stats: PlayerWorldStats,
+    effective_world_stats: PlayerWorldStats,
     health: u32,
     max_health: u32,
     xp: u32,
@@ -267,6 +271,9 @@ struct ActivePlayerSpellCast {
     profile: SpellCastProfile,
     targets: PendingSpellCastTargets,
     due_at: Instant,
+    cast_time_millis: u32,
+    interrupt_flags: u32,
+    damage_pushback_count: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +387,7 @@ struct DbCreatureDamageEvent {
 #[derive(Debug)]
 struct DbCreatureAuraUpdateEvent {
     update_body: Vec<u8>,
+    direct_packets: Vec<OutboundWorldPacket>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
@@ -389,6 +397,7 @@ struct DbCreatureDamageRequest {
     killer: ObjectGuid,
     damage: u32,
     melee_outcome: Option<MeleeDamageOutcome>,
+    spell_damage_outcome: Option<SpellDamageOutcome>,
     spell_id: Option<u32>,
     spell_school: u8,
     suppress_attacker_state: bool,

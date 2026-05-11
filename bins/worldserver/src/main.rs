@@ -348,14 +348,14 @@ radius = 10.0
                 if destination.map_id != 0 {
                     return false;
                 }
-                let dx = destination.x + 9095.620;
+                let dx = destination.x + 9_095.62;
                 let dy = destination.y - 422.026;
                 (dx * dx + dy * dy).sqrt() <= 10.0
             })
         }));
         assert!(spawns.iter().any(|spawn| {
             spawn.travel_destination.is_some_and(|destination| {
-                let dx = destination.x + 9095.620;
+                let dx = destination.x + 9_095.62;
                 let dy = destination.y - 422.026;
                 (dx * dx + dy * dy).sqrt() > 0.01
             })

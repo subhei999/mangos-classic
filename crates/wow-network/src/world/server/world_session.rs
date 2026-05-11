@@ -4,6 +4,7 @@ struct EnterWorldBootstrap<'a> {
     world_db_pool: &'a MySqlPool,
     character: &'a CharacterEnumEntry,
     inventory: &'a [CharacterInventoryItem],
+    inventory_container_slots: &'a HashMap<u32, u32>,
     base_world_stats: &'a PlayerWorldStats,
     world_stats: &'a PlayerWorldStats,
     equipped_templates: &'a [EquippedItemTemplate],
@@ -12,6 +13,7 @@ struct EnterWorldBootstrap<'a> {
     reputations: &'a [CharacterReputation],
     quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     active_auras: &'a [ActiveAura],
+    account_data: &'a HashMap<u32, AccountDataCache>,
     tutorial_flags: &'a [u32; 8],
     cinematic_sequence: Option<u32>,
     nearby_creatures: &'a [DbCreatureRuntime],
@@ -26,7 +28,12 @@ async fn send_enter_world_bootstrap(
 ) -> anyhow::Result<()> {
     let mut header_crypto = header_crypto;
     send_login_verify_world(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
-    send_account_data_times(stream, header_crypto.as_deref_mut()).await?;
+    send_account_data_times(
+        stream,
+        bootstrap.account_data,
+        header_crypto.as_deref_mut(),
+    )
+    .await?;
     send_set_rest_start(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     send_known_proficiencies(
@@ -58,6 +65,7 @@ async fn send_enter_world_bootstrap(
         SelfSpawnUpdate {
             character: bootstrap.character,
             inventory: bootstrap.inventory,
+            inventory_container_slots: bootstrap.inventory_container_slots,
             base_world_stats: bootstrap.base_world_stats,
             world_stats: bootstrap.world_stats,
             skills: bootstrap.skills,
@@ -96,9 +104,10 @@ async fn send_login_verify_world(
 
 async fn send_account_data_times(
     stream: &mut WorldPacketSink,
+    account_data: &HashMap<u32, AccountDataCache>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_account_data_times_body();
+    let body = build_account_data_times_body(account_data);
     send_packet(stream, SMSG_ACCOUNT_DATA_TIMES, &body, header_crypto).await
 }
 
@@ -131,8 +140,18 @@ fn build_bindpoint_update_body(character: &CharacterEnumEntry) -> Vec<u8> {
     body
 }
 
-fn build_account_data_times_body() -> Vec<u8> {
-    vec![0u8; ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN]
+fn build_account_data_times_body(account_data: &HashMap<u32, AccountDataCache>) -> Vec<u8> {
+    let mut body = Vec::with_capacity(ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN);
+    for data_type in 0..ACCOUNT_DATA_TYPES as u32 {
+        if let Some(entry) = account_data.get(&data_type).filter(|entry| !entry.data.is_empty()) {
+            let mut digest = Md5::new();
+            digest.update(&entry.data);
+            body.extend_from_slice(&digest.finalize());
+        } else {
+            body.extend_from_slice(&[0; MD5_DIGEST_LEN]);
+        }
+    }
+    body
 }
 
 async fn send_tutorial_flags(

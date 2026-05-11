@@ -534,6 +534,7 @@ async fn send_db_creature_swing(
                 killer: attacker,
                 damage: requested_damage,
                 melee_outcome: Some(melee_outcome),
+                spell_damage_outcome: None,
                 spell_id: queued_spell.map(|queued| queued.spell_id),
                 spell_school: 0,
                 suppress_attacker_state: queued_spell.is_some(),

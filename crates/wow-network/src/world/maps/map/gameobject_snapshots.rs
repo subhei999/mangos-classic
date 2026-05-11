@@ -148,6 +148,9 @@ impl MapRuntime {
             if player.selected_target == Some(gameobject_guid) {
                 player.selected_target = None;
             }
+            if player.unit_target == Some(gameobject_guid) {
+                player.unit_target = None;
+            }
         }
         self.refresh_grid_state(grid_coord);
         let packet = OutboundWorldPacket {

@@ -24,6 +24,7 @@ struct Creature {
     waypoint_resume_position: Option<WorldPosition>,
     already_called_assistance: bool,
     next_spline_id: u32,
+    move_speeds: UnitMoveSpeeds,
     health: u32,
     life_state: CreatureLifeState,
     corpse_expires_at: Option<Instant>,
@@ -44,6 +45,7 @@ struct Creature {
     loot_allowed_players: HashSet<u32>,
     loot_method: Option<CreatureLootMethod>,
     active_auras: Vec<ActiveAura>,
+    native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
     pending_movement_scripts: Vec<u32>,
 }
@@ -66,6 +68,12 @@ enum CreatureLifeState {
     Alive,
     Corpse,
     Dead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreatureDisplaySelection {
+    display_id: u32,
+    gender: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +107,7 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
         creature.template.unit_flags,
         creature.template.npc_flags,
         &[],
+        creature_native_display(creature),
         None,
     )
 }
@@ -123,6 +132,7 @@ fn build_db_creature_runtime_create_block_for_player(
             db_creature_npc_flags(creature)
         },
         &creature.active_auras,
+        creature.native_display,
         creature.display_id_override,
     )
 }
@@ -136,6 +146,7 @@ fn build_db_creature_create_block_inner(
     unit_flags: u32,
     npc_flags: u32,
     active_auras: &[ActiveAura],
+    native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
 ) -> anyhow::Result<Vec<u8>> {
     let guid = creature_spawn_guid(creature);
@@ -170,6 +181,7 @@ fn build_db_creature_create_block_inner(
         unit_flags,
         npc_flags,
         active_auras,
+        native_display,
         display_id_override,
     )?;
     Ok(block)
@@ -185,11 +197,12 @@ fn write_db_creature_update_values(
     unit_flags: u32,
     npc_flags: u32,
     active_auras: &[ActiveAura],
+    native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
-    let display_id = display_id_override.unwrap_or_else(|| creature_display_id(template));
+    let display_id = display_id_override.unwrap_or(native_display.display_id);
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
@@ -200,7 +213,11 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
     set_update_value(&mut values, UNIT_FIELD_LEVEL, template.min_level as u32)?;
     set_update_value(&mut values, UNIT_FIELD_FACTIONTEMPLATE, template.faction)?;
-    set_update_value(&mut values, UNIT_FIELD_BYTES_0, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_0,
+        creature_unit_bytes_0(template, native_display.gender),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_update_value(
         &mut values,
@@ -381,6 +398,10 @@ fn creature_health(template: &CreatureTemplateQuery) -> u32 {
 }
 
 fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
+    creature_default_display_id(template)
+}
+
+fn creature_default_display_id(template: &CreatureTemplateQuery) -> u32 {
     [
         template.display_id1,
         template.display_id2,
@@ -390,6 +411,147 @@ fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
     .into_iter()
     .find(|display_id| *display_id != 0)
     .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn creature_native_display(creature: &CreatureSpawnQuery) -> CreatureDisplaySelection {
+    choose_creature_display_for_roll(&creature.template, creature.guid, false)
+}
+
+fn choose_creature_display(template: &CreatureTemplateQuery) -> CreatureDisplaySelection {
+    let chance_total = creature_display_chance_total(template);
+    let display_roll = if chance_total > 0 {
+        rand::thread_rng().gen_range(0..chance_total)
+    } else {
+        0
+    };
+    let use_other_gender = rand::thread_rng().gen_range(0..=1) == 0;
+    choose_creature_display_for_roll(template, display_roll, use_other_gender)
+}
+
+fn choose_creature_display_for_roll(
+    template: &CreatureTemplateQuery,
+    display_roll: u32,
+    use_other_gender: bool,
+) -> CreatureDisplaySelection {
+    let models = creature_template_model_candidates(template);
+    let chance_total = creature_display_chance_total(template);
+    let mut roll = if chance_total > 0 {
+        display_roll % chance_total
+    } else {
+        0
+    };
+
+    let mut selected = None;
+    if chance_total > 0 {
+        for model in models {
+            if model.display_id == 0 {
+                continue;
+            }
+            if roll < model.probability {
+                selected = Some(model);
+                break;
+            }
+            roll = roll.saturating_sub(model.probability);
+        }
+    }
+
+    let selected = selected.or_else(|| {
+        models
+            .into_iter()
+            .find(|model| model.display_id != 0)
+    });
+
+    let Some(selected) = selected else {
+        return CreatureDisplaySelection {
+            display_id: 0,
+            gender: 0,
+        };
+    };
+
+    if use_other_gender && selected.other_gender_display_id != 0 {
+        return CreatureDisplaySelection {
+            display_id: selected.other_gender_display_id,
+            gender: sanitize_creature_gender(selected.other_gender),
+        };
+    }
+
+    CreatureDisplaySelection {
+        display_id: selected.display_id,
+        gender: sanitize_creature_gender(selected.gender),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CreatureTemplateModelCandidate {
+    display_id: u32,
+    probability: u32,
+    gender: u8,
+    other_gender_display_id: u32,
+    other_gender: u8,
+}
+
+fn creature_template_model_candidates(
+    template: &CreatureTemplateQuery,
+) -> [CreatureTemplateModelCandidate; 4] {
+    [
+        CreatureTemplateModelCandidate {
+            display_id: template.display_id1,
+            probability: template.display_id_probability1,
+            gender: template.model_gender1,
+            other_gender_display_id: template.model_other_gender1,
+            other_gender: template.model_other_gender_gender1,
+        },
+        CreatureTemplateModelCandidate {
+            display_id: template.display_id2,
+            probability: template.display_id_probability2,
+            gender: template.model_gender2,
+            other_gender_display_id: template.model_other_gender2,
+            other_gender: template.model_other_gender_gender2,
+        },
+        CreatureTemplateModelCandidate {
+            display_id: template.display_id3,
+            probability: template.display_id_probability3,
+            gender: template.model_gender3,
+            other_gender_display_id: template.model_other_gender3,
+            other_gender: template.model_other_gender_gender3,
+        },
+        CreatureTemplateModelCandidate {
+            display_id: template.display_id4,
+            probability: template.display_id_probability4,
+            gender: template.model_gender4,
+            other_gender_display_id: template.model_other_gender4,
+            other_gender: template.model_other_gender_gender4,
+        },
+    ]
+}
+
+fn creature_display_chance_total(template: &CreatureTemplateQuery) -> u32 {
+    creature_template_model_candidates(template)
+        .into_iter()
+        .filter(|model| model.display_id != 0)
+        .map(|model| model.probability)
+        .sum()
+}
+
+fn sanitize_creature_gender(gender: u8) -> u8 {
+    if gender <= 2 {
+        gender
+    } else {
+        0
+    }
+}
+
+fn creature_unit_bytes_0(template: &CreatureTemplateQuery, gender: u8) -> u32 {
+    let power_type = match template.unit_class {
+        1 => 1, // warrior rage
+        2 | 8 => 0, // paladin/mage mana
+        4 => 3, // rogue energy
+        _ => 0,
+    };
+    ((template.unit_class as u32) << 8)
+        | ((sanitize_creature_gender(gender) as u32) << 16)
+        | (power_type << 24)
 }
 
 fn creature_scale(template: &CreatureTemplateQuery) -> f32 {

@@ -51,6 +51,14 @@ async fn handle_loot(
             return Ok(());
         };
         let _ = gameobject;
+        send_player_looting_state_update(
+            stream,
+            shared_world,
+            session,
+            true,
+            &mut *header_crypto,
+        )
+        .await?;
         let response = build_gameobject_loot_response_body(target, &loot_items);
         return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
     }
@@ -130,6 +138,14 @@ async fn handle_loot(
         )
         .await;
     };
+    send_player_looting_state_update(
+        stream,
+        shared_world,
+        session,
+        true,
+        &mut *header_crypto,
+    )
+    .await?;
     let response = build_db_creature_loot_response_body_for_player(
         target,
         &creature,
@@ -158,6 +174,33 @@ async fn handle_loot(
         let body = build_loot_master_list_body(&members);
         send_packet(stream, SMSG_LOOT_MASTER_LIST, &body, Some(header_crypto)).await?;
     }
+    Ok(())
+}
+
+async fn send_player_looting_state_update(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    looting: bool,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let flags = player_unit_flags_with_looting(session.player_in_combat, looting);
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_unit_flags_update_body(player, flags)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_packets = shared_world
+        .maps
+        .set_player_looting_state(character.position.map_id, character.guid, looting)
+        .await?;
+    shared_world.sessions.dispatch(observer_packets).await;
     Ok(())
 }
 
@@ -1580,6 +1623,14 @@ async fn handle_loot_release(
                     character.guid,
                 )
                 .await;
+            send_player_looting_state_update(
+                stream,
+                shared_world,
+                session,
+                false,
+                &mut *header_crypto,
+            )
+            .await?;
         }
         return send_packet(
             stream,
@@ -1610,6 +1661,14 @@ async fn handle_loot_release(
         return Ok(());
     };
     let _ = event.creature;
+    send_player_looting_state_update(
+        stream,
+        shared_world,
+        session,
+        false,
+        &mut *header_crypto,
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,

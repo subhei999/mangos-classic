@@ -273,7 +273,7 @@ impl MapRuntime {
         };
         let display_id = if command.datalong == 0 {
             creature.display_id_override = None;
-            creature_display_id(&creature.spawn.template)
+            creature.native_display.display_id
         } else if command.data_flags & SCRIPT_FLAG_COMMAND_ADDITIONAL != 0 {
             creature.display_id_override = Some(command.datalong);
             command.datalong

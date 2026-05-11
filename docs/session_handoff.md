@@ -20,9 +20,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Latest work addresses the current real-client feedback slice: spell casts
   from sitting now force the player to stand before cast validation and send
   both the standstate acknowledgement and the acting client's authoritative
-  `UNIT_FIELD_BYTES_1` update, spell pushback now sends the CMaNGOS-shaped
-  cast-bar delay packet, and equipped bag containers are created with container
-  fields during login so clients can open them after equip/relog.
+  `UNIT_FIELD_BYTES_1` update. A follow-up correction now also makes
+  `CMSG_STANDSTATECHANGE` to stand cancel food/drink-style
+  `AURA_INTERRUPT_FLAG_STANDING_CANCELS` auras through session and
+  `MapRuntime`, matching CMaNGOS `Unit::SetStandState`. Spell pushback sends
+  the CMaNGOS-shaped cast-bar delay packet, and equipped bag containers are
+  created with container fields during login so clients can open them after
+  equip/relog.
 
 ## Recent Implemented Work
 
@@ -42,6 +46,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   cast-from-sitting now performs the stand transition before spell/item cast
   failure checks and now sends the self `SMSG_UPDATE_OBJECT` stand-state field
   update that the client needs to stop treating the caster as seated,
+  client-driven standing now cancels stand-cancel regen auras before syncing
+  player state,
   `SMSG_SPELL_DELAYED` now serializes a full 8-byte caster guid plus `uint32`
   delay like CMaNGOS `Spell::Delayed`, and login inventory create blocks now
   build equipped bag objects as `TYPEID_CONTAINER` with slot fields for visible
@@ -90,6 +96,7 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network map_owned_active_cast_damage_pushback_extends_remaining_cast_time --lib`
 - `cargo test -p wow-network login_create_blocks_make_equipped_bags_openable_containers --lib`
 - `cargo test -p wow-network spell_cast_from_sitting_auto_stands_player_and_observers --lib`
+- `cargo test -p wow-network stand_state_change_to_stand_cancels_consumable_regen_aura --lib`
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network inventory --lib`
 - `cargo test -p wow-network --lib`

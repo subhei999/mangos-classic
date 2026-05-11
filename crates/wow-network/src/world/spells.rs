@@ -950,8 +950,23 @@ async fn stand_player_for_spell_cast(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.player_stand_state == PLAYER_STAND_STATE_STAND {
+    let has_standing_cancel_aura = session
+        .active_auras
+        .iter()
+        .any(|aura| active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_STANDING_CANCELS != 0);
+    if session.player_stand_state == PLAYER_STAND_STATE_STAND && !has_standing_cancel_aura {
         return Ok(());
+    }
+    if has_standing_cancel_aura {
+        interrupt_player_consumable_auras(
+            stream,
+            shared_world.maps,
+            shared_world.sessions,
+            session,
+            AURA_INTERRUPT_FLAG_STANDING_CANCELS,
+            header_crypto,
+        )
+        .await?;
     }
     session.player_stand_state = PLAYER_STAND_STATE_STAND;
     let Some(character) = session.active_character.as_ref() else {

@@ -175,6 +175,17 @@ async fn handle_stand_state_change(
     ) {
         return Ok(());
     }
+    if stand_state == PLAYER_STAND_STATE_STAND {
+        interrupt_player_consumable_auras(
+            stream,
+            shared_world.maps,
+            shared_world.sessions,
+            session,
+            AURA_INTERRUPT_FLAG_STANDING_CANCELS,
+            header_crypto,
+        )
+        .await?;
+    }
     session.player_stand_state = stand_state;
 
     let Some(character) = &session.active_character else {
@@ -188,7 +199,7 @@ async fn handle_stand_state_change(
         stream,
         SMSG_UPDATE_OBJECT,
         &build_player_stand_state_update_body(character, stand_state)?,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
     )
     .await?;
     shared_world.sessions.dispatch(packets).await;

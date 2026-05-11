@@ -18316,6 +18316,86 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
 }
 
 #[tokio::test]
+async fn stand_state_change_to_stand_cancels_consumable_regen_aura() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let position = WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0);
+    let now = Instant::now();
+    let regen_aura = ActiveAura {
+        spell_id: 1127,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: Some(PeriodicRegenAura {
+            health_amount: 5,
+            mana_amount: 0,
+            tick_millis: 2_000,
+            next_tick_at: now + Duration::from_secs(2),
+        }),
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    };
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.stand_state = PLAYER_STAND_STATE_SIT;
+    player.active_auras.push(regen_aura.clone());
+    maps.add_player(player).await.unwrap();
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_stand_state: PLAYER_STAND_STATE_SIT,
+        active_auras: vec![regen_aura],
+        ..WorldSessionState::default()
+    };
+
+    handle_stand_state_change(
+        &mut stream,
+        shared_world,
+        &0u32.to_le_bytes(),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_STAND);
+    assert!(session.active_auras.is_empty());
+    assert_eq!(snapshot.active_auras, Vec::new());
+    assert!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == SMSG_UPDATE_OBJECT)
+            .count()
+            >= 2
+    );
+}
+
+#[tokio::test]
 async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut stream = WorldPacketSink::new(tx);

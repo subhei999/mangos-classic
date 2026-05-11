@@ -1066,6 +1066,31 @@ impl MapRuntime {
         player.quest_statuses = reward.quest_statuses;
     }
 
+    fn update_player_level_progression_state(
+        &mut self,
+        character_guid: u32,
+        progression: PlayerLevelProgressionRuntimeUpdate,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        player.level = progression.level;
+        player.xp = progression.xp;
+        player.base_world_stats = progression.world_stats;
+        player.effective_world_stats =
+            player_world_stats_with_active_auras(player.base_world_stats, &player.active_auras);
+        player.spirit = player.effective_world_stats.stats[4];
+        player.max_health = player.effective_world_stats.max_health().max(1);
+        player.health = progression.health.min(player.max_health);
+        player.max_power1 = player.effective_world_stats.max_mana();
+        player.power1 = progression.power1.min(player.max_power1);
+        player.power2 = progression.power2.min(POWER_RAGE_DEFAULT);
+        player.power4 = progression.power4.min(player.max_power4);
+        player.base_combat_stats = progression.combat_stats;
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+    }
+
     fn update_player_inventory(
         &mut self,
         character_guid: u32,

@@ -216,6 +216,18 @@ struct PlayerRewardRuntimeUpdate {
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PlayerLevelProgressionRuntimeUpdate {
+    level: u8,
+    xp: u32,
+    health: u32,
+    power1: u32,
+    power2: u32,
+    power4: u32,
+    world_stats: PlayerWorldStats,
+    combat_stats: PlayerCombatStats,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlayerComboPointsEvent {
     combo_target: ObjectGuid,
@@ -251,6 +263,7 @@ struct MapRuntime {
     gameobject_loots: HashMap<u64, DbGameObjectLootState>,
     gameobject_looting_by_character: HashMap<u32, u64>,
     active_creature_combats: HashMap<u64, CreatureCombatState>,
+    active_creature_spell_casts: HashMap<u64, ActiveDbCreatureSpellCast>,
     creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
     creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     corpses: HashMap<u64, PlayerCorpseRuntime>,
@@ -274,6 +287,30 @@ struct ActivePlayerSpellCast {
     cast_time_millis: u32,
     interrupt_flags: u32,
     damage_pushback_count: u8,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveDbCreatureSpellCast {
+    caster: ObjectGuid,
+    target: ObjectGuid,
+    spell_id: u32,
+    effect: ActiveDbCreatureSpellEffect,
+    cast_time_millis: u32,
+    due_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum ActiveDbCreatureSpellEffect {
+    Damage {
+        amount: u32,
+        school: u8,
+        dmg_class: u32,
+        attributes_ex2: u32,
+        attributes_ex3: u32,
+    },
+    Heal {
+        amount: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +406,29 @@ struct DbCreaturePlayerSpellDamageEvent {
     outcome: SpellDamageOutcome,
     spell_non_melee_log_body: Option<Vec<u8>>,
     spell_miss_log_body: Option<Vec<u8>>,
+    health_update_body: Vec<u8>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug)]
+struct DbCreatureCompletedSpellCastEvent {
+    spell_go_body: Vec<u8>,
+    effect: DbCreatureCompletedSpellEffect,
+}
+
+#[derive(Debug)]
+enum DbCreatureCompletedSpellEffect {
+    PlayerDamage(DbCreaturePlayerSpellDamageEvent),
+    CreatureHeal(DbCreatureSpellHealEvent),
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct DbCreatureSpellHealEvent {
+    target: ObjectGuid,
+    amount: u32,
+    target_health: u32,
+    spell_heal_log_body: Vec<u8>,
     health_update_body: Vec<u8>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
@@ -537,6 +597,7 @@ impl MapRuntime {
             gameobject_loots: HashMap::new(),
             gameobject_looting_by_character: HashMap::new(),
             active_creature_combats: HashMap::new(),
+            active_creature_spell_casts: HashMap::new(),
             creature_combat_leash: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),

@@ -39,6 +39,10 @@
             loot_allowed_players: HashSet::new(),
             loot_method: None,
             active_auras: Vec::new(),
+            next_spell_list_update_at: None,
+            spell_cooldowns_until: HashMap::new(),
+            spell_list_availability_id: None,
+            unavailable_spell_list_positions: HashSet::new(),
             native_display,
             display_id_override: None,
             pending_movement_scripts: Vec::new(),
@@ -93,6 +97,10 @@
                 creature.loot_current_looter = None;
                 creature.loot_allowed_players.clear();
                 creature.loot_method = None;
+                creature.next_spell_list_update_at = None;
+                creature.spell_cooldowns_until.clear();
+                creature.spell_list_availability_id = None;
+                creature.unavailable_spell_list_positions.clear();
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_waypoint_move_at = None;
@@ -286,6 +294,10 @@
         self.life_state = DbCreatureLifeState::Corpse;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();
+        self.next_spell_list_update_at = None;
+        self.spell_cooldowns_until.clear();
+        self.spell_list_availability_id = None;
+        self.unavailable_spell_list_positions.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at = Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
         self.respawn_at = Some(now + respawn_delay);
@@ -334,6 +346,10 @@
     fn remove_corpse(&mut self) {
         self.life_state = DbCreatureLifeState::Dead;
         self.active_auras.clear();
+        self.next_spell_list_update_at = None;
+        self.spell_cooldowns_until.clear();
+        self.spell_list_availability_id = None;
+        self.unavailable_spell_list_positions.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
@@ -372,6 +388,10 @@
         self.life_state = DbCreatureLifeState::Alive;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();
+        self.next_spell_list_update_at = None;
+        self.spell_cooldowns_until.clear();
+        self.spell_list_availability_id = None;
+        self.unavailable_spell_list_positions.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.respawn_at = None;

@@ -304,6 +304,7 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         trainer_type: 0,
         trainer_class: 0,
         pet_spell_data_id: 0,
+        spell_list: 0,
         civilian: 0,
         corpse_decay: 0,
         movement_type: DB_MOTION_TYPE_IDLE,
@@ -348,6 +349,96 @@ fn test_creature_spawn(entry: u32) -> CreatureSpawnQuery {
         formation_waypoint_path_id: None,
         template: test_creature_template(entry),
         waypoint_path: Vec::new(),
+    }
+}
+
+fn test_creature_spell_list_row(
+    id: u32,
+    position: u32,
+    spell_id: u32,
+    initial_millis: u32,
+    repeat_millis: u32,
+) -> wow_db::CreatureSpellListQuery {
+    wow_db::CreatureSpellListQuery {
+        id,
+        chance_support_action: 0,
+        chance_ranged_attack: 100,
+        position,
+        spell_id,
+        flags: CREATURE_SPELL_LIST_FLAG_RANGED_ACTION,
+        combat_condition: -1,
+        target_id: CREATURE_SPELL_LIST_TARGET_CURRENT,
+        script_id: 0,
+        availability: 100,
+        probability: 0,
+        initial_min: initial_millis,
+        initial_max: initial_millis,
+        repeat_min: repeat_millis,
+        repeat_max: repeat_millis,
+        target_type: CREATURE_SPELL_LIST_TARGETING_HARDCODED,
+        target_param1: 0,
+        target_param2: 0,
+        target_param3: 0,
+        target_unit_condition: -1,
+    }
+}
+
+fn test_unit_condition_row(
+    id: i32,
+    variable: u32,
+    operation: u32,
+    value: i32,
+) -> wow_db::UnitConditionQuery {
+    wow_db::UnitConditionQuery {
+        id,
+        flags: 0,
+        variable_0: variable,
+        variable_1: 0,
+        variable_2: 0,
+        variable_3: 0,
+        variable_4: 0,
+        variable_5: 0,
+        variable_6: 0,
+        variable_7: 0,
+        op_0: operation,
+        op_1: 0,
+        op_2: 0,
+        op_3: 0,
+        op_4: 0,
+        op_5: 0,
+        op_6: 0,
+        op_7: 0,
+        value_0: value,
+        value_1: 0,
+        value_2: 0,
+        value_3: 0,
+        value_4: 0,
+        value_5: 0,
+        value_6: 0,
+        value_7: 0,
+    }
+}
+
+fn test_combat_condition_row(id: i32, self_condition_id: i32) -> wow_db::CombatConditionQuery {
+    wow_db::CombatConditionQuery {
+        id,
+        world_state_expression_id: 0,
+        self_condition_id,
+        target_condition_id: 0,
+        friend_condition_logic: 0,
+        enemy_condition_logic: 0,
+        friend_condition_id_0: 0,
+        friend_condition_id_1: 0,
+        friend_condition_op_0: 0,
+        friend_condition_op_1: 0,
+        friend_condition_count_0: 0,
+        friend_condition_count_1: 0,
+        enemy_condition_id_0: 0,
+        enemy_condition_id_1: 0,
+        enemy_condition_op_0: 0,
+        enemy_condition_op_1: 0,
+        enemy_condition_count_0: 0,
+        enemy_condition_count_1: 0,
     }
 }
 
@@ -10623,6 +10714,462 @@ fn map_runtime_db_creature_spell_damage_to_player_uses_shared_outcome_and_logs()
         .observer_packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_list_schedules_direct_damage_cast() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 180;
+    spawn.template.spell_list = 42;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut no_roll_spell = test_creature_spell_list_row(42, 1, 999_012, 0, 5_000);
+    no_roll_spell.flags = 0;
+    let spell_list = vec![no_roll_spell];
+
+    assert!(
+        map.ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now,
+        )
+        .is_none(),
+        "first AI update should arm the CMaNGOS-style 1200ms spell-list tick"
+    );
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .expect("spell should become ready on the first AI tick");
+
+    assert_eq!(ready.spell.spell_id, 999_012);
+    assert_eq!(ready.target, victim);
+    assert!(
+        !map.creatures
+            .get(&creature_guid.raw())
+            .expect("creature")
+            .spell_cooldowns_until
+            .contains_key(&999_012),
+        "selection alone should not commit the repeat cooldown"
+    );
+    map.set_db_creature_spell_repeat_cooldown(
+        creature_guid,
+        ready.spell.spell_id,
+        ready.spell.repeat_min,
+        ready.spell.repeat_max,
+        now,
+    );
+    assert!(map
+        .creatures
+        .get(&creature_guid.raw())
+        .expect("creature")
+        .spell_cooldowns_until
+        .contains_key(&999_012));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_list_supports_self_and_condition_gates() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 183;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut gated = test_creature_spell_list_row(42, 1, 999_013, 0, 0);
+    gated.flags = 0;
+    gated.combat_condition = 7;
+    let mut self_spell = test_creature_spell_list_row(42, 2, 999_014, 0, 0);
+    self_spell.flags = 0;
+    self_spell.target_id = CREATURE_SPELL_LIST_TARGET_SELF;
+
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[gated.clone()],
+            &DbCreatureSpellConditionCache::default(),
+            now,
+        )
+        .is_none());
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[gated, self_spell],
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .expect("supported self-target spell should remain eligible");
+
+    assert_eq!(ready.spell.spell_id, 999_014);
+    assert_eq!(ready.target, creature_guid);
+}
+
+#[test]
+fn map_runtime_db_creature_spell_target_unit_condition_filters_selected_target() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 186;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut spell = test_creature_spell_list_row(42, 1, 999_017, 0, 0);
+    spell.flags = 0;
+    spell.target_unit_condition = 100;
+    let mut conditions = DbCreatureSpellConditionCache::default();
+    conditions.unit_conditions.insert(
+        100,
+        test_unit_condition_row(100, UNIT_CONDITION_HEALTH_PERCENT, 3, 50),
+    );
+
+    assert!(map
+        .ready_db_creature_spell_cast(creature_guid, victim, &[spell.clone()], &conditions, now)
+        .is_none());
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[spell.clone()],
+            &conditions,
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .is_none());
+
+    let player = map.players.get_mut(&1).expect("player");
+    player.health = 10;
+    player.max_health = 100;
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[spell],
+            &conditions,
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS * 2),
+        )
+        .expect("low-health target should satisfy target UnitCondition");
+
+    assert_eq!(ready.spell.spell_id, 999_017);
+    assert_eq!(ready.target, victim);
+}
+
+#[test]
+fn map_runtime_db_creature_spell_combat_condition_filters_self_condition() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 187;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.min_level_health = 100;
+    spawn.template.max_level_health = 100;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut spell = test_creature_spell_list_row(42, 1, 999_018, 0, 0);
+    spell.flags = 0;
+    spell.combat_condition = 200;
+    let mut conditions = DbCreatureSpellConditionCache::default();
+    conditions.unit_conditions.insert(
+        201,
+        test_unit_condition_row(201, UNIT_CONDITION_HEALTH_PERCENT, 3, 50),
+    );
+    conditions
+        .combat_conditions
+        .insert(200, test_combat_condition_row(200, 201));
+
+    assert!(map
+        .ready_db_creature_spell_cast(creature_guid, victim, &[spell.clone()], &conditions, now)
+        .is_none());
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[spell.clone()],
+            &conditions,
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .is_none());
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .expect("creature")
+        .health = 25;
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &[spell],
+            &conditions,
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS * 2),
+        )
+        .expect("low-health caster should satisfy CombatCondition self condition");
+
+    assert_eq!(ready.spell.spell_id, 999_018);
+}
+
+#[test]
+fn map_runtime_db_creature_spell_attack_target_selects_bottom_aggro() {
+    let mut map = MapRuntime::new(0, 0);
+    let creature_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, creature_position);
+    insert_map_runtime_player_for_test(
+        &mut map,
+        2,
+        WorldPosition::new(0, -8953.0, -130.0, 83.5, 0.0),
+    );
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 184;
+    spawn.position_x = creature_position.x + 1.0;
+    spawn.position_y = creature_position.y;
+    spawn.position_z = creature_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let current_victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let low_threat = ObjectGuid::new(HighGuid::Player, 0, 2);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, current_victim, now)
+        .expect("combat should start");
+    map.add_db_creature_threat(creature_guid, current_victim, 10.0);
+    map.add_db_creature_threat(creature_guid, low_threat, 1.0);
+    let mut spell = test_creature_spell_list_row(42, 1, 999_015, 0, 0);
+    spell.flags = 0;
+    spell.target_type = CREATURE_SPELL_LIST_TARGETING_ATTACK;
+    spell.target_param1 = CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO;
+
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            current_victim,
+            &[spell.clone()],
+            &DbCreatureSpellConditionCache::default(),
+            now,
+        )
+        .is_none());
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            current_victim,
+            &[spell],
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .expect("attack target selector should choose from threat list");
+
+    assert_eq!(ready.target, low_threat);
+}
+
+#[test]
+fn creature_spell_list_availability_matches_cmangos_lifetime_roll() {
+    assert!(db_creature_spell_available_for_lifetime(100, 100));
+    assert!(db_creature_spell_available_for_lifetime(50, 50));
+    assert!(!db_creature_spell_available_for_lifetime(50, 51));
+    assert!(db_creature_spell_available_for_lifetime(0, 0));
+    assert!(!db_creature_spell_available_for_lifetime(0, 1));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_cast_can_heal_creature_target() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 185;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.min_level_health = 80;
+    spawn.template.max_level_health = 80;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .expect("creature")
+        .health = 20;
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: creature_guid,
+        spell_id: 999_016,
+        effect: ActiveDbCreatureSpellEffect::Heal { amount: 15 },
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("heal cast should start");
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("heal cast should complete");
+    let DbCreatureCompletedSpellEffect::CreatureHeal(heal) = completed.effect else {
+        panic!("heal cast should complete as creature heal");
+    };
+
+    assert_eq!(heal.target, creature_guid);
+    assert_eq!(heal.amount, 15);
+    assert_eq!(heal.target_health, 35);
+    assert!(heal
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_SPELLHEALLOG));
+    assert!(heal
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 181;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+
+    let start_packets = map
+        .start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+            caster: creature_guid,
+            target: victim,
+            spell_id: 999_012,
+            effect: ActiveDbCreatureSpellEffect::Damage {
+                amount: 6,
+                school: 1,
+                dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+                attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+                attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+            },
+            cast_time_millis: 1_500,
+            due_at: now + Duration::from_millis(1_500),
+        })
+        .unwrap()
+        .expect("cast should start");
+    assert_eq!(start_packets.len(), 2);
+    assert!(start_packets
+        .iter()
+        .all(|(_, packet)| packet.opcode == SMSG_SPELL_START));
+    assert!(map
+        .complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .is_none());
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(1_500),
+        )
+        .unwrap()
+        .expect("cast should complete once due");
+
+    let DbCreatureCompletedSpellEffect::PlayerDamage(damage) = completed.effect else {
+        panic!("direct damage cast should complete as player damage");
+    };
+    assert_eq!(damage.damage, 6);
+    assert_eq!(damage.victim_health, 14);
+    assert!(damage.spell_non_melee_log_body.as_ref().is_some());
+    assert!(map
+        .active_db_creature_spell_cast_due_at(creature_guid)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 182;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: 999_012,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 6,
+            school: 1,
+            dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+            attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+            attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+        },
+        cast_time_millis: 1_500,
+        due_at: now + Duration::from_millis(1_500),
+    })
+    .unwrap()
+    .expect("cast should start");
+    map.players.get_mut(&1).expect("player").health = 0;
+
+    assert!(map
+        .complete_ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(1_500),
+        )
+        .unwrap()
+        .is_none());
+    assert!(map
+        .active_db_creature_spell_cast_due_at(creature_guid)
+        .is_none());
 }
 
 #[test]
@@ -23020,6 +23567,44 @@ fn parses_gm_dot_commands_for_creature_spawn_and_die() {
         Some(Ok(GmDotCommand::NpcDelete(Some(123))))
     );
     assert_eq!(parse_gm_dot_command(".die"), Some(Ok(GmDotCommand::Die)));
+    assert_eq!(
+        parse_gm_dot_command(".levelup"),
+        Some(Ok(GmDotCommand::LevelUp(1)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".levelup 5"),
+        Some(Ok(GmDotCommand::LevelUp(5)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".LEVELUP 5"),
+        Some(Ok(GmDotCommand::LevelUp(5)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".levelup +5"),
+        Some(Ok(GmDotCommand::LevelUp(5)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".levelup -2"),
+        Some(Ok(GmDotCommand::LevelUp(-2)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".level +10"),
+        Some(Ok(GmDotCommand::LevelUp(10)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".level 10"),
+        Some(Ok(GmDotCommand::LevelUp(10)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".character level 40"),
+        Some(Ok(GmDotCommand::LevelSet(40)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".character level 999"),
+        Some(Ok(GmDotCommand::LevelSet(DEFAULT_MAX_PLAYER_LEVEL)))
+    );
+    assert_eq!(gm_relative_level(58, 5), DEFAULT_MAX_PLAYER_LEVEL);
+    assert_eq!(gm_relative_level(3, -10), 1);
 }
 
 #[test]

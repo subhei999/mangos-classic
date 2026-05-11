@@ -877,6 +877,32 @@ fn advance_level_capped_combat_skill_maxes(
         .collect()
 }
 
+fn set_level_capped_combat_skill_maxes(
+    character_level: u8,
+    character_skills: &mut [CharacterSkill],
+) -> Vec<SkillProgressionUpdate> {
+    let level_cap = u16::from(character_level.max(1)).saturating_mul(5);
+    character_skills
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(slot, skill)| {
+            if !is_level_capped_combat_skill(skill.skill) {
+                return None;
+            }
+            let old_value = skill.value;
+            let old_max = skill.max;
+            skill.max = level_cap;
+            skill.value = skill.value.min(level_cap);
+            (skill.value != old_value || skill.max != old_max).then_some(SkillProgressionUpdate {
+                slot,
+                skill: skill.skill,
+                value: skill.value,
+                max: skill.max,
+            })
+        })
+        .collect()
+}
+
 fn is_level_capped_combat_skill(skill_id: u16) -> bool {
     matches!(
         skill_id,

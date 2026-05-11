@@ -16,6 +16,10 @@ struct ObjectMgr {
     exclusive_group_quests: tokio::sync::Mutex<std::collections::HashMap<i32, Vec<u32>>>,
     condition_entries:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::ConditionQuery>>>,
+    unit_conditions:
+        tokio::sync::Mutex<std::collections::HashMap<i32, Option<wow_db::UnitConditionQuery>>>,
+    combat_conditions:
+        tokio::sync::Mutex<std::collections::HashMap<i32, Option<wow_db::CombatConditionQuery>>>,
     game_event_schedules: tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
     creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
@@ -25,6 +29,8 @@ struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     spell_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellTemplateQuery>>>,
+    creature_spell_lists:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureSpellListQuery>>>,
     stats: ObjectMgrCacheStats,
 }
 
@@ -34,8 +40,11 @@ struct ObjectMgrCacheStats {
     quest_relation_db_loads: std::sync::atomic::AtomicU64,
     quest_chain_db_loads: std::sync::atomic::AtomicU64,
     condition_db_loads: std::sync::atomic::AtomicU64,
+    unit_condition_db_loads: std::sync::atomic::AtomicU64,
+    combat_condition_db_loads: std::sync::atomic::AtomicU64,
     loot_template_db_loads: std::sync::atomic::AtomicU64,
     spell_template_db_loads: std::sync::atomic::AtomicU64,
+    creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(test)]
@@ -45,8 +54,11 @@ struct ObjectMgrCacheSnapshot {
     quest_relation_db_loads: u64,
     quest_chain_db_loads: u64,
     condition_db_loads: u64,
+    unit_condition_db_loads: u64,
+    combat_condition_db_loads: u64,
     loot_template_db_loads: u64,
     spell_template_db_loads: u64,
+    creature_spell_list_db_loads: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,13 +72,31 @@ enum QuestRelationKind {
 impl ObjectMgr {
     async fn load_conditions(&self, world_db_pool: &MySqlPool) -> anyhow::Result<()> {
         let conditions = wow_db::get_conditions(world_db_pool).await?;
+        let unit_conditions = wow_db::get_unit_conditions(world_db_pool).await?;
+        let combat_conditions = wow_db::get_combat_conditions(world_db_pool).await?;
         self.stats
             .condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.stats
+            .unit_condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.stats
+            .combat_condition_db_loads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut cache = self.condition_entries.lock().await;
         cache.clear();
         for condition in conditions {
             cache.insert(condition.condition_entry, Some(condition));
+        }
+        let mut cache = self.unit_conditions.lock().await;
+        cache.clear();
+        for condition in unit_conditions {
+            cache.insert(condition.id, Some(condition));
+        }
+        let mut cache = self.combat_conditions.lock().await;
+        cache.clear();
+        for condition in combat_conditions {
+            cache.insert(condition.id, Some(condition));
         }
         Ok(())
     }
@@ -113,6 +143,52 @@ impl ObjectMgr {
             .lock()
             .await
             .insert(condition_entry, condition.clone());
+        Ok(condition)
+    }
+
+    async fn unit_condition(
+        &self,
+        world_db_pool: &MySqlPool,
+        id: i32,
+    ) -> anyhow::Result<Option<wow_db::UnitConditionQuery>> {
+        {
+            let cache = self.unit_conditions.lock().await;
+            if let Some(condition) = cache.get(&id) {
+                return Ok(condition.clone());
+            }
+        }
+
+        let condition = wow_db::get_unit_condition(world_db_pool, id).await?;
+        self.stats
+            .unit_condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.unit_conditions
+            .lock()
+            .await
+            .insert(id, condition.clone());
+        Ok(condition)
+    }
+
+    async fn combat_condition(
+        &self,
+        world_db_pool: &MySqlPool,
+        id: i32,
+    ) -> anyhow::Result<Option<wow_db::CombatConditionQuery>> {
+        {
+            let cache = self.combat_conditions.lock().await;
+            if let Some(condition) = cache.get(&id) {
+                return Ok(condition.clone());
+            }
+        }
+
+        let condition = wow_db::get_combat_condition(world_db_pool, id).await?;
+        self.stats
+            .combat_condition_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.combat_conditions
+            .lock()
+            .await
+            .insert(id, condition.clone());
         Ok(condition)
     }
 
@@ -384,6 +460,29 @@ impl ObjectMgr {
         Ok(template)
     }
 
+    async fn creature_spell_list(
+        &self,
+        world_db_pool: &MySqlPool,
+        list_id: u32,
+    ) -> anyhow::Result<Vec<wow_db::CreatureSpellListQuery>> {
+        {
+            let cache = self.creature_spell_lists.lock().await;
+            if let Some(list) = cache.get(&list_id) {
+                return Ok(list.clone());
+            }
+        }
+
+        let list = wow_db::get_creature_spell_list(world_db_pool, list_id).await?;
+        self.stats
+            .creature_spell_list_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.creature_spell_lists
+            .lock()
+            .await
+            .insert(list_id, list.clone());
+        Ok(list)
+    }
+
     async fn quest_relation_ids(
         &self,
         world_db_pool: &MySqlPool,
@@ -553,6 +652,14 @@ impl ObjectMgr {
                 .stats
                 .condition_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
+            unit_condition_db_loads: self
+                .stats
+                .unit_condition_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            combat_condition_db_loads: self
+                .stats
+                .combat_condition_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
             loot_template_db_loads: self
                 .stats
                 .loot_template_db_loads
@@ -560,6 +667,10 @@ impl ObjectMgr {
             spell_template_db_loads: self
                 .stats
                 .spell_template_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            creature_spell_list_db_loads: self
+                .stats
+                .creature_spell_list_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
         }
     }

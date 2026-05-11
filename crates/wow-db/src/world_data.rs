@@ -83,6 +83,7 @@ pub struct CreatureTemplateQuery {
     pub trainer_type: i8,
     pub trainer_class: u8,
     pub pet_spell_data_id: u32,
+    pub spell_list: u32,
     pub civilian: u8,
     pub corpse_decay: u32,
     pub movement_type: u8,
@@ -209,6 +210,116 @@ pub struct CreatureLootQuery {
     pub max_count: u32,
     pub display_id: u32,
     pub chance_or_quest_chance: f32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct CreatureSpellListQuery {
+    pub id: u32,
+    pub chance_support_action: u32,
+    pub chance_ranged_attack: u32,
+    pub position: u32,
+    pub spell_id: u32,
+    pub flags: u32,
+    pub combat_condition: i32,
+    pub target_id: u32,
+    pub script_id: u32,
+    pub availability: u32,
+    pub probability: u32,
+    pub initial_min: u32,
+    pub initial_max: u32,
+    pub repeat_min: u32,
+    pub repeat_max: u32,
+    pub target_type: u32,
+    pub target_param1: i32,
+    pub target_param2: i32,
+    pub target_param3: i32,
+    pub target_unit_condition: i32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnitConditionQuery {
+    pub id: i32,
+    pub flags: u32,
+    pub variable_0: u32,
+    pub variable_1: u32,
+    pub variable_2: u32,
+    pub variable_3: u32,
+    pub variable_4: u32,
+    pub variable_5: u32,
+    pub variable_6: u32,
+    pub variable_7: u32,
+    pub op_0: u32,
+    pub op_1: u32,
+    pub op_2: u32,
+    pub op_3: u32,
+    pub op_4: u32,
+    pub op_5: u32,
+    pub op_6: u32,
+    pub op_7: u32,
+    pub value_0: i32,
+    pub value_1: i32,
+    pub value_2: i32,
+    pub value_3: i32,
+    pub value_4: i32,
+    pub value_5: i32,
+    pub value_6: i32,
+    pub value_7: i32,
+}
+
+impl UnitConditionQuery {
+    pub fn variables(&self) -> [u32; 8] {
+        [
+            self.variable_0,
+            self.variable_1,
+            self.variable_2,
+            self.variable_3,
+            self.variable_4,
+            self.variable_5,
+            self.variable_6,
+            self.variable_7,
+        ]
+    }
+
+    pub fn operations(&self) -> [u32; 8] {
+        [
+            self.op_0, self.op_1, self.op_2, self.op_3, self.op_4, self.op_5, self.op_6, self.op_7,
+        ]
+    }
+
+    pub fn values(&self) -> [i32; 8] {
+        [
+            self.value_0,
+            self.value_1,
+            self.value_2,
+            self.value_3,
+            self.value_4,
+            self.value_5,
+            self.value_6,
+            self.value_7,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CombatConditionQuery {
+    pub id: i32,
+    pub world_state_expression_id: i32,
+    pub self_condition_id: i32,
+    pub target_condition_id: i32,
+    pub friend_condition_logic: i32,
+    pub enemy_condition_logic: i32,
+    pub friend_condition_id_0: i32,
+    pub friend_condition_id_1: i32,
+    pub friend_condition_op_0: i32,
+    pub friend_condition_op_1: i32,
+    pub friend_condition_count_0: i32,
+    pub friend_condition_count_1: i32,
+    pub enemy_condition_id_0: i32,
+    pub enemy_condition_id_1: i32,
+    pub enemy_condition_op_0: i32,
+    pub enemy_condition_op_1: i32,
+    pub enemy_condition_count_0: i32,
+    pub enemy_condition_count_1: i32,
 }
 
 impl CreatureLootQuery {
@@ -415,6 +526,7 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.TrainerType AS template_trainer_type, \
                 creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
+                CAST(creature_template.SpellList AS UNSIGNED) AS template_spell_list, \
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
@@ -775,6 +887,150 @@ pub async fn get_spell_template_query(
     .fetch_optional(pool)
     .await
     .map_err(Into::into)
+}
+
+pub async fn get_creature_spell_list(
+    pool: &MySqlPool,
+    list_id: u32,
+) -> Result<Vec<CreatureSpellListQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_spell_list_load");
+    let rows = sqlx::query_as::<_, CreatureSpellListQuery>(
+        "SELECT entry.Id AS id, \
+                entry.ChanceSupportAction AS chance_support_action, \
+                entry.ChanceRangedAttack AS chance_ranged_attack, \
+                list.Position AS position, list.SpellId AS spell_id, list.Flags AS flags, \
+                list.CombatCondition AS combat_condition, list.TargetId AS target_id, \
+                list.ScriptId AS script_id, list.Availability AS availability, \
+                list.Probability AS probability, list.InitialMin AS initial_min, \
+                list.InitialMax AS initial_max, list.RepeatMin AS repeat_min, \
+                list.RepeatMax AS repeat_max, \
+                COALESCE(target.Type, 0) AS target_type, \
+                COALESCE(target.Param1, 0) AS target_param1, \
+                COALESCE(target.Param2, 0) AS target_param2, \
+                COALESCE(target.Param3, 0) AS target_param3, \
+                COALESCE(target.UnitCondition, -1) AS target_unit_condition \
+         FROM creature_spell_list_entry entry \
+         JOIN creature_spell_list list ON list.Id = entry.Id \
+         LEFT JOIN creature_spell_targeting target ON target.Id = list.TargetId \
+         WHERE entry.Id = ? \
+         ORDER BY list.Position",
+    )
+    .bind(list_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::from)?;
+    if !rows.is_empty() {
+        return Ok(rows);
+    }
+
+    get_legacy_creature_template_spell_list(pool, list_id).await
+}
+
+async fn get_legacy_creature_template_spell_list(
+    pool: &MySqlPool,
+    list_id: u32,
+) -> Result<Vec<CreatureSpellListQuery>, DbError> {
+    let entry = list_id / 100;
+    let set_id = list_id % 100;
+    if entry == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::new();
+    let template_rows = sqlx::query_as::<_, LegacyCreatureTemplateSpellRow>(
+        "SELECT entry, setId AS set_id, spell1, spell2, spell3, spell4, spell5, \
+                spell6, spell7, spell8, spell9, spell10 \
+         FROM creature_template_spells \
+         WHERE entry = ? AND setId = ?",
+    )
+    .bind(entry)
+    .bind(set_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::from)?;
+    for row in template_rows {
+        let spells = [
+            row.spell1,
+            row.spell2,
+            row.spell3,
+            row.spell4,
+            row.spell5,
+            row.spell6,
+            row.spell7,
+            row.spell8,
+            row.spell9,
+            row.spell10,
+        ];
+        for (position, spell_id) in spells.into_iter().enumerate() {
+            if spell_id == 0 {
+                continue;
+            }
+            let cooldown = get_creature_cooldown_range(pool, entry, spell_id).await?;
+            rows.push(CreatureSpellListQuery {
+                id: row.entry.saturating_mul(100).saturating_add(row.set_id),
+                chance_support_action: 0,
+                chance_ranged_attack: 0,
+                position: position as u32,
+                spell_id,
+                flags: 0,
+                combat_condition: -1,
+                target_id: 1,
+                script_id: 0,
+                availability: 100,
+                probability: 0,
+                initial_min: 0,
+                initial_max: 0,
+                repeat_min: cooldown.map(|cooldown| cooldown.0).unwrap_or(0),
+                repeat_max: cooldown.map(|cooldown| cooldown.1).unwrap_or(0),
+                target_type: 0,
+                target_param1: 0,
+                target_param2: 0,
+                target_param3: 0,
+                target_unit_condition: -1,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+#[derive(Debug, FromRow)]
+struct LegacyCreatureTemplateSpellRow {
+    entry: u32,
+    set_id: u32,
+    spell1: u32,
+    spell2: u32,
+    spell3: u32,
+    spell4: u32,
+    spell5: u32,
+    spell6: u32,
+    spell7: u32,
+    spell8: u32,
+    spell9: u32,
+    spell10: u32,
+}
+
+async fn get_creature_cooldown_range(
+    pool: &MySqlPool,
+    entry: u32,
+    spell_id: u32,
+) -> Result<Option<(u32, u32)>, DbError> {
+    let row = sqlx::query_as::<_, CreatureCooldownRow>(
+        "SELECT CooldownMin AS cooldown_min, CooldownMax AS cooldown_max \
+         FROM creature_cooldowns \
+         WHERE Entry = ? AND SpellId = ?",
+    )
+    .bind(entry)
+    .bind(spell_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(DbError::from)?;
+    Ok(row.map(|row| (row.cooldown_min, row.cooldown_max)))
+}
+
+#[derive(Debug, FromRow)]
+struct CreatureCooldownRow {
+    cooldown_min: u32,
+    cooldown_max: u32,
 }
 
 pub async fn get_creature_loot_items(
@@ -1481,6 +1737,134 @@ pub async fn get_condition(
     .map_err(Into::into)
 }
 
+pub async fn get_unit_conditions(pool: &MySqlPool) -> Result<Vec<UnitConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("unit_condition_load");
+    sqlx::query_as::<_, UnitConditionQuery>(
+        "SELECT Id AS id, CAST(Flags AS UNSIGNED) AS flags, \
+                CAST(Variable_0 AS UNSIGNED) AS variable_0, \
+                CAST(Variable_1 AS UNSIGNED) AS variable_1, \
+                CAST(Variable_2 AS UNSIGNED) AS variable_2, \
+                CAST(Variable_3 AS UNSIGNED) AS variable_3, \
+                CAST(Variable_4 AS UNSIGNED) AS variable_4, \
+                CAST(Variable_5 AS UNSIGNED) AS variable_5, \
+                CAST(Variable_6 AS UNSIGNED) AS variable_6, \
+                CAST(Variable_7 AS UNSIGNED) AS variable_7, \
+                CAST(Op_0 AS UNSIGNED) AS op_0, \
+                CAST(Op_1 AS UNSIGNED) AS op_1, \
+                CAST(Op_2 AS UNSIGNED) AS op_2, \
+                CAST(Op_3 AS UNSIGNED) AS op_3, \
+                CAST(Op_4 AS UNSIGNED) AS op_4, \
+                CAST(Op_5 AS UNSIGNED) AS op_5, \
+                CAST(Op_6 AS UNSIGNED) AS op_6, \
+                CAST(Op_7 AS UNSIGNED) AS op_7, \
+                Value_0 AS value_0, Value_1 AS value_1, \
+                Value_2 AS value_2, Value_3 AS value_3, \
+                Value_4 AS value_4, Value_5 AS value_5, \
+                Value_6 AS value_6, Value_7 AS value_7 \
+         FROM unit_condition \
+         ORDER BY Id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_unit_condition(
+    pool: &MySqlPool,
+    id: i32,
+) -> Result<Option<UnitConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("unit_condition_single_load");
+    sqlx::query_as::<_, UnitConditionQuery>(
+        "SELECT Id AS id, CAST(Flags AS UNSIGNED) AS flags, \
+                CAST(Variable_0 AS UNSIGNED) AS variable_0, \
+                CAST(Variable_1 AS UNSIGNED) AS variable_1, \
+                CAST(Variable_2 AS UNSIGNED) AS variable_2, \
+                CAST(Variable_3 AS UNSIGNED) AS variable_3, \
+                CAST(Variable_4 AS UNSIGNED) AS variable_4, \
+                CAST(Variable_5 AS UNSIGNED) AS variable_5, \
+                CAST(Variable_6 AS UNSIGNED) AS variable_6, \
+                CAST(Variable_7 AS UNSIGNED) AS variable_7, \
+                CAST(Op_0 AS UNSIGNED) AS op_0, \
+                CAST(Op_1 AS UNSIGNED) AS op_1, \
+                CAST(Op_2 AS UNSIGNED) AS op_2, \
+                CAST(Op_3 AS UNSIGNED) AS op_3, \
+                CAST(Op_4 AS UNSIGNED) AS op_4, \
+                CAST(Op_5 AS UNSIGNED) AS op_5, \
+                CAST(Op_6 AS UNSIGNED) AS op_6, \
+                CAST(Op_7 AS UNSIGNED) AS op_7, \
+                Value_0 AS value_0, Value_1 AS value_1, \
+                Value_2 AS value_2, Value_3 AS value_3, \
+                Value_4 AS value_4, Value_5 AS value_5, \
+                Value_6 AS value_6, Value_7 AS value_7 \
+         FROM unit_condition \
+         WHERE Id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_combat_conditions(pool: &MySqlPool) -> Result<Vec<CombatConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("combat_condition_load");
+    sqlx::query_as::<_, CombatConditionQuery>(
+        "SELECT Id AS id, WorldStateExpressionID AS world_state_expression_id, \
+                SelfConditionID AS self_condition_id, \
+                TargetConditionID AS target_condition_id, \
+                FriendConditionLogic AS friend_condition_logic, \
+                EnemyConditionLogic AS enemy_condition_logic, \
+                FriendConditionID_0 AS friend_condition_id_0, \
+                FriendConditionID_1 AS friend_condition_id_1, \
+                FriendConditionOp_0 AS friend_condition_op_0, \
+                FriendConditionOp_1 AS friend_condition_op_1, \
+                FriendConditionCount_0 AS friend_condition_count_0, \
+                FriendConditionCount_1 AS friend_condition_count_1, \
+                EnemyConditionID_0 AS enemy_condition_id_0, \
+                EnemyConditionID_1 AS enemy_condition_id_1, \
+                EnemyConditionOp_0 AS enemy_condition_op_0, \
+                EnemyConditionOp_1 AS enemy_condition_op_1, \
+                EnemyConditionCount_0 AS enemy_condition_count_0, \
+                EnemyConditionCount_1 AS enemy_condition_count_1 \
+         FROM combat_condition \
+         ORDER BY Id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_combat_condition(
+    pool: &MySqlPool,
+    id: i32,
+) -> Result<Option<CombatConditionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("combat_condition_single_load");
+    sqlx::query_as::<_, CombatConditionQuery>(
+        "SELECT Id AS id, WorldStateExpressionID AS world_state_expression_id, \
+                SelfConditionID AS self_condition_id, \
+                TargetConditionID AS target_condition_id, \
+                FriendConditionLogic AS friend_condition_logic, \
+                EnemyConditionLogic AS enemy_condition_logic, \
+                FriendConditionID_0 AS friend_condition_id_0, \
+                FriendConditionID_1 AS friend_condition_id_1, \
+                FriendConditionOp_0 AS friend_condition_op_0, \
+                FriendConditionOp_1 AS friend_condition_op_1, \
+                FriendConditionCount_0 AS friend_condition_count_0, \
+                FriendConditionCount_1 AS friend_condition_count_1, \
+                EnemyConditionID_0 AS enemy_condition_id_0, \
+                EnemyConditionID_1 AS enemy_condition_id_1, \
+                EnemyConditionOp_0 AS enemy_condition_op_0, \
+                EnemyConditionOp_1 AS enemy_condition_op_1, \
+                EnemyConditionCount_0 AS enemy_condition_count_0, \
+                EnemyConditionCount_1 AS enemy_condition_count_1 \
+         FROM combat_condition \
+         WHERE Id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 pub async fn get_dbscripts_on_creature_movement(
     pool: &MySqlPool,
 ) -> Result<Vec<DbScriptCommandQuery>, DbError> {
@@ -1620,6 +2004,7 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.TrainerType AS template_trainer_type, \
                 creature_template.TrainerClass AS template_trainer_class, \
                 creature_template.PetSpellDataId AS template_pet_spell_data_id, \
+                CAST(creature_template.SpellList AS UNSIGNED) AS template_spell_list, \
                 creature_template.Civilian AS template_civilian, \
                 creature_template.CorpseDecay AS template_corpse_decay, \
                 creature_template.MovementType AS template_movement_type, \
@@ -2495,6 +2880,7 @@ mod world_data_tests {
                 trainer_type: 0,
                 trainer_class: 0,
                 pet_spell_data_id: 0,
+                spell_list: 0,
                 civilian: 0,
                 corpse_decay: 0,
                 movement_type: 0,
@@ -3185,6 +3571,7 @@ struct CreatureSpawnRow {
     template_trainer_type: i8,
     template_trainer_class: u8,
     template_pet_spell_data_id: u32,
+    template_spell_list: u32,
     template_civilian: u8,
     template_corpse_decay: u32,
     template_movement_type: u8,
@@ -3302,6 +3689,7 @@ impl CreatureSpawnRow {
                 trainer_type: self.template_trainer_type,
                 trainer_class: self.template_trainer_class,
                 pet_spell_data_id: self.template_pet_spell_data_id,
+                spell_list: self.template_spell_list,
                 civilian: self.template_civilian,
                 corpse_decay: self.template_corpse_decay,
                 movement_type: self.template_movement_type,

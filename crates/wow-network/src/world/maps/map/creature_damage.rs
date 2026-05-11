@@ -170,6 +170,7 @@ impl MapRuntime {
                 if creature.health == 0 {
                     creature.begin_corpse(now, now_epoch_secs);
                     self.active_creature_combats.remove(&raw_guid);
+                    self.active_creature_spell_casts.remove(&raw_guid);
                     self.creature_combat_leash.remove(&raw_guid);
                     self.creature_threats.remove(&raw_guid);
                     break;
@@ -319,6 +320,7 @@ impl MapRuntime {
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.active_creature_combats.remove(&creature_guid.raw());
+            self.active_creature_spell_casts.remove(&creature_guid.raw());
             self.creature_combat_leash.remove(&creature_guid.raw());
             self.creature_threats.remove(&creature_guid.raw());
         } else if self.active_creature_combats.contains_key(&creature_guid.raw()) {

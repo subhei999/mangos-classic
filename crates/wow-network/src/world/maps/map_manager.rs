@@ -471,6 +471,21 @@ impl MapRuntimeManager {
             .update_player_reward_state(character_guid, reward);
     }
 
+    async fn update_player_level_progression_state(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        progression: PlayerLevelProgressionRuntimeUpdate,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .update_player_level_progression_state(character_guid, progression);
+    }
+
     async fn update_player_inventory(
         &self,
         map_id: u32,
@@ -2019,6 +2034,87 @@ impl MapRuntimeManager {
             next_swing_at,
         );
         event
+    }
+
+    async fn ready_db_creature_spell_cast(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        spell_list: &[wow_db::CreatureSpellListQuery],
+        conditions: &DbCreatureSpellConditionCache,
+        now: Instant,
+    ) -> Option<ReadyDbCreatureSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let ready = map
+            .lock()
+            .await
+            .ready_db_creature_spell_cast(attacker, victim, spell_list, conditions, now);
+        ready
+    }
+
+    async fn start_db_creature_spell_cast(
+        &self,
+        map_id: u32,
+        cast: ActiveDbCreatureSpellCast,
+    ) -> anyhow::Result<Option<Vec<(SessionId, OutboundWorldPacket)>>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.start_db_creature_spell_cast(cast);
+        event
+    }
+
+    async fn set_db_creature_spell_repeat_cooldown(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        spell_id: u32,
+        repeat_min: u32,
+        repeat_max: u32,
+        now: Instant,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock().await.set_db_creature_spell_repeat_cooldown(
+            attacker, spell_id, repeat_min, repeat_max, now,
+        );
+    }
+
+    async fn complete_ready_db_creature_spell_cast(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map
+            .lock()
+            .await
+            .complete_ready_db_creature_spell_cast(attacker, victim, now);
+        event
+    }
+
+    async fn active_db_creature_spell_cast_due_at(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+    ) -> Option<Instant> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let due_at = map
+            .lock()
+            .await
+            .active_db_creature_spell_cast_due_at(attacker);
+        due_at
     }
 
     async fn db_creature_should_evade(

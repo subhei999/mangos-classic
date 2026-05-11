@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GmDotCommand {
     Gm(Option<bool>),
+    LevelUp(i32),
+    LevelSet(u8),
     NpcAdd(u32),
     NpcDelete(Option<u32>),
     Die,
@@ -46,6 +48,18 @@ async fn handle_gm_dot_command(
             }
             spawn_gm_creature_from_template(stream, deps, session, entry, header_crypto).await?;
         }
+        GmDotCommand::LevelUp(delta) => {
+            if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            change_gm_character_level_relative(stream, deps, session, delta, header_crypto).await?;
+        }
+        GmDotCommand::LevelSet(level) => {
+            if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            change_gm_character_level_absolute(stream, deps, session, level, header_crypto).await?;
+        }
         GmDotCommand::NpcDelete(db_guid) => {
             if !require_gm_security(stream, session, 2, header_crypto).await? {
                 return Ok(());
@@ -65,27 +79,51 @@ async fn handle_gm_dot_command(
 fn parse_gm_dot_command(message: &str) -> Option<Result<GmDotCommand, String>> {
     let trimmed = message.trim();
     let without_dot = trimmed.strip_prefix('.')?.trim();
-    if without_dot.eq_ignore_ascii_case("die") || without_dot.starts_with("die ") {
+    let normalized = without_dot.to_ascii_lowercase();
+    if normalized == "die" || normalized.starts_with("die ") {
         return Some(Ok(GmDotCommand::Die));
     }
-    if without_dot.eq_ignore_ascii_case("gm") {
+    if normalized == "gm" {
         return Some(Ok(GmDotCommand::Gm(None)));
     }
-    if let Some(args) = without_dot.strip_prefix("gm ") {
+    if let Some(args) = normalized.strip_prefix("gm ") {
         let arg = args.trim();
-        return Some(match arg.to_ascii_lowercase().as_str() {
+        return Some(match arg {
             "on" | "1" => Ok(GmDotCommand::Gm(Some(true))),
             "off" | "0" => Ok(GmDotCommand::Gm(Some(false))),
             _ => Err("Syntax: .gm on/off".to_string()),
         });
     }
-    if let Some(args) = without_dot.strip_prefix("npc add") {
+    if normalized == "levelup" || normalized == "level" {
+        return Some(Ok(GmDotCommand::LevelUp(1)));
+    }
+    if let Some(args) = normalized.strip_prefix("levelup ") {
+        return Some(match first_i32(args) {
+            Some(delta) => Ok(GmDotCommand::LevelUp(delta)),
+            None => Err("Syntax: .levelup [#levels]".to_string()),
+        });
+    }
+    if let Some(args) = normalized.strip_prefix("level ") {
+        return Some(match first_i32(args) {
+            Some(delta) => Ok(GmDotCommand::LevelUp(delta)),
+            None => Err("Syntax: .level [#levels]".to_string()),
+        });
+    }
+    if let Some(args) = normalized.strip_prefix("character level ") {
+        return Some(match first_u32(args) {
+            Some(level) if level > 0 => Ok(GmDotCommand::LevelSet(
+                level.min(u32::from(DEFAULT_MAX_PLAYER_LEVEL)) as u8,
+            )),
+            _ => Err("Syntax: .character level #level".to_string()),
+        });
+    }
+    if let Some(args) = normalized.strip_prefix("npc add") {
         return Some(match first_u32(args) {
             Some(entry) => Ok(GmDotCommand::NpcAdd(entry)),
             None => Err("Syntax: .npc add #creatureid".to_string()),
         });
     }
-    if let Some(args) = without_dot.strip_prefix("npc delete") {
+    if let Some(args) = normalized.strip_prefix("npc delete") {
         return Some(Ok(GmDotCommand::NpcDelete(first_u32(args))));
     }
     None
@@ -101,6 +139,29 @@ fn first_u32(input: &str) -> Option<u32> {
         }
     }
     (!current.is_empty()).then(|| current.parse().ok()).flatten()
+}
+
+fn first_i32(input: &str) -> Option<i32> {
+    let trimmed = input.trim_start();
+    let mut chars = trimmed.chars();
+    let mut current = String::new();
+    if matches!(chars.clone().next(), Some('+') | Some('-')) {
+        current.push(chars.next()?);
+    }
+    for ch in chars {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else {
+            break;
+        }
+    }
+    (current.chars().any(|ch| ch.is_ascii_digit()))
+        .then(|| current.parse().ok())
+        .flatten()
+}
+
+fn gm_relative_level(old_level: u8, delta: i32) -> u8 {
+    (i32::from(old_level) + delta).clamp(1, i32::from(DEFAULT_MAX_PLAYER_LEVEL)) as u8
 }
 
 async fn require_gm_security(
@@ -170,6 +231,191 @@ async fn spawn_gm_creature_from_template(
             entry,
             creature.guid().counter()
         ),
+        header_crypto,
+    )
+    .await
+}
+
+async fn change_gm_character_level_relative(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    delta: i32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.clone() else {
+        return Ok(());
+    };
+    let old_level = character.level;
+    let new_level = gm_relative_level(old_level, delta);
+    change_gm_character_level(stream, deps, session, old_level, new_level, header_crypto).await
+}
+
+async fn change_gm_character_level_absolute(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    new_level: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(());
+    };
+    let old_level = character.level;
+    change_gm_character_level(stream, deps, session, old_level, new_level, header_crypto).await
+}
+
+async fn change_gm_character_level(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    old_level: u8,
+    new_level: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.active_character.clone() else {
+        return Ok(());
+    };
+    if new_level == old_level {
+        send_system_message(
+            stream,
+            &format!("Level remains {new_level}."),
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let previous_stats =
+        wow_db::get_player_world_stats(deps.world_db_pool, character.race, character.class, old_level)
+            .await?;
+    let new_stats =
+        wow_db::get_player_world_stats(deps.world_db_pool, character.race, character.class, new_level)
+            .await?;
+    let health = new_stats.max_health().max(1);
+    let power1 = new_stats.max_mana();
+    let power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
+    let power3 = 0;
+    let power4 = create_power_for_class_power(character.class, POWER_ENERGY);
+    let power5 = 0;
+    let xp = 0;
+
+    wow_db::update_character_progression_state(
+        deps.character_db_pool,
+        character.guid,
+        wow_db::CharacterProgressionState {
+            level: new_level,
+            xp,
+            health,
+            power1,
+            power2,
+            power3,
+            power4,
+            power5,
+        },
+    )
+    .await?;
+
+    if let Some(active) = session.active_character.as_mut() {
+        active.level = new_level;
+        active.xp = xp;
+    }
+    session.player_health = health;
+    session.player_mana = power1;
+    session.player_rage = power2;
+    session.player_energy = power4;
+
+    let skill_cap_updates =
+        set_level_capped_combat_skill_maxes(new_level, &mut session.character_skills);
+    for updated in &skill_cap_updates {
+        wow_db::upsert_character_skill(
+            deps.character_db_pool,
+            character.guid,
+            updated.skill,
+            updated.value,
+            updated.max,
+        )
+        .await?;
+    }
+
+    let equipped_templates =
+        load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+    let combat_stats = player_combat_stats_for_values(
+        character.class,
+        new_level,
+        &new_stats,
+        &equipped_templates,
+    );
+    deps.maps
+        .update_player_level_progression_state(
+            character.position.map_id,
+            character.guid,
+            PlayerLevelProgressionRuntimeUpdate {
+                level: new_level,
+                xp,
+                health,
+                power1,
+                power2,
+                power4,
+                world_stats: new_stats,
+                combat_stats,
+            },
+        )
+        .await;
+
+    send_packet(
+        stream,
+        SMSG_LEVELUP_INFO,
+        &build_levelup_info_body(new_level, &previous_stats, &new_stats),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_progression_update_body(PlayerProgressionUpdate {
+            character_guid: character.guid,
+            level: new_level,
+            xp,
+            health,
+            power1,
+            power2,
+            power3,
+            power4,
+            power5,
+            world_stats: &new_stats,
+        })?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_combat_stats_update_body(character.guid, &combat_stats)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    if !skill_cap_updates.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_skill_updates_body(
+                character.guid,
+                &skill_cap_updates,
+                &session.active_auras,
+            )?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    let direction = if new_level > old_level {
+        "increased"
+    } else {
+        "decreased"
+    };
+    send_system_message(
+        stream,
+        &format!("Your level {direction} from {old_level} to {new_level}."),
         header_crypto,
     )
     .await

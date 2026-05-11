@@ -1,5 +1,66 @@
 // Shared DB-creature combat claim and player-damage authority.
 const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
+const DB_CREATURE_SPELL_LIST_UPDATE_MILLIS: u64 = 1_200;
+const CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION: u32 = 0x1;
+const CREATURE_SPELL_LIST_FLAG_RANGED_ACTION: u32 = 0x2;
+const CREATURE_SPELL_LIST_FLAG_NON_BLOCKING: u32 = 0x8;
+const CREATURE_SPELL_LIST_TARGETING_HARDCODED: u32 = 0;
+const CREATURE_SPELL_LIST_TARGETING_ATTACK: u32 = 1;
+const CREATURE_SPELL_LIST_TARGETING_SUPPORT: u32 = 2;
+const CREATURE_SPELL_LIST_TARGET_CURRENT: u32 = 1;
+const CREATURE_SPELL_LIST_TARGET_SELF: u32 = 2;
+const CREATURE_SPELL_LIST_TARGET_CURRENT_NOT_ALONE: u32 = 7;
+const CREATURE_ATTACKING_TARGET_RANDOM: i32 = 0;
+const CREATURE_ATTACKING_TARGET_TOP_AGGRO: i32 = 1;
+const CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO: i32 = 2;
+const CREATURE_ATTACKING_TARGET_NEAREST: i32 = 3;
+const CREATURE_ATTACKING_TARGET_FARTHEST: i32 = 4;
+const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
+const CONDITION_LOGIC_NONE: i32 = 0;
+const CONDITION_LOGIC_AND: i32 = 1;
+const CONDITION_LOGIC_OR: i32 = 2;
+const CONDITION_LOGIC_XOR: i32 = 3;
+const UNIT_CONDITION_NONE: u32 = 0;
+const UNIT_CONDITION_RACE: u32 = 1;
+const UNIT_CONDITION_CLASS: u32 = 2;
+const UNIT_CONDITION_LEVEL: u32 = 3;
+const UNIT_CONDITION_IS_SELF: u32 = 4;
+const UNIT_CONDITION_IS_TARGET: u32 = 7;
+const UNIT_CONDITION_HEALTH_PERCENT: u32 = 12;
+const UNIT_CONDITION_MANA_PERCENT: u32 = 13;
+const UNIT_CONDITION_RAGE_PERCENT: u32 = 14;
+const UNIT_CONDITION_ENERGY_PERCENT: u32 = 15;
+const UNIT_CONDITION_IN_COMBAT: u32 = 31;
+const UNIT_CONDITION_NUMBER_OF_MELEE_ATTACKERS: u32 = 37;
+const UNIT_CONDITION_IS_ATTACKING_ME: u32 = 38;
+const UNIT_CONDITION_RANGE: u32 = 39;
+const UNIT_CONDITION_IN_MELEE_RANGE: u32 = 40;
+const UNIT_CONDITION_NUMBER_OF_ENEMIES: u32 = 44;
+const UNIT_CONDITION_NUMBER_OF_ATTACKERS: u32 = 54;
+const UNIT_CONDITION_NUMBER_OF_RANGED_ATTACKERS: u32 = 55;
+const UNIT_CONDITION_CREATURE_TYPE: u32 = 56;
+const UNIT_CONDITION_IS_MELEE_ATTACKING: u32 = 57;
+const UNIT_CONDITION_IS_RANGED_ATTACKING: u32 = 58;
+const UNIT_CONDITION_HEALTH: u32 = 59;
+const UNIT_CONDITION_IS_INTERRUPTIBLE: u32 = 53;
+const UNIT_CONDITION_IS_PLAYER: u32 = 63;
+const UNIT_CONDITION_CREATURE_ID: u32 = 74;
+const UNIT_CONDITION_IS_ENEMY: u32 = 77;
+const UNIT_CONDITION_IS_DYING: u32 = 83;
+
+#[derive(Debug, Clone, Default)]
+struct DbCreatureSpellConditionCache {
+    unit_conditions: std::collections::HashMap<i32, wow_db::UnitConditionQuery>,
+    combat_conditions: std::collections::HashMap<i32, wow_db::CombatConditionQuery>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DbCreatureCombatConditionCountClause {
+    ids: [i32; 2],
+    ops: [i32; 2],
+    counts: [i32; 2],
+    logic: i32,
+}
 
 #[derive(Debug, Clone)]
 struct DbCreaturePlayerMeleeValidation {
@@ -40,6 +101,12 @@ enum PlayerSpellTargetCheck {
 struct ActiveDbCreatureCombatSnapshot {
     combat: CreatureCombatState,
     creature: DbCreatureRuntime,
+}
+
+#[derive(Debug, Clone)]
+struct ReadyDbCreatureSpellCast {
+    spell: wow_db::CreatureSpellListQuery,
+    target: ObjectGuid,
 }
 
 impl MapRuntime {
@@ -219,6 +286,237 @@ impl MapRuntime {
         Some(ActiveDbCreatureCombatSnapshot { combat, creature })
     }
 
+    fn ready_db_creature_spell_cast(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        spell_list: &[wow_db::CreatureSpellListQuery],
+        conditions: &DbCreatureSpellConditionCache,
+        now: Instant,
+    ) -> Option<ReadyDbCreatureSpellCast> {
+        if spell_list.is_empty() || self.active_creature_spell_casts.contains_key(&attacker.raw()) {
+            return None;
+        }
+        let combat = self.active_creature_combats.get(&attacker.raw()).copied()?;
+        if combat.victim != victim {
+            return None;
+        }
+        let (unavailable_positions, cooldowns_until) = {
+            let creature = self.creatures.get_mut(&attacker.raw())?;
+            if !creature.is_alive() || creature.is_evading_home() {
+                return None;
+            }
+            refresh_db_creature_spell_list_availability(creature, spell_list);
+            if creature.next_spell_list_update_at.is_none() {
+                creature.next_spell_list_update_at =
+                    Some(now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS));
+                initialize_db_creature_spell_cooldowns(creature, spell_list, now);
+                return None;
+            }
+            if creature
+                .next_spell_list_update_at
+                .is_some_and(|due_at| now < due_at)
+            {
+                return None;
+            }
+            creature.next_spell_list_update_at =
+                Some(now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS));
+            (
+                creature.unavailable_spell_list_positions.clone(),
+                creature.spell_cooldowns_until.clone(),
+            )
+        };
+
+        let support_action_roll = rand::thread_rng().gen_range(0..=100);
+        let ranged_action_roll = rand::thread_rng().gen_range(0..=100);
+        let current_ranged_mode = !self.db_creature_threat_victim_in_melee(attacker, victim);
+
+        let mut non_blocking = Vec::new();
+        let mut eligible = spell_list
+            .iter()
+            .filter_map(|spell| {
+                db_creature_spell_ai_target(self, attacker, spell, victim)
+                    .map(|target| (spell, target))
+            })
+            .filter(|(spell, _)| !unavailable_positions.contains(&spell.position))
+            .filter(|(spell, target)| {
+                db_creature_spell_conditions_met(self, attacker, *target, spell, conditions)
+            })
+            .filter(|(spell, _)| {
+                if (spell.flags & CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION) != 0 {
+                    support_action_roll <= spell.chance_support_action
+                } else {
+                    true
+                }
+            })
+            .filter(|(spell, _)| {
+                if (spell.flags & CREATURE_SPELL_LIST_FLAG_RANGED_ACTION) != 0 {
+                    let chance = if current_ranged_mode {
+                        spell.chance_ranged_attack as i32
+                    } else {
+                        (spell.chance_ranged_attack as i32 - 50).max(0)
+                    };
+                    (ranged_action_roll as i32) <= chance
+                } else {
+                    true
+                }
+            })
+            .filter(|(spell, _)| {
+                cooldowns_until
+                    .get(&spell.spell_id)
+                    .is_none_or(|cooldown| now >= *cooldown)
+            })
+            .map(|(spell, target)| (spell.clone(), target))
+            .inspect(|(spell, target)| {
+                if (spell.flags & CREATURE_SPELL_LIST_FLAG_NON_BLOCKING) != 0 {
+                    non_blocking.push((spell.clone(), *target));
+                }
+            })
+            .filter(|(spell, _)| (spell.flags & CREATURE_SPELL_LIST_FLAG_NON_BLOCKING) == 0)
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
+            eligible = non_blocking;
+        }
+        eligible.sort_by_key(|(spell, _)| spell.position);
+        let (spell, target) = choose_db_creature_spell(&eligible)?;
+        Some(ReadyDbCreatureSpellCast { spell, target })
+    }
+
+    fn set_db_creature_spell_repeat_cooldown(
+        &mut self,
+        attacker: ObjectGuid,
+        spell_id: u32,
+        repeat_min: u32,
+        repeat_max: u32,
+        now: Instant,
+    ) {
+        let cooldown_millis = random_millis_between(repeat_min, repeat_max);
+        if cooldown_millis == 0 {
+            return;
+        }
+        if let Some(creature) = self.creatures.get_mut(&attacker.raw()) {
+            creature
+                .spell_cooldowns_until
+                .insert(spell_id, now + Duration::from_millis(cooldown_millis as u64));
+        }
+    }
+
+    fn start_db_creature_spell_cast(
+        &mut self,
+        cast: ActiveDbCreatureSpellCast,
+    ) -> anyhow::Result<Option<Vec<(SessionId, OutboundWorldPacket)>>> {
+        let Some(creature) = self.creatures.get(&cast.caster.raw()) else {
+            return Ok(None);
+        };
+        if !creature.is_alive() || creature.is_evading_home() {
+            return Ok(None);
+        }
+        if !self.db_creature_spell_cast_target_alive(cast.target) {
+            return Ok(None);
+        }
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(cast.target),
+            gameobject_target: None,
+        };
+        let start_body = build_spell_start_body(
+            cast.caster,
+            cast.spell_id,
+            cast.cast_time_millis,
+            &targets,
+        )?;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_START,
+            body: start_body,
+        };
+        let position = creature.current_position;
+        self.active_creature_spell_casts.insert(cast.caster.raw(), cast);
+        Ok(Some(
+            self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+                .into_iter()
+                .filter_map(|player_guid| {
+                    self.players
+                        .get(&player_guid)
+                        .and_then(|player| player.packet_to_client(packet.clone()))
+                })
+                .collect(),
+        ))
+    }
+
+    fn complete_ready_db_creature_spell_cast(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
+        let Some(cast) = self.active_creature_spell_casts.get(&attacker.raw()).cloned() else {
+            return Ok(None);
+        };
+        if now < cast.due_at {
+            return Ok(None);
+        }
+        if self
+            .active_creature_combats
+            .get(&attacker.raw())
+            .is_none_or(|combat| combat.victim != victim)
+        {
+            return Ok(None);
+        }
+        self.active_creature_spell_casts.remove(&attacker.raw());
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(cast.target),
+            gameobject_target: None,
+        };
+        let spell_go_body = build_spell_go_body(attacker, cast.spell_id, &targets)?;
+        let effect = match cast.effect {
+            ActiveDbCreatureSpellEffect::Damage {
+                amount,
+                school,
+                dmg_class,
+                attributes_ex2,
+                attributes_ex3,
+            } => {
+                if !cast.target.is_player() {
+                    return Ok(None);
+                }
+                let Some(damage) = self.apply_db_creature_player_spell_damage(
+                    attacker,
+                    cast.target,
+                    cast.spell_id,
+                    amount,
+                    school,
+                    dmg_class,
+                    attributes_ex2,
+                    attributes_ex3,
+                    now,
+                )?
+                else {
+                    return Ok(None);
+                };
+                DbCreatureCompletedSpellEffect::PlayerDamage(damage)
+            }
+            ActiveDbCreatureSpellEffect::Heal { amount } => {
+                let Some(heal) =
+                    self.apply_db_creature_creature_spell_heal(attacker, cast.target, cast.spell_id, amount)?
+                else {
+                    return Ok(None);
+                };
+                DbCreatureCompletedSpellEffect::CreatureHeal(heal)
+            }
+        };
+        Ok(Some(DbCreatureCompletedSpellCastEvent {
+            spell_go_body,
+            effect,
+        }))
+    }
+
+    fn active_db_creature_spell_cast_due_at(&self, attacker: ObjectGuid) -> Option<Instant> {
+        self.active_creature_spell_casts
+            .get(&attacker.raw())
+            .map(|cast| cast.due_at)
+    }
+
     fn begin_db_creature_combat(
         &mut self,
         attacker: ObjectGuid,
@@ -255,6 +553,7 @@ impl MapRuntime {
 
     fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
         self.active_creature_combats.remove(&attacker.raw());
+        self.active_creature_spell_casts.remove(&attacker.raw());
         self.creature_combat_leash.remove(&attacker.raw());
         self.creature_threats.remove(&attacker.raw());
         if let Some(position) = self
@@ -281,6 +580,8 @@ impl MapRuntime {
             .keys()
             .copied()
             .collect::<HashSet<_>>();
+        self.active_creature_spell_casts
+            .retain(|attacker, cast| active_attackers.contains(attacker) && cast.target != victim);
         self.creature_combat_leash
             .retain(|attacker, _| active_attackers.contains(attacker));
         for threats in self.creature_threats.values_mut() {
@@ -422,6 +723,9 @@ impl MapRuntime {
         let Some(victim_player) = self.players.get(&victim.counter()) else {
             return Ok(None);
         };
+        if victim_player.health == 0 {
+            return Ok(None);
+        }
         let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
             damage,
             school,
@@ -508,6 +812,83 @@ impl MapRuntime {
             health_update_body,
             observer_packets,
         }))
+    }
+
+    fn apply_db_creature_creature_spell_heal(
+        &mut self,
+        caster: ObjectGuid,
+        target: ObjectGuid,
+        spell_id: u32,
+        heal: u32,
+    ) -> anyhow::Result<Option<DbCreatureSpellHealEvent>> {
+        if heal == 0 {
+            return Ok(None);
+        }
+        let Some(caster_creature) = self.creatures.get(&caster.raw()) else {
+            return Ok(None);
+        };
+        if !caster_creature.is_alive() || caster_creature.is_evading_home() {
+            return Ok(None);
+        }
+        let Some(target_creature) = self.creatures.get_mut(&target.raw()) else {
+            return Ok(None);
+        };
+        if !target_creature.is_alive() || target_creature.is_evading_home() {
+            return Ok(None);
+        }
+        let previous_health = target_creature.health;
+        target_creature.health = target_creature
+            .health
+            .saturating_add(heal)
+            .min(target_creature.max_health());
+        let amount = target_creature.health.saturating_sub(previous_health);
+        if amount == 0 {
+            return Ok(None);
+        }
+        let target_health = target_creature.health;
+        let dynamic_flags = target_creature.spawn.template.dynamic_flags;
+        let target_position = target_creature.current_position;
+        let spell_heal_log_body = build_spell_heal_log_body(caster, target, spell_id, amount, false)?;
+        let health_update_body = build_db_creature_state_update_body(target, target_health, dynamic_flags)?;
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(target_position, CREATURE_SPAWN_RADIUS_YARDS, None)
+        {
+            let Some(player) = self.players.get(&player_guid) else {
+                continue;
+            };
+            if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                opcode: SMSG_SPELLHEALLOG,
+                body: spell_heal_log_body.clone(),
+            }) {
+                observer_packets.push(packet);
+            }
+            if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: health_update_body.clone(),
+            }) {
+                observer_packets.push(packet);
+            }
+        }
+        Ok(Some(DbCreatureSpellHealEvent {
+            target,
+            amount,
+            target_health,
+            spell_heal_log_body,
+            health_update_body,
+            observer_packets,
+        }))
+    }
+
+    fn db_creature_spell_cast_target_alive(&self, target: ObjectGuid) -> bool {
+        if target.is_player() {
+            return self
+                .players
+                .get(&target.counter())
+                .is_some_and(|player| player.health > 0);
+        }
+        self.creatures
+            .get(&target.raw())
+            .is_some_and(|creature| creature.is_alive() && !creature.is_evading_home())
     }
 
     fn defer_ready_db_creature_swing_retry(
@@ -738,6 +1119,656 @@ fn db_creature_pursuit_duration_millis(creature: &DbCreatureRuntime) -> Duration
         creature.spawn.template.pursuit
     };
     Duration::from_millis(pursuit_millis as u64)
+}
+
+fn initialize_db_creature_spell_cooldowns(
+    creature: &mut DbCreatureRuntime,
+    spell_list: &[wow_db::CreatureSpellListQuery],
+    now: Instant,
+) {
+    for spell in spell_list {
+        let cooldown_millis = random_millis_between(spell.initial_min, spell.initial_max);
+        if cooldown_millis == 0 {
+            continue;
+        }
+        creature
+            .spell_cooldowns_until
+            .insert(spell.spell_id, now + Duration::from_millis(cooldown_millis as u64));
+    }
+}
+
+fn refresh_db_creature_spell_list_availability(
+    creature: &mut DbCreatureRuntime,
+    spell_list: &[wow_db::CreatureSpellListQuery],
+) {
+    let Some(list_id) = spell_list.first().map(|spell| spell.id) else {
+        creature.spell_list_availability_id = None;
+        creature.unavailable_spell_list_positions.clear();
+        return;
+    };
+    if creature.spell_list_availability_id == Some(list_id) {
+        return;
+    }
+    creature.spell_list_availability_id = Some(list_id);
+    creature.unavailable_spell_list_positions.clear();
+    let mut rng = rand::thread_rng();
+    for spell in spell_list {
+        if spell.availability >= 100 {
+            continue;
+        }
+        let roll = rng.gen_range(0..=100);
+        if !db_creature_spell_available_for_lifetime(spell.availability, roll) {
+            creature
+                .unavailable_spell_list_positions
+                .insert(spell.position);
+        }
+    }
+}
+
+fn db_creature_spell_available_for_lifetime(availability: u32, roll: u32) -> bool {
+    availability >= 100 || roll <= availability
+}
+
+fn db_creature_spell_ai_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    spell: &wow_db::CreatureSpellListQuery,
+    victim: ObjectGuid,
+) -> Option<ObjectGuid> {
+    match spell.target_type {
+        CREATURE_SPELL_LIST_TARGETING_HARDCODED
+            if spell.target_id == CREATURE_SPELL_LIST_TARGET_CURRENT =>
+        {
+            Some(victim)
+        }
+        CREATURE_SPELL_LIST_TARGETING_HARDCODED
+            if spell.target_id == CREATURE_SPELL_LIST_TARGET_SELF =>
+        {
+            Some(attacker)
+        }
+        CREATURE_SPELL_LIST_TARGETING_HARDCODED
+            if spell.target_id == CREATURE_SPELL_LIST_TARGET_CURRENT_NOT_ALONE =>
+        {
+            let threat_count = map
+                .creature_threats
+                .get(&attacker.raw())
+                .map(|threats| threats.iter().filter(|entry| entry.threat > 0.0).count())
+                .unwrap_or_default();
+            (threat_count > 1).then_some(victim)
+        }
+        CREATURE_SPELL_LIST_TARGETING_ATTACK => {
+            db_creature_spell_attack_target(map, attacker, victim, spell)
+        }
+        CREATURE_SPELL_LIST_TARGETING_SUPPORT => {
+            db_creature_spell_support_target(map, attacker, spell)
+        }
+        _ => None,
+    }
+}
+
+fn choose_db_creature_spell(
+    eligible: &[(wow_db::CreatureSpellListQuery, ObjectGuid)],
+) -> Option<(wow_db::CreatureSpellListQuery, ObjectGuid)> {
+    let probability_sum = eligible
+        .iter()
+        .map(|(spell, _)| spell.probability)
+        .sum::<u32>();
+    if probability_sum == 0 {
+        return eligible.first().cloned();
+    }
+    let mut roll = rand::thread_rng().gen_range(0..probability_sum);
+    for (spell, target) in eligible {
+        if roll < spell.probability {
+            return Some((spell.clone(), *target));
+        }
+        roll -= spell.probability;
+    }
+    eligible.first().cloned()
+}
+
+fn db_creature_spell_attack_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    spell: &wow_db::CreatureSpellListQuery,
+) -> Option<ObjectGuid> {
+    let threats = map.creature_threats.get(&attacker.raw())?;
+    let mut candidates = threats
+        .iter()
+        .filter(|entry| entry.threat > 0.0)
+        .filter(|entry| {
+            map.players
+                .get(&entry.victim.counter())
+                .is_some_and(|player| player.health > 0)
+        })
+        .map(|entry| entry.victim)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    match spell.target_param1 {
+        CREATURE_ATTACKING_TARGET_TOP_AGGRO => candidates.first().copied(),
+        CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO => candidates.last().copied(),
+        CREATURE_ATTACKING_TARGET_NEAREST => {
+            candidates.sort_by(|left, right| {
+                db_creature_spell_target_distance_squared(map, attacker, *left)
+                    .total_cmp(&db_creature_spell_target_distance_squared(map, attacker, *right))
+            });
+            candidates.first().copied()
+        }
+        CREATURE_ATTACKING_TARGET_FARTHEST => {
+            candidates.sort_by(|left, right| {
+                db_creature_spell_target_distance_squared(map, attacker, *right)
+                    .total_cmp(&db_creature_spell_target_distance_squared(map, attacker, *left))
+            });
+            candidates.first().copied()
+        }
+        CREATURE_ATTACKING_TARGET_RANDOM => {
+            let index = rand::thread_rng().gen_range(0..candidates.len());
+            candidates.get(index).copied()
+        }
+        _ => Some(victim),
+    }
+}
+
+fn db_creature_spell_support_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    spell: &wow_db::CreatureSpellListQuery,
+) -> Option<ObjectGuid> {
+    let caster = map.creatures.get(&attacker.raw())?;
+    let min_missing = spell.target_param1.max(0) as f32;
+    let use_percent_missing = spell.target_param2 != 0;
+    let include_self = spell.target_param3 != 0;
+    let max_range = CREATURE_SPAWN_RADIUS_YARDS;
+    let mut candidates = map
+        .creatures
+        .values()
+        .filter(|creature| include_self || creature.guid() != attacker)
+        .filter(|creature| creature.is_alive() && !creature.is_evading_home())
+        .filter(|creature| creature.spawn.template.faction == caster.spawn.template.faction)
+        .filter(|creature| {
+            is_position_inside_radius(
+                creature.current_position,
+                caster.current_position,
+                max_range + creature.combat_reach() + caster.combat_reach(),
+            )
+        })
+        .filter_map(|creature| {
+            let max_health = creature.max_health().max(1);
+            let missing = max_health.saturating_sub(creature.health);
+            let missing_score = if use_percent_missing {
+                missing as f32 * 100.0 / max_health as f32
+            } else {
+                missing as f32
+            };
+            (missing_score >= min_missing).then_some((creature.guid(), missing_score))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.raw().cmp(&right.0.raw()))
+    });
+    candidates.first().map(|(guid, _)| *guid)
+}
+
+fn db_creature_spell_conditions_met(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    target: ObjectGuid,
+    spell: &wow_db::CreatureSpellListQuery,
+    conditions: &DbCreatureSpellConditionCache,
+) -> bool {
+    if spell.target_unit_condition != -1
+        && !db_creature_unit_condition_met(
+            map,
+            target,
+            attacker,
+            spell.target_unit_condition,
+            conditions,
+        )
+    {
+        return false;
+    }
+    match spell.combat_condition {
+        -1 | 0 => true,
+        id => db_creature_combat_condition_met(map, attacker, target, id, conditions),
+    }
+}
+
+fn db_creature_combat_condition_met(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    target: ObjectGuid,
+    id: i32,
+    conditions: &DbCreatureSpellConditionCache,
+) -> bool {
+    let Some(condition) = conditions.combat_conditions.get(&id) else {
+        return false;
+    };
+    if condition.world_state_expression_id != 0 {
+        return false;
+    }
+    if condition.self_condition_id != 0
+        && !db_creature_unit_condition_met(
+            map,
+            attacker,
+            attacker,
+            condition.self_condition_id,
+            conditions,
+        )
+    {
+        return false;
+    }
+    if condition.target_condition_id != 0
+        && !db_creature_unit_condition_met(
+            map,
+            target,
+            attacker,
+            condition.target_condition_id,
+            conditions,
+        )
+    {
+        return false;
+    }
+    if condition.friend_condition_id_0 != 0
+        && !db_creature_combat_condition_counts_met(
+            map,
+            attacker,
+            conditions,
+            true,
+            DbCreatureCombatConditionCountClause {
+                ids: [
+                    condition.friend_condition_id_0,
+                    condition.friend_condition_id_1,
+                ],
+                ops: [
+                    condition.friend_condition_op_0,
+                    condition.friend_condition_op_1,
+                ],
+                counts: [
+                    condition.friend_condition_count_0,
+                    condition.friend_condition_count_1,
+                ],
+                logic: condition.friend_condition_logic,
+            },
+        )
+    {
+        return false;
+    }
+    if condition.enemy_condition_id_0 != 0
+        && !db_creature_combat_condition_counts_met(
+            map,
+            attacker,
+            conditions,
+            false,
+            DbCreatureCombatConditionCountClause {
+                ids: [
+                    condition.enemy_condition_id_0,
+                    condition.enemy_condition_id_1,
+                ],
+                ops: [
+                    condition.enemy_condition_op_0,
+                    condition.enemy_condition_op_1,
+                ],
+                counts: [
+                    condition.enemy_condition_count_0,
+                    condition.enemy_condition_count_1,
+                ],
+                logic: condition.enemy_condition_logic,
+            },
+        )
+    {
+        return false;
+    }
+    true
+}
+
+fn db_creature_combat_condition_counts_met(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    conditions: &DbCreatureSpellConditionCache,
+    friendly: bool,
+    clause: DbCreatureCombatConditionCountClause,
+) -> bool {
+    let units = if friendly {
+        db_creature_condition_friendlies(map, attacker)
+    } else {
+        db_creature_condition_enemies(map, attacker)
+    };
+    let mut eligible = [0_i32; 2];
+    for unit in units {
+        for (index, count) in eligible.iter_mut().enumerate() {
+            if clause.ids[index] != 0
+                && db_creature_unit_condition_met(map, unit, attacker, clause.ids[index], conditions)
+            {
+                *count += 1;
+            }
+        }
+    }
+    match clause.logic {
+        CONDITION_LOGIC_NONE => {
+            db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
+        }
+        CONDITION_LOGIC_AND => {
+            db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
+                && db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+        }
+        CONDITION_LOGIC_OR => {
+            db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
+                || db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+        }
+        CONDITION_LOGIC_XOR => {
+            db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
+                != db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+        }
+        _ => false,
+    }
+}
+
+fn db_creature_unit_condition_met(
+    map: &MapRuntime,
+    source: ObjectGuid,
+    target: ObjectGuid,
+    id: i32,
+    conditions: &DbCreatureSpellConditionCache,
+) -> bool {
+    if id == 0 {
+        return true;
+    }
+    let Some(condition) = conditions.unit_conditions.get(&id) else {
+        return false;
+    };
+    let variables = condition.variables();
+    let operations = condition.operations();
+    let values = condition.values();
+    for index in 0..8 {
+        let result = db_creature_unit_condition_value(map, source, target, variables[index])
+            .is_some_and(|condition_value| {
+                db_creature_condition_compare(operations[index], condition_value, values[index])
+            });
+        if result && (condition.flags & UNIT_CONDITION_FLAG_OR) != 0 {
+            return true;
+        }
+        if !result && (condition.flags & UNIT_CONDITION_FLAG_OR) == 0 {
+            return false;
+        }
+    }
+    (condition.flags & UNIT_CONDITION_FLAG_OR) == 0
+}
+
+fn db_creature_unit_condition_value(
+    map: &MapRuntime,
+    source: ObjectGuid,
+    target: ObjectGuid,
+    variable: u32,
+) -> Option<i32> {
+    match variable {
+        UNIT_CONDITION_NONE => Some(1),
+        UNIT_CONDITION_RACE => db_creature_condition_player(map, source).map(|player| player.race as i32),
+        UNIT_CONDITION_CLASS => {
+            db_creature_condition_player(map, source).map(|player| player.class as i32)
+        }
+        UNIT_CONDITION_LEVEL => db_creature_condition_level(map, source).map(i32::from),
+        UNIT_CONDITION_IS_SELF => Some(i32::from(source == target)),
+        UNIT_CONDITION_IS_TARGET | UNIT_CONDITION_IS_ATTACKING_ME => {
+            Some(i32::from(db_creature_condition_unit_target(map, source) == Some(target)))
+        }
+        UNIT_CONDITION_HEALTH_PERCENT => db_creature_condition_health(map, source)
+            .map(|(health, max_health)| (health.saturating_mul(100) / max_health.max(1)) as i32),
+        UNIT_CONDITION_HEALTH => db_creature_condition_health(map, source).map(|(health, _)| health as i32),
+        UNIT_CONDITION_MANA_PERCENT => db_creature_condition_player(map, source)
+            .map(|player| (player.power1.saturating_mul(100) / player.max_power1.max(1)) as i32),
+        UNIT_CONDITION_RAGE_PERCENT => db_creature_condition_player(map, source)
+            .map(|player| (player.power2.saturating_mul(100) / POWER_RAGE_DEFAULT.max(1)) as i32),
+        UNIT_CONDITION_ENERGY_PERCENT => db_creature_condition_player(map, source)
+            .map(|player| (player.power4.saturating_mul(100) / player.max_power4.max(1)) as i32),
+        UNIT_CONDITION_IN_COMBAT => Some(i32::from(db_creature_condition_in_combat(map, source))),
+        UNIT_CONDITION_NUMBER_OF_ENEMIES | UNIT_CONDITION_NUMBER_OF_ATTACKERS => {
+            Some(db_creature_condition_enemies(map, source).len() as i32)
+        }
+        UNIT_CONDITION_NUMBER_OF_MELEE_ATTACKERS => Some(
+            db_creature_condition_enemies(map, source)
+                .into_iter()
+                .filter(|enemy| db_creature_condition_in_melee_range(map, source, *enemy))
+                .count() as i32,
+        ),
+        UNIT_CONDITION_NUMBER_OF_RANGED_ATTACKERS => Some(
+            db_creature_condition_enemies(map, source)
+                .into_iter()
+                .filter(|enemy| !db_creature_condition_in_melee_range(map, source, *enemy))
+                .count() as i32,
+        ),
+        UNIT_CONDITION_RANGE => {
+            db_creature_condition_distance(map, source, target).map(|distance| distance as i32)
+        }
+        UNIT_CONDITION_IN_MELEE_RANGE => {
+            Some(i32::from(db_creature_condition_in_melee_range(map, source, target)))
+        }
+        UNIT_CONDITION_CREATURE_TYPE => db_creature_condition_creature(map, source)
+            .map(|creature| creature.spawn.template.creature_type as i32),
+        UNIT_CONDITION_CREATURE_ID => db_creature_condition_creature(map, source)
+            .map(|creature| creature.spawn.template.entry as i32),
+        UNIT_CONDITION_IS_INTERRUPTIBLE => Some(i32::from(
+            !source.is_player() && map.active_creature_spell_casts.contains_key(&source.raw()),
+        )),
+        UNIT_CONDITION_IS_MELEE_ATTACKING => {
+            let unit_target = db_creature_condition_unit_target(map, source)?;
+            Some(i32::from(db_creature_condition_in_melee_range(
+                map,
+                source,
+                unit_target,
+            )))
+        }
+        UNIT_CONDITION_IS_RANGED_ATTACKING => {
+            let unit_target = db_creature_condition_unit_target(map, source)?;
+            Some(i32::from(!db_creature_condition_in_melee_range(
+                map,
+                source,
+                unit_target,
+            )))
+        }
+        UNIT_CONDITION_IS_PLAYER => Some(i32::from(source.is_player())),
+        UNIT_CONDITION_IS_ENEMY => Some(i32::from(db_creature_condition_is_enemy(map, source, target))),
+        UNIT_CONDITION_IS_DYING => db_creature_condition_health(map, source).map(|(health, _)| i32::from(health == 0)),
+        _ => None,
+    }
+}
+
+fn db_creature_condition_compare(operation: u32, condition_value: i32, value: i32) -> bool {
+    match operation {
+        1 => condition_value == value,
+        2 => condition_value != value,
+        3 => condition_value < value,
+        4 => condition_value <= value,
+        5 => condition_value > value,
+        6 => condition_value >= value,
+        _ => true,
+    }
+}
+
+fn db_creature_condition_player(map: &MapRuntime, guid: ObjectGuid) -> Option<&PlayerRuntime> {
+    guid.is_player()
+        .then(|| map.players.get(&guid.counter()))
+        .flatten()
+}
+
+fn db_creature_condition_creature(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<&DbCreatureRuntime> {
+    (!guid.is_player())
+        .then(|| map.creatures.get(&guid.raw()))
+        .flatten()
+}
+
+fn db_creature_condition_level(map: &MapRuntime, guid: ObjectGuid) -> Option<u8> {
+    if let Some(player) = db_creature_condition_player(map, guid) {
+        Some(player.level)
+    } else {
+        db_creature_condition_creature(map, guid).map(|creature| creature.spawn.template.max_level)
+    }
+}
+
+fn db_creature_condition_health(map: &MapRuntime, guid: ObjectGuid) -> Option<(u32, u32)> {
+    if let Some(player) = db_creature_condition_player(map, guid) {
+        Some((player.health, player.max_health))
+    } else {
+        db_creature_condition_creature(map, guid)
+            .map(|creature| (creature.health, creature.max_health()))
+    }
+}
+
+fn db_creature_condition_unit_target(map: &MapRuntime, guid: ObjectGuid) -> Option<ObjectGuid> {
+    if let Some(player) = db_creature_condition_player(map, guid) {
+        player.unit_target.or(player.active_combat_target)
+    } else {
+        map.active_creature_combats
+            .get(&guid.raw())
+            .map(|combat| combat.victim)
+    }
+}
+
+fn db_creature_condition_in_combat(map: &MapRuntime, guid: ObjectGuid) -> bool {
+    if guid.is_player() {
+        map.players
+            .get(&guid.counter())
+            .is_some_and(|player| player.active_combat_target.is_some())
+    } else {
+        map.active_creature_combats.contains_key(&guid.raw())
+    }
+}
+
+fn db_creature_condition_friendlies(map: &MapRuntime, source: ObjectGuid) -> Vec<ObjectGuid> {
+    let Some(creature) = db_creature_condition_creature(map, source) else {
+        return Vec::new();
+    };
+    map.creatures
+        .values()
+        .filter(|candidate| candidate.is_alive() && !candidate.is_evading_home())
+        .filter(|candidate| candidate.spawn.template.faction == creature.spawn.template.faction)
+        .filter(|candidate| {
+            is_position_inside_radius(
+                candidate.current_position,
+                creature.current_position,
+                CREATURE_SPAWN_RADIUS_YARDS + candidate.combat_reach() + creature.combat_reach(),
+            )
+        })
+        .map(DbCreatureRuntime::guid)
+        .collect()
+}
+
+fn db_creature_condition_enemies(map: &MapRuntime, source: ObjectGuid) -> Vec<ObjectGuid> {
+    if source.is_player() {
+        return map
+            .active_creature_combats
+            .values()
+            .filter(|combat| combat.victim == source)
+            .map(|combat| combat.attacker)
+            .collect();
+    }
+    map.creature_threats
+        .get(&source.raw())
+        .map(|threats| {
+            threats
+                .iter()
+                .filter(|entry| entry.threat > 0.0)
+                .map(|entry| entry.victim)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn db_creature_condition_distance(
+    map: &MapRuntime,
+    source: ObjectGuid,
+    target: ObjectGuid,
+) -> Option<f32> {
+    let source_position = db_creature_condition_position(map, source)?;
+    let target_position = db_creature_condition_position(map, target)?;
+    let dx = source_position.x - target_position.x;
+    let dy = source_position.y - target_position.y;
+    let dz = source_position.z - target_position.z;
+    Some((dx * dx + dy * dy + dz * dz).sqrt())
+}
+
+fn db_creature_condition_in_melee_range(
+    map: &MapRuntime,
+    source: ObjectGuid,
+    target: ObjectGuid,
+) -> bool {
+    let Some(distance) = db_creature_condition_distance(map, source, target) else {
+        return false;
+    };
+    let reach = db_creature_condition_combat_reach(map, source)
+        + db_creature_condition_combat_reach(map, target);
+    distance <= reach
+}
+
+fn db_creature_condition_position(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<WorldPosition> {
+    if let Some(player) = db_creature_condition_player(map, guid) {
+        Some(player.position)
+    } else {
+        db_creature_condition_creature(map, guid).map(|creature| creature.current_position)
+    }
+}
+
+fn db_creature_condition_combat_reach(map: &MapRuntime, guid: ObjectGuid) -> f32 {
+    if guid.is_player() {
+        PLAYER_COMBAT_REACH_YARDS
+    } else {
+        db_creature_condition_creature(map, guid)
+            .map(DbCreatureRuntime::combat_reach)
+            .unwrap_or(0.0)
+    }
+}
+
+fn db_creature_condition_is_enemy(
+    map: &MapRuntime,
+    source: ObjectGuid,
+    target: ObjectGuid,
+) -> bool {
+    if source.is_player() != target.is_player() {
+        return true;
+    }
+    let Some(source_creature) = db_creature_condition_creature(map, source) else {
+        return false;
+    };
+    let Some(target_creature) = db_creature_condition_creature(map, target) else {
+        return false;
+    };
+    source_creature.spawn.template.faction != target_creature.spawn.template.faction
+}
+
+fn db_creature_spell_target_distance_squared(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    target: ObjectGuid,
+) -> f32 {
+    let Some(creature) = map.creatures.get(&attacker.raw()) else {
+        return f32::MAX;
+    };
+    let Some(player) = map.players.get(&target.counter()) else {
+        return f32::MAX;
+    };
+    let dx = creature.current_position.x - player.position.x;
+    let dy = creature.current_position.y - player.position.y;
+    let dz = creature.current_position.z - player.position.z;
+    dx * dx + dy * dy + dz * dz
+}
+
+fn random_millis_between(min: u32, max: u32) -> u32 {
+    let max = max.max(min);
+    if min == max {
+        min
+    } else {
+        rand::thread_rng().gen_range(min..=max)
+    }
 }
 
 fn packets_direct_to_character(

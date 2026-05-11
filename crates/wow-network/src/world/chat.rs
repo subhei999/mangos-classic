@@ -154,6 +154,7 @@ async fn handle_message_chat(
 }
 
 struct ChatDeps<'a> {
+    character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     object_mgr: &'a ObjectMgr,
     maps: &'a Arc<MapRuntimeManager>,

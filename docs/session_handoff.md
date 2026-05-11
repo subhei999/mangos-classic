@@ -7,18 +7,20 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/pve-spell-combat-parity`, created as a separate worktree at
-  `C:\Users\subhe\Documents\rusty-mangos-pve-parity` from clean
-  `origin/codex/rusty-mangos`.
-- The main checkout at `C:\Users\subhe\Documents\New project` has unrelated
-  inventory/loot edits; do not use it for this branch's PvE spell/combat work.
+- Branch: `codex/rusty-mangos`, in the main checkout at
+  `C:\Users\subhe\Documents\New project`.
+- The former `codex/pve-spell-combat-parity` worktree has been integrated into
+  this branch: committed spell outcome base plus the previously uncommitted
+  creature spell AI, condition/proc/aura follow-ups, and GM level command
+  helper are now present in the main integration branch.
 - Playerbots are disabled by default for normal multiplayer/Northshire testing:
   `config/worldserver.local.toml` has `[playerbots] enabled = false` and
   `[playerbots.random] enabled = false`; the stack launcher keeps them off
   unless explicitly passed a playerbot flag.
-- Current user-directed priority: PvE spell/combat parity first, while keeping
-  the newly landed inventory/bag and death-state fixes in the integration base.
-  Use CMaNGOS as the behavior reference and keep shared world authority in
+- Current user-directed priority: continue Northshire/playable parity on the
+  integrated `codex/rusty-mangos` branch, with PvE spell/combat parity and the
+  newly landed inventory/bag and death-state fixes all present together. Use
+  CMaNGOS as the behavior reference and keep shared world authority in
   `MapRuntime`.
 - Cast-from-sitting remains deprioritized after packet-trace investigation.
   The client eventually sent `CMSG_CAST_SPELL` after auto-standing, but then
@@ -119,13 +121,58 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `MapRuntime` has a map-owned creature-to-player spell damage application path
   that produces `SMSG_SPELLNONMELEEDAMAGELOG`/`SMSG_SPELLLOGMISS`, health
   updates, threat, and observer packets.
+- Current creature spell AI slice loads `creature_template.SpellList` and
+  DB-backed `creature_spell_list` rows through `ObjectMgr`, keeps per-creature
+  spell-list update timers, repeat cooldowns, and active casts in `MapRuntime`,
+  and lets active DB creatures select current-victim direct damage spells,
+  send `SMSG_SPELL_START`, complete delayed `SMSG_SPELL_GO`, and apply damage
+  through the shared creature-to-player spell outcome path. This is intentionally
+  limited to hostile direct damage/current-victim targeting; support spells,
+  combat/unit conditions, scripts, non-blocking spells, and richer target
+  selectors still need follow-up.
+- Current creature spell AI follow-up now mirrors more of the CMaNGOS spell-list
+  lifecycle: `Availability` is rolled once for the creature spell-list lifetime,
+  repeat cooldowns are committed only after a cast is accepted, old
+  `creature_template_spells` rows fall back to list id `entry * 100 + setId`
+  with `creature_cooldowns`, and delayed creature spells drop cleanly without a
+  fake damage log if the victim dies before `SMSG_SPELL_GO`.
+- Current creature spell AI target/heal follow-up adds more of the CMaNGOS
+  `UnitAI::UpdateSpellLists` shape: support/ranged action rolls happen once per
+  spell-list tick, unsupported positive `CombatCondition` ids fail closed,
+  hardcoded self/current/current-not-alone and attack target selectors can
+  choose from the map-owned threat list, support target selection can choose the
+  lowest-health friendly creature by missing health/percent semantics, and
+  DB-creature direct heals now run through creature `SMSG_SPELL_START`,
+  `SMSG_SPELL_GO`, `SMSG_SPELLHEALLOG`, and health update packets. This is still
+  a scoped creature-caster slice, not full CMaNGOS spell parity.
+- Current creature spell AI condition follow-up loads DB-backed
+  `unit_condition` and `combat_condition` rows through `ObjectMgr`, passes the
+  relevant condition cache into map-owned creature spell selection, and filters
+  target `UnitCondition`, combat self/target conditions, and friend/enemy count
+  predicates before cooldowns or cast packets are committed. The implemented
+  unit variables cover common creature-caster checks such as race/class/level,
+  health/power percent, combat/enemy counts, melee/ranged range, creature type,
+  creature entry, player checks, enemy checks, and dying state. Unsupported
+  variables and nonzero world-state expressions deliberately fail closed rather
+  than inventing state.
 - Current proc slice now treats `proc_charges = 0` as unlimited and decrements
   finite `proc_charges` only after a proc successfully fires.
+- Current GM testing helper slice adds CMaNGOS-style level commands for the
+  active character: `.levelup`, `.levelup <delta>`, `.level <delta>`,
+  `.level +/-<delta>`, and absolute `.character level <level>`. Command parsing
+  is case-insensitive for these dot commands. The command persists
+  level/XP/vitals, refreshes stat and combat-stat update packets, updates
+  map-owned player runtime stats, and adjusts level-capped combat/weapon skill
+  caps so higher-level spell and skill testing is easier.
 - Server-start hotfix: `CREATURE_SPAWN_SELECT`,
   `get_creature_template_query`, and `get_nearby_creature_spawns` now cast
   creature model gender, other-gender model id, and fallback radius/reach
   expressions. This fixes the real startup failure:
   `template_model_gender1` decoded as `DECIMAL` instead of `u8`.
+- Server-start hotfix follow-up: after importing a full ClassicDB world, the
+  live stack exposed another decode mismatch where `creature_template.SpellList`
+  is signed in SQL but loaded as `u32`. The creature spawn/template queries now
+  cast `SpellList` unsigned before decoding.
 - After rebasing onto `d1829107e`, `cargo test -p wow-network --lib` passes
   with 575 tests and `.\scripts\test-rust.cmd` is green, proving the combined
   inventory, death-state, and PvE spell changes. `.\scripts\test-starter-zone-flow.cmd`
@@ -179,6 +226,21 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network db_creature_slow_aura_expiration_restores_speed_and_attack_timer --lib`
 - `cargo test -p wow-network cast_time_spell_sends_start_before_delayed_go_and_effects --lib`
 - `cargo test -p wow-network spell_aura_mod_stat_and_resistance_use_generic_template_metadata --lib`
+- `cargo check -p wow-network`
+- `cargo test -p wow-network db_creature_spell --lib`
+- `cargo test -p wow-network creature_spell_list --lib`
+- `cargo test -p wow-network creature_spell --lib`
+- `cargo test -p wow-network gm_ --lib`
+- `cargo fmt --package wow-db --package wow-network --check`
+- `cargo test -p wow-network gm_ --lib`
+- `cargo check -p wow-network`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import-classic-db-world.ps1 -ClassicDbPath "C:\Users\subhe\Documents\New project\target\classic-db"`
+- `.\scripts\restart-game-stack.cmd`
+- `.\scripts\test-rust.cmd`
+- `cargo test -p wow-network combat_skill_progression --lib`
+- `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network combat --lib`
+- `cargo test -p wow-db world_data --lib`
 - `cargo test -p wow-network aura --lib`
 - `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network inventory --lib`
@@ -210,9 +272,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Debuff timers on hostile creature target portraits remain unimplemented or
   client-limited until proven otherwise. CMaNGOS sends aura duration updates to
   player aura targets; do not fake hostile portrait timers with an addon.
-- PvE spell outcome follow-ups: wire a real creature spell-selection/cast
-  scheduler to the new creature-to-player outcome path; add binary spell
-  full-resist behavior, absorbs/vulnerabilities, spell hit/crit aura modifiers,
+- PvE spell outcome follow-ups: finish the non-demo CMaNGOS spell backing that
+  this slice intentionally does not fake: world-state expression support and
+  broader unit-condition variables for creature spell lists, dbscript success
+  hooks, true non-blocking multi-cast execution in the same AI tick, range/LOS
+  validation for non-player creature spell targets, friendly dispel and
+  missing-buff target selectors, broader interrupt/death/leash cleanup proof,
+  absorbs/vulnerabilities/immunities, spell hit/crit aura modifiers,
   healing/energize threat, and broader proc event metadata (`spell_proc_event`,
   procEx, cooldowns, PPM, equipment requirements). Do not branch more ad hoc
   spell damage paths before extending the shared outcome structs.

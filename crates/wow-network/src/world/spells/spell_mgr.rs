@@ -4,6 +4,8 @@ struct SpellInfo<'a> {
     effects: [SpellInfoEffect; 3],
 }
 
+const SPELL_ATTR_EX_NO_AUTOCAST_AI: u32 = 0x0002_0000;
+
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 struct SpellInfoEffect {
@@ -196,6 +198,14 @@ impl<'a> SpellInfo<'a> {
             effect.dispatch == SpellEffectDispatch::Heal
                 && spell_effect_simple_value(effect.base_points).is_some()
         })
+    }
+
+    fn direct_heal(&self) -> u32 {
+        self.effects
+            .iter()
+            .filter(|effect| effect.dispatch == SpellEffectDispatch::Heal)
+            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .sum()
     }
 
     fn aura_target(&self) -> SpellAuraTarget {

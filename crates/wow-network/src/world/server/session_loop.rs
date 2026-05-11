@@ -271,6 +271,7 @@ async fn handle_client(
                             handle_message_chat(
                                 &mut stream,
                                 ChatDeps {
+                                    character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     object_mgr: &runtime_state.object_mgr,
                                     maps: &runtime_state.maps,

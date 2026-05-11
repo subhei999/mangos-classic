@@ -20057,8 +20057,11 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
     });
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    let mut fireball = fireball_with_dot_spell_template();
+    fireball.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    fireball.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
     object_mgr
-        .prime_spell_template_for_test(133, Some(fireball_with_dot_spell_template()))
+        .prime_spell_template_for_test(133, Some(fireball))
         .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,

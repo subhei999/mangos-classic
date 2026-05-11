@@ -792,6 +792,7 @@ pub async fn get_creature_template_query(
                 creature_template.DamageSchool AS damage_school, \
                 creature_template.TrainerType AS trainer_type, creature_template.TrainerClass AS trainer_class, \
                 creature_template.PetSpellDataId AS pet_spell_data_id, creature_template.Civilian AS civilian, \
+                CAST(creature_template.SpellList AS UNSIGNED) AS spell_list, \
                 creature_template.CorpseDecay AS corpse_decay, \
                 creature_template.MovementType AS movement_type, creature_template.EquipmentTemplateId AS equipment_template_id, \
                 CAST(COALESCE(equip_1.displayid, 0) AS UNSIGNED) AS equip_display_id1, \

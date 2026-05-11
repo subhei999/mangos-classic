@@ -173,6 +173,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   live stack exposed another decode mismatch where `creature_template.SpellList`
   is signed in SQL but loaded as `u32`. The creature spawn/template queries now
   cast `SpellList` unsigned before decoding.
+- GM spawn hotfix: real-client `.npc add 3196` disconnected/logged out the
+  session because the single-template GM spawn query omitted the `spell_list`
+  alias while `CreatureTemplateQuery` expected it. Static creature loading was
+  already correct. `get_creature_template_query` now selects
+  `CAST(creature_template.SpellList AS UNSIGNED) AS spell_list`, matching the
+  bulk spawn query and allowing DB caster templates to be GM-spawned.
+- Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
+  the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
+  random spell outcome rolls no longer make the full Rust suite fail while
+  verifying unrelated hotfixes.
 - After rebasing onto `d1829107e`, `cargo test -p wow-network --lib` passes
   with 575 tests and `.\scripts\test-rust.cmd` is green, proving the combined
   inventory, death-state, and PvE spell changes. `.\scripts\test-starter-zone-flow.cmd`

@@ -16961,6 +16961,7 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
 }
 
 const TEST_SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
+const TEST_SPELL_ATTR_EX2_CANT_CRIT: u32 = 0x2000_0000;
 
 fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(WARRIOR_HEROIC_STRIKE_RANK_1);
@@ -18252,6 +18253,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
     let mut fireball = fireball_spell_template();
+    fireball.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
     fireball.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
     fireball.speed = 10.0;
     fireball.start_recovery_time = 25;

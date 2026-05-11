@@ -7,9 +7,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/multiplayer-cross-action-parity`, tracking
-  `origin/codex/multiplayer-cross-action-parity`.
-- Integration target remains `codex/rusty-mangos`.
+- Branch: `codex/rusty-mangos`, tracking `origin/codex/rusty-mangos`.
+- The former worker branch `codex/multiplayer-cross-action-parity` has been
+  committed, pushed, and merged into `codex/rusty-mangos`.
 - Playerbots are disabled by default for normal multiplayer/Northshire testing:
   `config/worldserver.local.toml` has `[playerbots] enabled = false` and
   `[playerbots.random] enabled = false`; the stack launcher keeps them off
@@ -73,6 +73,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   the current position, and active creature swing timers are adjusted by the
   old/new base-attack-time delta. Chilled/Frost Armor should no longer be only
   a debuff icon or a next-path-only slowdown.
+- Post-merge stabilization fixed a flaky spell timing regression fixture: the
+  synthetic always-hit Fireball used by
+  `cast_time_spell_sends_start_before_delayed_go_and_effects` now also carries
+  the CMaNGOS "can't crit" spell attribute so the test continues to prove
+  delayed missile ordering instead of randomly observing a crit.
 - Arcane Intellect-style `SPELL_AURA_MOD_STAT` now refreshes map-owned
   effective `PlayerWorldStats`, sends the acting client stat/max-power update
   fields on aura apply/expiration, and feeds intellect bonuses into
@@ -131,6 +136,7 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network db_creature_chase_motion_duration_applies_temporary_run_speed_slow --lib`
 - `cargo test -p wow-network db_creature_slow_aura_retimes_active_chase_and_adjusts_swing_timer --lib`
 - `cargo test -p wow-network db_creature_slow_aura_expiration_restores_speed_and_attack_timer --lib`
+- `cargo test -p wow-network cast_time_spell_sends_start_before_delayed_go_and_effects --lib`
 - `cargo test -p wow-network spell_aura_mod_stat_and_resistance_use_generic_template_metadata --lib`
 - `cargo test -p wow-network aura --lib`
 - `cargo test -p wow-network combat --lib`

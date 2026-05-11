@@ -1969,6 +1969,8 @@ fn spell_periodic_damage_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Optio
                 aura_name: effect.aura_name,
                 school: spell_info.template.school,
                 damage_class: spell_info.template.dmg_class,
+                attributes_ex2: spell_info.template.attributes_ex2,
+                attributes_ex3: spell_info.template.attributes_ex3,
                 amount: damage,
                 tick_millis: effect.amplitude,
                 next_tick_at: now + Duration::from_millis(effect.amplitude as u64),

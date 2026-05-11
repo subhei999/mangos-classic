@@ -2073,6 +2073,56 @@ fn spell_damage_outcome_carries_crit_resist_and_full_resist() {
 }
 
 #[test]
+fn spell_damage_outcome_uses_unit_snapshots_for_player_and_creature_targets() {
+    let mut creature_spawn = test_creature_spawn(6);
+    creature_spawn.template.max_level = 10;
+    creature_spawn.template.resistance_fire = 1_000;
+    let creature = DbCreatureRuntime::new(creature_spawn);
+    let creature_snapshot = db_creature_spell_snapshot(&creature);
+    let mut player_stats = test_player_combat_stats();
+    player_stats.resistances[2] = 1_000;
+    let player_snapshot = player_spell_snapshot(10, 8, &player_stats);
+
+    let creature_target = calculate_spell_damage_outcome(
+        spell_damage_outcome_input(
+            100,
+            2,
+            SPELL_DAMAGE_CLASS_MAGIC,
+            SPELL_ATTR_EX2_CANT_CRIT,
+            0,
+            player_snapshot,
+            creature_snapshot,
+        ),
+        SpellDamageOutcomeRolls {
+            hit_roll: 10_000,
+            crit_roll: 1,
+            partial_resist_roll: 10_000,
+        },
+    );
+    let player_target = calculate_spell_damage_outcome(
+        spell_damage_outcome_input(
+            100,
+            2,
+            SPELL_DAMAGE_CLASS_MAGIC,
+            SPELL_ATTR_EX2_CANT_CRIT,
+            0,
+            creature_snapshot,
+            player_snapshot,
+        ),
+        SpellDamageOutcomeRolls {
+            hit_roll: 10_000,
+            crit_roll: 1,
+            partial_resist_roll: 10_000,
+        },
+    );
+
+    assert_eq!(creature_target.final_damage, 20);
+    assert_eq!(creature_target.resist, 80);
+    assert_eq!(player_target.final_damage, 20);
+    assert_eq!(player_target.resist, 80);
+}
+
+#[test]
 fn armor_reduced_damage_matches_cmangos_cap_shape() {
     assert_eq!(armor_reduced_damage(1, 0, 10.0), 10);
     let reduced = armor_reduced_damage(1, 100, 10.0);
@@ -10517,6 +10567,65 @@ fn map_runtime_db_creature_spell_damage_includes_combat_log_packet() {
 }
 
 #[test]
+fn map_runtime_db_creature_spell_damage_to_player_uses_shared_outcome_and_logs() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 179;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+
+    let event = map
+        .apply_db_creature_player_spell_damage(
+            creature_guid,
+            victim,
+            999_012,
+            6,
+            1,
+            SPELL_DAMAGE_CLASS_MAGIC,
+            SPELL_ATTR_EX2_CANT_CRIT,
+            TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+            now,
+        )
+        .unwrap()
+        .expect("spell damage should apply");
+
+    assert_eq!(event.damage, 6);
+    assert_eq!(event.victim_health, 14);
+    assert_eq!(event.outcome.final_damage, 6);
+    let spell_log = event
+        .spell_non_melee_log_body
+        .as_ref()
+        .expect("creature spell should produce non-melee log");
+    let mut cursor = 0;
+    assert_eq!(read_packed_guid(spell_log, &mut cursor).unwrap(), victim);
+    assert_eq!(
+        read_packed_guid(spell_log, &mut cursor).unwrap(),
+        creature_guid
+    );
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap(), 999_012);
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap(), 6);
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
 fn map_runtime_weapon_spell_avoid_sends_spell_miss_log_without_damage_log() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -11816,6 +11925,8 @@ fn creature_dot_death_clears_auras_before_respawn() {
             aura_name: SPELL_AURA_PERIODIC_DAMAGE,
             school: 1,
             damage_class: 2,
+            attributes_ex2: 0,
+            attributes_ex3: 0,
             amount: 7,
             tick_millis: 3_000,
             next_tick_at: now,
@@ -17302,12 +17413,20 @@ fn periodic_damage_tick_uses_aura_amount_without_armor_reduction() {
         aura_name: SPELL_AURA_PERIODIC_DAMAGE,
         school: 1,
         damage_class: 2,
+        attributes_ex2: 0,
+        attributes_ex3: 0,
         amount: 5,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
     };
 
-    let tick = calculate_periodic_damage_tick(&periodic, 120);
+    let snapshot = SpellCombatUnitSnapshot {
+        level: 1,
+        class: 1,
+        intellect: 0,
+        resistances: [0; MAX_SPELL_SCHOOL],
+    };
+    let tick = calculate_periodic_damage_tick(&periodic, snapshot, snapshot, 120);
 
     assert_eq!(tick.requested_damage, 5);
     assert_eq!(tick.dealt_damage, 5);
@@ -17315,6 +17434,45 @@ fn periodic_damage_tick_uses_aura_amount_without_armor_reduction() {
     assert_eq!(tick.absorb, 0);
     assert_eq!(tick.resist, 0);
     assert_eq!(tick.threat, 5.0);
+}
+
+#[test]
+fn periodic_damage_tick_uses_shared_spell_outcome_for_partial_resist() {
+    let periodic = PeriodicDamageAura {
+        aura_name: SPELL_AURA_PERIODIC_DAMAGE,
+        school: 2,
+        damage_class: SPELL_DAMAGE_CLASS_MAGIC,
+        attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+        attributes_ex3: 0,
+        amount: 100,
+        tick_millis: 3_000,
+        next_tick_at: Instant::now(),
+    };
+    let caster = SpellCombatUnitSnapshot {
+        level: 10,
+        class: 8,
+        intellect: 100,
+        resistances: [0; MAX_SPELL_SCHOOL],
+    };
+    let mut target = caster;
+    target.resistances[2] = 1_000;
+
+    let tick = calculate_periodic_damage_tick_with_rolls(
+        &periodic,
+        caster,
+        target,
+        120,
+        SpellDamageOutcomeRolls {
+            hit_roll: 10_000,
+            crit_roll: 1,
+            partial_resist_roll: 10_000,
+        },
+    );
+
+    assert_eq!(tick.requested_damage, 100);
+    assert_eq!(tick.dealt_damage, 20);
+    assert_eq!(tick.resist, 80);
+    assert_eq!(tick.threat, 20.0);
 }
 
 #[test]
@@ -20046,6 +20204,8 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
             aura_name: SPELL_AURA_PERIODIC_DAMAGE,
             school: 1,
             damage_class: 2,
+            attributes_ex2: 0,
+            attributes_ex3: 0,
             amount: 5,
             tick_millis: 3_000,
             next_tick_at: aura.periodic_damage.unwrap().next_tick_at,

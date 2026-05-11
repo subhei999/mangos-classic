@@ -265,6 +265,8 @@ struct PeriodicDamageAura {
     aura_name: u32,
     school: u32,
     damage_class: u32,
+    attributes_ex2: u32,
+    attributes_ex3: u32,
     amount: u32,
     tick_millis: u32,
     next_tick_at: Instant,

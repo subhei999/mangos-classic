@@ -121,6 +121,7 @@ impl MapRuntime {
             let old_attack_duration = creature.base_attack_duration();
             let before = creature.active_auras.len();
             let mut aura_changed = false;
+            let target_snapshot = db_creature_spell_snapshot(creature);
 
             let mut tick_packets = Vec::new();
             for aura in &mut creature.active_auras {
@@ -139,7 +140,16 @@ impl MapRuntime {
                 while periodic.next_tick_at <= now {
                     periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
                 }
-                let tick = calculate_periodic_damage_tick(periodic, creature.health);
+                let Some(caster_snapshot) = periodic_spell_caster_snapshot(&self.players, aura.caster)
+                else {
+                    continue;
+                };
+                let tick = calculate_periodic_damage_tick(
+                    periodic,
+                    caster_snapshot,
+                    target_snapshot,
+                    creature.health,
+                );
                 if tick.dealt_damage == 0 {
                     continue;
                 }
@@ -573,12 +583,47 @@ struct PeriodicAuraLog {
 
 fn calculate_periodic_damage_tick(
     periodic: &PeriodicDamageAura,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
     target_health: u32,
 ) -> PeriodicDamageTick {
+    let mut rng = rand::thread_rng();
+    calculate_periodic_damage_tick_with_rolls(
+        periodic,
+        caster,
+        target,
+        target_health,
+        SpellDamageOutcomeRolls {
+            hit_roll: rng.gen_range(1..=10_000),
+            crit_roll: rng.gen_range(1..=10_000),
+            partial_resist_roll: rng.gen_range(1..=10_000),
+        },
+    )
+}
+
+fn calculate_periodic_damage_tick_with_rolls(
+    periodic: &PeriodicDamageAura,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
+    target_health: u32,
+    rolls: SpellDamageOutcomeRolls,
+) -> PeriodicDamageTick {
     let requested_damage = periodic.amount.max(1);
-    let absorb = 0;
-    let resist = 0;
-    let effective_damage = requested_damage.saturating_sub(absorb);
+    let outcome = calculate_spell_damage_outcome(
+        spell_damage_outcome_input(
+            requested_damage,
+            periodic.school as u8,
+            periodic.damage_class,
+            periodic.attributes_ex2,
+            periodic.attributes_ex3,
+            caster,
+            target,
+        ),
+        rolls,
+    );
+    let absorb = outcome.absorb;
+    let resist = outcome.resist;
+    let effective_damage = outcome.final_damage;
     let dealt_damage = target_health.min(effective_damage);
     let threat = dealt_damage as f32;
     PeriodicDamageTick {
@@ -589,6 +634,21 @@ fn calculate_periodic_damage_tick(
         resist,
         threat,
     }
+}
+
+fn periodic_spell_caster_snapshot(
+    players: &HashMap<u32, PlayerRuntime>,
+    caster: ObjectGuid,
+) -> Option<SpellCombatUnitSnapshot> {
+    if !caster.is_player() {
+        return None;
+    }
+    let player = players.get(&caster.counter())?;
+    Some(player_spell_snapshot(
+        player.level,
+        player.class,
+        &player.combat_stats,
+    ))
 }
 
 fn db_creature_aura_runtime_packets(

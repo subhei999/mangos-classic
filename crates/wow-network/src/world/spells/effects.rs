@@ -566,18 +566,19 @@ async fn apply_db_creature_spell_damage(
                 )
             })?;
         let character = session.active_character.as_ref();
-        Some(roll_spell_damage_outcome(SpellDamageOutcomeInput {
-            damage: damage_effect.damage,
-            school: damage_effect.school,
-            dmg_class: damage_effect.dmg_class,
-            attributes_ex2: damage_effect.attributes_ex2,
-            attributes_ex3: damage_effect.attributes_ex3,
-            caster_class: character.map(|character| character.class).unwrap_or(1),
-            caster_level: character.map(|character| character.level).unwrap_or(1),
-            caster_intellect: combat_stats.intellect,
-            target_level: target_creature.spawn.template.max_level,
-            target_resistances: creature_spell_resistances(&target_creature.spawn.template),
-        }))
+        Some(roll_spell_damage_outcome(spell_damage_outcome_input(
+            damage_effect.damage,
+            damage_effect.school,
+            damage_effect.dmg_class,
+            damage_effect.attributes_ex2,
+            damage_effect.attributes_ex3,
+            player_spell_snapshot(
+                character.map(|character| character.level).unwrap_or(1),
+                character.map(|character| character.class).unwrap_or(1),
+                &combat_stats,
+            ),
+            db_creature_spell_snapshot(&target_creature),
+        )))
     } else {
         None
     };

@@ -394,6 +394,122 @@ impl MapRuntime {
         }))
     }
 
+    #[allow(clippy::too_many_arguments, dead_code)]
+    fn apply_db_creature_player_spell_damage(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        spell_id: u32,
+        damage: u32,
+        school: u8,
+        dmg_class: u32,
+        attributes_ex2: u32,
+        attributes_ex3: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreaturePlayerSpellDamageEvent>> {
+        let Some(combat) = self.active_creature_combats.get(&attacker.raw()).copied() else {
+            return Ok(None);
+        };
+        if combat.victim != victim {
+            return Ok(None);
+        }
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return Ok(None);
+        };
+        if !creature.is_alive() {
+            return Ok(None);
+        }
+        let Some(victim_player) = self.players.get(&victim.counter()) else {
+            return Ok(None);
+        };
+        let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
+            damage,
+            school,
+            dmg_class,
+            attributes_ex2,
+            attributes_ex3,
+            db_creature_spell_snapshot(creature),
+            player_spell_snapshot(victim_player.level, victim_player.class, &victim_player.combat_stats),
+        ));
+        let requested_damage = outcome.final_damage;
+        let damage = victim_player.health.min(requested_damage);
+        let Some(victim_player) = self.players.get_mut(&victim.counter()) else {
+            return Ok(None);
+        };
+        victim_player.health = victim_player.health.saturating_sub(damage);
+        let victim_health = victim_player.health;
+        let victim_position = victim_player.position;
+        let _ = victim_player;
+        if damage > 0 {
+            self.add_db_creature_threat(attacker, victim, damage as f32);
+            self.refresh_db_creature_combat_leash(attacker, now);
+        }
+        let spell_non_melee_log_body = outcome
+            .miss_info
+            .is_none()
+            .then(|| {
+                build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                    attacker,
+                    target: victim,
+                    spell_id,
+                    damage: requested_damage,
+                    school,
+                    absorb: outcome.absorb,
+                    resist: outcome.resist,
+                    periodic: false,
+                    blocked: outcome.blocked,
+                    hit_info: outcome.hit_info,
+                })
+            })
+            .transpose()?;
+        let spell_miss_log_body = outcome
+            .miss_info
+            .map(|miss_info| build_spell_log_miss_body(attacker, victim, spell_id, miss_info))
+            .transpose()?;
+        let health_update_body = build_player_health_update_body(victim, victim_health)?;
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(
+            victim_position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(victim.counter()),
+        ) {
+            let Some(player) = self.players.get(&player_guid) else {
+                continue;
+            };
+            if let Some(body) = &spell_miss_log_body {
+                if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_SPELLLOGMISS,
+                    body: body.clone(),
+                }) {
+                    observer_packets.push(packet);
+                }
+            }
+            if let Some(body) = &spell_non_melee_log_body {
+                if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_SPELLNONMELEEDAMAGELOG,
+                    body: body.clone(),
+                }) {
+                    observer_packets.push(packet);
+                }
+            }
+            if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: health_update_body.clone(),
+            }) {
+                observer_packets.push(packet);
+            }
+        }
+        Ok(Some(DbCreaturePlayerSpellDamageEvent {
+            damage,
+            victim_health,
+            outcome,
+            spell_non_melee_log_body,
+            spell_miss_log_body,
+            health_update_body,
+            observer_packets,
+        }))
+    }
+
     fn defer_ready_db_creature_swing_retry(
         &mut self,
         attacker: ObjectGuid,

@@ -179,6 +179,14 @@ struct SpellDamageOutcomeInput {
     target_resistances: [i16; MAX_SPELL_SCHOOL],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpellCombatUnitSnapshot {
+    level: u8,
+    class: u8,
+    intellect: u32,
+    resistances: [i16; MAX_SPELL_SCHOOL],
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SpellDamageOutcomeRolls {
     hit_roll: u32,
@@ -306,6 +314,29 @@ fn roll_spell_damage_outcome(input: SpellDamageOutcomeInput) -> SpellDamageOutco
             partial_resist_roll: rng.gen_range(1..=10_000),
         },
     )
+}
+
+fn spell_damage_outcome_input(
+    damage: u32,
+    school: u8,
+    dmg_class: u32,
+    attributes_ex2: u32,
+    attributes_ex3: u32,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
+) -> SpellDamageOutcomeInput {
+    SpellDamageOutcomeInput {
+        damage,
+        school,
+        dmg_class,
+        attributes_ex2,
+        attributes_ex3,
+        caster_class: caster.class,
+        caster_level: caster.level,
+        caster_intellect: caster.intellect,
+        target_level: target.level,
+        target_resistances: target.resistances,
+    }
 }
 
 fn calculate_spell_damage_outcome(
@@ -466,6 +497,37 @@ fn creature_spell_resistances(template: &CreatureTemplateQuery) -> [i16; MAX_SPE
         template.resistance_shadow,
         template.resistance_arcane,
     ]
+}
+
+fn db_creature_spell_snapshot(creature: &DbCreatureRuntime) -> SpellCombatUnitSnapshot {
+    SpellCombatUnitSnapshot {
+        level: creature
+            .spawn
+            .template
+            .max_level
+            .max(creature.spawn.template.min_level)
+            .max(1),
+        class: 0,
+        intellect: 0,
+        resistances: creature_spell_resistances(&creature.spawn.template),
+    }
+}
+
+fn player_spell_snapshot(
+    level: u8,
+    class: u8,
+    combat_stats: &PlayerCombatStats,
+) -> SpellCombatUnitSnapshot {
+    let mut resistances = [0i16; MAX_SPELL_SCHOOL];
+    for (index, value) in combat_stats.resistances.iter().copied().enumerate() {
+        resistances[index] = value.min(i16::MAX as u32) as i16;
+    }
+    SpellCombatUnitSnapshot {
+        level: level.max(1),
+        class,
+        intellect: combat_stats.intellect,
+        resistances,
+    }
 }
 
 fn partial_resist_chances(percent: f32) -> [u32; 5] {

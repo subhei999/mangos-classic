@@ -7,17 +7,19 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Branch And Worktree
 
-- Branch: `codex/rusty-mangos`, tracking `origin/codex/rusty-mangos`.
-- The former worker branch `codex/multiplayer-cross-action-parity` has been
-  committed, pushed, and merged into `codex/rusty-mangos`.
+- Branch: `codex/pve-spell-combat-parity`, created as a separate worktree at
+  `C:\Users\subhe\Documents\rusty-mangos-pve-parity` from clean
+  `origin/codex/rusty-mangos`.
+- The main checkout at `C:\Users\subhe\Documents\New project` has unrelated
+  inventory/loot edits; do not use it for this branch's PvE spell/combat work.
 - Playerbots are disabled by default for normal multiplayer/Northshire testing:
   `config/worldserver.local.toml` has `[playerbots] enabled = false` and
   `[playerbots.random] enabled = false`; the stack launcher keeps them off
   unless explicitly passed a playerbot flag.
-- Current user-directed priority: finish Northshire multiplayer/gameplay parity
-  issues found by real-client testing. Current sprint focus is inventory
-  parity, using CMaNGOS as the behavior reference and keeping shared world
-  authority in `MapRuntime`.
+- Current user-directed priority: PvE spell/combat parity first, while keeping
+  the newly landed inventory/bag and death-state fixes in the integration base.
+  Use CMaNGOS as the behavior reference and keep shared world authority in
+  `MapRuntime`.
 - Cast-from-sitting remains deprioritized after packet-trace investigation.
   The client eventually sent `CMSG_CAST_SPELL` after auto-standing, but then
   immediately sent `CMSG_CANCEL_CAST`; the root cause is likely a subtle
@@ -108,13 +110,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Local addon cleanup removed
   `C:\World of Warcraft Classic\Interface\AddOns\NorthshireAuraTimers`. No repo
   commit is needed for that file-system-only cleanup.
-- Current spell outcome slice ports the CMaNGOS low-level formulas that matter
-  for Northshire spell damage: `Unit::CalculateSpellMissChance`,
-  `Unit::CalculateEffectiveMagicResistancePercent`,
-  `SPELL_PARTIAL_RESIST_DISTRIBUTION`, and
-  `Player::GetSpellCritFromIntellect`. The Rust path currently applies this to
-  non-weapon direct player spell damage against shared DB creatures; melee
-  ability damage still uses the existing melee outcome path.
+- Current PvE spell/combat parity slice keeps the existing CMaNGOS low-level
+  spell outcome formulas and adds a shared `SpellCombatUnitSnapshot` input
+  boundary for player and DB-creature casters/targets. Direct player spell
+  damage against DB creatures now uses the snapshot helper instead of building
+  outcome inputs ad hoc, periodic DB-creature aura damage now rolls through the
+  same spell outcome path for partial/full resist and crit handling, and
+  `MapRuntime` has a map-owned creature-to-player spell damage application path
+  that produces `SMSG_SPELLNONMELEEDAMAGELOG`/`SMSG_SPELLLOGMISS`, health
+  updates, threat, and observer packets.
 - Current proc slice now treats `proc_charges = 0` as unlimited and decrements
   finite `proc_charges` only after a proc successfully fires.
 - Server-start hotfix: `CREATURE_SPAWN_SELECT`,
@@ -122,9 +126,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   creature model gender, other-gender model id, and fallback radius/reach
   expressions. This fixes the real startup failure:
   `template_model_gender1` decoded as `DECIMAL` instead of `u8`.
-- Current `cargo test -p wow-network --lib` passes with 572 tests, and the
-  full `.\scripts\test-rust.cmd` script is green after stopping the local
-  server binaries before rebuild.
+- After rebasing onto `d1829107e`, `cargo test -p wow-network --lib` passes
+  with 575 tests and `.\scripts\test-rust.cmd` is green, proving the combined
+  inventory, death-state, and PvE spell changes. `.\scripts\test-starter-zone-flow.cmd`
+  remains tracked separately in GitHub issue #69 for `Kobold kill 2 did not
+  grant quest credit`; focused quest/kill unit tests are green and a detached
+  clean `origin/codex/rusty-mangos` baseline worktree also failed under the
+  same Docker setup, so do not attribute that smoke failure to this PvE spell
+  outcome slice unless future evidence links it directly.
 
 ## Tests Run
 
@@ -157,6 +166,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network stand_state --lib`
 - `cargo check -p wow-db`
 - `cargo check -p wow-network`
+- `cargo test -p wow-network spell_damage_outcome --lib`
+- `cargo test -p wow-network periodic_damage_tick --lib`
+- `cargo test -p wow-network db_creature_spell_damage_to_player --lib`
+- `cargo test -p wow-network quest --lib`
+- `cargo test -p wow-network kill --lib`
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network chilled --lib`
 - `cargo test -p wow-network db_creature_swing_timer --lib`
@@ -173,6 +187,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `.\scripts\restart-game-stack.cmd`
 - `git diff --check`
 - `.\scripts\test-rust.cmd`
+- `.\scripts\test-starter-zone-flow.cmd` failed with `Kobold kill 2 did not
+  grant quest credit`. A reset without full world SQL left the local `mangos`
+  schema missing full-world tables; the DB was repaired by importing
+  `ClassicDB_1_12_1_z2815.sql.gz` plus post-dump mangos updates `z2816+`, and
+  the starter-zone flow still failed with the same Kobold kill-credit symptom.
+  A detached clean `origin/codex/rusty-mangos` baseline smoke also failed under
+  the same Docker setup, so issue #69 tracks the integration follow-up.
 - `.\scripts\restart-game-stack.cmd`
 
 ## Current Follow-Ups
@@ -189,12 +210,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Debuff timers on hostile creature target portraits remain unimplemented or
   client-limited until proven otherwise. CMaNGOS sends aura duration updates to
   player aura targets; do not fake hostile portrait timers with an addon.
-- Spell outcome follow-ups: wire the outcome layer into creature-cast spells,
-  player-vs-player spell damage, periodic damage, binary spell full-resist
-  behavior, absorbs/vulnerabilities, spell hit/crit aura modifiers, and broader
-  proc event metadata (`spell_proc_event`, procEx, cooldowns, PPM, equipment
-  requirements). Do not branch more ad hoc spell damage paths before extending
-  the shared outcome structs.
+- PvE spell outcome follow-ups: wire a real creature spell-selection/cast
+  scheduler to the new creature-to-player outcome path; add binary spell
+  full-resist behavior, absorbs/vulnerabilities, spell hit/crit aura modifiers,
+  healing/energize threat, and broader proc event metadata (`spell_proc_event`,
+  procEx, cooldowns, PPM, equipment requirements). Do not branch more ad hoc
+  spell damage paths before extending the shared outcome structs.
+- Starter-zone integration follow-up: GitHub issue #69 tracks the currently
+  red Kobold Camp Cleanup kill-credit smoke. Treat it as a separate quest/combat
+  lifecycle investigation unless a future PvE change directly touches the same
+  death-credit path.
 - Creature radius/reach still mostly use first-display template fallback. A
   later visual-size slice should derive radius/reach from the selected model row
   where CMaNGOS does.
@@ -220,10 +245,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `crates/wow-network/src/world/vendors.rs`
 - `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/spells/spell_mgr.rs`
+- `crates/wow-network/src/world/combat/outcome.rs`
 - `crates/wow-network/src/world/combat/aggro.rs`
 - `crates/wow-network/src/world/combat/runtime.rs`
 - `crates/wow-network/src/world/entities/creature.rs`
 - `crates/wow-network/src/world/maps/map.rs`
+- `crates/wow-network/src/world/maps/map/creature_combat.rs`
+- `crates/wow-network/src/world/maps/map/creature_damage.rs`
 - `crates/wow-network/src/world/maps/map_manager.rs`
 - `crates/wow-network/src/world/maps/map/creature_motion.rs`
 - `crates/wow-network/src/world/server/session_loop.rs`

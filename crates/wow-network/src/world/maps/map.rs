@@ -361,6 +361,18 @@ struct DbCreaturePlayerDamageEvent {
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
+struct DbCreaturePlayerSpellDamageEvent {
+    damage: u32,
+    victim_health: u32,
+    outcome: SpellDamageOutcome,
+    spell_non_melee_log_body: Option<Vec<u8>>,
+    spell_miss_log_body: Option<Vec<u8>>,
+    health_update_body: Vec<u8>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CreatureCombatLeashState {
     refresh_position: WorldPosition,

@@ -15,8 +15,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `[playerbots.random] enabled = false`; the stack launcher keeps them off
   unless explicitly passed a playerbot flag.
 - Current user-directed priority: finish Northshire multiplayer/gameplay parity
-  issues found by real-client testing, using CMaNGOS as the behavior reference
-  and keeping shared world authority in `MapRuntime`.
+  issues found by real-client testing. Current sprint focus is inventory
+  parity, using CMaNGOS as the behavior reference and keeping shared world
+  authority in `MapRuntime`.
 - Cast-from-sitting remains deprioritized after packet-trace investigation.
   The client eventually sent `CMSG_CAST_SPELL` after auto-standing, but then
   immediately sent `CMSG_CANCEL_CAST`; the root cause is likely a subtle
@@ -35,6 +36,24 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   bags into available bag slots, dropping gear onto a bag icon to place it in
   the first valid contained slot, vendor/autostore stack merging, and tests for
   stack merge plus equipped bag storage.
+- Current inventory parity follow-up fixes user-observed bag issues:
+  CMaNGOS-style rejection for dragging an equipped bag into its own contained
+  slots now sends the item GUID context that the client needs to clear the
+  cursor/gray drag state, looted bags are created as containers immediately
+  instead of only after relog, loot autostore now uses the shared inventory
+  store planner so equipped bags count as valid space, selling from equipped
+  bags clears the container slot instead of leaving the client one item behind,
+  and vendor buyback now handles `CMSG_BUYBACK_ITEM` with Classic buyback
+  player fields. A second real-client follow-up now also sends explicit
+  `SMSG_INVENTORY_CHANGE_FAILURE` packets when a non-empty equipped bag is
+  moved into another bag/storage slot and when right-click auto-equip has no
+  free bag slot, preventing gray stuck items after those rejected actions.
+- Current P0 death-state fix addresses the real-client overkill/jump repro
+  where a player could appear alive after death while mobs ignored them. The
+  root cause was `MapRuntime` gameplay sync applying session health `0` and
+  then stat/aura refresh flooring health back to `1`. Dead players now stay at
+  zero health through map sync, `CMSG_ATTACKSWING` is ignored for dead players,
+  and spell casts fail with CMaNGOS `SPELL_FAILED_CASTER_DEAD` (`0x13`).
 - Current spell lifecycle slice adds CMaNGOS-style cast pushback from creature
   melee hits (`SMSG_SPELL_DELAYED`), auto-standing when casting from sit/sleep,
   and nearby observer cleanup packets when an active cast is interrupted by
@@ -103,11 +122,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   creature model gender, other-gender model id, and fallback radius/reach
   expressions. This fixes the real startup failure:
   `template_model_gender1` decoded as `DECIMAL` instead of `u8`.
-- Current `cargo test -p wow-network --lib` passes with 564 tests. A previous
-  full `.\scripts\test-rust.cmd` run reached successful crate tests/checks,
-  then failed final binary rebuild because the running local `authserver.exe`
-  held `target\debug\authserver.exe`; `.\scripts\restart-game-stack.cmd` then
-  stopped/rebuilt/restarted the stack successfully.
+- Current `cargo test -p wow-network --lib` passes with 572 tests, and the
+  full `.\scripts\test-rust.cmd` script is green after stopping the local
+  server binaries before rebuild.
 
 ## Tests Run
 
@@ -116,6 +133,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo fmt --package wow-network --check`
 - `cargo check -p wow-db`
 - `cargo test -p wow-network inventory --lib`
+- `cargo test -p wow-network buyback --lib`
+- `cargo test -p wow-network loot --lib`
+- `cargo test -p wow-network item_create_block_for_looted_bag_is_container_immediately --lib`
+- `cargo test -p wow-network autoequip_bag --lib`
+- `cargo test -p wow-network --lib`
+- `cargo test -p wow-network map_runtime_gameplay_sync_preserves_dead_player_zero_health --lib`
+- `cargo test -p wow-network dead_player_attack_swing_does_not_start_map_auto_attack --lib`
+- `cargo test -p wow-network spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue --lib`
+- `cargo test -p wow-network death --lib`
+- `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network creature --lib`
@@ -145,10 +172,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-db world_data --lib`
 - `.\scripts\restart-game-stack.cmd`
 - `git diff --check`
-- `.\scripts\test-rust.cmd` reached successful crate tests/checks, then failed
-  final binary rebuild because the running local `authserver.exe` held
-  `target\debug\authserver.exe`; `.\scripts\restart-game-stack.cmd` then
-  stopped/rebuilt/restarted the stack successfully.
+- `.\scripts\test-rust.cmd`
+- `.\scripts\restart-game-stack.cmd`
 
 ## Current Follow-Ups
 
@@ -174,8 +199,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   later visual-size slice should derive radius/reach from the selected model row
   where CMaNGOS does.
 - Loot autostore paths still have backpack-heavy legacy branches. Move them
-  onto the shared inventory store planner when the next loot/inventory slice is
-  opened.
+  onto the shared inventory store planner for any remaining non-creature or
+  older helper paths if they show the same backpack-only behavior.
+- Real-client smoke needed for the current inventory parity patch: sell full
+  and partial stacks from an equipped bag, buy back both, loot into an empty
+  equipped bag with a full backpack, and drag an equipped bag onto one of its
+  own slots, drag a non-empty equipped bag into another bag, and right-click an
+  extra bag while all four bag slots are occupied to confirm the client clears
+  the cursor/gray state.
 - Continue Northshire missing criteria from the playable board: quest
   availability restrictions, quest item drops from real loot tables,
   gameobject quest pickup, remaining warrior level 1-6 spell parity, combat log

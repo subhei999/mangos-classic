@@ -286,6 +286,34 @@ pub async fn split_character_inventory_item(
     }))
 }
 
+pub async fn move_character_inventory_item_to_slot(
+    pool: &MySqlPool,
+    owner_guid: u32,
+    item_guid: u32,
+    bag: u32,
+    slot: u8,
+) -> Result<bool, DbError> {
+    let result = sqlx::query(
+        "UPDATE character_inventory ci \
+         JOIN item_instance ii ON ci.item = ii.guid \
+         SET ci.bag = ?, ci.slot = ? \
+         WHERE ci.guid = ? AND ci.item = ? AND ii.owner_guid = ?",
+    )
+    .bind(bag)
+    .bind(slot)
+    .bind(owner_guid)
+    .bind(item_guid)
+    .bind(owner_guid)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() > 0 && bag == 0 && slot < ENUM_EQUIPMENT_CACHE_SLOTS as u8 {
+        refresh_character_equipment_cache(pool, owner_guid).await?;
+    }
+
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn add_character_inventory_item(
     pool: &MySqlPool,
     guid: u32,

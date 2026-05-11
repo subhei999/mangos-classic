@@ -12,9 +12,23 @@
         warn!("Ignoring attack swing before character login");
         return Ok(());
     };
+    if session.player_death_state != PlayerDeathState::Alive {
+        debug!("Ignoring attack swing from dead player");
+        return Ok(());
+    }
     let Some(character) = session.active_character.as_ref() else {
         return Ok(());
     };
+    if session.player_health == 0
+        && shared_world
+            .maps
+            .player_runtime_snapshot(character.position.map_id, character.guid)
+            .await
+            .is_some_and(|snapshot| snapshot.health == 0)
+    {
+        debug!("Ignoring attack swing from dead player");
+        return Ok(());
+    }
     if shared_world
         .maps
         .db_creature_combat_snapshot(character.position.map_id, target)

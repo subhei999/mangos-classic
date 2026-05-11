@@ -253,6 +253,100 @@ async fn vendor_buy_item(
         }))
 }
 
+fn vendor_buyback_slot_index(slot: u8) -> Option<usize> {
+    (BUYBACK_SLOT_START..BUYBACK_SLOT_END)
+        .contains(&slot)
+        .then_some((slot - BUYBACK_SLOT_START) as usize)
+}
+
+fn next_buyback_slot(session: &WorldSessionState) -> u8 {
+    if (BUYBACK_SLOT_START..BUYBACK_SLOT_END).contains(&session.next_buyback_slot) {
+        session.next_buyback_slot
+    } else {
+        BUYBACK_SLOT_START
+    }
+}
+
+fn advance_buyback_slot(session: &mut WorldSessionState, used_slot: u8) {
+    session.next_buyback_slot = if used_slot < BUYBACK_SLOT_END - 1 {
+        used_slot + 1
+    } else {
+        BUYBACK_SLOT_START
+    };
+}
+
+fn build_buyback_slot_update_body(
+    character_guid: u32,
+    entry: Option<BuybackItem>,
+    slot: u8,
+) -> anyhow::Result<Vec<u8>> {
+    let Some(index) = vendor_buyback_slot_index(slot) else {
+        anyhow::bail!("invalid buyback slot {slot}");
+    };
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    let item_guid = entry
+        .map(|entry| ObjectGuid::new(HighGuid::Item, 0, entry.item).raw())
+        .unwrap_or(0);
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + index * 2,
+        item_guid as u32,
+    )?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + index * 2 + 1,
+        (item_guid >> 32) as u32,
+    )?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_BUYBACK_PRICE_1 + index,
+        entry.map(|entry| entry.price).unwrap_or(0),
+    )?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + index,
+        entry.map(|entry| entry.timestamp).unwrap_or(0),
+    )?;
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
+async fn remove_existing_buyback_slot(
+    character_db_pool: &MySqlPool,
+    character_guid: u32,
+    session: &mut WorldSessionState,
+    slot: u8,
+) -> anyhow::Result<()> {
+    let _ = wow_db::destroy_character_inventory_item_count(
+        character_db_pool,
+        character_guid,
+        INVENTORY_SLOT_BAG_0 as u32,
+        slot,
+        0,
+    )
+    .await?;
+    session.buyback_items.retain(|entry| entry.slot != slot);
+    Ok(())
+}
+
+fn push_buyback_entry(session: &mut WorldSessionState, slot: u8, item: u32, price: u32) -> BuybackItem {
+    let timestamp = 30 * 3600;
+    session.buyback_items.retain(|entry| entry.slot != slot);
+    let entry = BuybackItem {
+        slot,
+        item,
+        price,
+        timestamp,
+    };
+    session.buyback_items.push(entry);
+    advance_buyback_slot(session, slot);
+    entry
+}
+
 async fn handle_sell_item(
     stream: &mut WorldPacketSink,
     deps: QuestMutationDeps<'_>,
@@ -340,15 +434,34 @@ async fn handle_sell_item(
         .await;
     }
 
-    let sold = wow_db::destroy_character_inventory_item_count(
+    let buyback_slot = next_buyback_slot(session);
+    remove_existing_buyback_slot(character_db_pool, character_guid, session, buyback_slot).await?;
+    let buyback_item = if count < source_item.count {
+        let Some(split) = wow_db::split_character_inventory_item(
+            character_db_pool,
+            character_guid,
+            source_item.bag,
+            source_item.slot,
+            INVENTORY_SLOT_BAG_0 as u32,
+            buyback_slot,
+            count,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        split.new_item
+    } else if wow_db::move_character_inventory_item_to_slot(
         character_db_pool,
         character_guid,
-        source_item.bag,
-        source_item.slot,
-        count,
+        source_item.item,
+        INVENTORY_SLOT_BAG_0 as u32,
+        buyback_slot,
     )
-    .await?;
-    let Some(sold) = sold else {
+    .await?
+    {
+        source_item.item
+    } else {
         return Ok(());
     };
     let money = wow_db::add_character_money(
@@ -358,30 +471,53 @@ async fn handle_sell_item(
     )
     .await?;
     session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    let buyback_entry = push_buyback_entry(
+        session,
+        buyback_slot,
+        buyback_item,
+        template.sell_price.saturating_mul(count),
+    );
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
-    match sold {
-        wow_db::InventoryDestroyResult::CountChanged { item, count } => {
-            let body = build_item_stack_count_update_body(item, count)?;
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+    let mut update_blocks = Vec::new();
+    if count < source_item.count {
+        if let Some(item) = session.inventory.iter().find(|item| item.item == source_item.item) {
+            update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
         }
-        wow_db::InventoryDestroyResult::Removed { item } => {
-            let body = if source_item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-                build_inventory_slots_update_body(
-                    character_guid,
-                    &session.inventory,
-                    &[source_item.slot],
-                )?
-            } else {
-                build_destroy_object_body(item)
-            };
-            let opcode = if source_item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-                SMSG_UPDATE_OBJECT
-            } else {
-                SMSG_DESTROY_OBJECT
-            };
-            send_packet(stream, opcode, &body, Some(&mut *header_crypto)).await?;
+        if let Some(item) = session.inventory.iter().find(|item| item.item == buyback_item) {
+            update_blocks.push(build_item_create_update_block(owner_guid, owner_guid, item, None)?);
+        }
+    } else {
+        update_blocks.extend(build_inventory_position_update_blocks(
+            character_guid,
+            &session.inventory,
+            source_item.bag as u8,
+            source_item.slot,
+        )?);
+        if let Some(item) = session.inventory.iter().find(|item| item.item == buyback_item) {
+            update_blocks.push(build_item_contained_update_block(
+                owner_guid,
+                &session.inventory,
+                item,
+            )?);
         }
     }
+    if !update_blocks.is_empty() {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_update_object_body(&update_blocks),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_buyback_slot_update_body(character_guid, Some(buyback_entry), buyback_slot)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
@@ -400,3 +536,226 @@ async fn handle_sell_item(
     .await
 }
 
+async fn handle_buyback_item(
+    stream: &mut WorldPacketSink,
+    deps: QuestMutationDeps<'_>,
+    body: &[u8],
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let world_db_pool = deps.world_db_pool;
+    let Some(character) = &session.active_character else {
+        warn!("Ignoring vendor buyback before character login");
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let request = BuybackItemRequest::read(body)?;
+    let vendor_valid = if request.vendor_guid == rust_guide_guid() {
+        true
+    } else if request.vendor_guid.is_creature() {
+        !wow_db::get_vendor_items(world_db_pool, request.vendor_guid.entry())
+            .await?
+            .is_empty()
+    } else {
+        false
+    };
+    if !vendor_valid {
+        return send_packet(
+            stream,
+            SMSG_SELL_ITEM,
+            &build_sell_item_error_body(
+                request.vendor_guid,
+                ObjectGuid::from_raw(0),
+                SELL_ERR_CANT_FIND_VENDOR,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    }
+
+    let Some(entry_index) = session
+        .buyback_items
+        .iter()
+        .position(|entry| entry.slot == request.slot)
+    else {
+        return send_packet(
+            stream,
+            SMSG_BUY_FAILED,
+            &build_buy_failed_body(request.vendor_guid, 0, BUY_ERR_CANT_FIND_ITEM),
+            Some(header_crypto),
+        )
+        .await;
+    };
+    let entry = session.buyback_items[entry_index];
+    let Some(source_item) = session
+        .inventory
+        .iter()
+        .find(|item| {
+            item.item == entry.item
+                && item.bag == INVENTORY_SLOT_BAG_0 as u32
+                && item.slot == request.slot
+        })
+        .cloned()
+    else {
+        session.buyback_items.remove(entry_index);
+        return send_packet(
+            stream,
+            SMSG_BUY_FAILED,
+            &build_buy_failed_body(request.vendor_guid, 0, BUY_ERR_CANT_FIND_ITEM),
+            Some(header_crypto),
+        )
+        .await;
+    };
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    else {
+        return send_packet(
+            stream,
+            SMSG_BUY_FAILED,
+            &build_buy_failed_body(
+                request.vendor_guid,
+                source_item.item_template,
+                BUY_ERR_CANT_FIND_ITEM,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    };
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let Some(store_plan) = plan_store_item(
+        &session.inventory,
+        &template,
+        source_item.count,
+        &equipped_bags,
+        None,
+        Some(source_item.item),
+    ) else {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_INVENTORY_FULL,
+            Some(ObjectGuid::new(HighGuid::Item, 0, source_item.item)),
+            None,
+            header_crypto,
+        )
+        .await;
+    };
+    let Some(money) =
+        wow_db::spend_character_money(character_db_pool, character_guid, entry.price).await?
+    else {
+        return send_packet(
+            stream,
+            SMSG_BUY_FAILED,
+            &build_buy_failed_body(
+                request.vendor_guid,
+                source_item.item_template,
+                BUY_ERR_NOT_ENOUGHT_MONEY,
+            ),
+            Some(header_crypto),
+        )
+        .await;
+    };
+
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = session
+                .inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                character_guid,
+                item_guid,
+                existing_count.saturating_add(slot.count),
+            )
+            .await?;
+            let _ = wow_db::destroy_character_inventory_item_count(
+                character_db_pool,
+                character_guid,
+                INVENTORY_SLOT_BAG_0 as u32,
+                request.slot,
+                0,
+            )
+            .await?;
+        } else {
+            wow_db::move_character_inventory_item_to_slot(
+                character_db_pool,
+                character_guid,
+                source_item.item,
+                slot.bag as u32,
+                slot.slot,
+            )
+            .await?;
+        }
+    }
+    session.buyback_items.remove(entry_index);
+    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut update_blocks = Vec::new();
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+            }
+            continue;
+        }
+        if let Some(item) = session
+            .inventory
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            let contained_guid = item_contained_guid(owner_guid, &session.inventory, item);
+            let container_slots = if template.container_slots > 0 {
+                Some(template.container_slots)
+            } else {
+                None
+            };
+            update_blocks.push(build_item_create_update_block(
+                owner_guid,
+                contained_guid,
+                item,
+                container_slots,
+            )?);
+            update_blocks.extend(build_inventory_position_update_blocks(
+                character_guid,
+                &session.inventory,
+                slot.bag,
+                slot.slot,
+            )?);
+        }
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_update_object_body(&update_blocks),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_buyback_slot_update_body(character_guid, None, request.slot)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_money_update_body(character_guid, money)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    complete_inventory_item_quests(
+        stream,
+        character_db_pool,
+        deps.object_mgr,
+        world_db_pool,
+        session,
+        character_guid,
+        header_crypto,
+    )
+    .await
+}

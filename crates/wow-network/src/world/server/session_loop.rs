@@ -808,6 +808,25 @@ async fn handle_client(
                             )
                             .await?;
                         }
+                        CMSG_BUYBACK_ITEM => {
+                            handle_buyback_item(
+                                &mut stream,
+                                QuestMutationDeps {
+                                    character_db_pool: &character_db_pool,
+                                    object_mgr: runtime_state.object_mgr.as_ref(),
+                                    world_db_pool: &world_db_pool,
+                                    shared_world: SharedWorldDeps {
+                                        object_mgr: runtime_state.object_mgr.as_ref(),
+                                        maps: &runtime_state.maps,
+                                        sessions: &runtime_state.sessions,
+                                    },
+                                },
+                                &body,
+                                &mut session,
+                                &mut header_crypto,
+                            )
+                            .await?;
+                        }
                         CMSG_BUY_ITEM => {
                             handle_buy_item(
                                 &mut stream,

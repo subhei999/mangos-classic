@@ -2161,11 +2161,16 @@ fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
 }
 
 fn refresh_player_runtime_stats_from_auras(player: &mut PlayerRuntime) {
+    let was_dead = player.health == 0;
     player.effective_world_stats =
         player_world_stats_with_active_auras(player.base_world_stats, &player.active_auras);
     player.spirit = player.effective_world_stats.stats[4];
     player.max_health = player.effective_world_stats.max_health().max(1);
-    player.health = player.health.max(1).min(player.max_health);
+    player.health = if was_dead {
+        0
+    } else {
+        player.health.max(1).min(player.max_health)
+    };
     player.max_power1 = player.effective_world_stats.max_mana();
     player.power1 = player.power1.min(player.max_power1);
 }

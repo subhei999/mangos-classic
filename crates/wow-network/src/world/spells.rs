@@ -1496,7 +1496,19 @@ async fn spell_cast_failure(
     targets: &SpellCastTargets,
     now: Instant,
 ) -> Option<u8> {
+    if session.player_death_state != PlayerDeathState::Alive {
+        return Some(SPELL_FAILED_CASTER_DEAD);
+    }
     if let Some(character) = session.active_character.as_ref() {
+        if session.player_health == 0
+            && shared_world
+                .maps
+                .player_runtime_snapshot(character.position.map_id, character.guid)
+                .await
+                .is_some_and(|snapshot| snapshot.health == 0)
+        {
+            return Some(SPELL_FAILED_CASTER_DEAD);
+        }
         if let Some(failure) = shared_world
             .maps
             .player_spell_cast_failure(

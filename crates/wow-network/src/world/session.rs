@@ -207,6 +207,8 @@ struct WorldSessionState {
     active_auras: Vec<ActiveAura>,
     active_spells: HashSet<u32>,
     inventory: Vec<CharacterInventoryItem>,
+    buyback_items: Vec<BuybackItem>,
+    next_buyback_slot: u8,
     character_skills: Vec<CharacterSkill>,
     character_reputations: Vec<CharacterReputation>,
     quest_statuses: HashMap<u32, CharacterQuestStatus>,
@@ -220,6 +222,14 @@ struct WorldSessionState {
     #[allow(dead_code)]
     last_player_corpse_visibility_position: Option<WorldPosition>,
     db_creature_navigation: DbCreatureNavigationGuardrail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuybackItem {
+    slot: u8,
+    item: u32,
+    price: u32,
+    timestamp: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

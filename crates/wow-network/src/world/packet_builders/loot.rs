@@ -61,121 +61,101 @@ async fn autostore_loot_item(
         character_guid,
     } = context;
 
-    let max_stack = wow_db::get_item_template_query(world_db_pool, loot.item)
-        .await?
-        .map(|template| template.stackable.max(1))
-        .unwrap_or(1);
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, loot.item).await? else {
+        return Ok(false);
+    };
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let Some(store_plan) = plan_store_item(
+        &session.inventory,
+        &template,
+        loot.count,
+        &equipped_bags,
+        None,
+        None,
+    ) else {
+        send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_INVENTORY_FULL,
+            None,
+            None,
+            header_crypto,
+        )
+        .await?;
 
-    let mut remaining_count = loot.count;
-
+        return Ok(false);
+    };
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut update_blocks = Vec::new();
     let mut pushed_item = None;
 
-    if max_stack > 1 {
-        if let Some(existing_stack) = session
-            .inventory
-            .iter()
-            .filter(|item| {
-                item.item_template == loot.item
-                    && item.count < max_stack
-                    && remaining_count <= max_stack - item.count
-                    && u8::try_from(item.bag)
-                        .ok()
-                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
-            })
-            .min_by_key(|item| {
-                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-                    0
-                } else {
-                    1
-                };
-
-                (bag_order, item.bag, item.slot)
-            })
-            .cloned()
-        {
-            let merged_count = existing_stack.count + remaining_count;
-
-            if wow_db::update_character_inventory_item_count(
+    let random_properties = generate_item_instance_random_properties(
+        world_db_pool,
+        &session.db_creature_navigation.world_data_files,
+        loot.item,
+    )
+    .await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = session
+                .inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
                 character_db_pool,
                 character_guid,
-                existing_stack.item,
-                merged_count,
+                item_guid,
+                existing_count.saturating_add(slot.count),
             )
-            .await?
-            {
-                remaining_count = 0;
-
-                update_blocks.push(build_item_stack_count_update_block(
-                    existing_stack.item,
-                    merged_count,
-                )?);
-                pushed_item = Some(CharacterInventoryItem {
-                    count: merged_count,
-                    ..existing_stack
-                });
-            }
+            .await?;
+        } else {
+            wow_db::add_character_inventory_item_with_random_properties(
+                character_db_pool,
+                wow_db::AddCharacterInventoryItemRequest {
+                    guid: character_guid,
+                    bag: slot.bag as u32,
+                    slot: slot.slot,
+                    item_template: loot.item,
+                    count: slot.count,
+                    durability: 0,
+                    random_properties: random_properties.as_ref(),
+                },
+            )
+            .await?;
         }
     }
 
-    if remaining_count > 0 {
-        let Some(dst_slot) = first_empty_backpack_slot(&session.inventory) else {
-            send_inventory_change_failure(
-                stream,
-                EQUIP_ERR_INVENTORY_FULL,
-                None,
-                None,
-                header_crypto,
-            )
-            .await?;
-
-            return Ok(false);
-        };
-
-        let random_properties = generate_item_instance_random_properties(
-            world_db_pool,
-            &session.db_creature_navigation.world_data_files,
-            loot.item,
-        )
-        .await?;
-        wow_db::add_character_inventory_item_with_random_properties(
-            character_db_pool,
-            wow_db::AddCharacterInventoryItemRequest {
-                guid: character_guid,
-                bag: INVENTORY_SLOT_BAG_0 as u32,
-                slot: dst_slot,
-                item_template: loot.item,
-                count: remaining_count,
-                durability: 0,
-                random_properties: random_properties.as_ref(),
-            },
-        )
-        .await?;
-
-        session.inventory =
-            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
-
-        if let Some(new_item) = session.inventory.iter().find(|item| {
-            item.bag == INVENTORY_SLOT_BAG_0 as u32
-                && item.slot == dst_slot
-                && item.item_template == loot.item
-        }) {
-            let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-
+    session.inventory =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                pushed_item = Some(item.clone());
+            }
+            continue;
+        }
+        if let Some(new_item) = session
+            .inventory
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
             update_blocks.push(build_item_create_update_block(
-                owner_guid, owner_guid, new_item, None,
+                owner_guid,
+                contained_guid,
+                new_item,
+                (template.container_slots > 0).then_some(template.container_slots),
             )?);
-
-            update_blocks.push(build_inventory_slots_update_block(
+            update_blocks.extend(build_inventory_position_update_blocks(
                 character_guid,
                 &session.inventory,
-                &[dst_slot],
+                slot.bag,
+                slot.slot,
             )?);
             pushed_item = Some(new_item.clone());
         }
-    } else {
-        session.inventory =
-            wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     }
 
     send_packet(

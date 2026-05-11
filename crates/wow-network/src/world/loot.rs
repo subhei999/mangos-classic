@@ -1239,114 +1239,101 @@ async fn grant_loot_item_to_character(
     } else {
         wow_db::get_character_inventory_items(character_db_pool, target_guid).await?
     };
-    let max_stack = wow_db::get_item_template_query(world_db_pool, loot.item)
-        .await?
-        .map(|template| template.stackable.max(1))
-        .unwrap_or(1);
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, loot.item).await? else {
+        return Ok(false);
+    };
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &inventory).await?;
+    let Some(store_plan) = plan_store_item(
+        &inventory,
+        &template,
+        loot.count,
+        &equipped_bags,
+        None,
+        None,
+    ) else {
+        if target_is_current {
+            send_inventory_change_failure(
+                stream,
+                EQUIP_ERR_INVENTORY_FULL,
+                None,
+                None,
+                header_crypto,
+            )
+            .await?;
+        }
+        return Ok(false);
+    };
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, target_guid);
 
     let mut update_blocks = Vec::new();
-    let mut changed_slot = None;
     let mut pushed_item = None;
 
-    if max_stack > 1 {
-        if let Some(existing_stack) = inventory
-            .iter()
-            .filter(|item| {
-                item.item_template == loot.item
-                    && item.count < max_stack
-                    && loot.count <= max_stack - item.count
-                    && u8::try_from(item.bag)
-                        .ok()
-                        .is_some_and(|bag| is_supported_storage_position(bag, item.slot))
-            })
-            .min_by_key(|item| {
-                let bag_order = if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-                    0
-                } else {
-                    1
-                };
-                (bag_order, item.bag, item.slot)
-            })
-            .cloned()
-        {
-            let merged_count = existing_stack.count + loot.count;
-            if wow_db::update_character_inventory_item_count(
+    let random_properties = generate_item_instance_random_properties(
+        world_db_pool,
+        &session.db_creature_navigation.world_data_files,
+        loot.item,
+    )
+    .await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
                 character_db_pool,
                 target_guid,
-                existing_stack.item,
-                merged_count,
+                item_guid,
+                existing_count.saturating_add(slot.count),
             )
-            .await?
-            {
-                update_blocks.push(build_item_stack_count_update_block(
-                    existing_stack.item,
-                    merged_count,
-                )?);
-                changed_slot = Some(existing_stack.slot);
-            }
+            .await?;
+        } else {
+            wow_db::add_character_inventory_item_with_random_properties(
+                character_db_pool,
+                wow_db::AddCharacterInventoryItemRequest {
+                    guid: target_guid,
+                    bag: slot.bag as u32,
+                    slot: slot.slot,
+                    item_template: loot.item,
+                    count: slot.count,
+                    durability: 0,
+                    random_properties: random_properties.as_ref(),
+                },
+            )
+            .await?;
         }
-    }
-
-    if changed_slot.is_none() {
-        let Some(dst_slot) = first_empty_backpack_slot(&inventory) else {
-            if target_is_current {
-                send_inventory_change_failure(
-                    stream,
-                    EQUIP_ERR_INVENTORY_FULL,
-                    None,
-                    None,
-                    header_crypto,
-                )
-                .await?;
-            }
-            return Ok(false);
-        };
-        let random_properties = generate_item_instance_random_properties(
-            world_db_pool,
-            &session.db_creature_navigation.world_data_files,
-            loot.item,
-        )
-        .await?;
-        wow_db::add_character_inventory_item_with_random_properties(
-            character_db_pool,
-            wow_db::AddCharacterInventoryItemRequest {
-                guid: target_guid,
-                bag: INVENTORY_SLOT_BAG_0 as u32,
-                slot: dst_slot,
-                item_template: loot.item,
-                count: loot.count,
-                durability: 0,
-                random_properties: random_properties.as_ref(),
-            },
-        )
-        .await?;
-        changed_slot = Some(dst_slot);
     }
 
     let new_inventory = wow_db::get_character_inventory_items(character_db_pool, target_guid).await?;
-    let Some(changed_slot) = changed_slot else {
-        return Ok(false);
-    };
-    if let Some(item) = new_inventory
-        .iter()
-        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == changed_slot)
-    {
-        pushed_item = Some(item.clone());
-        if item.item_template == loot.item && item.count == loot.count {
-            let owner_guid = ObjectGuid::new(HighGuid::Player, 0, target_guid);
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = new_inventory.iter().find(|item| item.item == item_guid) {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                pushed_item = Some(item.clone());
+            }
+            continue;
+        }
+        if let Some(item) = new_inventory
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            pushed_item = Some(item.clone());
+            let contained_guid = item_contained_guid(owner_guid, &new_inventory, item);
             update_blocks.push(build_item_create_update_block(
                 owner_guid,
-                owner_guid,
+                contained_guid,
                 item,
-                None,
+                (template.container_slots > 0).then_some(template.container_slots),
+            )?);
+            update_blocks.extend(build_inventory_position_update_blocks(
+                target_guid,
+                &new_inventory,
+                slot.bag,
+                slot.slot,
             )?);
         }
     }
-    update_blocks.push(build_inventory_slots_update_block(
-        target_guid,
-        &new_inventory,
-        &[changed_slot],
-    )?);
 
     if target_is_current {
         session.inventory = new_inventory.clone();

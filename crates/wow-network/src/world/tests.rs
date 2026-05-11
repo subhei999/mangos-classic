@@ -6062,6 +6062,70 @@ fn db_creature_aggro_uses_cmangos_faction_template_reactions() {
 }
 
 #[tokio::test]
+async fn dead_player_attack_swing_does_not_start_map_auto_attack() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), position))
+        .await
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 45;
+    spawn.position_x = position.x + 2.0;
+    spawn.position_y = position.y;
+    spawn.position_z = position.z;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_death_state: PlayerDeathState::Corpse,
+        player_health: 0,
+        ..WorldSessionState::default()
+    };
+    let mut body = Vec::new();
+    body.extend_from_slice(&target.raw().to_le_bytes());
+
+    handle_attack_swing(
+        &mut stream,
+        shared_world,
+        &PartyManager::default(),
+        &body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert!(rx.try_recv().is_err());
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.active_combat_target, None);
+    assert_eq!(snapshot.active_combat_next_swing_at, None);
+}
+
+#[tokio::test]
 async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let attacker = creature_spawn_guid(&test_creature_spawn(299));
     let now = Instant::now();
@@ -12047,7 +12111,7 @@ fn chilled_aura_template_modifies_movement_and_attack_speed() {
         ]
     );
     assert_eq!(
-        active_aura_melee_attack_time_multiplier(&[chilled.clone()]),
+        active_aura_melee_attack_time_multiplier(std::slice::from_ref(&chilled)),
         1.25
     );
     assert_eq!(active_aura_movement_speed_multiplier(&[chilled]), 0.7);
@@ -13315,6 +13379,45 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
         .contains(&WARRIOR_HEROIC_STRIKE_RANK_1));
     assert_eq!(snapshot.inventory.len(), 1);
     assert_eq!(snapshot.quest_statuses.get(&33).unwrap().mobcount1, 1);
+}
+
+#[test]
+fn map_runtime_gameplay_sync_preserves_dead_player_zero_health() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_death_state: PlayerDeathState::Corpse,
+        player_health: 0,
+        ..WorldSessionState::default()
+    };
+
+    map.sync_player_gameplay_state(7, &session);
+    assert_eq!(
+        map.player_runtime_snapshot(7).unwrap().health,
+        0,
+        "stat/aura refresh during session sync must not resurrect a corpse to 1 health"
+    );
+
+    session.player_death_state = PlayerDeathState::Alive;
+    session.player_health = 42;
+    map.sync_player_gameplay_state(7, &session);
+    assert_eq!(map.player_runtime_snapshot(7).unwrap().health, 42);
 }
 
 #[tokio::test]
@@ -20253,6 +20356,22 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     };
     let heroic_template = heroic_strike_spell_template();
     let profile = player_spell_cast_profile(&heroic_template).unwrap();
+    session.player_death_state = PlayerDeathState::Corpse;
+    session.player_health = 0;
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &mut session,
+            &heroic_template,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        Some(SPELL_FAILED_CASTER_DEAD)
+    );
+
+    session.player_death_state = PlayerDeathState::Alive;
     assert_eq!(
         spell_cast_failure(
             shared_world,
@@ -20387,6 +20506,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
             fall_time: 0,
             jump: JumpInfo::default(),
         }),
+        player_health: caster_world_stats.max_health(),
         player_mana: 100,
         db_creature_navigation: DbCreatureNavigationGuardrail::default(),
         ..WorldSessionState::default()
@@ -21498,11 +21618,82 @@ fn parses_bag_container_inventory_move_packets() {
 }
 
 #[test]
+fn inventory_move_rejects_equipped_bag_into_its_own_container() {
+    let into_self = InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[19, 0, 255, 19]).unwrap();
+    assert!(into_self.moves_equipped_bag_into_itself());
+
+    let reverse_self = InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[255, 19, 19, 0]).unwrap();
+    assert!(reverse_self.moves_equipped_bag_into_itself());
+
+    let normal_contained_move =
+        InventoryMoveRequest::read(CMSG_SWAP_ITEM, &[19, 1, 19, 0]).unwrap();
+    assert!(!normal_contained_move.moves_equipped_bag_into_itself());
+}
+
+#[test]
+fn inventory_change_failure_for_bag_self_move_includes_item_guid() {
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let body = build_inventory_change_failure_body(
+        EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER_BAG,
+        Some(item_guid),
+        None,
+        None,
+    );
+
+    assert_eq!(body[0], EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER_BAG);
+    assert_eq!(&body[1..9], &item_guid.raw().to_le_bytes());
+    assert_eq!(&body[9..17], &0u64.to_le_bytes());
+}
+
+#[test]
+fn inventory_change_failure_for_nonempty_bag_unequip_includes_item_guid() {
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let body = build_inventory_change_failure_body(
+        EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS,
+        Some(item_guid),
+        None,
+        None,
+    );
+
+    assert_eq!(body[0], EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS);
+    assert_eq!(&body[1..9], &item_guid.raw().to_le_bytes());
+    assert_eq!(&body[9..17], &0u64.to_le_bytes());
+}
+
+#[test]
 fn parses_autostore_bag_item_packet_shape() {
     let body = [CLIENT_INVENTORY_SLOT_BAG_0, 3, 19];
     assert_eq!(normalize_client_bag(body[0]), INVENTORY_SLOT_BAG_0);
     assert_eq!(body[1], 3);
     assert_eq!(body[2], 19);
+}
+
+#[test]
+fn buyback_slot_update_writes_guid_price_and_timestamp_fields() {
+    let entry = BuybackItem {
+        slot: BUYBACK_SLOT_START,
+        item: 42,
+        price: 75,
+        timestamp: 30 * 3600,
+    };
+    let body = build_buyback_slot_update_body(11, Some(entry), BUYBACK_SLOT_START).unwrap();
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 11);
+    let (values, rest) = decode_values_update_block(&body[5..], player_guid);
+    assert!(rest.is_empty());
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    assert_eq!(
+        values[PLAYER_FIELD_VENDORBUYBACK_SLOT_1],
+        Some(item_guid.raw() as u32)
+    );
+    assert_eq!(
+        values[PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + 1],
+        Some((item_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[PLAYER_FIELD_BUYBACK_PRICE_1], Some(75));
+    assert_eq!(values[PLAYER_FIELD_BUYBACK_TIMESTAMP_1], Some(30 * 3600));
 }
 
 #[test]
@@ -21530,6 +21721,37 @@ fn autoequip_bag_prefers_first_empty_bag_slot() {
     assert_eq!(
         preferred_equipment_slot_for_inventory(&bag, &inventory),
         Some(INVENTORY_SLOT_BAG_START + 1)
+    );
+}
+
+#[test]
+fn autoequip_bag_has_no_destination_when_all_bag_slots_are_full() {
+    let mut bag = test_item_template(
+        RUST_VENDOR_BAG_ITEM,
+        ITEM_CLASS_CONTAINER,
+        INVTYPE_BAG,
+        0.0,
+        0.0,
+        0,
+    );
+    bag.container_slots = 6;
+    let inventory = (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END)
+        .enumerate()
+        .map(|(index, slot)| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 100 + index as u32,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        preferred_equipment_slot_for_inventory(&bag, &inventory),
+        None
     );
 }
 
@@ -22235,6 +22457,29 @@ fn item_create_block_includes_random_property_enchantments() {
         values[ITEM_FIELD_ENCHANTMENT + (PROP_ENCHANTMENT_SLOT_0 + 1) * MAX_ENCHANTMENT_OFFSET],
         Some(142)
     );
+}
+
+#[test]
+fn item_create_block_for_looted_bag_is_container_immediately() {
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 42,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    };
+
+    let block = build_item_create_update_block(owner_guid, owner_guid, &item, Some(6)).unwrap();
+    let (values, rest) = decode_create_update_block(&block, item_guid, TYPEID_CONTAINER);
+
+    assert!(rest.is_empty());
+    assert_eq!(values[0x002], Some(TYPEMASK_OBJECT_CONTAINER));
+    assert_eq!(values[CONTAINER_FIELD_NUM_SLOTS], Some(6));
 }
 
 #[test]

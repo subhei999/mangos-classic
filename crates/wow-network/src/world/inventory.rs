@@ -33,7 +33,20 @@ async fn handle_inventory_swap(
     let character_guid = character.guid;
     let Some(move_request) = (match opcode {
         CMSG_AUTOEQUIP_ITEM => {
-            InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?
+            let auto_equip =
+                InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?;
+            if auto_equip.is_none() {
+                send_auto_equip_failure_if_known(
+                    stream,
+                    body,
+                    deps.world_db_pool,
+                    session,
+                    header_crypto,
+                )
+                .await?;
+                return Ok(());
+            }
+            auto_equip
         }
         CMSG_AUTOSTORE_BAG_ITEM => {
             InventoryMoveRequest::read_auto_store_bag(body, deps.world_db_pool, session).await?
@@ -99,6 +112,31 @@ async fn handle_inventory_swap(
         );
         return Ok(());
     };
+
+    let dst_item = session
+        .inventory
+        .iter()
+        .find(|item| item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot);
+
+    if move_request.moves_equipped_bag_into_itself() {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            src_bag = move_request.src_bag,
+            src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
+            dst_slot = move_request.dst_slot,
+            "Rejected moving equipped bag into itself"
+        );
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER_BAG,
+            Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+            dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+            header_crypto,
+        )
+        .await;
+    }
 
     if move_request.dst_bag == INVENTORY_SLOT_BAG_0
         && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot))
@@ -186,13 +224,16 @@ async fn handle_inventory_swap(
             src_slot = move_request.src_slot,
             "Rejected moving non-empty equipped bag into non-bag storage"
         );
-        return Ok(());
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS,
+            Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+            dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+            header_crypto,
+        )
+        .await;
     }
 
-    let dst_item = session
-        .inventory
-        .iter()
-        .find(|item| item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot);
     let max_stack = if let Some(dst_item) = dst_item.filter(|item| {
         item.item_template == src_item.item_template && item.item != src_item.item
     }) {
@@ -322,6 +363,44 @@ async fn handle_inventory_swap(
             Ok(())
         }
     }
+}
+
+async fn send_auto_equip_failure_if_known(
+    stream: &mut WorldPacketSink,
+    body: &[u8],
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if body.len() < 2 {
+        return Ok(());
+    }
+    let src_bag = normalize_client_bag(body[0]);
+    let src_slot = body[1];
+    let Some(src_item) = session
+        .inventory
+        .iter()
+        .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+    else {
+        return Ok(());
+    };
+    let result =
+        if wow_db::get_item_template_query(world_db_pool, src_item.item_template)
+            .await?
+            .is_some()
+        {
+            EQUIP_ERR_ITEM_CANT_BE_EQUIPPED
+        } else {
+            EQUIP_ERR_ITEM_NOT_FOUND
+        };
+    send_inventory_change_failure(
+        stream,
+        result,
+        Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+        None,
+        header_crypto,
+    )
+    .await
 }
 
 struct InventoryDeps<'a> {
@@ -642,6 +721,15 @@ impl InventoryMoveRequest {
         move_position_exists(self.src_bag, self.src_slot, equipped_bags)
             && move_position_exists(self.dst_bag, self.dst_slot, equipped_bags)
     }
+
+    fn moves_equipped_bag_into_itself(&self) -> bool {
+        (self.src_bag == INVENTORY_SLOT_BAG_0
+            && is_bag_slot(self.src_slot)
+            && self.dst_bag == self.src_slot)
+            || (self.dst_bag == INVENTORY_SLOT_BAG_0
+                && is_bag_slot(self.dst_slot)
+                && self.src_bag == self.dst_slot)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -734,6 +822,24 @@ impl SellItemRequest {
             vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
             item_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[8..16].try_into()?)),
             count: body[16],
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuybackItemRequest {
+    vendor_guid: ObjectGuid,
+    slot: u8,
+}
+
+impl BuybackItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        if body.len() < 12 {
+            anyhow::bail!("CMSG_BUYBACK_ITEM payload too short: {} bytes", body.len());
+        }
+        Ok(Self {
+            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
+            slot: u32::from_le_bytes(body[8..12].try_into()?) as u8,
         })
     }
 }

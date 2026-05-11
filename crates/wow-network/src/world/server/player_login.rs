@@ -75,6 +75,7 @@ async fn handle_player_login(
     )
     .await;
     deps.online_characters.lock().await.insert(character.guid);
+    load_character_account_data_into_session(deps.character_db_pool, character.guid, session).await?;
     session.active_character = Some(ActiveCharacter {
         guid: character.guid,
         name: character.name.clone(),
@@ -300,6 +301,7 @@ async fn handle_player_login(
             reputations: &session.character_reputations,
             quest_statuses: &session.quest_statuses,
             active_auras: &session.active_auras,
+            account_data: &session.account_data,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
             nearby_creatures: &visible_nearby_creatures,
@@ -374,6 +376,8 @@ async fn handle_player_login(
         class: character.class,
         spirit: effective_world_stats.stats[4],
         gender: character.gender,
+        base_world_stats: world_stats,
+        effective_world_stats,
         health: session.player_health,
         max_health: effective_world_stats.max_health().max(1),
         xp: character.xp,

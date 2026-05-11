@@ -977,6 +977,7 @@ impl MapRuntime {
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
         player.active_auras = session.active_auras.clone();
+        refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
         if let Some(character) = session.active_character.as_ref() {
@@ -1190,6 +1191,7 @@ impl MapRuntime {
             return Ok(None);
         };
         apply_active_aura(&mut player.active_auras, aura);
+        refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
         self.build_player_aura_update_event(character_guid, Instant::now())
@@ -1213,6 +1215,7 @@ impl MapRuntime {
             if player.active_auras.len() == before {
                 continue;
             }
+            refresh_player_runtime_stats_from_auras(player);
             player.combat_stats =
                 combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
             let event = self.build_player_aura_update_event(character_guid, now)?;
@@ -1250,6 +1253,16 @@ impl MapRuntime {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_player_combat_stats_update_body(character_guid, &player.combat_stats)?,
         };
+        let world_stats_packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_world_stats_update_body(
+                character_guid,
+                &player.base_world_stats,
+                &player.effective_world_stats,
+                player.health,
+                player.power1,
+            )?,
+        };
         let mut observer_packets = Vec::new();
         for observer_guid in self.nearby_player_guids(
             player.position,
@@ -1267,7 +1280,7 @@ impl MapRuntime {
             }
         }
 
-        let mut direct_packets = vec![aura_packet, combat_stats_packet];
+        let mut direct_packets = vec![aura_packet, combat_stats_packet, world_stats_packet];
         direct_packets.extend(build_player_aura_duration_update_packets(
             &player.active_auras,
             now,
@@ -2145,6 +2158,16 @@ fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
         _ => 0.0,
     };
     per_two_seconds / 2.0
+}
+
+fn refresh_player_runtime_stats_from_auras(player: &mut PlayerRuntime) {
+    player.effective_world_stats =
+        player_world_stats_with_active_auras(player.base_world_stats, &player.active_auras);
+    player.spirit = player.effective_world_stats.stats[4];
+    player.max_health = player.effective_world_stats.max_health().max(1);
+    player.health = player.health.max(1).min(player.max_health);
+    player.max_power1 = player.effective_world_stats.max_mana();
+    player.power1 = player.power1.min(player.max_power1);
 }
 
 fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: WorldPosition) -> bool {

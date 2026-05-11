@@ -24,6 +24,7 @@ struct Creature {
     waypoint_resume_position: Option<WorldPosition>,
     already_called_assistance: bool,
     next_spline_id: u32,
+    move_speeds: UnitMoveSpeeds,
     health: u32,
     life_state: CreatureLifeState,
     corpse_expires_at: Option<Instant>,

@@ -6,6 +6,7 @@ impl MapRuntime {
         creature_guid: ObjectGuid,
         caster_character_guid: u32,
         aura: ActiveAura,
+        now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
             return Ok(None);
@@ -13,11 +14,25 @@ impl MapRuntime {
         if !creature.is_alive() {
             return Ok(None);
         }
+        let old_attack_duration = creature.base_attack_duration();
+        let old_speeds = creature.move_speeds;
         apply_active_aura(&mut creature.active_auras, aura);
+        let previous_speeds = creature.refresh_move_speeds();
+        debug_assert_eq!(old_speeds, previous_speeds);
+        let new_attack_duration = creature.base_attack_duration();
         let active_auras = creature.active_auras.clone();
+        let direct_packets =
+            db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?;
         let position = creature.current_position;
+        self.adjust_db_creature_attack_timer_for_base_time_change(
+            creature_guid,
+            old_attack_duration,
+            new_attack_duration,
+            now,
+        );
         let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
-        let observer_packets = self
+        let runtime_packets = direct_packets.clone();
+        let mut observer_packets: Vec<(SessionId, OutboundWorldPacket)> = self
             .nearby_player_guids(
                 position,
                 CREATURE_SPAWN_RADIUS_YARDS,
@@ -33,10 +48,55 @@ impl MapRuntime {
                 })
             })
             .collect();
+        for packet in runtime_packets {
+            observer_packets.extend(
+                self.nearby_player_guids(
+                    position,
+                    CREATURE_SPAWN_RADIUS_YARDS,
+                    Some(caster_character_guid),
+                )
+                .into_iter()
+                .filter_map(|player_guid| {
+                    self.players
+                        .get(&player_guid)
+                        .and_then(|player| player.packet_to_client(packet.clone()))
+                }),
+            );
+        }
         Ok(Some(DbCreatureAuraUpdateEvent {
             update_body,
+            direct_packets,
             observer_packets,
         }))
+    }
+
+    fn adjust_db_creature_attack_timer_for_base_time_change(
+        &mut self,
+        creature_guid: ObjectGuid,
+        old_duration: Duration,
+        new_duration: Duration,
+        now: Instant,
+    ) {
+        if old_duration == new_duration {
+            return;
+        }
+        let Some(combat) = self.active_creature_combats.get_mut(&creature_guid.raw()) else {
+            return;
+        };
+        let old_millis = old_duration.as_millis() as i128;
+        let new_millis = new_duration.as_millis() as i128;
+        let diff = new_millis - old_millis;
+        if diff >= 0 {
+            combat.next_swing_at += Duration::from_millis(diff as u64);
+            return;
+        }
+        let remaining = combat.next_swing_at.saturating_duration_since(now);
+        let reduction = Duration::from_millis(diff.unsigned_abs() as u64);
+        combat.next_swing_at = if reduction >= remaining {
+            now
+        } else {
+            combat.next_swing_at - reduction
+        };
     }
 
     fn advance_db_creature_auras(
@@ -47,6 +107,7 @@ impl MapRuntime {
         let creature_guids = self.creatures.keys().copied().collect::<Vec<_>>();
         let mut packets = Vec::new();
         let mut threat_updates = Vec::new();
+        let mut attack_timer_adjustments = Vec::new();
         for raw_guid in creature_guids {
             let creature_guid = ObjectGuid::from_raw(raw_guid);
             let Some(creature) = self.creatures.get_mut(&raw_guid) else {
@@ -56,6 +117,8 @@ impl MapRuntime {
                 continue;
             }
 
+            let old_speeds = creature.move_speeds;
+            let old_attack_duration = creature.base_attack_duration();
             let before = creature.active_auras.len();
             let mut aura_changed = false;
 
@@ -107,6 +170,19 @@ impl MapRuntime {
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
             aura_changed |= creature.active_auras.len() != before;
             let died_from_aura = creature.health == 0;
+            let runtime_packets = if aura_changed && !died_from_aura {
+                let previous_speeds = creature.refresh_move_speeds();
+                debug_assert_eq!(old_speeds, previous_speeds);
+                let new_attack_duration = creature.base_attack_duration();
+                attack_timer_adjustments.push((
+                    creature_guid,
+                    old_attack_duration,
+                    new_attack_duration,
+                ));
+                db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?
+            } else {
+                Vec::new()
+            };
 
             if aura_changed || !tick_packets.is_empty() {
                 let update_body = if creature.health == 0 {
@@ -150,6 +226,9 @@ impl MapRuntime {
                             body: update_body.clone(),
                         },
                     ));
+                    for packet in &runtime_packets {
+                        packets.push((session_id, packet.clone()));
+                    }
                 }
             }
             if died_from_aura {
@@ -161,6 +240,14 @@ impl MapRuntime {
             if self.active_creature_combats.contains_key(&creature_guid.raw()) {
                 self.refresh_db_creature_combat_leash(creature_guid, now);
             }
+        }
+        for (creature_guid, old_duration, new_duration) in attack_timer_adjustments {
+            self.adjust_db_creature_attack_timer_for_base_time_change(
+                creature_guid,
+                old_duration,
+                new_duration,
+                now,
+            );
         }
         Ok(packets)
     }
@@ -501,6 +588,98 @@ fn calculate_periodic_damage_tick(
         absorb,
         resist,
         threat,
+    }
+}
+
+fn db_creature_aura_runtime_packets(
+    creature_guid: ObjectGuid,
+    creature: &mut DbCreatureRuntime,
+    old_speeds: UnitMoveSpeeds,
+    now: Instant,
+) -> anyhow::Result<Vec<OutboundWorldPacket>> {
+    let mut packets = db_creature_speed_change_packets(creature_guid, old_speeds, creature.move_speeds)?;
+    if db_creature_motion_speed_changed(&creature.motion, old_speeds, creature.move_speeds) {
+        if let Some(packet) = retime_db_creature_motion_for_speed_change(creature, now)? {
+            packets.push(packet);
+        }
+    }
+    Ok(packets)
+}
+
+fn db_creature_speed_change_packets(
+    creature_guid: ObjectGuid,
+    old_speeds: UnitMoveSpeeds,
+    new_speeds: UnitMoveSpeeds,
+) -> anyhow::Result<Vec<OutboundWorldPacket>> {
+    let mut packets = Vec::new();
+    push_speed_change_packet(
+        &mut packets,
+        creature_guid,
+        SMSG_SPLINE_SET_WALK_SPEED,
+        old_speeds.walk,
+        new_speeds.walk,
+    )?;
+    push_speed_change_packet(
+        &mut packets,
+        creature_guid,
+        SMSG_SPLINE_SET_RUN_SPEED,
+        old_speeds.run,
+        new_speeds.run,
+    )?;
+    push_speed_change_packet(
+        &mut packets,
+        creature_guid,
+        SMSG_SPLINE_SET_RUN_BACK_SPEED,
+        old_speeds.run_back,
+        new_speeds.run_back,
+    )?;
+    push_speed_change_packet(
+        &mut packets,
+        creature_guid,
+        SMSG_SPLINE_SET_SWIM_SPEED,
+        old_speeds.swim,
+        new_speeds.swim,
+    )?;
+    push_speed_change_packet(
+        &mut packets,
+        creature_guid,
+        SMSG_SPLINE_SET_SWIM_BACK_SPEED,
+        old_speeds.swim_back,
+        new_speeds.swim_back,
+    )?;
+    Ok(packets)
+}
+
+fn push_speed_change_packet(
+    packets: &mut Vec<OutboundWorldPacket>,
+    creature_guid: ObjectGuid,
+    opcode: u16,
+    old_speed: f32,
+    new_speed: f32,
+) -> anyhow::Result<()> {
+    if (old_speed - new_speed).abs() <= f32::EPSILON {
+        return Ok(());
+    }
+    packets.push(OutboundWorldPacket {
+        opcode,
+        body: build_spline_set_speed_body(creature_guid, new_speed)?,
+    });
+    Ok(())
+}
+
+fn db_creature_motion_speed_changed(
+    motion: &CreatureMotionState,
+    old_speeds: UnitMoveSpeeds,
+    new_speeds: UnitMoveSpeeds,
+) -> bool {
+    match motion {
+        CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_) => {
+            (old_speeds.walk - new_speeds.walk).abs() > f32::EPSILON
+        }
+        CreatureMotionState::Chase(_) | CreatureMotionState::ReturnHome(_) => {
+            (old_speeds.run - new_speeds.run).abs() > f32::EPSILON
+        }
+        CreatureMotionState::Idle => false,
     }
 }
 

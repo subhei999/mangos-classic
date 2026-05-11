@@ -154,6 +154,8 @@ fn build_playerbot_runtime(
         class: config.class,
         spirit: world_stats.stats[4],
         gender: config.gender,
+        base_world_stats: world_stats,
+        effective_world_stats: world_stats,
         health: max_health,
         max_health,
         xp: 0,

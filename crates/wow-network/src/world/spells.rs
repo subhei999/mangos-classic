@@ -1816,6 +1816,7 @@ const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
 const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
 const SPELL_AURA_MOD_STAT: u32 = 29;
 const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
+const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
 const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
 const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 const SPELL_AURA_MOD_SKILL: u32 = 30;
@@ -1823,6 +1824,7 @@ const SPELL_AURA_MOD_REGEN: u32 = 84;
 const SPELL_AURA_MOD_POWER_REGEN: u32 = 85;
 const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
 const SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE: u32 = 137;
+const SPELL_AURA_MOD_MELEE_HASTE: u32 = 138;
 const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
 const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
 const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
@@ -2095,6 +2097,12 @@ fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier
             SPELL_AURA_MOD_ATTACK_POWER => Some(AuraStatModifier::AttackPower {
                 amount: spell_effect_simple_i32(effect.base_points),
             }),
+            SPELL_AURA_MOD_DECREASE_SPEED => Some(AuraStatModifier::MoveSpeedPercent {
+                percent: spell_effect_simple_i32(effect.base_points),
+            }),
+            SPELL_AURA_MOD_MELEE_HASTE => Some(AuraStatModifier::MeleeAttackTimePercent {
+                percent: spell_effect_simple_i32(effect.base_points),
+            }),
             SPELL_AURA_MOD_RESISTANCE => Some(AuraStatModifier::Resistance {
                 school_mask: u32::try_from(effect.misc_value).ok()?,
                 amount: spell_effect_simple_i32(effect.base_points),
@@ -2183,6 +2191,38 @@ fn reputation_gain_percent_from_active_auras(active_auras: &[ActiveAura]) -> i32
             _ => None,
         })
         .sum()
+}
+
+fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
+    let strongest_slow = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::MoveSpeedPercent { percent } if *percent < 0 => Some(*percent),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(0);
+
+    (100 + strongest_slow).clamp(0, 100) as f32 / 100.0
+}
+
+fn active_aura_melee_attack_time_multiplier(active_auras: &[ActiveAura]) -> f32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::MeleeAttackTimePercent { percent } => Some(*percent),
+            _ => None,
+        })
+        .fold(1.0, |multiplier, percent| {
+            let effect = if percent >= 0 {
+                (100 - percent).max(0) as f32 / 100.0
+            } else {
+                (100 + percent.saturating_abs()).max(0) as f32 / 100.0
+            };
+            multiplier * effect
+        })
 }
 
 fn player_world_stats_with_active_auras(

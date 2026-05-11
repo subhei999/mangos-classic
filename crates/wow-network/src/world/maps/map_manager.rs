@@ -1089,6 +1089,7 @@ impl MapRuntimeManager {
         creature_guid: ObjectGuid,
         caster_character_guid: u32,
         aura: ActiveAura,
+        now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -1096,7 +1097,7 @@ impl MapRuntimeManager {
         };
         let event = {
             let mut map = map.lock().await;
-            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura)
+            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura, now)
         };
         event
     }

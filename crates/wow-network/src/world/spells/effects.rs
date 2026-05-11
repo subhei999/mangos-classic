@@ -827,7 +827,7 @@ async fn apply_player_spell_aura(
                     if let Some(event) = deps
                         .shared_world
                         .maps
-                        .apply_db_creature_aura(map_id, target, character_guid, aura)
+                        .apply_db_creature_aura(map_id, target, character_guid, aura, now)
                         .await?
                     {
                         send_packet(
@@ -837,6 +837,15 @@ async fn apply_player_spell_aura(
                             Some(&mut *header_crypto),
                         )
                         .await?;
+                        for packet in event.direct_packets {
+                            send_packet(
+                                stream,
+                                packet.opcode,
+                                &packet.body,
+                                Some(&mut *header_crypto),
+                            )
+                            .await?;
+                        }
                         deps.shared_world.sessions.dispatch(event.observer_packets).await;
                     }
                     begin_db_creature_retaliation_if_needed(

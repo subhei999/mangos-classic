@@ -113,6 +113,14 @@ pub struct CharacterAction {
     pub action_type: u8,
 }
 
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct AccountDataEntry {
+    #[sqlx(rename = "type")]
+    pub data_type: u32,
+    pub time: u64,
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CharacterReputation {
     pub faction: u32,

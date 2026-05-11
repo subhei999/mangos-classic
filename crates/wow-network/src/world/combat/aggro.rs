@@ -495,7 +495,7 @@ async fn apply_player_taken_melee_proc_auras(
         );
         if let Some(event) = shared_world
             .maps
-            .apply_db_creature_aura(map_id, attacker, character_guid, aura)
+            .apply_db_creature_aura(map_id, attacker, character_guid, aura, now)
             .await?
         {
             send_packet(
@@ -505,6 +505,15 @@ async fn apply_player_taken_melee_proc_auras(
                 Some(&mut *header_crypto),
             )
             .await?;
+            for packet in event.direct_packets {
+                send_packet(
+                    stream,
+                    packet.opcode,
+                    &packet.body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
             shared_world.sessions.dispatch(event.observer_packets).await;
         }
     }

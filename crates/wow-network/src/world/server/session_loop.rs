@@ -91,6 +91,7 @@ async fn handle_client(
         },
         ..WorldSessionState::default()
     };
+    load_global_account_data_into_session(&character_db_pool, account.id, &mut session).await?;
     let world_tick_interval = runtime_state.world_tick_interval;
     let mut next_world_tick_at = Instant::now() + world_tick_interval;
 
@@ -452,11 +453,22 @@ async fn handle_client(
                             handle_query_time(&mut stream, &mut header_crypto).await?;
                         }
                         CMSG_REQUEST_ACCOUNT_DATA => {
-                            handle_request_account_data(&mut stream, &body, &mut header_crypto)
-                                .await?;
+                            handle_request_account_data(
+                                &mut stream,
+                                &body,
+                                &session,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_UPDATE_ACCOUNT_DATA => {
-                            handle_update_account_data(&body);
+                            handle_update_account_data(
+                                &character_db_pool,
+                                account.id,
+                                &body,
+                                &mut session,
+                            )
+                            .await?;
                         }
                         CMSG_TUTORIAL_FLAG => {
                             handle_tutorial_flag(&character_db_pool, account.id, &body).await?;

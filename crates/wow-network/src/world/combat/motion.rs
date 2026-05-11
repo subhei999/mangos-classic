@@ -582,6 +582,219 @@ fn stop_db_creature_motion_runtime(creature: &mut DbCreatureRuntime) -> StoppedC
     stop
 }
 
+fn retime_db_creature_motion_for_speed_change(
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> anyhow::Result<Option<OutboundWorldPacket>> {
+    let guid = creature.guid();
+    let Some(retimed) = retimed_db_creature_motion(creature, now) else {
+        return Ok(None);
+    };
+    let body = match retimed.facing_target {
+        Some(target) => build_monster_move_facing_target_path_body(
+            guid,
+            retimed.start,
+            &retimed.path,
+            retimed.spline_id,
+            retimed.duration.as_millis().max(1) as u32,
+            target,
+        )?,
+        None if retimed.run => build_monster_move_run_path_body(
+            guid,
+            retimed.start,
+            &retimed.path,
+            retimed.spline_id,
+            retimed.duration.as_millis().max(1) as u32,
+        )?,
+        None => build_monster_move_walk_path_body(
+            guid,
+            retimed.start,
+            &retimed.path,
+            retimed.spline_id,
+            retimed.duration.as_millis().max(1) as u32,
+        )?,
+    };
+    Ok(Some(OutboundWorldPacket {
+        opcode: SMSG_MONSTER_MOVE,
+        body,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct RetimedCreatureMotion {
+    start: WorldPosition,
+    path: Vec<WorldPosition>,
+    spline_id: u32,
+    duration: Duration,
+    run: bool,
+    facing_target: Option<ObjectGuid>,
+}
+
+fn retimed_db_creature_motion(
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> Option<RetimedCreatureMotion> {
+    let original = creature.motion.clone();
+    let (start, path, started_at, duration, run, facing_target) = match original {
+        CreatureMotionState::Idle => return None,
+        CreatureMotionState::Random(motion) => (
+            motion.start,
+            motion.path,
+            motion.started_at,
+            motion.duration,
+            false,
+            None,
+        ),
+        CreatureMotionState::Waypoint(motion) => (
+            motion.start,
+            motion.path,
+            motion.started_at,
+            motion.duration,
+            false,
+            None,
+        ),
+        CreatureMotionState::Chase(motion) => (
+            motion.start,
+            motion.path,
+            motion.started_at,
+            motion.duration,
+            true,
+            Some(motion.target),
+        ),
+        CreatureMotionState::ReturnHome(motion) => (
+            motion.start,
+            motion.path,
+            motion.started_at,
+            motion.duration,
+            true,
+            None,
+        ),
+    };
+    let (current_position, remaining_path) =
+        remaining_timed_path_after_speed_change(start, &path, started_at, duration, now)?;
+    if path_distance_2d(current_position, &remaining_path) <= f32::EPSILON {
+        advance_db_creature_motion_runtime(creature, now);
+        return None;
+    }
+    let new_duration = if run {
+        db_creature_path_motion_duration(current_position, &remaining_path, creature.run_speed())
+    } else {
+        db_creature_walk_path_motion_duration(
+            current_position,
+            &remaining_path,
+            creature.walk_speed(),
+        )
+    };
+    let destination = *remaining_path.last()?;
+    let spline_id = creature.next_spline_id;
+    creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.current_position = current_position;
+    match creature.motion.clone() {
+        CreatureMotionState::Random(_) => {
+            creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+            });
+        }
+        CreatureMotionState::Waypoint(motion) => {
+            creature.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
+                node_index: motion.node_index,
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+            });
+        }
+        CreatureMotionState::Chase(motion) => {
+            creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
+                target: motion.target,
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+                recheck_at: now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS),
+            });
+        }
+        CreatureMotionState::ReturnHome(_) => {
+            creature.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+            });
+        }
+        CreatureMotionState::Idle => return None,
+    }
+    Some(RetimedCreatureMotion {
+        start: current_position,
+        path: remaining_path,
+        spline_id,
+        duration: new_duration,
+        run,
+        facing_target,
+    })
+}
+
+fn remaining_timed_path_after_speed_change(
+    start: WorldPosition,
+    path: &[WorldPosition],
+    started_at: Instant,
+    duration: Duration,
+    now: Instant,
+) -> Option<(WorldPosition, Vec<WorldPosition>)> {
+    let elapsed = now.saturating_duration_since(started_at);
+    if elapsed >= duration {
+        return None;
+    }
+    let total = path_distance_2d(start, path);
+    if total <= f32::EPSILON || duration.is_zero() {
+        return None;
+    }
+    let travelled = total * (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+    let current = position_along_path(start, path, travelled)?;
+    let remaining = remaining_path_after_travel_distance(start, path, travelled)?;
+    Some((current, remaining))
+}
+
+fn remaining_path_after_travel_distance(
+    start: WorldPosition,
+    path: &[WorldPosition],
+    mut travelled: f32,
+) -> Option<Vec<WorldPosition>> {
+    let mut previous = start;
+    for (index, point) in path.iter().enumerate() {
+        let segment = distance_2d(previous.x, previous.y, point.x, point.y);
+        if segment <= f32::EPSILON {
+            previous = *point;
+            continue;
+        }
+        if travelled > segment {
+            travelled -= segment;
+            previous = *point;
+            continue;
+        }
+        let mut remaining = if travelled >= segment - f32::EPSILON {
+            path[index + 1..].to_vec()
+        } else {
+            path[index..].to_vec()
+        };
+        if remaining
+            .first()
+            .is_some_and(|first| distance_2d(previous.x, previous.y, first.x, first.y) <= f32::EPSILON)
+        {
+            remaining.remove(0);
+        }
+        return (!remaining.is_empty()).then_some(remaining);
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CreaturePathMode {
     Full,

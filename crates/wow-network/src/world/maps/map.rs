@@ -125,6 +125,8 @@ struct PlayerRuntime {
     class: u8,
     spirit: u32,
     gender: u8,
+    base_world_stats: PlayerWorldStats,
+    effective_world_stats: PlayerWorldStats,
     health: u32,
     max_health: u32,
     xp: u32,
@@ -385,6 +387,7 @@ struct DbCreatureDamageEvent {
 #[derive(Debug)]
 struct DbCreatureAuraUpdateEvent {
     update_body: Vec<u8>,
+    direct_packets: Vec<OutboundWorldPacket>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 

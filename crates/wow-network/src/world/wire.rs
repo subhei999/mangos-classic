@@ -18,6 +18,7 @@ async fn handle_query_time(
 async fn handle_request_account_data(
     stream: &mut WorldPacketSink,
     body: &[u8],
+    session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     if body.len() < 4 {
@@ -28,9 +29,27 @@ async fn handle_request_account_data(
     }
 
     let account_data_type = u32::from_le_bytes(body[0..4].try_into()?);
-    let mut response = Vec::with_capacity(8);
+    if account_data_type >= ACCOUNT_DATA_TYPES as u32 {
+        warn!(
+            account_data_type,
+            "Ignoring invalid account data request type"
+        );
+        return Ok(());
+    }
+    let account_data = session
+        .account_data
+        .get(&account_data_type)
+        .map(|entry| entry.data.as_slice())
+        .unwrap_or_default();
+    let compressed = if account_data.is_empty() {
+        Vec::new()
+    } else {
+        zlib_compress(account_data)?
+    };
+    let mut response = Vec::with_capacity(8 + compressed.len());
     response.extend_from_slice(&account_data_type.to_le_bytes());
-    response.extend_from_slice(&0u32.to_le_bytes()); // empty decompressed payload
+    response.extend_from_slice(&(account_data.len() as u32).to_le_bytes());
+    response.extend_from_slice(&compressed);
     send_packet(
         stream,
         SMSG_UPDATE_ACCOUNT_DATA,
@@ -40,19 +59,155 @@ async fn handle_request_account_data(
     .await
 }
 
-fn handle_update_account_data(body: &[u8]) {
-    if body.len() >= 8 {
-        let account_data_type = u32::from_le_bytes(body[0..4].try_into().unwrap_or_default());
-        let decompressed_size = u32::from_le_bytes(body[4..8].try_into().unwrap_or_default());
-        info!(
-            account_data_type,
-            decompressed_size,
-            bytes = body.len(),
-            "Ignoring account data update"
-        );
-    } else {
-        info!(bytes = body.len(), "Ignoring truncated account data update");
+async fn handle_update_account_data(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    body: &[u8],
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    if body.len() < 8 {
+        anyhow::bail!("CMSG_UPDATE_ACCOUNT_DATA payload too short: {} bytes", body.len());
     }
+    let account_data_type = u32::from_le_bytes(body[0..4].try_into()?);
+    let decompressed_size = u32::from_le_bytes(body[4..8].try_into()?);
+    if account_data_type >= ACCOUNT_DATA_TYPES as u32 {
+        warn!(
+            account_data_type,
+            "Ignoring invalid account data update type"
+        );
+        return Ok(());
+    }
+    let data = if decompressed_size == 0 {
+        Vec::new()
+    } else {
+        let mut data = zlib_decompress(&body[8..], decompressed_size as usize)?;
+        if data.last() == Some(&0) {
+            data.pop();
+        }
+        data
+    };
+
+    if account_data_is_global(account_data_type) {
+        wow_db::replace_global_account_data(
+            character_db_pool,
+            account_id,
+            account_data_type,
+            &data,
+        )
+        .await?;
+    } else if let Some(character) = session.active_character.as_ref() {
+        wow_db::replace_character_account_data(
+            character_db_pool,
+            character.guid,
+            account_data_type,
+            &data,
+        )
+        .await?;
+    } else {
+        warn!(
+            account_data_type,
+            account_id,
+            "Ignoring per-character account data update with no active character"
+        );
+        return Ok(());
+    }
+    if data.is_empty() {
+        session.account_data.remove(&account_data_type);
+    } else {
+        session.account_data.insert(
+            account_data_type,
+            AccountDataCache {
+                time: current_unix_time(),
+                data,
+            },
+        );
+    }
+    Ok(())
+}
+
+async fn load_global_account_data_into_session(
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    clear_account_data_mask(&mut session.account_data, GLOBAL_ACCOUNT_DATA_MASK);
+    load_account_data_entries(
+        &mut session.account_data,
+        wow_db::get_global_account_data(character_db_pool, account_id).await?,
+        GLOBAL_ACCOUNT_DATA_MASK,
+    );
+    Ok(())
+}
+
+async fn load_character_account_data_into_session(
+    character_db_pool: &MySqlPool,
+    character_guid: u32,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    clear_account_data_mask(&mut session.account_data, PER_CHARACTER_ACCOUNT_DATA_MASK);
+    load_account_data_entries(
+        &mut session.account_data,
+        wow_db::get_character_account_data(character_db_pool, character_guid).await?,
+        PER_CHARACTER_ACCOUNT_DATA_MASK,
+    );
+    Ok(())
+}
+
+fn load_account_data_entries(
+    account_data: &mut HashMap<u32, AccountDataCache>,
+    entries: Vec<wow_db::AccountDataEntry>,
+    mask: u32,
+) {
+    for entry in entries {
+        if entry.data_type >= ACCOUNT_DATA_TYPES as u32 || mask & (1 << entry.data_type) == 0 {
+            continue;
+        }
+        if entry.data.is_empty() {
+            continue;
+        }
+        account_data.insert(
+            entry.data_type,
+            AccountDataCache {
+                time: entry.time,
+                data: entry.data,
+            },
+        );
+    }
+}
+
+fn clear_account_data_mask(account_data: &mut HashMap<u32, AccountDataCache>, mask: u32) {
+    account_data.retain(|data_type, _| mask & (1 << *data_type) == 0);
+}
+
+fn account_data_is_global(account_data_type: u32) -> bool {
+    GLOBAL_ACCOUNT_DATA_MASK & (1 << account_data_type) != 0
+}
+
+fn zlib_compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    Ok(encoder.finish()?)
+}
+
+fn zlib_decompress(data: &[u8], expected_size: usize) -> anyhow::Result<Vec<u8>> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut decoded = Vec::with_capacity(expected_size);
+    decoder.read_to_end(&mut decoded)?;
+    if decoded.len() != expected_size {
+        anyhow::bail!(
+            "account data decompressed size mismatch: expected {}, got {}",
+            expected_size,
+            decoded.len()
+        );
+    }
+    Ok(decoded)
+}
+
+fn current_unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 async fn handle_gmticket_getticket(
@@ -195,13 +350,6 @@ async fn handle_stand_state_change(
         .maps
         .set_player_stand_state(character.position.map_id, character.guid, stand_state)
         .await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_stand_state_update_body(character, stand_state)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
     shared_world.sessions.dispatch(packets).await;
     Ok(())
 }

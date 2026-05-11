@@ -17,16 +17,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: finish Northshire multiplayer/gameplay parity
   issues found by real-client testing, using CMaNGOS as the behavior reference
   and keeping shared world authority in `MapRuntime`.
-- Latest work addresses the current real-client feedback slice: spell casts
-  from sitting now force the player to stand before cast validation and send
-  both the standstate acknowledgement and the acting client's authoritative
-  `UNIT_FIELD_BYTES_1` update. A follow-up correction now also makes
-  `CMSG_STANDSTATECHANGE` to stand cancel food/drink-style
-  `AURA_INTERRUPT_FLAG_STANDING_CANCELS` auras through session and
-  `MapRuntime`, matching CMaNGOS `Unit::SetStandState`. Spell pushback sends
-  the CMaNGOS-shaped cast-bar delay packet, and equipped bag containers are
-  created with container fields during login so clients can open them after
-  equip/relog.
+- Cast-from-sitting remains deprioritized after packet-trace investigation.
+  The client eventually sent `CMSG_CAST_SPELL` after auto-standing, but then
+  immediately sent `CMSG_CANCEL_CAST`; the root cause is likely a subtle
+  client/server acknowledgement or state-ordering edge. Runtime packet tracing
+  was removed again to keep normal playtest logs clean. Keep the useful
+  CMaNGOS-shaped account-data support and client-originated stand-state
+  acknowledgement cleanup, but do not block the Northshire demo on this bug.
 
 ## Recent Implemented Work
 
@@ -52,10 +49,34 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   delay like CMaNGOS `Spell::Delayed`, and login inventory create blocks now
   build equipped bag objects as `TYPEID_CONTAINER` with slot fields for visible
   contained items.
+- Current account-data diagnostic slice adds persistent global/per-character
+  account data loading, compressed `SMSG_UPDATE_ACCOUNT_DATA` responses, and
+  compressed `CMSG_UPDATE_ACCOUNT_DATA` storage in `account_data` and
+  `character_account_data`. `SMSG_ACCOUNT_DATA_TIMES` now sends MD5 digests for
+  cached data instead of all-zero placeholders, matching the WoW 1.12.1 cache
+  contract.
+- Current stand-state cleanup aligns `CMSG_STANDSTATECHANGE` with CMaNGOS more
+  closely: client-originated sit/stand changes update `MapRuntime` and nearby
+  observers but no longer echo an immediate self `SMSG_UPDATE_OBJECT`; the
+  server-forced auto-stand path used by spells/items still sends the acting
+  client its explicit stand update.
 - Current spell proc slice loads DB-backed proc trigger metadata from
   `spell_template` and applies triggered aura spells from successful creature
   melee hits against players. Frost Armor-style `SPELL_AURA_PROC_TRIGGER_SPELL`
   now applies its triggered effect to the attacker when proc flags/chance allow.
+- Current aura stat slice parses DB-backed movement slow and melee attack-time
+  aura modifiers (`SPELL_AURA_MOD_DECREASE_SPEED`,
+  `SPELL_AURA_MOD_MELEE_HASTE`) and routes DB-creature apply/expiration through
+  CMaNGOS-shaped runtime updates: map-owned move speeds are recomputed
+  immediately, `SMSG_SPLINE_SET_*_SPEED` packets are sent for changed run,
+  run-back, and swim speeds, active chase/return-home motion is retimed from
+  the current position, and active creature swing timers are adjusted by the
+  old/new base-attack-time delta. Chilled/Frost Armor should no longer be only
+  a debuff icon or a next-path-only slowdown.
+- Arcane Intellect-style `SPELL_AURA_MOD_STAT` now refreshes map-owned
+  effective `PlayerWorldStats`, sends the acting client stat/max-power update
+  fields on aura apply/expiration, and feeds intellect bonuses into
+  `PlayerCombatStats` so spell crit math sees the buffed intellect.
 - Current creature display slice loads `DisplayIdProbability*`,
   `creature_model_info.gender`, and `modelid_other_gender`, then serializes the
   selected display id/gender in DB-creature create blocks. Respawn reselects a
@@ -77,8 +98,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   creature model gender, other-gender model id, and fallback radius/reach
   expressions. This fixes the real startup failure:
   `template_model_gender1` decoded as `DECIMAL` instead of `u8`.
-- Full `.\scripts\test-rust.cmd` passed after stopping stale local
-  `authserver.exe`/`worldserver.exe` processes that had locked target binaries.
+- Current `cargo test -p wow-network --lib` passes with 564 tests. A previous
+  full `.\scripts\test-rust.cmd` run reached successful crate tests/checks,
+  then failed final binary rebuild because the running local `authserver.exe`
+  held `target\debug\authserver.exe`; `.\scripts\restart-game-stack.cmd` then
+  stopped/rebuilt/restarted the stack successfully.
 
 ## Tests Run
 
@@ -97,20 +121,36 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network login_create_blocks_make_equipped_bags_openable_containers --lib`
 - `cargo test -p wow-network spell_cast_from_sitting_auto_stands_player_and_observers --lib`
 - `cargo test -p wow-network stand_state_change_to_stand_cancels_consumable_regen_aura --lib`
+- `cargo test -p wow-network account_data --lib`
+- `cargo test -p wow-network stand_state --lib`
+- `cargo check -p wow-db`
+- `cargo check -p wow-network`
 - `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network chilled --lib`
+- `cargo test -p wow-network db_creature_swing_timer --lib`
+- `cargo test -p wow-network db_creature_chase_motion_duration_applies_temporary_run_speed_slow --lib`
+- `cargo test -p wow-network db_creature_slow_aura_retimes_active_chase_and_adjusts_swing_timer --lib`
+- `cargo test -p wow-network db_creature_slow_aura_expiration_restores_speed_and_attack_timer --lib`
+- `cargo test -p wow-network spell_aura_mod_stat_and_resistance_use_generic_template_metadata --lib`
+- `cargo test -p wow-network aura --lib`
+- `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network inventory --lib`
 - `cargo test -p wow-network --lib`
 - `cargo test -p wow-db world_data --lib`
 - `.\scripts\restart-game-stack.cmd`
 - `git diff --check`
-- `.\scripts\test-rust.cmd`
+- `.\scripts\test-rust.cmd` reached successful crate tests/checks, then failed
+  final binary rebuild because the running local `authserver.exe` held
+  `target\debug\authserver.exe`; `.\scripts\restart-game-stack.cmd` then
+  stopped/rebuilt/restarted the stack successfully.
 
 ## Current Follow-Ups
 
-- Real-client smoke the newest fixes after the latest restart: cast a spell
-  from sitting and from using an item while sitting, get hit while casting and
-  confirm the cast bar extends instead of hanging at 100%, and equip/relog with
-  a secondary bag then open it and verify contained items are visible.
+- Park cast-from-sitting as a non-blocking real-client follow-up. Known trace:
+  after `/console autoStand 1`, the client can send `CMSG_CAST_SPELL` but then
+  immediately sends `CMSG_CANCEL_CAST`; this needs a focused future parity pass
+  against CMaNGOS stand acknowledgement/cast-start ordering. Runtime packet
+  tracing is currently removed.
 - Continue real-client smoke from the prior slices: buy duplicate bread stacks,
   drag equipped gear onto a bag icon, cancel/move during a cast while another
   player watches, and test Frost Armor or another proc-on-hit aura against a

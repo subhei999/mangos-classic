@@ -295,6 +295,8 @@ struct ActiveDbCreatureSpellCast {
     target: ObjectGuid,
     spell_id: u32,
     effect: ActiveDbCreatureSpellEffect,
+    aura: Option<ActiveAura>,
+    mana_cost: u32,
     cast_time_millis: u32,
     due_at: Instant,
 }
@@ -414,6 +416,7 @@ struct DbCreaturePlayerSpellDamageEvent {
 struct DbCreatureCompletedSpellCastEvent {
     spell_go_body: Vec<u8>,
     effect: DbCreatureCompletedSpellEffect,
+    aura_event: Option<PlayerAuraUpdateEvent>,
 }
 
 #[derive(Debug)]

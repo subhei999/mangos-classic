@@ -1,6 +1,7 @@
 ﻿impl DbCreatureRuntime {
     fn new(spawn: CreatureSpawnQuery) -> Self {
         let health = creature_health(&spawn.template);
+        let power1 = creature_mana(&spawn.template);
         let home_position = db_creature_spawn_position(&spawn);
         let next_random_move_at = Self::initial_random_move_at(&spawn);
         let next_waypoint_move_at = Self::initial_waypoint_move_at(&spawn);
@@ -20,6 +21,7 @@
             next_spline_id: 0,
             move_speeds,
             health,
+            power1,
             life_state: DbCreatureLifeState::Alive,
             corpse_expires_at: None,
             respawn_at: None,
@@ -79,6 +81,7 @@
         if let Some(respawn_epoch_secs) = respawn_epoch_secs {
             if respawn_epoch_secs > now_epoch_secs {
                 creature.health = 0;
+                creature.power1 = 0;
                 creature.life_state = DbCreatureLifeState::Dead;
                 creature.corpse_expires_at = None;
                 creature.respawn_at =
@@ -291,6 +294,7 @@
     fn begin_corpse(&mut self, now: Instant, now_epoch_secs: u64) {
         let respawn_delay = db_creature_respawn_delay(&self.spawn);
         self.health = 0;
+        self.power1 = 0;
         self.life_state = DbCreatureLifeState::Corpse;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();
@@ -353,6 +357,7 @@
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
+        self.power1 = 0;
         self.client_visible = false;
         self.lootable = false;
         self.looting = false;
@@ -385,6 +390,7 @@
 
     fn respawn(&mut self) {
         self.health = self.max_health();
+        self.power1 = creature_mana(&self.spawn.template);
         self.life_state = DbCreatureLifeState::Alive;
         self.life_generation = self.life_generation.saturating_add(1);
         self.active_auras.clear();

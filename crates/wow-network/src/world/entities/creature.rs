@@ -26,6 +26,7 @@ struct Creature {
     next_spline_id: u32,
     move_speeds: UnitMoveSpeeds,
     health: u32,
+    power1: u32,
     life_state: CreatureLifeState,
     corpse_expires_at: Option<Instant>,
     respawn_at: Option<Instant>,
@@ -113,6 +114,7 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
         &[],
         creature_native_display(creature),
         None,
+        creature_mana(&creature.template),
     )
 }
 
@@ -138,6 +140,7 @@ fn build_db_creature_runtime_create_block_for_player(
         &creature.active_auras,
         creature.native_display,
         creature.display_id_override,
+        creature.power1,
     )
 }
 
@@ -152,6 +155,7 @@ fn build_db_creature_create_block_inner(
     active_auras: &[ActiveAura],
     native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
+    power1: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let guid = creature_spawn_guid(creature);
     let mut block = Vec::new();
@@ -187,6 +191,7 @@ fn build_db_creature_create_block_inner(
         active_auras,
         native_display,
         display_id_override,
+        power1,
     )?;
     Ok(block)
 }
@@ -203,6 +208,7 @@ fn write_db_creature_update_values(
     active_auras: &[ActiveAura],
     native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
+    power1: u32,
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
@@ -215,6 +221,9 @@ fn write_db_creature_update_values(
     set_update_value(&mut values, 0x004, creature_scale(template).to_bits())?;
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
+    let max_mana = creature_mana(template);
+    set_update_value(&mut values, UNIT_FIELD_POWER1, power1.min(max_mana))?;
+    set_update_value(&mut values, UNIT_FIELD_MAXPOWER1, max_mana)?;
     set_update_value(&mut values, UNIT_FIELD_LEVEL, template.min_level as u32)?;
     set_update_value(&mut values, UNIT_FIELD_FACTIONTEMPLATE, template.faction)?;
     set_update_value(
@@ -363,6 +372,16 @@ fn build_db_creature_display_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_db_creature_power_update_body(creature: ObjectGuid, power1: u32) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, creature)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, UNIT_FIELD_POWER1, power1)?;
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
 fn packed_virtual_item_info0(class: u32, subclass: u32, material: i32, inventory_type: u32) -> u32 {
     (class & 0xFF)
         | ((subclass & 0xFF) << 8)
@@ -399,6 +418,14 @@ fn creature_health(template: &CreatureTemplateQuery) -> u32 {
         .max_level_health
         .max(template.min_level_health)
         .max(1)
+}
+
+fn creature_mana(template: &CreatureTemplateQuery) -> u32 {
+    if creature_unit_power_type(template) == POWER_MANA as u32 {
+        template.max_level_mana.max(template.min_level_mana)
+    } else {
+        0
+    }
 }
 
 fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
@@ -547,15 +574,19 @@ fn sanitize_creature_gender(gender: u8) -> u8 {
 }
 
 fn creature_unit_bytes_0(template: &CreatureTemplateQuery, gender: u8) -> u32 {
-    let power_type = match template.unit_class {
+    let power_type = creature_unit_power_type(template);
+    ((template.unit_class as u32) << 8)
+        | ((sanitize_creature_gender(gender) as u32) << 16)
+        | (power_type << 24)
+}
+
+fn creature_unit_power_type(template: &CreatureTemplateQuery) -> u32 {
+    match template.unit_class {
         1 => 1, // warrior rage
         2 | 8 => 0, // paladin/mage mana
         4 => 3, // rogue energy
         _ => 0,
-    };
-    ((template.unit_class as u32) << 8)
-        | ((sanitize_creature_gender(gender) as u32) << 16)
-        | (power_type << 24)
+    }
 }
 
 fn creature_scale(template: &CreatureTemplateQuery) -> f32 {

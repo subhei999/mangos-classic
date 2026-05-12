@@ -148,6 +148,7 @@ async fn send_db_creature_evade_and_return_home(
 fn prepare_db_creature_evade(session: &mut WorldSessionState, attacker: ObjectGuid) {
     if let Some(creature) = session.db_creatures.get_mut(&attacker.raw()) {
         creature.health = creature.max_health();
+        creature.power1 = creature_mana(&creature.spawn.template);
         creature.life_state = DbCreatureLifeState::Alive;
         creature.corpse_expires_at = None;
         creature.respawn_at = None;

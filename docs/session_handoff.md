@@ -184,6 +184,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   decoding as signed `INT` into Rust `u32`. `get_creature_spell_list` now casts
   nonnegative ids, chances, positions, flags, timers, and target type fields to
   unsigned for ClassicDB's signed spell-list tables.
+- Current creature caster real-client fix addresses the first Burning Blade
+  Neophyte `.npc add 3196` parity findings: mana-class DB creatures now carry
+  runtime mana in create/update blocks, spend mana on accepted casts, restore it
+  on respawn/evade, stop active chase motion when starting a spell cast, expose
+  the DBC cast time in `SMSG_SPELL_START` for the client cast bar, and apply
+  hostile periodic auras such as Immolate to player targets so map-owned aura
+  ticks produce real periodic damage logs and health updates.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -218,6 +225,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network combat --lib`
 - `cargo test -p wow-network creature --lib`
 - `cargo test -p wow-network proc_trigger --lib`
+- `cargo test -p wow-network db_creature_runtime_create_block_uses_runtime_mana_for_mana_creatures --lib`
+- `cargo test -p wow-network map_runtime_db_creature_spell --lib`
+- `cargo test -p wow-network map_runtime_db_creature_immolate_applies_player_dot_ticks --lib`
+- `cargo test -p wow-network --lib`
+- `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`
 - `cargo test -p wow-network spell_delayed_packet_uses_full_caster_guid_for_client_cast_bar --lib`
 - `cargo test -p wow-network map_owned_active_cast_damage_pushback_extends_remaining_cast_time --lib`

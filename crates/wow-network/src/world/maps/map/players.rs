@@ -1228,16 +1228,83 @@ impl MapRuntime {
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let mut packets = Vec::new();
+        let player_snapshots = self
+            .players
+            .iter()
+            .map(|(guid, player)| {
+                (
+                    ObjectGuid::new(HighGuid::Player, 0, *guid).raw(),
+                    player_spell_snapshot(player.level, player.class, &player.combat_stats),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let creature_snapshots = self
+            .creatures
+            .iter()
+            .map(|(guid, creature)| (*guid, db_creature_spell_snapshot(creature)))
+            .collect::<HashMap<_, _>>();
         let character_guids = self.players.keys().copied().collect::<Vec<_>>();
         for character_guid in character_guids {
+            let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+            let mut tick_packets = Vec::new();
+            let mut health_changed = false;
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
             let before = player.active_auras.len();
+            let target_snapshot = player_spell_snapshot(player.level, player.class, &player.combat_stats);
+            for aura in &mut player.active_auras {
+                let Some(periodic) = aura.periodic_damage.as_mut() else {
+                    continue;
+                };
+                if aura
+                    .expires_at
+                    .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
+                {
+                    continue;
+                }
+                if now < periodic.next_tick_at {
+                    continue;
+                }
+                while periodic.next_tick_at <= now {
+                    periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
+                }
+                let Some(caster_snapshot) = player_snapshots
+                    .get(&aura.caster.raw())
+                    .or_else(|| creature_snapshots.get(&aura.caster.raw()))
+                    .copied()
+                else {
+                    continue;
+                };
+                let tick = calculate_periodic_damage_tick(
+                    periodic,
+                    caster_snapshot,
+                    target_snapshot,
+                    player.health,
+                );
+                if tick.dealt_damage == 0 {
+                    continue;
+                }
+                player.health = player.health.saturating_sub(tick.dealt_damage);
+                health_changed = true;
+                tick_packets.push(OutboundWorldPacket {
+                    opcode: SMSG_PERIODICAURALOG,
+                    body: build_periodic_aura_log_body(PeriodicAuraLog {
+                        creature_guid: player_guid,
+                        caster: aura.caster,
+                        spell_id: aura.spell_id,
+                        aura_name: periodic.aura_name,
+                        tick,
+                    })?,
+                });
+                if player.health == 0 {
+                    break;
+                }
+            }
             player
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
-            if player.active_auras.len() == before {
+            if player.active_auras.len() == before && !health_changed && tick_packets.is_empty() {
                 continue;
             }
             refresh_player_runtime_stats_from_auras(player);
@@ -1247,12 +1314,47 @@ impl MapRuntime {
             let Some(player) = self.players.get(&character_guid) else {
                 continue;
             };
+            for packet in &tick_packets {
+                if let Some(packet) = player.packet_to_client(packet.clone()) {
+                    packets.push(packet);
+                }
+            }
+            if health_changed {
+                if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_player_health_update_body(player_guid, player.health)?,
+                }) {
+                    packets.push(packet);
+                }
+            }
             packets.extend(
                 event
                     .direct_packets
                     .into_iter()
                     .filter_map(|packet| player.packet_to_client(packet)),
             );
+            for observer_guid in self.nearby_player_guids(
+                player.position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            ) {
+                let Some(observer) = self.players.get(&observer_guid) else {
+                    continue;
+                };
+                for packet in &tick_packets {
+                    if let Some(packet) = observer.packet_to_client(packet.clone()) {
+                        packets.push(packet);
+                    }
+                }
+                if health_changed {
+                    if let Some(packet) = observer.packet_to_client(OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_player_health_update_body(player_guid, player.health)?,
+                    }) {
+                        packets.push(packet);
+                    }
+                }
+            }
             packets.extend(event.observer_packets);
         }
         Ok(packets)

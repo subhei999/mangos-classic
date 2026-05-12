@@ -411,6 +411,9 @@ impl MapRuntime {
         if !creature.is_alive() || creature.is_evading_home() {
             return Ok(None);
         }
+        if creature.power1 < cast.mana_cost {
+            return Ok(None);
+        }
         if !self.db_creature_spell_cast_target_alive(cast.target) {
             return Ok(None);
         }
@@ -425,20 +428,54 @@ impl MapRuntime {
             cast.cast_time_millis,
             &targets,
         )?;
-        let packet = OutboundWorldPacket {
+        let start_packet = OutboundWorldPacket {
             opcode: SMSG_SPELL_START,
             body: start_body,
         };
-        let position = creature.current_position;
+        let (position, motion_stop_packet, power_update_packet) = {
+            let creature = self.creatures.get_mut(&cast.caster.raw()).expect("checked above");
+            let position = creature.current_position;
+            let motion_stop_packet = if matches!(creature.motion, CreatureMotionState::Idle) {
+                None
+            } else {
+                let stop = stop_db_creature_motion_runtime(creature);
+                Some(OutboundWorldPacket {
+                    opcode: SMSG_MONSTER_MOVE,
+                    body: build_monster_move_stop_body(cast.caster, stop.position, stop.spline_id)?,
+                })
+            };
+            creature.power1 = creature.power1.saturating_sub(cast.mana_cost);
+            let power_update_packet = (cast.mana_cost > 0).then(|| {
+                Ok::<_, anyhow::Error>(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_db_creature_power_update_body(cast.caster, creature.power1)?,
+                })
+            }).transpose()?;
+            (position, motion_stop_packet, power_update_packet)
+        };
         self.active_creature_spell_casts.insert(cast.caster.raw(), cast);
         Ok(Some(
             self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
                 .into_iter()
                 .filter_map(|player_guid| {
-                    self.players
-                        .get(&player_guid)
-                        .and_then(|player| player.packet_to_client(packet.clone()))
+                    let player = self.players.get(&player_guid)?;
+                    let mut packets = Vec::new();
+                    if let Some(packet) = &motion_stop_packet {
+                        if let Some(packet) = player.packet_to_client(packet.clone()) {
+                            packets.push(packet);
+                        }
+                    }
+                    if let Some(packet) = &power_update_packet {
+                        if let Some(packet) = player.packet_to_client(packet.clone()) {
+                            packets.push(packet);
+                        }
+                    }
+                    if let Some(packet) = player.packet_to_client(start_packet.clone()) {
+                        packets.push(packet);
+                    }
+                    Some(packets)
                 })
+                .flatten()
                 .collect(),
         ))
     }
@@ -469,6 +506,15 @@ impl MapRuntime {
             gameobject_target: None,
         };
         let spell_go_body = build_spell_go_body(attacker, cast.spell_id, &targets)?;
+        let aura_event = if let Some(aura) = cast.aura {
+            if cast.target.is_player() {
+                self.apply_player_aura(cast.target.counter(), aura)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let effect = match cast.effect {
             ActiveDbCreatureSpellEffect::Damage {
                 amount,
@@ -508,6 +554,7 @@ impl MapRuntime {
         Ok(Some(DbCreatureCompletedSpellCastEvent {
             spell_go_body,
             effect,
+            aura_event,
         }))
     }
 

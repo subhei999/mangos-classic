@@ -556,6 +556,16 @@ async fn try_start_db_creature_spell_cast(
     }
     let target = ready.target;
     let spell_info = SpellInfo::from_template(&template);
+    let aura = (target.is_player() && spell_info.has_effect(SpellEffectDispatch::ApplyAura))
+        .then(|| {
+            build_active_aura(
+                &template,
+                attacker,
+                creature.spawn.template.max_level.max(creature.spawn.template.min_level),
+                now,
+                shared_world.maps.spell_duration(template.duration_index),
+            )
+        });
     let effect = if spell_info.has_direct_damage_effect() {
         if !target.is_player() {
             return Ok(false);
@@ -583,6 +593,11 @@ async fn try_start_db_creature_spell_cast(
     } else {
         return Ok(false);
     };
+    let mana_cost = if template.power_type == POWER_TYPE_MANA {
+        template.mana_cost
+    } else {
+        0
+    };
     let cast_time_millis = spell_cast_time_millis(
         shared_world
             .maps
@@ -593,6 +608,8 @@ async fn try_start_db_creature_spell_cast(
         target,
         spell_id: template.id,
         effect,
+        aura,
+        mana_cost,
         cast_time_millis,
         due_at: now + Duration::from_millis(cast_time_millis as u64),
     };
@@ -799,6 +816,7 @@ async fn complete_ready_db_creature_spell_cast(
         spell_go_body,
     )
     .await;
+    let aura_event = event.aura_event;
     match event.effect {
         DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
             if let Some(body) = damage.spell_miss_log_body {
@@ -869,6 +887,18 @@ async fn complete_ready_db_creature_spell_cast(
             .await?;
             shared_world.sessions.dispatch(heal.observer_packets).await;
         }
+    }
+    if let Some(aura_event) = aura_event {
+        for packet in aura_event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        shared_world.sessions.dispatch(aura_event.observer_packets).await;
     }
     Ok(true)
 }

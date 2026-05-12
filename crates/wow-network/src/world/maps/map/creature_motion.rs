@@ -570,6 +570,7 @@ impl MapRuntime {
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         creature.health = creature.max_health();
+        creature.power1 = creature_mana(&creature.spawn.template);
         creature.life_state = DbCreatureLifeState::Alive;
         creature.corpse_expires_at = None;
         creature.respawn_at = None;

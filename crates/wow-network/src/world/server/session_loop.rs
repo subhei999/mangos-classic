@@ -112,6 +112,19 @@ async fn handle_client(
             {
                 Ok(Ok((opcode, body))) => {
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
+                    finalize_map_owned_player_death_if_needed(
+                        &mut stream,
+                        &character_db_pool,
+                        account.id,
+                        SharedWorldDeps {
+                            object_mgr: runtime_state.object_mgr.as_ref(),
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                        },
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
                     if is_movement_opcode(opcode) {
                         debug!(
                             opcode = format_args!("0x{opcode:04X}"),
@@ -1163,6 +1176,19 @@ async fn handle_client(
                 }
                 Err(_) => {
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
+                    finalize_map_owned_player_death_if_needed(
+                        &mut stream,
+                        &character_db_pool,
+                        account.id,
+                        SharedWorldDeps {
+                            object_mgr: runtime_state.object_mgr.as_ref(),
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                        },
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
                     if pending_player_spell_cast_is_due(
                         runtime_state.maps.as_ref(),
                         &session,
@@ -1361,6 +1387,46 @@ async fn refresh_active_player_session_cache(
         character.level = snapshot.level;
         character.xp = snapshot.xp;
     }
+}
+
+async fn finalize_map_owned_player_death_if_needed(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    account_id: u32,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    if session.player_death_state != PlayerDeathState::Alive || session.player_health != 0 {
+        return Ok(false);
+    }
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let death_time = Instant::now();
+    kill_player_from_creature(
+        stream,
+        character_db_pool,
+        shared_world.maps,
+        account_id,
+        session,
+        player,
+        header_crypto,
+    )
+    .await?;
+    send_db_creature_victim_death_evades(
+        stream,
+        shared_world,
+        map_id,
+        session,
+        player,
+        death_time,
+        header_crypto,
+    )
+    .await?;
+    Ok(true)
 }
 
 async fn sync_active_player_gameplay_state(

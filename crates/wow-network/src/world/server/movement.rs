@@ -95,6 +95,9 @@ async fn handle_movement(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    if session.player_death_state == PlayerDeathState::Corpse {
+        return Ok(());
+    }
     let movement = MovementInfo::read(body)?;
     if movement_opcode_interrupts_spell_cast(opcode) {
         cancel_pending_player_spell_cast(

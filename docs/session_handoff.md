@@ -204,6 +204,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   map-owned creature debuffs without an aura-removal packet. Explicit aura
   interruption paths now clear the map-owned player aura list directly instead
   of relying on sync side effects.
+- Current spell/DoT death follow-up fixes the user-observed case where a player
+  could die from creature spell or periodic aura damage, appear to pop back up
+  without releasing spirit, and then die again. The root cause was map-owned
+  spell/DoT ticks reducing player health to zero outside the session-owned
+  melee death path; the next session refresh could see health `0` while
+  `player_death_state` was still `Alive`. The session loop now finalizes that
+  map-owned zero-health state through the normal corpse/death path, and
+  movement packets are ignored while the player is an unreleased corpse.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while

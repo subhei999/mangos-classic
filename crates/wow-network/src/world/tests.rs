@@ -7216,6 +7216,7 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         },
         visible_equipment: [0; ENUM_EQUIPMENT_SLOTS],
         flags: 0,
+        death_state: PlayerDeathState::Alive,
         level: 1,
         race: 1,
         class: 1,
@@ -12662,6 +12663,7 @@ fn test_player_runtime_with_controller(
         },
         visible_equipment: [0; ENUM_EQUIPMENT_SLOTS],
         flags: 0,
+        death_state: PlayerDeathState::Alive,
         level: 1,
         race: 1,
         class: 1,
@@ -15080,6 +15082,46 @@ async fn player_death_evades_active_db_creature_and_starts_return_home() {
     assert!(observer_packets
         .iter()
         .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
+}
+
+#[test]
+fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(7, SessionId::next(), position))
+        .unwrap();
+
+    let death = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            999,
+            WorldDamageKind::SpellDirect,
+            Instant::now(),
+        )
+        .unwrap()
+        .expect("damage should apply");
+
+    assert!(death.died);
+    assert_eq!(death.remaining_health, 0);
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.health, 0);
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+
+    let second = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            1,
+            WorldDamageKind::PeriodicAura,
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(
+        second.is_none(),
+        "dead players must not accept a second damage/death transition"
+    );
 }
 
 #[tokio::test]
@@ -24823,6 +24865,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
     let snapshot = PlayerRuntimeSnapshot {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
         flags: 0,
+        death_state: PlayerDeathState::Alive,
         level: 3,
         race: 1,
         class: 1,
@@ -24872,6 +24915,7 @@ fn party_member_stats_reports_rogue_energy_power() {
     let mut snapshot = PlayerRuntimeSnapshot {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
         flags: 0,
+        death_state: PlayerDeathState::Alive,
         level: 3,
         race: 1,
         class: 4,

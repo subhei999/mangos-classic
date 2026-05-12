@@ -124,6 +124,8 @@ impl MapRuntime {
             let target_snapshot = db_creature_spell_snapshot(creature);
 
             let mut tick_packets = Vec::new();
+            let mut pending_damage_ticks = Vec::new();
+            let mut died_from_pending_tick = false;
             for aura in &mut creature.active_auras {
                 let Some(periodic) = aura.periodic_damage.as_mut() else {
                     continue;
@@ -153,22 +155,35 @@ impl MapRuntime {
                 if tick.dealt_damage == 0 {
                     continue;
                 }
-                creature.health = creature.health.saturating_sub(tick.dealt_damage);
-                if creature.health > 0 {
-                    threat_updates.push((creature_guid, aura.caster, tick.threat));
+                pending_damage_ticks.push((aura.caster, aura.spell_id, periodic.aura_name, tick));
+            }
+            for (caster, spell_id, aura_name, tick) in pending_damage_ticks {
+                let Some(applied) = apply_creature_runtime_world_damage(
+                    creature,
+                    creature_guid,
+                    caster,
+                    tick.dealt_damage,
+                    WorldDamageKind::PeriodicAura,
+                    now,
+                    now_epoch_secs,
+                )? else {
+                    continue;
+                };
+                if applied.remaining_health > 0 {
+                    threat_updates.push((creature_guid, caster, tick.threat));
                 }
                 tick_packets.push((
-                    aura.caster,
+                    caster,
                     build_periodic_aura_log_body(PeriodicAuraLog {
                         creature_guid,
-                        caster: aura.caster,
-                        spell_id: aura.spell_id,
-                        aura_name: periodic.aura_name,
+                        caster,
+                        spell_id,
+                        aura_name,
                         tick,
                     })?,
                 ));
-                if creature.health == 0 {
-                    creature.begin_corpse(now, now_epoch_secs);
+                if applied.died {
+                    died_from_pending_tick = true;
                     self.active_creature_combats.remove(&raw_guid);
                     self.active_creature_spell_casts.remove(&raw_guid);
                     self.creature_combat_leash.remove(&raw_guid);
@@ -180,7 +195,7 @@ impl MapRuntime {
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
             aura_changed |= creature.active_auras.len() != before;
-            let died_from_aura = creature.health == 0;
+            let died_from_aura = died_from_pending_tick || creature.health == 0;
             let runtime_packets = if aura_changed && !died_from_aura {
                 let previous_speeds = creature.refresh_move_speeds();
                 debug_assert_eq!(old_speeds, previous_speeds);
@@ -268,7 +283,7 @@ impl MapRuntime {
         request: DbCreatureDamageRequest,
     ) -> anyhow::Result<Option<DbCreatureDamageEvent>> {
         let creature_guid = request.creature_guid;
-        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+        let Some(creature) = self.creatures.get(&creature_guid.raw()) else {
             return Ok(None);
         };
         if !creature.is_alive() || creature.is_evading_home() {
@@ -284,21 +299,45 @@ impl MapRuntime {
         } else {
             0
         };
-        let damage = creature.health.min(requested_damage);
-        creature.health = creature.health.saturating_sub(damage);
-        let is_dead = creature.health == 0;
-        let motion_stop_packet = if is_dead && !matches!(creature.motion, CreatureMotionState::Idle)
-        {
-            let stop = stop_db_creature_motion_runtime(creature);
-            Some(OutboundWorldPacket {
-                opcode: SMSG_MONSTER_MOVE,
-                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
-            })
-        } else {
-            None
+        let motion_stop_packet = {
+            let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+                return Ok(None);
+            };
+            let will_die = requested_damage >= creature.health;
+            if will_die && !matches!(creature.motion, CreatureMotionState::Idle) {
+                let stop = stop_db_creature_motion_runtime(creature);
+                Some(OutboundWorldPacket {
+                    opcode: SMSG_MONSTER_MOVE,
+                    body: build_monster_move_stop_body(
+                        creature_guid,
+                        stop.position,
+                        stop.spline_id,
+                    )?,
+                })
+            } else {
+                None
+            }
+        };
+        let Some(applied) = self.apply_creature_world_damage(
+            creature_guid,
+            request.killer,
+            requested_damage,
+            if request.spell_damage_outcome.is_some() {
+                WorldDamageKind::SpellDirect
+            } else {
+                WorldDamageKind::Melee
+            },
+            request.now,
+            request.now_epoch_secs,
+        )? else {
+            return Ok(None);
+        };
+        let damage = applied.applied_damage;
+        let is_dead = applied.died;
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(None);
         };
         if is_dead {
-            creature.begin_corpse(request.now, request.now_epoch_secs);
             if let Some(corpse_loot) = request.corpse_loot {
                 creature.loot_owner.get_or_insert(corpse_loot.owner);
                 creature.loot_allowed_players = corpse_loot.allowed_players.into_iter().collect();

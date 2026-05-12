@@ -124,6 +124,7 @@ fn build_playerbot_runtime(
         active_combat_target: None,
         active_combat_next_swing_at: None,
         looting: false,
+        death_state: PlayerDeathState::Alive,
         combo_target: None,
         combo_points: 0,
         position: config.position,

@@ -695,14 +695,25 @@ impl MapRuntime {
             .creatures
             .get(&attacker.raw())
             .map(|creature| creature.motion.clone());
-        let Some(victim_player) = self.players.get_mut(&victim.counter()) else {
+        if !self
+            .players
+            .get(&victim.counter())
+            .is_some_and(|player| player.health > 0 && player.death_state == PlayerDeathState::Alive)
+        {
             return Ok(None);
         };
         let damage = outcome.total_damage;
-        victim_player.health = victim_player.health.saturating_sub(damage);
-        let victim_health = victim_player.health;
-        let victim_position = victim_player.position;
-        let _ = victim_player;
+        let Some(applied) = self.apply_player_world_damage(
+            victim,
+            Some(attacker),
+            damage,
+            WorldDamageKind::Melee,
+            now,
+        )? else {
+            return Ok(None);
+        };
+        let victim_health = applied.remaining_health;
+        let victim_position = applied.position;
         if damage > 0
             && creature_motion
                 .as_ref()
@@ -716,7 +727,7 @@ impl MapRuntime {
         };
         let health_update = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
-            body: build_player_health_update_body(victim, victim_health)?,
+            body: applied.health_packet.body.clone(),
         };
         let mut observer_packets = Vec::new();
         for player_guid in self.nearby_player_guids(
@@ -770,7 +781,7 @@ impl MapRuntime {
         let Some(victim_player) = self.players.get(&victim.counter()) else {
             return Ok(None);
         };
-        if victim_player.health == 0 {
+        if victim_player.health == 0 || victim_player.death_state != PlayerDeathState::Alive {
             return Ok(None);
         }
         let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
@@ -784,13 +795,17 @@ impl MapRuntime {
         ));
         let requested_damage = outcome.final_damage;
         let damage = victim_player.health.min(requested_damage);
-        let Some(victim_player) = self.players.get_mut(&victim.counter()) else {
+        let Some(applied) = self.apply_player_world_damage(
+            victim,
+            Some(attacker),
+            damage,
+            WorldDamageKind::SpellDirect,
+            now,
+        )? else {
             return Ok(None);
         };
-        victim_player.health = victim_player.health.saturating_sub(damage);
-        let victim_health = victim_player.health;
-        let victim_position = victim_player.position;
-        let _ = victim_player;
+        let victim_health = applied.remaining_health;
+        let victim_position = applied.position;
         if damage > 0 {
             self.add_db_creature_threat(attacker, victim, damage as f32);
             self.refresh_db_creature_combat_leash(attacker, now);
@@ -817,7 +832,7 @@ impl MapRuntime {
             .miss_info
             .map(|miss_info| build_spell_log_miss_body(attacker, victim, spell_id, miss_info))
             .transpose()?;
-        let health_update_body = build_player_health_update_body(victim, victim_health)?;
+        let health_update_body = applied.health_packet.body.clone();
         let mut observer_packets = Vec::new();
         for player_guid in self.nearby_player_guids(
             victim_position,

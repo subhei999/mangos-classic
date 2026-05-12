@@ -97,9 +97,7 @@ impl MapRuntime {
                 if amount == 0 || player.health == 0 {
                     continue;
                 }
-                let applied = amount.min(player.health);
-                player.health = player.health.saturating_sub(applied);
-                player.environment.last_damage_at = Some(now);
+                let applied_damage = amount.min(player.health);
                 if remove_active_auras_with_interrupt_flag(
                     &mut player.active_auras,
                     AURA_INTERRUPT_FLAG_DAMAGE,
@@ -130,38 +128,31 @@ impl MapRuntime {
                         stand_packet,
                     ));
                 }
-                let health_packet = if player.health == 0 {
-                    OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_player_death_update_body(
-                            player_guid,
-                            0,
-                            player.flags,
-                            PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                            player_unit_flags(false),
-                        )?,
-                    }
-                } else {
-                    OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_player_health_update_body(player_guid, player.health)?,
-                    }
+                let Some(applied) = apply_player_runtime_world_damage(
+                    player,
+                    player_guid,
+                    None,
+                    amount,
+                    WorldDamageKind::Environmental,
+                    now,
+                )? else {
+                    continue;
                 };
                 damage_events.push((
                     character_guid,
-                    player.position,
+                    applied.position,
                     player_session_id,
                     OutboundWorldPacket {
                         opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                         body: build_environmental_damage_log_body(
                             player_guid,
                             damage_type,
-                            applied,
+                            applied_damage,
                             0,
                             0,
                         )?,
                     },
-                    health_packet,
+                    applied.health_packet,
                 ));
             }
         }
@@ -763,23 +754,44 @@ impl MapRuntime {
                 player.visible_objects = retained_non_player_visible;
             }
             if let Some(damage) = fall_update.damage {
-                player.health = player.health.saturating_sub(damage);
+                let _ = apply_player_runtime_world_damage(
+                    player,
+                    player_object,
+                    None,
+                    damage,
+                    WorldDamageKind::Fall,
+                    Instant::now(),
+                )?;
             }
         }
 
         if let Some(damage) = fall_update.damage {
-            let health = self
+            let (health, death_state, flags) = self
                 .players
                 .get(&character_guid)
-                .map(|player| player.health)
-                .unwrap_or(current_player.health.saturating_sub(damage));
+                .map(|player| (player.health, player.death_state, player.flags))
+                .unwrap_or((
+                    current_player.health.saturating_sub(damage),
+                    current_player.death_state,
+                    current_player.flags,
+                ));
             let damage_log = OutboundWorldPacket {
                 opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                 body: build_environmental_damage_log_body(player_object, DAMAGE_FALL, damage, 0, 0)?,
             };
             let health_update = OutboundWorldPacket {
                 opcode: SMSG_UPDATE_OBJECT,
-                body: build_player_health_update_body(player_object, health)?,
+                body: if death_state == PlayerDeathState::Corpse && health == 0 {
+                    build_player_death_update_body(
+                        player_object,
+                        0,
+                        flags,
+                        PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                        player_unit_flags(false),
+                    )?
+                } else {
+                    build_player_health_update_body(player_object, health)?
+                },
             };
             if let Some(packet) = current_player.packet_to_client(damage_log.clone()) {
                 packets.push(packet);
@@ -968,7 +980,12 @@ impl MapRuntime {
         };
         player.max_health = player.max_health.max(session.player_health.max(1));
         player.max_power1 = player.max_power1.max(session.player_mana);
-        player.health = session.player_health.min(player.max_health);
+        player.death_state = session.player_death_state;
+        player.health = if session.player_death_state == PlayerDeathState::Alive {
+            session.player_health.min(player.max_health)
+        } else {
+            session.player_health
+        };
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
         player.power4 = session.player_energy.min(player.max_power4);
@@ -1004,6 +1021,7 @@ impl MapRuntime {
         Some(PlayerRuntimeSnapshot {
             position: player.position,
             flags: player.flags,
+            death_state: player.death_state,
             level: player.level,
             race: player.race,
             class: player.class,
@@ -1264,9 +1282,14 @@ impl MapRuntime {
             let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
             let mut tick_packets = Vec::new();
             let mut health_changed = false;
+            let mut player_died = false;
+            let mut pending_damage_ticks = Vec::new();
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
+            if player.death_state != PlayerDeathState::Alive || player.health == 0 {
+                continue;
+            }
             let before = player.active_auras.len();
             let target_snapshot = player_spell_snapshot(player.level, player.class, &player.combat_stats);
             for aura in &mut player.active_auras {
@@ -1301,25 +1324,47 @@ impl MapRuntime {
                 if tick.dealt_damage == 0 {
                     continue;
                 }
-                player.health = player.health.saturating_sub(tick.dealt_damage);
+                pending_damage_ticks.push((aura.caster, aura.spell_id, periodic.aura_name, tick));
+            }
+            let _ = player;
+            for (caster, spell_id, aura_name, tick) in pending_damage_ticks {
+                let Some(applied) = self.apply_player_world_damage(
+                    player_guid,
+                    Some(caster),
+                    tick.dealt_damage,
+                    WorldDamageKind::PeriodicAura,
+                    now,
+                )? else {
+                    continue;
+                };
                 health_changed = true;
                 tick_packets.push(OutboundWorldPacket {
                     opcode: SMSG_PERIODICAURALOG,
                     body: build_periodic_aura_log_body(PeriodicAuraLog {
                         creature_guid: player_guid,
-                        caster: aura.caster,
-                        spell_id: aura.spell_id,
-                        aura_name: periodic.aura_name,
+                        caster,
+                        spell_id,
+                        aura_name,
                         tick,
                     })?,
                 });
-                if player.health == 0 {
+                if let Some(aura_packet) = applied.aura_packet {
+                    tick_packets.push(aura_packet);
+                }
+                if applied.died {
+                    player_died = true;
                     break;
                 }
             }
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                continue;
+            };
             player
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+            if player_died {
+                self.active_player_spell_casts.remove(&character_guid);
+            }
             if player.active_auras.len() == before && !health_changed && tick_packets.is_empty() {
                 continue;
             }
@@ -1338,7 +1383,17 @@ impl MapRuntime {
             if health_changed {
                 if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                     opcode: SMSG_UPDATE_OBJECT,
-                    body: build_player_health_update_body(player_guid, player.health)?,
+                    body: if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
+                        build_player_death_update_body(
+                            player_guid,
+                            0,
+                            player.flags,
+                            PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                            player_unit_flags(false),
+                        )?
+                    } else {
+                        build_player_health_update_body(player_guid, player.health)?
+                    },
                 }) {
                     packets.push(packet);
                 }

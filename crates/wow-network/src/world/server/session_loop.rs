@@ -111,7 +111,9 @@ async fn handle_client(
             .await
             {
                 Ok(Ok((opcode, body))) => {
-                    refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
+                    let map_player_died =
+                        refresh_active_player_session_cache(&runtime_state.maps, &mut session)
+                            .await;
                     finalize_map_owned_player_death_if_needed(
                         &mut stream,
                         &character_db_pool,
@@ -123,6 +125,7 @@ async fn handle_client(
                         },
                         &mut session,
                         &mut header_crypto,
+                        map_player_died,
                     )
                     .await?;
                     if is_movement_opcode(opcode) {
@@ -1175,7 +1178,9 @@ async fn handle_client(
                     break Ok(());
                 }
                 Err(_) => {
-                    refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
+                    let map_player_died =
+                        refresh_active_player_session_cache(&runtime_state.maps, &mut session)
+                            .await;
                     finalize_map_owned_player_death_if_needed(
                         &mut stream,
                         &character_db_pool,
@@ -1187,6 +1192,7 @@ async fn handle_client(
                         },
                         &mut session,
                         &mut header_crypto,
+                        map_player_died,
                     )
                     .await?;
                     if pending_player_spell_cast_is_due(
@@ -1364,17 +1370,21 @@ fn advance_world_tick_deadline(
 async fn refresh_active_player_session_cache(
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
-) {
+) -> bool {
     let Some(character) = session.active_character.as_ref() else {
-        return;
+        return false;
     };
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let Some(snapshot) = maps.player_runtime_snapshot(map_id, character_guid).await else {
-        return;
+        return false;
     };
 
+    let map_player_died = session.player_death_state == PlayerDeathState::Alive
+        && snapshot.death_state == PlayerDeathState::Corpse
+        && snapshot.health == 0;
     session.player_health = snapshot.health;
+    session.player_death_state = snapshot.death_state;
     session.player_mana = snapshot.power1;
     session.player_rage = snapshot.power2;
     session.player_energy = snapshot.power4;
@@ -1387,6 +1397,7 @@ async fn refresh_active_player_session_cache(
         character.level = snapshot.level;
         character.xp = snapshot.xp;
     }
+    map_player_died
 }
 
 async fn finalize_map_owned_player_death_if_needed(
@@ -1396,26 +1407,29 @@ async fn finalize_map_owned_player_death_if_needed(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
+    map_player_died: bool,
 ) -> anyhow::Result<bool> {
-    if session.player_death_state != PlayerDeathState::Alive || session.player_health != 0 {
+    if !map_player_died || session.player_health != 0 {
         return Ok(false);
     }
     let Some(character) = session.active_character.as_ref() else {
         return Ok(false);
     };
     let map_id = character.position.map_id;
-    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let character_guid = character.guid;
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let death_time = Instant::now();
-    kill_player_from_creature(
-        stream,
-        character_db_pool,
-        shared_world.maps,
-        account_id,
-        session,
-        player,
-        header_crypto,
-    )
-    .await?;
+    session.player_death_state = PlayerDeathState::Corpse;
+    session.player_corpse = None;
+    session.player_health = 0;
+    session.player_in_combat = false;
+    mirror_session_player_auto_attack(session, None, None);
+    clear_session_active_creature_combats(session);
+    shared_world
+        .maps
+        .set_player_auto_attack(map_id, character_guid, None, None)
+        .await;
+    persist_player_death_state(character_db_pool, account_id, session).await?;
     send_db_creature_victim_death_evades(
         stream,
         shared_world,

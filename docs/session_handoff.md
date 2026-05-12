@@ -204,14 +204,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   map-owned creature debuffs without an aura-removal packet. Explicit aura
   interruption paths now clear the map-owned player aura list directly instead
   of relying on sync side effects.
-- Current spell/DoT death follow-up fixes the user-observed case where a player
-  could die from creature spell or periodic aura damage, appear to pop back up
-  without releasing spirit, and then die again. The root cause was map-owned
-  spell/DoT ticks reducing player health to zero outside the session-owned
-  melee death path; the next session refresh could see health `0` while
-  `player_death_state` was still `Alive`. The session loop now finalizes that
-  map-owned zero-health state through the normal corpse/death path, and
-  movement packets are ignored while the player is an unreleased corpse.
+- Current death-certainty pass replaces the prior spell/DoT catch-up fix with a
+  CMaNGOS-shaped map-owned damage boundary. `MapRuntime` now tracks live player
+  death state, direct player/creature HP subtraction in melee, direct spell,
+  periodic aura, environmental, and fall damage paths is routed through shared
+  world-damage helpers, and overkill immediately produces `Corpse + 0 HP`
+  instead of allowing `Alive + 0 HP`. Login no longer silently heals a legacy
+  `Alive + 0 HP` row; it preserves the invariant for death handling and logs
+  the corrupted state.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -252,6 +252,7 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network creature_spell_start_packets_use_current_session_socket_without_registry_lookup --lib`
 - `cargo test -p wow-network map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update --lib`
 - `cargo test -p wow-network --lib`
+- `cargo test -p wow-network map_runtime_player_world_damage --lib`
 - `cargo test -p wow-network aura --lib`
 - `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`

@@ -120,6 +120,7 @@ struct PlayerRuntime {
     visual: PlayerVisualState,
     visible_equipment: [u32; ENUM_EQUIPMENT_SLOTS],
     flags: u32,
+    death_state: PlayerDeathState,
     level: u8,
     race: u8,
     class: u8,
@@ -177,6 +178,7 @@ impl PlayerRuntime {
 struct PlayerRuntimeSnapshot {
     position: WorldPosition,
     flags: u32,
+    death_state: PlayerDeathState,
     level: u8,
     race: u8,
     class: u8,
@@ -641,6 +643,7 @@ include!("map/players.rs");
 include!("map/player_corpses.rs");
 include!("map/creature_snapshots.rs");
 include!("map/gameobject_snapshots.rs");
+include!("map/damage.rs");
 include!("map/creature_damage.rs");
 include!("map/creature_lifecycle.rs");
 include!("map/creature_loot.rs");

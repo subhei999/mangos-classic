@@ -245,7 +245,10 @@ async fn handle_player_login(
         session.player_mana = effective_world_stats.max_mana();
     }
     if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
-        session.player_health = effective_world_stats.max_health().max(1);
+        warn!(
+            character_guid = character.guid,
+            "Loaded legacy Alive + 0 HP character state; preserving zero health for death invariant handling"
+        );
     }
     let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
     let inventory_container_slots =
@@ -371,6 +374,7 @@ async fn handle_player_login(
             &session.inventory,
         ),
         flags: character.player_flags,
+        death_state: session.player_death_state,
         level: character.level,
         race: character.race,
         class: character.class,

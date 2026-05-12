@@ -111,6 +111,7 @@ async fn handle_player_login(
     } else {
         PlayerDeathState::Alive
     };
+    session.player_death_presentation_pending = false;
     session.player_corpse = if session.player_death_state == PlayerDeathState::Ghost {
         let corpse = wow_db::get_player_corpse(deps.character_db_pool, character.guid).await?;
         corpse.map(player_corpse_runtime_from_query)

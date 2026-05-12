@@ -1396,6 +1396,10 @@ async fn refresh_active_player_session_cache(
     session.player_flags = snapshot.flags;
     if let Some(character) = session.active_character.as_mut() {
         character.position = snapshot.position;
+        character.movement_flags = snapshot.movement_flags;
+        character.client_time = snapshot.client_time;
+        character.fall_time = snapshot.fall_time;
+        character.jump = snapshot.jump;
         character.level = snapshot.level;
         character.xp = snapshot.xp;
     }
@@ -1420,9 +1424,11 @@ async fn finalize_map_owned_player_death_if_needed(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let character_class = character.class;
+    let character_is_airborne = active_character_is_airborne(character);
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let death_time = Instant::now();
     session.player_death_state = PlayerDeathState::Corpse;
+    session.player_death_presentation_pending = false;
     session.player_corpse = None;
     session.player_health = 0;
     session.player_stand_state = PLAYER_STAND_STATE_DEAD;
@@ -1435,6 +1441,43 @@ async fn finalize_map_owned_player_death_if_needed(
         .set_player_auto_attack(map_id, character_guid, None, None)
         .await;
     persist_player_death_state(character_db_pool, account_id, session).await?;
+    let death_presentation_deferred = character_is_airborne;
+    if death_presentation_deferred {
+        session.player_death_presentation_pending = true;
+    } else {
+        send_player_death_presentation(
+            stream,
+            session,
+            player,
+            character_class,
+            header_crypto,
+        )
+        .await?;
+    }
+    send_db_creature_victim_death_evades(
+        stream,
+        shared_world,
+        map_id,
+        session,
+        player,
+        death_time,
+        header_crypto,
+    )
+    .await?;
+    Ok(!death_presentation_deferred)
+}
+
+fn active_character_is_airborne(character: &ActiveCharacter) -> bool {
+    character.movement_flags & MOVEFLAG_JUMPING != 0 || character.fall_time > 0
+}
+
+async fn send_player_death_presentation(
+    stream: &mut WorldPacketSink,
+    session: &mut WorldSessionState,
+    player: ObjectGuid,
+    character_class: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
     send_packet(
         stream,
         SMSG_FORCE_MOVE_ROOT,
@@ -1457,17 +1500,8 @@ async fn finalize_map_owned_player_death_if_needed(
         Some(&mut *header_crypto),
     )
     .await?;
-    send_db_creature_victim_death_evades(
-        stream,
-        shared_world,
-        map_id,
-        session,
-        player,
-        death_time,
-        header_crypto,
-    )
-    .await?;
-    Ok(true)
+    session.player_death_presentation_pending = false;
+    Ok(())
 }
 
 async fn sync_active_player_gameplay_state(

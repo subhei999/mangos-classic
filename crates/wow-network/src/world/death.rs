@@ -63,6 +63,7 @@ async fn handle_repop_request(
         .map(|character| character.position.map_id)
         .unwrap_or(corpse_position.map_id);
     session.player_death_state = PlayerDeathState::Ghost;
+    session.player_death_presentation_pending = false;
     session.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
     session.player_flags |= PLAYER_FLAGS_GHOST;
     session.player_stand_state = PLAYER_STAND_STATE_STAND;
@@ -344,6 +345,7 @@ async fn resurrect_player_at_position(
     let world_stats = wow_db::get_player_world_stats(deps.world_db_pool, race, class, level).await?;
     let resurrected_health = (world_stats.max_health().max(1) / 2).max(1);
     session.player_death_state = PlayerDeathState::Alive;
+    session.player_death_presentation_pending = false;
     let corpse_to_bones = session.player_corpse.take();
     session.player_health = resurrected_health;
     session.player_flags &= !PLAYER_FLAGS_GHOST;
@@ -440,7 +442,9 @@ async fn kill_player_from_creature(
         return Ok(());
     };
     let character_class = character.class;
+    let character_is_airborne = active_character_is_airborne(character);
     session.player_death_state = PlayerDeathState::Corpse;
+    session.player_death_presentation_pending = character_is_airborne;
     session.player_corpse = None;
     session.player_health = 0;
     session.player_stand_state = PLAYER_STAND_STATE_DEAD;
@@ -453,28 +457,16 @@ async fn kill_player_from_creature(
             .await;
     }
 
-    send_packet(
-        stream,
-        SMSG_FORCE_MOVE_ROOT,
-        &build_force_move_root_body(player, 0)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_death_update_body(
+    if !character_is_airborne {
+        send_player_death_presentation(
+            stream,
+            session,
             player,
-            0,
-            session.player_flags,
-            PLAYER_FIELD_BYTE_RELEASE_TIMER,
-            player_unit_flags(false),
             character_class,
-            PLAYER_STAND_STATE_DEAD,
-        )?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
+            header_crypto,
+        )
+        .await?;
+    }
     persist_player_death_state(character_db_pool, account_id, session).await
 }
 

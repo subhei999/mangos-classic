@@ -83,6 +83,7 @@ async fn unregister_active_character(
     }
     session.active_spells.clear();
     session.player_death_state = PlayerDeathState::Alive;
+    session.player_death_presentation_pending = false;
     session.player_corpse = None;
     session.player_visual = None;
     session.player_flags = 0;

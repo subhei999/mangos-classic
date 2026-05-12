@@ -1066,6 +1066,10 @@ impl MapRuntime {
         let player = self.players.get(&character_guid)?;
         Some(PlayerRuntimeSnapshot {
             position: player.position,
+            movement_flags: player.movement_flags,
+            client_time: player.client_time,
+            fall_time: player.fall_time,
+            jump: player.jump.clone(),
             flags: player.flags,
             death_state: player.death_state,
             stand_state: player.stand_state,

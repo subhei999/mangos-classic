@@ -15265,15 +15265,8 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     let values_start = 4 + 1 + 1 + packed.len();
     let values = decode_update_values(&death.health_packet.body[values_start..]);
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
-    assert_eq!(
-        values[UNIT_FIELD_BYTES_1],
-        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_DEAD))
-    );
-    assert_eq!(
-        values[PLAYER_FIELD_BYTES],
-        Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
-    );
-    assert_eq!(values[UNIT_FIELD_AURA + MAX_POSITIVE_AURA_SLOTS], Some(0));
+    assert_eq!(values[UNIT_FIELD_BYTES_1], None);
+    assert_eq!(values[PLAYER_FIELD_BYTES], None);
     let snapshot = map.player_runtime_snapshot(7).unwrap();
     assert_eq!(snapshot.health, 0);
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
@@ -15295,6 +15288,43 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     assert!(
         second.is_none(),
         "dead players must not accept a second damage/death transition"
+    );
+}
+
+#[test]
+fn map_runtime_grounded_player_world_damage_sends_corpse_presentation_update() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId::next(),
+        WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+    ))
+    .unwrap();
+
+    let death = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            999,
+            WorldDamageKind::SpellDirect,
+            Instant::now(),
+        )
+        .unwrap()
+        .expect("damage should apply");
+
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, player_guid).unwrap();
+    let values_start = 4 + 1 + 1 + packed.len();
+    let values = decode_update_values(&death.health_packet.body[values_start..]);
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_DEAD))
+    );
+    assert_eq!(
+        values[PLAYER_FIELD_BYTES],
+        Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
     );
 }
 
@@ -20368,7 +20398,7 @@ fn corpse_falling_movement_allows_landing_but_blocks_walking() {
     ));
     assert!(corpse_falling_movement_allowed(
         MSG_MOVE_FALL_LAND,
-        &landing
+        &standing
     ));
     assert!(corpse_falling_movement_allowed(
         MSG_MOVE_START_SWIM,
@@ -20381,6 +20411,14 @@ fn corpse_falling_movement_allows_landing_but_blocks_walking() {
     assert!(!corpse_falling_movement_allowed(
         MSG_MOVE_HEARTBEAT,
         &standing
+    ));
+    assert!(corpse_falling_movement_landed(
+        MSG_MOVE_FALL_LAND,
+        &standing
+    ));
+    assert!(!corpse_falling_movement_landed(
+        MSG_MOVE_HEARTBEAT,
+        &landing
     ));
 }
 
@@ -25124,6 +25162,10 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let snapshot = PlayerRuntimeSnapshot {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
         flags: 0,
         death_state: PlayerDeathState::Alive,
         stand_state: PLAYER_STAND_STATE_STAND,
@@ -25175,6 +25217,10 @@ fn party_member_stats_reports_rogue_energy_power() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 8);
     let mut snapshot = PlayerRuntimeSnapshot {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
         flags: 0,
         death_state: PlayerDeathState::Alive,
         stand_state: PLAYER_STAND_STATE_STAND,

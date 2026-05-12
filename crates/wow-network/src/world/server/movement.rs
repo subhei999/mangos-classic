@@ -122,6 +122,7 @@ async fn handle_movement(
     }
     let server_time = synchronize_movement_server_time(session, movement.client_time);
     let mut fatal_environmental_damage_player = None;
+    let mut pending_death_presentation = None;
     if let Some(character) = &mut session.active_character {
         let previous_player_health = session.player_health;
         character.position.x = movement.position.x;
@@ -177,6 +178,15 @@ async fn handle_movement(
                 }
             }
         }
+        if corpse_movement
+            && session.player_death_presentation_pending
+            && corpse_falling_movement_landed(opcode, &movement)
+        {
+            pending_death_presentation = Some((
+                ObjectGuid::new(HighGuid::Player, 0, character.guid),
+                character.class,
+            ));
+        }
         if !corpse_movement {
             stream_newly_visible_db_creatures(
                 stream,
@@ -230,6 +240,16 @@ async fn handle_movement(
             "Received movement packet before character login"
         );
     }
+    if let Some((player, character_class)) = pending_death_presentation {
+        send_player_death_presentation(
+            stream,
+            session,
+            player,
+            character_class,
+            header_crypto,
+        )
+        .await?;
+    }
     if let Some(player) = fatal_environmental_damage_player {
         kill_player_from_creature(
             stream,
@@ -246,6 +266,10 @@ async fn handle_movement(
 }
 
 fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool {
+    if opcode == MSG_MOVE_FALL_LAND {
+        return true;
+    }
+
     if movement.flags & MOVEFLAG_JUMPING != 0 {
         return true;
     }
@@ -254,6 +278,11 @@ fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool
         opcode,
         MSG_MOVE_FALL_LAND | MSG_MOVE_START_SWIM | MSG_MOVE_HEARTBEAT
     ) && movement.fall_time > 0
+}
+
+fn corpse_falling_movement_landed(opcode: u32, movement: &MovementInfo) -> bool {
+    opcode == MSG_MOVE_FALL_LAND
+        || (opcode == MSG_MOVE_START_SWIM && movement.flags & MOVEFLAG_JUMPING == 0)
 }
 
 fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {

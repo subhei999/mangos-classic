@@ -113,7 +113,8 @@ fn apply_player_runtime_world_damage(
         );
     }
     let remaining_health = player.health;
-    let health_packet = if died {
+    let defer_death_presentation = died && player_runtime_is_airborne(player);
+    let health_packet = if died && !defer_death_presentation {
         OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_player_death_update_body(
@@ -146,6 +147,10 @@ fn apply_player_runtime_world_damage(
         health_packet,
         aura_packet,
     }))
+}
+
+fn player_runtime_is_airborne(player: &PlayerRuntime) -> bool {
+    player.movement_flags & MOVEFLAG_JUMPING != 0 || player.fall_time > 0
 }
 
 impl MapRuntime {

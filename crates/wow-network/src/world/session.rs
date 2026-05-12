@@ -191,6 +191,7 @@ struct WorldSessionState {
     active_creature_combats: HashMap<u64, CreatureCombatState>,
     player_in_combat: bool,
     player_death_state: PlayerDeathState,
+    player_death_presentation_pending: bool,
     player_corpse: Option<PlayerCorpseRuntime>,
     player_visual: Option<PlayerVisualState>,
     player_flags: u32,

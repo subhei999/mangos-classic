@@ -177,6 +177,10 @@ impl PlayerRuntime {
 #[allow(dead_code)]
 struct PlayerRuntimeSnapshot {
     position: WorldPosition,
+    movement_flags: u32,
+    client_time: u32,
+    fall_time: u32,
+    jump: JumpInfo,
     flags: u32,
     death_state: PlayerDeathState,
     stand_state: u8,

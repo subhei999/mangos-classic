@@ -262,6 +262,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   while still ignoring ordinary dead-player walking/control packets. This
   targets the real-client report that dying while jumping froze the player in
   midair instead of letting the body fall to the ground.
+- Current airborne-death presentation follow-up fixes the remaining real-client
+  midair freeze. Airborne lethal damage now stays authoritative at `0 HP` in
+  map/session state but defers the controlling client's root/release/dead-stand
+  presentation until the client sends `MSG_MOVE_FALL_LAND` or lands in water.
+  The session cache now carries map-owned movement flags/fall state so this
+  decision is based on the current map runtime, and `MSG_MOVE_FALL_LAND` is
+  accepted even when the client reports `fall_time = 0`.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -331,6 +338,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network corpse --lib`
 - `cargo test -p wow-network movement --lib`
 - `cargo test -p wow-network corpse_falling_movement --lib`
+- `cargo test -p wow-network map_runtime_grounded_player_world_damage --lib`
+- `cargo test -p wow-network party_member_stats --lib`
 - `.\scripts\test-rust.cmd`
 - First `.\scripts\test-rust.cmd` attempt passed tests but failed the final
   `cargo build -p authserver` because the running local stack had

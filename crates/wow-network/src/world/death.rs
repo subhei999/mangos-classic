@@ -427,6 +427,8 @@ async fn kill_player_from_creature(
     session.player_death_state = PlayerDeathState::Corpse;
     session.player_corpse = None;
     session.player_health = 0;
+    session.player_stand_state = PLAYER_STAND_STATE_DEAD;
+    session.active_auras.clear();
     session.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);

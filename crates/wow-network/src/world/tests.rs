@@ -11376,6 +11376,76 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
 }
 
 #[test]
+fn map_runtime_db_creature_lethal_immolate_clears_preapplied_dot() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    map.players.get_mut(&1).unwrap().health = 4;
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 188;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        6,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: immolate.attributes_ex3,
+        },
+        aura: Some(aura),
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("cast should start");
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("instant cast should complete");
+    let DbCreatureCompletedSpellEffect::PlayerDamage(damage) = completed.effect else {
+        panic!("Immolate should include direct player damage");
+    };
+
+    assert_eq!(damage.victim_health, 0);
+    assert!(
+        damage.aura_packet.is_some(),
+        "lethal spell damage must send the death aura-clear packet after removing the preapplied DoT"
+    );
+    let player = map.players.get(&1).unwrap();
+    assert_eq!(player.active_auras.len(), 0);
+    assert_eq!(player.death_state, PlayerDeathState::Corpse);
+    assert_eq!(player.stand_state, PLAYER_STAND_STATE_DEAD);
+}
+
+#[test]
 fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -15131,15 +15201,13 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     assert!(death.died);
     assert_eq!(death.remaining_health, 0);
     assert!(
-        death
-            .direct_packets
-            .iter()
-            .any(|packet| packet.opcode == SMSG_FORCE_MOVE_ROOT),
-        "player death must force-root the controlling client like CMaNGOS KillPlayer"
+        death.direct_packets.is_empty(),
+        "raw map damage reaches JUST_DIED-style state; root/release presentation is sent by the player death finalizer"
     );
     let snapshot = map.player_runtime_snapshot(7).unwrap();
     assert_eq!(snapshot.health, 0);
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
 
     let second = map
         .apply_player_world_damage(
@@ -24936,6 +25004,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
         flags: 0,
         death_state: PlayerDeathState::Alive,
+        stand_state: PLAYER_STAND_STATE_STAND,
         level: 3,
         race: 1,
         class: 1,
@@ -24986,6 +25055,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         position: WorldPosition::new(0, 42.0, 84.0, 1.0, 0.0),
         flags: 0,
         death_state: PlayerDeathState::Alive,
+        stand_state: PLAYER_STAND_STATE_STAND,
         level: 3,
         race: 1,
         class: 4,

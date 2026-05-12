@@ -814,7 +814,7 @@ async fn complete_ready_db_creature_spell_cast(
         spell_go_body,
     )
     .await;
-    let aura_event = event.aura_event;
+    let mut aura_event = event.aura_event;
     match event.effect {
         DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
             for packet in damage.direct_packets {
@@ -844,6 +844,15 @@ async fn complete_ready_db_creature_spell_cast(
                 )
                 .await?;
             }
+            if let Some(packet) = damage.aura_packet {
+                send_packet(
+                    stream,
+                    packet.opcode,
+                    &packet.body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
             session.player_health = damage.victim_health;
             send_packet(
                 stream,
@@ -854,6 +863,7 @@ async fn complete_ready_db_creature_spell_cast(
             .await?;
             shared_world.sessions.dispatch(damage.observer_packets).await;
             if session.player_health == 0 {
+                aura_event = None;
                 let death_time = Instant::now();
                 kill_player_from_creature(
                     stream,

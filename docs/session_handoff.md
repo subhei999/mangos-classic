@@ -226,6 +226,17 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   create blocks no longer floor dead players back to 1 HP, and login now
   reconstructs `health = 0`/non-ghost rows as `PlayerDeathState::Corpse`
   instead of `Alive`.
+- Current spell/DoT death cleanup pass is based on a direct CMaNGOS death
+  lifecycle read: `Unit::DealDamage` lethal damage calls `Kill`, `Kill` sets
+  health 0 and player `JUST_DIED`, `SetDeathState(JUST_DIED)` removes all
+  non-death-persistent auras and stops movement/combat/casts, and
+  `Player::Update` later runs `KillPlayer()` to send root/release/corpse
+  presentation. Rust now mirrors that split more closely: map-owned lethal
+  damage first records 0 HP/corpse/dead stand state and clears auras, direct
+  creature spell death suppresses stale prebuilt aura-apply packets and sends
+  the clear packet instead, session sync inherits map-owned dead stand/aura
+  state, and the active session finalizer sends the root/release death
+  presentation for map-owned DoT/environment/fall deaths.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -273,7 +284,18 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network other_player_create_block_preserves_dead_corpse_state --lib`
 - `cargo test -p wow-network login_player_create_values_preserve_zero_health_corpse_state --lib`
 - `cargo test -p wow-network aura --lib`
+- `cargo test -p wow-network map_runtime_player_world_damage --lib`
+- `cargo test -p wow-network map_runtime_db_creature_lethal_immolate_clears_preapplied_dot --lib`
+- `cargo test -p wow-network death --lib`
+- `cargo test -p wow-network aura --lib`
+- `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network creature_spell --lib`
+- `cargo test -p wow-network map_runtime_gameplay_sync_preserves_dead_player_zero_health --lib`
 - `.\scripts\test-rust.cmd`
+- First `.\scripts\test-rust.cmd` attempt passed tests but failed the final
+  `cargo build -p authserver` because the running local stack had
+  `target\debug\authserver.exe` locked. After stopping `authserver` and
+  `worldserver`, rerunning `.\scripts\test-rust.cmd` passed.
 - `cargo test -p wow-network spell_damage_outcome --lib`
 - `cargo test -p wow-network spell_delayed_packet_uses_full_caster_guid_for_client_cast_bar --lib`
 - `cargo test -p wow-network map_owned_active_cast_damage_pushback_extends_remaining_cast_time --lib`

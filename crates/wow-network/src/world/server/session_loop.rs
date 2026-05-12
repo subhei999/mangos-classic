@@ -1385,12 +1385,14 @@ async fn refresh_active_player_session_cache(
         && snapshot.health == 0;
     session.player_health = snapshot.health;
     session.player_death_state = snapshot.death_state;
+    session.player_stand_state = snapshot.stand_state;
     session.player_mana = snapshot.power1;
     session.player_rage = snapshot.power2;
     session.player_energy = snapshot.power4;
     session.active_spells = snapshot.active_spells;
     session.inventory = snapshot.inventory;
     session.quest_statuses = snapshot.quest_statuses;
+    session.active_auras = snapshot.active_auras;
     session.player_flags = snapshot.flags;
     if let Some(character) = session.active_character.as_mut() {
         character.position = snapshot.position;
@@ -1417,11 +1419,14 @@ async fn finalize_map_owned_player_death_if_needed(
     };
     let map_id = character.position.map_id;
     let character_guid = character.guid;
+    let character_class = character.class;
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let death_time = Instant::now();
     session.player_death_state = PlayerDeathState::Corpse;
     session.player_corpse = None;
     session.player_health = 0;
+    session.player_stand_state = PLAYER_STAND_STATE_DEAD;
+    session.active_auras.clear();
     session.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);
@@ -1430,6 +1435,28 @@ async fn finalize_map_owned_player_death_if_needed(
         .set_player_auto_attack(map_id, character_guid, None, None)
         .await;
     persist_player_death_state(character_db_pool, account_id, session).await?;
+    send_packet(
+        stream,
+        SMSG_FORCE_MOVE_ROOT,
+        &build_force_move_root_body(player, 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_death_update_body(
+            player,
+            0,
+            session.player_flags,
+            PLAYER_FIELD_BYTE_RELEASE_TIMER,
+            player_unit_flags(false),
+            character_class,
+            PLAYER_STAND_STATE_DEAD,
+        )?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     send_db_creature_victim_death_evades(
         stream,
         shared_world,

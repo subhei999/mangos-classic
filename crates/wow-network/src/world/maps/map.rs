@@ -179,6 +179,7 @@ struct PlayerRuntimeSnapshot {
     position: WorldPosition,
     flags: u32,
     death_state: PlayerDeathState,
+    stand_state: u8,
     level: u8,
     race: u8,
     class: u8,
@@ -411,6 +412,7 @@ struct DbCreaturePlayerSpellDamageEvent {
     spell_non_melee_log_body: Option<Vec<u8>>,
     spell_miss_log_body: Option<Vec<u8>>,
     direct_packets: Vec<OutboundWorldPacket>,
+    aura_packet: Option<OutboundWorldPacket>,
     health_update_body: Vec<u8>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }

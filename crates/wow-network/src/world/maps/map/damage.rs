@@ -85,7 +85,7 @@ fn apply_player_runtime_world_damage(
     let died = player.health == 0;
     let position = player.position;
     let direct_session_id = player.client_session_id();
-    let mut direct_packets = Vec::new();
+    let direct_packets = Vec::new();
     let aura_packet = if died && !player.active_auras.is_empty() {
         player.active_auras.clear();
         Some(OutboundWorldPacket {
@@ -101,6 +101,9 @@ fn apply_player_runtime_world_damage(
         player.active_combat_next_swing_at = None;
         player.queued_next_melee_spell = None;
         player.stand_state = PLAYER_STAND_STATE_DEAD;
+        player.movement_flags = 0;
+        player.fall_time = 0;
+        player.jump = JumpInfo::default();
         let source_guid = source.map(|guid| format!("0x{:016X}", guid.raw()));
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -111,24 +114,12 @@ fn apply_player_runtime_world_damage(
             old_health = previous_health,
             "MapRuntime finalized player death from world damage"
         );
-        direct_packets.push(OutboundWorldPacket {
-            opcode: SMSG_FORCE_MOVE_ROOT,
-            body: build_force_move_root_body(target, 0)?,
-        });
     }
     let remaining_health = player.health;
     let health_packet = if died {
         OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
-            body: build_player_death_update_body(
-                target,
-                0,
-                player.flags,
-                PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                player_unit_flags(false),
-                player.class,
-                PLAYER_STAND_STATE_DEAD,
-            )?,
+            body: build_player_health_update_body(target, 0)?,
         }
     } else {
         OutboundWorldPacket {

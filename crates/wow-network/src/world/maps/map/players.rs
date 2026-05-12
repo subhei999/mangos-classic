@@ -143,6 +143,7 @@ impl MapRuntime {
                     applied.position,
                     player_session_id,
                     applied.direct_packets,
+                    applied.aura_packet,
                     OutboundWorldPacket {
                         opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                         body: build_environmental_damage_log_body(
@@ -186,6 +187,7 @@ impl MapRuntime {
             position,
             direct_session_id,
             direct_death_packets,
+            aura_packet,
             damage_log,
             health_packet,
         ) in damage_events
@@ -195,6 +197,9 @@ impl MapRuntime {
                     packets.push((direct_session_id, packet));
                 }
                 packets.push((direct_session_id, damage_log.clone()));
+                if let Some(packet) = aura_packet.clone() {
+                    packets.push((direct_session_id, packet));
+                }
                 packets.push((direct_session_id, health_packet.clone()));
             }
             packets.extend(self.nearby_player_guids(
@@ -207,6 +212,9 @@ impl MapRuntime {
                 self.players.get(&observer_guid).map(|observer| {
                     [
                         observer.packet_to_client(damage_log.clone()),
+                        aura_packet
+                            .clone()
+                            .and_then(|packet| observer.packet_to_client(packet)),
                         observer.packet_to_client(health_packet.clone()),
                     ]
                     .into_iter()
@@ -744,6 +752,7 @@ impl MapRuntime {
             self.invalidate_idle_motion_start_schedule();
         }
 
+        let mut fall_applied = None;
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.position = movement.position;
             player.movement_flags = movement.flags;
@@ -765,7 +774,7 @@ impl MapRuntime {
                 player.visible_objects = retained_non_player_visible;
             }
             if let Some(damage) = fall_update.damage {
-                let _ = apply_player_runtime_world_damage(
+                fall_applied = apply_player_runtime_world_damage(
                     player,
                     player_object,
                     None,
@@ -790,24 +799,35 @@ impl MapRuntime {
                 opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                 body: build_environmental_damage_log_body(player_object, DAMAGE_FALL, damage, 0, 0)?,
             };
+            let health_update_body = if let Some(applied) = fall_applied.as_ref() {
+                applied.health_packet.body.clone()
+            } else if death_state == PlayerDeathState::Corpse && health == 0 {
+                build_player_death_update_body(
+                    player_object,
+                    0,
+                    flags,
+                    PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                    player_unit_flags(false),
+                    current_player.class,
+                    PLAYER_STAND_STATE_DEAD,
+                )?
+            } else {
+                build_player_health_update_body(player_object, health)?
+            };
             let health_update = OutboundWorldPacket {
                 opcode: SMSG_UPDATE_OBJECT,
-                body: if death_state == PlayerDeathState::Corpse && health == 0 {
-                    build_player_death_update_body(
-                        player_object,
-                        0,
-                        flags,
-                        PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                        player_unit_flags(false),
-                        current_player.class,
-                        PLAYER_STAND_STATE_DEAD,
-                    )?
-                } else {
-                    build_player_health_update_body(player_object, health)?
-                },
+                body: health_update_body,
             };
             if let Some(packet) = current_player.packet_to_client(damage_log.clone()) {
                 packets.push(packet);
+            }
+            if let Some(aura_packet) = fall_applied
+                .as_ref()
+                .and_then(|applied| applied.aura_packet.clone())
+            {
+                if let Some(packet) = current_player.packet_to_client(aura_packet) {
+                    packets.push(packet);
+                }
             }
             if let Some(packet) = current_player.packet_to_client(health_update.clone()) {
                 packets.push(packet);
@@ -818,6 +838,14 @@ impl MapRuntime {
                 };
                 if let Some(packet) = other.packet_to_client(damage_log.clone()) {
                     packets.push(packet);
+                }
+                if let Some(aura_packet) = fall_applied
+                    .as_ref()
+                    .and_then(|applied| applied.aura_packet.clone())
+                {
+                    if let Some(packet) = other.packet_to_client(aura_packet) {
+                        packets.push(packet);
+                    }
                 }
                 if let Some(packet) = other.packet_to_client(health_update.clone()) {
                     packets.push(packet);
@@ -1002,7 +1030,12 @@ impl MapRuntime {
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
         player.power4 = session.player_energy.min(player.max_power4);
-        player.stand_state = session.player_stand_state;
+        player.stand_state =
+            if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
+                PLAYER_STAND_STATE_DEAD
+            } else {
+                session.player_stand_state
+            };
         player.active_spells = session.active_spells.clone();
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
@@ -1035,6 +1068,7 @@ impl MapRuntime {
             position: player.position,
             flags: player.flags,
             death_state: player.death_state,
+            stand_state: player.stand_state,
             level: player.level,
             race: player.race,
             class: player.class,

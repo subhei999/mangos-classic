@@ -872,6 +872,7 @@ impl MapRuntime {
             spell_non_melee_log_body,
             spell_miss_log_body,
             direct_packets: applied.direct_packets,
+            aura_packet: applied.aura_packet,
             health_update_body,
             observer_packets,
         }))

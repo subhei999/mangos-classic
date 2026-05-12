@@ -179,6 +179,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   already correct. `get_creature_template_query` now selects
   `CAST(creature_template.SpellList AS UNSIGNED) AS spell_list`, matching the
   bulk spawn query and allowing DB caster templates to be GM-spawned.
+- GM caster spawn hotfix follow-up: the next `.npc add 3196` retry progressed
+  past template loading and then disconnected on `creature_spell_list_entry.Id`
+  decoding as signed `INT` into Rust `u32`. `get_creature_spell_list` now casts
+  nonnegative ids, chances, positions, flags, timers, and target type fields to
+  unsigned for ClassicDB's signed spell-list tables.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while

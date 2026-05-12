@@ -896,16 +896,22 @@ pub async fn get_creature_spell_list(
 ) -> Result<Vec<CreatureSpellListQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("creature_spell_list_load");
     let rows = sqlx::query_as::<_, CreatureSpellListQuery>(
-        "SELECT entry.Id AS id, \
-                entry.ChanceSupportAction AS chance_support_action, \
-                entry.ChanceRangedAttack AS chance_ranged_attack, \
-                list.Position AS position, list.SpellId AS spell_id, list.Flags AS flags, \
-                list.CombatCondition AS combat_condition, list.TargetId AS target_id, \
-                list.ScriptId AS script_id, list.Availability AS availability, \
-                list.Probability AS probability, list.InitialMin AS initial_min, \
-                list.InitialMax AS initial_max, list.RepeatMin AS repeat_min, \
-                list.RepeatMax AS repeat_max, \
-                COALESCE(target.Type, 0) AS target_type, \
+        "SELECT CAST(entry.Id AS UNSIGNED) AS id, \
+                CAST(entry.ChanceSupportAction AS UNSIGNED) AS chance_support_action, \
+                CAST(entry.ChanceRangedAttack AS UNSIGNED) AS chance_ranged_attack, \
+                CAST(list.Position AS UNSIGNED) AS position, \
+                CAST(list.SpellId AS UNSIGNED) AS spell_id, \
+                CAST(list.Flags AS UNSIGNED) AS flags, \
+                list.CombatCondition AS combat_condition, \
+                CAST(list.TargetId AS UNSIGNED) AS target_id, \
+                CAST(list.ScriptId AS UNSIGNED) AS script_id, \
+                CAST(list.Availability AS UNSIGNED) AS availability, \
+                CAST(list.Probability AS UNSIGNED) AS probability, \
+                CAST(list.InitialMin AS UNSIGNED) AS initial_min, \
+                CAST(list.InitialMax AS UNSIGNED) AS initial_max, \
+                CAST(list.RepeatMin AS UNSIGNED) AS repeat_min, \
+                CAST(list.RepeatMax AS UNSIGNED) AS repeat_max, \
+                CAST(COALESCE(target.Type, 0) AS UNSIGNED) AS target_type, \
                 COALESCE(target.Param1, 0) AS target_param1, \
                 COALESCE(target.Param2, 0) AS target_param2, \
                 COALESCE(target.Param3, 0) AS target_param3, \

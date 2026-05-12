@@ -65,10 +65,13 @@ async fn handle_combat_tick(
     try_start_db_creature_aggro(stream, deps.shared_world, session, header_crypto).await?;
     send_active_db_creature_attack(
         stream,
-        deps.character_db_pool,
-        deps.world_db_pool,
-        deps.shared_world,
-        deps.account_id,
+        ActiveDbCreatureAttackContext {
+            character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
+            shared_world: deps.shared_world,
+            account_id: deps.account_id,
+            session_id: deps.session_id,
+        },
         session,
         header_crypto,
     )
@@ -82,6 +85,7 @@ struct CombatTickDeps<'a> {
     shared_world: SharedWorldDeps<'a>,
     parties: &'a PartyManager,
     account_id: u32,
+    session_id: SessionId,
 }
 
 #[derive(Clone, Copy)]

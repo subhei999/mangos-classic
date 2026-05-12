@@ -11148,6 +11148,64 @@ fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
         .is_none());
 }
 
+#[tokio::test]
+async fn creature_spell_start_packets_use_current_session_socket_without_registry_lookup() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let sessions = Arc::new(SessionRegistry::default());
+    let maps = Arc::new(MapRuntimeManager::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let current_session_id = SessionId(77);
+    let observer_session_id = SessionId(88);
+    let packet = OutboundWorldPacket {
+        opcode: SMSG_SPELL_START,
+        body: vec![1, 2, 3, 4],
+    };
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        ..WorldSessionState::default()
+    };
+
+    send_or_dispatch_creature_spell_packets(
+        &mut stream,
+        shared_world,
+        &session,
+        vec![
+            (current_session_id, packet.clone()),
+            (observer_session_id, packet),
+        ],
+        Some(current_session_id),
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let direct = rx
+        .try_recv()
+        .expect("current session spell-start packet should use the live socket");
+    assert_eq!(direct.opcode, SMSG_SPELL_START);
+    assert_eq!(direct.body, vec![1, 2, 3, 4]);
+    assert!(rx.try_recv().is_err());
+}
+
 #[test]
 fn map_runtime_db_creature_spell_start_stops_chase_spends_mana_and_exposes_cast_time() {
     let mut map = MapRuntime::new(0, 0);

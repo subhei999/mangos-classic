@@ -136,10 +136,7 @@ async fn send_db_creature_combat_start(
 
 async fn send_active_db_creature_attack(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    world_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
-    account_id: u32,
+    context: ActiveDbCreatureAttackContext<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -149,13 +146,15 @@ async fn send_active_db_creature_attack(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-    let active_combats = shared_world
+    let active_combats = context
+        .shared_world
         .maps
         .active_db_creature_combats_for_victim(map_id, player)
         .await;
     if active_combats.is_empty() {
         clear_session_active_creature_combats(session);
-        if shared_world
+        if context
+            .shared_world
             .maps
             .player_auto_attack_target(map_id, character_guid)
             .await
@@ -167,12 +166,6 @@ async fn send_active_db_creature_attack(
     }
     send_player_combat_flag_if_changed(stream, session, true, header_crypto).await?;
     mirror_session_active_creature_combats(session, &active_combats);
-    let context = ActiveDbCreatureAttackContext {
-        character_db_pool,
-        world_db_pool,
-        shared_world,
-        account_id,
-    };
     for combat in active_combats {
         send_single_active_db_creature_attack(
             stream,
@@ -192,6 +185,7 @@ struct ActiveDbCreatureAttackContext<'a> {
     world_db_pool: &'a MySqlPool,
     shared_world: SharedWorldDeps<'a>,
     account_id: u32,
+    session_id: SessionId,
 }
 
 async fn send_single_active_db_creature_attack(
@@ -206,6 +200,7 @@ async fn send_single_active_db_creature_attack(
         world_db_pool,
         shared_world,
         account_id,
+        session_id,
     } = context;
     let attacker = combat.attacker;
     let Some(character) = session.active_character.as_ref() else {
@@ -287,6 +282,7 @@ async fn send_single_active_db_creature_attack(
         context.world_db_pool,
         shared_world,
         context.account_id,
+        session_id,
         map_id,
         session,
         &active.creature,
@@ -498,6 +494,7 @@ async fn try_start_db_creature_spell_cast(
     world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
     account_id: u32,
+    current_session_id: SessionId,
     map_id: u32,
     session: &mut WorldSessionState,
     creature: &DbCreatureRuntime,
@@ -636,6 +633,7 @@ async fn try_start_db_creature_spell_cast(
         shared_world,
         session,
         start_packets,
+        Some(current_session_id),
         header_crypto,
     )
     .await?;
@@ -908,6 +906,7 @@ async fn send_or_dispatch_creature_spell_packets(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     packets: Vec<(SessionId, OutboundWorldPacket)>,
+    current_session_id: Option<SessionId>,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let own_session_id = if let Some(character) = &session.active_character {
@@ -920,7 +919,7 @@ async fn send_or_dispatch_creature_spell_packets(
     };
     let mut dispatch = Vec::new();
     for (session_id, packet) in packets {
-        if Some(session_id) == own_session_id {
+        if Some(session_id) == own_session_id || Some(session_id) == current_session_id {
             send_packet(
                 stream,
                 packet.opcode,

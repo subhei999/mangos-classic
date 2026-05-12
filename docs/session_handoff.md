@@ -191,6 +191,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   the DBC cast time in `SMSG_SPELL_START` for the client cast bar, and apply
   hostile periodic auras such as Immolate to player targets so map-owned aura
   ticks produce real periodic damage logs and health updates.
+- Current creature caster cast-bar follow-up fixes a live-socket delivery gap
+  for the current player: creature `SMSG_SPELL_START` packets now use the
+  active session socket even when the session registry lookup has not yet
+  associated that character with the current `SessionId`, while observer packets
+  still dispatch through the shared registry. This specifically targets the
+  real-client report that Burning Blade Neophyte Immolate applied/spent mana but
+  showed no visible cast bar.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -228,6 +235,7 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network db_creature_runtime_create_block_uses_runtime_mana_for_mana_creatures --lib`
 - `cargo test -p wow-network map_runtime_db_creature_spell --lib`
 - `cargo test -p wow-network map_runtime_db_creature_immolate_applies_player_dot_ticks --lib`
+- `cargo test -p wow-network creature_spell_start_packets_use_current_session_socket_without_registry_lookup --lib`
 - `cargo test -p wow-network --lib`
 - `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`
@@ -309,6 +317,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   healing/energize threat, and broader proc event metadata (`spell_proc_event`,
   procEx, cooldowns, PPM, equipment requirements). Do not branch more ad hoc
   spell damage paths before extending the shared outcome structs.
+- Creature caster real-client follow-up: after the cast-start delivery fix,
+  retest `.npc add 3196` and confirm the Immolate cast bar. If combat log still
+  reports only generic melee hit/crit lines instead of spell damage/periodic
+  spell events, do a focused CMaNGOS packet comparison around
+  `SMSG_SPELLNONMELEEDAMAGELOG`, `SMSG_PERIODICAURALOG`, `SMSG_SPELLLOGMISS`,
+  and the exact target/caster GUID ordering seen by the client.
 - Starter-zone integration follow-up: GitHub issue #69 tracks the currently
   red Kobold Camp Cleanup kill-credit smoke. Treat it as a separate quest/combat
   lifecycle investigation unless a future PvE change directly touches the same

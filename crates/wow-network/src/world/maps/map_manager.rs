@@ -1722,6 +1722,27 @@ impl MapRuntimeManager {
         validation
     }
 
+    async fn validate_db_creature_spell_against_target(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        target: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        range: Option<SpellRangeEntry>,
+    ) -> DbCreatureSpellTargetValidation {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::MissingCaster,
+            };
+        };
+        let validation = map
+            .lock()
+            .await
+            .validate_db_creature_spell_against_target(caster, target, navigation, range);
+        validation
+    }
+
     #[allow(dead_code)]
     async fn update_db_creature_snapshot(&self, map_id: u32, creature: DbCreatureRuntime) {
         let map = self.get_or_create_map(map_id, 0).await;
@@ -2084,22 +2105,21 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn set_db_creature_spell_repeat_cooldown(
+    async fn apply_db_creature_spell_cooldowns(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
-        spell_id: u32,
-        repeat_min: u32,
-        repeat_max: u32,
+        spell: &wow_db::CreatureSpellListQuery,
+        template: &wow_db::SpellTemplateQuery,
         now: Instant,
     ) {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return;
         };
-        map.lock().await.set_db_creature_spell_repeat_cooldown(
-            attacker, spell_id, repeat_min, repeat_max, now,
-        );
+        map.lock()
+            .await
+            .apply_db_creature_spell_cooldowns(attacker, spell, template, now);
     }
 
     async fn complete_ready_db_creature_spell_cast(
@@ -2108,6 +2128,7 @@ impl MapRuntimeManager {
         attacker: ObjectGuid,
         victim: ObjectGuid,
         now: Instant,
+        navigation: &DbCreatureNavigationGuardrail,
     ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -2116,7 +2137,7 @@ impl MapRuntimeManager {
         let event = map
             .lock()
             .await
-            .complete_ready_db_creature_spell_cast(attacker, victim, now);
+            .complete_ready_db_creature_spell_cast_with_navigation(attacker, victim, now, navigation);
         event
     }
 

@@ -3,7 +3,9 @@ const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
 const DB_CREATURE_SPELL_LIST_UPDATE_MILLIS: u64 = 1_200;
 const CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION: u32 = 0x1;
 const CREATURE_SPELL_LIST_FLAG_RANGED_ACTION: u32 = 0x2;
+const CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN: u32 = 0x4;
 const CREATURE_SPELL_LIST_FLAG_NON_BLOCKING: u32 = 0x8;
+const CREATURE_SPELL_CATEGORY_COOLDOWN_KEY: u32 = 0x8000_0000;
 const CREATURE_SPELL_LIST_TARGETING_HARDCODED: u32 = 0;
 const CREATURE_SPELL_LIST_TARGETING_ATTACK: u32 = 1;
 const CREATURE_SPELL_LIST_TARGETING_SUPPORT: u32 = 2;
@@ -77,6 +79,11 @@ struct PlayerSpellTargetValidation {
     check: PlayerSpellTargetCheck,
 }
 
+#[derive(Debug, Clone)]
+struct DbCreatureSpellTargetValidation {
+    check: DbCreatureSpellTargetCheck,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlayerChargeCheck {
     Clear,
@@ -95,6 +102,17 @@ enum PlayerSpellTargetCheck {
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
     BadFacing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbCreatureSpellTargetCheck {
+    Clear,
+    MissingCaster,
+    CasterNotAlive,
+    MissingTarget,
+    TargetNotAlive,
+    NavigationBlocked(DbCreatureNavigationResult),
+    OutOfRange,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +288,74 @@ impl MapRuntime {
         }
     }
 
+    fn validate_db_creature_spell_against_target(
+        &self,
+        caster_guid: ObjectGuid,
+        target_guid: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        range: Option<SpellRangeEntry>,
+    ) -> DbCreatureSpellTargetValidation {
+        let Some(caster) = self.creatures.get(&caster_guid.raw()) else {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::MissingCaster,
+            };
+        };
+        if !caster.is_alive() || caster.is_evading_home() {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::CasterNotAlive,
+            };
+        }
+        let Some(target_position) = self.db_creature_spell_target_position(target_guid) else {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::MissingTarget,
+            };
+        };
+        if !self.db_creature_spell_cast_target_alive(target_guid) {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::TargetNotAlive,
+            };
+        }
+        if caster_guid != target_guid {
+            let navigation_check =
+                db_creature_navigation_check(navigation, caster.current_position, target_position);
+            if !navigation_check.is_clear() {
+                return DbCreatureSpellTargetValidation {
+                    check: DbCreatureSpellTargetCheck::NavigationBlocked(navigation_check),
+                };
+            }
+        }
+        if let Some(range) = range {
+            let dx = caster.current_position.x - target_position.x;
+            let dy = caster.current_position.y - target_position.y;
+            let dz = caster.current_position.z - target_position.z;
+            let distance_squared = dx * dx + dy * dy + dz * dz;
+            let range_mod = caster.combat_reach() + self.db_creature_spell_target_combat_reach(target_guid);
+            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0 {
+                range.min_range + range_mod
+            } else {
+                range.min_range
+            };
+            let max_range = if range.max_range > 0.0 {
+                range.max_range + range_mod
+            } else {
+                range.max_range
+            };
+            if max_range > 0.0 && distance_squared > max_range * max_range {
+                return DbCreatureSpellTargetValidation {
+                    check: DbCreatureSpellTargetCheck::OutOfRange,
+                };
+            }
+            if min_range > 0.0 && distance_squared < min_range * min_range {
+                return DbCreatureSpellTargetValidation {
+                    check: DbCreatureSpellTargetCheck::OutOfRange,
+                };
+            }
+        }
+        DbCreatureSpellTargetValidation {
+            check: DbCreatureSpellTargetCheck::Clear,
+        }
+    }
+
     fn active_db_creature_combat_snapshot(
         &mut self,
         attacker: ObjectGuid,
@@ -362,9 +448,7 @@ impl MapRuntime {
                 }
             })
             .filter(|(spell, _)| {
-                cooldowns_until
-                    .get(&spell.spell_id)
-                    .is_none_or(|cooldown| now >= *cooldown)
+                db_creature_spell_cooldown_ready(&cooldowns_until, spell, now)
             })
             .map(|(spell, target)| (spell.clone(), target))
             .inspect(|(spell, target)| {
@@ -382,22 +466,38 @@ impl MapRuntime {
         Some(ReadyDbCreatureSpellCast { spell, target })
     }
 
-    fn set_db_creature_spell_repeat_cooldown(
+    fn apply_db_creature_spell_cooldowns(
         &mut self,
         attacker: ObjectGuid,
-        spell_id: u32,
-        repeat_min: u32,
-        repeat_max: u32,
+        spell: &wow_db::CreatureSpellListQuery,
+        template: &wow_db::SpellTemplateQuery,
         now: Instant,
     ) {
-        let cooldown_millis = random_millis_between(repeat_min, repeat_max);
-        if cooldown_millis == 0 {
+        let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
             return;
+        };
+        let repeat_cooldown_millis = random_millis_between(spell.repeat_min, spell.repeat_max);
+        if repeat_cooldown_millis > 0 {
+            let key = db_creature_spell_list_repeat_cooldown_key(spell, template.category);
+            db_creature_insert_spell_cooldown(
+                creature,
+                key,
+                now + Duration::from_millis(repeat_cooldown_millis as u64),
+            );
         }
-        if let Some(creature) = self.creatures.get_mut(&attacker.raw()) {
-            creature
-                .spell_cooldowns_until
-                .insert(spell_id, now + Duration::from_millis(cooldown_millis as u64));
+        if template.recovery_time > 0 {
+            db_creature_insert_spell_cooldown(
+                creature,
+                template.id,
+                now + Duration::from_millis(template.recovery_time as u64),
+            );
+        }
+        if template.category != 0 && template.category_recovery_time > 0 {
+            db_creature_insert_spell_cooldown(
+                creature,
+                db_creature_spell_category_cooldown_key(template.category),
+                now + Duration::from_millis(template.category_recovery_time as u64),
+            );
         }
     }
 
@@ -480,11 +580,27 @@ impl MapRuntime {
         ))
     }
 
+    #[allow(dead_code)]
     fn complete_ready_db_creature_spell_cast(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
         now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
+        self.complete_ready_db_creature_spell_cast_with_navigation(
+            attacker,
+            victim,
+            now,
+            &DbCreatureNavigationGuardrail::default(),
+        )
+    }
+
+    fn complete_ready_db_creature_spell_cast_with_navigation(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        now: Instant,
+        navigation: &DbCreatureNavigationGuardrail,
     ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
         let Some(cast) = self.active_creature_spell_casts.get(&attacker.raw()).cloned() else {
             return Ok(None);
@@ -499,15 +615,27 @@ impl MapRuntime {
         {
             return Ok(None);
         }
+        let target_validation =
+            self.validate_db_creature_spell_against_target(attacker, cast.target, navigation, cast.range);
+        if target_validation.check != DbCreatureSpellTargetCheck::Clear {
+            self.active_creature_spell_casts.remove(&attacker.raw());
+            let failure = db_creature_spell_failure_from_target_check(target_validation.check);
+            return Ok(Some(DbCreatureCompletedSpellCastEvent {
+                spell_go_body: Vec::new(),
+                effect: DbCreatureCompletedSpellEffect::Interrupted(
+                    self.db_creature_interrupted_spell_cast_event(attacker, cast.spell_id, failure)?,
+                ),
+                aura_event: None,
+            }));
+        }
         self.active_creature_spell_casts.remove(&attacker.raw());
         let targets = SpellCastTargets {
             target_mask: SPELL_CAST_TARGET_UNIT,
             unit_target: Some(cast.target),
             gameobject_target: None,
         };
-        let spell_go_body = build_spell_go_body(attacker, cast.spell_id, &targets)?;
         let pending_aura = cast.aura.clone();
-        let effect = match cast.effect {
+        let (effect, spell_go_body) = match cast.effect {
             ActiveDbCreatureSpellEffect::Damage {
                 amount,
                 school,
@@ -532,7 +660,15 @@ impl MapRuntime {
                 else {
                     return Ok(None);
                 };
-                DbCreatureCompletedSpellEffect::PlayerDamage(damage)
+                let spell_go_body = if let Some(miss_info) = damage.outcome.miss_info {
+                    build_spell_go_body_with_miss(attacker, cast.spell_id, &targets, miss_info)?
+                } else {
+                    build_spell_go_body(attacker, cast.spell_id, &targets)?
+                };
+                (
+                    DbCreatureCompletedSpellEffect::PlayerDamage(damage),
+                    spell_go_body,
+                )
             }
             ActiveDbCreatureSpellEffect::Heal { amount } => {
                 let Some(heal) =
@@ -540,7 +676,10 @@ impl MapRuntime {
                 else {
                     return Ok(None);
                 };
-                DbCreatureCompletedSpellEffect::CreatureHeal(heal)
+                (
+                    DbCreatureCompletedSpellEffect::CreatureHeal(heal),
+                    build_spell_go_body(attacker, cast.spell_id, &targets)?,
+                )
             }
         };
         let aura_event = match (pending_aura, &effect) {
@@ -560,6 +699,49 @@ impl MapRuntime {
             effect,
             aura_event,
         }))
+    }
+
+    fn db_creature_interrupted_spell_cast_event(
+        &self,
+        caster: ObjectGuid,
+        spell_id: u32,
+        failure: u8,
+    ) -> anyhow::Result<DbCreatureInterruptedSpellCastEvent> {
+        let Some(position) = self
+            .creatures
+            .get(&caster.raw())
+            .map(|creature| creature.current_position)
+        else {
+            return Ok(DbCreatureInterruptedSpellCastEvent {
+                failure,
+                observer_packets: Vec::new(),
+            });
+        };
+        let failure_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILURE,
+            body: build_spell_failure_body(caster, spell_id, failure)?,
+        };
+        let failed_other_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILED_OTHER,
+            body: build_spell_failed_other_body(caster, spell_id),
+        };
+        let observer_packets = self
+            .nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+            .into_iter()
+            .filter_map(|player_guid| {
+                let player = self.players.get(&player_guid)?;
+                Some([
+                    player.packet_to_client(failure_packet.clone()),
+                    player.packet_to_client(failed_other_packet.clone()),
+                ])
+            })
+            .flatten()
+            .flatten()
+            .collect();
+        Ok(DbCreatureInterruptedSpellCastEvent {
+            failure,
+            observer_packets,
+        })
     }
 
     fn active_db_creature_spell_cast_due_at(&self, attacker: ObjectGuid) -> Option<Instant> {
@@ -1030,6 +1212,25 @@ impl MapRuntime {
             .is_some_and(|creature| creature.is_alive() && !creature.is_evading_home())
     }
 
+    fn db_creature_spell_target_position(&self, target: ObjectGuid) -> Option<WorldPosition> {
+        if target.is_player() {
+            return self.players.get(&target.counter()).map(|player| player.position);
+        }
+        self.creatures
+            .get(&target.raw())
+            .map(|creature| creature.current_position)
+    }
+
+    fn db_creature_spell_target_combat_reach(&self, target: ObjectGuid) -> f32 {
+        if target.is_player() {
+            return PLAYER_COMBAT_REACH_YARDS;
+        }
+        self.creatures
+            .get(&target.raw())
+            .map(DbCreatureRuntime::combat_reach)
+            .unwrap_or(0.0)
+    }
+
     fn defer_ready_db_creature_swing_retry(
         &mut self,
         attacker: ObjectGuid,
@@ -1274,6 +1475,72 @@ fn initialize_db_creature_spell_cooldowns(
             .spell_cooldowns_until
             .insert(spell.spell_id, now + Duration::from_millis(cooldown_millis as u64));
     }
+}
+
+fn db_creature_spell_cooldown_ready(
+    cooldowns_until: &std::collections::HashMap<u32, Instant>,
+    spell: &wow_db::CreatureSpellListQuery,
+    now: Instant,
+) -> bool {
+    cooldowns_until
+        .get(&spell.spell_id)
+        .is_none_or(|cooldown| now >= *cooldown)
+        && (spell.category == 0
+            || cooldowns_until
+                .get(&db_creature_spell_category_cooldown_key(spell.category))
+                .is_none_or(|cooldown| now >= *cooldown))
+}
+
+fn db_creature_spell_list_repeat_cooldown_key(
+    spell: &wow_db::CreatureSpellListQuery,
+    template_category: u32,
+) -> u32 {
+    if (spell.flags & CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN) != 0 {
+        let category = if spell.category != 0 {
+            spell.category
+        } else {
+            template_category
+        };
+        if category != 0 {
+            return db_creature_spell_category_cooldown_key(category);
+        }
+    }
+    spell.spell_id
+}
+
+fn db_creature_spell_category_cooldown_key(category: u32) -> u32 {
+    CREATURE_SPELL_CATEGORY_COOLDOWN_KEY | (category & !CREATURE_SPELL_CATEGORY_COOLDOWN_KEY)
+}
+
+fn db_creature_spell_failure_from_target_check(check: DbCreatureSpellTargetCheck) -> u8 {
+    match check {
+        DbCreatureSpellTargetCheck::Clear => SPELL_FAILED_INTERRUPTED,
+        DbCreatureSpellTargetCheck::CasterNotAlive => SPELL_FAILED_CASTER_DEAD,
+        DbCreatureSpellTargetCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
+            SPELL_FAILED_LINE_OF_SIGHT
+        }
+        DbCreatureSpellTargetCheck::MissingCaster
+        | DbCreatureSpellTargetCheck::MissingTarget
+        | DbCreatureSpellTargetCheck::TargetNotAlive
+        | DbCreatureSpellTargetCheck::NavigationBlocked(_)
+        | DbCreatureSpellTargetCheck::OutOfRange => SPELL_FAILED_OUT_OF_RANGE,
+    }
+}
+
+fn db_creature_insert_spell_cooldown(
+    creature: &mut DbCreatureRuntime,
+    key: u32,
+    cooldown_until: Instant,
+) {
+    creature
+        .spell_cooldowns_until
+        .entry(key)
+        .and_modify(|existing| {
+            if cooldown_until > *existing {
+                *existing = cooldown_until;
+            }
+        })
+        .or_insert(cooldown_until);
 }
 
 fn refresh_db_creature_spell_list_availability(

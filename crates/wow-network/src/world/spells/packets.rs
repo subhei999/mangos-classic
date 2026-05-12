@@ -28,7 +28,30 @@ fn build_spell_go_body(
     spell_id: u32,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Vec<u8>> {
-    build_spell_go_body_with_source(caster, caster, spell_id, CAST_FLAG_SPELL_GO, targets)
+    build_spell_go_body_with_source(
+        caster,
+        caster,
+        spell_id,
+        CAST_FLAG_SPELL_GO,
+        targets,
+        None,
+    )
+}
+
+fn build_spell_go_body_with_miss(
+    caster: ObjectGuid,
+    spell_id: u32,
+    targets: &SpellCastTargets,
+    miss_info: u8,
+) -> anyhow::Result<Vec<u8>> {
+    build_spell_go_body_with_source(
+        caster,
+        caster,
+        spell_id,
+        CAST_FLAG_SPELL_GO,
+        targets,
+        Some(miss_info),
+    )
 }
 
 fn build_spell_go_body_with_source(
@@ -37,6 +60,7 @@ fn build_spell_go_body_with_source(
     spell_id: u32,
     cast_flags: u16,
     targets: &SpellCastTargets,
+    miss_info: Option<u8>,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(40);
     PackedGuid::write(&mut body, source)?;
@@ -44,13 +68,25 @@ fn build_spell_go_body_with_source(
     body.extend_from_slice(&spell_id.to_le_bytes());
     body.extend_from_slice(&cast_flags.to_le_bytes());
 
-    if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
-        body.push(1);
-        body.extend_from_slice(&target.raw().to_le_bytes());
+    if let Some(miss_info) = miss_info {
+        if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
+            body.push(0);
+            body.push(1);
+            body.extend_from_slice(&target.raw().to_le_bytes());
+            body.push(miss_info);
+        } else {
+            body.push(0);
+            body.push(0);
+        }
     } else {
+        if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
+            body.push(1);
+            body.extend_from_slice(&target.raw().to_le_bytes());
+        } else {
+            body.push(0);
+        }
         body.push(0);
     }
-    body.push(0); // miss count
     targets.write(&mut body)?;
     Ok(body)
 }

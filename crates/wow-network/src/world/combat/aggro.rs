@@ -534,11 +534,20 @@ async fn try_start_db_creature_spell_cast(
     {
         return Ok(false);
     }
-    if !db_creature_spell_target_in_range(
-        creature,
-        session.active_character.as_ref(),
-        shared_world.maps.spell_range(template.range_index),
-    ) {
+    let spell_range = shared_world.maps.spell_range(template.range_index);
+    if shared_world
+        .maps
+        .validate_db_creature_spell_against_target(
+            map_id,
+            attacker,
+            ready.target,
+            &session.db_creature_navigation,
+            spell_range,
+        )
+        .await
+        .check
+        != DbCreatureSpellTargetCheck::Clear
+    {
         return Ok(false);
     }
     let target = ready.target;
@@ -596,6 +605,7 @@ async fn try_start_db_creature_spell_cast(
         spell_id: template.id,
         effect,
         aura,
+        range: spell_range,
         mana_cost,
         cast_time_millis,
         due_at: now + Duration::from_millis(cast_time_millis as u64),
@@ -609,14 +619,7 @@ async fn try_start_db_creature_spell_cast(
     };
     shared_world
         .maps
-        .set_db_creature_spell_repeat_cooldown(
-            map_id,
-            attacker,
-            template.id,
-            ready.spell.repeat_min,
-            ready.spell.repeat_max,
-            now,
-        )
+        .apply_db_creature_spell_cooldowns(map_id, attacker, &ready.spell, &template, now)
         .await;
     send_or_dispatch_creature_spell_packets(
         stream,
@@ -727,41 +730,6 @@ async fn collect_db_creature_spell_unit_condition(
     Ok(())
 }
 
-fn db_creature_spell_target_in_range(
-    creature: &DbCreatureRuntime,
-    target: Option<&ActiveCharacter>,
-    range: Option<SpellRangeEntry>,
-) -> bool {
-    let Some(target) = target else {
-        return false;
-    };
-    let Some(range) = range else {
-        return true;
-    };
-    let dx = creature.current_position.x - target.position.x;
-    let dy = creature.current_position.y - target.position.y;
-    let dz = creature.current_position.z - target.position.z;
-    let distance_squared = dx * dx + dy * dy + dz * dz;
-    let range_mod = creature.combat_reach() + PLAYER_COMBAT_REACH_YARDS;
-    let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0 {
-        range.min_range + range_mod
-    } else {
-        range.min_range
-    };
-    let max_range = if range.max_range > 0.0 {
-        range.max_range + range_mod
-    } else {
-        range.max_range
-    };
-    if max_range > 0.0 && distance_squared > max_range * max_range {
-        return false;
-    }
-    if min_range > 0.0 && distance_squared < min_range * min_range {
-        return false;
-    }
-    true
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn complete_ready_db_creature_spell_cast(
     stream: &mut WorldPacketSink,
@@ -775,34 +743,52 @@ async fn complete_ready_db_creature_spell_cast(
 ) -> anyhow::Result<bool> {
     let Some(event) = shared_world
         .maps
-        .complete_ready_db_creature_spell_cast(map_id, attacker, victim, now)
+        .complete_ready_db_creature_spell_cast(
+            map_id,
+            attacker,
+            victim,
+            now,
+            &session.db_creature_navigation,
+        )
         .await?
     else {
         return Ok(false);
     };
-    let spell_go_body = event.spell_go_body;
-    send_packet(
-        stream,
-        SMSG_SPELL_GO,
-        &spell_go_body,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    broadcast_db_creature_packet(
-        CreatureCombatBroadcast {
-            shared_world,
-            map_id,
-            player: victim,
-        },
-        session,
-        attacker,
-        SMSG_SPELL_GO,
-        spell_go_body,
-    )
-    .await;
     let mut aura_event = event.aura_event;
     match event.effect {
+        DbCreatureCompletedSpellEffect::Interrupted(interrupted) => {
+            send_or_dispatch_creature_spell_packets(
+                stream,
+                shared_world,
+                session,
+                interrupted.observer_packets,
+                None,
+                header_crypto,
+            )
+            .await?;
+            return Ok(true);
+        }
         DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
+            let spell_go_body = event.spell_go_body;
+            send_packet(
+                stream,
+                SMSG_SPELL_GO,
+                &spell_go_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            broadcast_db_creature_packet(
+                CreatureCombatBroadcast {
+                    shared_world,
+                    map_id,
+                    player: victim,
+                },
+                session,
+                attacker,
+                SMSG_SPELL_GO,
+                spell_go_body,
+            )
+            .await;
             for packet in damage.direct_packets {
                 send_packet(
                     stream,
@@ -855,6 +841,26 @@ async fn complete_ready_db_creature_spell_cast(
             }
         }
         DbCreatureCompletedSpellEffect::CreatureHeal(heal) => {
+            let spell_go_body = event.spell_go_body;
+            send_packet(
+                stream,
+                SMSG_SPELL_GO,
+                &spell_go_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            broadcast_db_creature_packet(
+                CreatureCombatBroadcast {
+                    shared_world,
+                    map_id,
+                    player: victim,
+                },
+                session,
+                attacker,
+                SMSG_SPELL_GO,
+                spell_go_body,
+            )
+            .await;
             send_packet(
                 stream,
                 SMSG_SPELLHEALLOG,

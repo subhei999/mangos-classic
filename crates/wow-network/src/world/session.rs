@@ -268,6 +268,7 @@ struct PeriodicDamageAura {
     damage_class: u32,
     attributes_ex2: u32,
     attributes_ex3: u32,
+    caster_snapshot: SpellCombatUnitSnapshot,
     amount: u32,
     tick_millis: u32,
     next_tick_at: Instant,

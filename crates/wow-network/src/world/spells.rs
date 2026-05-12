@@ -1936,7 +1936,7 @@ fn build_active_aura(
         duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
         expires_at: (duration_millis > 0)
             .then_some(now + Duration::from_millis(duration_millis as u64)),
-        periodic_damage: spell_periodic_damage_aura(&spell_info, now),
+        periodic_damage: spell_periodic_damage_aura(&spell_info, level, now),
         periodic_regen: spell_periodic_regen_aura(&spell_info, now),
         stat_modifiers: spell_aura_stat_modifiers(&spell_info),
         proc_triggers: spell_aura_proc_triggers(&spell_info),
@@ -1954,7 +1954,11 @@ fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
         })
 }
 
-fn spell_periodic_damage_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option<PeriodicDamageAura> {
+fn spell_periodic_damage_aura(
+    spell_info: &SpellInfo<'_>,
+    caster_level: u8,
+    now: Instant,
+) -> Option<PeriodicDamageAura> {
     spell_info
         .effects
         .iter()
@@ -1972,11 +1976,21 @@ fn spell_periodic_damage_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Optio
                 damage_class: spell_info.template.dmg_class,
                 attributes_ex2: spell_info.template.attributes_ex2,
                 attributes_ex3: spell_info.template.attributes_ex3,
+                caster_snapshot: spell_periodic_damage_fallback_caster_snapshot(caster_level),
                 amount: damage,
                 tick_millis: effect.amplitude,
                 next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
             })
         })
+}
+
+fn spell_periodic_damage_fallback_caster_snapshot(caster_level: u8) -> SpellCombatUnitSnapshot {
+    SpellCombatUnitSnapshot {
+        level: caster_level.max(1),
+        class: 0,
+        intellect: 0,
+        resistances: [0; MAX_SPELL_SCHOOL],
+    }
 }
 
 fn spell_periodic_regen_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option<PeriodicRegenAura> {

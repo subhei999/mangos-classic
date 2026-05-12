@@ -375,6 +375,9 @@ fn test_creature_spell_list_row(
         initial_max: initial_millis,
         repeat_min: repeat_millis,
         repeat_max: repeat_millis,
+        recovery_time: 0,
+        category: 0,
+        category_recovery_time: 0,
         target_type: CREATURE_SPELL_LIST_TARGETING_HARDCODED,
         target_param1: 0,
         target_param2: 0,
@@ -10838,19 +10841,133 @@ fn map_runtime_db_creature_spell_list_schedules_direct_damage_cast() {
             .contains_key(&999_012),
         "selection alone should not commit the repeat cooldown"
     );
-    map.set_db_creature_spell_repeat_cooldown(
-        creature_guid,
-        ready.spell.spell_id,
-        ready.spell.repeat_min,
-        ready.spell.repeat_max,
-        now,
-    );
+    let template = test_spell_template(ready.spell.spell_id);
+    map.apply_db_creature_spell_cooldowns(creature_guid, &ready.spell, &template, now);
     assert!(map
         .creatures
         .get(&creature_guid.raw())
         .expect("creature")
         .spell_cooldowns_until
         .contains_key(&999_012));
+}
+
+#[test]
+fn map_runtime_db_creature_spell_initial_cooldown_blocks_first_ready_tick() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 193;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut spell = test_creature_spell_list_row(42, 1, 999_020, 5_000, 0);
+    spell.flags = 0;
+    let spell_list = vec![spell];
+
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now,
+        )
+        .is_none());
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .is_none());
+
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(5_000),
+        )
+        .expect("spell should become ready after its InitialMin/InitialMax delay");
+    assert_eq!(ready.spell.spell_id, 999_020);
+}
+
+#[test]
+fn map_runtime_db_creature_spell_category_cooldown_blocks_same_category_spell() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 194;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let mut first = test_creature_spell_list_row(42, 1, 999_021, 0, 5_000);
+    first.flags = CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN;
+    first.category = 77;
+    first.recovery_time = 1_500;
+    first.category_recovery_time = 4_000;
+    let mut second = test_creature_spell_list_row(42, 2, 999_022, 0, 0);
+    second.flags = 0;
+    second.category = 77;
+    let mut template = test_spell_template(first.spell_id);
+    template.category = 77;
+    template.recovery_time = 1_500;
+    template.category_recovery_time = 4_000;
+    let spell_list = vec![first.clone(), second.clone()];
+
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now,
+        )
+        .is_none());
+    map.apply_db_creature_spell_cooldowns(creature_guid, &first, &template, now);
+    let creature = map.creatures.get(&creature_guid.raw()).expect("creature");
+    assert!(creature.spell_cooldowns_until.contains_key(&999_021));
+    assert!(creature
+        .spell_cooldowns_until
+        .contains_key(&db_creature_spell_category_cooldown_key(77)));
+
+    assert!(map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(DB_CREATURE_SPELL_LIST_UPDATE_MILLIS),
+        )
+        .is_none());
+
+    let ready = map
+        .ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            &spell_list,
+            &DbCreatureSpellConditionCache::default(),
+            now + Duration::from_millis(5_000),
+        )
+        .expect("same-category spells should become eligible after category cooldown");
+    assert_eq!(ready.spell.spell_id, 999_021);
 }
 
 #[test]
@@ -11104,6 +11221,7 @@ fn map_runtime_db_creature_spell_cast_can_heal_creature_target() {
         spell_id: 999_016,
         effect: ActiveDbCreatureSpellEffect::Heal { amount: 15 },
         aura: None,
+        range: None,
         mana_cost: 0,
         cast_time_millis: 0,
         due_at: now,
@@ -11164,6 +11282,7 @@ fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
                 attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
             },
             aura: None,
+            range: None,
             mana_cost: 0,
             cast_time_millis: 1_500,
             due_at: now + Duration::from_millis(1_500),
@@ -11194,6 +11313,190 @@ fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
     assert_eq!(damage.damage, 6);
     assert_eq!(damage.victim_health, 14);
     assert!(damage.spell_non_melee_log_body.as_ref().is_some());
+    assert!(map
+        .active_db_creature_spell_cast_due_at(creature_guid)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_db_creature_spell_target_validation_checks_selected_target_range_and_los() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 192;
+    spawn.position_x = 40.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let range = SpellRangeEntry {
+        min_range: 0.0,
+        max_range: 30.0,
+        flags: 0,
+    };
+
+    assert_eq!(
+        map.validate_db_creature_spell_against_target(
+            creature_guid,
+            victim,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(range),
+        )
+        .check,
+        DbCreatureSpellTargetCheck::OutOfRange
+    );
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .current_position
+        .x = 10.0;
+    let blocked_los = DbCreatureNavigationGuardrail {
+        line_of_sight_clear: false,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+    assert_eq!(
+        map.validate_db_creature_spell_against_target(
+            creature_guid,
+            victim,
+            &blocked_los,
+            Some(range),
+        )
+        .check,
+        DbCreatureSpellTargetCheck::NavigationBlocked(
+            DbCreatureNavigationResult::LineOfSightBlocked
+        )
+    );
+
+    assert_eq!(
+        map.validate_db_creature_spell_against_target(
+            creature_guid,
+            victim,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(range),
+        )
+        .check,
+        DbCreatureSpellTargetCheck::Clear
+    );
+}
+
+#[test]
+fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 195;
+    spawn.position_x = 10.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let range = SpellRangeEntry {
+        min_range: 0.0,
+        max_range: 30.0,
+        flags: 0,
+    };
+
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: 999_012,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 6,
+            school: 1,
+            dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+            attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+            attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+        },
+        aura: None,
+        range: Some(range),
+        mana_cost: 0,
+        cast_time_millis: 1_500,
+        due_at: now + Duration::from_millis(1_500),
+    })
+    .unwrap()
+    .expect("cast should start");
+    map.players.get_mut(&1).expect("player").position.x = 80.0;
+
+    let interrupted = map
+        .complete_ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(1_500),
+        )
+        .unwrap()
+        .expect("out-of-range completion should send an interrupted cast cleanup");
+    let DbCreatureCompletedSpellEffect::Interrupted(interrupted) = interrupted.effect else {
+        panic!("out-of-range completion should be interrupted");
+    };
+    assert_eq!(interrupted.failure, SPELL_FAILED_OUT_OF_RANGE);
+    let opcodes = interrupted
+        .observer_packets
+        .iter()
+        .map(|(_, packet)| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&SMSG_SPELL_FAILURE));
+    assert!(opcodes.contains(&SMSG_SPELL_FAILED_OTHER));
+    assert!(!opcodes.contains(&SMSG_SPELL_GO));
+    assert_eq!(map.players.get(&1).expect("player").health, 20);
+    assert!(map
+        .active_db_creature_spell_cast_due_at(creature_guid)
+        .is_none());
+
+    map.players.get_mut(&1).expect("player").position = player_position;
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: 999_012,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 6,
+            school: 1,
+            dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+            attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
+            attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+        },
+        aura: None,
+        range: Some(range),
+        mana_cost: 0,
+        cast_time_millis: 1_500,
+        due_at: now + Duration::from_millis(3_000),
+    })
+    .unwrap()
+    .expect("second cast should start");
+    let blocked_los = DbCreatureNavigationGuardrail {
+        line_of_sight_clear: false,
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    let interrupted = map
+        .complete_ready_db_creature_spell_cast_with_navigation(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(3_000),
+            &blocked_los,
+        )
+        .unwrap()
+        .expect("LOS completion should send an interrupted cast cleanup");
+    let DbCreatureCompletedSpellEffect::Interrupted(interrupted) = interrupted.effect else {
+        panic!("LOS completion should be interrupted");
+    };
+    assert_eq!(interrupted.failure, SPELL_FAILED_LINE_OF_SIGHT);
+    let opcodes = interrupted
+        .observer_packets
+        .iter()
+        .map(|(_, packet)| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&SMSG_SPELL_FAILURE));
+    assert!(opcodes.contains(&SMSG_SPELL_FAILED_OTHER));
+    assert!(!opcodes.contains(&SMSG_SPELL_GO));
+    assert_eq!(map.players.get(&1).expect("player").health, 20);
     assert!(map
         .active_db_creature_spell_cast_due_at(creature_guid)
         .is_none());
@@ -11300,6 +11603,7 @@ fn map_runtime_db_creature_spell_start_stops_chase_spends_mana_and_exposes_cast_
                 attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
             },
             aura: None,
+            range: None,
             mana_cost: 25,
             cast_time_millis: 2_000,
             due_at: now + Duration::from_millis(2_000),
@@ -11385,6 +11689,7 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
             attributes_ex3: immolate.attributes_ex3,
         },
         aura: Some(aura),
+        range: None,
         mana_cost: immolate.mana_cost,
         cast_time_millis: 0,
         due_at: now,
@@ -11417,6 +11722,86 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
     assert!(tick_packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_dot_keeps_ticking_after_caster_runtime_is_missing() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    {
+        let player = map.players.get_mut(&1).unwrap();
+        player.health = 40;
+        player.max_health = 40;
+    }
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 191;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        6,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: immolate.attributes_ex3,
+        },
+        aura: Some(aura),
+        range: None,
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("cast should start");
+    map.complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("instant cast should complete");
+    assert_eq!(map.players.get(&1).unwrap().health, 32);
+
+    map.creatures.remove(&creature_guid.raw());
+
+    for (tick_index, expected_health) in [(1, 28), (2, 24), (3, 20)] {
+        let tick_at = now + Duration::from_millis(3_000 * tick_index);
+        let tick_packets = map.advance_player_aura_expirations(tick_at).unwrap();
+        let player = map.players.get(&1).unwrap();
+        assert_eq!(player.health, expected_health);
+        assert!(
+            tick_packets
+                .iter()
+                .any(|(_, packet)| packet.opcode == SMSG_PERIODICAURALOG),
+            "missing periodic aura log for tick {tick_index}"
+        );
+    }
+    assert!(
+        map.players.get(&1).unwrap().active_auras.is_empty(),
+        "third Immolate tick at aura duration should also expire the debuff"
+    );
 }
 
 #[test]
@@ -11467,6 +11852,7 @@ fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
             attributes_ex3: 0,
         },
         aura: Some(aura),
+        range: None,
         mana_cost: immolate.mana_cost,
         cast_time_millis: 0,
         due_at: now,
@@ -11479,6 +11865,48 @@ fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
         .unwrap()
         .expect("fully resisted casts should still complete and emit SPELL_GO");
     assert!(!completed.spell_go_body.is_empty());
+    let mut cursor = PackedGuid::packed_size(creature_guid) * 2 + 4;
+    assert_eq!(
+        u16::from_le_bytes(
+            completed.spell_go_body[cursor..cursor + 2]
+                .try_into()
+                .unwrap()
+        ),
+        CAST_FLAG_SPELL_GO
+    );
+    cursor += 2;
+    assert_eq!(
+        completed.spell_go_body[cursor], 0,
+        "fully resisted creature spells must not list the target as a hit in SMSG_SPELL_GO"
+    );
+    cursor += 1;
+    assert_eq!(completed.spell_go_body[cursor], 1);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(
+            completed.spell_go_body[cursor..cursor + 8]
+                .try_into()
+                .unwrap()
+        ),
+        victim.raw()
+    );
+    cursor += 8;
+    assert_eq!(completed.spell_go_body[cursor], SPELL_MISS_RESIST);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(
+            completed.spell_go_body[cursor..cursor + 2]
+                .try_into()
+                .unwrap()
+        ),
+        SPELL_CAST_TARGET_UNIT
+    );
+    cursor += 2;
+    assert_eq!(
+        read_packed_guid(&completed.spell_go_body, &mut cursor).unwrap(),
+        victim
+    );
+    assert_eq!(cursor, completed.spell_go_body.len());
     assert!(completed.aura_event.is_none());
     let DbCreatureCompletedSpellEffect::PlayerDamage(damage) = completed.effect else {
         panic!("Immolate should complete as player spell damage");
@@ -11536,6 +11964,7 @@ fn map_runtime_creature_dot_death_presents_release_and_clears_combat() {
             attributes_ex3: immolate.attributes_ex3,
         },
         aura: Some(aura),
+        range: None,
         mana_cost: immolate.mana_cost,
         cast_time_millis: 0,
         due_at: now,
@@ -11649,6 +12078,7 @@ fn map_runtime_db_creature_lethal_immolate_does_not_apply_dot() {
             attributes_ex3: immolate.attributes_ex3,
         },
         aura: Some(aura),
+        range: None,
         mana_cost: immolate.mana_cost,
         cast_time_millis: 0,
         due_at: now,
@@ -11716,6 +12146,7 @@ fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
             attributes_ex3: immolate.attributes_ex3,
         },
         aura: Some(aura),
+        range: None,
         mana_cost: immolate.mana_cost,
         cast_time_millis: 0,
         due_at: now,
@@ -11796,6 +12227,7 @@ fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
             attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
         },
         aura: None,
+        range: None,
         mana_cost: 0,
         cast_time_millis: 1_500,
         due_at: now + Duration::from_millis(1_500),
@@ -11804,14 +12236,26 @@ fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
     .expect("cast should start");
     map.players.get_mut(&1).expect("player").health = 0;
 
-    assert!(map
+    let interrupted = map
         .complete_ready_db_creature_spell_cast(
             creature_guid,
             victim,
             now + Duration::from_millis(1_500),
         )
         .unwrap()
-        .is_none());
+        .expect("dead target completion should send an interrupted cast cleanup");
+    let DbCreatureCompletedSpellEffect::Interrupted(interrupted) = interrupted.effect else {
+        panic!("dead target completion should be interrupted");
+    };
+    assert_eq!(interrupted.failure, SPELL_FAILED_OUT_OF_RANGE);
+    assert!(interrupted
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_SPELL_FAILURE));
+    assert!(interrupted
+        .observer_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_SPELL_FAILED_OTHER));
     assert!(map
         .active_db_creature_spell_cast_due_at(creature_guid)
         .is_none());
@@ -13120,6 +13564,12 @@ fn creature_dot_death_clears_auras_before_respawn() {
             damage_class: 2,
             attributes_ex2: 0,
             attributes_ex3: 0,
+            caster_snapshot: SpellCombatUnitSnapshot {
+                level: 1,
+                class: 0,
+                intellect: 0,
+                resistances: [0; MAX_SPELL_SCHOOL],
+            },
             amount: 7,
             tick_millis: 3_000,
             next_tick_at: now,
@@ -19022,6 +19472,12 @@ fn periodic_damage_tick_uses_aura_amount_without_armor_reduction() {
         damage_class: 2,
         attributes_ex2: 0,
         attributes_ex3: 0,
+        caster_snapshot: SpellCombatUnitSnapshot {
+            level: 1,
+            class: 0,
+            intellect: 0,
+            resistances: [0; MAX_SPELL_SCHOOL],
+        },
         amount: 5,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -19051,6 +19507,12 @@ fn periodic_damage_tick_uses_shared_spell_outcome_for_partial_resist() {
         damage_class: SPELL_DAMAGE_CLASS_MAGIC,
         attributes_ex2: SPELL_ATTR_EX2_CANT_CRIT,
         attributes_ex3: 0,
+        caster_snapshot: SpellCombatUnitSnapshot {
+            level: 10,
+            class: 8,
+            intellect: 100,
+            resistances: [0; MAX_SPELL_SCHOOL],
+        },
         amount: 100,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -21864,6 +22326,12 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
             damage_class: 2,
             attributes_ex2: 0,
             attributes_ex3: 0,
+            caster_snapshot: SpellCombatUnitSnapshot {
+                level: 4,
+                class: 0,
+                intellect: 0,
+                resistances: [0; MAX_SPELL_SCHOOL],
+            },
             amount: 5,
             tick_millis: 3_000,
             next_tick_at: aura.periodic_damage.unwrap().next_tick_at,
@@ -25895,6 +26363,38 @@ fn spell_packets_match_cmangos_success_shapes() {
     cursor += 2;
     assert_eq!(read_packed_guid(&go, &mut cursor).unwrap(), target);
     assert_eq!(cursor, go.len());
+
+    let resisted = build_spell_go_body_with_miss(
+        caster,
+        WARRIOR_HEROIC_STRIKE_RANK_1,
+        &targets,
+        SPELL_MISS_RESIST,
+    )
+    .unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2 + 4;
+    assert_eq!(
+        u16::from_le_bytes(resisted[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_GO
+    );
+    cursor += 2;
+    assert_eq!(resisted[cursor], 0);
+    cursor += 1;
+    assert_eq!(resisted[cursor], 1);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(resisted[cursor..cursor + 8].try_into().unwrap()),
+        target.raw()
+    );
+    cursor += 8;
+    assert_eq!(resisted[cursor], SPELL_MISS_RESIST);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(resisted[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_UNIT
+    );
+    cursor += 2;
+    assert_eq!(read_packed_guid(&resisted, &mut cursor).unwrap(), target);
+    assert_eq!(cursor, resisted.len());
 }
 
 #[test]
@@ -25931,6 +26431,7 @@ fn item_spell_packets_use_item_source_and_item_cast_flag() {
         433,
         CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER,
         &targets,
+        None,
     )
     .unwrap();
     let mut cursor = 0;

@@ -142,10 +142,8 @@ impl MapRuntime {
                 while periodic.next_tick_at <= now {
                     periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
                 }
-                let Some(caster_snapshot) = periodic_spell_caster_snapshot(&self.players, aura.caster)
-                else {
-                    continue;
-                };
+                let caster_snapshot = periodic_spell_caster_snapshot(&self.players, aura.caster)
+                    .unwrap_or(periodic.caster_snapshot);
                 let tick = calculate_periodic_damage_tick(
                     periodic,
                     caster_snapshot,

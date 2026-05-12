@@ -309,6 +309,7 @@ struct ActiveDbCreatureSpellCast {
     spell_id: u32,
     effect: ActiveDbCreatureSpellEffect,
     aura: Option<ActiveAura>,
+    range: Option<SpellRangeEntry>,
     mana_cost: u32,
     cast_time_millis: u32,
     due_at: Instant,
@@ -441,6 +442,14 @@ struct DbCreatureCompletedSpellCastEvent {
 enum DbCreatureCompletedSpellEffect {
     PlayerDamage(DbCreaturePlayerSpellDamageEvent),
     CreatureHeal(DbCreatureSpellHealEvent),
+    Interrupted(DbCreatureInterruptedSpellCastEvent),
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct DbCreatureInterruptedSpellCastEvent {
+    failure: u8,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]

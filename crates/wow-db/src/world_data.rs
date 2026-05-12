@@ -229,6 +229,9 @@ pub struct CreatureSpellListQuery {
     pub initial_max: u32,
     pub repeat_min: u32,
     pub repeat_max: u32,
+    pub recovery_time: u32,
+    pub category: u32,
+    pub category_recovery_time: u32,
     pub target_type: u32,
     pub target_param1: i32,
     pub target_param2: i32,
@@ -911,6 +914,9 @@ pub async fn get_creature_spell_list(
                 CAST(list.InitialMax AS UNSIGNED) AS initial_max, \
                 CAST(list.RepeatMin AS UNSIGNED) AS repeat_min, \
                 CAST(list.RepeatMax AS UNSIGNED) AS repeat_max, \
+                CAST(COALESCE(template.RecoveryTime, 0) AS UNSIGNED) AS recovery_time, \
+                CAST(COALESCE(template.Category, 0) AS UNSIGNED) AS category, \
+                CAST(COALESCE(template.CategoryRecoveryTime, 0) AS UNSIGNED) AS category_recovery_time, \
                 CAST(COALESCE(target.Type, 0) AS UNSIGNED) AS target_type, \
                 COALESCE(target.Param1, 0) AS target_param1, \
                 COALESCE(target.Param2, 0) AS target_param2, \
@@ -918,6 +924,7 @@ pub async fn get_creature_spell_list(
                 COALESCE(target.UnitCondition, -1) AS target_unit_condition \
          FROM creature_spell_list_entry entry \
          JOIN creature_spell_list list ON list.Id = entry.Id \
+         LEFT JOIN spell_template template ON template.Id = list.SpellId \
          LEFT JOIN creature_spell_targeting target ON target.Id = list.TargetId \
          WHERE entry.Id = ? \
          ORDER BY list.Position",
@@ -973,6 +980,7 @@ async fn get_legacy_creature_template_spell_list(
                 continue;
             }
             let cooldown = get_creature_cooldown_range(pool, entry, spell_id).await?;
+            let template = get_spell_template_query(pool, spell_id).await?;
             rows.push(CreatureSpellListQuery {
                 id: row.entry.saturating_mul(100).saturating_add(row.set_id),
                 chance_support_action: 0,
@@ -989,6 +997,18 @@ async fn get_legacy_creature_template_spell_list(
                 initial_max: 0,
                 repeat_min: cooldown.map(|cooldown| cooldown.0).unwrap_or(0),
                 repeat_max: cooldown.map(|cooldown| cooldown.1).unwrap_or(0),
+                recovery_time: template
+                    .as_ref()
+                    .map(|template| template.recovery_time)
+                    .unwrap_or(0),
+                category: template
+                    .as_ref()
+                    .map(|template| template.category)
+                    .unwrap_or(0),
+                category_recovery_time: template
+                    .as_ref()
+                    .map(|template| template.category_recovery_time)
+                    .unwrap_or(0),
                 target_type: 0,
                 target_param1: 0,
                 target_param2: 0,

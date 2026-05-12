@@ -976,7 +976,6 @@ impl MapRuntime {
         player.active_spells = session.active_spells.clone();
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
-        player.active_auras = session.active_auras.clone();
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -1205,6 +1204,23 @@ impl MapRuntime {
         self.players
             .get(&character_guid)
             .map(|player| player.combat_stats)
+    }
+
+    fn remove_player_auras_with_interrupt_flag(
+        &mut self,
+        character_guid: u32,
+        interrupt_flag: u32,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return false;
+        };
+        let changed = remove_active_auras_with_interrupt_flag(&mut player.active_auras, interrupt_flag);
+        if changed {
+            refresh_player_runtime_stats_from_auras(player);
+            player.combat_stats =
+                combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+        }
+        changed
     }
 
     fn apply_player_aura(

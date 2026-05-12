@@ -11369,6 +11369,101 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
 }
 
 #[test]
+fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 187;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        6,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: immolate.attributes_ex3,
+        },
+        aura: Some(aura),
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("cast should start");
+    map.complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("instant cast should complete");
+
+    let session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 1,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position: player_position,
+            movement_flags: 0,
+            client_time: 0,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        }),
+        player_health: 12,
+        ..WorldSessionState::default()
+    };
+    map.sync_player_gameplay_state(1, &session);
+    assert_eq!(map.players.get(&1).unwrap().active_auras.len(), 1);
+
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_millis(9_000))
+        .unwrap();
+    let player = map.players.get(&1).unwrap();
+    assert!(player.active_auras.is_empty());
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    let values = packets
+        .iter()
+        .filter(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT)
+        .find_map(|(_, packet)| {
+            let (values, trailing) = decode_values_update_block(&packet.body[5..], victim);
+            if trailing.is_empty() && values[UNIT_FIELD_AURA + debuff_slot].is_some() {
+                Some(values)
+            } else {
+                None
+            }
+        })
+        .expect("aura expiration should send an aura-field update object packet");
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)], Some(0));
+}
+
+#[test]
 fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);

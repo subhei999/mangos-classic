@@ -198,6 +198,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   still dispatch through the shared registry. This specifically targets the
   real-client report that Burning Blade Neophyte Immolate applied/spent mana but
   showed no visible cast bar.
+- Current creature DoT expiration follow-up fixes the user-observed Immolate
+  debuff stuck at `0 sec`: `MapRuntime` remains the owner of live player auras
+  after login/apply, so normal session gameplay sync no longer clobbers
+  map-owned creature debuffs without an aura-removal packet. Explicit aura
+  interruption paths now clear the map-owned player aura list directly instead
+  of relying on sync side effects.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -236,7 +242,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network map_runtime_db_creature_spell --lib`
 - `cargo test -p wow-network map_runtime_db_creature_immolate_applies_player_dot_ticks --lib`
 - `cargo test -p wow-network creature_spell_start_packets_use_current_session_socket_without_registry_lookup --lib`
+- `cargo test -p wow-network map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update --lib`
 - `cargo test -p wow-network --lib`
+- `cargo test -p wow-network aura --lib`
 - `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`
 - `cargo test -p wow-network spell_delayed_packet_uses_full_caster_guid_for_client_cast_bar --lib`

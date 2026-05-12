@@ -2424,6 +2424,8 @@ async fn interrupt_player_consumable_auras(
     let map_id = character.position.map_id;
     let character_guid = character.guid;
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    maps.remove_player_auras_with_interrupt_flag(map_id, character_guid, interrupt_flag)
+        .await;
     let aura_packet = OutboundWorldPacket {
         opcode: SMSG_UPDATE_OBJECT,
         body: build_player_aura_update_body(player, &session.active_auras)?,

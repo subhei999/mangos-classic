@@ -445,6 +445,23 @@ impl MapRuntimeManager {
             .sync_player_gameplay_state(character_guid, session);
     }
 
+    async fn remove_player_auras_with_interrupt_flag(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        interrupt_flag: u32,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return false;
+        };
+        let removed = map
+            .lock()
+            .await
+            .remove_player_auras_with_interrupt_flag(character_guid, interrupt_flag);
+        removed
+    }
+
     async fn player_runtime_snapshot(
         &self,
         map_id: u32,

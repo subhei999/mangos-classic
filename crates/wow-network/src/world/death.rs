@@ -65,6 +65,7 @@ async fn handle_repop_request(
     session.player_death_state = PlayerDeathState::Ghost;
     session.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
     session.player_flags |= PLAYER_FLAGS_GHOST;
+    session.player_stand_state = PLAYER_STAND_STATE_STAND;
     session.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);
@@ -96,6 +97,13 @@ async fn handle_repop_request(
             character_class,
             PLAYER_STAND_STATE_STAND,
         )?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_FORCE_MOVE_UNROOT,
+        &build_force_move_unroot_body(player, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -339,6 +347,7 @@ async fn resurrect_player_at_position(
     let corpse_to_bones = session.player_corpse.take();
     session.player_health = resurrected_health;
     session.player_flags &= !PLAYER_FLAGS_GHOST;
+    session.player_stand_state = PLAYER_STAND_STATE_STAND;
     let (character_guid, map_id) = {
         let Some(character) = &mut session.active_character else {
             return Ok(());
@@ -372,6 +381,13 @@ async fn resurrect_player_at_position(
             class,
             PLAYER_STAND_STATE_STAND,
         )?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_FORCE_MOVE_UNROOT,
+        &build_force_move_unroot_body(player, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;

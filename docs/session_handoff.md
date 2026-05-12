@@ -237,6 +237,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   the clear packet instead, session sync inherits map-owned dead stand/aura
   state, and the active session finalizer sends the root/release death
   presentation for map-owned DoT/environment/fall deaths.
+- Current death/repop follow-up fixes the user-observed post-resurrection
+  movement lock. CMaNGOS sends `SendMoveRoot(false)` both when converting the
+  corpse player into a ghost in `BuildPlayerRepop()` and when reviving in
+  `ResurrectPlayer()`. Rust now sends `SMSG_FORCE_MOVE_UNROOT` during both
+  release-to-ghost and corpse/spirit-healer resurrection, accepts the matching
+  `CMSG_FORCE_MOVE_UNROOT_ACK` as an expected client acknowledgement, and
+  resets session stand state back to standing so map sync does not keep the
+  dead stand state after release or resurrection.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -291,6 +299,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network creature_spell --lib`
 - `cargo test -p wow-network map_runtime_gameplay_sync_preserves_dead_player_zero_health --lib`
+- `cargo test -p wow-network force_move_unroot_body_matches_root_ack_shape --lib`
+- `cargo test -p wow-network death --lib`
+- `cargo test -p wow-network corpse --lib`
+- `cargo test -p wow-network ghost --lib`
 - `.\scripts\test-rust.cmd`
 - First `.\scripts\test-rust.cmd` attempt passed tests but failed the final
   `cargo build -p authserver` because the running local stack had

@@ -644,6 +644,7 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
             | CMSG_REQUEST_RAID_INFO
             | CMSG_MOVE_TIME_SKIPPED
             | CMSG_FORCE_MOVE_ROOT_ACK
+            | CMSG_FORCE_MOVE_UNROOT_ACK
             | CMSG_BATTLEFIELD_STATUS
     )
 }
@@ -660,6 +661,7 @@ fn expected_noop_opcode_name(opcode: u32) -> &'static str {
         CMSG_REQUEST_RAID_INFO => "CMSG_REQUEST_RAID_INFO",
         CMSG_MOVE_TIME_SKIPPED => "CMSG_MOVE_TIME_SKIPPED",
         CMSG_FORCE_MOVE_ROOT_ACK => "CMSG_FORCE_MOVE_ROOT_ACK",
+        CMSG_FORCE_MOVE_UNROOT_ACK => "CMSG_FORCE_MOVE_UNROOT_ACK",
         CMSG_BATTLEFIELD_STATUS => "CMSG_BATTLEFIELD_STATUS",
         _ => "EXPECTED_NOOP",
     }

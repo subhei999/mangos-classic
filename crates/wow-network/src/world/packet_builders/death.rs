@@ -45,6 +45,14 @@ fn build_player_death_update_body(
 }
 
 fn build_force_move_root_body(player: ObjectGuid, counter: u32) -> anyhow::Result<Vec<u8>> {
+    build_force_move_root_state_body(player, counter)
+}
+
+fn build_force_move_unroot_body(player: ObjectGuid, counter: u32) -> anyhow::Result<Vec<u8>> {
+    build_force_move_root_state_body(player, counter)
+}
+
+fn build_force_move_root_state_body(player: ObjectGuid, counter: u32) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(12);
     PackedGuid::write(&mut body, player)?;
     body.extend_from_slice(&counter.to_le_bytes());

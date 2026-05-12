@@ -5167,6 +5167,17 @@ fn player_death_update_sets_health_flags_and_release_timer() {
 }
 
 #[test]
+fn force_move_unroot_body_matches_root_ack_shape() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_force_move_unroot_body(player, 23).unwrap();
+    let mut expected = Vec::new();
+    PackedGuid::write(&mut expected, player).unwrap();
+    expected.extend_from_slice(&23u32.to_le_bytes());
+
+    assert_eq!(body, expected);
+}
+
+#[test]
 fn corpse_query_points_ghosts_back_to_their_body() {
     let corpse = WorldPosition::new(0, -8935.25, -142.5, 83.0, 1.0);
     let body = build_corpse_query_body(Some(corpse));

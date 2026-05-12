@@ -15230,6 +15230,18 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     let position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
     map.add_player(test_player_runtime(7, SessionId::next(), position))
         .unwrap();
+    let jump = JumpInfo {
+        z_speed: 7.0,
+        cos_angle: 0.25,
+        sin_angle: 0.75,
+        xy_speed: 4.5,
+    };
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.movement_flags = MOVEFLAG_JUMPING;
+        player.fall_time = 456;
+        player.jump = jump.clone();
+    }
 
     let death = map
         .apply_player_world_damage(
@@ -15266,6 +15278,10 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     assert_eq!(snapshot.health, 0);
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
     assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(player.movement_flags, MOVEFLAG_JUMPING);
+    assert_eq!(player.fall_time, 456);
+    assert_eq!(player.jump, jump);
 
     let second = map
         .apply_player_world_damage(
@@ -20318,6 +20334,54 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     assert!(!packets.iter().any(|packet| {
         packet.opcode == SMSG_CAST_RESULT && packet.body[5] == SPELL_FAILED_NOT_READY
     }));
+}
+
+#[test]
+fn corpse_falling_movement_allows_landing_but_blocks_walking() {
+    let standing = MovementInfo {
+        flags: 0,
+        client_time: 1,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let falling = MovementInfo {
+        flags: MOVEFLAG_JUMPING,
+        fall_time: 250,
+        jump: JumpInfo {
+            z_speed: 7.0,
+            cos_angle: 0.25,
+            sin_angle: 0.75,
+            xy_speed: 4.5,
+        },
+        ..standing.clone()
+    };
+    let landing = MovementInfo {
+        fall_time: 250,
+        ..standing.clone()
+    };
+
+    assert!(corpse_falling_movement_allowed(MSG_MOVE_JUMP, &falling));
+    assert!(corpse_falling_movement_allowed(
+        MSG_MOVE_HEARTBEAT,
+        &landing
+    ));
+    assert!(corpse_falling_movement_allowed(
+        MSG_MOVE_FALL_LAND,
+        &landing
+    ));
+    assert!(corpse_falling_movement_allowed(
+        MSG_MOVE_START_SWIM,
+        &landing
+    ));
+    assert!(!corpse_falling_movement_allowed(
+        MSG_MOVE_START_FORWARD,
+        &standing
+    ));
+    assert!(!corpse_falling_movement_allowed(
+        MSG_MOVE_HEARTBEAT,
+        &standing
+    ));
 }
 
 #[tokio::test]

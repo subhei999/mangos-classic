@@ -101,9 +101,6 @@ fn apply_player_runtime_world_damage(
         player.active_combat_next_swing_at = None;
         player.queued_next_melee_spell = None;
         player.stand_state = PLAYER_STAND_STATE_DEAD;
-        player.movement_flags = 0;
-        player.fall_time = 0;
-        player.jump = JumpInfo::default();
         let source_guid = source.map(|guid| format!("0x{:016X}", guid.raw()));
         warn!(
             target = format_args!("0x{:016X}", target.raw()),

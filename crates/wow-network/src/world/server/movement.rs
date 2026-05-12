@@ -95,11 +95,21 @@ async fn handle_movement(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.player_death_state == PlayerDeathState::Corpse {
+    let movement = MovementInfo::read(body)?;
+    let map_death_state = if let Some(character) = session.active_character.as_ref() {
+        deps.maps
+            .player_runtime_snapshot(character.position.map_id, character.guid)
+            .await
+            .map(|snapshot| snapshot.death_state)
+    } else {
+        None
+    };
+    let corpse_movement = session.player_death_state == PlayerDeathState::Corpse
+        || map_death_state == Some(PlayerDeathState::Corpse);
+    if corpse_movement && !corpse_falling_movement_allowed(opcode, &movement) {
         return Ok(());
     }
-    let movement = MovementInfo::read(body)?;
-    if movement_opcode_interrupts_spell_cast(opcode) {
+    if !corpse_movement && movement_opcode_interrupts_spell_cast(opcode) {
         cancel_pending_player_spell_cast(
             stream,
             deps.maps,
@@ -157,7 +167,8 @@ async fn handle_movement(
                 session.player_mana = snapshot.power1;
                 session.player_rage = snapshot.power2;
                 session.player_energy = snapshot.power4;
-                if previous_player_health > 0
+                if !corpse_movement
+                    && previous_player_health > 0
                     && session.player_health == 0
                     && session.player_death_state == PlayerDeathState::Alive
                 {
@@ -166,51 +177,53 @@ async fn handle_movement(
                 }
             }
         }
-        stream_newly_visible_db_creatures(
-            stream,
-            deps.character_db_pool,
-            deps.world_db_pool,
-            deps.maps,
-            session,
-            header_crypto,
-        )
-        .await?;
-        stream_newly_visible_db_gameobjects(
-            stream,
-            deps.world_db_pool,
-            deps.maps,
-            session,
-            header_crypto,
-        )
-        .await?;
-        stream_nearby_player_corpses(
-            stream,
-            deps.character_db_pool,
-            deps.maps,
-            session,
-            header_crypto,
-        )
-        .await?;
-        interrupt_player_consumable_auras(
-            stream,
-            deps.maps,
-            deps.sessions,
-            session,
-            AURA_INTERRUPT_FLAG_MOVING,
-            header_crypto,
-        )
-        .await?;
-        try_start_db_creature_aggro(
-            stream,
-            SharedWorldDeps {
-                object_mgr: deps.object_mgr,
-                maps: deps.maps,
-                sessions: deps.sessions,
-            },
-            session,
-            header_crypto,
-        )
-        .await?;
+        if !corpse_movement {
+            stream_newly_visible_db_creatures(
+                stream,
+                deps.character_db_pool,
+                deps.world_db_pool,
+                deps.maps,
+                session,
+                header_crypto,
+            )
+            .await?;
+            stream_newly_visible_db_gameobjects(
+                stream,
+                deps.world_db_pool,
+                deps.maps,
+                session,
+                header_crypto,
+            )
+            .await?;
+            stream_nearby_player_corpses(
+                stream,
+                deps.character_db_pool,
+                deps.maps,
+                session,
+                header_crypto,
+            )
+            .await?;
+            interrupt_player_consumable_auras(
+                stream,
+                deps.maps,
+                deps.sessions,
+                session,
+                AURA_INTERRUPT_FLAG_MOVING,
+                header_crypto,
+            )
+            .await?;
+            try_start_db_creature_aggro(
+                stream,
+                SharedWorldDeps {
+                    object_mgr: deps.object_mgr,
+                    maps: deps.maps,
+                    sessions: deps.sessions,
+                },
+                session,
+                header_crypto,
+            )
+            .await?;
+        }
     } else {
         warn!(
             opcode = movement_opcode_name(opcode),
@@ -230,6 +243,17 @@ async fn handle_movement(
         .await?;
     }
     Ok(())
+}
+
+fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool {
+    if movement.flags & MOVEFLAG_JUMPING != 0 {
+        return true;
+    }
+
+    matches!(
+        opcode,
+        MSG_MOVE_FALL_LAND | MSG_MOVE_START_SWIM | MSG_MOVE_HEARTBEAT
+    ) && movement.fall_time > 0
 }
 
 fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {

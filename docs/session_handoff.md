@@ -255,6 +255,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   persistence, and evade cleanup. Death, ghost, and alive recovery updates now
   clear all visible aura slots before applying the ghost aura, so stale hostile
   debuff slots are cleared even during release/resurrection.
+- Current airborne-death follow-up matches the CMaNGOS `KillPlayer()` comment
+  that corpse creation is delayed because the player might still be falling.
+  Map-owned lethal damage no longer wipes jump/fall movement state, and the
+  movement handler now accepts only corpse falling/landing/swim-fall packets
+  while still ignoring ordinary dead-player walking/control packets. This
+  targets the real-client report that dying while jumping froze the player in
+  midair instead of letting the body fall to the ground.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -322,6 +329,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network creature_spell --lib`
 - `cargo test -p wow-network corpse --lib`
+- `cargo test -p wow-network movement --lib`
+- `cargo test -p wow-network corpse_falling_movement --lib`
 - `.\scripts\test-rust.cmd`
 - First `.\scripts\test-rust.cmd` attempt passed tests but failed the final
   `cargo build -p authserver` because the running local stack had

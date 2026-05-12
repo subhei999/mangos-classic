@@ -106,6 +106,8 @@ async fn handle_player_login(
     session.player_flags = character.player_flags;
     session.player_death_state = if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
         PlayerDeathState::Ghost
+    } else if character.health == 0 {
+        PlayerDeathState::Corpse
     } else {
         PlayerDeathState::Alive
     };
@@ -244,10 +246,15 @@ async fn handle_player_login(
     if session.player_mana == 0 {
         session.player_mana = effective_world_stats.max_mana();
     }
-    if session.player_health == 0 && session.player_death_state == PlayerDeathState::Alive {
+    session.player_stand_state = if session.player_death_state == PlayerDeathState::Corpse {
+        PLAYER_STAND_STATE_DEAD
+    } else {
+        PLAYER_STAND_STATE_STAND
+    };
+    if session.player_health == 0 && session.player_death_state == PlayerDeathState::Corpse {
         warn!(
             character_guid = character.guid,
-            "Loaded legacy Alive + 0 HP character state; preserving zero health for death invariant handling"
+            "Loaded 0 HP character as corpse state for death invariant handling"
         );
     }
     let equipped_templates = load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;

@@ -10,6 +10,10 @@ fn build_player_death_update_body(
     field_bytes: u32,
 
     unit_flags: u32,
+
+    class: u8,
+
+    stand_state: u8,
 ) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
 
@@ -22,6 +26,12 @@ fn build_player_death_update_body(
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
 
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        unit_bytes_1_for_class(class) | u32::from(stand_state),
+    )?;
 
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, player_flags)?;
 

@@ -74,7 +74,7 @@ fn write_other_player_update_values(
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT_PLAYER)?;
     set_update_value(&mut values, 0x004, 1.0f32.to_bits())?;
-    set_update_value(&mut values, UNIT_FIELD_HEALTH, player.health.max(1))?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, player.health)?;
     set_update_value(&mut values, UNIT_FIELD_POWER1, player.power1)?;
     set_update_value(&mut values, UNIT_FIELD_POWER2, player.power2)?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, player.max_health.max(1))?;
@@ -248,7 +248,15 @@ fn write_minimal_player_update_values(
         UNIT_FIELD_MAXOFFHANDDAMAGE,
         combat_stats.off_max_damage.to_bits(),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_BYTES_1, unit_bytes_1(character))?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        if character.health == 0 && character.player_flags & PLAYER_FLAGS_GHOST == 0 {
+            unit_bytes_1_for_class(character.class) | u32::from(PLAYER_STAND_STATE_DEAD)
+        } else {
+            unit_bytes_1(character)
+        },
+    )?;
     set_player_ghost_aura_update_values(
         &mut values,
         character.player_flags & PLAYER_FLAGS_GHOST != 0,
@@ -330,7 +338,15 @@ fn write_minimal_player_update_values(
     set_player_stat_mod_update_values(&mut values, base_world_stats, world_stats)?;
     set_player_resistance_buff_mod_update_values(&mut values, &combat_stats)?;
     set_player_damage_mod_update_values(&mut values)?;
-    set_update_value(&mut values, PLAYER_FIELD_BYTES, 0)?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_BYTES,
+        if character.health == 0 && character.player_flags & PLAYER_FLAGS_GHOST == 0 {
+            PLAYER_FIELD_BYTE_RELEASE_TIMER
+        } else {
+            0
+        },
+    )?;
     set_update_value(&mut values, PLAYER_AMMO_ID, 0)?;
     set_update_value(&mut values, PLAYER_SELF_RES_SPELL, 0)?;
     set_update_value(&mut values, PLAYER_FIELD_PVP_MEDALS, 0)?;
@@ -373,14 +389,18 @@ fn set_player_vital_update_values(
     world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
     let max_health = world_stats.max_health().max(1);
-    let health = character
-        .health
-        .max(if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
-            PLAYER_SURVIVOR_HEALTH_FLOOR
-        } else {
-            1
-        })
-        .min(max_health);
+    let health = if character.health == 0 && character.player_flags & PLAYER_FLAGS_GHOST == 0 {
+        0
+    } else {
+        character
+            .health
+            .max(if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
+                PLAYER_SURVIVOR_HEALTH_FLOOR
+            } else {
+                1
+            })
+            .min(max_health)
+    };
     let max_mana = world_stats.max_mana();
     let power1 = if character.power1 > 0 {
         character.power1

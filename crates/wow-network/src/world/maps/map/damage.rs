@@ -100,7 +100,7 @@ fn apply_player_runtime_world_damage(
         player.active_combat_target = None;
         player.active_combat_next_swing_at = None;
         player.queued_next_melee_spell = None;
-        player.stand_state = PLAYER_STAND_STATE_STAND;
+        player.stand_state = PLAYER_STAND_STATE_DEAD;
         let source_guid = source.map(|guid| format!("0x{:016X}", guid.raw()));
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -126,6 +126,8 @@ fn apply_player_runtime_world_damage(
                 player.flags,
                 PLAYER_FIELD_BYTE_RELEASE_TIMER,
                 player_unit_flags(false),
+                player.class,
+                PLAYER_STAND_STATE_DEAD,
             )?,
         }
     } else {

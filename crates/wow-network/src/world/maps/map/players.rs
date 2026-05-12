@@ -799,6 +799,8 @@ impl MapRuntime {
                         flags,
                         PLAYER_FIELD_BYTE_RELEASE_TIMER,
                         player_unit_flags(false),
+                        current_player.class,
+                        PLAYER_STAND_STATE_DEAD,
                     )?
                 } else {
                     build_player_health_update_body(player_object, health)?
@@ -1408,6 +1410,8 @@ impl MapRuntime {
                             player.flags,
                             PLAYER_FIELD_BYTE_RELEASE_TIMER,
                             player_unit_flags(false),
+                            player.class,
+                            PLAYER_STAND_STATE_DEAD,
                         )?
                     } else {
                         build_player_health_update_body(player_guid, player.health)?

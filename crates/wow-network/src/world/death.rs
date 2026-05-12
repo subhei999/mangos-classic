@@ -52,7 +52,11 @@ async fn handle_repop_request(
     let graveyard_position =
         select_repop_graveyard_position(deps.world_db_pool, corpse_position).await?;
 
-    let character_guid = session.active_character.as_ref().map(|c| c.guid).unwrap_or_default();
+    let (character_guid, character_class) = session
+        .active_character
+        .as_ref()
+        .map(|character| (character.guid, character.class))
+        .unwrap_or_default();
     let old_map_id = session
         .active_character
         .as_ref()
@@ -89,6 +93,8 @@ async fn handle_repop_request(
             session.player_flags,
             0,
             player_unit_flags(false),
+            character_class,
+            PLAYER_STAND_STATE_STAND,
         )?,
         Some(&mut *header_crypto),
     )
@@ -363,6 +369,8 @@ async fn resurrect_player_at_position(
             session.player_flags,
             0,
             player_unit_flags(false),
+            class,
+            PLAYER_STAND_STATE_STAND,
         )?,
         Some(&mut *header_crypto),
     )
@@ -412,9 +420,10 @@ async fn kill_player_from_creature(
     if session.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
-    if session.active_character.is_none() {
+    let Some(character) = session.active_character.as_ref() else {
         return Ok(());
-    }
+    };
+    let character_class = character.class;
     session.player_death_state = PlayerDeathState::Corpse;
     session.player_corpse = None;
     session.player_health = 0;
@@ -442,6 +451,8 @@ async fn kill_player_from_creature(
             session.player_flags,
             PLAYER_FIELD_BYTE_RELEASE_TIMER,
             player_unit_flags(false),
+            character_class,
+            PLAYER_STAND_STATE_DEAD,
         )?,
         Some(&mut *header_crypto),
     )

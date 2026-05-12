@@ -5140,6 +5140,8 @@ fn player_death_update_sets_health_flags_and_release_timer() {
         PLAYER_FLAGS_GHOST,
         PLAYER_FIELD_BYTE_RELEASE_TIMER,
         player_unit_flags(false),
+        1,
+        PLAYER_STAND_STATE_DEAD,
     )
     .unwrap();
     let mut packed = Vec::new();
@@ -5149,6 +5151,10 @@ fn player_death_update_sets_health_flags_and_release_timer() {
 
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
     assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_DEAD))
+    );
     assert_eq!(values[PLAYER_FLAGS_FIELD], Some(PLAYER_FLAGS_GHOST));
     assert_eq!(
         values[PLAYER_FIELD_BYTES],
@@ -13300,6 +13306,25 @@ fn other_player_create_block_preserves_jump_launch_state() {
     assert_eq!(movement.client_time, 5678);
     assert_eq!(movement.fall_time, 456);
     assert_eq!(movement.jump, player.jump);
+}
+
+#[test]
+fn other_player_create_block_preserves_dead_corpse_state() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.25);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.health = 0;
+    player.death_state = PlayerDeathState::Corpse;
+    player.stand_state = PLAYER_STAND_STATE_DEAD;
+
+    let values =
+        decode_other_player_create_values(&build_other_player_create_block(&player).unwrap(), guid);
+
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(player.class) | u32::from(PLAYER_STAND_STATE_DEAD))
+    );
 }
 
 #[test]
@@ -22202,6 +22227,44 @@ fn class_power_defaults_match_cmangos_create_powers() {
     assert_eq!(values[UNIT_FIELD_POWER4], Some(POWER_ENERGY_DEFAULT));
     assert_eq!(values[UNIT_FIELD_MAXPOWER4], Some(POWER_ENERGY_DEFAULT));
     assert_eq!(values[UNIT_FIELD_MAXPOWER2], Some(0));
+}
+
+#[test]
+fn login_player_create_values_preserve_zero_health_corpse_state() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let character = test_character(1, 1);
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 21],
+        next_level_xp: 400,
+    };
+    let mut body = Vec::new();
+
+    write_minimal_player_update_values(
+        &mut body,
+        guid,
+        &character,
+        &[],
+        &world_stats,
+        &world_stats,
+        &[],
+        &std::collections::HashMap::new(),
+        &[],
+        &[],
+    )
+    .unwrap();
+    let values = decode_update_values(&body);
+
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(character.class) | u32::from(PLAYER_STAND_STATE_DEAD))
+    );
+    assert_eq!(
+        values[PLAYER_FIELD_BYTES],
+        Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
+    );
 }
 
 #[test]

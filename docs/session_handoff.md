@@ -219,6 +219,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   and the active creature-spell path sends that packet alongside spell damage
   logs. This targets the real-client report that spell death made the character
   technically dead but still upright and controllable with no release flow.
+- Current death-presentation follow-up fixes the remaining real-client report
+  after force-root: corpse-state player updates now set the CMaNGOS dead stand
+  state (`UNIT_FIELD_BYTES_1` stand state 7), login self create blocks preserve
+  `health = 0` plus the release-timer byte for non-ghost corpses, observer
+  create blocks no longer floor dead players back to 1 HP, and login now
+  reconstructs `health = 0`/non-ghost rows as `PlayerDeathState::Corpse`
+  instead of `Alive`.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -262,6 +269,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network map_runtime_player_world_damage --lib`
 - `cargo test -p wow-network death --lib`
 - `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network player_death_update_sets_health_flags_and_release_timer --lib`
+- `cargo test -p wow-network other_player_create_block_preserves_dead_corpse_state --lib`
+- `cargo test -p wow-network login_player_create_values_preserve_zero_health_corpse_state --lib`
 - `cargo test -p wow-network aura --lib`
 - `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`

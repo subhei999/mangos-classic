@@ -34,6 +34,13 @@ fn build_player_death_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+fn build_force_move_root_body(player: ObjectGuid, counter: u32) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(12);
+    PackedGuid::write(&mut body, player)?;
+    body.extend_from_slice(&counter.to_le_bytes());
+    Ok(body)
+}
+
 fn set_player_ghost_aura_update_values(
     values: &mut [Option<u32>],
 

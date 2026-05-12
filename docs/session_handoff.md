@@ -212,6 +212,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   instead of allowing `Alive + 0 HP`. Login no longer silently heals a legacy
   `Alive + 0 HP` row; it preserves the invariant for death handling and logs
   the corrupted state.
+- Current death-presentation hotfix adds the missing CMaNGOS
+  `KillPlayer()->SendMoveRoot(true)` behavior to Rust player death. Map-owned
+  spell/DoT/environmental/fall deaths now produce a direct
+  `SMSG_FORCE_MOVE_ROOT` for the controlling client before the death update,
+  and the active creature-spell path sends that packet alongside spell damage
+  logs. This targets the real-client report that spell death made the character
+  technically dead but still upright and controllable with no release flow.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -253,6 +260,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update --lib`
 - `cargo test -p wow-network --lib`
 - `cargo test -p wow-network map_runtime_player_world_damage --lib`
+- `cargo test -p wow-network death --lib`
+- `cargo test -p wow-network spell --lib`
 - `cargo test -p wow-network aura --lib`
 - `.\scripts\test-rust.cmd`
 - `cargo test -p wow-network spell_damage_outcome --lib`

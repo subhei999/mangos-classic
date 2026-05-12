@@ -428,6 +428,13 @@ async fn kill_player_from_creature(
 
     send_packet(
         stream,
+        SMSG_FORCE_MOVE_ROOT,
+        &build_force_move_root_body(player, 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
         SMSG_UPDATE_OBJECT,
         &build_player_death_update_body(
             player,

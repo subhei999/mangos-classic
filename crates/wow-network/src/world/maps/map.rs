@@ -410,6 +410,7 @@ struct DbCreaturePlayerSpellDamageEvent {
     outcome: SpellDamageOutcome,
     spell_non_melee_log_body: Option<Vec<u8>>,
     spell_miss_log_body: Option<Vec<u8>>,
+    direct_packets: Vec<OutboundWorldPacket>,
     health_update_body: Vec<u8>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }

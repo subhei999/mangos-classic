@@ -817,6 +817,15 @@ async fn complete_ready_db_creature_spell_cast(
     let aura_event = event.aura_event;
     match event.effect {
         DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
+            for packet in damage.direct_packets {
+                send_packet(
+                    stream,
+                    packet.opcode,
+                    &packet.body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
             if let Some(body) = damage.spell_miss_log_body {
                 send_packet(
                     stream,

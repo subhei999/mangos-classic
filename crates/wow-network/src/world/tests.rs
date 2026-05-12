@@ -15105,6 +15105,13 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
 
     assert!(death.died);
     assert_eq!(death.remaining_health, 0);
+    assert!(
+        death
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == SMSG_FORCE_MOVE_ROOT),
+        "player death must force-root the controlling client like CMaNGOS KillPlayer"
+    );
     let snapshot = map.player_runtime_snapshot(7).unwrap();
     assert_eq!(snapshot.health, 0);
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);

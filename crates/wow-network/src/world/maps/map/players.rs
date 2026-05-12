@@ -142,6 +142,7 @@ impl MapRuntime {
                     character_guid,
                     applied.position,
                     player_session_id,
+                    applied.direct_packets,
                     OutboundWorldPacket {
                         opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                         body: build_environmental_damage_log_body(
@@ -180,9 +181,19 @@ impl MapRuntime {
                 .flatten(),
             );
         }
-        for (character_guid, position, direct_session_id, damage_log, health_packet) in damage_events
+        for (
+            character_guid,
+            position,
+            direct_session_id,
+            direct_death_packets,
+            damage_log,
+            health_packet,
+        ) in damage_events
         {
             if let Some(direct_session_id) = direct_session_id {
+                for packet in direct_death_packets {
+                    packets.push((direct_session_id, packet));
+                }
                 packets.push((direct_session_id, damage_log.clone()));
                 packets.push((direct_session_id, health_packet.clone()));
             }
@@ -1283,6 +1294,7 @@ impl MapRuntime {
             let mut tick_packets = Vec::new();
             let mut health_changed = false;
             let mut player_died = false;
+            let mut direct_death_packets = Vec::new();
             let mut pending_damage_ticks = Vec::new();
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
@@ -1351,6 +1363,7 @@ impl MapRuntime {
                 if let Some(aura_packet) = applied.aura_packet {
                     tick_packets.push(aura_packet);
                 }
+                direct_death_packets.extend(applied.direct_packets);
                 if applied.died {
                     player_died = true;
                     break;
@@ -1375,6 +1388,11 @@ impl MapRuntime {
             let Some(player) = self.players.get(&character_guid) else {
                 continue;
             };
+            for packet in direct_death_packets {
+                if let Some(packet) = player.packet_to_client(packet) {
+                    packets.push(packet);
+                }
+            }
             for packet in &tick_packets {
                 if let Some(packet) = player.packet_to_client(packet.clone()) {
                     packets.push(packet);

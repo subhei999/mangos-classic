@@ -871,6 +871,7 @@ impl MapRuntime {
             outcome,
             spell_non_melee_log_body,
             spell_miss_log_body,
+            direct_packets: applied.direct_packets,
             health_update_body,
             observer_packets,
         }))

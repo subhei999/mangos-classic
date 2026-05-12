@@ -24,6 +24,7 @@ struct AppliedPlayerWorldDamage {
     died: bool,
     position: WorldPosition,
     direct_session_id: Option<SessionId>,
+    direct_packets: Vec<OutboundWorldPacket>,
     health_packet: OutboundWorldPacket,
     aura_packet: Option<OutboundWorldPacket>,
 }
@@ -84,6 +85,7 @@ fn apply_player_runtime_world_damage(
     let died = player.health == 0;
     let position = player.position;
     let direct_session_id = player.client_session_id();
+    let mut direct_packets = Vec::new();
     let aura_packet = if died && !player.active_auras.is_empty() {
         player.active_auras.clear();
         Some(OutboundWorldPacket {
@@ -109,6 +111,10 @@ fn apply_player_runtime_world_damage(
             old_health = previous_health,
             "MapRuntime finalized player death from world damage"
         );
+        direct_packets.push(OutboundWorldPacket {
+            opcode: SMSG_FORCE_MOVE_ROOT,
+            body: build_force_move_root_body(target, 0)?,
+        });
     }
     let remaining_health = player.health;
     let health_packet = if died {
@@ -138,6 +144,7 @@ fn apply_player_runtime_world_damage(
         died,
         position,
         direct_session_id,
+        direct_packets,
         health_packet,
         aura_packet,
     }))

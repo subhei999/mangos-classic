@@ -5164,6 +5164,39 @@ fn player_death_update_sets_health_flags_and_release_timer() {
     assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(GHOST_AURA_FLAGS));
     assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(1));
     assert_eq!(values[UNIT_FIELD_AURAAPPLICATIONS], Some(0));
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_AURAAPPLICATIONS + (debuff_slot / 4)],
+        Some(0)
+    );
+}
+
+#[test]
+fn player_alive_recovery_update_clears_all_visible_aura_slots() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_death_update_body(
+        player,
+        50,
+        0,
+        0,
+        player_unit_flags(false),
+        1,
+        PLAYER_STAND_STATE_STAND,
+    )
+    .unwrap();
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, player).unwrap();
+    let values_start = 4 + 1 + 1 + packed.len();
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(values[UNIT_FIELD_AURA], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(0));
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)], Some(0));
 }
 
 #[test]
@@ -15213,8 +15246,22 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     assert_eq!(death.remaining_health, 0);
     assert!(
         death.direct_packets.is_empty(),
-        "raw map damage reaches JUST_DIED-style state; root/release presentation is sent by the player death finalizer"
+        "raw map damage reaches JUST_DIED-style state; root is sent by the player death finalizer"
     );
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, player_guid).unwrap();
+    let values_start = 4 + 1 + 1 + packed.len();
+    let values = decode_update_values(&death.health_packet.body[values_start..]);
+    assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_BYTES_1],
+        Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_DEAD))
+    );
+    assert_eq!(
+        values[PLAYER_FIELD_BYTES],
+        Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
+    );
+    assert_eq!(values[UNIT_FIELD_AURA + MAX_POSITIVE_AURA_SLOTS], Some(0));
     let snapshot = map.player_runtime_snapshot(7).unwrap();
     assert_eq!(snapshot.health, 0);
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);

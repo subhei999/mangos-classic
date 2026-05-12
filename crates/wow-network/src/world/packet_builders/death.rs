@@ -66,6 +66,7 @@ fn set_player_ghost_aura_update_values(
 
     level: u8,
 ) -> anyhow::Result<()> {
+    set_unit_aura_update_values(values, &[])?;
     set_update_value(
         values,
         UNIT_FIELD_AURA,

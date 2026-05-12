@@ -245,6 +245,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `CMSG_FORCE_MOVE_UNROOT_ACK` as an expected client acknowledgement, and
   resets session stand state back to standing so map sync does not keep the
   dead stand state after release or resurrection.
+- Current death presentation/aura-clear follow-up addresses two remaining
+  real-client artifacts: release UI/collapse could lag because map-owned
+  lethal damage sometimes sent only `health = 0` and waited for the session
+  finalizer to send corpse/release fields, and hostile DoT icons could remain
+  visually stuck if the client missed a separate aura-clear packet. Map-owned
+  lethal damage now emits the full corpse/dead-stand/release-timer update as
+  its first health update, while the later finalizer still handles root,
+  persistence, and evade cleanup. Death, ghost, and alive recovery updates now
+  clear all visible aura slots before applying the ghost aura, so stale hostile
+  debuff slots are cleared even during release/resurrection.
 - Test reliability cleanup: the synthetic Fireball-with-DoT fixture now carries
   the same always-hit/cannot-crit flags used by adjacent spell timing tests, so
   random spell outcome rolls no longer make the full Rust suite fail while
@@ -303,6 +313,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network death --lib`
 - `cargo test -p wow-network corpse --lib`
 - `cargo test -p wow-network ghost --lib`
+- `cargo test -p wow-network player_death_update_sets_health_flags_and_release_timer --lib`
+- `cargo test -p wow-network player_alive_recovery_update_clears_all_visible_aura_slots --lib`
+- `cargo test -p wow-network map_runtime_player_world_damage --lib`
+- `cargo test -p wow-network map_runtime_db_creature_lethal_immolate_clears_preapplied_dot --lib`
+- `cargo test -p wow-network map_runtime_db_creature_immolate_applies_player_dot_ticks --lib`
+- `cargo test -p wow-network aura --lib`
+- `cargo test -p wow-network spell --lib`
+- `cargo test -p wow-network creature_spell --lib`
+- `cargo test -p wow-network corpse --lib`
 - `.\scripts\test-rust.cmd`
 - First `.\scripts\test-rust.cmd` attempt passed tests but failed the final
   `cargo build -p authserver` because the running local stack had

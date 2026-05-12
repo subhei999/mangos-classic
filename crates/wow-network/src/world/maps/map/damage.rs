@@ -119,7 +119,15 @@ fn apply_player_runtime_world_damage(
     let health_packet = if died {
         OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
-            body: build_player_health_update_body(target, 0)?,
+            body: build_player_death_update_body(
+                target,
+                0,
+                player.flags,
+                PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                player_unit_flags(false),
+                player.class,
+                PLAYER_STAND_STATE_DEAD,
+            )?,
         }
     } else {
         OutboundWorldPacket {

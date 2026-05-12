@@ -69,7 +69,6 @@ async fn handle_combat_tick(
             character_db_pool: deps.character_db_pool,
             world_db_pool: deps.world_db_pool,
             shared_world: deps.shared_world,
-            account_id: deps.account_id,
             session_id: deps.session_id,
         },
         session,
@@ -84,7 +83,6 @@ struct CombatTickDeps<'a> {
     world_db_pool: &'a MySqlPool,
     shared_world: SharedWorldDeps<'a>,
     parties: &'a PartyManager,
-    account_id: u32,
     session_id: SessionId,
 }
 

@@ -2400,6 +2400,42 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
+    async fn advance_all_player_death_presentations(
+        &self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = {
+            self.maps
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_player_death_presentations(now)?);
+        }
+        Ok(packets)
+    }
+
+    async fn force_player_death_presentation(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .force_player_death_presentation(character_guid, now)?;
+        Ok(packets)
+    }
+
     async fn advance_all_db_creature_auras(
         &self,
         now: Instant,

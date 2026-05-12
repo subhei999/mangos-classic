@@ -184,7 +184,6 @@ struct ActiveDbCreatureAttackContext<'a> {
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     shared_world: SharedWorldDeps<'a>,
-    account_id: u32,
     session_id: SessionId,
 }
 
@@ -199,7 +198,6 @@ async fn send_single_active_db_creature_attack(
         character_db_pool,
         world_db_pool,
         shared_world,
-        account_id,
         session_id,
     } = context;
     let attacker = combat.attacker;
@@ -262,9 +260,7 @@ async fn send_single_active_db_creature_attack(
     }
     if complete_ready_db_creature_spell_cast(
         stream,
-        context.character_db_pool,
         shared_world,
-        context.account_id,
         map_id,
         session,
         attacker,
@@ -278,10 +274,8 @@ async fn send_single_active_db_creature_attack(
     }
     if try_start_db_creature_spell_cast(
         stream,
-        context.character_db_pool,
         context.world_db_pool,
         shared_world,
-        context.account_id,
         session_id,
         map_id,
         session,
@@ -425,6 +419,24 @@ async fn send_single_active_db_creature_attack(
     }
     mirror_session_active_creature_combat(session, event.combat);
     shared_world.sessions.dispatch(event.observer_packets).await;
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if let Some(packet) = event.aura_packet {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     send_packet(
         stream,
         SMSG_ATTACKERSTATEUPDATE,
@@ -435,7 +447,7 @@ async fn send_single_active_db_creature_attack(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_player_health_update_body(player, session.player_health)?,
+        &event.health_update_body,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -462,27 +474,7 @@ async fn send_single_active_db_creature_attack(
         .await?;
     }
     if session.player_health == 0 {
-        let death_time = Instant::now();
-        kill_player_from_creature(
-            stream,
-            character_db_pool,
-            shared_world.maps,
-            account_id,
-            session,
-            player,
-            header_crypto,
-        )
-        .await?;
-        send_db_creature_victim_death_evades(
-            stream,
-            shared_world,
-            map_id,
-            session,
-            player,
-            death_time,
-            header_crypto,
-        )
-        .await?;
+        refresh_session_from_map_owned_player_death(shared_world.maps, map_id, session).await;
     }
     Ok(())
 }
@@ -490,10 +482,8 @@ async fn send_single_active_db_creature_attack(
 #[allow(clippy::too_many_arguments)]
 async fn try_start_db_creature_spell_cast(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
-    account_id: u32,
     current_session_id: SessionId,
     map_id: u32,
     session: &mut WorldSessionState,
@@ -640,9 +630,7 @@ async fn try_start_db_creature_spell_cast(
     if cast_time_millis == 0 {
         complete_ready_db_creature_spell_cast(
             stream,
-            character_db_pool,
             shared_world,
-            account_id,
             map_id,
             session,
             attacker,
@@ -777,9 +765,7 @@ fn db_creature_spell_target_in_range(
 #[allow(clippy::too_many_arguments)]
 async fn complete_ready_db_creature_spell_cast(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
-    account_id: u32,
     map_id: u32,
     session: &mut WorldSessionState,
     attacker: ObjectGuid,
@@ -864,27 +850,8 @@ async fn complete_ready_db_creature_spell_cast(
             shared_world.sessions.dispatch(damage.observer_packets).await;
             if session.player_health == 0 {
                 aura_event = None;
-                let death_time = Instant::now();
-                kill_player_from_creature(
-                    stream,
-                    character_db_pool,
-                    shared_world.maps,
-                    account_id,
-                    session,
-                    victim,
-                    header_crypto,
-                )
-                .await?;
-                send_db_creature_victim_death_evades(
-                    stream,
-                    shared_world,
-                    map_id,
-                    session,
-                    victim,
-                    death_time,
-                    header_crypto,
-                )
-                .await?;
+                refresh_session_from_map_owned_player_death(shared_world.maps, map_id, session)
+                    .await;
             }
         }
         DbCreatureCompletedSpellEffect::CreatureHeal(heal) => {
@@ -1027,40 +994,36 @@ async fn apply_player_taken_melee_proc_auras(
     Ok(())
 }
 
-async fn send_db_creature_victim_death_evades(
-    stream: &mut WorldPacketSink,
-    shared_world: SharedWorldDeps<'_>,
+async fn refresh_session_from_map_owned_player_death(
+    maps: &Arc<MapRuntimeManager>,
     map_id: u32,
     session: &mut WorldSessionState,
-    player: ObjectGuid,
-    now: Instant,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    let active_combats = shared_world
-        .maps
-        .active_db_creature_combats_for_victim(map_id, player)
-        .await;
-    if active_combats.is_empty() {
-        clear_session_active_creature_combats(session);
-        return Ok(());
-    }
-    let broadcast = CreatureCombatBroadcast {
-        shared_world,
-        map_id,
-        player,
+) {
+    let Some(character) = session.active_character.as_ref() else {
+        return;
     };
-    for combat in active_combats {
-        send_db_creature_evade_and_return_home(
-            stream,
-            broadcast,
-            session,
-            combat.attacker,
-            now,
-            header_crypto,
-        )
-        .await?;
+    let Some(snapshot) = maps.player_runtime_snapshot(map_id, character.guid).await else {
+        return;
+    };
+    if snapshot.health != 0 || snapshot.death_state == PlayerDeathState::Alive {
+        return;
     }
-    Ok(())
+    session.player_health = 0;
+    session.player_death_state = snapshot.death_state;
+    session.player_death_presentation_pending = snapshot.death_state == PlayerDeathState::JustDied;
+    session.player_stand_state = snapshot.stand_state;
+    session.active_auras = snapshot.active_auras;
+    session.player_flags = snapshot.flags;
+    session.player_in_combat = false;
+    mirror_session_player_auto_attack(session, None, None);
+    clear_session_active_creature_combats(session);
+    if let Some(character) = session.active_character.as_mut() {
+        character.position = snapshot.position;
+        character.movement_flags = snapshot.movement_flags;
+        character.client_time = snapshot.client_time;
+        character.fall_time = snapshot.fall_time;
+        character.jump = snapshot.jump;
+    }
 }
 
 async fn defer_ready_db_creature_swing_retry(

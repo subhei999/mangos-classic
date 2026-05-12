@@ -17,6 +17,7 @@ struct Player {
 enum PlayerDeathState {
     #[default]
     Alive,
+    JustDied,
     Corpse,
     Ghost,
 }
@@ -926,7 +927,7 @@ fn build_player_world_stats_update_body(
     let max_health = effective_world_stats.max_health().max(1);
     let max_mana = effective_world_stats.max_mana();
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_update_value(&mut values, UNIT_FIELD_HEALTH, health.max(1).min(max_health))?;
+    set_update_value(&mut values, UNIT_FIELD_HEALTH, health.min(max_health))?;
     set_update_value(&mut values, UNIT_FIELD_POWER1, power1.min(max_mana))?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
     set_update_value(&mut values, UNIT_FIELD_MAXPOWER1, max_mana)?;

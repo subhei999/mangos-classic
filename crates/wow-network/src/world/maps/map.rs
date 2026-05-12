@@ -211,6 +211,11 @@ struct PlayerRuntimeSnapshot {
     active_combat_next_swing_at: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PlayerDeathPresentationRuntime {
+    waiting_since: Instant,
+}
+
 #[derive(Debug)]
 struct PlayerRewardRuntimeUpdate {
     level: u8,
@@ -282,6 +287,7 @@ struct MapRuntime {
     active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
     pending_spell_events: Vec<PendingSpellEvent>,
     next_spell_event_id: u64,
+    pending_player_death_presentations: HashMap<u32, PlayerDeathPresentationRuntime>,
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +410,9 @@ struct DbCreaturePlayerDamageEvent {
     damage: u32,
     victim_health: u32,
     combat: CreatureCombatState,
+    direct_packets: Vec<OutboundWorldPacket>,
+    aura_packet: Option<OutboundWorldPacket>,
+    health_update_body: Vec<u8>,
     observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
@@ -621,6 +630,7 @@ impl MapRuntime {
             active_player_spell_casts: HashMap::new(),
             pending_spell_events: Vec::new(),
             next_spell_event_id: 1,
+            pending_player_death_presentations: HashMap::new(),
         }
     }
 

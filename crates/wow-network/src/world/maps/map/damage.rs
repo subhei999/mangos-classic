@@ -1,4 +1,5 @@
 // CMaNGOS reference: src/game/Entities/Unit.cpp Unit::DealDamage/Kill/SetDeathState.
+const AIRBORNE_DEATH_PRESENTATION_FALLBACK: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -25,8 +26,10 @@ struct AppliedPlayerWorldDamage {
     position: WorldPosition,
     direct_session_id: Option<SessionId>,
     direct_packets: Vec<OutboundWorldPacket>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
     health_packet: OutboundWorldPacket,
     aura_packet: Option<OutboundWorldPacket>,
+    death_presentation_deferred: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,12 +56,242 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&target.counter()) else {
             return Ok(None);
         };
-        let applied =
+        let mut applied =
             apply_player_runtime_world_damage(player, target, source, requested_damage, kind, now)?;
-        if applied.as_ref().is_some_and(|damage| damage.died) {
-            self.active_player_spell_casts.remove(&target.counter());
+        if let Some(damage) = applied.as_mut().filter(|damage| damage.died) {
+            if damage.death_presentation_deferred {
+                self.pending_player_death_presentations.insert(
+                    target.counter(),
+                    PlayerDeathPresentationRuntime { waiting_since: now },
+                );
+            } else {
+                self.pending_player_death_presentations
+                    .remove(&target.counter());
+            }
+            let cleanup = self.finalize_player_death_cleanup(target, now)?;
+            damage.direct_packets.extend(cleanup.direct_packets);
+            damage.observer_packets.extend(cleanup.observer_packets);
         }
         Ok(applied)
+    }
+
+    fn finalize_player_death_cleanup(
+        &mut self,
+        player_guid: ObjectGuid,
+        now: Instant,
+    ) -> anyhow::Result<PlayerDeathCleanupPackets> {
+        let character_guid = player_guid.counter();
+        self.active_player_spell_casts.remove(&character_guid);
+        self.pending_spell_events
+            .retain(|event| event.caster_character_guid != character_guid);
+        self.active_creature_spell_casts
+            .retain(|_, cast| cast.target != player_guid);
+
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(PlayerDeathCleanupPackets::default());
+        };
+        player.active_combat_target = None;
+        player.active_combat_next_swing_at = None;
+        player.queued_next_melee_spell = None;
+        player.combo_target = None;
+        player.combo_points = 0;
+        player.looting = false;
+        let player_position = player.position;
+        let direct_session_id = player.client_session_id();
+        let _ = player;
+
+        let mut direct_packets = Vec::new();
+        let mut observer_packets = Vec::new();
+        let player_combat_flags = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_unit_flags_update_body(player_guid, player_unit_flags(false))?,
+        };
+        direct_packets.push(player_combat_flags.clone());
+        observer_packets.extend(self.nearby_player_guids(
+            player_position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(character_guid),
+        )
+        .into_iter()
+        .filter_map(|observer_guid| {
+            self.players
+                .get(&observer_guid)
+                .and_then(|observer| observer.packet_to_client(player_combat_flags.clone()))
+        }));
+
+        let active_combats = self.active_db_creature_combats_for_victim(player_guid);
+        for combat in active_combats {
+            let attacker = combat.attacker;
+            let Some(mut creature) = self.prepare_db_creature_evade(attacker) else {
+                continue;
+            };
+            let mut creature_packets = vec![
+                OutboundWorldPacket {
+                    opcode: SMSG_ATTACKSTOP,
+                    body: build_attack_stop_body(attacker, player_guid, false)?,
+                },
+                OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_unit_flags_update_body(
+                        attacker,
+                        db_creature_unit_flags(&creature, false),
+                    )?,
+                },
+                OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_db_creature_state_update_body(attacker, creature.health, 0)?,
+                },
+            ];
+            if let Some((returned, motion)) =
+                self.start_db_creature_return_home_motion(&DbCreatureNavigationGuardrail::default(), attacker, now)
+            {
+                creature = returned;
+                creature_packets.push(OutboundWorldPacket {
+                    opcode: SMSG_MONSTER_MOVE,
+                    body: build_monster_move_path_body_inner(
+                        attacker,
+                        motion.start,
+                        &motion.path,
+                        motion.spline_id,
+                        motion.duration.as_millis().max(1) as u32,
+                        None,
+                        true,
+                    )?,
+                });
+            }
+            direct_packets.extend(creature_packets.iter().cloned());
+            observer_packets.extend(self.nearby_player_guids(
+                creature.current_position,
+                CREATURE_SPAWN_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .flat_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .map(|observer| {
+                        creature_packets
+                            .iter()
+                            .cloned()
+                            .filter_map(|packet| observer.packet_to_client(packet))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            }));
+        }
+
+        self.clear_db_creature_combats_for_victim(player_guid);
+        self.creature_threats.retain(|_, threats| {
+            threats.retain(|entry| entry.victim != player_guid);
+            !threats.is_empty()
+        });
+        if direct_session_id.is_none() {
+            direct_packets.clear();
+        }
+        Ok(PlayerDeathCleanupPackets {
+            direct_packets,
+            observer_packets,
+        })
+    }
+
+    fn advance_player_death_presentations(
+        &mut self,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let pending = self
+            .pending_player_death_presentations
+            .iter()
+            .map(|(guid, presentation)| (*guid, *presentation))
+            .collect::<Vec<_>>();
+        let mut packets = Vec::new();
+        for (character_guid, presentation) in pending {
+            let force = now.saturating_duration_since(presentation.waiting_since)
+                >= AIRBORNE_DEATH_PRESENTATION_FALLBACK;
+            packets.extend(self.present_player_death_if_ready(character_guid, now, force)?);
+        }
+        Ok(packets)
+    }
+
+    fn force_player_death_presentation(
+        &mut self,
+        character_guid: u32,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        self.present_player_death_if_ready(character_guid, now, true)
+    }
+
+    fn present_player_death_if_ready(
+        &mut self,
+        character_guid: u32,
+        _now: Instant,
+        force: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            self.pending_player_death_presentations.remove(&character_guid);
+            return Ok(Vec::new());
+        };
+        if player.health != 0 || player.death_state == PlayerDeathState::Alive {
+            self.pending_player_death_presentations.remove(&character_guid);
+            return Ok(Vec::new());
+        }
+        if player.death_state == PlayerDeathState::Corpse {
+            self.pending_player_death_presentations.remove(&character_guid);
+            return Ok(Vec::new());
+        }
+        let airborne = player_runtime_is_airborne(player);
+        if airborne && !force {
+            return Ok(Vec::new());
+        }
+        if force && airborne {
+            if let Some(ground_position) = self.geometry.ground_position(player.position) {
+                player.position = ground_position;
+            }
+        }
+        clear_player_fall_state_for_death_presentation(player);
+        player.death_state = PlayerDeathState::Corpse;
+        player.stand_state = PLAYER_STAND_STATE_DEAD;
+        let position = player.position;
+        let flags = player.flags;
+        let class = player.class;
+        let direct_session_id = player.client_session_id();
+        self.pending_player_death_presentations.remove(&character_guid);
+
+        let death_packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_death_update_body(
+                player_guid,
+                0,
+                flags,
+                PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                player_unit_flags(false),
+                class,
+                PLAYER_STAND_STATE_DEAD,
+            )?,
+        };
+        let mut packets = Vec::new();
+        if let Some(session_id) = direct_session_id {
+            packets.push((
+                session_id,
+                OutboundWorldPacket {
+                    opcode: SMSG_FORCE_MOVE_ROOT,
+                    body: build_force_move_root_body(player_guid, 0)?,
+                },
+            ));
+            packets.push((session_id, death_packet.clone()));
+        }
+        packets.extend(self.nearby_player_guids(
+            position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(character_guid),
+        )
+        .into_iter()
+        .filter_map(|observer_guid| {
+            self.players
+                .get(&observer_guid)
+                .and_then(|observer| observer.packet_to_client(death_packet.clone()))
+        }));
+        Ok(packets)
     }
 }
 
@@ -85,7 +318,8 @@ fn apply_player_runtime_world_damage(
     let died = player.health == 0;
     let position = player.position;
     let direct_session_id = player.client_session_id();
-    let direct_packets = Vec::new();
+    let death_presentation_deferred = died && player_runtime_is_airborne(player);
+    let mut direct_packets = Vec::new();
     let aura_packet = if died && !player.active_auras.is_empty() {
         player.active_auras.clear();
         Some(OutboundWorldPacket {
@@ -96,11 +330,24 @@ fn apply_player_runtime_world_damage(
         None
     };
     if died {
-        player.death_state = PlayerDeathState::Corpse;
+        player.death_state = if death_presentation_deferred {
+            PlayerDeathState::JustDied
+        } else {
+            PlayerDeathState::Corpse
+        };
         player.active_combat_target = None;
         player.active_combat_next_swing_at = None;
         player.queued_next_melee_spell = None;
-        player.stand_state = PLAYER_STAND_STATE_DEAD;
+        player.combo_target = None;
+        player.combo_points = 0;
+        player.looting = false;
+        if !death_presentation_deferred {
+            player.stand_state = PLAYER_STAND_STATE_DEAD;
+            direct_packets.push(OutboundWorldPacket {
+                opcode: SMSG_FORCE_MOVE_ROOT,
+                body: build_force_move_root_body(target, 0)?,
+            });
+        }
         let source_guid = source.map(|guid| format!("0x{:016X}", guid.raw()));
         warn!(
             target = format_args!("0x{:016X}", target.raw()),
@@ -113,8 +360,7 @@ fn apply_player_runtime_world_damage(
         );
     }
     let remaining_health = player.health;
-    let defer_death_presentation = died && player_runtime_is_airborne(player);
-    let health_packet = if died && !defer_death_presentation {
+    let health_packet = if died && !death_presentation_deferred {
         OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_player_death_update_body(
@@ -144,13 +390,30 @@ fn apply_player_runtime_world_damage(
         position,
         direct_session_id,
         direct_packets,
+        observer_packets: Vec::new(),
         health_packet,
         aura_packet,
+        death_presentation_deferred,
     }))
 }
 
 fn player_runtime_is_airborne(player: &PlayerRuntime) -> bool {
-    player.movement_flags & MOVEFLAG_JUMPING != 0 || player.fall_time > 0
+    player.movement_flags & MOVEFLAG_JUMPING != 0
+        || (player.fall_time > 0 && player.last_fall_z.is_some())
+}
+
+fn clear_player_fall_state_for_death_presentation(player: &mut PlayerRuntime) {
+    player.movement_flags &= !MOVEFLAG_JUMPING;
+    player.fall_time = 0;
+    player.last_fall_z = None;
+    player.last_fall_time = 0;
+    player.jump = JumpInfo::default();
+}
+
+#[derive(Default)]
+struct PlayerDeathCleanupPackets {
+    direct_packets: Vec<OutboundWorldPacket>,
+    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 impl MapRuntime {

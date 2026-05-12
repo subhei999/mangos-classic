@@ -13,29 +13,16 @@ async fn handle_repop_request(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.player_death_state == PlayerDeathState::Alive {
-        if let Some(character) = session.active_character.as_ref() {
-            if deps
-                .maps
-                .player_runtime_snapshot(character.position.map_id, character.guid)
-                .await
-                .is_some_and(|snapshot| snapshot.health == 0)
-            {
-                let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-                kill_player_from_creature(
-                    stream,
-                    deps.character_db_pool,
-                    deps.maps,
-                    deps.account_id,
-                    session,
-                    player,
-                    header_crypto,
-                )
-                .await?;
-            }
-        }
-    }
+    let presentation_packets =
+        refresh_session_death_state_before_repop(deps.maps, session).await?;
+    deps.sessions.dispatch(presentation_packets).await;
     if session.player_death_state != PlayerDeathState::Corpse {
+        warn!(
+            player_death_state = ?session.player_death_state,
+            pending = session.player_death_presentation_pending,
+            health = session.player_health,
+            "Ignoring Release Spirit request before player is in corpse state"
+        );
         return Ok(());
     }
     if session.active_character.is_none() {
@@ -139,6 +126,33 @@ async fn handle_repop_request(
     )
     .await?;
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await
+}
+
+async fn refresh_session_death_state_before_repop(
+    maps: &Arc<MapRuntimeManager>,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+    let Some(character) = session.active_character.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(mut snapshot) = maps.player_runtime_snapshot(map_id, character_guid).await else {
+        return Ok(Vec::new());
+    };
+    let mut presentation_packets = Vec::new();
+    if snapshot.health == 0 && snapshot.death_state == PlayerDeathState::JustDied {
+        presentation_packets =
+            maps.force_player_death_presentation(map_id, character_guid, Instant::now())
+                .await?;
+        if let Some(updated) = maps.player_runtime_snapshot(map_id, character_guid).await {
+            snapshot = updated;
+        }
+    }
+    if snapshot.health == 0 && snapshot.death_state != PlayerDeathState::Alive {
+        refresh_session_from_map_owned_player_death(maps, map_id, session).await;
+    }
+    Ok(presentation_packets)
 }
 
 async fn select_repop_graveyard_position(
@@ -424,50 +438,6 @@ async fn resurrect_player_at_position(
     )
     .await?;
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await
-}
-
-async fn kill_player_from_creature(
-    stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
-    maps: &Arc<MapRuntimeManager>,
-    account_id: u32,
-    session: &mut WorldSessionState,
-    player: ObjectGuid,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    if session.player_death_state != PlayerDeathState::Alive {
-        return Ok(());
-    }
-    let Some(character) = session.active_character.as_ref() else {
-        return Ok(());
-    };
-    let character_class = character.class;
-    let character_is_airborne = active_character_is_airborne(character);
-    session.player_death_state = PlayerDeathState::Corpse;
-    session.player_death_presentation_pending = character_is_airborne;
-    session.player_corpse = None;
-    session.player_health = 0;
-    session.player_stand_state = PLAYER_STAND_STATE_DEAD;
-    session.active_auras.clear();
-    session.player_in_combat = false;
-    mirror_session_player_auto_attack(session, None, None);
-    clear_session_active_creature_combats(session);
-    if let Some(character) = session.active_character.as_ref() {
-        maps.set_player_auto_attack(character.position.map_id, character.guid, None, None)
-            .await;
-    }
-
-    if !character_is_airborne {
-        send_player_death_presentation(
-            stream,
-            session,
-            player,
-            character_class,
-            header_crypto,
-        )
-        .await?;
-    }
-    persist_player_death_state(character_db_pool, account_id, session).await
 }
 
 async fn create_or_get_player_corpse(

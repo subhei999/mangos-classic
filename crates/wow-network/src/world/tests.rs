@@ -11420,7 +11420,193 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
 }
 
 #[test]
-fn map_runtime_db_creature_lethal_immolate_clears_preapplied_dot() {
+fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    map.players.get_mut(&1).unwrap().level = 30;
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 190;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level = 9;
+    spawn.template.max_level = 10;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        10,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: 0,
+        },
+        aura: Some(aura),
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("cast should start");
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("fully resisted casts should still complete and emit SPELL_GO");
+    assert!(!completed.spell_go_body.is_empty());
+    assert!(completed.aura_event.is_none());
+    let DbCreatureCompletedSpellEffect::PlayerDamage(damage) = completed.effect else {
+        panic!("Immolate should complete as player spell damage");
+    };
+    assert_eq!(damage.damage, 0);
+    assert_eq!(damage.victim_health, 20);
+    assert!(damage.spell_miss_log_body.is_some());
+    assert!(damage.spell_non_melee_log_body.is_none());
+    assert!(map.players.get(&1).unwrap().active_auras.is_empty());
+    assert!(map
+        .active_db_creature_spell_cast_due_at(creature_guid)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_creature_dot_death_presents_release_and_clears_combat() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 189;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        6,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: immolate.attributes_ex3,
+        },
+        aura: Some(aura),
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 0,
+        due_at: now,
+    })
+    .unwrap()
+    .expect("cast should start");
+    map.complete_ready_db_creature_spell_cast(creature_guid, victim, now)
+        .unwrap()
+        .expect("instant cast should complete");
+    let tick_at = map.players.get(&1).unwrap().active_auras[0]
+        .periodic_damage
+        .unwrap()
+        .next_tick_at;
+    {
+        let player = map.players.get_mut(&1).unwrap();
+        player.health = 4;
+        player.active_combat_target = Some(creature_guid);
+        player.active_combat_next_swing_at = Some(tick_at);
+        player.queued_next_melee_spell = Some(QueuedNextMeleeSpell {
+            spell_id: 78,
+            target: creature_guid,
+            bonus_damage: 1,
+            rage_cost: 15,
+            mana_cost: 0,
+        });
+    }
+
+    let packets = map.advance_player_aura_expirations(tick_at).unwrap();
+    let player = map.players.get(&1).unwrap();
+    assert_eq!(player.health, 0);
+    assert_eq!(player.death_state, PlayerDeathState::Corpse);
+    assert_eq!(player.stand_state, PLAYER_STAND_STATE_DEAD);
+    assert!(player.active_auras.is_empty());
+    assert!(player.active_combat_target.is_none());
+    assert!(player.active_combat_next_swing_at.is_none());
+    assert!(player.queued_next_melee_spell.is_none());
+    assert!(map.active_db_creature_combats_for_victim(victim).is_empty());
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTOP));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+    let mut packed_player_guid = Vec::new();
+    PackedGuid::write(&mut packed_player_guid, victim).unwrap();
+    let direct_player_health_updates = packets
+        .iter()
+        .filter(|(session, packet)| {
+            *session == SessionId(1)
+                && packet.opcode == SMSG_UPDATE_OBJECT
+                && packet.body.len() > 6 + packed_player_guid.len()
+                && packet.body[5] == UPDATE_TYPE_VALUES
+                && packet.body[6..6 + packed_player_guid.len()] == packed_player_guid
+        })
+        .filter_map(|(_, packet)| {
+            let (values, _) = decode_values_update_block(&packet.body[5..], victim);
+            values.get(UNIT_FIELD_HEALTH).copied().flatten()
+        })
+        .collect::<Vec<_>>();
+    assert!(direct_player_health_updates.contains(&0));
+    assert!(
+        !direct_player_health_updates.contains(&1),
+        "death aura cleanup must not send a later 1 HP stat refresh: {direct_player_health_updates:?}"
+    );
+}
+
+#[test]
+fn map_runtime_db_creature_lethal_immolate_does_not_apply_dot() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     insert_map_runtime_player_for_test(&mut map, 1, player_position);
@@ -11479,10 +11665,8 @@ fn map_runtime_db_creature_lethal_immolate_clears_preapplied_dot() {
     };
 
     assert_eq!(damage.victim_health, 0);
-    assert!(
-        damage.aura_packet.is_some(),
-        "lethal spell damage must send the death aura-clear packet after removing the preapplied DoT"
-    );
+    assert!(completed.aura_event.is_none());
+    assert!(damage.aura_packet.is_none());
     let player = map.players.get(&1).unwrap();
     assert_eq!(player.active_auras.len(), 0);
     assert_eq!(player.death_state, PlayerDeathState::Corpse);
@@ -13157,6 +13341,15 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
     assert_eq!(values[UNIT_FIELD_STAT0 + 3], Some(18));
     assert_eq!(values[PLAYER_FIELD_POSSTAT0 + 3], Some(5));
     assert_eq!(values[UNIT_FIELD_MAXPOWER1], Some(effective.max_mana()));
+    let zero_health_body =
+        build_player_world_stats_update_body(7, &world_stats, &effective, 0, 20).unwrap();
+    let (values, trailing) = decode_values_update_block(&zero_health_body[5..], player_guid);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_HEALTH],
+        Some(0),
+        "aura/stat refreshes after death must not resurrect the client to 1 HP"
+    );
 
     let mut resistance_template = test_spell_template(687);
     resistance_template.effect1 = SPELL_EFFECT_APPLY_AURA;
@@ -14012,7 +14205,7 @@ fn map_runtime_fall_land_applies_cmangos_fall_damage_and_log() {
         .unwrap();
 
     let falling = MovementInfo {
-        flags: 0,
+        flags: MOVEFLAG_JUMPING,
         client_time: 1,
         position: WorldPosition::new(0, -8950.0, -130.0, 90.0, 0.0),
         fall_time: 500,
@@ -14555,6 +14748,27 @@ fn map_runtime_gameplay_sync_preserves_dead_player_zero_health() {
 
     session.player_death_state = PlayerDeathState::Alive;
     session.player_health = 42;
+    if let Some(character) = session.active_character.as_mut() {
+        character.position = WorldPosition::new(0, -8940.0, -120.0, 90.0, 1.0);
+        character.movement_flags = MOVEFLAG_JUMPING;
+        character.fall_time = 456;
+        character.jump = JumpInfo {
+            z_speed: 7.0,
+            cos_angle: 1.0,
+            sin_angle: 0.0,
+            xy_speed: 4.5,
+        };
+    }
+    map.sync_player_gameplay_state(7, &session);
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(
+        snapshot.health, 0,
+        "a stale alive session sync must not resurrect a map-owned corpse"
+    );
+    assert_eq!(snapshot.position, position);
+    assert_eq!(snapshot.movement_flags, 0);
+    assert_eq!(snapshot.fall_time, 0);
+    map.update_player_health(7, 42).unwrap();
     map.sync_player_gameplay_state(7, &session);
     assert_eq!(map.player_runtime_snapshot(7).unwrap().health, 42);
 }
@@ -15095,44 +15309,21 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
         .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
 }
 
-#[tokio::test]
-async fn player_death_evades_active_db_creature_and_starts_return_home() {
-    let maps = Arc::new(MapRuntimeManager::default());
-    let sessions = Arc::new(SessionRegistry::default());
-    let object_mgr = ObjectMgr::default();
-    let shared_world = SharedWorldDeps {
-        object_mgr: &object_mgr,
-        maps: &maps,
-        sessions: &sessions,
-    };
+#[test]
+fn player_death_evades_active_db_creature_and_starts_return_home() {
+    let mut map = MapRuntime::new(0, 0);
     let home = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let death_position = WorldPosition::new(0, -8940.0, -130.0, 83.5, 0.0);
     let observer_position = WorldPosition::new(0, -8941.0, -130.0, 83.5, 0.0);
     let victim_session_id = SessionId(1);
     let observer_session_id = SessionId(2);
-    let (victim_tx, mut victim_rx) = mpsc::unbounded_channel();
-    let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
-    let mut sink = WorldPacketSink::new(victim_tx);
-    sessions
-        .register(
-            observer_session_id,
-            SessionHandle {
-                account_id: 2,
-                character_guid: Some(2),
-                character_name: Some("Player2".to_string()),
-                outbound: observer_tx,
-            },
-        )
-        .await;
-    maps.add_player(test_player_runtime(1, victim_session_id, death_position))
-        .await
+    map.add_player(test_player_runtime(1, victim_session_id, death_position))
         .unwrap();
-    maps.add_player(test_player_runtime(
+    map.add_player(test_player_runtime(
         2,
         observer_session_id,
         observer_position,
     ))
-    .await
     .unwrap();
 
     let mut spawn = test_creature_spawn(6);
@@ -15146,59 +15337,24 @@ async fn player_death_evades_active_db_creature_and_starts_return_home() {
     creature.health = 1;
     creature.lootable = true;
     let max_health = creature.max_health();
-    maps.share_db_creature_snapshots(0, vec![creature.clone()])
-        .await;
+    map.creatures.insert(attacker.raw(), creature);
     let player = ObjectGuid::new(HighGuid::Player, 0, 1);
     let now = Instant::now();
-    let combat = maps
-        .begin_db_creature_combat(0, attacker, player, now)
-        .await
-        .expect("combat should start")
-        .0;
-    let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: death_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 0,
-        player_death_state: PlayerDeathState::Corpse,
-        ..WorldSessionState::default()
-    };
-    session.db_creatures.insert(attacker.raw(), creature);
-    session
-        .active_creature_combats
-        .insert(attacker.raw(), combat);
-    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    map.begin_db_creature_combat(attacker, player, now)
+        .expect("combat should start");
+    let death = map
+        .apply_player_world_damage(
+            player,
+            Some(attacker),
+            999,
+            WorldDamageKind::SpellDirect,
+            now,
+        )
+        .unwrap()
+        .expect("damage should apply");
+    let snapshot = map.creatures.get(&attacker.raw()).unwrap();
 
-    send_db_creature_victim_death_evades(
-        &mut sink,
-        shared_world,
-        0,
-        &mut session,
-        player,
-        now,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap();
-
-    let victim_packets = std::iter::from_fn(|| victim_rx.try_recv().ok()).collect::<Vec<_>>();
-    let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
-    let snapshot = maps.db_creature_snapshot(0, attacker).await.unwrap();
-
-    assert!(maps
-        .active_db_creature_combats_for_victim(0, player)
-        .await
-        .is_empty());
+    assert!(map.active_db_creature_combats_for_victim(player).is_empty());
     assert_eq!(snapshot.health, max_health);
     assert!(!snapshot.lootable);
     assert!(matches!(
@@ -15206,21 +15362,22 @@ async fn player_death_evades_active_db_creature_and_starts_return_home() {
         CreatureMotionState::ReturnHome(CreatureReturnHomeMotion { destination, .. })
             if distance_2d(destination.x, destination.y, home.x, home.y) <= f32::EPSILON
     ));
-    assert!(!session
-        .active_creature_combats
-        .contains_key(&attacker.raw()));
-    assert!(victim_packets
+    assert!(death
+        .direct_packets
         .iter()
         .any(|packet| packet.opcode == SMSG_ATTACKSTOP));
-    assert!(victim_packets
+    assert!(death
+        .direct_packets
         .iter()
         .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
-    assert!(observer_packets
+    assert!(death
+        .observer_packets
         .iter()
-        .any(|packet| packet.opcode == SMSG_ATTACKSTOP));
-    assert!(observer_packets
+        .any(|(_, packet)| packet.opcode == SMSG_ATTACKSTOP));
+    assert!(death
+        .observer_packets
         .iter()
-        .any(|packet| packet.opcode == SMSG_MONSTER_MOVE));
+        .any(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE));
 }
 
 #[test]
@@ -15256,9 +15413,13 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
 
     assert!(death.died);
     assert_eq!(death.remaining_health, 0);
+    assert!(death.death_presentation_deferred);
     assert!(
-        death.direct_packets.is_empty(),
-        "raw map damage reaches JUST_DIED-style state; root is sent by the player death finalizer"
+        !death
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == SMSG_FORCE_MOVE_ROOT),
+        "airborne death must not root the client until landing"
     );
     let mut packed = Vec::new();
     PackedGuid::write(&mut packed, player_guid).unwrap();
@@ -15269,12 +15430,31 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
     assert_eq!(values[PLAYER_FIELD_BYTES], None);
     let snapshot = map.player_runtime_snapshot(7).unwrap();
     assert_eq!(snapshot.health, 0);
-    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
-    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
+    assert_eq!(snapshot.death_state, PlayerDeathState::JustDied);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_STAND);
     let player = map.players.get(&7).unwrap();
     assert_eq!(player.movement_flags, MOVEFLAG_JUMPING);
     assert_eq!(player.fall_time, 456);
     assert_eq!(player.jump, jump);
+
+    assert!(map
+        .present_player_death_if_ready(7, Instant::now(), false)
+        .unwrap()
+        .is_empty());
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.movement_flags = 0;
+        player.fall_time = 0;
+    }
+    let presentation = map
+        .present_player_death_if_ready(7, Instant::now(), false)
+        .unwrap();
+    assert!(presentation
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
 
     let second = map
         .apply_player_world_damage(
@@ -15289,6 +15469,278 @@ fn map_runtime_player_world_damage_makes_zero_health_corpse_state_authoritative(
         second.is_none(),
         "dead players must not accept a second damage/death transition"
     );
+}
+
+#[test]
+fn map_runtime_airborne_death_presentation_fallback_forces_after_timeout() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let position = WorldPosition::new(0, 11.0, 22.0, 33.0, 0.0);
+    map.add_player(test_player_runtime(7, SessionId::next(), position))
+        .unwrap();
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.movement_flags = MOVEFLAG_JUMPING;
+        player.fall_time = 456;
+    }
+    let killed_at = Instant::now();
+
+    let death = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            999,
+            WorldDamageKind::SpellDirect,
+            killed_at,
+        )
+        .unwrap()
+        .expect("damage should apply");
+
+    assert!(death.died);
+    assert!(death.death_presentation_deferred);
+    assert!(map
+        .advance_player_death_presentations(killed_at + Duration::from_millis(2_999))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        map.player_runtime_snapshot(7).unwrap().death_state,
+        PlayerDeathState::JustDied
+    );
+
+    let presentation = map
+        .advance_player_death_presentations(killed_at + Duration::from_secs(3))
+        .unwrap();
+
+    assert!(presentation
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
+    assert_eq!(snapshot.movement_flags & MOVEFLAG_JUMPING, 0);
+    assert_eq!(snapshot.fall_time, 0);
+    assert_eq!(snapshot.position, position);
+    assert!(map
+        .advance_player_death_presentations(killed_at + Duration::from_secs(4))
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn repop_refreshes_session_after_map_presents_delayed_death() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.health = 0;
+    player.death_state = PlayerDeathState::Corpse;
+    player.stand_state = PLAYER_STAND_STATE_DEAD;
+    maps.add_player(player).await.unwrap();
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: MOVEFLAG_JUMPING,
+            client_time: 123,
+            fall_time: 456,
+            jump: JumpInfo::default(),
+        }),
+        player_death_state: PlayerDeathState::JustDied,
+        player_death_presentation_pending: true,
+        player_health: 0,
+        player_stand_state: PLAYER_STAND_STATE_STAND,
+        ..WorldSessionState::default()
+    };
+
+    let packets = refresh_session_death_state_before_repop(&maps, &mut session)
+        .await
+        .unwrap();
+
+    assert!(packets.is_empty());
+    assert_eq!(session.player_death_state, PlayerDeathState::Corpse);
+    assert!(!session.player_death_presentation_pending);
+    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_DEAD);
+    assert_eq!(session.player_health, 0);
+    let character = session.active_character.as_ref().unwrap();
+    assert_eq!(character.position, position);
+    assert_eq!(character.movement_flags, 0);
+    assert_eq!(character.fall_time, 0);
+}
+
+#[tokio::test]
+async fn repop_forces_pending_just_died_presentation_before_refresh() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.health = 0;
+    player.death_state = PlayerDeathState::JustDied;
+    player.movement_flags = MOVEFLAG_JUMPING;
+    player.fall_time = 456;
+    player.last_fall_z = Some(90.0);
+    maps.add_player(player).await.unwrap();
+
+    let mut session = WorldSessionState {
+        active_character: Some(ActiveCharacter {
+            guid: 7,
+            name: "Ada".to_string(),
+            race: 1,
+            class: 1,
+            level: 1,
+            xp: 0,
+            position,
+            movement_flags: MOVEFLAG_JUMPING,
+            client_time: 123,
+            fall_time: 456,
+            jump: JumpInfo::default(),
+        }),
+        player_death_state: PlayerDeathState::JustDied,
+        player_death_presentation_pending: true,
+        player_health: 0,
+        player_stand_state: PLAYER_STAND_STATE_STAND,
+        ..WorldSessionState::default()
+    };
+
+    let packets = refresh_session_death_state_before_repop(&maps, &mut session)
+        .await
+        .unwrap();
+
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    assert_eq!(session.player_death_state, PlayerDeathState::Corpse);
+    assert!(!session.player_death_presentation_pending);
+    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_DEAD);
+    assert_eq!(session.player_health, 0);
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.movement_flags & MOVEFLAG_JUMPING, 0);
+    assert_eq!(snapshot.fall_time, 0);
+}
+
+#[test]
+fn map_runtime_dot_death_landing_presents_even_with_nonzero_fall_time() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let start = WorldPosition::new(0, 11.0, 22.0, 33.0, 0.0);
+    map.add_player(test_player_runtime(7, SessionId::next(), start))
+        .unwrap();
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.movement_flags = MOVEFLAG_JUMPING;
+        player.fall_time = 456;
+        player.last_fall_z = Some(40.0);
+    }
+    let killed_at = Instant::now();
+
+    let death = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            999,
+            WorldDamageKind::PeriodicAura,
+            killed_at,
+        )
+        .unwrap()
+        .expect("damage should apply");
+
+    assert!(death.died);
+    assert!(death.death_presentation_deferred);
+    assert_eq!(
+        map.player_runtime_snapshot(7).unwrap().death_state,
+        PlayerDeathState::JustDied
+    );
+
+    let landing = MovementInfo {
+        flags: 0,
+        client_time: 2,
+        position: WorldPosition::new(0, 11.0, 22.0, 30.0, 0.0),
+        fall_time: 900,
+        jump: JumpInfo::default(),
+    };
+    let packets = map
+        .update_player_position(7, MSG_MOVE_FALL_LAND as u16, &landing, 2)
+        .unwrap();
+
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    assert!(packets.iter().any(|(_, packet)| {
+        if packet.opcode != SMSG_UPDATE_OBJECT {
+            return false;
+        }
+        let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let (values, _) = decode_values_update_block(&packet.body[5..], player);
+        values[UNIT_FIELD_HEALTH] == Some(0)
+            && values[UNIT_FIELD_BYTES_1].is_some_and(|bytes| {
+                bytes & u32::from(PLAYER_STAND_STATE_DEAD) == u32::from(PLAYER_STAND_STATE_DEAD)
+            })
+    }));
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
+    assert_eq!(snapshot.fall_time, 0);
+    assert_eq!(snapshot.movement_flags & MOVEFLAG_JUMPING, 0);
+    assert!(map
+        .advance_player_death_presentations(killed_at + Duration::from_secs(3))
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn grounded_movement_clears_stale_fall_tracking_before_dot_death() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let start = WorldPosition::new(0, 11.0, 22.0, 33.0, 0.0);
+    map.add_player(test_player_runtime(7, SessionId::next(), start))
+        .unwrap();
+    {
+        let player = map.players.get_mut(&7).unwrap();
+        player.fall_time = 900;
+        player.last_fall_z = Some(40.0);
+        player.last_fall_time = 900;
+    }
+
+    let grounded = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 2,
+        position: WorldPosition::new(0, 12.0, 22.0, 32.5, 0.0),
+        fall_time: 900,
+        jump: JumpInfo::default(),
+    };
+    map.update_player_position(7, MSG_MOVE_HEARTBEAT as u16, &grounded, 2)
+        .unwrap();
+    {
+        let player = map.players.get(&7).unwrap();
+        assert_eq!(player.fall_time, 0);
+        assert_eq!(player.last_fall_z, None);
+        assert_eq!(player.last_fall_time, 0);
+    }
+
+    let death = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 3196)),
+            999,
+            WorldDamageKind::PeriodicAura,
+            Instant::now(),
+        )
+        .unwrap()
+        .expect("damage should apply");
+
+    assert!(death.died);
+    assert!(!death.death_presentation_deferred);
+    assert!(death
+        .direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
+    assert_eq!(snapshot.stand_state, PLAYER_STAND_STATE_DEAD);
 }
 
 #[test]
@@ -20411,14 +20863,6 @@ fn corpse_falling_movement_allows_landing_but_blocks_walking() {
     assert!(!corpse_falling_movement_allowed(
         MSG_MOVE_HEARTBEAT,
         &standing
-    ));
-    assert!(corpse_falling_movement_landed(
-        MSG_MOVE_FALL_LAND,
-        &standing
-    ));
-    assert!(!corpse_falling_movement_landed(
-        MSG_MOVE_HEARTBEAT,
-        &landing
     ));
 }
 

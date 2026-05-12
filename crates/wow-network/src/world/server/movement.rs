@@ -104,8 +104,13 @@ async fn handle_movement(
     } else {
         None
     };
-    let corpse_movement = session.player_death_state == PlayerDeathState::Corpse
-        || map_death_state == Some(PlayerDeathState::Corpse);
+    let corpse_movement = matches!(
+        session.player_death_state,
+        PlayerDeathState::JustDied | PlayerDeathState::Corpse
+    ) || matches!(
+        map_death_state,
+        Some(PlayerDeathState::JustDied | PlayerDeathState::Corpse)
+    );
     if corpse_movement && !corpse_falling_movement_allowed(opcode, &movement) {
         return Ok(());
     }
@@ -121,8 +126,7 @@ async fn handle_movement(
         .await?;
     }
     let server_time = synchronize_movement_server_time(session, movement.client_time);
-    let mut fatal_environmental_damage_player = None;
-    let mut pending_death_presentation = None;
+    let mut map_owned_death_detected = false;
     if let Some(character) = &mut session.active_character {
         let previous_player_health = session.player_health;
         character.position.x = movement.position.x;
@@ -131,8 +135,12 @@ async fn handle_movement(
         character.position.orientation = movement.position.orientation;
         character.movement_flags = movement.flags;
         character.client_time = movement.client_time;
-        character.fall_time = movement.fall_time;
-        character.jump = movement.jump.clone();
+        character.fall_time = tracked_session_fall_time(opcode, &movement);
+        character.jump = if character.fall_time == 0 {
+            JumpInfo::default()
+        } else {
+            movement.jump.clone()
+        };
         debug!(
             opcode = movement_opcode_name(opcode),
             guid = character.guid,
@@ -173,19 +181,9 @@ async fn handle_movement(
                     && session.player_health == 0
                     && session.player_death_state == PlayerDeathState::Alive
                 {
-                    fatal_environmental_damage_player =
-                        Some(ObjectGuid::new(HighGuid::Player, 0, character.guid));
+                    map_owned_death_detected = true;
                 }
             }
-        }
-        if corpse_movement
-            && session.player_death_presentation_pending
-            && corpse_falling_movement_landed(opcode, &movement)
-        {
-            pending_death_presentation = Some((
-                ObjectGuid::new(HighGuid::Player, 0, character.guid),
-                character.class,
-            ));
         }
         if !corpse_movement {
             stream_newly_visible_db_creatures(
@@ -240,27 +238,15 @@ async fn handle_movement(
             "Received movement packet before character login"
         );
     }
-    if let Some((player, character_class)) = pending_death_presentation {
-        send_player_death_presentation(
-            stream,
-            session,
-            player,
-            character_class,
-            header_crypto,
-        )
-        .await?;
-    }
-    if let Some(player) = fatal_environmental_damage_player {
-        kill_player_from_creature(
-            stream,
-            deps.character_db_pool,
-            deps.maps,
-            deps.account_id,
-            session,
-            player,
-            header_crypto,
-        )
-        .await?;
+    if map_owned_death_detected {
+        if let Some(character) = session.active_character.as_ref() {
+            refresh_session_from_map_owned_player_death(
+                deps.maps,
+                character.position.map_id,
+                session,
+            )
+            .await;
+        }
     }
     Ok(())
 }
@@ -280,9 +266,12 @@ fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool
     ) && movement.fall_time > 0
 }
 
-fn corpse_falling_movement_landed(opcode: u32, movement: &MovementInfo) -> bool {
-    opcode == MSG_MOVE_FALL_LAND
-        || (opcode == MSG_MOVE_START_SWIM && movement.flags & MOVEFLAG_JUMPING == 0)
+fn tracked_session_fall_time(opcode: u32, movement: &MovementInfo) -> u32 {
+    if opcode == MSG_MOVE_FALL_LAND || movement.flags & MOVEFLAG_JUMPING == 0 {
+        0
+    } else {
+        movement.fall_time
+    }
 }
 
 fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
@@ -298,7 +287,6 @@ fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
 }
 
 struct MovementDeps<'a> {
-    account_id: u32,
     character_db_pool: &'a MySqlPool,
     world_db_pool: &'a MySqlPool,
     object_mgr: &'a ObjectMgr,

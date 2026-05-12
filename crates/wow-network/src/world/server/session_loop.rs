@@ -1059,7 +1059,6 @@ async fn handle_client(
                             handle_movement(
                                 &mut stream,
                                 MovementDeps {
-                                    account_id: account.id,
                                     character_db_pool: &character_db_pool,
                                     world_db_pool: &world_db_pool,
                                     object_mgr: runtime_state.object_mgr.as_ref(),
@@ -1126,7 +1125,6 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                 },
                                 parties: &runtime_state.parties,
-                                account_id: account.id,
                                 session_id,
                             },
                             &mut session,
@@ -1231,7 +1229,6 @@ async fn handle_client(
                                 sessions: &runtime_state.sessions,
                             },
                             parties: &runtime_state.parties,
-                            account_id: account.id,
                             session_id,
                         },
                         &mut session,
@@ -1381,10 +1378,11 @@ async fn refresh_active_player_session_cache(
     };
 
     let map_player_died = session.player_death_state == PlayerDeathState::Alive
-        && snapshot.death_state == PlayerDeathState::Corpse
+        && snapshot.death_state != PlayerDeathState::Alive
         && snapshot.health == 0;
     session.player_health = snapshot.health;
     session.player_death_state = snapshot.death_state;
+    session.player_death_presentation_pending = snapshot.death_state == PlayerDeathState::JustDied;
     session.player_stand_state = snapshot.stand_state;
     session.player_mana = snapshot.power1;
     session.player_rage = snapshot.power2;
@@ -1407,12 +1405,12 @@ async fn refresh_active_player_session_cache(
 }
 
 async fn finalize_map_owned_player_death_if_needed(
-    stream: &mut WorldPacketSink,
+    _stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     account_id: u32,
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
-    header_crypto: &mut HeaderCrypto,
+    _header_crypto: &mut HeaderCrypto,
     map_player_died: bool,
 ) -> anyhow::Result<bool> {
     if !map_player_died || session.player_health != 0 {
@@ -1423,15 +1421,9 @@ async fn finalize_map_owned_player_death_if_needed(
     };
     let map_id = character.position.map_id;
     let character_guid = character.guid;
-    let character_class = character.class;
-    let character_is_airborne = active_character_is_airborne(character);
-    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-    let death_time = Instant::now();
-    session.player_death_state = PlayerDeathState::Corpse;
-    session.player_death_presentation_pending = false;
+    session.player_death_presentation_pending = session.player_death_state == PlayerDeathState::JustDied;
     session.player_corpse = None;
     session.player_health = 0;
-    session.player_stand_state = PLAYER_STAND_STATE_DEAD;
     session.active_auras.clear();
     session.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
@@ -1441,67 +1433,7 @@ async fn finalize_map_owned_player_death_if_needed(
         .set_player_auto_attack(map_id, character_guid, None, None)
         .await;
     persist_player_death_state(character_db_pool, account_id, session).await?;
-    let death_presentation_deferred = character_is_airborne;
-    if death_presentation_deferred {
-        session.player_death_presentation_pending = true;
-    } else {
-        send_player_death_presentation(
-            stream,
-            session,
-            player,
-            character_class,
-            header_crypto,
-        )
-        .await?;
-    }
-    send_db_creature_victim_death_evades(
-        stream,
-        shared_world,
-        map_id,
-        session,
-        player,
-        death_time,
-        header_crypto,
-    )
-    .await?;
-    Ok(!death_presentation_deferred)
-}
-
-fn active_character_is_airborne(character: &ActiveCharacter) -> bool {
-    character.movement_flags & MOVEFLAG_JUMPING != 0 || character.fall_time > 0
-}
-
-async fn send_player_death_presentation(
-    stream: &mut WorldPacketSink,
-    session: &mut WorldSessionState,
-    player: ObjectGuid,
-    character_class: u8,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    send_packet(
-        stream,
-        SMSG_FORCE_MOVE_ROOT,
-        &build_force_move_root_body(player, 0)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_death_update_body(
-            player,
-            0,
-            session.player_flags,
-            PLAYER_FIELD_BYTE_RELEASE_TIMER,
-            player_unit_flags(false),
-            character_class,
-            PLAYER_STAND_STATE_DEAD,
-        )?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    session.player_death_presentation_pending = false;
-    Ok(())
+    Ok(session.player_death_state == PlayerDeathState::Corpse)
 }
 
 async fn sync_active_player_gameplay_state(

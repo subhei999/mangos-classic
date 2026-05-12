@@ -143,7 +143,10 @@ impl MapRuntime {
                     applied.position,
                     player_session_id,
                     applied.direct_packets,
+                    applied.observer_packets,
                     applied.aura_packet,
+                    applied.died,
+                    applied.death_presentation_deferred,
                     OutboundWorldPacket {
                         opcode: SMSG_ENVIRONMENTALDAMAGELOG,
                         body: build_environmental_damage_log_body(
@@ -186,12 +189,31 @@ impl MapRuntime {
             character_guid,
             position,
             direct_session_id,
-            direct_death_packets,
+            mut direct_death_packets,
+            mut observer_death_packets,
             aura_packet,
+            died,
+            death_presentation_deferred,
             damage_log,
             health_packet,
         ) in damage_events
         {
+            if died {
+                let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+                if death_presentation_deferred {
+                    self.pending_player_death_presentations.insert(
+                        character_guid,
+                        PlayerDeathPresentationRuntime {
+                            waiting_since: now,
+                        },
+                    );
+                } else {
+                    self.pending_player_death_presentations.remove(&character_guid);
+                }
+                let cleanup = self.finalize_player_death_cleanup(player, now)?;
+                direct_death_packets.extend(cleanup.direct_packets);
+                observer_death_packets.extend(cleanup.observer_packets);
+            }
             if let Some(direct_session_id) = direct_session_id {
                 for packet in direct_death_packets {
                     packets.push((direct_session_id, packet));
@@ -202,6 +224,7 @@ impl MapRuntime {
                 }
                 packets.push((direct_session_id, health_packet.clone()));
             }
+            packets.extend(observer_death_packets);
             packets.extend(self.nearby_player_guids(
                 position,
                 PLAYER_VISIBILITY_RADIUS_YARDS,
@@ -758,10 +781,14 @@ impl MapRuntime {
             player.movement_flags = movement.flags;
             player.client_time = movement.client_time;
             player.server_time = server_time;
-            player.fall_time = movement.fall_time;
+            player.fall_time = tracked_player_fall_time(opcode, movement);
             player.last_fall_z = fall_update.last_fall_z;
             player.last_fall_time = fall_update.last_fall_time;
-            player.jump = movement.jump.clone();
+            player.jump = if player.fall_time == 0 {
+                JumpInfo::default()
+            } else {
+                movement.jump.clone()
+            };
             player.cell = new_cell;
             if mover_is_client_controlled {
                 player.visible_objects = retained_non_player_visible;
@@ -783,6 +810,22 @@ impl MapRuntime {
                     Instant::now(),
                 )?;
             }
+        }
+
+        if let Some(applied) = fall_applied.as_mut().filter(|applied| applied.died) {
+            if applied.death_presentation_deferred {
+                self.pending_player_death_presentations.insert(
+                    character_guid,
+                    PlayerDeathPresentationRuntime {
+                        waiting_since: Instant::now(),
+                    },
+                );
+            } else {
+                self.pending_player_death_presentations.remove(&character_guid);
+            }
+            let cleanup = self.finalize_player_death_cleanup(player_object, Instant::now())?;
+            applied.direct_packets.extend(cleanup.direct_packets);
+            applied.observer_packets.extend(cleanup.observer_packets);
         }
 
         if let Some(damage) = fall_update.damage {
@@ -818,6 +861,13 @@ impl MapRuntime {
                 opcode: SMSG_UPDATE_OBJECT,
                 body: health_update_body,
             };
+            if let Some(applied) = fall_applied.as_ref() {
+                for packet in &applied.direct_packets {
+                    if let Some(packet) = current_player.packet_to_client(packet.clone()) {
+                        packets.push(packet);
+                    }
+                }
+            }
             if let Some(packet) = current_player.packet_to_client(damage_log.clone()) {
                 packets.push(packet);
             }
@@ -831,6 +881,9 @@ impl MapRuntime {
             }
             if let Some(packet) = current_player.packet_to_client(health_update.clone()) {
                 packets.push(packet);
+            }
+            if let Some(applied) = fall_applied.as_ref() {
+                packets.extend(applied.observer_packets.clone());
             }
             for other_guid in &new_visible {
                 let Some(other) = self.players.get(other_guid) else {
@@ -852,6 +905,7 @@ impl MapRuntime {
                 }
             }
         }
+        packets.extend(self.present_player_death_if_ready(character_guid, Instant::now(), false)?);
         self.invalidate_idle_motion_start_schedule();
 
         Ok(packets)
@@ -1021,21 +1075,28 @@ impl MapRuntime {
         };
         player.max_health = player.max_health.max(session.player_health.max(1));
         player.max_power1 = player.max_power1.max(session.player_mana);
-        player.death_state = session.player_death_state;
-        player.health = if session.player_death_state == PlayerDeathState::Alive {
-            session.player_health.min(player.max_health)
-        } else {
-            session.player_health
-        };
+        let map_death_is_newer = player.health == 0
+            && player.death_state != PlayerDeathState::Alive
+            && session.player_death_state == PlayerDeathState::Alive;
+        if !map_death_is_newer {
+            player.death_state = session.player_death_state;
+            player.health = if session.player_death_state == PlayerDeathState::Alive {
+                session.player_health.min(player.max_health)
+            } else {
+                session.player_health
+            };
+        }
         player.power1 = session.player_mana.min(player.max_power1);
         player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
         player.power4 = session.player_energy.min(player.max_power4);
-        player.stand_state =
-            if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
-                PLAYER_STAND_STATE_DEAD
-            } else {
-                session.player_stand_state
-            };
+        if !map_death_is_newer {
+            player.stand_state =
+                if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
+                    PLAYER_STAND_STATE_DEAD
+                } else {
+                    session.player_stand_state
+                };
+        }
         player.active_spells = session.active_spells.clone();
         player.inventory = session.inventory.clone();
         player.quest_statuses = session.quest_statuses.clone();
@@ -1045,12 +1106,20 @@ impl MapRuntime {
         if let Some(character) = session.active_character.as_ref() {
             player.level = character.level;
             player.xp = character.xp;
-            player.flags = session.player_flags;
-            player.position = character.position;
-            player.movement_flags = character.movement_flags;
-            player.client_time = character.client_time;
-            player.fall_time = character.fall_time;
-            player.jump = character.jump.clone();
+            if !map_death_is_newer {
+                player.flags = session.player_flags;
+                player.position = character.position;
+                player.movement_flags = character.movement_flags;
+                player.client_time = character.client_time;
+                player.fall_time = character.fall_time;
+                if character.movement_flags & MOVEFLAG_JUMPING == 0 || character.fall_time == 0 {
+                    player.last_fall_z = None;
+                    player.last_fall_time = 0;
+                    player.jump = JumpInfo::default();
+                } else {
+                    player.jump = character.jump.clone();
+                }
+            }
             let equipment_cache = session
                 .player_visual
                 .as_ref()
@@ -1335,6 +1404,7 @@ impl MapRuntime {
             let mut health_changed = false;
             let mut player_died = false;
             let mut direct_death_packets = Vec::new();
+            let mut observer_death_packets = Vec::new();
             let mut pending_damage_ticks = Vec::new();
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
@@ -1404,6 +1474,7 @@ impl MapRuntime {
                     tick_packets.push(aura_packet);
                 }
                 direct_death_packets.extend(applied.direct_packets);
+                observer_death_packets.extend(applied.observer_packets);
                 if applied.died {
                     player_died = true;
                     break;
@@ -1433,6 +1504,7 @@ impl MapRuntime {
                     packets.push(packet);
                 }
             }
+            packets.extend(observer_death_packets);
             for packet in &tick_packets {
                 if let Some(packet) = player.packet_to_client(packet.clone()) {
                     packets.push(packet);
@@ -2111,7 +2183,7 @@ fn player_fall_update(
         };
     }
 
-    if movement.fall_time == 0 {
+    if movement.flags & MOVEFLAG_JUMPING == 0 || movement.fall_time == 0 {
         return PlayerFallUpdate {
             last_fall_z: None,
             last_fall_time: 0,
@@ -2136,6 +2208,14 @@ fn player_fall_update(
         last_fall_z,
         last_fall_time,
         damage: None,
+    }
+}
+
+fn tracked_player_fall_time(opcode: u16, movement: &MovementInfo) -> u32 {
+    if opcode == MSG_MOVE_FALL_LAND as u16 || movement.flags & MOVEFLAG_JUMPING == 0 {
+        0
+    } else {
+        movement.fall_time
     }
 }
 

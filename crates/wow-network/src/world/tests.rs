@@ -26978,6 +26978,52 @@ fn trigger_cinematic_packet_uses_vanilla_chrraces_sequence() {
 }
 
 #[test]
+fn login_set_time_speed_packs_cmangos_local_time_fields() {
+    let fields = CmangosTimeFields {
+        year_since_1900: 126,
+        month_zero_based: 4,
+        day_of_month: 13,
+        week_day: 3,
+        hour: 15,
+        minute: 4,
+    };
+
+    assert_eq!(
+        cmangos_pack_time_fields(fields),
+        (26u32 << 24) | (4u32 << 20) | (12u32 << 14) | (3u32 << 11) | (15u32 << 6) | 4
+    );
+}
+
+#[test]
+fn login_set_time_speed_packet_uses_cmangos_speed_and_time_layout() {
+    let fields = CmangosTimeFields {
+        year_since_1900: 125,
+        month_zero_based: 0,
+        day_of_month: 2,
+        week_day: 4,
+        hour: 6,
+        minute: 30,
+    };
+    let body = build_login_set_time_speed_body_for_fields(fields);
+
+    assert_eq!(body.len(), 8);
+    assert_eq!(&body[0..4], &cmangos_pack_time_fields(fields).to_le_bytes());
+    assert_eq!(&body[4..8], &0.01666667f32.to_le_bytes());
+}
+
+#[test]
+fn login_set_time_speed_current_packet_no_longer_sends_zero_time() {
+    let body = build_login_set_time_speed_body();
+    let packed = u32::from_le_bytes(body[0..4].try_into().unwrap());
+
+    assert_ne!(
+        packed, 0,
+        "SMSG_LOGIN_SETTIMESPEED should use the current server time, not the old placeholder"
+    );
+    assert_eq!(&body[4..8], &0.01666667f32.to_le_bytes());
+}
+
+#[test]
 fn tutorial_flags_packet_serializes_account_state() {
     let body = build_tutorial_flags_body(&[1, 0x8000_0000, 0x0102_0304, 0, 0, 0, 0, 0xFFFF_FFFF]);
 

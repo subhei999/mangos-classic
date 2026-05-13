@@ -7,6 +7,8 @@ use wow_proto::{
     SmsgTriggerCinematicResponse, SmsgTutorialFlagsResponse,
 };
 
+const CMANGOS_LOGIN_GAME_SPEED: f32 = 0.01666667;
+
 // CMaNGOS reference: src/game/Server/WorldSession.cpp login/bootstrap packet path.
 pub(in crate::world) struct EnterWorldBootstrap<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
@@ -431,12 +433,159 @@ pub(in crate::world) async fn send_login_set_time_speed(
     stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = SmsgLoginSetTimeSpeedResponse {
-        packed_server_time: 0,
-        game_speed: 0.01666667,
-    }
-    .body();
+    let body = build_login_set_time_speed_body();
     send_packet(stream, SMSG_LOGIN_SETTIMESPEED, &body, header_crypto).await
+}
+
+pub(in crate::world) fn build_login_set_time_speed_body() -> Vec<u8> {
+    SmsgLoginSetTimeSpeedResponse {
+        packed_server_time: current_cmangos_packed_server_time(),
+        game_speed: CMANGOS_LOGIN_GAME_SPEED,
+    }
+    .body()
+}
+
+pub(in crate::world) fn current_cmangos_packed_server_time() -> u32 {
+    let unix_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    cmangos_packed_server_time_from_unix(unix_secs)
+}
+
+pub(in crate::world) fn cmangos_packed_server_time_from_unix(unix_secs: i64) -> u32 {
+    let fields = local_time_fields_from_unix(unix_secs);
+    cmangos_pack_time_fields(fields)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct CmangosTimeFields {
+    pub(in crate::world) year_since_1900: i32,
+    pub(in crate::world) month_zero_based: u32,
+    pub(in crate::world) day_of_month: u32,
+    pub(in crate::world) week_day: u32,
+    pub(in crate::world) hour: u32,
+    pub(in crate::world) minute: u32,
+}
+
+pub(in crate::world) fn cmangos_pack_time_fields(fields: CmangosTimeFields) -> u32 {
+    ((fields.year_since_1900 - 100) as u32) << 24
+        | fields.month_zero_based << 20
+        | (fields.day_of_month.saturating_sub(1)) << 14
+        | fields.week_day << 11
+        | fields.hour << 6
+        | fields.minute
+}
+
+#[cfg(test)]
+pub(in crate::world) fn build_login_set_time_speed_body_for_fields(
+    fields: CmangosTimeFields,
+) -> Vec<u8> {
+    SmsgLoginSetTimeSpeedResponse {
+        packed_server_time: cmangos_pack_time_fields(fields),
+        game_speed: CMANGOS_LOGIN_GAME_SPEED,
+    }
+    .body()
+}
+
+#[cfg(windows)]
+pub(in crate::world) fn local_time_fields_from_unix(unix_secs: i64) -> CmangosTimeFields {
+    use std::os::raw::c_int;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Tm {
+        tm_sec: c_int,
+        tm_min: c_int,
+        tm_hour: c_int,
+        tm_mday: c_int,
+        tm_mon: c_int,
+        tm_year: c_int,
+        tm_wday: c_int,
+        tm_yday: c_int,
+        tm_isdst: c_int,
+    }
+
+    extern "C" {
+        #[link_name = "_localtime64_s"]
+        fn localtime_s(time: *mut Tm, source_time: *const i64) -> c_int;
+    }
+
+    let mut fields = Tm::default();
+    let result = unsafe { localtime_s(&mut fields, &unix_secs) };
+    if result != 0 {
+        return utc_time_fields_from_unix(unix_secs);
+    }
+    CmangosTimeFields {
+        year_since_1900: fields.tm_year,
+        month_zero_based: fields.tm_mon as u32,
+        day_of_month: fields.tm_mday as u32,
+        week_day: fields.tm_wday as u32,
+        hour: fields.tm_hour as u32,
+        minute: fields.tm_min as u32,
+    }
+}
+
+#[cfg(unix)]
+pub(in crate::world) fn local_time_fields_from_unix(unix_secs: i64) -> CmangosTimeFields {
+    use std::os::raw::{c_char, c_int, c_long};
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Tm {
+        tm_sec: c_int,
+        tm_min: c_int,
+        tm_hour: c_int,
+        tm_mday: c_int,
+        tm_mon: c_int,
+        tm_year: c_int,
+        tm_wday: c_int,
+        tm_yday: c_int,
+        tm_isdst: c_int,
+        tm_gmtoff: c_long,
+        tm_zone: *const c_char,
+    }
+
+    extern "C" {
+        fn localtime_r(timep: *const i64, result: *mut Tm) -> *mut Tm;
+    }
+
+    let mut fields = Tm::default();
+    let result = unsafe { localtime_r(&unix_secs, &mut fields) };
+    if result.is_null() {
+        return utc_time_fields_from_unix(unix_secs);
+    }
+    CmangosTimeFields {
+        year_since_1900: fields.tm_year,
+        month_zero_based: fields.tm_mon as u32,
+        day_of_month: fields.tm_mday as u32,
+        week_day: fields.tm_wday as u32,
+        hour: fields.tm_hour as u32,
+        minute: fields.tm_min as u32,
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+pub(in crate::world) fn local_time_fields_from_unix(unix_secs: i64) -> CmangosTimeFields {
+    utc_time_fields_from_unix(unix_secs)
+}
+
+pub(in crate::world) fn utc_time_fields_from_unix(unix_secs: i64) -> CmangosTimeFields {
+    let days = unix_secs.div_euclid(86_400);
+    let seconds_of_day = unix_secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    CmangosTimeFields {
+        year_since_1900: year - 1900,
+        month_zero_based: month - 1,
+        day_of_month: day,
+        week_day: unix_week_day(days),
+        hour: (seconds_of_day / 3_600) as u32,
+        minute: ((seconds_of_day % 3_600) / 60) as u32,
+    }
+}
+
+pub(in crate::world) fn unix_week_day(days_since_epoch: i64) -> u32 {
+    (days_since_epoch + 4).rem_euclid(7) as u32
 }
 
 pub(in crate::world) async fn send_init_world_states(

@@ -171,6 +171,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   while the old straight-path random fixture behavior remains limited to
   unit-test fixture navigation. Advertised-but-unloadable mmap data no longer
   falls back to fake through-geometry random movement.
+- Added CMaNGOS-shaped server time for day/night on login. The
+  `SMSG_LOGIN_SETTIMESPEED` bootstrap packet now sends current local server time
+  packed with the same `secsToTimeBitFields` layout CMaNGOS uses, plus the
+  Classic game speed `0.01666667`, instead of the old zero placeholder.
 
 ## Tests Run
 
@@ -292,6 +296,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `$env:CARGO_TARGET_DIR='target\codex-merge-final'; .\scripts\test-rust.cmd`
   passed fully, including workspace unit/doc tests, `wow-network` 665 tests,
   `wow-proto` 23 tests, and final authserver/auth-flow builds.
+- Server time/day-night login slice:
+  `cargo fmt --check` passed.
+  `cargo test -p wow-network --lib login_set_time_speed -- --nocapture`
+  passed with 3 focused packet/time-layout tests.
+  `cargo test -p wow-network --lib` passed with 668 tests.
+  `$env:CARGO_TARGET_DIR='target\codex-server-time-final'; .\scripts\test-rust.cmd`
+  passed fully, including fmt, clippy, workspace unit/doc tests, `wow-network`
+  668 tests, `wow-proto` 23 tests, and final authserver/auth-flow builds.
 - Spell-effect-value/conjure scaling slice:
   baseline `$env:CARGO_TARGET_DIR='target\codex-effectvalue-baseline'; .\scripts\test-rust.cmd`
   passed fully before changes, including `wow-network` 647 tests.
@@ -344,6 +356,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   random movement should choose grounded Detour paths inside spawn radius and
   avoid fake straight-line movement through unavailable mmap geometry. Rooted
   random-movement creatures should remain idle until root expires.
+- Day/night smoke: log in at visibly different local server times or adjust the
+  host clock in a throwaway test environment and verify the client receives the
+  expected day/night lighting from `SMSG_LOGIN_SETTIMESPEED`.
 - HP/mana real-client smoke: verify food/drink bars only increase while seated
   and out of interrupting actions, no stale lower-value snapback occurs after
   client input, normal mana regen resumes after the five-second rule, and

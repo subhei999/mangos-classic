@@ -95,27 +95,28 @@ pub(in crate::world) async fn handle_cast_spell(
     )
     .await
     {
-        send_packet(
-            stream,
-            SMSG_CAST_RESULT,
-            &build_cast_result_failure_body(packet.spell_id, failure),
-            Some(header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            SMSG_SPELL_FAILURE,
-            &build_spell_failure_body(caster, packet.spell_id, failure)?,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        return send_packet(
-            stream,
-            SMSG_SPELL_FAILED_OTHER,
-            &build_spell_failed_other_body(caster, packet.spell_id),
-            Some(header_crypto),
-        )
-        .await;
+        return send_spell_cast_failure(stream, caster, packet.spell_id, failure, header_crypto)
+            .await;
+    }
+    if let Some(failure) = player_aura_rank_cast_failure(
+        deps,
+        session,
+        &spell_template,
+        &spell_profile,
+        &targets,
+        caster,
+    )
+    .await?
+    {
+        return send_spell_cast_failure(stream, caster, packet.spell_id, failure, header_crypto)
+            .await;
+    }
+    if spell_profile.kind == SpellCastKind::CreateItem {
+        if let Some(failure) =
+            player_create_item_cast_inventory_failure(deps, session, &spell_template).await?
+        {
+            return send_inventory_change_failure(stream, failure, None, None, header_crypto).await;
+        }
     }
     if spell_profile.kind == SpellCastKind::AutoRepeatRanged {
         if let Some(failure) = player_ranged_auto_attack_failure(
@@ -862,6 +863,32 @@ pub(in crate::world) async fn complete_player_spell_cast(
         )
         .await;
     }
+    if let Some(failure) = player_aura_rank_cast_failure(
+        deps,
+        session,
+        &spell_template,
+        &spell_profile,
+        &targets,
+        caster,
+    )
+    .await?
+    {
+        return send_spell_cast_failure(
+            stream,
+            caster,
+            prepared_spell.spell_id,
+            failure,
+            header_crypto,
+        )
+        .await;
+    }
+    if spell_profile.kind == SpellCastKind::CreateItem {
+        if let Some(failure) =
+            player_create_item_cast_inventory_failure(deps, session, &spell_template).await?
+        {
+            return send_inventory_change_failure(stream, failure, None, None, header_crypto).await;
+        }
+    }
 
     if let Err(failure) = deps
         .shared_world
@@ -886,6 +913,7 @@ pub(in crate::world) async fn complete_player_spell_cast(
     }
     sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid)
         .await;
+    send_player_spell_power_update(stream, caster, &spell_profile, session, header_crypto).await?;
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -1635,6 +1663,82 @@ pub(in crate::world) async fn spell_target_cast_failure(
     spell_melee_cast_failure(shared_world, session, spell_profile, targets).await
 }
 
+pub(in crate::world) async fn player_aura_rank_cast_failure(
+    deps: SpellCastDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+    caster: ObjectGuid,
+) -> anyhow::Result<Option<u8>> {
+    if !spell_has_aura_application(spell_template)
+        || !matches!(
+            spell_profile.kind,
+            SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
+        )
+    {
+        return Ok(None);
+    }
+    match spell_profile.aura_target {
+        SpellAuraTarget::Caster => {
+            let resolution = aura_rank_conflict_resolution(
+                deps.shared_world.object_mgr,
+                deps.world_db_pool,
+                spell_template.id,
+                caster,
+                &session.auras.active_auras,
+            )
+            .await?;
+            Ok(resolution.failure)
+        }
+        SpellAuraTarget::UnitTarget => {
+            let Some(character) = session.character.active_character.as_ref() else {
+                return Ok(None);
+            };
+            let Some(target) = targets.unit_target else {
+                return Ok(None);
+            };
+            let active_auras = if target.is_player() {
+                if target.counter() == character.guid {
+                    session.auras.active_auras.clone()
+                } else {
+                    let Some(snapshot) = deps
+                        .shared_world
+                        .maps
+                        .player_runtime_snapshot(character.position.map_id, target.counter())
+                        .await
+                    else {
+                        return Ok(None);
+                    };
+                    snapshot.active_auras
+                }
+            } else if target.is_creature() {
+                let Some(creature) = deps
+                    .shared_world
+                    .maps
+                    .db_creature_snapshot(character.position.map_id, target)
+                    .await
+                else {
+                    return Ok(None);
+                };
+                creature.active_auras
+            } else {
+                return Ok(None);
+            };
+            let resolution = aura_rank_conflict_resolution(
+                deps.shared_world.object_mgr,
+                deps.world_db_pool,
+                spell_template.id,
+                caster,
+                &active_auras,
+            )
+            .await?;
+            Ok(resolution.failure)
+        }
+        SpellAuraTarget::CasterAreaEnemy => Ok(None),
+    }
+}
+
 pub(in crate::world) async fn spell_combo_point_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
@@ -1697,6 +1801,21 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
     let target_kind = SpellInfo::from_template(spell_template).unit_target_kind(spell_profile.kind);
     if target_kind.requires_unit_target() && targets.unit_target.is_none() {
         return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    if target_kind == SpellTargetKind::FriendlyUnit {
+        let character = session.character.active_character.as_ref()?;
+        let target = targets.unit_target?;
+        if !target.is_player() {
+            return Some(SPELL_FAILED_OUT_OF_RANGE);
+        }
+        let Some(snapshot) = shared_world
+            .maps
+            .player_runtime_snapshot(character.position.map_id, target.counter())
+            .await
+        else {
+            return Some(SPELL_FAILED_OUT_OF_RANGE);
+        };
+        return (snapshot.health == 0).then_some(SPELL_FAILED_OUT_OF_RANGE);
     }
     if target_kind != SpellTargetKind::HostileUnit
         || spell_profile.requires_melee
@@ -1784,6 +1903,33 @@ pub(in crate::world) async fn sync_session_player_power_from_map(
     }
 }
 
+pub(in crate::world) async fn send_player_spell_power_update(
+    stream: &mut WorldPacketSink,
+    caster: ObjectGuid,
+    spell_profile: &SpellCastProfile,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let power_update = match spell_profile.power {
+        SpellPowerCost::Rage { .. } => {
+            build_player_rage_update_body(caster, session.character.player_rage)?
+        }
+        SpellPowerCost::Mana { .. } => {
+            build_player_mana_update_body(caster, session.character.player_mana)?
+        }
+        SpellPowerCost::Energy { .. } => {
+            build_player_energy_update_body(caster, session.character.player_energy)?
+        }
+    };
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &power_update,
+        Some(header_crypto),
+    )
+    .await
+}
+
 pub(in crate::world) fn spell_cast_time_millis(cast_time: Option<SpellCastTimeEntry>) -> u32 {
     let Some(cast_time) = cast_time else {
         return 0;
@@ -1852,6 +1998,7 @@ pub(in crate::world) enum SpellCastKind {
     InstantDamage,
     DirectHeal,
     AuraApplication,
+    CreateItem,
     AutoRepeatRanged,
     Charge,
     NextMeleeSwing,
@@ -1862,6 +2009,7 @@ pub(in crate::world) enum SpellCastKind {
 pub(in crate::world) enum SpellAuraTarget {
     Caster,
     UnitTarget,
+    CasterAreaEnemy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1896,6 +2044,7 @@ pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
+pub(in crate::world) const SPELL_EFFECT_CREATE_ITEM: u32 = 24;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE: u32 = 58;
 pub(in crate::world) const SPELL_EFFECT_ADD_COMBO_POINTS: u32 = 80;
@@ -1910,6 +2059,7 @@ pub(in crate::world) const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
 pub(in crate::world) const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
 pub(in crate::world) const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
 pub(in crate::world) const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
+pub(in crate::world) const SPELL_AURA_MOD_ROOT: u32 = 26;
 pub(in crate::world) const SPELL_AURA_MOD_STAT: u32 = 29;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
 pub(in crate::world) const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
@@ -1937,7 +2087,18 @@ pub(in crate::world) const POSITIVE_AURA_FLAGS: u32 = 0x05;
 pub(in crate::world) const NEGATIVE_AURA_FLAGS: u32 = 0x08;
 pub(in crate::world) const TARGET_UNIT_CASTER: u32 = 1;
 pub(in crate::world) const TARGET_UNIT_ENEMY: u32 = 6;
+pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC: u32 = 15;
+pub(in crate::world) const TARGET_UNIT_FRIEND: u32 = 21;
 pub(in crate::world) const TARGET_UNIT: u32 = 25;
+pub(in crate::world) const TARGET_UNIT_PARTY: u32 = 35;
+pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE: u32 = 36;
+pub(in crate::world) const TARGET_UNIT_FRIEND_AND_PARTY: u32 = 37;
+pub(in crate::world) const TARGET_UNIT_FRIEND_CHAIN_HEAL: u32 = 45;
+pub(in crate::world) const TARGET_UNIT_RAID: u32 = 57;
+pub(in crate::world) const TARGET_UNIT_RAID_NEAR_CASTER: u32 = 58;
+pub(in crate::world) const TARGET_UNIT_RAID_AND_CLASS: u32 = 61;
+pub(in crate::world) const SPELL_GROUP_RULE_UNIQUE: u32 = 1;
+pub(in crate::world) const SPELL_GROUP_RULE_UNIQUE_PER_CASTER: u32 = 2;
 pub(in crate::world) const PROC_FLAG_TAKE_MELEE_SWING: u32 = 0x0000_0008;
 pub(in crate::world) const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 pub(in crate::world) const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
@@ -2004,6 +2165,137 @@ pub(in crate::world) fn spell_has_aura_application(template: &wow_db::SpellTempl
         .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::world) struct AuraRankConflictResolution {
+    pub(in crate::world) failure: Option<u8>,
+    pub(in crate::world) replace_spell_ids: Vec<u32>,
+    pub(in crate::world) replace_any_caster_spell_ids: Vec<u32>,
+}
+
+impl AuraRankConflictResolution {
+    pub(in crate::world) fn clear() -> Self {
+        Self {
+            failure: None,
+            replace_spell_ids: Vec::new(),
+            replace_any_caster_spell_ids: Vec::new(),
+        }
+    }
+}
+
+pub(in crate::world) async fn aura_rank_conflict_resolution(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    spell_id: u32,
+    caster: ObjectGuid,
+    active_auras: &[ActiveAura],
+) -> anyhow::Result<AuraRankConflictResolution> {
+    let conflicting_auras = active_auras
+        .iter()
+        .filter(|aura| aura.spell_id != spell_id || aura.caster != caster)
+        .collect::<Vec<_>>();
+    if conflicting_auras.is_empty() {
+        return Ok(AuraRankConflictResolution::clear());
+    }
+    let new_chain = object_mgr.spell_chain(world_db_pool, spell_id).await?;
+    let new_root = new_chain.map(spell_chain_root);
+    let mut replace_spell_ids = Vec::new();
+    let mut replace_any_caster_spell_ids = Vec::new();
+
+    for existing in &conflicting_auras {
+        let Some(new_chain) = new_chain else {
+            continue;
+        };
+        let existing_chain = object_mgr
+            .spell_chain(world_db_pool, existing.spell_id)
+            .await?;
+        let Some(existing_chain) = existing_chain.filter(|existing_chain| {
+            Some(spell_chain_root(*existing_chain)) == new_root
+                && existing_chain.spell_id != new_chain.spell_id
+        }) else {
+            continue;
+        };
+        if existing_chain.rank >= new_chain.rank {
+            if existing.caster == caster || existing.positive {
+                return Ok(AuraRankConflictResolution {
+                    failure: Some(SPELL_FAILED_AURA_BOUNCED),
+                    replace_spell_ids: Vec::new(),
+                    replace_any_caster_spell_ids: Vec::new(),
+                });
+            }
+            continue;
+        }
+        if existing.caster == caster {
+            push_unique_spell_id(&mut replace_spell_ids, existing.spell_id);
+        } else if existing.positive {
+            push_unique_spell_id(&mut replace_any_caster_spell_ids, existing.spell_id);
+        }
+    }
+
+    if conflicting_auras.iter().all(|existing| {
+        existing.caster == caster && replace_spell_ids.contains(&existing.spell_id)
+            || replace_any_caster_spell_ids.contains(&existing.spell_id)
+    }) {
+        return Ok(AuraRankConflictResolution {
+            failure: None,
+            replace_spell_ids,
+            replace_any_caster_spell_ids,
+        });
+    }
+
+    let new_groups = object_mgr
+        .spell_group_memberships(world_db_pool, spell_id)
+        .await?;
+    if !new_groups.is_empty() {
+        for existing in &conflicting_auras {
+            if existing.caster == caster && replace_spell_ids.contains(&existing.spell_id)
+                || replace_any_caster_spell_ids.contains(&existing.spell_id)
+            {
+                continue;
+            }
+            let existing_groups = object_mgr
+                .spell_group_memberships(world_db_pool, existing.spell_id)
+                .await?;
+            for group in &new_groups {
+                if !existing_groups
+                    .iter()
+                    .any(|existing_group| existing_group.group_id == group.group_id)
+                {
+                    continue;
+                }
+                match group.rule {
+                    SPELL_GROUP_RULE_UNIQUE => {
+                        push_unique_spell_id(&mut replace_any_caster_spell_ids, existing.spell_id);
+                    }
+                    SPELL_GROUP_RULE_UNIQUE_PER_CASTER if existing.caster == caster => {
+                        push_unique_spell_id(&mut replace_spell_ids, existing.spell_id);
+                    }
+                    _ => {}
+                }
+                break;
+            }
+        }
+    }
+    Ok(AuraRankConflictResolution {
+        failure: None,
+        replace_spell_ids,
+        replace_any_caster_spell_ids,
+    })
+}
+
+pub(in crate::world) fn spell_chain_root(chain: wow_db::SpellChainQuery) -> u32 {
+    if chain.first_spell != 0 {
+        chain.first_spell
+    } else {
+        chain.spell_id
+    }
+}
+
+pub(in crate::world) fn push_unique_spell_id(spell_ids: &mut Vec<u32>, spell_id: u32) {
+    if !spell_ids.contains(&spell_id) {
+        spell_ids.push(spell_id);
+    }
+}
+
 pub(in crate::world) fn spell_effect_simple_value(base_points: i32) -> Option<u32> {
     (base_points >= 0).then_some((base_points + 1) as u32)
 }
@@ -2044,7 +2336,8 @@ pub(in crate::world) fn build_active_aura(
 pub(in crate::world) fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
     !spell_info.effects.iter().any(|effect| {
         effect.dispatch == SpellEffectDispatch::ApplyAura
-            && (effect.implicit_target_a == TARGET_UNIT_ENEMY
+            && (effect_targets_direct_hostile_unit(*effect)
+                || effect_targets_caster_centered_hostile_area(*effect)
                 || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE)
     })
 }
@@ -2241,6 +2534,7 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 school_mask: u32::try_from(effect.misc_value).ok()?,
                 amount: spell_effect_simple_i32(effect.base_points),
             }),
+            SPELL_AURA_MOD_ROOT => Some(AuraStatModifier::Root),
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
@@ -2332,7 +2626,18 @@ pub(in crate::world) fn reputation_gain_percent_from_active_auras(
         .sum()
 }
 
+pub(in crate::world) fn active_aura_has_root(active_auras: &[ActiveAura]) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(|modifier| *modifier == AuraStatModifier::Root)
+}
+
 pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
+    if active_aura_has_root(active_auras) {
+        return 0.0;
+    }
+
     let strongest_slow = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2504,6 +2809,14 @@ pub(in crate::world) fn apply_player_aura(session: &mut WorldSessionState, aura:
     apply_active_aura(&mut session.auras.active_auras, aura);
 }
 
+pub(in crate::world) fn apply_player_aura_replacing_conflicts(
+    session: &mut WorldSessionState,
+    aura: ActiveAura,
+    resolution: &AuraRankConflictResolution,
+) {
+    apply_active_aura_replacing_conflicts(&mut session.auras.active_auras, aura, resolution);
+}
+
 pub(in crate::world) fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, aura: ActiveAura) {
     if let Some(existing) = active_auras
         .iter_mut()
@@ -2513,6 +2826,39 @@ pub(in crate::world) fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, au
     } else {
         active_auras.push(aura);
     }
+}
+
+#[cfg(test)]
+pub(in crate::world) fn apply_active_aura_replacing_spell_ids(
+    active_auras: &mut Vec<ActiveAura>,
+    aura: ActiveAura,
+    replace_spell_ids: &[u32],
+) {
+    if !replace_spell_ids.is_empty() {
+        active_auras.retain(|existing| {
+            existing.caster != aura.caster || !replace_spell_ids.contains(&existing.spell_id)
+        });
+    }
+    apply_active_aura(active_auras, aura);
+}
+
+pub(in crate::world) fn apply_active_aura_replacing_conflicts(
+    active_auras: &mut Vec<ActiveAura>,
+    aura: ActiveAura,
+    resolution: &AuraRankConflictResolution,
+) {
+    if !resolution.replace_spell_ids.is_empty()
+        || !resolution.replace_any_caster_spell_ids.is_empty()
+    {
+        active_auras.retain(|existing| {
+            !resolution
+                .replace_any_caster_spell_ids
+                .contains(&existing.spell_id)
+                && (existing.caster != aura.caster
+                    || !resolution.replace_spell_ids.contains(&existing.spell_id))
+        });
+    }
+    apply_active_aura(active_auras, aura);
 }
 
 pub(in crate::world) fn expire_session_auras(session: &mut WorldSessionState, now: Instant) {

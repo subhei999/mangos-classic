@@ -19,9 +19,12 @@ pub(in crate::world) fn normalize_spell_cast_targets(
     if targets.unit_target.is_none()
         && matches!(
             spell_profile.kind,
-            SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
+            SpellCastKind::AuraApplication | SpellCastKind::CreateItem | SpellCastKind::DirectHeal
         )
-        && spell_profile.aura_target == SpellAuraTarget::Caster
+        && matches!(
+            spell_profile.aura_target,
+            SpellAuraTarget::Caster | SpellAuraTarget::CasterAreaEnemy
+        )
     {
         targets.unit_target = Some(caster);
     }

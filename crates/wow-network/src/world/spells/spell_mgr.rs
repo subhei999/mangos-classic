@@ -19,8 +19,12 @@ pub(in crate::world) struct SpellInfoEffect {
     pub(in crate::world) points_per_combo_point: f32,
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
+    pub(in crate::world) implicit_target_b: u32,
+    pub(in crate::world) radius_index: u32,
     pub(in crate::world) misc_value: i32,
+    pub(in crate::world) mechanic: u32,
     pub(in crate::world) trigger_spell: u32,
+    pub(in crate::world) item_type: u32,
     pub(in crate::world) dispatch: SpellEffectDispatch,
 }
 
@@ -32,8 +36,12 @@ pub(in crate::world) struct SpellInfoEffectSlot {
     pub(in crate::world) roll: (i32, u32, f32),
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
+    pub(in crate::world) implicit_target_b: u32,
+    pub(in crate::world) radius_index: u32,
     pub(in crate::world) misc_value: i32,
+    pub(in crate::world) mechanic: u32,
     pub(in crate::world) trigger_spell: u32,
+    pub(in crate::world) item_type: u32,
 }
 
 impl<'a> SpellInfo<'a> {
@@ -50,8 +58,12 @@ impl<'a> SpellInfo<'a> {
                 ),
                 amplitude: template.effect_amplitude1,
                 implicit_target_a: template.effect_implicit_target_a1,
+                implicit_target_b: template.effect_implicit_target_b1,
+                radius_index: template.effect_radius_index1,
                 misc_value: template.effect_misc_value1,
+                mechanic: template.effect_mechanic1,
                 trigger_spell: template.effect_trigger_spell1,
+                item_type: template.effect_item_type1,
             }),
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
                 effect_id: template.effect2,
@@ -64,8 +76,12 @@ impl<'a> SpellInfo<'a> {
                 ),
                 amplitude: template.effect_amplitude2,
                 implicit_target_a: template.effect_implicit_target_a2,
+                implicit_target_b: template.effect_implicit_target_b2,
+                radius_index: template.effect_radius_index2,
                 misc_value: template.effect_misc_value2,
+                mechanic: template.effect_mechanic2,
                 trigger_spell: template.effect_trigger_spell2,
+                item_type: template.effect_item_type2,
             }),
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
                 effect_id: template.effect3,
@@ -78,8 +94,12 @@ impl<'a> SpellInfo<'a> {
                 ),
                 amplitude: template.effect_amplitude3,
                 implicit_target_a: template.effect_implicit_target_a3,
+                implicit_target_b: template.effect_implicit_target_b3,
+                radius_index: template.effect_radius_index3,
                 misc_value: template.effect_misc_value3,
+                mechanic: template.effect_mechanic3,
                 trigger_spell: template.effect_trigger_spell3,
+                item_type: template.effect_item_type3,
             }),
         ];
         Self { template, effects }
@@ -113,6 +133,8 @@ impl<'a> SpellInfo<'a> {
             SpellCastKind::Charge
         } else if self.has_direct_heal_effect() {
             SpellCastKind::DirectHeal
+        } else if self.has_effect(SpellEffectDispatch::CreateItem) {
+            SpellCastKind::CreateItem
         } else if self.has_effect(SpellEffectDispatch::ApplyAura) {
             SpellCastKind::AuraApplication
         } else if self.has_direct_damage_effect() {
@@ -237,9 +259,12 @@ impl<'a> SpellInfo<'a> {
             .iter()
             .find(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
         {
+            if effect_targets_caster_centered_hostile_area(*effect) {
+                return SpellAuraTarget::CasterAreaEnemy;
+            }
             return match effect.implicit_target_a {
                 TARGET_UNIT_CASTER => SpellAuraTarget::Caster,
-                TARGET_UNIT_ENEMY | TARGET_UNIT => SpellAuraTarget::UnitTarget,
+                target if is_direct_unit_target(target) => SpellAuraTarget::UnitTarget,
                 _ => SpellAuraTarget::Caster,
             };
         }
@@ -248,7 +273,7 @@ impl<'a> SpellInfo<'a> {
             .find(|effect| effect.dispatch == SpellEffectDispatch::Heal)
             .map(|effect| match effect.implicit_target_a {
                 TARGET_UNIT_CASTER => SpellAuraTarget::Caster,
-                TARGET_UNIT => SpellAuraTarget::UnitTarget,
+                target if is_direct_unit_target(target) => SpellAuraTarget::UnitTarget,
                 _ => SpellAuraTarget::UnitTarget,
             })
             .unwrap_or(SpellAuraTarget::Caster)
@@ -267,13 +292,23 @@ impl<'a> SpellInfo<'a> {
                 }
             }
             SpellCastKind::AuraApplication => {
-                if self.aura_target() == SpellAuraTarget::Caster {
+                let aura_target = self.aura_target();
+                if matches!(
+                    aura_target,
+                    SpellAuraTarget::Caster | SpellAuraTarget::CasterAreaEnemy
+                ) {
                     SpellTargetKind::Caster
                 } else if self.effects.iter().any(|effect| {
-                    effect.implicit_target_a == TARGET_UNIT_ENEMY
+                    effect_targets_direct_hostile_unit(*effect)
                         || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
                 }) {
                     SpellTargetKind::HostileUnit
+                } else if self
+                    .effects
+                    .iter()
+                    .any(|effect| effect_targets_direct_friendly_unit(*effect))
+                {
+                    SpellTargetKind::FriendlyUnit
                 } else {
                     SpellTargetKind::Unit
                 }
@@ -292,7 +327,7 @@ impl<'a> SpellInfo<'a> {
                     SpellTargetKind::HostileUnit
                 }
             }
-            SpellCastKind::Teleport => SpellTargetKind::Caster,
+            SpellCastKind::CreateItem | SpellCastKind::Teleport => SpellTargetKind::Caster,
         }
     }
 
@@ -372,9 +407,60 @@ impl SpellInfoEffect {
             points_per_combo_point: slot.roll.2,
             amplitude: slot.amplitude,
             implicit_target_a: slot.implicit_target_a,
+            implicit_target_b: slot.implicit_target_b,
+            radius_index: slot.radius_index,
             misc_value: slot.misc_value,
+            mechanic: slot.mechanic,
             trigger_spell: slot.trigger_spell,
+            item_type: slot.item_type,
             dispatch: SpellEffectDispatch::from_effect_id(slot.effect_id),
         }
     }
+}
+
+pub(in crate::world) fn effect_targets_caster_centered_hostile_area(
+    effect: SpellInfoEffect,
+) -> bool {
+    is_caster_centered_hostile_area_target(effect.implicit_target_a)
+        || is_caster_centered_hostile_area_target(effect.implicit_target_b)
+}
+
+pub(in crate::world) fn effect_targets_direct_hostile_unit(effect: SpellInfoEffect) -> bool {
+    is_direct_hostile_unit_target(effect.implicit_target_a)
+        || is_direct_hostile_unit_target(effect.implicit_target_b)
+}
+
+pub(in crate::world) fn effect_targets_direct_friendly_unit(effect: SpellInfoEffect) -> bool {
+    is_direct_friendly_unit_target(effect.implicit_target_a)
+        || is_direct_friendly_unit_target(effect.implicit_target_b)
+}
+
+pub(in crate::world) fn is_direct_unit_target(target: u32) -> bool {
+    is_direct_hostile_unit_target(target)
+        || is_direct_friendly_unit_target(target)
+        || matches!(target, TARGET_UNIT)
+}
+
+pub(in crate::world) fn is_direct_hostile_unit_target(target: u32) -> bool {
+    matches!(target, TARGET_UNIT_ENEMY)
+}
+
+pub(in crate::world) fn is_direct_friendly_unit_target(target: u32) -> bool {
+    matches!(
+        target,
+        TARGET_UNIT_FRIEND
+            | TARGET_UNIT_PARTY
+            | TARGET_UNIT_FRIEND_AND_PARTY
+            | TARGET_UNIT_FRIEND_CHAIN_HEAL
+            | TARGET_UNIT_RAID
+            | TARGET_UNIT_RAID_NEAR_CASTER
+            | TARGET_UNIT_RAID_AND_CLASS
+    )
+}
+
+pub(in crate::world) fn is_caster_centered_hostile_area_target(target: u32) -> bool {
+    matches!(
+        target,
+        TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC | TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE
+    )
 }

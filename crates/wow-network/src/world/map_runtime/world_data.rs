@@ -9,6 +9,7 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
+    pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
@@ -28,6 +29,7 @@ impl WorldDataFiles {
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
@@ -48,6 +50,7 @@ impl WorldDataFiles {
         let spell_cast_times =
             load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
+        let spell_radii = load_spell_radii(&data_dir.join("dbc").join("SpellRadius.dbc"));
         let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
         let faction_templates =
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
@@ -104,6 +107,7 @@ impl WorldDataFiles {
             creature_display_scales,
             spell_cast_times,
             spell_durations,
+            spell_radii,
             spell_ranges,
             faction_templates,
             item_random_properties,
@@ -143,6 +147,13 @@ pub(in crate::world) struct SpellDurationEntry {
     pub(in crate::world) duration_millis: i32,
     pub(in crate::world) duration_per_level_millis: i32,
     pub(in crate::world) max_duration_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct SpellRadiusEntry {
+    pub(in crate::world) radius: f32,
+    pub(in crate::world) radius_per_level: f32,
+    pub(in crate::world) max_radius: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -558,6 +569,13 @@ pub(in crate::world) fn load_spell_ranges(path: &std::path::Path) -> HashMap<u32
     parse_spell_ranges(&bytes)
 }
 
+pub(in crate::world) fn load_spell_radii(path: &std::path::Path) -> HashMap<u32, SpellRadiusEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_spell_radii(&bytes)
+}
+
 pub(in crate::world) fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const SPELL_CAST_TIME_FIELD_COUNT: usize = 4;
@@ -656,6 +674,56 @@ pub(in crate::world) fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRa
         }
     }
     ranges
+}
+
+pub(in crate::world) fn parse_spell_radii(bytes: &[u8]) -> HashMap<u32, SpellRadiusEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SPELL_RADIUS_FIELD_COUNT: usize = 4;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count != SPELL_RADIUS_FIELD_COUNT || record_size < SPELL_RADIUS_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut radii = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let radius = f32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let radius_per_level = f32::from_le_bytes(
+            bytes[record_offset + 8..record_offset + 12]
+                .try_into()
+                .unwrap(),
+        );
+        let max_radius = f32::from_le_bytes(
+            bytes[record_offset + 12..record_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
+        if id != 0 {
+            radii.insert(
+                id,
+                SpellRadiusEntry {
+                    radius,
+                    radius_per_level,
+                    max_radius,
+                },
+            );
+        }
+    }
+    radii
 }
 
 pub(in crate::world) fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {

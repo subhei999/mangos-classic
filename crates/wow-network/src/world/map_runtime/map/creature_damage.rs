@@ -3,11 +3,51 @@ use super::*;
 // Shared DB-creature damage authority and observer packet production.
 
 impl MapRuntime {
+    #[allow(dead_code)]
     pub(in crate::world) fn apply_db_creature_aura(
         &mut self,
         creature_guid: ObjectGuid,
         caster_character_guid: u32,
         aura: ActiveAura,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        self.apply_db_creature_aura_replacing_spell_ids(
+            creature_guid,
+            caster_character_guid,
+            aura,
+            &[],
+            now,
+        )
+    }
+
+    pub(in crate::world) fn apply_db_creature_aura_replacing_spell_ids(
+        &mut self,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+        replace_spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        let resolution = AuraRankConflictResolution {
+            failure: None,
+            replace_spell_ids: replace_spell_ids.to_vec(),
+            replace_any_caster_spell_ids: Vec::new(),
+        };
+        self.apply_db_creature_aura_replacing_conflicts(
+            creature_guid,
+            caster_character_guid,
+            aura,
+            &resolution,
+            now,
+        )
+    }
+
+    pub(in crate::world) fn apply_db_creature_aura_replacing_conflicts(
+        &mut self,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+        resolution: &AuraRankConflictResolution,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
@@ -18,13 +58,30 @@ impl MapRuntime {
         }
         let old_attack_duration = creature.base_attack_duration();
         let old_speeds = creature.move_speeds;
-        apply_active_aura(&mut creature.active_auras, aura);
+        let was_rooted = active_aura_has_root(&creature.active_auras);
+        apply_active_aura_replacing_conflicts(&mut creature.active_auras, aura, resolution);
+        let is_rooted = active_aura_has_root(&creature.active_auras);
         let previous_speeds = creature.refresh_move_speeds();
         debug_assert_eq!(old_speeds, previous_speeds);
+        let stop_packet = if !was_rooted
+            && is_rooted
+            && !matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            let stop = stop_db_creature_motion_runtime(creature);
+            Some(OutboundWorldPacket {
+                opcode: SMSG_MONSTER_MOVE,
+                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
+            })
+        } else {
+            None
+        };
         let new_attack_duration = creature.base_attack_duration();
         let active_auras = creature.active_auras.clone();
-        let direct_packets =
+        let mut direct_packets =
             db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?;
+        if let Some(packet) = stop_packet {
+            direct_packets.push(packet);
+        }
         let position = creature.current_position;
         self.adjust_db_creature_attack_timer_for_base_time_change(
             creature_guid,

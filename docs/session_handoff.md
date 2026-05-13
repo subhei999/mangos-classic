@@ -9,268 +9,183 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`, in the main checkout at
   `C:\Users\subhe\Documents\New project`.
-- Base commit: `9fc8a4c2b`.
-- Current user-directed priority: Northshire/playable gameplay parity. The most
-  recent implementation pass tightened hunter ranged Auto Shot toward CMaNGOS
-  parity: selected ammo, 500 ms shoot wind-up, ranged weapon-delay cadence,
-  ammo visual packet payloads, map-owned repeated ranged swings, preserving
-  ranged auto-repeat when the client sends melee `CMSG_ATTACKSTOP`, CMaNGOS-like
-  triggered `SMSG_SPELL_START` / `SMSG_SPELL_GO` packet order at each shot
-  release, delayed projectile impact damage based on Auto Shot missile speed,
-  CMaNGOS-shaped spell weapon-damage impact logs that avoid melee
-  attacker-state updates, and ranged-to-melee auto attack handoff when the
-  target is in melee reach. A follow-up fix also preserves the ranged weapon
-  cooldown when Auto Shot is canceled/restarted, preventing toggle spam from
-  shortening the timer.
-- Worktree is intentionally dirty. In addition to the ranged/ammo changes, it
-  still contains the pre-existing handler/router and map-runtime file moves
-  under `crates/wow-network/src/world/{handlers,map_runtime}` plus related
-  typed-dispatch edits. Do not revert those unrelated changes.
-- A local `target\debug\authserver.exe --config config\authserver.local.toml`
-  and `worldserver` process were already running from the default target during
-  verification. Use an isolated `CARGO_TARGET_DIR` or stop those processes
-  before rebuilding the default `target\debug` binaries.
-- Playerbots are disabled by default for normal multiplayer/Northshire testing:
-  `config/worldserver.local.toml` has `[playerbots] enabled = false` and
-  `[playerbots.random] enabled = false`.
+- HEAD at task start/current base: `318189dcc`.
+- Worktree is intentionally dirty with the current player spell-system parity
+  slice plus a focused HP/mana regen and spell-power packet timing fix. Touched
+  files are limited to spell/world DB metadata, spell execution, map-runtime
+  aura/movement helpers, opcodes/session state, and
+  `crates/wow-network/src/world/tests.rs`.
+- Current user-directed priority: player spell-system parity for generic
+  mechanics behind spells such as Conjure Food, Frost Nova, and ranked buffs.
+  Keep gameplay values backed by CMaNGOS/DBC/DB data; do not add spell-ID
+  special cases for these families.
+- Playerbots remain disabled by default for normal multiplayer/Northshire
+  testing: `config/worldserver.local.toml` has `[playerbots] enabled = false`
+  and `[playerbots.random] enabled = false`.
 
 ## Current Goal And Recommended Next Task
 
-- Goal: continue closing the user-observed missing Northshire/playable systems,
-  with real-client playtesting as the Checkpoint 2 grader. Do not add or
-  maintain a Northshire grading harness.
-- Recommended next task: real-client smoke the hunter flow with a low-level bow
-  user and real arrow stacks. Verify `CMSG_SET_AMMO`, `PLAYER_AMMO_ID`, Auto
-  Shot spell id `75`, 500 ms initial shoot delay, repeated shot animation with
-  the triggered start/result/go packet trio at release, weapon-speed repeat
-  cadence, ammo projectile visuals, ammo consumption, damage landing when the
-  projectile reaches the target instead of at release, ranged white-hit logs,
-  skill-ups, target death/loot, no-ammo failure, and Auto Shot
-  cancellation/close-range failure handing off to melee auto attack without
-  requiring another right-click. Also verify that toggling Auto Shot off and
-  back on after a shot does not allow shots faster than ranged weapon speed.
-- After hunter proof, continue the remaining board items: quest restrictions,
-  quest item drops from real loot tables, gameobject quest pickup, combat log
-  polish, health/rage regeneration, skills and weapon skills, aggro/chase/leash,
-  and patrol runtime stability.
+- Goal: continue closing user-observed missing spell behavior while preserving
+  the existing melee, ranged, item-use, aura tick, and starter-zone flows.
+- Recommended next task: real-client smoke the expanded spell slice. Verify
+  Conjure Food creates the DBC/DB item into inventory, merges stacks before
+  empty slots, fails cleanly when bags are full, and does not spend
+  resources/cooldowns on preflight failure. Verify Frost Nova resolves nearby
+  hostile targets from DBC radius/implicit target data, roots players/creatures,
+  stops rooted creature movement/chase, and unroots on expiration. Verify ranked
+  buffs such as Arcane Intellect refresh on same spell, higher rank replaces
+  lower across casters, lower rank after higher bounces, `spell_group` unique
+  categories replace correctly, and stats do not double-apply.
+- After this proof, continue the broader spell backlog: full SpellStacker
+  aura-effect stackability matrix, dispels, summons, pets, channeled AoE,
+  totems, shapeshifts, stealth, fear/stun/confuse, advanced proc rules, and the
+  custom script-hook system once the generic engine needs it.
 
 ## Recent Implemented Work
 
-- Added typed `CMSG_SET_AMMO` support in `wow-proto` and `wow-network`, including
-  world opcode mapping, packet parsing, dispatch, and wire-name reporting.
-- Added character ammo persistence through `characters.ammoId`: enum loading,
-  session state, login bootstrap, and `update_character_ammo_id`.
-- Implemented CMaNGOS-shaped ammo selection in inventory handling. Ammo can be
-  cleared, must exist in the player's inventory, must be projectile ammo
-  (`class = 6`, `inventory_type = 24`), must match bow/crossbow arrow or gun
-  bullet requirements, and must pass normal item-use checks.
-- Initial player updates and ammo changes now send `PLAYER_AMMO_ID` and refresh
-  derived combat stats. Ranged weapon damage includes compatible ammo DPS scaled
-  by ranged weapon attack time.
-- Spell profile derivation now recognizes Auto Shot as an auto-repeat ranged
-  spell from CMaNGOS spell attributes (`SPELL_ATTR_USES_RANGED_SLOT` and
-  `SPELL_ATTR_EX2_AUTO_REPEAT`) rather than hardcoding combat behavior by name.
-- Map runtime now stores player auto-attack kind: melee or ranged with spell id
-  and ranged phase. Ranged auto attack is scheduled by the map owner, uses a
-  CMaNGOS-shaped 500 ms initial wind-up, resets that wind-up while the player is
-  moving, and then repeats from `ranged_attack_time_ms`.
-- `SMSG_SPELL_START` and `SMSG_SPELL_GO` can now carry CMaNGOS `CAST_FLAG_AMMO`
-  plus projectile display id/inventory type. Auto Shot now treats the 500 ms
-  wind-up as CMaNGOS' internal auto-repeat delay, then sends the triggered shot
-  packets at release in CMaNGOS order: `SMSG_SPELL_START`, `SMSG_CAST_RESULT`,
-  and `SMSG_SPELL_GO`. This replaced the earlier split that sent start 500 ms
-  before go, which still made repeat arrows appear to come from the player body
-  in the real client.
-- Ranged swing execution validates live target, ranged weapon, compatible ammo,
-  range, facing, and LOS; computes ranged outcome from ranged stats and weapon
-  skill; consumes one ammo at release; emits spell start/go immediately; then
-  queues a map-owned ranged impact event using Auto Shot projectile speed.
-  Attacker-state/miss logs, creature health updates, retaliation, skill advance,
-  and death/loot finalization now happen at projectile impact.
-- `CMSG_CANCEL_AUTO_REPEAT_SPELL` now attempts to transition ranged auto-repeat
-  to melee auto attack when the current ranged target is in melee reach; only
-  failed transitions clear map-owned auto attack state. Ranged wind-up/release
-  validation failures use the same close-range melee handoff path.
-- Fixed a real-client repeat blocker where `CMSG_ATTACKSTOP` used the generic
-  auto-attack clear path and erased ranged Auto Shot after the opener. The map
-  runtime now has a melee-only stop path, matching CMaNGOS' separation between
-  melee attack state and `CURRENT_AUTOREPEAT_SPELL`.
-- Auto Shot pending impact events now share the existing map-owned delayed spell
-  event scheduler. Stale events are dropped if the target dies/respawns before
-  impact, and the delay uses the spell projectile speed with CMaNGOS' 5-yard
-  minimum travel distance.
-- Auto Shot projectile impact now suppresses `SMSG_ATTACKERSTATEUPDATE` and
-  sends `SMSG_SPELLNONMELEEDAMAGELOG`, matching CMaNGOS' spell weapon-damage
-  path. This avoids telling the client that each arrow impact was a melee swing,
-  which was making repeat shots fall back to melee/dagger-looking stance.
-- Spell range validation now treats `SPELL_RANGE_FLAG_RANGED` as the complement
-  of melee reach and returns `SPELL_FAILED_TOO_CLOSE` for the minimum-range side.
-  Auto Shot close-range failures still use the existing ranged-to-melee handoff
-  path, so a target entering melee reach should start melee auto attack without
-  another right-click.
-- Auto Shot now stores a map-owned ranged auto-repeat next-shot timer separate
-  from active target/kind. Starting or restarting Auto Shot uses
-  `max(existing_ranged_timer, now + 500ms)`, matching CMaNGOS'
-  `_UpdateAutoRepeatSpell` behavior where interrupting
-  `CURRENT_AUTOREPEAT_SPELL` does not clear the spell cooldown. Canceling,
-  target clearing, or switching to melee no longer resets the ranged weapon
-  cooldown, while player death clears it with the rest of combat state.
+- Extended world spell metadata loading from `spell_template` with dispel,
+  mechanic, stack amount, per-effect mechanic, implicit target B, radius index,
+  and item type fields. Added `spell_chain` DB lookup/cache in `ObjectMgr`.
+- Added `SpellRadius.dbc` loading into `WorldDataFiles`/`MapRuntimeManager` so
+  AoE spell radius comes from DBC data rather than constants.
+- Extended `SpellInfoEffect` and spell profile derivation for
+  `SPELL_EFFECT_CREATE_ITEM`, effect item type, secondary implicit targets, and
+  caster-centered hostile AoE targets (`15` / `36`).
+- Implemented generic create-item spell handling. Item id comes from
+  `EffectItemTypeN`; count comes from the CMaNGOS effect roll value with a
+  minimum of 1 and item stack-size cap. Cast preflight checks item-template
+  existence and storage space, then the effect uses the existing inventory store
+  plan, stack merge/add paths, persistence helpers, item push result, and update
+  packets.
+- Implemented `SPELL_AURA_MOD_ROOT` as a generic aura modifier. Players now send
+  force-root/unroot packets when root state changes or expires. Creatures stop
+  active motion when newly rooted, and chase/random/waypoint/return-home motion
+  will not start while root aura state is active.
+- Added caster-centered hostile AoE aura application for player spells. The
+  effect resolves DBC radius metadata, finds nearby hostile DB creatures from
+  map-owned spatial/faction state, applies the aura to each target, and starts
+  retaliation.
+- Added rank-aware aura conflict checks backed by `spell_chain`. Same spell from
+  the same caster refreshes; higher rank in the same chain replaces lower-rank
+  auras; lower/equal different-rank recasts bounce with
+  `SPELL_FAILED_AURA_BOUNCED`; replacement paths avoid duplicate stat
+  application in session and map-owned aura state.
+- Added `spell_group` / `spell_group_spell` DB lookup and ObjectMgr caching.
+  Aura conflict preflight now honors CMaNGOS group rules: `UNIQUE` replaces
+  matching aura groups regardless of caster, while `UNIQUE_PER_CASTER` only
+  replaces the caster's own matching group. Rank checks also bounce stronger
+  positive auras from other casters and replace weaker positive ranks across
+  casters.
+- Broadened generic implicit target handling for direct friendly unit aura
+  targets (`TARGET_UNIT_FRIEND`, party/raid unit variants, chain-heal target).
+  Friendly player-target aura casts now update map-owned target aura state and
+  dispatch direct/observer aura packets instead of silently doing nothing or
+  falling back to self.
+- Kept unsupported player spell effects visible with warning logs so new spell
+  families are easier to triage.
+- Fixed a parity wrinkle found during tests: caster-centered hostile root auras
+  are classified as debuffs, not positive self buffs.
+- Fixed a critical player power timing issue: spell mana/rage/energy is still
+  spent from map-owned state at cast completion, but the client-visible power
+  `SMSG_UPDATE_OBJECT` now goes out immediately before cast result/`SMSG_SPELL_GO`
+  instead of waiting for delayed projectile impact. This matches the CMaNGOS
+  `Spell::cast` ordering where `TakePower()` happens before `SendSpellGo()`.
+- Strengthened the map-owned regen/session-cache regression so food/drink-style
+  mana ticks, health regen, and rage decay survive refresh/sync without stale
+  session state pushing bars backwards.
 
 ## Tests Run
 
-- Baseline attempt before edits:
-  `$env:CARGO_TARGET_DIR='target\codex-ranged-baseline'; .\scripts\test-rust.cmd`
-  timed out after about 124 seconds without a useful failure signal.
-- `cargo check -p wow-network` passed after the ranged/ammo implementation.
-- `cargo test -p wow-network ranged_weapon_damage_adds_compatible_ammo_dps_for_weapon_speed --lib`
-  passed.
-- `cargo test -p wow-network spell_cast_profiles_are_derived_from_cmangos_spell_template_fields --lib`
-  passed.
-- `cargo test -p wow-network --lib` passed with 625 tests.
-- `.\scripts\test-rust.cmd` against the default target mostly passed but failed
-  at the final `cargo build -p authserver` because Windows could not replace
-  the running `target\debug\authserver.exe`.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-script-final'; .\scripts\test-rust.cmd`
+- Baseline before spell changes:
+  `$env:CARGO_TARGET_DIR='target\codex-spells-baseline'; .\scripts\test-rust.cmd`
   passed fully.
-- `cargo check -p wow-network` passed after the Auto Shot wind-up/projectile
-  packet pass.
-- `cargo test -p wow-network ranged_auto_attack_uses_cmangos_windup_before_weapon_timer --lib`
-  passed.
-- `cargo test -p wow-network ranged_auto_attack_movement_does_not_shortcut_long_weapon_cooldown --lib`
-  passed.
-- `cargo test -p wow-network ranged_spell_packets_include_cmangos_ammo_visual_payload --lib`
-  passed.
-- `cargo test -p wow-proto --lib` passed with 23 tests.
-- `cargo test -p wow-network --lib` passed with 628 tests.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-parity-final'; .\scripts\test-rust.cmd`
-  passed fully, including clippy, unit/doc tests, and authserver/worldserver
+- During implementation:
+  `$env:CARGO_TARGET_DIR='target\codex-spells-dev'; cargo test -p wow-network --lib`
+  initially exposed a DB access bug in aura-rank conflict preflight when no
+  same-caster different-rank aura was active; after the early-return fix it
+  passed with 634 tests, and later with 640 tests after focused spell tests were
+  added.
+- Added focused tests for SpellRadius DBC parsing, create-item metadata/stack
+  cap, full-backpack storage planning, Frost-Nova-style caster-centered hostile
+  root targeting/radius/debuff classification, root movement/root packet
+  expiration, and ranked aura replacement/bounce/stat behavior.
+- Final verification:
+  `$env:CARGO_TARGET_DIR='target\codex-spells-final'; .\scripts\test-rust.cmd`
+  passed fully after clippy cleanup, including fmt, clippy, workspace unit/doc
+  tests, `wow-network` 640 tests, `wow-proto` 23 tests, and authserver/worldserver
   builds in the isolated target dir.
-- Baseline for the repeat fix:
-  `$env:CARGO_TARGET_DIR='target\codex-ranged-repeat-baseline'; .\scripts\test-rust.cmd`
-  passed fully before the `CMSG_ATTACKSTOP` change.
-- `cargo test -p wow-network player_attack_stop_preserves_ranged_auto_repeat_spell --lib`
-  passed.
-- `cargo test -p wow-network player_attack_stop_broadcasts_to_nearby_observer --lib`
-  passed.
-- `cargo test -p wow-network player_attack_stop_clears_queued_next_melee_spell_without_active_target --lib`
-  passed.
-- `cargo test -p wow-network ranged_auto_attack_uses_cmangos_windup_before_weapon_timer --lib`
-  passed.
-- `cargo test -p wow-network ranged_auto_attack_movement_does_not_shortcut_long_weapon_cooldown --lib`
-  passed.
-- `cargo test -p wow-proto --lib` passed with 23 tests.
-- `cargo test -p wow-network --lib` passed with 629 tests.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-repeat-final'; .\scripts\test-rust.cmd`
-  passed fully, including clippy, unit/doc tests, and authserver/worldserver
-  builds in the isolated target dir.
-- Latest focused repeat-animation/transition tests:
-  `cargo test -p wow-network ranged_auto_attack_uses_cmangos_windup_before_weapon_timer --lib`,
-  `cargo test -p wow-network ranged_auto_attack_movement_does_not_shortcut_long_weapon_cooldown --lib`,
-  `cargo test -p wow-network player_attack_stop_preserves_ranged_auto_repeat_spell --lib`,
-  and
-  `cargo test -p wow-network ranged_auto_repeat_cancel_transitions_to_melee_when_target_is_in_reach --lib`
-  all passed.
-- `cargo test -p wow-network --lib` passed with 630 tests.
-- `cargo test -p wow-proto --lib` passed with 23 tests.
-- First run of
-  `$env:CARGO_TARGET_DIR='target\codex-ranged-draw-transition-final'; .\scripts\test-rust.cmd`
-  failed at `cargo fmt --check`; after `cargo fmt --package wow-network`, the
-  same script passed fully, including clippy, unit/doc tests, and
-  authserver/worldserver builds in the isolated target dir.
-- Latest repeat-animation correction:
-  `cargo test -p wow-network ranged_auto_attack_uses_cmangos_windup_before_weapon_timer --lib`,
-  `cargo test -p wow-network ranged_auto_attack_movement_does_not_shortcut_long_weapon_cooldown --lib`,
-  `cargo test -p wow-network player_attack_stop_preserves_ranged_auto_repeat_spell --lib`,
-  `cargo test -p wow-network ranged_auto_repeat_cancel_transitions_to_melee_when_target_is_in_reach --lib`,
-  and
-  `cargo test -p wow-network ranged_spell_packets_include_cmangos_ammo_visual_payload --lib`
-  all passed.
-- `cargo test -p wow-network --lib` passed with 630 tests.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-triggered-start-final'; .\scripts\test-rust.cmd`
-  passed fully, including clippy, unit/doc tests, and authserver/worldserver
-  builds in the isolated target dir.
-- Latest projectile-impact correction:
-  `cargo test -p wow-network ranged_auto` passed with 5 ranged auto-repeat
-  tests, and
-  `cargo test -p wow-network auto_shot_pending_impact_delays_damage_until_projectile_due`
-  passed.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-projectile-full'; .\scripts\test-rust.cmd`
-  passed fully, including clippy, 632 `wow-network` tests, doc tests, and
-  authserver/worldserver builds in the isolated target dir.
-- Latest Auto Shot stance/too-close correction:
-  `cargo test -p wow-network auto_shot_pending_impact_delays_damage_until_projectile_due --lib`,
-  `cargo test -p wow-network map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_complement --lib`,
-  `cargo test -p wow-network ranged_auto_repeat_cancel_transitions_to_melee_when_target_is_in_reach --lib`,
-  and `cargo test -p wow-network ranged_auto --lib` all passed.
-- `cargo test -p wow-network --lib` passed with 633 tests.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-autoshot-parity-final'; .\scripts\test-rust.cmd`
-  passed fully, including fmt, clippy, unit/doc tests, and authserver/worldserver
-  builds in the isolated target dir.
-- Latest Auto Shot cooldown toggle exploit correction:
-  `cargo test -p wow-network ranged_auto_repeat_restart_preserves_weapon_cooldown_after_cancel --lib`,
-  `cargo test -p wow-network ranged_auto --lib`,
-  `cargo test -p wow-network player_attack_stop_preserves_ranged_auto_repeat_spell --lib`,
-  `cargo test -p wow-network ranged_auto_repeat_cancel_transitions_to_melee_when_target_is_in_reach --lib`,
-  and
-  `cargo test -p wow-network auto_shot_pending_impact_delays_damage_until_projectile_due --lib`
-  all passed.
-- `cargo test -p wow-network --lib` passed with 634 tests.
-- `$env:CARGO_TARGET_DIR='target\codex-ranged-cooldown-final'; .\scripts\test-rust.cmd`
-  passed fully, including fmt, clippy, unit/doc tests, and authserver/worldserver
+- Regen/power timing investigation:
+  baseline `$env:CARGO_TARGET_DIR='target\codex-regen-baseline'; .\scripts\test-rust.cmd`
+  initially failed on a pre-existing `cargo fmt --check` mismatch in
+  `crates/wow-network/src/world/spells.rs`; `cargo fmt` fixed it. Focused
+  tests passed for
+  `session_cache_refresh_preserves_map_owned_regen_before_session_sync` and
+  `cast_time_spell_sends_start_before_delayed_go_and_effects`. Final
+  verification `$env:CARGO_TARGET_DIR='target\codex-regen-final'; .\scripts\test-rust.cmd`
+  passed fully, including `wow-network` 643 tests.
+- Baseline for the follow-up stacker/target slice:
+  `$env:CARGO_TARGET_DIR='target\codex-spellstack-baseline'; cargo test -p wow-network --lib`
+  passed with 640 tests.
+- Focused follow-up checks:
+  `$env:CARGO_TARGET_DIR='target\codex-spellstack-dev'; cargo test -p wow-network --lib conflict`
+  passed with the rank/group conflict tests, and
+  `$env:CARGO_TARGET_DIR='target\codex-spellstack-dev'; cargo test -p wow-network --lib direct_friendly_unit`
+  passed. Full crate rerun:
+  `$env:CARGO_TARGET_DIR='target\codex-spellstack-dev'; cargo test -p wow-network --lib`
+  passed with 643 tests.
+- Final verification after the stacker/target follow-up:
+  `$env:CARGO_TARGET_DIR='target\codex-spellstack-final'; .\scripts\test-rust.cmd`
+  passed fully, including fmt, clippy, workspace unit/doc tests,
+  `wow-network` 643 tests, `wow-proto` 23 tests, and authserver/worldserver
   builds in the isolated target dir.
 
 ## Real-Client Verification Needed
 
-- Hunter ranged flow still needs live-client proof. Verify arrows can be chosen
-  as ammo, Auto Shot starts and repeats, every repeat now animates from the bow
-  instead of appearing to launch from the player body or switching to dagger
-  stance, arrows are consumed, damage/logs appear at projectile impact rather
-  than at release, weapon skill advances, target death/loot still works, and the
-  client receives clear failures for missing ammo and target-too-close. Verify
-  specifically that canceling/restarting Auto Shot after a release keeps the
-  ranged weapon cooldown instead of allowing rapid-fire toggle shots.
-- Verify switching out of Auto Shot at close range starts melee auto attack
-  without another right-click. If repeat animation is still wrong, capture or
-  compare real CMaNGOS packet order/fields around repeat Auto Shot; the current
-  Rust path now avoids the known bad melee attacker-state packet on arrow
-  impact, but real packets may expose another client-facing state update.
-- Verify selected ammo persistence across logout/relogin through
-  `characters.ammoId`.
-- Re-run `.\scripts\test-rust-db.cmd` only if the next pass broadens character
-  DB behavior beyond the narrow `ammoId` update; it was not run in this pass.
-- Thrown and wand parity are not complete. This slice targets bow/gun/crossbow
-  Auto Shot and projectile ammo requirements.
-- Quiver/ammo-pouch ranged haste is intentionally not complete; GitHub issue
-  #70 tracks adding `SPELL_AURA_MOD_RANGED_AMMO_HASTE` to ranged attack time.
+- Conjure Food live cast: inventory creation, stack merge, item push/update
+  packets, bag-full failure, missing-template logging if DB data is absent, and
+  resource/cooldown behavior around failed preflight.
+- Frost Nova live cast: root animation/state, hostile-only AoE selection,
+  creature movement stop/resume, expiration unroot, combat retaliation, and no
+  friendly/self accidental roots.
+- Ranked/grouped buffs live cast: higher/lower rank interactions across casters,
+  `spell_group` unique category replacement, visible aura slot replacement,
+  bounce failure text, and no doubled character-panel stats.
+- Friendly unit buffs live cast: Arcane Intellect or similar direct friendly
+  target auras should apply to the selected friendly player, not self or hostile
+  creatures.
+- Regression smoke: existing damage, heal, DoT, Battle Shout, Heroic Strike,
+  Auto Shot, item-use, and aura tick behavior.
+- HP/mana real-client smoke: verify food/drink bars only increase while seated
+  and out of interrupting actions, no stale lower-value snapback occurs after
+  client input, normal mana regen resumes after the five-second rule, and
+  projectile spell mana visibly drops on cast launch rather than on impact.
 
 ## Current Follow-Ups
 
-- If real-client testing shows selected ammo remains after the final stack is
-  consumed, decide whether CMaNGOS clears `ammoId` immediately or leaves the
-  selected ammo id and fails the next shot. The current implementation leaves
-  the selection and sends `SPELL_FAILED_NO_AMMO` on the next invalid shot.
-- Broaden ranged combat parity after hunter proof: exact ranged combat-log
-  payloads, animation timing, shoot/cast state UI behavior, PvP/duel target
-  support, and any class/race-specific weapon-skill wrinkles.
-- GitHub issue #70 tracks quiver/ammo-pouch haste not yet adjusting
-  `ranged_attack_time_ms`.
-- Existing P2 protocol/router cleanup remains in the same dirty worktree. Keep
-  future changes focused and avoid mixing unrelated gameplay work into that
-  refactor unless it is required for correctness.
+- The create-item path has focused metadata/planner tests but still needs a
+  real DB/client proof for actual persisted inventory creation and packet
+  sequencing.
+- The AoE target resolver currently covers the caster-centered hostile target
+  families needed by Frost Nova. Direct friendly player targets are now
+  classified/applied, but party/raid area targets, chain jumps, cone targets,
+  destination-location AoE, and gameobject/unit-location target payloads remain
+  future spell-engine work.
+- The DB-backed `spell_group` foundation is in, but full Classic SpellStacker
+  parity still needs the CMaNGOS per-aura stackability matrix, exclusive dispel
+  categories, diminishing-return interaction, and special proc/aura rules.
+- Custom spell script hooks are intentionally deferred; the user wants generic
+  systems 2 and 3 first and script architecture later.
 
 ## Key Files
 
-- `crates/wow-proto/src/world_packets.rs`
-- `crates/wow-db/src/character/{queries.rs,state.rs,types.rs}`
-- `crates/wow-network/src/world/packets.rs`
-- `crates/wow-network/src/world/opcodes.rs`
-- `crates/wow-network/src/world/wire.rs`
-- `crates/wow-network/src/world/session.rs`
-- `crates/wow-network/src/world/server/{dispatch.rs,player_login.rs,world_session.rs}`
-- `crates/wow-network/src/world/handlers/inventory.rs`
+- `crates/wow-db/src/world_data.rs`
+- `crates/wow-network/src/world/globals/object_mgr.rs`
+- `crates/wow-network/src/world/map_runtime/world_data.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager.rs`
+- `crates/wow-network/src/world/map_runtime/map/{players.rs,creature_damage.rs,spatial.rs}`
+- `crates/wow-network/src/world/combat/motion.rs`
 - `crates/wow-network/src/world/spells.rs`
-- `crates/wow-network/src/world/spells/spell_mgr.rs`
-- `crates/wow-network/src/world/combat/{lifecycle.rs,outcome.rs}`
-- `crates/wow-network/src/world/entities/{player.rs,update_data.rs}`
-- `crates/wow-network/src/world/map_runtime/{map.rs,map/players.rs,map_manager.rs}`
+- `crates/wow-network/src/world/spells/{effects.rs,spell_mgr.rs,targets.rs}`
+- `crates/wow-network/src/world/session.rs`
+- `crates/wow-network/src/world/opcodes.rs`
 - `crates/wow-network/src/world/tests.rs`

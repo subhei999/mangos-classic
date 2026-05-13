@@ -7,6 +7,7 @@ pub(in crate::world) enum SpellEffectDispatch {
     WeaponDamage,
     WeaponPercentDamage,
     ApplyAura,
+    CreateItem,
     Heal,
     Energize,
     Teleport,
@@ -29,6 +30,7 @@ impl SpellEffectDispatch {
             | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => Self::WeaponDamage,
             SPELL_EFFECT_WEAPON_PERCENT_DAMAGE => Self::WeaponPercentDamage,
             SPELL_EFFECT_APPLY_AURA => Self::ApplyAura,
+            SPELL_EFFECT_CREATE_ITEM => Self::CreateItem,
             SPELL_EFFECT_HEAL => Self::Heal,
             SPELL_EFFECT_ENERGIZE => Self::Energize,
             SPELL_EFFECT_TELEPORT_UNITS | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => Self::Teleport,
@@ -62,6 +64,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
     let mut charge_applied = false;
     let mut direct_heal_applied = false;
     let mut aura_applied = false;
+    let mut create_item_applied = false;
     let mut weapon_damage_applied = false;
     let mut landed_damage = false;
     let combo_points_for_effects = spell_combo_points_for_effects(
@@ -166,6 +169,20 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 direct_heal_applied = true;
             }
+            SpellEffectDispatch::CreateItem
+                if spell_profile.kind == SpellCastKind::CreateItem && !create_item_applied =>
+            {
+                apply_player_create_item_effects(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    &spell_info,
+                    header_crypto,
+                )
+                .await?;
+                create_item_applied = true;
+            }
             SpellEffectDispatch::ApplyAura
                 if matches!(
                     spell_profile.kind,
@@ -189,6 +206,12 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 aura_applied = true;
             }
+            SpellEffectDispatch::Unsupported(effect_id) => {
+                warn!(
+                    spell_id = spell_template.id,
+                    effect_id, "Skipping unsupported player spell effect"
+                );
+            }
             _ => {}
         }
     }
@@ -205,24 +228,248 @@ pub(in crate::world) async fn apply_player_spell_effects(
         .await?;
     }
 
-    let power_update = match spell_profile.power {
-        SpellPowerCost::Rage { .. } => {
-            build_player_rage_update_body(caster, session.character.player_rage)?
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct CreateItemSpellEffect {
+    pub(in crate::world) item_template: u32,
+    pub(in crate::world) requested_count: u32,
+}
+
+pub(in crate::world) fn create_item_spell_effect(
+    effect: SpellInfoEffect,
+) -> Option<CreateItemSpellEffect> {
+    if effect.dispatch != SpellEffectDispatch::CreateItem || effect.item_type == 0 {
+        return None;
+    }
+    Some(CreateItemSpellEffect {
+        item_template: effect.item_type,
+        requested_count: spell_effect_roll_value(effect, 0).unwrap_or(1).max(1),
+    })
+}
+
+pub(in crate::world) fn create_item_spell_effects(
+    spell_info: &SpellInfo<'_>,
+) -> Vec<CreateItemSpellEffect> {
+    spell_info
+        .effects
+        .into_iter()
+        .filter_map(create_item_spell_effect)
+        .collect()
+}
+
+pub(in crate::world) fn create_item_count_for_template(
+    effect: CreateItemSpellEffect,
+    template: &ItemTemplateQuery,
+) -> u32 {
+    effect.requested_count.min(template.stackable.max(1)).max(1)
+}
+
+pub(in crate::world) async fn player_create_item_cast_inventory_failure(
+    deps: SpellCastDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+) -> anyhow::Result<Option<u8>> {
+    let spell_info = SpellInfo::from_template(spell_template);
+    let effects = create_item_spell_effects(&spell_info);
+    if effects.is_empty() {
+        return Ok(None);
+    }
+    let equipped_bags =
+        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    for effect in effects {
+        let Some(template) =
+            wow_db::get_item_template_query(deps.world_db_pool, effect.item_template).await?
+        else {
+            warn!(
+                spell_id = spell_template.id,
+                item_template = effect.item_template,
+                "Create-item spell references missing item_template row"
+            );
+            return Ok(Some(EQUIP_ERR_ITEM_NOT_FOUND));
+        };
+        let count = create_item_count_for_template(effect, &template);
+        if plan_store_item(
+            &session.inventory.items,
+            &template,
+            count,
+            &equipped_bags,
+            None,
+            None,
+        )
+        .is_none()
+        {
+            return Ok(Some(EQUIP_ERR_INVENTORY_FULL));
         }
-        SpellPowerCost::Mana { .. } => {
-            build_player_mana_update_body(caster, session.character.player_mana)?
+    }
+    Ok(None)
+}
+
+pub(in crate::world) async fn apply_player_create_item_effects(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    spell_info: &SpellInfo<'_>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let effects = create_item_spell_effects(spell_info);
+    if effects.is_empty() {
+        return Ok(());
+    }
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let equipped_bags =
+        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    let mut update_blocks = Vec::new();
+    let mut push_results = Vec::new();
+
+    for effect in effects {
+        let Some(template) =
+            wow_db::get_item_template_query(deps.world_db_pool, effect.item_template).await?
+        else {
+            warn!(
+                spell_id = spell_info.template.id,
+                item_template = effect.item_template,
+                "Skipping create-item spell effect with missing item_template row"
+            );
+            send_inventory_change_failure(
+                stream,
+                EQUIP_ERR_ITEM_NOT_FOUND,
+                None,
+                None,
+                header_crypto,
+            )
+            .await?;
+            return Ok(());
+        };
+        let count = create_item_count_for_template(effect, &template);
+        let Some(store_plan) = plan_store_item(
+            &session.inventory.items,
+            &template,
+            count,
+            &equipped_bags,
+            None,
+            None,
+        ) else {
+            send_inventory_change_failure(
+                stream,
+                EQUIP_ERR_INVENTORY_FULL,
+                None,
+                None,
+                header_crypto,
+            )
+            .await?;
+            return Ok(());
+        };
+
+        let random_properties = generate_item_instance_random_properties_for_template(
+            deps.world_db_pool,
+            &session.movement.db_creature_navigation.world_data_files,
+            &template,
+        )
+        .await?;
+        for slot in &store_plan {
+            if let Some(item_guid) = slot.existing_item {
+                let existing_count = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == item_guid)
+                    .map(|item| item.count)
+                    .unwrap_or(0);
+                wow_db::update_character_inventory_item_count(
+                    deps.character_db_pool,
+                    character_guid,
+                    item_guid,
+                    existing_count.saturating_add(slot.count),
+                )
+                .await?;
+            } else {
+                wow_db::add_character_inventory_item_with_random_properties(
+                    deps.character_db_pool,
+                    wow_db::AddCharacterInventoryItemRequest {
+                        guid: character_guid,
+                        bag: slot.bag as u32,
+                        slot: slot.slot,
+                        item_template: template.entry,
+                        count: slot.count,
+                        durability: template.max_durability,
+                        random_properties: random_properties.as_ref(),
+                    },
+                )
+                .await?;
+            }
         }
-        SpellPowerCost::Energy { .. } => {
-            build_player_energy_update_body(caster, session.character.player_energy)?
+
+        session.inventory.items =
+            wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
+        for slot in &store_plan {
+            if let Some(item_guid) = slot.existing_item {
+                if let Some(item) = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == item_guid)
+                {
+                    update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                    push_results.push(build_item_push_result_body(
+                        character_guid,
+                        item,
+                        slot.count,
+                        true,
+                        true,
+                        true,
+                    ));
+                }
+                continue;
+            }
+            if let Some(new_item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+            {
+                let contained_guid =
+                    item_contained_guid(owner_guid, &session.inventory.items, new_item);
+                update_blocks.push(build_item_create_update_block(
+                    owner_guid,
+                    contained_guid,
+                    new_item,
+                    (template.container_slots > 0).then_some(template.container_slots),
+                )?);
+                update_blocks.extend(build_inventory_position_update_blocks(
+                    character_guid,
+                    &session.inventory.items,
+                    slot.bag,
+                    slot.slot,
+                )?);
+                push_results.push(build_item_push_result_body(
+                    character_guid,
+                    new_item,
+                    slot.count,
+                    true,
+                    true,
+                    true,
+                ));
+            }
         }
-    };
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &power_update,
-        Some(header_crypto),
-    )
-    .await
+    }
+
+    for body in push_results {
+        send_packet(
+            stream,
+            SMSG_ITEM_PUSH_RESULT,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if !update_blocks.is_empty() {
+        let body = build_update_object_body(&update_blocks);
+        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -505,6 +752,61 @@ pub(in crate::world) async fn send_player_spell_log_to_target_set(
         }
         dispatch.push((*session_id, packet.clone()));
     }
+    shared_world.sessions.dispatch(dispatch).await;
+    Ok(())
+}
+
+pub(in crate::world) async fn send_or_dispatch_player_aura_event(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    current_character_guid: u32,
+    target_character_guid: u32,
+    event: PlayerAuraUpdateEvent,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let current_session_id = shared_world
+        .sessions
+        .session_for_character(current_character_guid)
+        .await;
+    let mut dispatch = Vec::new();
+
+    if target_character_guid == current_character_guid {
+        for packet in event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    } else if let Some(target_session_id) = shared_world
+        .sessions
+        .session_for_character(target_character_guid)
+        .await
+    {
+        dispatch.extend(
+            event
+                .direct_packets
+                .into_iter()
+                .map(|packet| (target_session_id, packet)),
+        );
+    }
+
+    for (session_id, packet) in event.observer_packets {
+        if Some(session_id) == current_session_id {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        } else {
+            dispatch.push((session_id, packet));
+        }
+    }
+
     shared_world.sessions.dispatch(dispatch).await;
     Ok(())
 }
@@ -829,26 +1131,33 @@ pub(in crate::world) async fn apply_player_spell_aura(
     );
     match spell_profile.aura_target {
         SpellAuraTarget::Caster => {
-            apply_player_aura(session, aura.clone());
+            let resolution = aura_rank_conflict_resolution(
+                deps.shared_world.object_mgr,
+                deps.world_db_pool,
+                spell_template.id,
+                caster,
+                &session.auras.active_auras,
+            )
+            .await?;
+            if resolution.failure.is_some() {
+                return Ok(());
+            }
+            apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
             if let Some(event) = deps
                 .shared_world
                 .maps
-                .apply_player_aura(map_id, character_guid, aura)
+                .apply_player_aura_replacing_conflicts(map_id, character_guid, aura, &resolution)
                 .await?
             {
-                for packet in event.direct_packets {
-                    send_packet(
-                        stream,
-                        packet.opcode,
-                        &packet.body,
-                        Some(&mut *header_crypto),
-                    )
-                    .await?;
-                }
-                deps.shared_world
-                    .sessions
-                    .dispatch(event.observer_packets)
-                    .await;
+                send_or_dispatch_player_aura_event(
+                    stream,
+                    deps.shared_world,
+                    character_guid,
+                    character_guid,
+                    event,
+                    header_crypto,
+                )
+                .await?;
             } else {
                 send_packet(
                     stream,
@@ -872,11 +1181,87 @@ pub(in crate::world) async fn apply_player_spell_aura(
         }
         SpellAuraTarget::UnitTarget => {
             if let Some(target) = targets.unit_target {
-                if target.is_creature() {
+                if target.is_player() {
+                    let target_character_guid = target.counter();
+                    let active_auras = if target_character_guid == character_guid {
+                        session.auras.active_auras.clone()
+                    } else {
+                        let Some(snapshot) = deps
+                            .shared_world
+                            .maps
+                            .player_runtime_snapshot(map_id, target_character_guid)
+                            .await
+                        else {
+                            return Ok(());
+                        };
+                        snapshot.active_auras
+                    };
+                    let resolution = aura_rank_conflict_resolution(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template.id,
+                        caster,
+                        &active_auras,
+                    )
+                    .await?;
+                    if resolution.failure.is_some() {
+                        return Ok(());
+                    }
+                    if target_character_guid == character_guid {
+                        apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
+                    }
                     if let Some(event) = deps
                         .shared_world
                         .maps
-                        .apply_db_creature_aura(map_id, target, character_guid, aura, now)
+                        .apply_player_aura_replacing_conflicts(
+                            map_id,
+                            target_character_guid,
+                            aura,
+                            &resolution,
+                        )
+                        .await?
+                    {
+                        send_or_dispatch_player_aura_event(
+                            stream,
+                            deps.shared_world,
+                            character_guid,
+                            target_character_guid,
+                            event,
+                            header_crypto,
+                        )
+                        .await?;
+                    }
+                } else if target.is_creature() {
+                    let Some(target_creature) = deps
+                        .shared_world
+                        .maps
+                        .db_creature_snapshot(map_id, target)
+                        .await
+                    else {
+                        return Ok(());
+                    };
+                    let resolution = aura_rank_conflict_resolution(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template.id,
+                        caster,
+                        &target_creature.active_auras,
+                    )
+                    .await?;
+                    if resolution.failure.is_some() {
+                        return Ok(());
+                    }
+                    if let Some(event) = deps
+                        .shared_world
+                        .maps
+                        .apply_db_creature_aura_replacing_conflicts(
+                            map_id,
+                            target,
+                            character_guid,
+                            aura,
+                            &resolution,
+                            now,
+                        )
                         .await?
                     {
                         send_packet(
@@ -913,8 +1298,104 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 }
             }
         }
+        SpellAuraTarget::CasterAreaEnemy => {
+            let spell_info = SpellInfo::from_template(spell_template);
+            let Some(effect) = spell_info.effects.into_iter().find(|effect| {
+                effect.dispatch == SpellEffectDispatch::ApplyAura
+                    && effect_targets_caster_centered_hostile_area(*effect)
+            }) else {
+                return Ok(());
+            };
+            let Some(radius) = spell_effect_radius_yards(deps.shared_world.maps, effect) else {
+                warn!(
+                    spell_id = spell_template.id,
+                    radius_index = effect.radius_index,
+                    "Skipping caster-centered AoE aura with missing SpellRadius.dbc row"
+                );
+                return Ok(());
+            };
+            let targets = deps
+                .shared_world
+                .maps
+                .nearby_hostile_db_creature_guids_for_player(map_id, character_guid, radius)
+                .await;
+            for target in targets {
+                let Some(target_creature) = deps
+                    .shared_world
+                    .maps
+                    .db_creature_snapshot(map_id, target)
+                    .await
+                else {
+                    continue;
+                };
+                let resolution = aura_rank_conflict_resolution(
+                    deps.shared_world.object_mgr,
+                    deps.world_db_pool,
+                    spell_template.id,
+                    caster,
+                    &target_creature.active_auras,
+                )
+                .await?;
+                if resolution.failure.is_some() {
+                    continue;
+                }
+                if let Some(event) = deps
+                    .shared_world
+                    .maps
+                    .apply_db_creature_aura_replacing_conflicts(
+                        map_id,
+                        target,
+                        character_guid,
+                        aura.clone(),
+                        &resolution,
+                        now,
+                    )
+                    .await?
+                {
+                    send_packet(
+                        stream,
+                        SMSG_UPDATE_OBJECT,
+                        &event.update_body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                    for packet in event.direct_packets {
+                        send_packet(
+                            stream,
+                            packet.opcode,
+                            &packet.body,
+                            Some(&mut *header_crypto),
+                        )
+                        .await?;
+                    }
+                    deps.shared_world
+                        .sessions
+                        .dispatch(event.observer_packets)
+                        .await;
+                }
+                begin_db_creature_retaliation_if_needed(
+                    stream,
+                    deps.shared_world,
+                    map_id,
+                    session,
+                    target,
+                    caster,
+                    header_crypto,
+                )
+                .await?;
+            }
+        }
     }
     Ok(())
+}
+
+pub(in crate::world) fn spell_effect_radius_yards(
+    maps: &MapRuntimeManager,
+    effect: SpellInfoEffect,
+) -> Option<f32> {
+    maps.spell_radius(effect.radius_index)
+        .map(|entry| entry.radius)
+        .filter(|radius| *radius > 0.0)
 }
 
 pub(in crate::world) fn spell_direct_heal(spell_info: &SpellInfo<'_>) -> u32 {

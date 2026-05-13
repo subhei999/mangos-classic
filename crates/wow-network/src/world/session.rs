@@ -469,6 +469,7 @@ pub(in crate::world) enum AuraStatModifier {
     MeleeAttackTimePercent {
         percent: i32,
     },
+    Root,
     Stat {
         stat: Option<usize>,
         amount: i32,

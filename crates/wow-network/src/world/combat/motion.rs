@@ -216,6 +216,9 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
+    if active_aura_has_root(&creature.active_auras) {
+        return None;
+    }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
         return None;
     }
@@ -297,6 +300,9 @@ pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
+    if active_aura_has_root(&creature.active_auras) {
+        return None;
+    }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
         return None;
     }
@@ -460,6 +466,9 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     chase_destination: Option<WorldPosition>,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
+    if active_aura_has_root(&creature.active_auras) {
+        return None;
+    }
     let start = creature.current_position;
     let stop_distance = db_creature_chase_stop_distance(creature);
     if creature.has_waypoint_movement() && creature.waypoint_resume_position.is_none() {
@@ -550,6 +559,9 @@ pub(in crate::world) fn start_db_creature_return_home_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
+    if active_aura_has_root(&creature.active_auras) {
+        return None;
+    }
     if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
         return None;
     }

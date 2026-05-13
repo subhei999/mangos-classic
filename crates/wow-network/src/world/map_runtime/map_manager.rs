@@ -9,6 +9,7 @@ pub(in crate::world) struct MapRuntimeManager {
     pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
+    pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) next_gm_creature_guid: AtomicU64,
@@ -91,6 +92,7 @@ impl MapRuntimeManager {
             creature_display_scales: world_data_files.creature_display_scales.clone(),
             spell_cast_times: world_data_files.spell_cast_times.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
+            spell_radii: world_data_files.spell_radii.clone(),
             spell_ranges: world_data_files.spell_ranges.clone(),
             faction_templates: world_data_files.faction_templates.clone(),
             next_gm_creature_guid: AtomicU64::new(next_gm_creature_guid.max(1)),
@@ -124,6 +126,10 @@ impl MapRuntimeManager {
 
     pub(in crate::world) fn spell_range(&self, range_index: u32) -> Option<SpellRangeEntry> {
         self.spell_ranges.get(&range_index).copied()
+    }
+
+    pub(in crate::world) fn spell_radius(&self, radius_index: u32) -> Option<SpellRadiusEntry> {
+        self.spell_radii.get(&radius_index).copied()
     }
 
     pub(in crate::world) async fn set_active_player_spell_cast(
@@ -1251,11 +1257,42 @@ impl MapRuntimeManager {
         character_guid: u32,
         aura: ActiveAura,
     ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        self.apply_player_aura_replacing_spell_ids(map_id, character_guid, aura, &[])
+            .await
+    }
+
+    pub(in crate::world) async fn apply_player_aura_replacing_spell_ids(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        aura: ActiveAura,
+        replace_spell_ids: &[u32],
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        let resolution = AuraRankConflictResolution {
+            failure: None,
+            replace_spell_ids: replace_spell_ids.to_vec(),
+            replace_any_caster_spell_ids: Vec::new(),
+        };
+        self.apply_player_aura_replacing_conflicts(map_id, character_guid, aura, &resolution)
+            .await
+    }
+
+    pub(in crate::world) async fn apply_player_aura_replacing_conflicts(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        aura: ActiveAura,
+        resolution: &AuraRankConflictResolution,
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return Ok(None);
         };
-        let event = map.lock().await.apply_player_aura(character_guid, aura);
+        let event = map.lock().await.apply_player_aura_replacing_conflicts(
+            character_guid,
+            aura,
+            resolution,
+        );
         event
     }
 
@@ -1267,15 +1304,87 @@ impl MapRuntimeManager {
         aura: ActiveAura,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        self.apply_db_creature_aura_replacing_spell_ids(
+            map_id,
+            creature_guid,
+            caster_character_guid,
+            aura,
+            &[],
+            now,
+        )
+        .await
+    }
+
+    pub(in crate::world) async fn apply_db_creature_aura_replacing_spell_ids(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+        replace_spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        let resolution = AuraRankConflictResolution {
+            failure: None,
+            replace_spell_ids: replace_spell_ids.to_vec(),
+            replace_any_caster_spell_ids: Vec::new(),
+        };
+        self.apply_db_creature_aura_replacing_conflicts(
+            map_id,
+            creature_guid,
+            caster_character_guid,
+            aura,
+            &resolution,
+            now,
+        )
+        .await
+    }
+
+    pub(in crate::world) async fn apply_db_creature_aura_replacing_conflicts(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        aura: ActiveAura,
+        resolution: &AuraRankConflictResolution,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return Ok(None);
         };
         let event = {
             let mut map = map.lock().await;
-            map.apply_db_creature_aura(creature_guid, caster_character_guid, aura, now)
+            map.apply_db_creature_aura_replacing_conflicts(
+                creature_guid,
+                caster_character_guid,
+                aura,
+                resolution,
+                now,
+            )
         };
         event
+    }
+
+    pub(in crate::world) async fn nearby_hostile_db_creature_guids_for_player(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        radius: f32,
+    ) -> Vec<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let targets = map
+            .lock()
+            .await
+            .nearby_hostile_db_creature_guids_for_player(
+                &self.faction_templates,
+                character_guid,
+                radius,
+            );
+        targets
     }
 
     pub(in crate::world) async fn set_player_position(

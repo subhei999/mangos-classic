@@ -1402,6 +1402,45 @@ fn spell_cast_times_dbc_parser_reads_cmangos_cast_time_fields() {
 }
 
 #[test]
+fn spell_radius_dbc_parser_reads_cmangos_radius_fields() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    for (id, radius, per_level, max_radius) in [
+        (7u32, 10.0f32, 0.0f32, 10.0f32),
+        (11u32, 8.0f32, 0.25f32, 20.0f32),
+    ] {
+        bytes.extend_from_slice(&id.to_le_bytes());
+        bytes.extend_from_slice(&radius.to_le_bytes());
+        bytes.extend_from_slice(&per_level.to_le_bytes());
+        bytes.extend_from_slice(&max_radius.to_le_bytes());
+    }
+    bytes.push(0);
+
+    let radii = parse_spell_radii(&bytes);
+
+    assert_eq!(
+        radii.get(&7).copied(),
+        Some(SpellRadiusEntry {
+            radius: 10.0,
+            radius_per_level: 0.0,
+            max_radius: 10.0,
+        })
+    );
+    assert_eq!(
+        radii.get(&11).copied(),
+        Some(SpellRadiusEntry {
+            radius: 8.0,
+            radius_per_level: 0.25,
+            max_radius: 20.0,
+        })
+    );
+}
+
+#[test]
 fn faction_template_dbc_parser_reads_cmangos_relation_fields() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"WDBC");
@@ -5959,6 +5998,7 @@ fn test_mmap_navigation_for_positions(
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
@@ -6497,6 +6537,7 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
                     creature_display_scales: HashMap::new(),
                     spell_cast_times: HashMap::new(),
                     spell_durations: HashMap::new(),
+                    spell_radii: HashMap::new(),
                     spell_ranges: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
@@ -7364,6 +7405,7 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
                     creature_display_scales: HashMap::new(),
                     spell_cast_times: HashMap::new(),
                     spell_durations: HashMap::new(),
+                    spell_radii: HashMap::new(),
                     spell_ranges: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
@@ -14617,6 +14659,60 @@ fn chilled_aura_template_modifies_movement_and_attack_speed() {
 }
 
 #[test]
+fn root_aura_template_stops_movement_until_expiration() {
+    let now = Instant::now();
+    let mut root_template = test_spell_template(122);
+    root_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    root_template.effect_apply_aura_name1 = SPELL_AURA_MOD_ROOT;
+    let root = build_active_aura(
+        &root_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 1_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 1_000,
+        }),
+    );
+
+    assert_eq!(root.stat_modifiers, vec![AuraStatModifier::Root]);
+    assert!(active_aura_has_root(std::slice::from_ref(&root)));
+    assert_eq!(
+        active_aura_movement_speed_multiplier(std::slice::from_ref(&root)),
+        0.0
+    );
+
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+
+    let event = map.apply_player_aura(7, root).unwrap().unwrap();
+    assert!(event
+        .direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_FORCE_MOVE_ROOT));
+
+    assert!(map
+        .advance_player_aura_expirations(now + Duration::from_millis(999))
+        .unwrap()
+        .is_empty());
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_millis(1_000))
+        .unwrap();
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_UNROOT));
+    assert!(!active_aura_has_root(
+        &map.players.get(&7).unwrap().active_auras
+    ));
+}
+
+#[test]
 fn active_aura_proc_trigger_spell_ids_filter_flags_and_expiration() {
     let now = Instant::now();
     let active = ActiveAura {
@@ -15982,15 +16078,43 @@ fn map_runtime_gameplay_sync_preserves_dead_player_zero_health() {
 async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
     let maps = Arc::new(MapRuntimeManager::default());
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let now = Instant::now();
     let mut player = test_player_runtime(7, SessionId(7), position);
     player.class = 1;
     player.spirit = 30;
     player.health = 10;
     player.max_health = 80;
+    let world_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 100,
+        stats: [20, 20, 30, 20, 30],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = world_stats;
+    player.effective_world_stats = world_stats;
+    player.power1 = 20;
+    player.max_power1 = world_stats.max_mana();
     player.power2 = 100;
+    player.active_auras.push(ActiveAura {
+        spell_id: 430,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: Some(PeriodicRegenAura {
+            health_amount: 0,
+            mana_amount: 9,
+            tick_millis: 2_000,
+            next_tick_at: now + Duration::from_secs(2),
+        }),
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    });
     maps.add_player(player).await.unwrap();
 
-    let now = Instant::now();
     assert!(maps
         .advance_all_player_regen_ticks(now)
         .await
@@ -16000,9 +16124,10 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
         .advance_all_player_regen_ticks(now + Duration::from_secs(2))
         .await
         .unwrap();
-    assert_eq!(packets.len(), 2);
+    assert!(packets.len() >= 4);
 
     let stale_session_health = 10;
+    let stale_session_mana = 20;
     let stale_session_rage = 100;
     let mut session = WorldSessionState {
         character: CharacterSessionState {
@@ -16020,6 +16145,7 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
                 jump: JumpInfo::default(),
             }),
             player_health: stale_session_health,
+            player_mana: stale_session_mana,
             player_rage: stale_session_rage,
             ..CharacterSessionState::default()
         },
@@ -16028,11 +16154,13 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
 
     refresh_active_player_session_cache(&maps, &mut session).await;
     assert!(session.character.player_health > stale_session_health);
+    assert!(session.character.player_mana > stale_session_mana);
     assert!(session.character.player_rage < stale_session_rage);
 
     sync_active_player_gameplay_state(&maps, &session).await;
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.health, session.character.player_health);
+    assert_eq!(snapshot.power1, session.character.player_mana);
     assert_eq!(snapshot.power2, session.character.player_rage);
 }
 
@@ -18194,6 +18322,7 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
@@ -18460,6 +18589,7 @@ fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
@@ -19903,6 +20033,7 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
@@ -20783,6 +20914,8 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         spell_name: format!("Spell {spell_id}"),
         rank: None,
         school: 0,
+        dispel: 0,
+        mechanic: 0,
         attributes: 0,
         attributes_ex: 0,
         attributes_ex2: 0,
@@ -20800,6 +20933,7 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         power_type: 0,
         mana_cost: 0,
         duration_index: 0,
+        stack_amount: 0,
         effect1: 0,
         effect2: 0,
         effect3: 0,
@@ -20827,9 +20961,21 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         effect_amplitude1: 0,
         effect_amplitude2: 0,
         effect_amplitude3: 0,
+        effect_mechanic1: 0,
+        effect_mechanic2: 0,
+        effect_mechanic3: 0,
         effect_implicit_target_a1: 0,
         effect_implicit_target_a2: 0,
         effect_implicit_target_a3: 0,
+        effect_implicit_target_b1: 0,
+        effect_implicit_target_b2: 0,
+        effect_implicit_target_b3: 0,
+        effect_radius_index1: 0,
+        effect_radius_index2: 0,
+        effect_radius_index3: 0,
+        effect_item_type1: 0,
+        effect_item_type2: 0,
+        effect_item_type3: 0,
         equipped_item_class: -1,
         equipped_item_subclass_mask: 0,
         spell_family_name: 0,
@@ -21405,6 +21551,383 @@ async fn consumable_regen_item_use_does_not_install_duration_cooldown() {
         )
         .await,
         None
+    );
+}
+
+#[test]
+fn create_item_spell_profile_uses_effect_item_type_and_stack_cap() {
+    let mut template = test_spell_template(587);
+    template.effect1 = SPELL_EFFECT_CREATE_ITEM;
+    template.effect_base_points1 = 9;
+    template.effect_item_type1 = 1113;
+
+    let profile = player_spell_cast_profile(&template).expect("create item spell profile");
+    assert_eq!(profile.kind, SpellCastKind::CreateItem);
+    assert_eq!(profile.aura_target, SpellAuraTarget::Caster);
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+
+    let spell_info = SpellInfo::from_template(&template);
+    let effects = create_item_spell_effects(&spell_info);
+    assert_eq!(
+        effects,
+        vec![CreateItemSpellEffect {
+            item_template: 1113,
+            requested_count: 10,
+        }]
+    );
+
+    let mut conjured_food = test_item_template(1113, 0, 0, 0.0, 0.0, 0);
+    conjured_food.stackable = 5;
+    assert_eq!(
+        create_item_count_for_template(effects[0], &conjured_food),
+        5
+    );
+}
+
+#[test]
+fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
+    let mut frost_nova = test_spell_template(122);
+    frost_nova.effect1 = SPELL_EFFECT_APPLY_AURA;
+    frost_nova.effect_apply_aura_name1 = SPELL_AURA_MOD_ROOT;
+    frost_nova.effect_implicit_target_a1 = TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC;
+    frost_nova.effect_radius_index1 = 11;
+    frost_nova.start_recovery_category = 133;
+    frost_nova.start_recovery_time = 1_500;
+
+    let profile = player_spell_cast_profile(&frost_nova).expect("frost nova profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.aura_target, SpellAuraTarget::CasterAreaEnemy);
+    let spell_info = SpellInfo::from_template(&frost_nova);
+    assert_eq!(
+        spell_info.unit_target_kind(profile.kind),
+        SpellTargetKind::Caster
+    );
+
+    let aura = build_active_aura(
+        &frost_nova,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive, "hostile AoE roots must be debuffs");
+    assert_eq!(aura.stat_modifiers, vec![AuraStatModifier::Root]);
+
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        11,
+        SpellRadiusEntry {
+            radius: 8.0,
+            radius_per_level: 0.0,
+            max_radius: 8.0,
+        },
+    );
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+    assert_eq!(
+        spell_effect_radius_yards(&maps, spell_info.effects[0]),
+        Some(8.0)
+    );
+}
+
+#[tokio::test]
+async fn ranked_aura_conflict_replaces_lower_rank_and_bounces_weaker_recast() {
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_chain_for_test(
+            1459,
+            Some(wow_db::SpellChainQuery {
+                spell_id: 1459,
+                prev_spell: 0,
+                first_spell: 1459,
+                rank: 1,
+                req_spell: 0,
+            }),
+        )
+        .await;
+    object_mgr
+        .prime_spell_chain_for_test(
+            1460,
+            Some(wow_db::SpellChainQuery {
+                spell_id: 1460,
+                prev_spell: 1459,
+                first_spell: 1459,
+                rank: 2,
+                req_spell: 1459,
+            }),
+        )
+        .await;
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let lower = ActiveAura {
+        spell_id: 1459,
+        caster,
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(1_800_000),
+        expires_at: Some(now + Duration::from_secs(1_800)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Stat {
+            stat: Some(3),
+            amount: 5,
+        }],
+        proc_triggers: Vec::new(),
+    };
+    let higher = ActiveAura {
+        spell_id: 1460,
+        stat_modifiers: vec![AuraStatModifier::Stat {
+            stat: Some(3),
+            amount: 12,
+        }],
+        ..lower.clone()
+    };
+
+    let replace_lower = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        1460,
+        caster,
+        std::slice::from_ref(&lower),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replace_lower.failure, None);
+    assert_eq!(replace_lower.replace_spell_ids, vec![1459]);
+
+    let mut active_auras = vec![lower];
+    apply_active_aura_replacing_spell_ids(
+        &mut active_auras,
+        higher.clone(),
+        &replace_lower.replace_spell_ids,
+    );
+    assert_eq!(active_auras.len(), 1);
+    assert_eq!(active_auras[0].spell_id, 1460);
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 20,
+        stats: [10; MAX_STATS],
+        next_level_xp: 400,
+    };
+    assert_eq!(
+        player_world_stats_with_active_auras(world_stats, &active_auras).stats[3],
+        22
+    );
+
+    let refresh_same_rank = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        1460,
+        caster,
+        std::slice::from_ref(&higher),
+    )
+    .await
+    .unwrap();
+    assert_eq!(refresh_same_rank, AuraRankConflictResolution::clear());
+
+    let weaker_recast =
+        aura_rank_conflict_resolution(&object_mgr, &world_db_pool, 1459, caster, &[higher])
+            .await
+            .unwrap();
+    assert_eq!(weaker_recast.failure, Some(SPELL_FAILED_AURA_BOUNCED));
+    assert!(weaker_recast.replace_spell_ids.is_empty());
+    assert!(weaker_recast.replace_any_caster_spell_ids.is_empty());
+}
+
+#[tokio::test]
+async fn ranked_aura_conflict_bounces_stronger_other_caster_and_replaces_weaker() {
+    let object_mgr = ObjectMgr::default();
+    for (spell_id, prev_spell, rank) in [(1459, 0, 1), (1460, 1459, 2)] {
+        object_mgr
+            .prime_spell_chain_for_test(
+                spell_id,
+                Some(wow_db::SpellChainQuery {
+                    spell_id,
+                    prev_spell,
+                    first_spell: 1459,
+                    rank,
+                    req_spell: prev_spell,
+                }),
+            )
+            .await;
+        object_mgr
+            .prime_spell_group_memberships_for_test(spell_id, Vec::new())
+            .await;
+    }
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let other_caster = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let now = Instant::now();
+    let lower_from_other = ActiveAura {
+        spell_id: 1459,
+        caster: other_caster,
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(1_800_000),
+        expires_at: Some(now + Duration::from_secs(1_800)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    };
+    let higher_from_other = ActiveAura {
+        spell_id: 1460,
+        ..lower_from_other.clone()
+    };
+
+    let stronger_existing = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        1459,
+        caster,
+        std::slice::from_ref(&higher_from_other),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stronger_existing.failure, Some(SPELL_FAILED_AURA_BOUNCED));
+
+    let replace_weaker = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        1460,
+        caster,
+        &[lower_from_other],
+    )
+    .await
+    .unwrap();
+    assert_eq!(replace_weaker.failure, None);
+    assert!(replace_weaker.replace_spell_ids.is_empty());
+    assert_eq!(replace_weaker.replace_any_caster_spell_ids, vec![1459]);
+
+    let stronger_debuff_from_other = ActiveAura {
+        positive: false,
+        ..higher_from_other
+    };
+    let other_caster_debuff = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        1459,
+        caster,
+        &[stronger_debuff_from_other],
+    )
+    .await
+    .unwrap();
+    assert_eq!(other_caster_debuff, AuraRankConflictResolution::clear());
+}
+
+#[tokio::test]
+async fn spell_group_conflict_resolution_uses_unique_and_unique_per_caster_rules() {
+    let object_mgr = ObjectMgr::default();
+    for spell_id in [11_001, 11_002, 11_003, 11_004] {
+        object_mgr.prime_spell_chain_for_test(spell_id, None).await;
+    }
+    object_mgr
+        .prime_spell_group_memberships_for_test(
+            11_001,
+            vec![wow_db::SpellGroupMembershipQuery {
+                spell_id: 11_001,
+                group_id: 13,
+                rule: SPELL_GROUP_RULE_UNIQUE,
+            }],
+        )
+        .await;
+    object_mgr
+        .prime_spell_group_memberships_for_test(
+            11_002,
+            vec![wow_db::SpellGroupMembershipQuery {
+                spell_id: 11_002,
+                group_id: 13,
+                rule: SPELL_GROUP_RULE_UNIQUE,
+            }],
+        )
+        .await;
+    object_mgr
+        .prime_spell_group_memberships_for_test(
+            11_003,
+            vec![wow_db::SpellGroupMembershipQuery {
+                spell_id: 11_003,
+                group_id: 19,
+                rule: SPELL_GROUP_RULE_UNIQUE_PER_CASTER,
+            }],
+        )
+        .await;
+    object_mgr
+        .prime_spell_group_memberships_for_test(
+            11_004,
+            vec![wow_db::SpellGroupMembershipQuery {
+                spell_id: 11_004,
+                group_id: 19,
+                rule: SPELL_GROUP_RULE_UNIQUE_PER_CASTER,
+            }],
+        )
+        .await;
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let other_caster = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let now = Instant::now();
+    let unique_existing = ActiveAura {
+        spell_id: 11_001,
+        caster: other_caster,
+        level: 1,
+        positive: true,
+        visible: true,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    };
+
+    let unique = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        11_002,
+        caster,
+        std::slice::from_ref(&unique_existing),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unique.replace_any_caster_spell_ids, vec![11_001]);
+
+    let same_caster_personal = ActiveAura {
+        spell_id: 11_003,
+        caster,
+        ..unique_existing.clone()
+    };
+    let other_caster_personal = ActiveAura {
+        spell_id: 11_003,
+        caster: other_caster,
+        ..unique_existing
+    };
+    let personal = aura_rank_conflict_resolution(
+        &object_mgr,
+        &world_db_pool,
+        11_004,
+        caster,
+        &[same_caster_personal, other_caster_personal],
+    )
+    .await
+    .unwrap();
+    assert_eq!(personal.replace_spell_ids, vec![11_003]);
+    assert!(personal.replace_any_caster_spell_ids.is_empty());
+}
+
+#[test]
+fn direct_friendly_unit_aura_targets_require_a_friendly_unit() {
+    let mut intellect = test_spell_template(1459);
+    intellect.effect1 = SPELL_EFFECT_APPLY_AURA;
+    intellect.effect_apply_aura_name1 = SPELL_AURA_MOD_STAT;
+    intellect.effect_implicit_target_a1 = TARGET_UNIT_FRIEND;
+
+    let spell_info = SpellInfo::from_template(&intellect);
+    assert_eq!(spell_info.aura_target(), SpellAuraTarget::UnitTarget);
+    assert_eq!(
+        spell_info.unit_target_kind(SpellCastKind::AuraApplication),
+        SpellTargetKind::FriendlyUnit
     );
 }
 
@@ -22250,6 +22773,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
             },
         )]),
         spell_durations: HashMap::new(),
+        spell_radii: HashMap::new(),
         spell_ranges: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
@@ -22387,6 +22911,17 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         .collect::<Vec<_>>();
     assert!(opcodes.contains(&SMSG_CAST_RESULT));
     assert!(opcodes.contains(&SMSG_SPELL_GO));
+    assert!(opcodes.contains(&SMSG_UPDATE_OBJECT));
+    assert_eq!(session.character.player_mana, 75);
+    assert_eq!(maps.player_runtime_snapshot(0, 7).await.unwrap().power1, 75);
+    assert!(packets.iter().any(|packet| {
+        if packet.opcode != SMSG_UPDATE_OBJECT || packet.body[5] != UPDATE_TYPE_VALUES {
+            return false;
+        }
+        let (values, _) =
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
+        values[UNIT_FIELD_POWER1] == Some(75)
+    }));
     assert!(
         !opcodes.contains(&SMSG_SPELLNONMELEEDAMAGELOG),
         "missile damage should wait for projectile impact after SPELL_GO"
@@ -22454,7 +22989,16 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         .collect::<Vec<_>>();
     assert!(second_cast_opcodes.contains(&SMSG_CAST_RESULT));
     assert!(second_cast_opcodes.contains(&SMSG_SPELL_GO));
+    assert!(second_cast_packets.iter().any(|packet| {
+        if packet.opcode != SMSG_UPDATE_OBJECT || packet.body[5] != UPDATE_TYPE_VALUES {
+            return false;
+        }
+        let (values, _) =
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
+        values[UNIT_FIELD_POWER1] == Some(50)
+    }));
     assert!(!second_cast_opcodes.contains(&SMSG_SPELLNONMELEEDAMAGELOG));
+    assert_eq!(session.character.player_mana, 50);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -22812,6 +23356,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
             },
         )]),
         spell_durations: HashMap::new(),
+        spell_radii: HashMap::new(),
         spell_ranges: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
@@ -23055,6 +23600,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
             },
         )]),
         spell_durations: HashMap::new(),
+        spell_radii: HashMap::new(),
         spell_ranges: HashMap::from([(
             900,
             SpellRangeEntry {
@@ -23201,6 +23747,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
             },
         )]),
         spell_durations: HashMap::new(),
+        spell_radii: HashMap::new(),
         spell_ranges: HashMap::from([(
             900,
             SpellRangeEntry {
@@ -25870,6 +26417,26 @@ fn inventory_store_plan_merges_stack_before_empty_slots() {
             existing_item: Some(90),
         }]
     );
+}
+
+#[test]
+fn inventory_store_plan_returns_none_when_backpack_is_full_and_no_stack_can_merge() {
+    let mut bread = test_item_template(4540, 0, 0, 0.0, 0.0, 0);
+    bread.stackable = 20;
+    let inventory = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(plan_store_item(&inventory, &bread, 1, &[], None, None).is_none());
 }
 
 #[test]

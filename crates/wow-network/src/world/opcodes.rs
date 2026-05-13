@@ -658,6 +658,7 @@ pub(in crate::world) const CAST_FLAG_ITEM_CASTER: u16 = 0x0040;
 pub(in crate::world) const OPENING_SPELL_ID: u32 = 6478;
 pub(in crate::world) const OPENING_SPELL_CAST_TIME_MS: u32 = 5_000;
 pub(in crate::world) const SPELL_FAILED_OUT_OF_RANGE: u8 = 0x59;
+pub(in crate::world) const SPELL_FAILED_AURA_BOUNCED: u8 = 0x07;
 pub(in crate::world) const SPELL_FAILED_LINE_OF_SIGHT: u8 = 0x2A;
 pub(in crate::world) const SPELL_FAILED_NOPATH: u8 = 0x32;
 pub(in crate::world) const SPELL_FAILED_NOT_BEHIND: u8 = 0x33;

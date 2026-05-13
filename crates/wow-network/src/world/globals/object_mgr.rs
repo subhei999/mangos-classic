@@ -39,6 +39,10 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     pub(in crate::world) spell_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellTemplateQuery>>>,
+    pub(in crate::world) spell_chains:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellChainQuery>>>,
+    pub(in crate::world) spell_group_memberships:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::SpellGroupMembershipQuery>>>,
     pub(in crate::world) creature_spell_lists:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureSpellListQuery>>>,
     pub(in crate::world) stats: ObjectMgrCacheStats,
@@ -54,6 +58,8 @@ pub(in crate::world) struct ObjectMgrCacheStats {
     pub(in crate::world) combat_condition_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) loot_template_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_template_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) spell_chain_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) spell_group_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
 }
 
@@ -68,6 +74,8 @@ pub(in crate::world) struct ObjectMgrCacheSnapshot {
     pub(in crate::world) combat_condition_db_loads: u64,
     pub(in crate::world) loot_template_db_loads: u64,
     pub(in crate::world) spell_template_db_loads: u64,
+    pub(in crate::world) spell_chain_db_loads: u64,
+    pub(in crate::world) spell_group_db_loads: u64,
     pub(in crate::world) creature_spell_list_db_loads: u64,
 }
 
@@ -474,6 +482,47 @@ impl ObjectMgr {
         Ok(template)
     }
 
+    pub(in crate::world) async fn spell_chain(
+        &self,
+        world_db_pool: &MySqlPool,
+        spell: u32,
+    ) -> anyhow::Result<Option<wow_db::SpellChainQuery>> {
+        let mut cache = self.spell_chains.lock().await;
+        if let Some(chain) = cache.get(&spell) {
+            return Ok(*chain);
+        }
+
+        let chain = wow_db::get_spell_chain_query(world_db_pool, spell).await?;
+        self.stats
+            .spell_chain_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cache.insert(spell, chain);
+        Ok(chain)
+    }
+
+    pub(in crate::world) async fn spell_group_memberships(
+        &self,
+        world_db_pool: &MySqlPool,
+        spell: u32,
+    ) -> anyhow::Result<Vec<wow_db::SpellGroupMembershipQuery>> {
+        {
+            let cache = self.spell_group_memberships.lock().await;
+            if let Some(memberships) = cache.get(&spell) {
+                return Ok(memberships.clone());
+            }
+        }
+
+        let memberships = wow_db::get_spell_group_memberships(world_db_pool, spell).await?;
+        self.stats
+            .spell_group_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.spell_group_memberships
+            .lock()
+            .await
+            .insert(spell, memberships.clone());
+        Ok(memberships)
+    }
+
     pub(in crate::world) async fn creature_spell_list(
         &self,
         world_db_pool: &MySqlPool,
@@ -664,6 +713,27 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    pub(in crate::world) async fn prime_spell_chain_for_test(
+        &self,
+        spell: u32,
+        chain: Option<wow_db::SpellChainQuery>,
+    ) {
+        self.spell_chains.lock().await.insert(spell, chain);
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) async fn prime_spell_group_memberships_for_test(
+        &self,
+        spell: u32,
+        memberships: Vec<wow_db::SpellGroupMembershipQuery>,
+    ) {
+        self.spell_group_memberships
+            .lock()
+            .await
+            .insert(spell, memberships);
+    }
+
+    #[cfg(test)]
     pub(in crate::world) fn cache_stats_snapshot(&self) -> ObjectMgrCacheSnapshot {
         ObjectMgrCacheSnapshot {
             quest_template_db_loads: self
@@ -697,6 +767,14 @@ impl ObjectMgr {
             spell_template_db_loads: self
                 .stats
                 .spell_template_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            spell_chain_db_loads: self
+                .stats
+                .spell_chain_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            spell_group_db_loads: self
+                .stats
+                .spell_group_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
             creature_spell_list_db_loads: self
                 .stats

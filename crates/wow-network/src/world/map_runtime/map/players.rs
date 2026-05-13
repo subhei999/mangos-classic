@@ -1419,15 +1419,45 @@ impl MapRuntime {
         character_guid: u32,
         aura: ActiveAura,
     ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        self.apply_player_aura_replacing_spell_ids(character_guid, aura, &[])
+    }
+
+    pub(in crate::world) fn apply_player_aura_replacing_spell_ids(
+        &mut self,
+        character_guid: u32,
+        aura: ActiveAura,
+        replace_spell_ids: &[u32],
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
+        let resolution = AuraRankConflictResolution {
+            failure: None,
+            replace_spell_ids: replace_spell_ids.to_vec(),
+            replace_any_caster_spell_ids: Vec::new(),
+        };
+        self.apply_player_aura_replacing_conflicts(character_guid, aura, &resolution)
+    }
+
+    pub(in crate::world) fn apply_player_aura_replacing_conflicts(
+        &mut self,
+        character_guid: u32,
+        aura: ActiveAura,
+        resolution: &AuraRankConflictResolution,
+    ) -> anyhow::Result<Option<PlayerAuraUpdateEvent>> {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return Ok(None);
         };
-        apply_active_aura(&mut player.active_auras, aura);
+        let was_rooted = active_aura_has_root(&player.active_auras);
+        apply_active_aura_replacing_conflicts(&mut player.active_auras, aura, resolution);
+        let is_rooted = active_aura_has_root(&player.active_auras);
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
-        self.build_player_aura_update_event(character_guid, Instant::now())
-            .map(Some)
+        let mut event = self.build_player_aura_update_event(character_guid, Instant::now())?;
+        if let Some(packet) =
+            build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+        {
+            event.direct_packets.push(packet);
+        }
+        Ok(Some(event))
     }
 
     pub(in crate::world) fn advance_player_aura_expirations(
@@ -1536,9 +1566,11 @@ impl MapRuntime {
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
+            let was_rooted = active_aura_has_root(&player.active_auras);
             player
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+            let is_rooted = active_aura_has_root(&player.active_auras);
             if player_died {
                 self.active_player_spell_casts.remove(&character_guid);
             }
@@ -1548,7 +1580,12 @@ impl MapRuntime {
             refresh_player_runtime_stats_from_auras(player);
             player.combat_stats =
                 combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
-            let event = self.build_player_aura_update_event(character_guid, now)?;
+            let mut event = self.build_player_aura_update_event(character_guid, now)?;
+            if let Some(packet) =
+                build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+            {
+                event.direct_packets.push(packet);
+            }
             let Some(player) = self.players.get(&character_guid) else {
                 continue;
             };
@@ -2322,6 +2359,29 @@ impl MapRuntime {
             player.visible_objects.remove(guid);
         }
     }
+}
+
+pub(in crate::world) fn build_player_root_transition_packet(
+    character_guid: u32,
+    was_rooted: bool,
+    is_rooted: bool,
+) -> anyhow::Result<Option<OutboundWorldPacket>> {
+    if was_rooted == is_rooted {
+        return Ok(None);
+    }
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let (opcode, body) = if is_rooted {
+        (
+            SMSG_FORCE_MOVE_ROOT,
+            build_force_move_root_body(player_guid, 0)?,
+        )
+    } else {
+        (
+            SMSG_FORCE_MOVE_UNROOT,
+            build_force_move_unroot_body(player_guid, 0)?,
+        )
+    };
+    Ok(Some(OutboundWorldPacket { opcode, body }))
 }
 
 pub(in crate::world) const DAMAGE_FALL: u8 = 2;

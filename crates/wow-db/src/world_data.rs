@@ -596,6 +596,8 @@ pub struct SpellTemplateQuery {
     pub spell_name: String,
     pub rank: Option<String>,
     pub school: u32,
+    pub dispel: u32,
+    pub mechanic: u32,
     pub attributes: u32,
     pub attributes_ex: u32,
     pub attributes_ex2: u32,
@@ -613,6 +615,7 @@ pub struct SpellTemplateQuery {
     pub power_type: u32,
     pub mana_cost: u32,
     pub duration_index: u32,
+    pub stack_amount: u32,
     pub effect1: u32,
     pub effect2: u32,
     pub effect3: u32,
@@ -640,9 +643,21 @@ pub struct SpellTemplateQuery {
     pub effect_amplitude1: u32,
     pub effect_amplitude2: u32,
     pub effect_amplitude3: u32,
+    pub effect_mechanic1: u32,
+    pub effect_mechanic2: u32,
+    pub effect_mechanic3: u32,
     pub effect_implicit_target_a1: u32,
     pub effect_implicit_target_a2: u32,
     pub effect_implicit_target_a3: u32,
+    pub effect_implicit_target_b1: u32,
+    pub effect_implicit_target_b2: u32,
+    pub effect_implicit_target_b3: u32,
+    pub effect_radius_index1: u32,
+    pub effect_radius_index2: u32,
+    pub effect_radius_index3: u32,
+    pub effect_item_type1: u32,
+    pub effect_item_type2: u32,
+    pub effect_item_type3: u32,
     pub equipped_item_class: i32,
     pub equipped_item_subclass_mask: i32,
     pub spell_family_name: u32,
@@ -651,6 +666,22 @@ pub struct SpellTemplateQuery {
     pub proc_flags: u32,
     pub proc_chance: u32,
     pub proc_charges: u32,
+}
+
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpellChainQuery {
+    pub spell_id: u32,
+    pub prev_spell: u32,
+    pub first_spell: u32,
+    pub rank: u8,
+    pub req_spell: u32,
+}
+
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpellGroupMembershipQuery {
+    pub spell_id: u32,
+    pub group_id: u32,
+    pub rule: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -848,6 +879,7 @@ pub async fn get_spell_template_query(
     let _query_timer = crate::observability::DbQueryTimer::start("spell_template_load");
     sqlx::query_as::<_, SpellTemplateQuery>(
         "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, School AS school, \
+                Dispel AS dispel, Mechanic AS mechanic, \
                 Attributes AS attributes, AttributesEx AS attributes_ex, CastingTimeIndex AS casting_time_index, \
                 RangeIndex AS range_index, \
                 Speed AS speed, \
@@ -857,6 +889,7 @@ pub async fn get_spell_template_query(
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
+                StackAmount AS stack_amount, \
                 Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
                 EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
                 EffectBasePoints3 AS effect_base_points3, \
@@ -877,9 +910,20 @@ pub async fn get_spell_template_query(
                 EffectApplyAuraName3 AS effect_apply_aura_name3, \
                 EffectAmplitude1 AS effect_amplitude1, EffectAmplitude2 AS effect_amplitude2, \
                 EffectAmplitude3 AS effect_amplitude3, \
+                EffectMechanic1 AS effect_mechanic1, EffectMechanic2 AS effect_mechanic2, \
+                EffectMechanic3 AS effect_mechanic3, \
                 EffectImplicitTargetA1 AS effect_implicit_target_a1, \
                 EffectImplicitTargetA2 AS effect_implicit_target_a2, \
                 EffectImplicitTargetA3 AS effect_implicit_target_a3, \
+                EffectImplicitTargetB1 AS effect_implicit_target_b1, \
+                EffectImplicitTargetB2 AS effect_implicit_target_b2, \
+                EffectImplicitTargetB3 AS effect_implicit_target_b3, \
+                EffectRadiusIndex1 AS effect_radius_index1, \
+                EffectRadiusIndex2 AS effect_radius_index2, \
+                EffectRadiusIndex3 AS effect_radius_index3, \
+                EffectItemType1 AS effect_item_type1, \
+                EffectItemType2 AS effect_item_type2, \
+                EffectItemType3 AS effect_item_type3, \
                 EquippedItemClass AS equipped_item_class, \
                 EquippedItemSubClassMask AS equipped_item_subclass_mask, \
                 SpellFamilyName AS spell_family_name, SpellFamilyFlags AS spell_family_flags, \
@@ -889,6 +933,44 @@ pub async fn get_spell_template_query(
     )
     .bind(spell)
     .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_spell_chain_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<SpellChainQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_chain_load");
+    sqlx::query_as::<_, SpellChainQuery>(
+        "SELECT CAST(spell_id AS UNSIGNED) AS spell_id, \
+                CAST(prev_spell AS UNSIGNED) AS prev_spell, \
+                CAST(first_spell AS UNSIGNED) AS first_spell, \
+                CAST(rank AS UNSIGNED) AS rank, \
+                CAST(req_spell AS UNSIGNED) AS req_spell \
+         FROM spell_chain WHERE spell_id = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_spell_group_memberships(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Vec<SpellGroupMembershipQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_group_membership_load");
+    sqlx::query_as::<_, SpellGroupMembershipQuery>(
+        "SELECT CAST(spell_group_spell.SpellId AS UNSIGNED) AS spell_id, \
+                CAST(spell_group_spell.Id AS UNSIGNED) AS group_id, \
+                CAST(spell_group.Rule AS UNSIGNED) AS rule \
+         FROM spell_group_spell \
+         INNER JOIN spell_group ON spell_group.Id = spell_group_spell.Id \
+         WHERE spell_group_spell.SpellId = ?",
+    )
+    .bind(spell)
+    .fetch_all(pool)
     .await
     .map_err(Into::into)
 }

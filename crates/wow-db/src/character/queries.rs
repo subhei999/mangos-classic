@@ -10,7 +10,7 @@ pub async fn get_character_enum_entries(
                 characters.position_x, characters.position_y, characters.position_z, \
                 characters.orientation, \
                 guild_member.guildid, characters.playerFlags, characters.at_login, \
-                characters.money, characters.cinematic, \
+                characters.money, characters.cinematic, characters.ammoId, \
                 characters.health, characters.power1, characters.power2, \
                 characters.power3, characters.power4, characters.power5, \
                 characters.watchedFaction, characters.exploredZones, \

@@ -24,6 +24,8 @@ pub struct CharacterEnumEntry {
     pub at_login: u32,
     pub money: u32,
     pub cinematic: u8,
+    #[sqlx(rename = "ammoId")]
+    pub ammo_id: u32,
     pub health: u32,
     pub power1: u32,
     pub power2: u32,

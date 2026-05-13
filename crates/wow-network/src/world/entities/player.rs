@@ -187,6 +187,7 @@ pub(in crate::world) fn write_minimal_player_update_values(
     skills: &[CharacterSkill],
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
+    ammo_template: Option<&ItemTemplateQuery>,
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
@@ -205,7 +206,13 @@ pub(in crate::world) fn write_minimal_player_update_values(
     set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, None)?;
     let combat_stats = combat_stats_with_active_auras(
-        player_combat_stats(character, world_stats, equipped_templates),
+        player_combat_stats_for_values_with_ammo(
+            character.class,
+            character.level,
+            world_stats,
+            equipped_templates,
+            ammo_template,
+        ),
         active_auras,
     );
     set_update_value(
@@ -366,7 +373,7 @@ pub(in crate::world) fn write_minimal_player_update_values(
             0
         },
     )?;
-    set_update_value(&mut values, PLAYER_AMMO_ID, 0)?;
+    set_update_value(&mut values, PLAYER_AMMO_ID, character.ammo_id)?;
     set_update_value(&mut values, PLAYER_SELF_RES_SPELL, 0)?;
     set_update_value(&mut values, PLAYER_FIELD_PVP_MEDALS, 0)?;
     set_update_value(&mut values, PLAYER_FIELD_BYTES2, 0)?;
@@ -754,24 +761,21 @@ pub(in crate::world) struct PlayerCombatStats {
     pub(in crate::world) ranged_crit_percent: f32,
 }
 
-pub(in crate::world) fn player_combat_stats(
-    character: &CharacterEnumEntry,
-    world_stats: &PlayerWorldStats,
-    equipped_templates: &[EquippedItemTemplate],
-) -> PlayerCombatStats {
-    player_combat_stats_for_values(
-        character.class,
-        character.level,
-        world_stats,
-        equipped_templates,
-    )
-}
-
 pub(in crate::world) fn player_combat_stats_for_values(
     class: u8,
     level: u8,
     world_stats: &PlayerWorldStats,
     equipped_templates: &[EquippedItemTemplate],
+) -> PlayerCombatStats {
+    player_combat_stats_for_values_with_ammo(class, level, world_stats, equipped_templates, None)
+}
+
+pub(in crate::world) fn player_combat_stats_for_values_with_ammo(
+    class: u8,
+    level: u8,
+    world_stats: &PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+    ammo_template: Option<&ItemTemplateQuery>,
 ) -> PlayerCombatStats {
     let strength = world_stats.stats[0];
     let agility = world_stats.stats[1];
@@ -797,8 +801,12 @@ pub(in crate::world) fn player_combat_stats_for_values(
         weapon_damage_with_attack_power(main_weapon, melee_attack_power, main_attack_time_ms);
     let (off_min_damage, off_max_damage) =
         weapon_damage_with_attack_power(off_weapon, melee_attack_power, off_attack_time_ms);
-    let (ranged_min_damage, ranged_max_damage) =
-        weapon_damage_with_attack_power(ranged_weapon, ranged_attack_power, ranged_attack_time_ms);
+    let (ranged_min_damage, ranged_max_damage) = ranged_weapon_damage_with_attack_power_and_ammo(
+        ranged_weapon,
+        ammo_template,
+        ranged_attack_power,
+        ranged_attack_time_ms,
+    );
 
     PlayerCombatStats {
         intellect,
@@ -832,6 +840,22 @@ pub(in crate::world) fn player_combat_stats_for_values(
         crit_percent: melee_crit_percent(class, level as u8, agility),
         ranged_crit_percent: melee_crit_percent(class, level as u8, agility),
     }
+}
+
+pub(in crate::world) fn build_player_ammo_update_body(
+    character_guid: u32,
+    ammo_id: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, PLAYER_AMMO_ID, ammo_id)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
 }
 
 pub(in crate::world) fn build_player_combat_stats_update_body(
@@ -1015,6 +1039,43 @@ pub(in crate::world) fn weapon_damage_with_attack_power(
     };
     let ap_damage = attack_power as f32 / 14.0 * attack_time_ms as f32 / 1000.0;
     (weapon.dmg_min1 + ap_damage, weapon.dmg_max1 + ap_damage)
+}
+
+pub(in crate::world) fn ranged_weapon_damage_with_attack_power_and_ammo(
+    weapon: Option<&ItemTemplateQuery>,
+    ammo: Option<&ItemTemplateQuery>,
+    attack_power: u32,
+    attack_time_ms: u32,
+) -> (f32, f32) {
+    let (mut min_damage, mut max_damage) =
+        weapon_damage_with_attack_power(weapon, attack_power, attack_time_ms);
+    if min_damage == 0.0 && max_damage == 0.0 {
+        return (min_damage, max_damage);
+    }
+    if let (Some(weapon), Some(ammo)) = (weapon, ammo) {
+        if ranged_weapon_accepts_ammo(weapon, ammo) {
+            let speed = attack_time_ms.max(1) as f32 / 1000.0;
+            min_damage += ammo.dmg_min1 * speed;
+            max_damage += ammo.dmg_max1 * speed;
+        }
+    }
+    (min_damage, max_damage)
+}
+
+pub(in crate::world) fn ranged_weapon_accepts_ammo(
+    weapon: &ItemTemplateQuery,
+    ammo: &ItemTemplateQuery,
+) -> bool {
+    if weapon.class != ITEM_CLASS_WEAPON || ammo.class != ITEM_CLASS_PROJECTILE {
+        return false;
+    }
+    matches!(
+        (weapon.subclass, ammo.subclass),
+        (
+            ITEM_SUBCLASS_WEAPON_BOW | ITEM_SUBCLASS_WEAPON_CROSSBOW,
+            ITEM_SUBCLASS_ARROW
+        ) | (ITEM_SUBCLASS_WEAPON_GUN, ITEM_SUBCLASS_BULLET)
+    )
 }
 
 pub(in crate::world) fn attack_power_mod_pair(positive: i16, negative: i16) -> u32 {

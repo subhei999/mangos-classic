@@ -66,6 +66,27 @@ pub(in crate::world) enum PlayerbotCombatIntent {
     NoTarget,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum PlayerAutoAttackKind {
+    Melee,
+    Ranged {
+        spell_id: u32,
+        phase: PlayerRangedAutoAttackPhase,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum PlayerRangedAutoAttackPhase {
+    Windup,
+    Shooting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct PlayerAutoAttackDue {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) kind: PlayerAutoAttackKind,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(in crate::world) struct PlayerbotPlanInput {
@@ -103,7 +124,9 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) selected_target: Option<ObjectGuid>,
     pub(in crate::world) unit_target: Option<ObjectGuid>,
     pub(in crate::world) active_combat_target: Option<ObjectGuid>,
+    pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
+    pub(in crate::world) ranged_auto_attack_next_shot_at: Option<Instant>,
     pub(in crate::world) looting: bool,
     pub(in crate::world) position: WorldPosition,
     pub(in crate::world) movement_flags: u32,
@@ -211,6 +234,7 @@ pub(in crate::world) struct PlayerRuntimeSnapshot {
     pub(in crate::world) base_combat_stats: PlayerCombatStats,
     pub(in crate::world) combat_stats: PlayerCombatStats,
     pub(in crate::world) active_combat_target: Option<ObjectGuid>,
+    pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
 }
 
@@ -344,11 +368,32 @@ pub(in crate::world) enum ActivePlayerSpellCastSource {
 }
 
 #[derive(Debug, Clone)]
+pub(in crate::world) enum PendingSpellEventKind {
+    Spell {
+        targets: PendingSpellCastTargets,
+    },
+    RangedAutoAttack {
+        target: ObjectGuid,
+        outcome: MeleeDamageOutcome,
+        weapon_skill_id: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct PendingRangedAutoAttackImpact {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) outcome: MeleeDamageOutcome,
+    pub(in crate::world) weapon_skill_id: Option<u16>,
+    pub(in crate::world) due_at: Instant,
+}
+
+#[derive(Debug, Clone)]
 pub(in crate::world) struct PendingSpellEvent {
     pub(in crate::world) event_id: u64,
     pub(in crate::world) caster_character_guid: u32,
     pub(in crate::world) spell_id: u32,
-    pub(in crate::world) targets: PendingSpellCastTargets,
+    pub(in crate::world) kind: PendingSpellEventKind,
     pub(in crate::world) unit_target_generation: Option<(ObjectGuid, u64)>,
     pub(in crate::world) due_at: Instant,
 }
@@ -671,31 +716,18 @@ impl MapRuntime {
     }
 }
 
-#[path = "map/creature_combat.rs"]
 mod creature_combat;
-#[path = "map/creature_damage.rs"]
 mod creature_damage;
-#[path = "map/creature_lifecycle.rs"]
 mod creature_lifecycle;
-#[path = "map/creature_loot.rs"]
 mod creature_loot;
-#[path = "map/creature_motion.rs"]
 mod creature_motion;
-#[path = "map/creature_snapshots.rs"]
 mod creature_snapshots;
-#[path = "map/damage.rs"]
 mod damage;
-#[path = "map/gameobject_loot.rs"]
 mod gameobject_loot;
-#[path = "map/gameobject_snapshots.rs"]
 mod gameobject_snapshots;
-#[path = "map/player_corpses.rs"]
 mod player_corpses;
-#[path = "map/playerbots.rs"]
 mod playerbots;
-#[path = "map/players.rs"]
 mod players;
-#[path = "map/spatial.rs"]
 mod spatial;
 
 pub(in crate::world) use self::creature_combat::*;

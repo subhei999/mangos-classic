@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub(in crate::world) const CMSG_CHAR_CREATE: u32 = 0x0036;
 pub(in crate::world) const CMSG_CHAR_ENUM: u32 = 0x0037;
 pub(in crate::world) const CMSG_CHAR_DELETE: u32 = 0x0038;
@@ -183,6 +185,7 @@ pub(in crate::world) const CMSG_UPDATE_ACCOUNT_DATA: u32 = 0x020B;
 pub(in crate::world) const SMSG_UPDATE_ACCOUNT_DATA: u16 = 0x020C;
 pub(in crate::world) const CMSG_GMTICKET_GETTICKET: u32 = 0x0211;
 pub(in crate::world) const SMSG_GMTICKET_GETTICKET: u16 = 0x0212;
+pub(in crate::world) const CMSG_SET_AMMO: u32 = 0x0268;
 pub(in crate::world) const CMSG_SET_ACTIVE_MOVER: u32 = 0x026A;
 pub(in crate::world) const CMSG_CANCEL_AUTO_REPEAT_SPELL: u32 = 0x026D;
 pub(in crate::world) const CMSG_GROUP_CHANGE_SUB_GROUP: u32 = 0x027E;
@@ -329,10 +332,25 @@ pub(in crate::world) const GAMEOBJECT_ARTKIT: usize = 0x017;
 pub(in crate::world) const GAMEOBJECT_ANIMPROGRESS: usize = 0x018;
 pub(in crate::world) const GAMEOBJECT_END_FIELDS: usize = 0x01A;
 pub(in crate::world) const MOVEFLAG_FORWARD: u32 = 0x0000_0001;
+pub(in crate::world) const MOVEFLAG_BACKWARD: u32 = 0x0000_0002;
+pub(in crate::world) const MOVEFLAG_STRAFE_LEFT: u32 = 0x0000_0004;
+pub(in crate::world) const MOVEFLAG_STRAFE_RIGHT: u32 = 0x0000_0008;
+pub(in crate::world) const MOVEFLAG_PITCH_UP: u32 = 0x0000_0040;
+pub(in crate::world) const MOVEFLAG_PITCH_DOWN: u32 = 0x0000_0080;
 pub(in crate::world) const MOVEFLAG_JUMPING: u32 = 0x0000_2000;
+pub(in crate::world) const MOVEFLAG_FALLINGFAR: u32 = 0x0000_4000;
 pub(in crate::world) const MOVEFLAG_SWIMMING: u32 = 0x0020_0000;
 pub(in crate::world) const MOVEFLAG_ONTRANSPORT: u32 = 0x0200_0000;
 pub(in crate::world) const MOVEFLAG_SPLINE_ELEVATION: u32 = 0x0400_0000;
+pub(in crate::world) const MOVEFLAG_MASK_SPELL_MOVING: u32 = MOVEFLAG_FORWARD
+    | MOVEFLAG_BACKWARD
+    | MOVEFLAG_STRAFE_LEFT
+    | MOVEFLAG_STRAFE_RIGHT
+    | MOVEFLAG_PITCH_UP
+    | MOVEFLAG_PITCH_DOWN
+    | MOVEFLAG_JUMPING
+    | MOVEFLAG_FALLINGFAR
+    | MOVEFLAG_SPLINE_ELEVATION;
 pub(in crate::world) const REALM_ID: u32 = 1;
 pub(in crate::world) const ALLIANCE_FACTION: u32 = 469;
 pub(in crate::world) const MAX_CHARACTERS_PER_REALM: u8 = 10;
@@ -475,6 +493,7 @@ pub(in crate::world) const EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER_BAG: u8 = 5;
 pub(in crate::world) const EQUIP_ERR_NO_REQUIRED_PROFICIENCY: u8 = 8;
 pub(in crate::world) const EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM: u8 = 10;
 pub(in crate::world) const EQUIP_ERR_ITEM_CANT_BE_EQUIPPED: u8 = 20;
+pub(in crate::world) const EQUIP_ERR_YOU_ARE_DEAD: u8 = 21;
 pub(in crate::world) const EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS: u8 = 31;
 pub(in crate::world) const EQUIP_ERR_CANT_EQUIP_RANK: u8 = 63;
 pub(in crate::world) const EQUIP_ERR_CANT_EQUIP_REPUTATION: u8 = 64;
@@ -634,6 +653,7 @@ pub(in crate::world) const SPELL_CAST_TARGET_GAMEOBJECT: u16 = 0x0800;
 pub(in crate::world) const SPELL_CAST_TARGET_LOCKED: u16 = 0x4000;
 pub(in crate::world) const CAST_FLAG_SPELL_GO: u16 = 0x0100;
 pub(in crate::world) const CAST_FLAG_SPELL_START: u16 = 0x0002;
+pub(in crate::world) const CAST_FLAG_AMMO: u16 = 0x0020;
 pub(in crate::world) const CAST_FLAG_ITEM_CASTER: u16 = 0x0040;
 pub(in crate::world) const OPENING_SPELL_ID: u32 = 6478;
 pub(in crate::world) const OPENING_SPELL_CAST_TIME_MS: u32 = 5_000;
@@ -643,7 +663,9 @@ pub(in crate::world) const SPELL_FAILED_NOPATH: u8 = 0x32;
 pub(in crate::world) const SPELL_FAILED_NOT_BEHIND: u8 = 0x33;
 pub(in crate::world) const SPELL_FAILED_NO_COMBO_POINTS: u8 = 0x46;
 pub(in crate::world) const SPELL_FAILED_UNIT_NOT_INFRONT: u8 = 0x7C;
+pub(in crate::world) const SPELL_FAILED_TOO_CLOSE: u8 = 0x76;
 pub(in crate::world) const SPELL_FAILED_NOT_READY: u8 = 0x3C;
+pub(in crate::world) const SPELL_FAILED_NO_AMMO: u8 = 0x43;
 pub(in crate::world) const SPELL_FAILED_NO_POWER: u8 = 0x4D;
 pub(in crate::world) const SPELL_FAILED_INTERRUPTED: u8 = 0x23;
 pub(in crate::world) const SPELL_FAILED_CASTER_DEAD: u8 = 0x13;

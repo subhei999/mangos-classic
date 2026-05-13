@@ -316,6 +316,7 @@ pub(in crate::world) struct CharacterSessionState {
     pub(in crate::world) player_rage: u32,
     pub(in crate::world) player_mana: u32,
     pub(in crate::world) player_energy: u32,
+    pub(in crate::world) player_ammo_id: u32,
     pub(in crate::world) player_stand_state: u8,
     pub(in crate::world) active_spells: HashSet<u32>,
     pub(in crate::world) character_skills: Vec<CharacterSkill>,

@@ -94,6 +94,7 @@ impl MapRuntime {
         };
         player.active_combat_target = None;
         player.active_combat_next_swing_at = None;
+        player.ranged_auto_attack_next_shot_at = None;
         player.queued_next_melee_spell = None;
         player.combo_target = None;
         player.combo_points = 0;
@@ -351,6 +352,7 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
         };
         player.active_combat_target = None;
         player.active_combat_next_swing_at = None;
+        player.ranged_auto_attack_next_shot_at = None;
         player.queued_next_melee_spell = None;
         player.combo_target = None;
         player.combo_points = 0;

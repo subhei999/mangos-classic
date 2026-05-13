@@ -117,7 +117,38 @@ pub(in crate::world) async fn handle_cast_spell(
         )
         .await;
     }
-    let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
+    if spell_profile.kind == SpellCastKind::AutoRepeatRanged {
+        if let Some(failure) = player_ranged_auto_attack_failure(
+            deps.world_db_pool,
+            deps.shared_world,
+            session,
+            targets.unit_target.unwrap_or(caster),
+            &spell_template,
+        )
+        .await?
+        {
+            send_auto_repeat_spell_failure(stream, header_crypto, caster, packet.spell_id, failure)
+                .await?;
+            return Ok(());
+        }
+    }
+    let ranged_ammo_visual = if spell_profile.kind == SpellCastKind::AutoRepeatRanged {
+        player_ranged_spell_ammo_visual(deps.world_db_pool, session).await?
+    } else {
+        None
+    };
+    let spell_start_body = if spell_profile.kind == SpellCastKind::AutoRepeatRanged {
+        prepared_spell.start_casting();
+        build_spell_start_body_with_ammo(
+            caster,
+            prepared_spell.spell_id,
+            cast_time_ms,
+            &targets,
+            ranged_ammo_visual,
+        )?
+    } else {
+        prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?
+    };
     send_packet(
         stream,
         SMSG_SPELL_START,
@@ -139,7 +170,20 @@ pub(in crate::world) async fn handle_cast_spell(
         )
         .await;
     deps.shared_world.sessions.dispatch(observer_packets).await;
-    if spell_profile.kind == SpellCastKind::NextMeleeSwing {
+    if spell_profile.kind == SpellCastKind::AutoRepeatRanged {
+        let next_shot_at = deps
+            .shared_world
+            .maps
+            .set_player_ranged_auto_attack_started(
+                map_id,
+                character_guid,
+                targets.unit_target,
+                now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+                packet.spell_id,
+            )
+            .await;
+        mirror_session_player_auto_attack(session, targets.unit_target, Some(next_shot_at));
+    } else if spell_profile.kind == SpellCastKind::NextMeleeSwing {
         deps.shared_world
             .maps
             .apply_player_spell_cooldowns(map_id, character_guid, &spell_profile, now, false)
@@ -673,16 +717,43 @@ pub(in crate::world) async fn complete_pending_player_spell_cast(
         .take_due_pending_spell_event(map_id, character_guid, now)
         .await
     {
-        return apply_player_spell_impact_by_id(
-            stream,
-            deps,
-            session,
-            event.spell_id,
-            event.targets.into_spell_targets(),
-            now,
-            header_crypto,
-        )
-        .await;
+        return match event.kind {
+            PendingSpellEventKind::Spell { targets } => {
+                apply_player_spell_impact_by_id(
+                    stream,
+                    deps,
+                    session,
+                    event.spell_id,
+                    targets.into_spell_targets(),
+                    now,
+                    header_crypto,
+                )
+                .await
+            }
+            PendingSpellEventKind::RangedAutoAttack {
+                target,
+                outcome,
+                weapon_skill_id,
+            } => {
+                apply_player_ranged_auto_attack_impact(
+                    stream,
+                    CombatRewardDeps {
+                        character_db_pool: deps.character_db_pool,
+                        world_db_pool: deps.world_db_pool,
+                        shared_world: deps.shared_world,
+                        parties: deps.parties,
+                    },
+                    session,
+                    header_crypto,
+                    target,
+                    event.spell_id,
+                    outcome,
+                    weapon_skill_id,
+                    now,
+                )
+                .await
+            }
+        };
     }
     Ok(())
 }
@@ -1666,6 +1737,7 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
         PlayerSpellTargetCheck::NavigationBlocked(
             DbCreatureNavigationResult::LineOfSightBlocked,
         ) => Some(SPELL_FAILED_LINE_OF_SIGHT),
+        PlayerSpellTargetCheck::TooClose => Some(SPELL_FAILED_TOO_CLOSE),
         PlayerSpellTargetCheck::NoActiveCharacter
         | PlayerSpellTargetCheck::MissingTarget
         | PlayerSpellTargetCheck::TargetNotAlive
@@ -1780,6 +1852,7 @@ pub(in crate::world) enum SpellCastKind {
     InstantDamage,
     DirectHeal,
     AuraApplication,
+    AutoRepeatRanged,
     Charge,
     NextMeleeSwing,
     Teleport,
@@ -1816,6 +1889,7 @@ pub(in crate::world) enum SpellPowerCost {
 }
 
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
+pub(in crate::world) const SPELL_ATTR_USES_RANGED_SLOT: u32 = 0x0000_0002;
 pub(in crate::world) const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
@@ -1868,7 +1942,9 @@ pub(in crate::world) const PROC_FLAG_TAKE_MELEE_SWING: u32 = 0x0000_0008;
 pub(in crate::world) const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 pub(in crate::world) const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
 pub(in crate::world) const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
+pub(in crate::world) const SPELL_ATTR_EX2_AUTO_REPEAT: u32 = 0x0000_0020;
 pub(in crate::world) const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
+pub(in crate::world) const SPELL_RANGE_FLAG_MELEE: u32 = 0x1;
 pub(in crate::world) const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
 pub(in crate::world) const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
 pub(in crate::world) const BASE_CHARGE_SPEED: f32 = 27.0;

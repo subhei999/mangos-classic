@@ -425,6 +425,7 @@ fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
         at_login: 0,
         money: 12345,
         cinematic: 0,
+        ammo_id: 0,
         health: 0,
         power1: 0,
         power2: 0,
@@ -1710,6 +1711,7 @@ fn self_spawn_update_chunks_without_legacy_fixture_blocks() {
         skills: &[],
         quest_statuses: &quest_statuses,
         equipped_templates: &[],
+        ammo_template: None,
         active_auras: &[],
         nearby_creatures: &[],
         nearby_gameobjects: &[gameobject],
@@ -2783,6 +2785,41 @@ fn player_swing_timer_uses_equipped_main_hand_delay() {
         player_main_hand_next_swing_at(now, &stats),
         now + Duration::from_millis(2800)
     );
+}
+
+#[test]
+fn ranged_weapon_damage_adds_compatible_ammo_dps_for_weapon_speed() {
+    let mut bow = test_item_template(2504, ITEM_CLASS_WEAPON, 15, 5.0, 7.0, 0);
+    bow.subclass = ITEM_SUBCLASS_WEAPON_BOW;
+    bow.delay = 2000;
+    let mut arrow = test_item_template(2512, ITEM_CLASS_PROJECTILE, INVTYPE_AMMO, 1.0, 1.5, 0);
+    arrow.subclass = ITEM_SUBCLASS_ARROW;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_RANGED, bow)];
+    let world_stats = PlayerWorldStats {
+        base_health: 46,
+        base_mana: 80,
+        stats: [21, 24, 22, 20, 20],
+        next_level_xp: 400,
+    };
+
+    let without_ammo =
+        player_combat_stats_for_values_with_ammo(3, 1, &world_stats, &equipped, None);
+    let with_ammo =
+        player_combat_stats_for_values_with_ammo(3, 1, &world_stats, &equipped, Some(&arrow));
+
+    assert!((with_ammo.ranged_min_damage - without_ammo.ranged_min_damage - 2.0).abs() < 0.001);
+    assert!((with_ammo.ranged_max_damage - without_ammo.ranged_max_damage - 3.0).abs() < 0.001);
+    assert!(ranged_weapon_accepts_ammo(&equipped[0].template, &arrow));
+}
+
+#[test]
+fn bow_rejects_bullet_ammo_for_damage_bonus() {
+    let mut bow = test_item_template(2504, ITEM_CLASS_WEAPON, 15, 5.0, 7.0, 0);
+    bow.subclass = ITEM_SUBCLASS_WEAPON_BOW;
+    let mut bullet = test_item_template(2516, ITEM_CLASS_PROJECTILE, INVTYPE_AMMO, 1.0, 1.0, 0);
+    bullet.subclass = ITEM_SUBCLASS_BULLET;
+
+    assert!(!ranged_weapon_accepts_ammo(&bow, &bullet));
 }
 
 #[test]
@@ -7876,7 +7913,9 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         selected_target: None,
         unit_target: None,
         active_combat_target: None,
+        active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
+        ranged_auto_attack_next_shot_at: None,
         looting: false,
         position: center,
         movement_flags: 0,
@@ -12025,6 +12064,53 @@ fn map_runtime_db_creature_spell_target_validation_checks_selected_target_range_
 }
 
 #[test]
+fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_complement() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 193;
+    spawn.position_x = 9.9;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let hunter_range = SpellRangeEntry {
+        min_range: 5.0,
+        max_range: 35.0,
+        flags: SPELL_RANGE_FLAG_RANGED,
+    };
+
+    assert_eq!(
+        map.validate_player_spell_against_db_creature(
+            1,
+            creature_guid,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(hunter_range),
+        )
+        .check,
+        PlayerSpellTargetCheck::TooClose,
+        "CMaNGOS range flag 0x2 makes the minimum range start beyond melee reach"
+    );
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .current_position
+        .x = 10.0;
+    assert_eq!(
+        map.validate_player_spell_against_db_creature(
+            1,
+            creature_guid,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(hunter_range),
+        )
+        .check,
+        PlayerSpellTargetCheck::Clear
+    );
+}
+
+#[test]
 fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
@@ -14034,7 +14120,9 @@ fn test_player_runtime_with_controller(
         selected_target: None,
         unit_target: None,
         active_combat_target: None,
+        active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
+        ranged_auto_attack_next_shot_at: None,
         looting: false,
         position,
         movement_flags: 0,
@@ -17080,6 +17168,368 @@ async fn player_attack_stop_clears_queued_next_melee_spell_without_active_target
 }
 
 #[tokio::test]
+async fn player_attack_stop_preserves_ranged_auto_repeat_spell() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 0, 77);
+    let spell_id = 75;
+    let now = Instant::now();
+    let next_swing = now + Duration::from_millis(2_800);
+    maps.set_player_ranged_auto_attack(0, 1, Some(target), Some(next_swing), spell_id)
+        .await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(tx);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 3,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_attack_stop(&mut sink, shared_world, &mut session, &mut header_crypto)
+        .await
+        .unwrap();
+
+    let direct_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        direct_packets
+            .iter()
+            .all(|packet| packet.opcode != SMSG_ATTACKSTOP),
+        "CMSG_ATTACKSTOP is melee-only and must not acknowledge by stopping Auto Shot"
+    );
+    let snapshot = maps.player_runtime_snapshot(0, 1).await.unwrap();
+    assert_eq!(snapshot.active_combat_target, Some(target));
+    assert_eq!(
+        snapshot.active_combat_attack_kind,
+        PlayerAutoAttackKind::Ranged {
+            spell_id,
+            phase: PlayerRangedAutoAttackPhase::Windup,
+        }
+    );
+    assert_eq!(snapshot.active_combat_next_swing_at, Some(next_swing));
+    assert_eq!(
+        maps.player_auto_attack_due(0, 1, now + Duration::from_millis(100))
+            .await,
+        None
+    );
+    let snapshot = maps.player_runtime_snapshot(0, 1).await.unwrap();
+    assert_eq!(
+        snapshot.active_combat_attack_kind,
+        PlayerAutoAttackKind::Ranged {
+            spell_id,
+            phase: PlayerRangedAutoAttackPhase::Windup,
+        }
+    );
+    assert_eq!(snapshot.active_combat_next_swing_at, Some(next_swing));
+    assert_eq!(
+        maps.player_auto_attack_due(
+            0,
+            1,
+            next_swing - Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS)
+        )
+        .await,
+        None,
+        "CMaNGOS keeps the shoot wind-up as an internal auto-repeat delay, not as a separate client packet"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(0, 1, next_swing).await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Shooting,
+            },
+        }),
+        "the ranged scheduler should still deliver the next Auto Shot after melee attack stop"
+    );
+}
+
+#[tokio::test]
+async fn ranged_auto_repeat_cancel_transitions_to_melee_when_target_is_in_reach() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 77;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    maps.set_player_ranged_auto_attack_started(
+        0,
+        1,
+        Some(target),
+        Instant::now() + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+        75,
+    )
+    .await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(tx);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 3,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 46,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    let transitioned = try_transition_ranged_auto_repeat_to_melee(
+        &mut sink,
+        shared_world,
+        &mut session,
+        &mut header_crypto,
+        target,
+    )
+    .await
+    .unwrap();
+
+    assert!(transitioned);
+    let direct_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTART));
+    let snapshot = maps.player_runtime_snapshot(0, 1).await.unwrap();
+    assert_eq!(snapshot.active_combat_target, Some(target));
+    assert_eq!(
+        snapshot.active_combat_attack_kind,
+        PlayerAutoAttackKind::Melee
+    );
+    assert!(snapshot.active_combat_next_swing_at.is_some());
+}
+
+#[tokio::test]
+async fn ranged_auto_attack_projectile_delay_uses_spell_speed_and_min_distance() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 77;
+    spawn.position_x = player_position.x + 2.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    let session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 3,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        ranged_auto_attack_travel_delay_millis(
+            shared_world,
+            &session,
+            &auto_shot_spell_template(),
+            target,
+        )
+        .await,
+        125,
+        "CMaNGOS uses spell projectile speed with a 5 yard minimum travel distance"
+    );
+}
+
+#[tokio::test]
+async fn auto_shot_pending_impact_delays_damage_until_projectile_due() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 78;
+    spawn.position_x = player_position.x + 20.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 3,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let due_at = Instant::now() + Duration::from_millis(40);
+    maps.push_pending_ranged_auto_attack_event(
+        0,
+        1,
+        PendingRangedAutoAttackImpact {
+            spell_id: 75,
+            target,
+            outcome: MeleeDamageOutcome::normal_hit(7),
+            weapon_skill_id: None,
+            due_at,
+        },
+    )
+    .await;
+
+    complete_pending_player_spell_cast(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        maps.db_creature_snapshot(0, target).await.unwrap().health,
+        120,
+        "Auto Shot damage must not land before the projectile impact event is due"
+    );
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).next().is_none());
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    complete_pending_player_spell_cast(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let opcodes = packets
+        .iter()
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(
+        opcodes.contains(&SMSG_SPELLNONMELEEDAMAGELOG),
+        "Auto Shot impact is spell weapon damage in CMaNGOS and should not force a melee swing state"
+    );
+    assert!(!opcodes.contains(&SMSG_ATTACKERSTATEUPDATE));
+    assert!(opcodes.contains(&SMSG_UPDATE_OBJECT));
+    assert_eq!(
+        maps.db_creature_snapshot(0, target).await.unwrap().health,
+        113
+    );
+    assert!(maps
+        .next_pending_player_spell_cast_due_at(0, 1)
+        .await
+        .is_none());
+}
+
+#[tokio::test]
 async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
@@ -17277,7 +17727,10 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
             first_next + Duration::from_millis(1)
         )
         .await,
-        Some(target)
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Melee,
+        })
     );
     maps.set_active_player_spell_cast(
         map_id,
@@ -17330,6 +17783,261 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     );
 
     session.character.active_character = None;
+}
+
+#[tokio::test]
+async fn ranged_auto_attack_uses_cmangos_windup_before_weapon_timer() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let spell_id = 75;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+
+    maps.set_player_ranged_auto_attack(map_id, character_guid, Some(target), None, spell_id)
+        .await;
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now)
+            .await,
+        None,
+        "Auto Shot should wait for CMaNGOS' 500 ms internal shoot wind-up before the first triggered shot"
+    );
+    let snapshot = maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.active_combat_next_swing_at,
+        Some(now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS))
+    );
+    assert_eq!(
+        snapshot.active_combat_attack_kind,
+        PlayerAutoAttackKind::Ranged {
+            spell_id,
+            phase: PlayerRangedAutoAttackPhase::Windup,
+        }
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS - 1)
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS)
+        )
+        .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Shooting,
+            },
+        })
+    );
+
+    let next_weapon_swing =
+        now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS + 2_800);
+    maps.set_player_ranged_next_shot_at(map_id, character_guid, next_weapon_swing)
+        .await;
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            next_weapon_swing - Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS + 1)
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            next_weapon_swing - Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS)
+        )
+        .await,
+        None,
+        "repeat Auto Shot should send its triggered start/go pair at release, after the weapon timer is ready"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, next_weapon_swing)
+            .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Shooting,
+            },
+        })
+    );
+}
+
+#[tokio::test]
+async fn ranged_auto_repeat_restart_preserves_weapon_cooldown_after_cancel() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let spell_id = 75;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let requested_first_shot = now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS);
+
+    let first_shot_at = maps
+        .set_player_ranged_auto_attack_started(
+            map_id,
+            character_guid,
+            Some(target),
+            requested_first_shot,
+            spell_id,
+        )
+        .await;
+    assert_eq!(first_shot_at, requested_first_shot);
+
+    let next_weapon_shot = now + Duration::from_millis(2_800);
+    maps.set_player_ranged_next_shot_at(map_id, character_guid, next_weapon_shot)
+        .await;
+    maps.set_player_auto_attack(map_id, character_guid, None, None)
+        .await;
+
+    let requested_restart_shot = now + Duration::from_millis(1_200);
+    let restart_shot_at = maps
+        .set_player_ranged_auto_attack_started(
+            map_id,
+            character_guid,
+            Some(target),
+            requested_restart_shot,
+            spell_id,
+        )
+        .await;
+    assert_eq!(
+        restart_shot_at, next_weapon_shot,
+        "canceling and restarting Auto Shot must not shorten the ranged weapon cooldown"
+    );
+    let snapshot = maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.active_combat_next_swing_at, Some(next_weapon_shot));
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, requested_restart_shot)
+            .await,
+        None
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, next_weapon_shot)
+            .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Shooting,
+            },
+        })
+    );
+}
+
+#[tokio::test]
+async fn ranged_auto_attack_movement_does_not_shortcut_long_weapon_cooldown() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let spell_id = 75;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let long_weapon_cooldown = now + Duration::from_millis(2_800);
+
+    maps.set_player_ranged_auto_attack(
+        map_id,
+        character_guid,
+        Some(target),
+        Some(long_weapon_cooldown),
+        spell_id,
+    )
+    .await;
+    let moving = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1,
+        position,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    maps.update_player_position(
+        map_id,
+        character_guid,
+        MSG_MOVE_START_FORWARD as u16,
+        &moving,
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now + Duration::from_millis(100))
+            .await,
+        None
+    );
+    let standing = MovementInfo {
+        flags: 0,
+        client_time: 2,
+        position,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    maps.update_player_position(map_id, character_guid, MSG_MOVE_STOP as u16, &standing, 2)
+        .await
+        .unwrap();
+    let stop_time = now + Duration::from_millis(200);
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, stop_time)
+            .await,
+        None
+    );
+    let snapshot = maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.active_combat_next_swing_at,
+        Some(long_weapon_cooldown),
+        "movement reset should preserve a weapon cooldown longer than the 500 ms shoot wind-up"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            long_weapon_cooldown - Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS)
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, long_weapon_cooldown)
+            .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Shooting,
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -17468,7 +18176,10 @@ async fn killing_blow_target_clear_preserves_weapon_swing_cooldown_for_retarget(
     assert_eq!(
         maps.player_auto_attack_due(map_id, character_guid, next_swing)
             .await,
-        Some(next_target)
+        Some(PlayerAutoAttackDue {
+            target: next_target,
+            kind: PlayerAutoAttackKind::Melee,
+        })
     );
 }
 
@@ -20167,6 +20878,16 @@ fn raptor_strike_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+fn auto_shot_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(75);
+    template.spell_name = "Auto Shot".to_string();
+    template.attributes = SPELL_ATTR_USES_RANGED_SLOT;
+    template.attributes_ex2 = SPELL_ATTR_EX2_AUTO_REPEAT;
+    template.range_index = 114;
+    template.speed = 40.0;
+    template
+}
+
 fn instant_melee_damage_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(999_010);
     template.spell_name = "Instant Melee".to_string();
@@ -20727,6 +21448,24 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             global_cooldown_category: 0,
             global_cooldown_millis: 0,
             cooldown_millis: 6000,
+        })
+    );
+    assert_eq!(
+        player_spell_cast_profile(&auto_shot_spell_template()),
+        Some(SpellCastProfile {
+            spell_id: 75,
+            kind: SpellCastKind::AutoRepeatRanged,
+            aura_target: SpellAuraTarget::Caster,
+            bonus_damage: 0,
+            weapon_damage_percent: 100,
+            damage: 0,
+            power: SpellPowerCost::Mana { cost: 0 },
+            requires_melee: false,
+            requires_behind: false,
+            needs_combo_points: false,
+            global_cooldown_category: 0,
+            global_cooldown_millis: 0,
+            cooldown_millis: 0,
         })
     );
     assert_eq!(
@@ -23939,6 +24678,7 @@ fn serializes_character_enum_entry() {
         at_login: AT_LOGIN_FIRST,
         money: 0,
         cinematic: 0,
+        ammo_id: 0,
         health: 20,
         power1: 0,
         power2: 0,
@@ -23994,6 +24734,7 @@ fn login_verify_world_packet_shape() {
         at_login: 0,
         money: 0,
         cinematic: 0,
+        ammo_id: 0,
         health: 20,
         power1: 0,
         power2: 0,
@@ -24180,6 +24921,7 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
         at_login: 0,
         money: 0,
         cinematic: 0,
+        ammo_id: 0,
         health: 20,
         power1: 0,
         power2: 0,
@@ -24238,6 +24980,7 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
         &skills,
         &std::collections::HashMap::new(),
         &equipped,
+        None,
         &[],
     )
     .unwrap();
@@ -24353,6 +25096,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &[],
         &std::collections::HashMap::new(),
         &[],
+        None,
         &[],
     )
     .unwrap();
@@ -24379,6 +25123,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &[],
         &std::collections::HashMap::new(),
         &[],
+        None,
         &[],
     )
     .unwrap();
@@ -24410,6 +25155,7 @@ fn login_player_create_values_preserve_zero_health_corpse_state() {
         &[],
         &std::collections::HashMap::new(),
         &[],
+        None,
         &[],
     )
     .unwrap();
@@ -25671,6 +26417,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         at_login: 0,
         money: 0,
         cinematic: 0,
+        ammo_id: 0,
         health: 20,
         power1: 0,
         power2: 0,
@@ -25922,6 +26669,7 @@ fn maps_classic_race_gender_display_ids() {
         at_login: 0,
         money: 0,
         cinematic: 0,
+        ammo_id: 0,
         health: 20,
         power1: 0,
         power2: 0,
@@ -25990,6 +26738,7 @@ fn maps_classic_race_gender_display_ids() {
                 &[],
                 &std::collections::HashMap::new(),
                 &[],
+                None,
                 &[],
             )
             .unwrap();
@@ -27138,6 +27887,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
         active_combat_target: None,
+        active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
     };
 
@@ -27193,6 +27943,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
         active_combat_target: None,
+        active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
     };
     snapshot.class = 4;
@@ -27432,6 +28183,65 @@ fn spell_packets_match_cmangos_success_shapes() {
     cursor += 2;
     assert_eq!(read_packed_guid(&resisted, &mut cursor).unwrap(), target);
     assert_eq!(cursor, resisted.len());
+}
+
+#[test]
+fn ranged_spell_packets_include_cmangos_ammo_visual_payload() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 45);
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+        gameobject_target: None,
+    };
+    let ammo = wow_proto::SpellAmmoVisual {
+        display_id: 5996,
+        inventory_type: INVTYPE_AMMO,
+    };
+
+    let start = build_spell_start_body_with_ammo(caster, 75, 0, &targets, Some(ammo)).unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2 + 4;
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_START | CAST_FLAG_AMMO
+    );
+    cursor += 2;
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), 0);
+    assert_eq!(
+        u16::from_le_bytes(start[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_UNIT
+    );
+    cursor += 2;
+    assert_eq!(read_packed_guid(&start, &mut cursor).unwrap(), target);
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), ammo.display_id);
+    assert_eq!(read_u32(&start, &mut cursor).unwrap(), ammo.inventory_type);
+    assert_eq!(cursor, start.len());
+
+    let go = build_spell_go_body_with_ammo(caster, 75, &targets, Some(ammo)).unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2 + 4;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        CAST_FLAG_SPELL_GO | CAST_FLAG_AMMO
+    );
+    cursor += 2;
+    assert_eq!(go[cursor], 1);
+    cursor += 1;
+    assert_eq!(
+        u64::from_le_bytes(go[cursor..cursor + 8].try_into().unwrap()),
+        target.raw()
+    );
+    cursor += 8;
+    assert_eq!(go[cursor], 0);
+    cursor += 1;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        SPELL_CAST_TARGET_UNIT
+    );
+    cursor += 2;
+    assert_eq!(read_packed_guid(&go, &mut cursor).unwrap(), target);
+    assert_eq!(read_u32(&go, &mut cursor).unwrap(), ammo.display_id);
+    assert_eq!(read_u32(&go, &mut cursor).unwrap(), ammo.inventory_type);
+    assert_eq!(cursor, go.len());
 }
 
 #[test]

@@ -166,6 +166,7 @@ pub enum WorldOpcode {
     SmsgSpellLogMiss = 0x024B,
     SmsgPeriodicAuraLog = 0x024E,
     SmsgSpellNonMeleeDamageLog = 0x0250,
+    CmsgSetAmmo = 0x0268,
     SmsgCorpseReclaimDelay = 0x0269,
     CmsgSetActiveMover = 0x026A,
     CmsgCancelAutoRepeatSpell = 0x026D,
@@ -355,6 +356,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x024B => Ok(Self::SmsgSpellLogMiss),
             0x024E => Ok(Self::SmsgPeriodicAuraLog),
             0x0250 => Ok(Self::SmsgSpellNonMeleeDamageLog),
+            0x0268 => Ok(Self::CmsgSetAmmo),
             0x0269 => Ok(Self::SmsgCorpseReclaimDelay),
             0x026A => Ok(Self::CmsgSetActiveMover),
             0x026D => Ok(Self::CmsgCancelAutoRepeatSpell),
@@ -419,7 +421,6 @@ impl WorldOpcode {
                 | Self::SmsgChannelNotify
                 | Self::SmsgUpdateObject
                 | Self::SmsgDestroyObject
-                | Self::MsgMoveTeleportAck
                 | Self::SmsgMonsterMove
                 | Self::SmsgForceMoveRoot
                 | Self::SmsgForceMoveUnroot
@@ -658,6 +659,24 @@ empty_request!(RepopRequest);
 empty_request!(CorpseQueryRequest);
 empty_request!(LootMoneyRequest);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetAmmoRequest {
+    pub item: u32,
+}
+
+impl SetAmmoRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 4, "CMSG_SET_AMMO")?;
+        Ok(Self {
+            item: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.item);
+    }
+}
+
 guid_request!(CharDeleteRequest, "CMSG_CHAR_DELETE");
 guid_request!(PlayerLoginRequest, "CMSG_PLAYER_LOGIN");
 guid_request!(GameObjectUseRequest, "CMSG_GAMEOBJ_USE");
@@ -676,6 +695,32 @@ guid_request!(
     RequestPartyMemberStatsRequest,
     "CMSG_REQUEST_PARTY_MEMBER_STATS"
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveTeleportAckRequest {
+    pub player: ObjectGuid,
+    pub counter: u32,
+    pub client_time: u32,
+}
+
+impl MoveTeleportAckRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        let player = read_packed_guid_request(buf, "MSG_MOVE_TELEPORT_ACK")?;
+        ensure_remaining(buf, 8, "MSG_MOVE_TELEPORT_ACK")?;
+        Ok(Self {
+            player,
+            counter: buf.get_u32_le(),
+            client_time: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) -> io::Result<()> {
+        write_packed_guid(buf, self.player)?;
+        buf.put_u32_le(self.counter);
+        buf.put_u32_le(self.client_time);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CharCreateRequest {
@@ -2388,6 +2433,12 @@ impl ServerWorldPacket for SmsgCastResultResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpellAmmoVisual {
+    pub display_id: u32,
+    pub inventory_type: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmsgSpellGoResponse {
     pub source: ObjectGuid,
     pub caster: ObjectGuid,
@@ -2395,6 +2446,7 @@ pub struct SmsgSpellGoResponse {
     pub cast_flags: u16,
     pub targets: SpellCastTargets,
     pub miss_info: Option<u8>,
+    pub ammo: Option<SpellAmmoVisual>,
 }
 
 impl ServerWorldPacket for SmsgSpellGoResponse {
@@ -2425,6 +2477,10 @@ impl ServerWorldPacket for SmsgSpellGoResponse {
             buf.put_u8(0);
         }
         write_spell_cast_targets_body(buf, &self.targets);
+        if let Some(ammo) = self.ammo {
+            buf.put_u32_le(ammo.display_id);
+            buf.put_u32_le(ammo.inventory_type);
+        }
     }
 }
 
@@ -2436,6 +2492,7 @@ pub struct SmsgSpellStartResponse {
     pub cast_flags: u16,
     pub cast_time_ms: u32,
     pub targets: SpellCastTargets,
+    pub ammo: Option<SpellAmmoVisual>,
 }
 
 impl ServerWorldPacket for SmsgSpellStartResponse {
@@ -2448,6 +2505,10 @@ impl ServerWorldPacket for SmsgSpellStartResponse {
         buf.put_u16_le(self.cast_flags);
         buf.put_u32_le(self.cast_time_ms);
         write_spell_cast_targets_body(buf, &self.targets);
+        if let Some(ammo) = self.ammo {
+            buf.put_u32_le(ammo.display_id);
+            buf.put_u32_le(ammo.inventory_type);
+        }
     }
 }
 
@@ -4463,6 +4524,7 @@ mod tests {
             cast_flags: 0x0100,
             targets,
             miss_info: None,
+            ammo: None,
         };
         let mut expected_go = Vec::new();
         put_packed_guid(&mut expected_go, caster);

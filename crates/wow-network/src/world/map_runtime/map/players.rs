@@ -1,5 +1,7 @@
 use super::*;
 
+pub(in crate::world) const PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS: u64 = 500;
+
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
 pub(in crate::world) const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
 pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
@@ -1206,6 +1208,7 @@ impl MapRuntime {
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
             active_combat_target: player.active_combat_target,
+            active_combat_attack_kind: player.active_combat_attack_kind,
             active_combat_next_swing_at: player.active_combat_next_swing_at,
         })
     }
@@ -1687,24 +1690,141 @@ impl MapRuntime {
                 player.queued_next_melee_spell = None;
             }
             player.active_combat_target = target;
+            player.active_combat_attack_kind = PlayerAutoAttackKind::Melee;
             player.active_combat_next_swing_at = next_swing_at;
         }
     }
 
+    #[cfg(test)]
+    pub(in crate::world) fn set_player_ranged_auto_attack(
+        &mut self,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        next_swing_at: Option<Instant>,
+        spell_id: u32,
+    ) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.queued_next_melee_spell = None;
+            player.active_combat_target = target;
+            player.active_combat_attack_kind = PlayerAutoAttackKind::Ranged {
+                spell_id,
+                phase: PlayerRangedAutoAttackPhase::Windup,
+            };
+            player.active_combat_next_swing_at = next_swing_at;
+            player.ranged_auto_attack_next_shot_at = next_swing_at;
+        }
+    }
+
+    pub(in crate::world) fn set_player_ranged_auto_attack_started(
+        &mut self,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        requested_next_shot_at: Instant,
+        spell_id: u32,
+    ) -> Option<Instant> {
+        let player = self.players.get_mut(&character_guid)?;
+        // CMaNGOS keeps Auto Shot's spell cooldown when CURRENT_AUTOREPEAT_SPELL is interrupted.
+        let next_shot_at = player
+            .ranged_auto_attack_next_shot_at
+            .map(|existing_next_shot_at| existing_next_shot_at.max(requested_next_shot_at))
+            .unwrap_or(requested_next_shot_at);
+        player.queued_next_melee_spell = None;
+        player.active_combat_target = target;
+        player.active_combat_attack_kind = PlayerAutoAttackKind::Ranged {
+            spell_id,
+            phase: PlayerRangedAutoAttackPhase::Windup,
+        };
+        player.active_combat_next_swing_at = Some(next_shot_at);
+        player.ranged_auto_attack_next_shot_at = Some(next_shot_at);
+        Some(next_shot_at)
+    }
+
+    pub(in crate::world) fn set_player_ranged_next_shot_at(
+        &mut self,
+        character_guid: u32,
+        next_shot_at: Instant,
+    ) {
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.ranged_auto_attack_next_shot_at = Some(next_shot_at);
+            if let PlayerAutoAttackKind::Ranged { spell_id, .. } = player.active_combat_attack_kind
+            {
+                player.active_combat_attack_kind = PlayerAutoAttackKind::Ranged {
+                    spell_id,
+                    phase: PlayerRangedAutoAttackPhase::Windup,
+                };
+                player.active_combat_next_swing_at = Some(next_shot_at);
+            }
+        }
+    }
+
+    pub(in crate::world) fn stop_player_melee_auto_attack(
+        &mut self,
+        character_guid: u32,
+    ) -> Option<(ObjectGuid, Option<Instant>)> {
+        let player = self.players.get_mut(&character_guid)?;
+        if player.active_combat_attack_kind != PlayerAutoAttackKind::Melee {
+            return None;
+        }
+        let target = player.active_combat_target?;
+        let next_swing_at = player.active_combat_next_swing_at;
+        player.active_combat_target = None;
+        Some((target, next_swing_at))
+    }
+
     pub(in crate::world) fn player_auto_attack_due(
-        &self,
+        &mut self,
         character_guid: u32,
         now: Instant,
-    ) -> Option<ObjectGuid> {
+    ) -> Option<PlayerAutoAttackDue> {
         if self.active_player_spell_casts.contains_key(&character_guid) {
             return None;
         }
-        let player = self.players.get(&character_guid)?;
+        let player = self.players.get_mut(&character_guid)?;
         let target = player.active_combat_target?;
+        let spell_moving = player_is_spell_moving(player);
+        if let PlayerAutoAttackKind::Ranged { spell_id, phase } =
+            &mut player.active_combat_attack_kind
+        {
+            let windup = Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS);
+            if spell_moving {
+                let delayed_shot_at = now + windup;
+                if player
+                    .active_combat_next_swing_at
+                    .is_none_or(|next_shot_at| next_shot_at < delayed_shot_at)
+                {
+                    player.active_combat_next_swing_at = Some(delayed_shot_at);
+                    player.ranged_auto_attack_next_shot_at = Some(delayed_shot_at);
+                }
+                *phase = PlayerRangedAutoAttackPhase::Windup;
+                return None;
+            }
+            let Some(next_shot_at) = player.active_combat_next_swing_at else {
+                let next_shot_at = now + windup;
+                player.active_combat_next_swing_at = Some(next_shot_at);
+                player.ranged_auto_attack_next_shot_at = Some(next_shot_at);
+                *phase = PlayerRangedAutoAttackPhase::Windup;
+                return None;
+            };
+            if now < next_shot_at {
+                *phase = PlayerRangedAutoAttackPhase::Windup;
+                return None;
+            }
+            *phase = PlayerRangedAutoAttackPhase::Shooting;
+            return Some(PlayerAutoAttackDue {
+                target,
+                kind: PlayerAutoAttackKind::Ranged {
+                    spell_id: *spell_id,
+                    phase: PlayerRangedAutoAttackPhase::Shooting,
+                },
+            });
+        }
         player
             .active_combat_next_swing_at
             .is_none_or(|next_swing_at| now >= next_swing_at)
-            .then_some(target)
+            .then_some(PlayerAutoAttackDue {
+                target,
+                kind: player.active_combat_attack_kind,
+            })
     }
 
     pub(in crate::world) fn player_auto_attack_target(
@@ -2587,6 +2707,10 @@ pub(in crate::world) fn refresh_player_runtime_stats_from_auras(player: &mut Pla
     };
     player.max_power1 = player.effective_world_stats.max_mana();
     player.power1 = player.power1.min(player.max_power1);
+}
+
+pub(in crate::world) fn player_is_spell_moving(player: &PlayerRuntime) -> bool {
+    player.movement_flags & MOVEFLAG_MASK_SPELL_MOVING != 0
 }
 
 pub(in crate::world) fn should_rescan_visibility_from(

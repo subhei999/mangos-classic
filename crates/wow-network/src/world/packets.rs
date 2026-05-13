@@ -10,12 +10,13 @@ use wow_proto::{
     InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, JoinChannelRequest,
     ListInventoryRequest, LogoutCancelRequest, LogoutRequest, LootMasterGiveRequest,
     LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest, LootRollRequest,
-    MessageChatRequest, NameQueryRequest, NpcTextQueryRequest, PingRequest, PlayerLoginRequest,
-    PlayerLogoutRequest, QueryNextMailTimeRequest, QueryTimeRequest, QuestLogRemoveQuestRequest,
-    QuestQueryRequest, QuestRewardRequest, QuestgiverHelloRequest, QuestgiverQuestRequest,
-    QuestgiverStatusQueryRequest, ReclaimCorpseRequest, RepopRequest, RequestAccountDataRequest,
-    RequestPartyMemberStatsRequest, SellItemRequest, SetActionButtonRequest, SetActiveMoverRequest,
-    SetSelectionRequest, SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
+    MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest, PingRequest,
+    PlayerLoginRequest, PlayerLogoutRequest, QueryNextMailTimeRequest, QueryTimeRequest,
+    QuestLogRemoveQuestRequest, QuestQueryRequest, QuestRewardRequest, QuestgiverHelloRequest,
+    QuestgiverQuestRequest, QuestgiverStatusQueryRequest, ReclaimCorpseRequest, RepopRequest,
+    RequestAccountDataRequest, RequestPartyMemberStatsRequest, SellItemRequest,
+    SetActionButtonRequest, SetActiveMoverRequest, SetAmmoRequest, SetSelectionRequest,
+    SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
     StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest, TrainerListRequest,
     TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest, UpdateAccountDataRequest,
     UseItemRequest, WorldAuthSessionRequest, WorldOpcode,
@@ -54,6 +55,7 @@ pub(super) enum ParsedWorldClientPacket {
     InventoryMove(InventoryMoveClientRequest),
     DestroyItem(DestroyItemRequest),
     SplitItem(SplitItemRequest),
+    SetAmmo(SetAmmoRequest),
     CancelCast(CancelCastRequest),
     CancelAutoRepeatSpell(CancelAutoRepeatSpellRequest),
     GameObjectUse(GameObjectUseRequest),
@@ -72,7 +74,10 @@ pub(super) enum ParsedWorldClientPacket {
     NpcTextQuery(NpcTextQueryRequest),
     QuestgiverStatusQuery(QuestgiverStatusQueryRequest),
     QuestgiverHello(QuestgiverHelloRequest),
-    QuestgiverQuest(QuestgiverQuestRequest),
+    QuestgiverQueryQuest(QuestgiverQuestRequest),
+    QuestgiverAcceptQuest(QuestgiverQuestRequest),
+    QuestgiverCompleteQuest(QuestgiverQuestRequest),
+    QuestgiverRequestReward(QuestgiverQuestRequest),
     QuestReward(QuestRewardRequest),
     QuestLogRemoveQuest(QuestLogRemoveQuestRequest),
     ListInventory(ListInventoryRequest),
@@ -93,6 +98,7 @@ pub(super) enum ParsedWorldClientPacket {
     LootRelease(LootReleaseRequest),
     GmTicketGetTicket(GmTicketGetTicketRequest),
     SetActiveMover(SetActiveMoverRequest),
+    MoveTeleportAck(MoveTeleportAckRequest),
     GroupChangeSubGroup(GroupChangeSubGroupRequest),
     RequestPartyMemberStats(RequestPartyMemberStatsRequest),
     QueryNextMailTime(QueryNextMailTimeRequest),
@@ -166,6 +172,7 @@ impl ParsedWorldClientPacket {
             },
             Self::DestroyItem(_) => WorldOpcode::CmsgDestroyItem.into(),
             Self::SplitItem(_) => WorldOpcode::CmsgSplitItem.into(),
+            Self::SetAmmo(_) => WorldOpcode::CmsgSetAmmo.into(),
             Self::CancelCast(_) => WorldOpcode::CmsgCancelCast.into(),
             Self::CancelAutoRepeatSpell(_) => WorldOpcode::CmsgCancelAutoRepeatSpell.into(),
             Self::GameObjectUse(_) => WorldOpcode::CmsgGameObjUse.into(),
@@ -184,7 +191,10 @@ impl ParsedWorldClientPacket {
             Self::NpcTextQuery(_) => WorldOpcode::CmsgNpcTextQuery.into(),
             Self::QuestgiverStatusQuery(_) => WorldOpcode::CmsgQuestgiverStatusQuery.into(),
             Self::QuestgiverHello(_) => WorldOpcode::CmsgQuestgiverHello.into(),
-            Self::QuestgiverQuest(_) => WorldOpcode::CmsgQuestgiverQueryQuest.into(),
+            Self::QuestgiverQueryQuest(_) => WorldOpcode::CmsgQuestgiverQueryQuest.into(),
+            Self::QuestgiverAcceptQuest(_) => WorldOpcode::CmsgQuestgiverAcceptQuest.into(),
+            Self::QuestgiverCompleteQuest(_) => WorldOpcode::CmsgQuestgiverCompleteQuest.into(),
+            Self::QuestgiverRequestReward(_) => WorldOpcode::CmsgQuestgiverRequestReward.into(),
             Self::QuestReward(_) => WorldOpcode::CmsgQuestgiverChooseReward.into(),
             Self::QuestLogRemoveQuest(_) => WorldOpcode::CmsgQuestlogRemoveQuest.into(),
             Self::ListInventory(_) => WorldOpcode::CmsgListInventory.into(),
@@ -205,6 +215,7 @@ impl ParsedWorldClientPacket {
             Self::LootRelease(_) => WorldOpcode::CmsgLootRelease.into(),
             Self::GmTicketGetTicket(_) => WorldOpcode::CmsgGmTicketGetTicket.into(),
             Self::SetActiveMover(_) => WorldOpcode::CmsgSetActiveMover.into(),
+            Self::MoveTeleportAck(_) => WorldOpcode::MsgMoveTeleportAck.into(),
             Self::GroupChangeSubGroup(_) => WorldOpcode::CmsgGroupChangeSubGroup.into(),
             Self::RequestPartyMemberStats(_) => WorldOpcode::CmsgRequestPartyMemberStats.into(),
             Self::QueryNextMailTime(_) => WorldOpcode::MsgQueryNextMailTime.into(),
@@ -339,6 +350,7 @@ impl ParsedWorldClientPacket {
         "CMSG_DESTROYITEM"
     );
     packet_accessor!(split_item, SplitItem, SplitItemRequest, "CMSG_SPLIT_ITEM");
+    packet_accessor!(set_ammo, SetAmmo, SetAmmoRequest, "CMSG_SET_AMMO");
     packet_accessor!(
         request_account_data,
         RequestAccountData,
@@ -411,12 +423,20 @@ impl ParsedWorldClientPacket {
         QuestgiverHelloRequest,
         "CMSG_QUESTGIVER_HELLO"
     );
-    packet_accessor!(
-        questgiver_quest,
-        QuestgiverQuest,
-        QuestgiverQuestRequest,
-        "CMSG_QUESTGIVER_*_QUEST"
-    );
+    pub(super) fn questgiver_quest(&self) -> anyhow::Result<QuestgiverQuestRequest> {
+        match self {
+            Self::QuestgiverQueryQuest(request)
+            | Self::QuestgiverAcceptQuest(request)
+            | Self::QuestgiverCompleteQuest(request)
+            | Self::QuestgiverRequestReward(request) => Ok(*request),
+            other => {
+                anyhow::bail!(
+                    "expected CMSG_QUESTGIVER_*_QUEST, got opcode 0x{:04X}",
+                    other.opcode()
+                )
+            }
+        }
+    }
     packet_accessor!(
         quest_reward,
         QuestReward,
@@ -505,6 +525,12 @@ impl ParsedWorldClientPacket {
         SetActiveMover,
         SetActiveMoverRequest,
         "CMSG_SET_ACTIVE_MOVER"
+    );
+    packet_accessor!(
+        move_teleport_ack,
+        MoveTeleportAck,
+        MoveTeleportAckRequest,
+        "MSG_MOVE_TELEPORT_ACK"
     );
     packet_accessor!(
         group_change_subgroup,
@@ -737,6 +763,12 @@ pub(super) fn parse_world_client_packet(
                 &mut body,
             )?))
         }
+        Ok(WorldOpcode::CmsgSetAmmo) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::SetAmmo(SetAmmoRequest::read(
+                &mut body,
+            )?))
+        }
         Ok(WorldOpcode::CmsgCancelCast) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::CancelCast(
@@ -845,12 +877,27 @@ pub(super) fn parse_world_client_packet(
                 QuestgiverHelloRequest::read(&mut body)?,
             ))
         }
-        Ok(WorldOpcode::CmsgQuestgiverQueryQuest)
-        | Ok(WorldOpcode::CmsgQuestgiverAcceptQuest)
-        | Ok(WorldOpcode::CmsgQuestgiverCompleteQuest)
-        | Ok(WorldOpcode::CmsgQuestgiverRequestReward) => {
+        Ok(WorldOpcode::CmsgQuestgiverQueryQuest) => {
             let mut body = body;
-            Ok(ParsedWorldClientPacket::QuestgiverQuest(
+            Ok(ParsedWorldClientPacket::QuestgiverQueryQuest(
+                QuestgiverQuestRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgQuestgiverAcceptQuest) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::QuestgiverAcceptQuest(
+                QuestgiverQuestRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgQuestgiverCompleteQuest) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::QuestgiverCompleteQuest(
+                QuestgiverQuestRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgQuestgiverRequestReward) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::QuestgiverRequestReward(
                 QuestgiverQuestRequest::read(&mut body)?,
             ))
         }
@@ -970,6 +1017,12 @@ pub(super) fn parse_world_client_packet(
             let mut body = body;
             Ok(ParsedWorldClientPacket::SetActiveMover(
                 SetActiveMoverRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::MsgMoveTeleportAck) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MoveTeleportAck(
+                MoveTeleportAckRequest::read(&mut body)?,
             ))
         }
         Ok(WorldOpcode::CmsgGroupChangeSubGroup) => {
@@ -1099,6 +1152,16 @@ mod packet_dispatch_tests {
             0x8877_6655_4433_2211
         );
 
+        let mut teleport_ack_body = vec![0x01, 0x07];
+        teleport_ack_body.extend_from_slice(&9u32.to_le_bytes());
+        teleport_ack_body.extend_from_slice(&1234u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x00C7, &teleport_ack_body).unwrap();
+        assert_eq!(parsed.opcode(), 0x00C7);
+        let ack = parsed.move_teleport_ack().unwrap();
+        assert_eq!(ack.player.raw(), 7);
+        assert_eq!(ack.counter, 9);
+        assert_eq!(ack.client_time, 1234);
+
         let parsed = parse_world_client_packet(0x005C, &33u32.to_le_bytes()).unwrap();
         assert_eq!(parsed.quest_query().unwrap().quest_id, 33);
 
@@ -1167,6 +1230,41 @@ mod packet_dispatch_tests {
             parsed.trainer_list().unwrap().raw_guid,
             0xF130_0000_0000_0037
         );
+    }
+
+    #[test]
+    pub(in crate::world) fn parse_world_client_packet_keeps_questgiver_intents_distinct() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&0xF130_0000_0000_0037u64.to_le_bytes());
+        body.extend_from_slice(&47u32.to_le_bytes());
+
+        let parsed = parse_world_client_packet(0x0186, &body).unwrap();
+        assert!(matches!(
+            parsed,
+            ParsedWorldClientPacket::QuestgiverQueryQuest(_)
+        ));
+        assert_eq!(parsed.opcode(), 0x0186);
+
+        let parsed = parse_world_client_packet(0x0189, &body).unwrap();
+        assert!(matches!(
+            parsed,
+            ParsedWorldClientPacket::QuestgiverAcceptQuest(_)
+        ));
+        assert_eq!(parsed.opcode(), 0x0189);
+
+        let parsed = parse_world_client_packet(0x018A, &body).unwrap();
+        assert!(matches!(
+            parsed,
+            ParsedWorldClientPacket::QuestgiverCompleteQuest(_)
+        ));
+        assert_eq!(parsed.opcode(), 0x018A);
+
+        let parsed = parse_world_client_packet(0x018C, &body).unwrap();
+        assert!(matches!(
+            parsed,
+            ParsedWorldClientPacket::QuestgiverRequestReward(_)
+        ));
+        assert_eq!(parsed.opcode(), 0x018C);
     }
 
     #[test]

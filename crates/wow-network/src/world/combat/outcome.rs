@@ -835,6 +835,49 @@ pub(in crate::world) fn calculate_player_main_hand_melee_outcome_against_db_crea
     )
 }
 
+pub(in crate::world) fn player_ranged_outcome_against_db_creature(
+    combat_stats: &PlayerCombatStats,
+    attacker_level: u8,
+    attacker_skill: u16,
+    creature: &DbCreatureRuntime,
+) -> MeleeDamageOutcome {
+    let level = creature
+        .spawn
+        .template
+        .max_level
+        .max(creature.spawn.template.min_level)
+        .max(1);
+    let creature_defense = u16::from(level).saturating_mul(5);
+    let skill_delta = i32::from(attacker_skill) - i32::from(creature_defense);
+    calculate_melee_damage(
+        MeleeDamageInput {
+            attacker_level: attacker_level.max(1),
+            attacker_skill,
+            victim_defense: creature_defense,
+            min_damage: combat_stats.ranged_min_damage,
+            max_damage: combat_stats.ranged_max_damage,
+            victim_armor: creature.spawn.template.armor,
+            victim_block_value: 0,
+            chances: MeleeRollChances {
+                miss: cmangos_melee_miss_chance(
+                    i32::from(attacker_skill),
+                    i32::from(creature_defense),
+                    false,
+                ),
+                dodge: 0.0,
+                parry: 0.0,
+                block: 0.0,
+                glancing: 0.0,
+                crit: (combat_stats.ranged_crit_percent + skill_delta as f32 * 0.2)
+                    .clamp(0.0, 100.0),
+                crushing: 0.0,
+            },
+        },
+        rand::thread_rng().gen_range(1..=10_000),
+        rand::thread_rng().gen_range(1..=10_000),
+    )
+}
+
 pub(in crate::world) fn player_main_hand_chances_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_skill: u16,

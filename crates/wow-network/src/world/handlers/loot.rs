@@ -1,5 +1,116 @@
 use super::*;
 
+pub(in crate::world) async fn dispatch_loot_packet(
+    ctx: &mut WorldPacketDispatchContext<'_>,
+    packet: &packets::ParsedWorldClientPacket,
+) -> anyhow::Result<()> {
+    match packet {
+        packets::ParsedWorldClientPacket::LootRoll(_) => {
+            handle_loot_roll(
+                &mut *ctx.stream,
+                LootMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                    parties: ctx.runtime_state.parties.as_ref(),
+                },
+                packet.loot_roll()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::LootMasterGive(_) => {
+            handle_loot_master_give(
+                &mut *ctx.stream,
+                LootMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                    parties: ctx.runtime_state.parties.as_ref(),
+                },
+                packet.loot_master_give()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::Loot(_) => {
+            handle_loot(
+                &mut *ctx.stream,
+                ctx.world_db_pool,
+                SharedWorldDeps {
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                },
+                &ctx.runtime_state.parties,
+                packet.loot()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::AutostoreLootItem(_) => {
+            handle_autostore_loot_item(
+                &mut *ctx.stream,
+                LootMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                    parties: &ctx.runtime_state.parties,
+                },
+                packet.autostore_loot_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::LootMoney(_) => {
+            let _ = packet.loot_money()?;
+            handle_loot_money(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                SharedWorldDeps {
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                },
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::LootRelease(_) => {
+            handle_loot_release(
+                &mut *ctx.stream,
+                SharedWorldDeps {
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                },
+                packet.loot_release()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        other => anyhow::bail!("loot router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
 pub(in crate::world) async fn handle_loot(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,

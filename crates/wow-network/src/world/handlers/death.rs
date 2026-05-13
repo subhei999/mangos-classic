@@ -1,5 +1,66 @@
 use super::*;
 
+pub(in crate::world) async fn dispatch_death_packet(
+    ctx: &mut WorldPacketDispatchContext<'_>,
+    packet: &packets::ParsedWorldClientPacket,
+) -> anyhow::Result<()> {
+    match packet {
+        packets::ParsedWorldClientPacket::Repop(_) => {
+            let _ = packet.repop()?;
+            handle_repop_request(
+                &mut *ctx.stream,
+                PlayerDeathDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                    account_id: ctx.account_id,
+                },
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::ReclaimCorpse(_) => {
+            handle_reclaim_corpse(
+                &mut *ctx.stream,
+                PlayerDeathDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                    account_id: ctx.account_id,
+                },
+                packet.reclaim_corpse()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::SpiritHealerActivate(_) => {
+            handle_spirit_healer_activate(
+                &mut *ctx.stream,
+                PlayerDeathDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                    account_id: ctx.account_id,
+                },
+                packet.spirit_healer_activate()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::CorpseQuery(_) => {
+            let _ = packet.corpse_query()?;
+            handle_corpse_query(&mut *ctx.stream, &*ctx.session, &mut *ctx.header_crypto).await
+        }
+        other => anyhow::bail!("death router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::world) struct PlayerDeathDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,

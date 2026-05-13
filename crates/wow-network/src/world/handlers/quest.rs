@@ -1,5 +1,117 @@
 use super::*;
 
+pub(in crate::world) async fn dispatch_quest_packet(
+    ctx: &mut WorldPacketDispatchContext<'_>,
+    packet: &packets::ParsedWorldClientPacket,
+) -> anyhow::Result<()> {
+    match packet {
+        packets::ParsedWorldClientPacket::QuestQuery(_) => {
+            handle_quest_query(
+                &mut *ctx.stream,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.quest_query()?,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverStatusQuery(_) => {
+            handle_questgiver_status_query(
+                &mut *ctx.stream,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.questgiver_status_query()?,
+                &*ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverHello(_) => {
+            handle_questgiver_hello(
+                &mut *ctx.stream,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.questgiver_hello()?,
+                &*ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverQueryQuest(_) => {
+            handle_questgiver_query_quest(
+                &mut *ctx.stream,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.questgiver_quest()?,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverAcceptQuest(_) => {
+            handle_questgiver_accept_quest(
+                &mut *ctx.stream,
+                QuestMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.questgiver_quest()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverCompleteQuest(_)
+        | packets::ParsedWorldClientPacket::QuestgiverRequestReward(_) => {
+            handle_questgiver_complete_quest(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.questgiver_quest()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestReward(_) => {
+            handle_questgiver_choose_reward(
+                &mut *ctx.stream,
+                QuestMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.quest_reward()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestLogRemoveQuest(_) => {
+            handle_questlog_remove_quest(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                packet.questlog_remove_quest()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        other => anyhow::bail!("quest router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
 pub(in crate::world) async fn handle_quest_query(
     stream: &mut WorldPacketSink,
     object_mgr: &ObjectMgr,

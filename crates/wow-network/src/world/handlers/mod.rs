@@ -1,48 +1,39 @@
 use super::*;
 
-#[path = "../chat.rs"]
-mod chat;
-#[path = "../creatures.rs"]
-mod creatures;
-#[path = "../death.rs"]
-mod death;
-#[path = "../gameobjects.rs"]
-mod gameobjects;
-#[path = "../gm_commands.rs"]
-mod gm_commands;
-#[path = "../gossip.rs"]
-mod gossip;
-#[path = "../inventory.rs"]
-mod inventory;
-#[path = "../loot.rs"]
-mod loot;
-#[path = "../mmap_path.rs"]
+pub(in crate::world) mod character;
+pub(in crate::world) mod chat;
+pub(in crate::world) mod combat;
+pub(in crate::world) mod creature;
+pub(in crate::world) mod death;
+pub(in crate::world) mod gameobject;
+pub(in crate::world) mod gm;
+pub(in crate::world) mod gossip;
+pub(in crate::world) mod inventory;
+pub(in crate::world) mod loot;
+pub(in crate::world) mod misc;
 mod mmap_path;
-#[path = "../quests.rs"]
-mod quests;
-#[path = "../reputation/reputation_mgr.rs"]
-mod reputation_mgr;
-#[path = "../terrain_height.rs"]
+pub(in crate::world) mod movement;
+pub(in crate::world) mod npc;
+pub(in crate::world) mod quest;
+mod reputation;
+pub(in crate::world) mod social;
 mod terrain_height;
-#[path = "../trainers.rs"]
-mod trainers;
-#[path = "../vendors.rs"]
-mod vendors;
-#[path = "../vmap_los.rs"]
+pub(in crate::world) mod trainer;
+pub(in crate::world) mod vendor;
 mod vmap_los;
 
 pub(in crate::world) use self::chat::*;
-pub(in crate::world) use self::creatures::*;
+pub(in crate::world) use self::creature::*;
 pub(in crate::world) use self::death::*;
-pub(in crate::world) use self::gameobjects::*;
-pub(in crate::world) use self::gm_commands::*;
+pub(in crate::world) use self::gameobject::*;
+pub(in crate::world) use self::gm::*;
 pub(in crate::world) use self::gossip::*;
 pub(in crate::world) use self::inventory::*;
 pub(in crate::world) use self::loot::*;
 pub(in crate::world) use self::mmap_path::*;
-pub(in crate::world) use self::quests::*;
-pub(in crate::world) use self::reputation_mgr::*;
+pub(in crate::world) use self::quest::*;
+pub(in crate::world) use self::reputation::*;
 pub(in crate::world) use self::terrain_height::*;
-pub(in crate::world) use self::trainers::*;
-pub(in crate::world) use self::vendors::*;
+pub(in crate::world) use self::trainer::*;
+pub(in crate::world) use self::vendor::*;
 pub(in crate::world) use self::vmap_los::*;

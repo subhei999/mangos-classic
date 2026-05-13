@@ -5,8 +5,85 @@ use wow_proto::{
     VendorListItemResponse,
 };
 
+pub(in crate::world) async fn dispatch_inventory_packet(
+    ctx: &mut WorldPacketDispatchContext<'_>,
+    packet: &packets::ParsedWorldClientPacket,
+) -> anyhow::Result<()> {
+    match packet {
+        packets::ParsedWorldClientPacket::InventoryMove(_) => {
+            handle_inventory_swap(
+                &mut *ctx.stream,
+                InventoryDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.inventory_move()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::DestroyItem(_) => {
+            handle_destroy_item(
+                &mut *ctx.stream,
+                QuestMutationDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.destroy_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::SplitItem(_) => {
+            handle_split_item(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                packet.split_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::SetAmmo(_) => {
+            handle_set_ammo(
+                &mut *ctx.stream,
+                InventoryDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.set_ammo()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        other => anyhow::bail!("inventory router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
 pub(in crate::world) const INVTYPE_BAG: u32 = 18;
+pub(in crate::world) const INVTYPE_AMMO: u32 = 24;
+pub(in crate::world) const INVTYPE_THROWN: u32 = 25;
 pub(in crate::world) const ITEM_CLASS_CONTAINER: u32 = 1;
+pub(in crate::world) const ITEM_CLASS_PROJECTILE: u32 = 6;
 pub(in crate::world) const ITEM_CLASS_QUIVER: u32 = 11;
 pub(in crate::world) const ITEM_SUBCLASS_CONTAINER: u32 = 0;
 pub(in crate::world) const ITEM_SUBCLASS_SOUL_CONTAINER: u32 = 1;
@@ -15,6 +92,11 @@ pub(in crate::world) const ITEM_SUBCLASS_ENCHANTING_CONTAINER: u32 = 3;
 pub(in crate::world) const ITEM_SUBCLASS_ENGINEERING_CONTAINER: u32 = 4;
 pub(in crate::world) const ITEM_SUBCLASS_QUIVER: u32 = 2;
 pub(in crate::world) const ITEM_SUBCLASS_AMMO_POUCH: u32 = 3;
+pub(in crate::world) const ITEM_SUBCLASS_ARROW: u32 = 2;
+pub(in crate::world) const ITEM_SUBCLASS_BULLET: u32 = 3;
+pub(in crate::world) const ITEM_SUBCLASS_WEAPON_BOW: u32 = 2;
+pub(in crate::world) const ITEM_SUBCLASS_WEAPON_GUN: u32 = 3;
+pub(in crate::world) const ITEM_SUBCLASS_WEAPON_CROSSBOW: u32 = 18;
 pub(in crate::world) const BAG_FAMILY_ARROWS: i32 = 1;
 pub(in crate::world) const BAG_FAMILY_BULLETS: i32 = 2;
 pub(in crate::world) const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
@@ -318,11 +400,18 @@ pub(in crate::world) async fn handle_inventory_swap(
             .await?;
             let equipped_templates =
                 load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
-            let combat_stats = player_combat_stats_for_values(
+            let ammo_template = load_selected_ammo_template(
+                deps.world_db_pool,
+                &session.inventory.items,
+                session.character.player_ammo_id,
+            )
+            .await?;
+            let combat_stats = player_combat_stats_for_values_with_ammo(
                 character.class,
                 character.level,
                 &world_stats,
                 &equipped_templates,
+                ammo_template.as_ref(),
             );
             combat_stats_update_body = Some(build_player_combat_stats_update_body(
                 character_guid,
@@ -664,6 +753,183 @@ pub(in crate::world) async fn handle_split_item(
     }
     let body = build_update_object_body(&blocks);
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+}
+
+pub(in crate::world) async fn handle_set_ammo(
+    stream: &mut WorldPacketSink,
+    deps: InventoryDeps<'_>,
+    request: wow_proto::SetAmmoRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref().cloned() else {
+        warn!("Ignoring ammo selection before character login");
+        return Ok(());
+    };
+    if session.death.player_death_state != PlayerDeathState::Alive {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_YOU_ARE_DEAD,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    }
+
+    if request.item == 0 {
+        return apply_player_ammo_selection(stream, deps, session, &character, 0, header_crypto)
+            .await;
+    }
+
+    let Some(template) = wow_db::get_item_template_query(deps.world_db_pool, request.item).await?
+    else {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_ITEM_NOT_FOUND,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    };
+    let source_item = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.item_template == request.item && item.count > 0);
+    if source_item.is_none() {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_ITEM_NOT_FOUND,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    }
+    if !is_selectable_ammo_template(&template) {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_ITEM_CANT_BE_EQUIPPED,
+            source_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+            None,
+            header_crypto,
+        )
+        .await;
+    }
+    let use_result = character_can_use_item_template(
+        character.level,
+        character.race,
+        character.class,
+        &template,
+        &session.character.character_skills,
+        &session.character.active_spells,
+        &session.character.character_reputations,
+    );
+    if use_result != 0 {
+        return send_inventory_change_failure_with_required_level(
+            stream,
+            use_result,
+            source_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+            None,
+            (use_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I).then_some(template.required_level),
+            header_crypto,
+        )
+        .await;
+    }
+
+    apply_player_ammo_selection(
+        stream,
+        deps,
+        session,
+        &character,
+        template.entry,
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn apply_player_ammo_selection(
+    stream: &mut WorldPacketSink,
+    deps: InventoryDeps<'_>,
+    session: &mut WorldSessionState,
+    character: &ActiveCharacter,
+    ammo_id: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if session.character.player_ammo_id == ammo_id {
+        return Ok(());
+    }
+    wow_db::update_character_ammo_id(deps.character_db_pool, character.guid, ammo_id).await?;
+    session.character.player_ammo_id = ammo_id;
+
+    let world_stats = wow_db::get_player_world_stats(
+        deps.world_db_pool,
+        character.race,
+        character.class,
+        character.level,
+    )
+    .await?;
+    let equipped_templates =
+        load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
+    let ammo_template =
+        load_selected_ammo_template(deps.world_db_pool, &session.inventory.items, ammo_id).await?;
+    let combat_stats = player_combat_stats_for_values_with_ammo(
+        character.class,
+        character.level,
+        &world_stats,
+        &equipped_templates,
+        ammo_template.as_ref(),
+    );
+    let observer_packets = deps
+        .shared_world
+        .maps
+        .update_player_combat_stats(character.position.map_id, character.guid, combat_stats)
+        .await?;
+    deps.shared_world.sessions.dispatch(observer_packets).await;
+
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_ammo_update_body(character.guid, ammo_id)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_combat_stats_update_body(character.guid, &combat_stats)?,
+        Some(header_crypto),
+    )
+    .await
+}
+
+pub(in crate::world) fn is_selectable_ammo_template(template: &ItemTemplateQuery) -> bool {
+    template.class == ITEM_CLASS_PROJECTILE
+        && template.inventory_type == INVTYPE_AMMO
+        && matches!(
+            template.subclass,
+            ITEM_SUBCLASS_ARROW | ITEM_SUBCLASS_BULLET
+        )
+}
+
+pub(in crate::world) async fn load_selected_ammo_template(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+    ammo_id: u32,
+) -> anyhow::Result<Option<ItemTemplateQuery>> {
+    if ammo_id == 0
+        || !inventory
+            .iter()
+            .any(|item| item.item_template == ammo_id && item.count > 0)
+    {
+        return Ok(None);
+    }
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, ammo_id).await? else {
+        return Ok(None);
+    };
+    Ok(is_selectable_ammo_template(&template).then_some(template))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

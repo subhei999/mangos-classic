@@ -2,6 +2,7 @@ use super::*;
 
 mod action_buttons;
 mod character_screen;
+mod dispatch;
 mod logout;
 mod map_update;
 mod movement;
@@ -13,6 +14,7 @@ mod world_session;
 
 pub(in crate::world) use self::action_buttons::*;
 pub(in crate::world) use self::character_screen::*;
+pub(in crate::world) use self::dispatch::*;
 pub(in crate::world) use self::logout::*;
 pub(in crate::world) use self::map_update::*;
 pub(in crate::world) use self::movement::*;

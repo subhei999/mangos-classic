@@ -105,7 +105,9 @@ impl<'a> SpellInfo<'a> {
     }
 
     pub(in crate::world) fn player_cast_profile(&self) -> Option<SpellCastProfile> {
-        let kind = if self.has_on_next_swing_attribute() {
+        let kind = if self.is_auto_repeat_ranged() {
+            SpellCastKind::AutoRepeatRanged
+        } else if self.has_on_next_swing_attribute() {
             SpellCastKind::NextMeleeSwing
         } else if self.has_effect(SpellEffectDispatch::Charge) {
             SpellCastKind::Charge
@@ -150,14 +152,23 @@ impl<'a> SpellInfo<'a> {
             aura_target: self.aura_target(),
             bonus_damage: self.bonus_damage(),
             weapon_damage_percent: self.weapon_damage_percent(),
-            damage: if matches!(kind, SpellCastKind::NextMeleeSwing | SpellCastKind::Charge) {
+            damage: if matches!(
+                kind,
+                SpellCastKind::AutoRepeatRanged
+                    | SpellCastKind::NextMeleeSwing
+                    | SpellCastKind::Charge
+            ) {
                 0
             } else {
                 self.direct_damage()
             },
             power: self.power(),
             requires_melee: kind == SpellCastKind::NextMeleeSwing
-                || (self.template.dmg_class == 2 && kind != SpellCastKind::Charge),
+                || (self.template.dmg_class == 2
+                    && !matches!(
+                        kind,
+                        SpellCastKind::AutoRepeatRanged | SpellCastKind::Charge
+                    )),
             requires_behind: self.requires_behind_target(),
             needs_combo_points: self.needs_combo_points(),
             global_cooldown_category: self.template.start_recovery_category,
@@ -178,6 +189,11 @@ impl<'a> SpellInfo<'a> {
     pub(in crate::world) fn has_on_next_swing_attribute(&self) -> bool {
         (self.template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING))
             != 0
+    }
+
+    pub(in crate::world) fn is_auto_repeat_ranged(&self) -> bool {
+        (self.template.attributes & SPELL_ATTR_USES_RANGED_SLOT) != 0
+            && (self.template.attributes_ex2 & SPELL_ATTR_EX2_AUTO_REPEAT) != 0
     }
 
     pub(in crate::world) fn has_item_direct_effect(&self) -> bool {
@@ -240,7 +256,9 @@ impl<'a> SpellInfo<'a> {
 
     pub(in crate::world) fn unit_target_kind(&self, kind: SpellCastKind) -> SpellTargetKind {
         match kind {
-            SpellCastKind::Charge | SpellCastKind::NextMeleeSwing => SpellTargetKind::HostileUnit,
+            SpellCastKind::AutoRepeatRanged
+            | SpellCastKind::Charge
+            | SpellCastKind::NextMeleeSwing => SpellTargetKind::HostileUnit,
             SpellCastKind::DirectHeal => {
                 if self.aura_target() == SpellAuraTarget::Caster {
                     SpellTargetKind::Caster

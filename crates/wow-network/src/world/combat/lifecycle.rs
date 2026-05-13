@@ -43,25 +43,45 @@ pub(in crate::world) async fn handle_combat_tick(
         return Ok(());
     }
     if let Some(character) = session.character.active_character.as_ref() {
-        if let Some(target) = deps
+        if let Some(due) = deps
             .shared_world
             .maps
             .player_auto_attack_due(character.position.map_id, character.guid, now)
             .await
         {
-            send_db_creature_swing(
-                stream,
-                CombatRewardDeps {
-                    character_db_pool: deps.character_db_pool,
-                    world_db_pool: deps.world_db_pool,
-                    shared_world: deps.shared_world,
-                    parties: deps.parties,
-                },
-                session,
-                header_crypto,
-                target,
-            )
-            .await?;
+            match due.kind {
+                PlayerAutoAttackKind::Melee => {
+                    send_db_creature_swing(
+                        stream,
+                        CombatRewardDeps {
+                            character_db_pool: deps.character_db_pool,
+                            world_db_pool: deps.world_db_pool,
+                            shared_world: deps.shared_world,
+                            parties: deps.parties,
+                        },
+                        session,
+                        header_crypto,
+                        due.target,
+                    )
+                    .await?;
+                }
+                PlayerAutoAttackKind::Ranged { spell_id, .. } => {
+                    send_db_creature_ranged_swing(
+                        stream,
+                        CombatRewardDeps {
+                            character_db_pool: deps.character_db_pool,
+                            world_db_pool: deps.world_db_pool,
+                            shared_world: deps.shared_world,
+                            parties: deps.parties,
+                        },
+                        session,
+                        header_crypto,
+                        due.target,
+                        spell_id,
+                    )
+                    .await?;
+                }
+            }
         }
     }
 
@@ -767,6 +787,530 @@ pub(in crate::world) async fn send_db_creature_swing(
     Ok(())
 }
 
+pub(in crate::world) async fn send_db_creature_ranged_swing(
+    stream: &mut WorldPacketSink,
+    deps: CombatRewardDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    target: ObjectGuid,
+    spell_id: u32,
+) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let world_db_pool = deps.world_db_pool;
+    let shared_world = deps.shared_world;
+    let parties = deps.parties;
+    let Some(character) = session.character.active_character.as_ref().cloned() else {
+        return Ok(());
+    };
+    let map_id = character.position.map_id;
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let Some(spell_template) = shared_world
+        .object_mgr
+        .spell_template(world_db_pool, spell_id)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    if let Some(failure) = player_ranged_auto_attack_failure(
+        world_db_pool,
+        shared_world,
+        session,
+        target,
+        &spell_template,
+    )
+    .await?
+    {
+        send_auto_repeat_spell_failure(stream, header_crypto, attacker, spell_id, failure).await?;
+        if !try_transition_ranged_auto_repeat_to_melee(
+            stream,
+            shared_world,
+            session,
+            header_crypto,
+            target,
+        )
+        .await?
+        {
+            shared_world
+                .maps
+                .set_player_auto_attack(map_id, character.guid, None, None)
+                .await;
+            mirror_session_player_auto_attack(session, None, None);
+        }
+        return Ok(());
+    }
+
+    let combat_stats = shared_world
+        .maps
+        .player_combat_stats(map_id, character.guid)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "map-owned player combat stats missing for character {}",
+                character.guid
+            )
+        })?;
+    let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character.guid, None, None)
+            .await;
+        mirror_session_player_auto_attack(session, None, None);
+        return Ok(());
+    };
+    let weapon_skill_id = ranged_weapon_skill_id(world_db_pool, &session.inventory.items).await?;
+    let attacker_skill = weapon_skill_id
+        .map(|skill_id| {
+            current_skill_value_with_active_auras(
+                &session.character.character_skills,
+                &session.auras.active_auras,
+                skill_id,
+            )
+        })
+        .unwrap_or(0);
+    let ranged_outcome = player_ranged_outcome_against_db_creature(
+        &combat_stats,
+        character.level,
+        attacker_skill,
+        &target_creature,
+    );
+    let spell_miss_info = ranged_outcome.spell_miss_info();
+    let ammo_visual = player_ranged_spell_ammo_visual(world_db_pool, session).await?;
+    let swing_time = Instant::now();
+    let next_swing = player_ranged_next_swing_at(swing_time, &combat_stats);
+
+    let ammo_source = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.item_template == session.character.player_ammo_id && item.count > 0)
+        .cloned();
+    if let Some(ammo_source) = ammo_source {
+        consume_used_item(
+            stream,
+            character_db_pool,
+            session,
+            character.guid,
+            &ammo_source,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    mirror_session_player_next_swing_at(session, Some(next_swing));
+    shared_world
+        .maps
+        .set_player_ranged_next_shot_at(map_id, character.guid, next_swing)
+        .await;
+
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+        gameobject_target: None,
+    };
+    let spell_start_body =
+        build_spell_start_body_with_ammo(attacker, spell_id, 0, &targets, ammo_visual)?;
+    send_packet(
+        stream,
+        SMSG_SPELL_START,
+        &spell_start_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_start = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character.guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_START,
+                body: spell_start_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(observer_start).await;
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_ok_body(spell_id),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let spell_go_body = if let Some(miss_info) = spell_miss_info {
+        build_spell_go_body_with_miss_and_ammo(
+            attacker,
+            spell_id,
+            &targets,
+            miss_info,
+            ammo_visual,
+        )?
+    } else {
+        build_spell_go_body_with_ammo(attacker, spell_id, &targets, ammo_visual)?
+    };
+    send_packet(
+        stream,
+        SMSG_SPELL_GO,
+        &spell_go_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_go = shared_world
+        .maps
+        .broadcast_nearby_player_packet(
+            map_id,
+            character.guid,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_SPELL_GO,
+                body: spell_go_body,
+            },
+        )
+        .await;
+    shared_world.sessions.dispatch(observer_go).await;
+
+    let travel_delay =
+        ranged_auto_attack_travel_delay_millis(shared_world, session, &spell_template, target)
+            .await;
+    if travel_delay > 0 {
+        shared_world
+            .maps
+            .push_pending_ranged_auto_attack_event(
+                map_id,
+                character.guid,
+                PendingRangedAutoAttackImpact {
+                    spell_id,
+                    target,
+                    outcome: ranged_outcome,
+                    weapon_skill_id,
+                    due_at: swing_time + Duration::from_millis(travel_delay as u64),
+                },
+            )
+            .await;
+    } else {
+        apply_player_ranged_auto_attack_impact(
+            stream,
+            CombatRewardDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world,
+                parties,
+            },
+            session,
+            header_crypto,
+            target,
+            spell_id,
+            ranged_outcome,
+            weapon_skill_id,
+            swing_time,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
+    stream: &mut WorldPacketSink,
+    deps: CombatRewardDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    target: ObjectGuid,
+    spell_id: u32,
+    ranged_outcome: MeleeDamageOutcome,
+    weapon_skill_id: Option<u16>,
+    impact_time: Instant,
+) -> anyhow::Result<()> {
+    let character_db_pool = deps.character_db_pool;
+    let world_db_pool = deps.world_db_pool;
+    let shared_world = deps.shared_world;
+    let parties = deps.parties;
+    let Some(character) = session.character.active_character.as_ref().cloned() else {
+        return Ok(());
+    };
+    let map_id = character.position.map_id;
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character.guid, None, None)
+            .await;
+        mirror_session_player_auto_attack(session, None, None);
+        return Ok(());
+    };
+    let combat_stats = shared_world
+        .maps
+        .player_combat_stats(map_id, character.guid)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "map-owned player combat stats missing for character {}",
+                character.guid
+            )
+        })?;
+    let requested_damage = ranged_outcome.total_damage;
+    let corpse_loot = if requested_damage >= target_creature.health {
+        Some(
+            prepare_db_creature_corpse_loot(
+                shared_world.object_mgr,
+                world_db_pool,
+                parties,
+                session,
+                character.guid,
+                target_creature.spawn.entry,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let Some(event) = shared_world
+        .maps
+        .apply_db_creature_damage(
+            map_id,
+            DbCreatureDamageRequest {
+                creature_guid: target,
+                killer: attacker,
+                damage: requested_damage,
+                melee_outcome: Some(ranged_outcome),
+                spell_damage_outcome: None,
+                spell_id: Some(spell_id),
+                spell_school: 0,
+                suppress_attacker_state: true,
+                now: impact_time,
+                now_epoch_secs: current_unix_epoch_secs(),
+                exclude_character_guid: Some(character.guid),
+                corpse_loot,
+            },
+        )
+        .await?
+    else {
+        shared_world
+            .maps
+            .set_player_auto_attack(map_id, character.guid, None, None)
+            .await;
+        mirror_session_player_auto_attack(session, None, None);
+        return Ok(());
+    };
+
+    let is_dead = event.death_finalization.is_some();
+    mirror_session_db_creature(session, target.raw(), event.creature.clone());
+    if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
+        send_packet(
+            stream,
+            SMSG_SPELLNONMELEEDAMAGELOG,
+            spell_non_melee_log_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if let Some(attacker_state_body) = &event.attacker_state_body {
+        send_packet(
+            stream,
+            SMSG_ATTACKERSTATEUPDATE,
+            attacker_state_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
+        send_packet(
+            stream,
+            SMSG_SPELLLOGMISS,
+            spell_miss_log_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &event.update_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    shared_world.sessions.dispatch(event.observer_packets).await;
+    if !is_dead {
+        begin_db_creature_retaliation_if_needed(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            target,
+            attacker,
+            header_crypto,
+        )
+        .await?;
+    }
+    if let Some(skill_id) = weapon_skill_id {
+        if let Some(updated) = try_advance_combat_skill_value(
+            character.level,
+            skill_id,
+            combat_stats.intellect,
+            true,
+            &mut session.character.character_skills,
+        ) {
+            wow_db::upsert_character_skill(
+                character_db_pool,
+                character.guid,
+                updated.skill,
+                updated.value,
+                updated.max,
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_skill_update_body(
+                    character.guid,
+                    updated,
+                    &session.auras.active_auras,
+                )?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
+    if is_dead {
+        finalize_db_creature_death(
+            stream,
+            CombatRewardDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world,
+                parties,
+            },
+            session,
+            event.death_finalization,
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(in crate::world) async fn ranged_auto_attack_travel_delay_millis(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    target: ObjectGuid,
+) -> u32 {
+    if spell_template.speed <= 0.0 {
+        return 0;
+    }
+    let Some(character) = session.character.active_character.as_ref() else {
+        return 0;
+    };
+    let map_id = character.position.map_id;
+    let caster_position = shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character.guid)
+        .await
+        .map(|snapshot| snapshot.position)
+        .unwrap_or(character.position);
+    let Some(creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
+        return 0;
+    };
+    let distance = caster_position
+        .distance_to(&creature.current_position)
+        .max(5.0);
+    ((distance / spell_template.speed.max(f32::EPSILON)) * 1000.0)
+        .floor()
+        .max(1.0) as u32
+}
+
+pub(in crate::world) async fn send_auto_repeat_spell_failure(
+    stream: &mut WorldPacketSink,
+    header_crypto: &mut HeaderCrypto,
+    caster: ObjectGuid,
+    spell_id: u32,
+    failure: u8,
+) -> anyhow::Result<()> {
+    send_packet(
+        stream,
+        SMSG_CAST_RESULT,
+        &build_cast_result_failure_body(spell_id, failure),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILURE,
+        &build_spell_failure_body(caster, spell_id, failure)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_SPELL_FAILED_OTHER,
+        &build_spell_failed_other_body(caster, spell_id),
+        Some(header_crypto),
+    )
+    .await
+}
+
+pub(in crate::world) async fn player_ranged_auto_attack_failure(
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    target: ObjectGuid,
+    spell_template: &wow_db::SpellTemplateQuery,
+) -> anyhow::Result<Option<u8>> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(Some(SPELL_FAILED_OUT_OF_RANGE));
+    };
+    let Some(ranged_weapon) =
+        ranged_weapon_template(world_db_pool, &session.inventory.items).await?
+    else {
+        return Ok(Some(SPELL_FAILED_NO_AMMO));
+    };
+    if ranged_weapon_requires_ammo(&ranged_weapon) {
+        let Some(ammo_template) = load_selected_ammo_template(
+            world_db_pool,
+            &session.inventory.items,
+            session.character.player_ammo_id,
+        )
+        .await?
+        else {
+            return Ok(Some(SPELL_FAILED_NO_AMMO));
+        };
+        if !ranged_weapon_accepts_ammo(&ranged_weapon, &ammo_template) {
+            return Ok(Some(SPELL_FAILED_NO_AMMO));
+        }
+    }
+    let range = if spell_template.range_index == 0 {
+        None
+    } else {
+        let Some(range) = shared_world.maps.spell_range(spell_template.range_index) else {
+            return Ok(Some(SPELL_FAILED_OUT_OF_RANGE));
+        };
+        Some(range)
+    };
+    let validation = shared_world
+        .maps
+        .validate_player_spell_against_db_creature(
+            character.position.map_id,
+            character.guid,
+            target,
+            &session.movement.db_creature_navigation,
+            range,
+        )
+        .await;
+    Ok(match validation.check {
+        PlayerSpellTargetCheck::Clear => None,
+        PlayerSpellTargetCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        PlayerSpellTargetCheck::NavigationBlocked(
+            DbCreatureNavigationResult::LineOfSightBlocked,
+        ) => Some(SPELL_FAILED_LINE_OF_SIGHT),
+        PlayerSpellTargetCheck::TooClose => Some(SPELL_FAILED_TOO_CLOSE),
+        PlayerSpellTargetCheck::NoActiveCharacter
+        | PlayerSpellTargetCheck::MissingTarget
+        | PlayerSpellTargetCheck::TargetNotAlive
+        | PlayerSpellTargetCheck::NavigationBlocked(_)
+        | PlayerSpellTargetCheck::OutOfRange => Some(SPELL_FAILED_OUT_OF_RANGE),
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct SkillProgressionUpdate {
     pub(in crate::world) slot: usize,
@@ -949,6 +1493,70 @@ pub(in crate::world) async fn main_hand_weapon_skill_id(
     Ok(item_weapon_skill_from_template(&template))
 }
 
+pub(in crate::world) async fn ranged_weapon_skill_id(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Option<u16>> {
+    let Some(template) = ranged_weapon_template(world_db_pool, inventory).await? else {
+        return Ok(None);
+    };
+    Ok(item_weapon_skill_from_template(&template))
+}
+
+pub(in crate::world) async fn ranged_weapon_template(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Option<ItemTemplateQuery>> {
+    let ranged = inventory
+        .iter()
+        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == EQUIPMENT_SLOT_RANGED);
+    let Some(ranged) = ranged else {
+        return Ok(None);
+    };
+    Ok(wow_db::get_item_template_query(world_db_pool, ranged.item_template).await?)
+}
+
+pub(in crate::world) async fn player_ranged_spell_ammo_visual(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+) -> anyhow::Result<Option<wow_proto::SpellAmmoVisual>> {
+    let Some(ranged_weapon) =
+        ranged_weapon_template(world_db_pool, &session.inventory.items).await?
+    else {
+        return Ok(None);
+    };
+    if ranged_weapon.inventory_type == INVTYPE_THROWN {
+        return Ok(Some(wow_proto::SpellAmmoVisual {
+            display_id: ranged_weapon.displayid,
+            inventory_type: ranged_weapon.inventory_type,
+        }));
+    }
+    let Some(ammo) = load_selected_ammo_template(
+        world_db_pool,
+        &session.inventory.items,
+        session.character.player_ammo_id,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    if !ranged_weapon_accepts_ammo(&ranged_weapon, &ammo) {
+        return Ok(None);
+    }
+    Ok(Some(wow_proto::SpellAmmoVisual {
+        display_id: ammo.displayid,
+        inventory_type: ammo.inventory_type,
+    }))
+}
+
+pub(in crate::world) fn ranged_weapon_requires_ammo(template: &ItemTemplateQuery) -> bool {
+    template.class == ITEM_CLASS_WEAPON
+        && matches!(
+            template.subclass,
+            ITEM_SUBCLASS_WEAPON_BOW | ITEM_SUBCLASS_WEAPON_GUN | ITEM_SUBCLASS_WEAPON_CROSSBOW
+        )
+}
+
 pub(in crate::world) fn item_weapon_skill_from_template(
     template: &ItemTemplateQuery,
 ) -> Option<u16> {
@@ -1038,6 +1646,43 @@ pub(in crate::world) async fn begin_db_creature_retaliation_if_needed(
     Ok(())
 }
 
+pub(in crate::world) async fn try_transition_ranged_auto_repeat_to_melee(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    target: ObjectGuid,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    if db_creature_player_melee_check_from_map(shared_world, session, target).await
+        != PlayerMeleeCheck::Clear
+    {
+        return Ok(false);
+    }
+
+    let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let next_swing_at = Some(Instant::now());
+    mirror_session_player_auto_attack(session, Some(target), next_swing_at);
+    shared_world
+        .maps
+        .set_player_auto_attack(map_id, character_guid, Some(target), next_swing_at)
+        .await;
+
+    send_packet(
+        stream,
+        SMSG_ATTACKSTART,
+        &build_attack_start_body(attacker, target),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    broadcast_player_attack_start(shared_world, session, attacker, target).await;
+    Ok(true)
+}
+
 pub(in crate::world) fn player_melee_retry_at(now: Instant) -> Instant {
     now + Duration::from_millis(PLAYER_MELEE_RETRY_MILLIS)
 }
@@ -1047,6 +1692,13 @@ pub(in crate::world) fn player_main_hand_next_swing_at(
     combat_stats: &PlayerCombatStats,
 ) -> Instant {
     now + Duration::from_millis(combat_stats.main_attack_time_ms.max(1) as u64)
+}
+
+pub(in crate::world) fn player_ranged_next_swing_at(
+    now: Instant,
+    combat_stats: &PlayerCombatStats,
+) -> Instant {
+    now + Duration::from_millis(combat_stats.ranged_attack_time_ms.max(1) as u64)
 }
 
 pub(in crate::world) fn rage_gain_from_main_hand_white_damage(

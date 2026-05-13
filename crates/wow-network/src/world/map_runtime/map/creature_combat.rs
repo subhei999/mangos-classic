@@ -105,6 +105,7 @@ pub(in crate::world) enum PlayerSpellTargetCheck {
     TargetNotAlive,
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
+    TooClose,
     BadFacing,
 }
 
@@ -117,6 +118,34 @@ pub(in crate::world) enum DbCreatureSpellTargetCheck {
     TargetNotAlive,
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
+    TooClose,
+}
+
+pub(in crate::world) fn spell_unit_target_range_bounds(
+    range: SpellRangeEntry,
+    caster_combat_reach: f32,
+    target_combat_reach: f32,
+) -> (f32, f32) {
+    let caster_combat_reach = caster_combat_reach.max(0.0);
+    let target_combat_reach = target_combat_reach.max(0.0);
+    let range_mod = caster_combat_reach + target_combat_reach;
+    let min_range = if range.min_range > 0.0 {
+        if range.flags & SPELL_RANGE_FLAG_RANGED != 0 {
+            range.min_range + combined_melee_reach(caster_combat_reach, target_combat_reach)
+        } else if range.flags & SPELL_RANGE_FLAG_MELEE == 0 {
+            range.min_range + range_mod
+        } else {
+            range.min_range
+        }
+    } else {
+        range.min_range
+    };
+    let max_range = if range.max_range > 0.0 {
+        range.max_range + range_mod
+    } else {
+        range.max_range
+    };
+    (min_range, max_range)
 }
 
 #[derive(Debug, Clone)]
@@ -261,18 +290,11 @@ impl MapRuntime {
             let dy = player.position.y - creature.current_position.y;
             let dz = player.position.z - creature.current_position.z;
             let distance_squared = dx * dx + dy * dy + dz * dz;
-            let range_mod = PLAYER_COMBAT_REACH_YARDS + creature.combat_reach();
-            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
-            {
-                range.min_range + range_mod
-            } else {
-                range.min_range
-            };
-            let max_range = if range.max_range > 0.0 {
-                range.max_range + range_mod
-            } else {
-                range.max_range
-            };
+            let (min_range, max_range) = spell_unit_target_range_bounds(
+                range,
+                PLAYER_COMBAT_REACH_YARDS,
+                creature.combat_reach(),
+            );
             if max_range > 0.0 && distance_squared > max_range * max_range {
                 return PlayerSpellTargetValidation {
                     check: PlayerSpellTargetCheck::OutOfRange,
@@ -280,7 +302,7 @@ impl MapRuntime {
             }
             if min_range > 0.0 && distance_squared < min_range * min_range {
                 return PlayerSpellTargetValidation {
-                    check: PlayerSpellTargetCheck::OutOfRange,
+                    check: PlayerSpellTargetCheck::TooClose,
                 };
             }
         }
@@ -339,19 +361,11 @@ impl MapRuntime {
             let dy = caster.current_position.y - target_position.y;
             let dz = caster.current_position.z - target_position.z;
             let distance_squared = dx * dx + dy * dy + dz * dz;
-            let range_mod =
-                caster.combat_reach() + self.db_creature_spell_target_combat_reach(target_guid);
-            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
-            {
-                range.min_range + range_mod
-            } else {
-                range.min_range
-            };
-            let max_range = if range.max_range > 0.0 {
-                range.max_range + range_mod
-            } else {
-                range.max_range
-            };
+            let (min_range, max_range) = spell_unit_target_range_bounds(
+                range,
+                caster.combat_reach(),
+                self.db_creature_spell_target_combat_reach(target_guid),
+            );
             if max_range > 0.0 && distance_squared > max_range * max_range {
                 return DbCreatureSpellTargetValidation {
                     check: DbCreatureSpellTargetCheck::OutOfRange,
@@ -359,7 +373,7 @@ impl MapRuntime {
             }
             if min_range > 0.0 && distance_squared < min_range * min_range {
                 return DbCreatureSpellTargetValidation {
-                    check: DbCreatureSpellTargetCheck::OutOfRange,
+                    check: DbCreatureSpellTargetCheck::TooClose,
                 };
             }
         }
@@ -1584,6 +1598,7 @@ pub(in crate::world) fn db_creature_spell_failure_from_target_check(
         DbCreatureSpellTargetCheck::NavigationBlocked(
             DbCreatureNavigationResult::LineOfSightBlocked,
         ) => SPELL_FAILED_LINE_OF_SIGHT,
+        DbCreatureSpellTargetCheck::TooClose => SPELL_FAILED_TOO_CLOSE,
         DbCreatureSpellTargetCheck::MissingCaster
         | DbCreatureSpellTargetCheck::MissingTarget
         | DbCreatureSpellTargetCheck::TargetNotAlive

@@ -38,6 +38,7 @@ pub(in crate::world) struct SelfSpawnUpdate<'a> {
     pub(in crate::world) skills: &'a [CharacterSkill],
     pub(in crate::world) quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     pub(in crate::world) equipped_templates: &'a [EquippedItemTemplate],
+    pub(in crate::world) ammo_template: Option<&'a ItemTemplateQuery>,
     pub(in crate::world) active_auras: &'a [ActiveAura],
     pub(in crate::world) nearby_creatures: &'a [DbCreatureRuntime],
     pub(in crate::world) nearby_gameobjects: &'a [DbGameObjectRuntime],
@@ -160,6 +161,7 @@ pub(in crate::world) fn build_self_spawn_update_blocks(
         update.skills,
         update.quest_statuses,
         update.equipped_templates,
+        update.ammo_template,
         update.active_auras,
     )?;
 

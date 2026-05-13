@@ -626,6 +626,7 @@ pub(in crate::world) fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
         CMSG_CANCEL_CAST => "CMSG_CANCEL_CAST",
+        CMSG_SET_AMMO => "CMSG_SET_AMMO",
         CMSG_CANCEL_AUTO_REPEAT_SPELL => "CMSG_CANCEL_AUTO_REPEAT_SPELL",
         CMSG_ZONEUPDATE => "CMSG_ZONEUPDATE",
         CMSG_SET_ACTIVE_MOVER => "CMSG_SET_ACTIVE_MOVER",

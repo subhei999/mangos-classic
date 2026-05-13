@@ -214,21 +214,41 @@ impl MapRuntimeManager {
         let mut map = map.lock().await;
         let event_id = map.next_spell_event_id;
         map.next_spell_event_id = map.next_spell_event_id.saturating_add(1).max(1);
-        let unit_target_generation = targets
-            .unit_target
-            .filter(|target| target.is_creature())
-            .and_then(|target| {
-                map.creatures
-                    .get(&target.raw())
-                    .map(|creature| (target, creature.life_generation))
-            });
+        let kind = PendingSpellEventKind::Spell { targets };
+        let unit_target_generation = pending_spell_event_unit_target_generation(&map, &kind);
         map.pending_spell_events.push(PendingSpellEvent {
             event_id,
             caster_character_guid,
             spell_id,
-            targets,
+            kind,
             unit_target_generation,
             due_at,
+        });
+    }
+
+    pub(in crate::world) async fn push_pending_ranged_auto_attack_event(
+        &self,
+        map_id: u32,
+        caster_character_guid: u32,
+        impact: PendingRangedAutoAttackImpact,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let mut map = map.lock().await;
+        let event_id = map.next_spell_event_id;
+        map.next_spell_event_id = map.next_spell_event_id.saturating_add(1).max(1);
+        let kind = PendingSpellEventKind::RangedAutoAttack {
+            target: impact.target,
+            outcome: impact.outcome,
+            weapon_skill_id: impact.weapon_skill_id,
+        };
+        let unit_target_generation = pending_spell_event_unit_target_generation(&map, &kind);
+        map.pending_spell_events.push(PendingSpellEvent {
+            event_id,
+            caster_character_guid,
+            spell_id: impact.spell_id,
+            kind,
+            unit_target_generation,
+            due_at: impact.due_at,
         });
     }
 
@@ -677,16 +697,91 @@ impl MapRuntimeManager {
             .set_player_auto_attack(character_guid, target, next_swing_at);
     }
 
+    #[cfg(test)]
+    pub(in crate::world) async fn set_player_ranged_auto_attack(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        next_swing_at: Option<Instant>,
+        spell_id: u32,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock().await.set_player_ranged_auto_attack(
+            character_guid,
+            target,
+            next_swing_at,
+            spell_id,
+        );
+    }
+
+    pub(in crate::world) async fn set_player_ranged_auto_attack_started(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        target: Option<ObjectGuid>,
+        requested_next_shot_at: Instant,
+        spell_id: u32,
+    ) -> Instant {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return requested_next_shot_at;
+        };
+        let next_shot_at = map
+            .lock()
+            .await
+            .set_player_ranged_auto_attack_started(
+                character_guid,
+                target,
+                requested_next_shot_at,
+                spell_id,
+            )
+            .unwrap_or(requested_next_shot_at);
+        next_shot_at
+    }
+
+    pub(in crate::world) async fn set_player_ranged_next_shot_at(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        next_shot_at: Instant,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .set_player_ranged_next_shot_at(character_guid, next_shot_at);
+    }
+
+    pub(in crate::world) async fn stop_player_melee_auto_attack(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<(ObjectGuid, Option<Instant>)> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let stopped = map
+            .lock()
+            .await
+            .stop_player_melee_auto_attack(character_guid);
+        stopped
+    }
+
     pub(in crate::world) async fn player_auto_attack_due(
         &self,
         map_id: u32,
         character_guid: u32,
         now: Instant,
-    ) -> Option<ObjectGuid> {
+    ) -> Option<PlayerAutoAttackDue> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let target = map.lock().await.player_auto_attack_due(character_guid, now);
-        target
+        let mut map = map.lock().await;
+        map.player_auto_attack_due(character_guid, now)
     }
 
     pub(in crate::world) async fn player_auto_attack_target(
@@ -2657,6 +2752,21 @@ impl MapRuntimeManager {
             })
             .clone()
     }
+}
+
+fn pending_spell_event_unit_target_generation(
+    map: &MapRuntime,
+    kind: &PendingSpellEventKind,
+) -> Option<(ObjectGuid, u64)> {
+    let target = match kind {
+        PendingSpellEventKind::Spell { targets } => targets.unit_target?,
+        PendingSpellEventKind::RangedAutoAttack { target, .. } => *target,
+    };
+    target.is_creature().then_some(target).and_then(|target| {
+        map.creatures
+            .get(&target.raw())
+            .map(|creature| (target, creature.life_generation))
+    })
 }
 
 pub(in crate::world) fn grid_world_center(grid: GridCoord) -> (f32, f32) {

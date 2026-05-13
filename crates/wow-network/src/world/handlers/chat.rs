@@ -4,6 +4,71 @@ use wow_proto::{
     SmsgTextEmoteResponse,
 };
 
+pub(in crate::world) async fn dispatch_chat_packet(
+    ctx: &mut WorldPacketDispatchContext<'_>,
+    packet: &packets::ParsedWorldClientPacket,
+) -> anyhow::Result<()> {
+    match packet {
+        packets::ParsedWorldClientPacket::Ping(_) => {
+            handle_ping(
+                &mut *ctx.stream,
+                packet.ping()?,
+                Some(&mut *ctx.header_crypto),
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::NameQuery(_) => {
+            handle_name_query(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                &ctx.runtime_state.playerbots,
+                packet.name_query()?,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::MessageChat(_) => {
+            handle_message_chat(
+                &mut *ctx.stream,
+                ChatDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    object_mgr: &ctx.runtime_state.object_mgr,
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                    parties: &ctx.runtime_state.parties,
+                },
+                packet.message_chat()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::JoinChannel(_) => {
+            handle_join_channel(
+                &mut *ctx.stream,
+                packet.join_channel()?,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::TextEmote(_) => {
+            handle_text_emote(
+                &mut *ctx.stream,
+                TextEmoteDeps {
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                },
+                packet.text_emote()?,
+                &*ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        other => anyhow::bail!("chat router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
 pub(in crate::world) async fn handle_ping(
     stream: &mut WorldPacketSink,
     ping: wow_proto::PingRequest,

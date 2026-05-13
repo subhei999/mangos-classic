@@ -198,6 +198,7 @@ pub(in crate::world) async fn handle_player_login(
     session.character.player_health = character.health;
     session.character.player_rage = character.power2.min(POWER_RAGE_DEFAULT);
     session.character.player_mana = character.power1;
+    session.character.player_ammo_id = character.ammo_id;
     session.character.player_energy = if character.power4 > 0 {
         character.power4
     } else {
@@ -268,13 +269,20 @@ pub(in crate::world) async fn handle_player_login(
     }
     let equipped_templates =
         load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
+    let ammo_template = load_selected_ammo_template(
+        deps.world_db_pool,
+        &session.inventory.items,
+        character.ammo_id,
+    )
+    .await?;
     let inventory_container_slots =
         load_inventory_container_slots(deps.world_db_pool, &session.inventory.items).await?;
-    let base_combat_stats = player_combat_stats_for_values(
+    let base_combat_stats = player_combat_stats_for_values_with_ammo(
         character.class,
         character.level,
         &effective_world_stats,
         &equipped_templates,
+        ammo_template.as_ref(),
     );
     let combat_stats =
         combat_stats_with_active_auras(base_combat_stats, &session.auras.active_auras);
@@ -317,6 +325,7 @@ pub(in crate::world) async fn handle_player_login(
             base_world_stats: &world_stats,
             world_stats: &effective_world_stats,
             equipped_templates: &equipped_templates,
+            ammo_template: ammo_template.as_ref(),
             spells: &spells,
             skills: &session.character.character_skills,
             reputations: &session.character.character_reputations,
@@ -367,7 +376,9 @@ pub(in crate::world) async fn handle_player_login(
         selected_target: session.character.selected_target,
         unit_target: session.character.selected_target,
         active_combat_target: None,
+        active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
+        ranged_auto_attack_next_shot_at: None,
         looting: false,
         position: login_position,
         movement_flags: 0,

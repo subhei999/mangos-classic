@@ -16,24 +16,15 @@ pub(in crate::world) async fn handle_attack_stop(
         .maps
         .clear_player_next_melee_spell(map_id, character_guid)
         .await;
-    let Some(victim) = shared_world
+    let Some((victim, next_swing_at)) = shared_world
         .maps
-        .player_auto_attack_target(map_id, character_guid)
+        .stop_player_melee_auto_attack(map_id, character_guid)
         .await
     else {
         return Ok(());
     };
-    let next_swing_at = shared_world
-        .maps
-        .player_runtime_snapshot(map_id, character_guid)
-        .await
-        .and_then(|snapshot| snapshot.active_combat_next_swing_at);
     session.combat.last_player_melee_swing_error = None;
     mirror_session_player_auto_attack(session, None, next_swing_at);
-    shared_world
-        .maps
-        .set_player_auto_attack(map_id, character_guid, None, next_swing_at)
-        .await;
     let attack_stop_body = build_attack_stop_body(attacker, victim, false)?;
     send_packet(
         stream,

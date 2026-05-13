@@ -99,6 +99,21 @@ pub async fn mark_character_first_login_seen(
     Ok(result.rows_affected())
 }
 
+pub async fn update_character_ammo_id(
+    pool: &MySqlPool,
+    guid: u32,
+    ammo_id: u32,
+) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_ammo_save");
+    let result = sqlx::query("UPDATE characters SET ammoId = ? WHERE guid = ?")
+        .bind(ammo_id)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
 pub async fn get_tutorial_flags(pool: &MySqlPool, account_id: u32) -> Result<[u32; 8], DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("character_tutorial_load");
     let Some(row) = sqlx::query(

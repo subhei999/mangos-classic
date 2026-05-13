@@ -1401,29 +1401,6 @@ pub(in crate::world) fn try_advance_combat_skill_value_with_rolls(
     })
 }
 
-pub(in crate::world) fn advance_level_capped_combat_skill_maxes(
-    character_level: u8,
-    character_skills: &mut [CharacterSkill],
-) -> Vec<SkillProgressionUpdate> {
-    let level_cap = u16::from(character_level.max(1)).saturating_mul(5);
-    character_skills
-        .iter_mut()
-        .enumerate()
-        .filter_map(|(slot, skill)| {
-            if !is_level_capped_combat_skill(skill.skill) || skill.max >= level_cap {
-                return None;
-            }
-            skill.max = level_cap;
-            Some(SkillProgressionUpdate {
-                slot,
-                skill: skill.skill,
-                value: skill.value,
-                max: skill.max,
-            })
-        })
-        .collect()
-}
-
 pub(in crate::world) fn set_level_capped_combat_skill_maxes(
     character_level: u8,
     character_skills: &mut [CharacterSkill],
@@ -1837,6 +1814,7 @@ pub(in crate::world) async fn finalize_db_creature_death(
                     stream,
                     character_db_pool,
                     world_db_pool,
+                    shared_world.maps,
                     session,
                     killed,
                     &creature.spawn.template,
@@ -1889,10 +1867,12 @@ pub(in crate::world) async fn finalize_db_creature_death(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn grant_db_creature_xp(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
     session: &mut WorldSessionState,
     killed: ObjectGuid,
     creature_template: &CreatureTemplateQuery,
@@ -1906,6 +1886,7 @@ pub(in crate::world) async fn grant_db_creature_xp(
         stream,
         character_db_pool,
         world_db_pool,
+        maps,
         session,
         Some(killed),
         xp,
@@ -1988,6 +1969,7 @@ pub(in crate::world) async fn reward_party_for_db_creature_kill(
                 stream,
                 character_db_pool,
                 world_db_pool,
+                shared_world.maps,
                 session,
                 Some(killed),
                 reward.xp,
@@ -2038,6 +2020,8 @@ pub(in crate::world) async fn reward_party_for_db_creature_kill(
                     power1: xp_award.power1,
                     max_power1: xp_award.max_power1,
                     power2: xp_award.power2,
+                    world_stats: xp_award.world_stats,
+                    combat_stats: xp_award.combat_stats,
                     quest_statuses,
                 },
             )
@@ -2216,6 +2200,21 @@ pub(in crate::world) async fn award_character_xp_to_member(
         wow_db::get_player_world_stats(world_db_pool, snapshot.race, snapshot.class, new_level)
             .await?;
     let leveled = new_level != snapshot.level;
+    let (world_stats_update, combat_stats_update) = if leveled {
+        let equipped_templates =
+            load_equipped_item_templates(world_db_pool, &snapshot.inventory).await?;
+        (
+            Some(new_stats),
+            Some(player_combat_stats_for_values(
+                snapshot.class,
+                new_level,
+                &new_stats,
+                &equipped_templates,
+            )),
+        )
+    } else {
+        (None, None)
+    };
     let max_health = new_stats.max_health().max(1);
     let max_mana = new_stats.max_mana();
     let health = if leveled {
@@ -2283,6 +2282,8 @@ pub(in crate::world) async fn award_character_xp_to_member(
         power1,
         max_power1: max_mana,
         power2,
+        world_stats: world_stats_update,
+        combat_stats: combat_stats_update,
         packets,
     })
 }
@@ -2296,6 +2297,8 @@ pub(in crate::world) struct MemberXpAward {
     pub(in crate::world) power1: u32,
     pub(in crate::world) max_power1: u32,
     pub(in crate::world) power2: u32,
+    pub(in crate::world) world_stats: Option<PlayerWorldStats>,
+    pub(in crate::world) combat_stats: Option<PlayerCombatStats>,
     pub(in crate::world) packets: Vec<OutboundWorldPacket>,
 }
 
@@ -2309,15 +2312,19 @@ impl MemberXpAward {
             power1: snapshot.power1,
             max_power1: snapshot.max_power1,
             power2: snapshot.power2,
+            world_stats: None,
+            combat_stats: None,
             packets: Vec::new(),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn award_character_xp(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
     session: &mut WorldSessionState,
     source: Option<ObjectGuid>,
     xp: u32,
@@ -2336,6 +2343,7 @@ pub(in crate::world) async fn award_character_xp(
     let guid = character.guid;
     let race = character.race;
     let class = character.class;
+    let map_id = character.position.map_id;
     let old_level = character.level;
     let old_xp = character.xp;
     let previous_stats =
@@ -2391,8 +2399,15 @@ pub(in crate::world) async fn award_character_xp(
     session.character.player_health = health;
     session.character.player_mana = power1;
     session.character.player_rage = power2;
+    session.character.player_energy = power4;
     let skill_cap_updates = if leveled {
-        advance_level_capped_combat_skill_maxes(new_level, &mut session.character.character_skills)
+        sync_player_level_backed_skills(
+            maps,
+            race,
+            class,
+            new_level,
+            &mut session.character.character_skills,
+        )
     } else {
         Vec::new()
     };
@@ -2406,6 +2421,26 @@ pub(in crate::world) async fn award_character_xp(
         )
         .await?;
     }
+
+    let equipped_templates =
+        load_equipped_item_templates(world_db_pool, &session.inventory.items).await?;
+    let combat_stats =
+        player_combat_stats_for_values(class, new_level, &new_stats, &equipped_templates);
+    maps.update_player_level_progression_state(
+        map_id,
+        guid,
+        PlayerLevelProgressionRuntimeUpdate {
+            level: new_level,
+            xp: new_xp,
+            health,
+            power1,
+            power2,
+            power4,
+            world_stats: new_stats,
+            combat_stats,
+        },
+    )
+    .await;
 
     send_packet(
         stream,

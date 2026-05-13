@@ -216,6 +216,23 @@ pub(in crate::world) async fn handle_player_login(
     .await?;
     session.character.character_skills =
         wow_db::get_character_skills(deps.character_db_pool, character.guid).await?;
+    let skill_updates = sync_player_level_backed_skills(
+        deps.maps,
+        character.race,
+        character.class,
+        character.level,
+        &mut session.character.character_skills,
+    );
+    for updated in &skill_updates {
+        wow_db::upsert_character_skill(
+            deps.character_db_pool,
+            character.guid,
+            updated.skill,
+            updated.value,
+            updated.max,
+        )
+        .await?;
+    }
     session.character.character_reputations =
         wow_db::get_character_reputations(deps.character_db_pool, character.guid).await?;
     session.quests.quest_statuses =
@@ -379,6 +396,7 @@ pub(in crate::world) async fn handle_player_login(
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
         ranged_auto_attack_next_shot_at: None,
+        in_combat: session.combat.player_in_combat,
         looting: false,
         position: login_position,
         movement_flags: 0,
@@ -471,9 +489,20 @@ pub(in crate::world) async fn apply_known_passive_spell_auras(
             continue;
         };
         let duration = maps.spell_duration(template.duration_index);
-        if let Some(aura) =
-            passive_spell_active_aura(&template, caster, character_level, now, duration)
-        {
+        let value_context = player_spell_effect_value_context(
+            maps,
+            &template,
+            &session.character.character_skills,
+            0,
+        );
+        if let Some(aura) = passive_spell_active_aura(
+            &template,
+            caster,
+            character_level,
+            value_context,
+            now,
+            duration,
+        ) {
             apply_player_aura(session, aura);
         }
     }

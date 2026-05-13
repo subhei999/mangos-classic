@@ -11,6 +11,10 @@ pub(in crate::world) struct MapRuntimeManager {
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
     pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
+    pub(in crate::world) skill_line_abilities_by_spell: HashMap<u32, Vec<SkillLineAbilityEntry>>,
+    pub(in crate::world) skill_lines: HashMap<u32, SkillLineEntry>,
+    pub(in crate::world) skill_race_class_infos_by_skill:
+        HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) next_gm_creature_guid: AtomicU64,
     pub(in crate::world) creature_grid_load_ensure_calls: AtomicU64,
@@ -94,6 +98,11 @@ impl MapRuntimeManager {
             spell_durations: world_data_files.spell_durations.clone(),
             spell_radii: world_data_files.spell_radii.clone(),
             spell_ranges: world_data_files.spell_ranges.clone(),
+            skill_line_abilities_by_spell: world_data_files.skill_line_abilities_by_spell.clone(),
+            skill_lines: world_data_files.skill_lines.clone(),
+            skill_race_class_infos_by_skill: world_data_files
+                .skill_race_class_infos_by_skill
+                .clone(),
             faction_templates: world_data_files.faction_templates.clone(),
             next_gm_creature_guid: AtomicU64::new(next_gm_creature_guid.max(1)),
             ..Self::default()
@@ -130,6 +139,38 @@ impl MapRuntimeManager {
 
     pub(in crate::world) fn spell_radius(&self, radius_index: u32) -> Option<SpellRadiusEntry> {
         self.spell_radii.get(&radius_index).copied()
+    }
+
+    pub(in crate::world) fn skill_line_ability_for_spell(
+        &self,
+        spell_id: u32,
+    ) -> Option<SkillLineAbilityEntry> {
+        self.skill_line_abilities_by_spell
+            .get(&spell_id)
+            .and_then(|abilities| abilities.first())
+            .copied()
+    }
+
+    pub(in crate::world) fn skill_line(&self, skill_id: u32) -> Option<SkillLineEntry> {
+        self.skill_lines.get(&skill_id).copied()
+    }
+
+    pub(in crate::world) fn skill_race_class_info(
+        &self,
+        skill_id: u32,
+        race: u8,
+        class: u8,
+    ) -> Option<SkillRaceClassInfoEntry> {
+        let race_mask = 1u32.checked_shl(u32::from(race.saturating_sub(1)))?;
+        let class_mask = 1u32.checked_shl(u32::from(class.saturating_sub(1)))?;
+        self.skill_race_class_infos_by_skill
+            .get(&skill_id)?
+            .iter()
+            .copied()
+            .find(|entry| {
+                (entry.race_mask == 0 || (entry.race_mask & race_mask) != 0)
+                    && (entry.class_mask == 0 || (entry.class_mask & class_mask) != 0)
+            })
     }
 
     pub(in crate::world) async fn set_active_player_spell_cast(
@@ -788,6 +829,29 @@ impl MapRuntimeManager {
         let map = map?;
         let mut map = map.lock().await;
         map.player_auto_attack_due(character_guid, now)
+    }
+
+    pub(in crate::world) async fn retime_player_auto_attack_after_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+        melee_delay: Duration,
+        ranged_windup: Duration,
+        cancel_ranged_auto_repeat: bool,
+    ) -> PlayerAutoAttackAfterSpellCast {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return PlayerAutoAttackAfterSpellCast::None;
+        };
+        let mut map = map.lock().await;
+        map.retime_player_auto_attack_after_spell_cast(
+            character_guid,
+            now,
+            melee_delay,
+            ranged_windup,
+            cancel_ranged_auto_repeat,
+        )
     }
 
     pub(in crate::world) async fn player_auto_attack_target(

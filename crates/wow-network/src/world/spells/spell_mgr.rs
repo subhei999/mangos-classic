@@ -16,6 +16,8 @@ pub(in crate::world) struct SpellInfoEffect {
     pub(in crate::world) base_points: i32,
     pub(in crate::world) die_sides: i32,
     pub(in crate::world) base_dice: u32,
+    pub(in crate::world) dice_per_level: f32,
+    pub(in crate::world) real_points_per_level: f32,
     pub(in crate::world) points_per_combo_point: f32,
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
@@ -33,7 +35,7 @@ pub(in crate::world) struct SpellInfoEffectSlot {
     pub(in crate::world) effect_id: u32,
     pub(in crate::world) aura_name: u32,
     pub(in crate::world) base_points: i32,
-    pub(in crate::world) roll: (i32, u32, f32),
+    pub(in crate::world) roll: (i32, u32, f32, f32, f32),
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
@@ -54,6 +56,8 @@ impl<'a> SpellInfo<'a> {
                 roll: (
                     template.effect_die_sides1,
                     template.effect_base_dice1,
+                    template.effect_dice_per_level1,
+                    template.effect_real_points_per_level1,
                     template.effect_points_per_combo_point1,
                 ),
                 amplitude: template.effect_amplitude1,
@@ -72,6 +76,8 @@ impl<'a> SpellInfo<'a> {
                 roll: (
                     template.effect_die_sides2,
                     template.effect_base_dice2,
+                    template.effect_dice_per_level2,
+                    template.effect_real_points_per_level2,
                     template.effect_points_per_combo_point2,
                 ),
                 amplitude: template.effect_amplitude2,
@@ -90,6 +96,8 @@ impl<'a> SpellInfo<'a> {
                 roll: (
                     template.effect_die_sides3,
                     template.effect_base_dice3,
+                    template.effect_dice_per_level3,
+                    template.effect_real_points_per_level3,
                     template.effect_points_per_combo_point3,
                 ),
                 amplitude: template.effect_amplitude3,
@@ -332,26 +340,47 @@ impl<'a> SpellInfo<'a> {
     }
 
     pub(in crate::world) fn bonus_damage(&self) -> u32 {
+        self.bonus_damage_with_context(SpellEffectValueContext::unranked(self.template, 0))
+    }
+
+    pub(in crate::world) fn bonus_damage_with_context(
+        &self,
+        value_context: SpellEffectValueContext,
+    ) -> u32 {
         let fixed_bonus: u32 = self
             .effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::WeaponDamage)
-            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .filter_map(|effect| spell_effect_calculated_u32(*effect, value_context))
             .sum();
-        fixed_bonus.saturating_mul(self.weapon_damage_percent()) / 100
+        fixed_bonus.saturating_mul(self.weapon_damage_percent_with_context(value_context)) / 100
     }
 
     pub(in crate::world) fn weapon_damage_percent(&self) -> u32 {
+        self.weapon_damage_percent_with_context(SpellEffectValueContext::unranked(self.template, 0))
+    }
+
+    pub(in crate::world) fn weapon_damage_percent_with_context(
+        &self,
+        value_context: SpellEffectValueContext,
+    ) -> u32 {
         self.effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::WeaponPercentDamage)
-            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .filter_map(|effect| spell_effect_calculated_u32(*effect, value_context))
             .fold(100u32, |percent, effect_percent| {
                 percent.saturating_mul(effect_percent) / 100
             })
     }
 
     pub(in crate::world) fn direct_damage(&self) -> u32 {
+        self.direct_damage_with_context(SpellEffectValueContext::unranked(self.template, 0))
+    }
+
+    pub(in crate::world) fn direct_damage_with_context(
+        &self,
+        value_context: SpellEffectValueContext,
+    ) -> u32 {
         if self.has_on_next_swing_attribute() || self.has_effect(SpellEffectDispatch::Charge) {
             return 0;
         }
@@ -359,10 +388,10 @@ impl<'a> SpellInfo<'a> {
             .effects
             .iter()
             .filter(|effect| matches!(effect.dispatch, SpellEffectDispatch::SchoolDamage))
-            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .filter_map(|effect| spell_effect_calculated_u32(*effect, value_context))
             .sum();
         let weapon_damage = if self.has_effect(SpellEffectDispatch::WeaponDamage) {
-            self.bonus_damage()
+            self.bonus_damage_with_context(value_context)
         } else {
             0
         };
@@ -379,19 +408,19 @@ impl<'a> SpellInfo<'a> {
     }
 
     pub(in crate::world) fn power(&self) -> SpellPowerCost {
+        self.power_with_context(SpellEffectValueContext::unranked(self.template, 0))
+    }
+
+    pub(in crate::world) fn power_with_context(
+        &self,
+        value_context: SpellEffectValueContext,
+    ) -> SpellPowerCost {
+        let cost = spell_power_cost_amount(self.template, value_context);
         match self.template.power_type {
-            POWER_TYPE_RAGE => SpellPowerCost::Rage {
-                cost: self.template.mana_cost,
-            },
-            POWER_TYPE_MANA => SpellPowerCost::Mana {
-                cost: self.template.mana_cost,
-            },
-            POWER_TYPE_ENERGY => SpellPowerCost::Energy {
-                cost: self.template.mana_cost,
-            },
-            _ => SpellPowerCost::Mana {
-                cost: self.template.mana_cost,
-            },
+            POWER_TYPE_RAGE => SpellPowerCost::Rage { cost },
+            POWER_TYPE_MANA => SpellPowerCost::Mana { cost },
+            POWER_TYPE_ENERGY => SpellPowerCost::Energy { cost },
+            _ => SpellPowerCost::Mana { cost },
         }
     }
 }
@@ -404,7 +433,9 @@ impl SpellInfoEffect {
             base_points: slot.base_points,
             die_sides: slot.roll.0,
             base_dice: slot.roll.1,
-            points_per_combo_point: slot.roll.2,
+            dice_per_level: slot.roll.2,
+            real_points_per_level: slot.roll.3,
+            points_per_combo_point: slot.roll.4,
             amplitude: slot.amplitude,
             implicit_target_a: slot.implicit_target_a,
             implicit_target_b: slot.implicit_target_b,

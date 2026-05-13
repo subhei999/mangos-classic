@@ -67,7 +67,15 @@ pub(in crate::world) async fn handle_cast_spell(
         return Ok(());
     };
     prepared_spell.prepare();
-    let spell_profile = prepared_spell.profile;
+    let mut spell_profile = prepared_spell.profile;
+    let power_value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        &spell_template,
+        &session.character.character_skills,
+        0,
+    );
+    spell_profile.power = spell_info.power_with_context(power_value_context);
+    prepared_spell.profile = spell_profile;
     let cast_time_ms = spell_cast_time_millis(
         deps.shared_world
             .maps
@@ -195,10 +203,16 @@ pub(in crate::world) async fn handle_cast_spell(
                 SpellPowerCost::Mana { cost } => (0, cost),
                 SpellPowerCost::Energy { .. } => (0, 0),
             };
+            let value_context = player_spell_effect_value_context(
+                deps.shared_world.maps,
+                &spell_template,
+                &session.character.character_skills,
+                0,
+            );
             let queued = QueuedNextMeleeSpell {
                 spell_id: packet.spell_id,
                 target,
-                bonus_damage: spell_profile.bonus_damage,
+                bonus_damage: spell_info.bonus_damage_with_context(value_context),
                 rage_cost,
                 mana_cost,
             };
@@ -394,8 +408,14 @@ pub(in crate::world) async fn handle_use_item(
     stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let targets = normalize_item_use_targets(request.targets, &item_spell_profile, caster);
     let spell_info = SpellInfo::from_template(&spell_template);
+    let item_value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        &spell_template,
+        &session.character.character_skills,
+        0,
+    );
     let refreshable_consumable_regen = item_spell_profile.kind == SpellCastKind::AuraApplication
-        && spell_periodic_regen_aura(&spell_info, now).is_some();
+        && spell_periodic_regen_aura(&spell_info, item_value_context, now).is_some();
     if let Some(failure) = item_use_spell_failure(
         deps.shared_world.maps,
         map_id,
@@ -943,6 +963,16 @@ pub(in crate::world) async fn complete_player_spell_cast(
         )
         .await;
     deps.shared_world.sessions.dispatch(observer_packets).await;
+    retime_player_auto_attack_after_spell_cast(
+        deps,
+        session,
+        &spell_template,
+        &spell_profile,
+        map_id,
+        character_guid,
+        now,
+    )
+    .await?;
     let travel_delay =
         spell_travel_delay_millis(deps.shared_world, session, &spell_template, &targets).await;
     if travel_delay > 0 {
@@ -1061,6 +1091,86 @@ pub(in crate::world) async fn apply_player_spell_impact(
         header_crypto,
     )
     .await
+}
+
+pub(in crate::world) fn spell_resets_auto_attack_timers_on_cast(
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+) -> bool {
+    spell_template.interrupt_flags & SPELL_INTERRUPT_FLAG_COMBAT != 0
+        && !matches!(
+            spell_profile.kind,
+            SpellCastKind::AutoRepeatRanged | SpellCastKind::NextMeleeSwing
+        )
+}
+
+pub(in crate::world) fn auto_repeat_spell_cancels_when_casting(
+    spell_template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    spell_template.attributes_ex3 & SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT != 0
+}
+
+async fn retime_player_auto_attack_after_spell_cast(
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    map_id: u32,
+    character_guid: u32,
+    now: Instant,
+) -> anyhow::Result<()> {
+    if !spell_resets_auto_attack_timers_on_cast(spell_template, spell_profile) {
+        return Ok(());
+    }
+
+    let Some(snapshot) = deps
+        .shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+    else {
+        return Ok(());
+    };
+
+    let cancel_ranged_auto_repeat = match snapshot.active_combat_attack_kind {
+        PlayerAutoAttackKind::Ranged { spell_id, .. } => deps
+            .shared_world
+            .object_mgr
+            .spell_template(deps.world_db_pool, spell_id)
+            .await?
+            .as_ref()
+            .is_some_and(auto_repeat_spell_cancels_when_casting),
+        PlayerAutoAttackKind::Melee => false,
+    };
+
+    let melee_delay =
+        player_auto_attack_swing_delay(deps.shared_world, map_id, character_guid).await;
+    let adjusted = deps
+        .shared_world
+        .maps
+        .retime_player_auto_attack_after_spell_cast(
+            map_id,
+            character_guid,
+            now,
+            melee_delay,
+            Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+            cancel_ranged_auto_repeat,
+        )
+        .await;
+    match adjusted {
+        PlayerAutoAttackAfterSpellCast::None => {}
+        PlayerAutoAttackAfterSpellCast::MeleeRetimed { next_swing_at, .. }
+        | PlayerAutoAttackAfterSpellCast::RangedRetimed {
+            next_shot_at: next_swing_at,
+            ..
+        } => {
+            mirror_session_player_next_swing_at(session, Some(next_swing_at));
+        }
+        PlayerAutoAttackAfterSpellCast::RangedCanceled { .. } => {
+            mirror_session_player_auto_attack(session, None, None);
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::world) async fn stand_player_for_spell_cast(
@@ -2043,6 +2153,7 @@ pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
+pub(in crate::world) const SPELL_EFFECT_SCHOOL_DAMAGE: u32 = 2;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
 pub(in crate::world) const SPELL_EFFECT_CREATE_ITEM: u32 = 24;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
@@ -2104,7 +2215,9 @@ pub(in crate::world) const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
 pub(in crate::world) const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
 pub(in crate::world) const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
 pub(in crate::world) const SPELL_ATTR_EX2_AUTO_REPEAT: u32 = 0x0000_0020;
+pub(in crate::world) const SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT: u32 = 0x0040_0000;
 pub(in crate::world) const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
+pub(in crate::world) const SPELL_INTERRUPT_FLAG_COMBAT: u32 = 0x08;
 pub(in crate::world) const SPELL_RANGE_FLAG_MELEE: u32 = 0x1;
 pub(in crate::world) const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
 pub(in crate::world) const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
@@ -2300,10 +2413,226 @@ pub(in crate::world) fn spell_effect_simple_value(base_points: i32) -> Option<u3
     (base_points >= 0).then_some((base_points + 1) as u32)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SpellEffectValueContext {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) max_level: u32,
+    pub(in crate::world) base_level: u32,
+    pub(in crate::world) spell_level: u32,
+    pub(in crate::world) spell_rank_level: Option<i32>,
+    pub(in crate::world) combo_points: u8,
+}
+
+impl SpellEffectValueContext {
+    pub(in crate::world) fn unranked(
+        template: &wow_db::SpellTemplateQuery,
+        combo_points: u8,
+    ) -> Self {
+        Self {
+            spell_id: template.id,
+            max_level: template.max_level,
+            base_level: template.base_level,
+            spell_level: template.spell_level,
+            spell_rank_level: None,
+            combo_points,
+        }
+    }
+
+    pub(in crate::world) fn with_spell_rank_level(
+        template: &wow_db::SpellTemplateQuery,
+        spell_rank_level: i32,
+        combo_points: u8,
+    ) -> Self {
+        Self {
+            spell_rank_level: Some(spell_rank_level),
+            ..Self::unranked(template, combo_points)
+        }
+    }
+}
+
+pub(in crate::world) fn player_spell_effect_value_context(
+    maps: &MapRuntimeManager,
+    template: &wow_db::SpellTemplateQuery,
+    character_skills: &[CharacterSkill],
+    combo_points: u8,
+) -> SpellEffectValueContext {
+    let Some(ability) = maps.skill_line_ability_for_spell(template.id) else {
+        return if maps.skill_line_abilities_by_spell.is_empty() {
+            SpellEffectValueContext::unranked(template, combo_points)
+        } else {
+            SpellEffectValueContext::with_spell_rank_level(template, 0, combo_points)
+        };
+    };
+    let mut spell_rank = character_skills
+        .iter()
+        .find(|skill| u32::from(skill.skill) == ability.skill_id)
+        .map(|skill| u32::from(skill.value))
+        .unwrap_or(0);
+    if template.max_level > 0 {
+        let max_rank = template.max_level.saturating_mul(5);
+        if spell_rank >= max_rank {
+            spell_rank = max_rank;
+        }
+    }
+    SpellEffectValueContext::with_spell_rank_level(template, (spell_rank / 5) as i32, combo_points)
+}
+
+pub(in crate::world) fn spell_effect_calculated_i32(
+    effect: SpellInfoEffect,
+    context: SpellEffectValueContext,
+) -> i32 {
+    let base_dice = effect.base_dice as i32;
+    let mut base_points = effect.base_points as f32;
+    let mut random_points = effect.die_sides;
+
+    if effect.real_points_per_level != 0.0 {
+        if let Some(mut level) = context.spell_rank_level {
+            if context.max_level > 0 && level > context.max_level as i32 {
+                level = context.max_level as i32;
+            } else if level < context.base_level as i32 {
+                level = context.base_level as i32;
+            }
+            level -= context.spell_level as i32;
+            base_points += level as f32 * effect.real_points_per_level;
+            random_points =
+                random_points.saturating_add((level as f32 * effect.dice_per_level).trunc() as i32);
+        } else {
+            warn!(
+                spell_id = context.spell_id,
+                effect_id = effect.effect_id,
+                "Skipping level scaling for spell effect because SkillLineAbility.dbc rank data is unavailable"
+            );
+        }
+    }
+
+    match random_points {
+        0 | 1 => {
+            base_points += base_dice as f32;
+        }
+        random_points => {
+            let low = random_points.min(base_dice);
+            let high = random_points.max(base_dice);
+            base_points += rand::thread_rng().gen_range(low..=high) as f32;
+        }
+    }
+
+    if effect.points_per_combo_point != 0.0 && context.combo_points > 0 {
+        base_points +=
+            (effect.points_per_combo_point * f32::from(context.combo_points)).trunc() as i32 as f32;
+    }
+
+    base_points.trunc() as i32
+}
+
+pub(in crate::world) fn spell_effect_calculated_u32(
+    effect: SpellInfoEffect,
+    context: SpellEffectValueContext,
+) -> Option<u32> {
+    let value = spell_effect_calculated_i32(effect, context);
+    (value >= 0).then_some(value as u32)
+}
+
+pub(in crate::world) fn spell_power_cost_amount(
+    template: &wow_db::SpellTemplateQuery,
+    context: SpellEffectValueContext,
+) -> u32 {
+    let Some(rank_level) = context.spell_rank_level else {
+        return template.mana_cost;
+    };
+    let cost = i64::from(template.mana_cost)
+        + i64::from(template.mana_cost_per_level)
+            * i64::from(rank_level.saturating_sub(template.base_level as i32));
+    cost.clamp(0, u32::MAX as i64) as u32
+}
+
+const CMANGOS_SKILL_CATEGORY_WEAPON: i32 = 6;
+const CMANGOS_SKILL_CATEGORY_CLASS: i32 = 7;
+const CMANGOS_SKILL_CATEGORY_ARMOR: i32 = 8;
+const CMANGOS_SKILL_CATEGORY_LANGUAGES: i32 = 10;
+const CMANGOS_SKILL_POISONS: u32 = 40;
+const CMANGOS_SKILL_LOCKPICKING: u32 = 633;
+const CMANGOS_SKILL_FLAG_MAXIMIZED: u32 = 0x010;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CMaNGOSSkillRangeType {
+    None,
+    Language,
+    Level,
+    Mono,
+}
+
+fn cmangos_skill_range_type(skill: SkillLineEntry) -> CMaNGOSSkillRangeType {
+    match skill.category_id {
+        CMANGOS_SKILL_CATEGORY_LANGUAGES => CMaNGOSSkillRangeType::Language,
+        CMANGOS_SKILL_CATEGORY_WEAPON => {
+            if skill.id != u32::from(SKILL_FIST_WEAPONS) {
+                CMaNGOSSkillRangeType::Level
+            } else {
+                CMaNGOSSkillRangeType::Mono
+            }
+        }
+        CMANGOS_SKILL_CATEGORY_ARMOR | CMANGOS_SKILL_CATEGORY_CLASS => {
+            if skill.id != CMANGOS_SKILL_POISONS && skill.id != CMANGOS_SKILL_LOCKPICKING {
+                CMaNGOSSkillRangeType::Mono
+            } else {
+                CMaNGOSSkillRangeType::Level
+            }
+        }
+        _ => CMaNGOSSkillRangeType::None,
+    }
+}
+
+pub(in crate::world) fn sync_player_level_backed_skills(
+    maps: &MapRuntimeManager,
+    race: u8,
+    class: u8,
+    level: u8,
+    character_skills: &mut [CharacterSkill],
+) -> Vec<SkillProgressionUpdate> {
+    if maps.skill_lines.is_empty() || maps.skill_race_class_infos_by_skill.is_empty() {
+        return set_level_capped_combat_skill_maxes(level, character_skills);
+    }
+
+    let level_cap = u16::from(level.max(1)).saturating_mul(5);
+    character_skills
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(slot, skill)| {
+            let skill_id = u32::from(skill.skill);
+            let skill_line = maps.skill_line(skill_id)?;
+            let range_type = cmangos_skill_range_type(skill_line);
+            if !matches!(
+                range_type,
+                CMaNGOSSkillRangeType::Level | CMaNGOSSkillRangeType::Mono
+            ) || skill.max == 1
+            {
+                return None;
+            }
+            let skill_info = maps.skill_race_class_info(skill_id, race, class);
+            let maxed = skill_info
+                .map(|entry| (entry.flags & CMANGOS_SKILL_FLAG_MAXIMIZED) != 0)
+                .unwrap_or(false);
+            let old_value = skill.value;
+            let old_max = skill.max;
+            skill.max = level_cap;
+            if maxed || skill.value > level_cap {
+                skill.value = level_cap;
+            }
+            (skill.value != old_value || skill.max != old_max).then_some(SkillProgressionUpdate {
+                slot,
+                skill: skill.skill,
+                value: skill.value,
+                max: skill.max,
+            })
+        })
+        .collect()
+}
+
 pub(in crate::world) fn build_active_aura(
     template: &wow_db::SpellTemplateQuery,
     caster: ObjectGuid,
     level: u8,
+    value_context: SpellEffectValueContext,
     now: Instant,
     duration: Option<SpellDurationEntry>,
 ) -> ActiveAura {
@@ -2326,9 +2655,9 @@ pub(in crate::world) fn build_active_aura(
         duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
         expires_at: (duration_millis > 0)
             .then_some(now + Duration::from_millis(duration_millis as u64)),
-        periodic_damage: spell_periodic_damage_aura(&spell_info, level, now),
-        periodic_regen: spell_periodic_regen_aura(&spell_info, now),
-        stat_modifiers: spell_aura_stat_modifiers(&spell_info),
+        periodic_damage: spell_periodic_damage_aura(&spell_info, level, value_context, now),
+        periodic_regen: spell_periodic_regen_aura(&spell_info, value_context, now),
+        stat_modifiers: spell_aura_stat_modifiers(&spell_info, value_context),
         proc_triggers: spell_aura_proc_triggers(&spell_info),
     }
 }
@@ -2345,6 +2674,7 @@ pub(in crate::world) fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> b
 pub(in crate::world) fn spell_periodic_damage_aura(
     spell_info: &SpellInfo<'_>,
     caster_level: u8,
+    value_context: SpellEffectValueContext,
     now: Instant,
 ) -> Option<PeriodicDamageAura> {
     spell_info
@@ -2357,7 +2687,7 @@ pub(in crate::world) fn spell_periodic_damage_aura(
                 && effect.amplitude > 0
         })
         .and_then(|effect| {
-            let damage = spell_effect_simple_value(effect.base_points)?;
+            let damage = spell_effect_calculated_u32(effect, value_context)?;
             Some(PeriodicDamageAura {
                 aura_name: effect.aura_name,
                 school: spell_info.template.school,
@@ -2385,6 +2715,7 @@ pub(in crate::world) fn spell_periodic_damage_fallback_caster_snapshot(
 
 pub(in crate::world) fn spell_periodic_regen_aura(
     spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
     now: Instant,
 ) -> Option<PeriodicRegenAura> {
     let mut health_amount = 0u32;
@@ -2394,7 +2725,7 @@ pub(in crate::world) fn spell_periodic_regen_aura(
         if effect.dispatch != SpellEffectDispatch::ApplyAura {
             continue;
         }
-        let Some(amount) = spell_effect_simple_value(effect.base_points) else {
+        let Some(amount) = spell_effect_calculated_u32(effect, value_context) else {
             continue;
         };
         match effect.aura_name {
@@ -2487,13 +2818,14 @@ pub(in crate::world) fn passive_spell_active_aura(
     template: &wow_db::SpellTemplateQuery,
     caster: ObjectGuid,
     level: u8,
+    value_context: SpellEffectValueContext,
     now: Instant,
     duration: Option<SpellDurationEntry>,
 ) -> Option<ActiveAura> {
     if !spell_needs_passive_cast_at_learn(template) {
         return None;
     }
-    let mut aura = build_active_aura(template, caster, level, now, duration);
+    let mut aura = build_active_aura(template, caster, level, value_context, now, duration);
     aura.visible = false;
     (!aura.stat_modifiers.is_empty()).then_some(aura)
 }
@@ -2506,6 +2838,7 @@ pub(in crate::world) fn spell_needs_passive_cast_at_learn(
 
 pub(in crate::world) fn spell_aura_stat_modifiers(
     spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
 ) -> Vec<AuraStatModifier> {
     spell_info
         .effects
@@ -2516,41 +2849,41 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 let skill_id = u16::try_from(effect.misc_value).ok()?;
                 Some(AuraStatModifier::Skill {
                     skill_id,
-                    amount: spell_effect_simple_i32(effect.base_points)
+                    amount: spell_effect_calculated_i32(effect, value_context)
                         .clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                     permanent: effect.aura_name == SPELL_AURA_MOD_SKILL_TALENT,
                 })
             }
             SPELL_AURA_MOD_ATTACK_POWER => Some(AuraStatModifier::AttackPower {
-                amount: spell_effect_simple_i32(effect.base_points),
+                amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_DECREASE_SPEED => Some(AuraStatModifier::MoveSpeedPercent {
-                percent: spell_effect_simple_i32(effect.base_points),
+                percent: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_MELEE_HASTE => Some(AuraStatModifier::MeleeAttackTimePercent {
-                percent: spell_effect_simple_i32(effect.base_points),
+                percent: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_RESISTANCE => Some(AuraStatModifier::Resistance {
                 school_mask: u32::try_from(effect.misc_value).ok()?,
-                amount: spell_effect_simple_i32(effect.base_points),
+                amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_ROOT => Some(AuraStatModifier::Root),
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
                     stat: stat.filter(|stat| *stat < MAX_STATS),
-                    amount: spell_effect_simple_i32(effect.base_points),
+                    amount: spell_effect_calculated_i32(effect, value_context),
                 })
             }
             SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE => {
                 let stat = usize::try_from(effect.misc_value).ok()?;
                 (stat < MAX_STATS).then_some(AuraStatModifier::TotalStatPercent {
                     stat,
-                    percent: spell_effect_simple_i32(effect.base_points),
+                    percent: spell_effect_calculated_i32(effect, value_context),
                 })
             }
             SPELL_AURA_MOD_REPUTATION_GAIN => Some(AuraStatModifier::ReputationGainPercent {
-                percent: spell_effect_simple_i32(effect.base_points),
+                percent: spell_effect_calculated_i32(effect, value_context),
             }),
             _ => None,
         })
@@ -2733,10 +3066,6 @@ pub(in crate::world) fn apply_percent_modifier(value: u32, percent: i32) -> u32 
         return 0;
     }
     ((i64::from(value) * multiplier) / 100).clamp(0, u32::MAX as i64) as u32
-}
-
-pub(in crate::world) fn spell_effect_simple_i32(base_points: i32) -> i32 {
-    base_points.saturating_add(1)
 }
 
 pub(in crate::world) async fn consume_used_item(

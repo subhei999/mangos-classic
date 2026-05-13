@@ -87,6 +87,24 @@ pub(in crate::world) struct PlayerAutoAttackDue {
     pub(in crate::world) kind: PlayerAutoAttackKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum PlayerAutoAttackAfterSpellCast {
+    None,
+    MeleeRetimed {
+        target: ObjectGuid,
+        next_swing_at: Instant,
+    },
+    RangedRetimed {
+        target: ObjectGuid,
+        spell_id: u32,
+        next_shot_at: Instant,
+    },
+    RangedCanceled {
+        target: ObjectGuid,
+        spell_id: u32,
+    },
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(in crate::world) struct PlayerbotPlanInput {
@@ -127,6 +145,7 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
     pub(in crate::world) ranged_auto_attack_next_shot_at: Option<Instant>,
+    pub(in crate::world) in_combat: bool,
     pub(in crate::world) looting: bool,
     pub(in crate::world) position: WorldPosition,
     pub(in crate::world) movement_flags: u32,
@@ -233,6 +252,7 @@ pub(in crate::world) struct PlayerRuntimeSnapshot {
     pub(in crate::world) queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     pub(in crate::world) base_combat_stats: PlayerCombatStats,
     pub(in crate::world) combat_stats: PlayerCombatStats,
+    pub(in crate::world) in_combat: bool,
     pub(in crate::world) active_combat_target: Option<ObjectGuid>,
     pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
@@ -252,6 +272,8 @@ pub(in crate::world) struct PlayerRewardRuntimeUpdate {
     pub(in crate::world) power1: u32,
     pub(in crate::world) max_power1: u32,
     pub(in crate::world) power2: u32,
+    pub(in crate::world) world_stats: Option<PlayerWorldStats>,
+    pub(in crate::world) combat_stats: Option<PlayerCombatStats>,
     pub(in crate::world) quest_statuses: HashMap<u32, CharacterQuestStatus>,
 }
 

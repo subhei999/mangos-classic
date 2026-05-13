@@ -127,6 +127,7 @@ pub(in crate::world) fn build_playerbot_runtime(
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
         ranged_auto_attack_next_shot_at: None,
+        in_combat: false,
         looting: false,
         death_state: PlayerDeathState::Alive,
         combo_target: None,

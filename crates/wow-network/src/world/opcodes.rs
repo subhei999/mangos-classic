@@ -668,5 +668,6 @@ pub(in crate::world) const SPELL_FAILED_TOO_CLOSE: u8 = 0x76;
 pub(in crate::world) const SPELL_FAILED_NOT_READY: u8 = 0x3C;
 pub(in crate::world) const SPELL_FAILED_NO_AMMO: u8 = 0x43;
 pub(in crate::world) const SPELL_FAILED_NO_POWER: u8 = 0x4D;
+pub(in crate::world) const SPELL_FAILED_SPELL_IN_PROGRESS: u8 = 0x61;
 pub(in crate::world) const SPELL_FAILED_INTERRUPTED: u8 = 0x23;
 pub(in crate::world) const SPELL_FAILED_CASTER_DEAD: u8 = 0x13;

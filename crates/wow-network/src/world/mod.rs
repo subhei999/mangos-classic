@@ -162,6 +162,13 @@ impl WorldServer {
             faction_templates = world_data_files.faction_templates.len(),
             faction_templates_dbc_backed = world_data_files.faction_templates.is_dbc_backed(),
             item_random_properties = world_data_files.item_random_properties.len(),
+            skill_line_ability_spells = world_data_files.skill_line_abilities_by_spell.len(),
+            skill_lines = world_data_files.skill_lines.len(),
+            skill_race_class_infos = world_data_files
+                .skill_race_class_infos_by_skill
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
             mmap_maps = world_data_files.mmap_headers.len(),
             mmap_tiles = world_data_files.mmap_tiles.len(),
             vmap_maps = world_data_files.vmap_trees.len(),

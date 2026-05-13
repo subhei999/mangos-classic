@@ -421,11 +421,7 @@ impl MapRuntime {
         let creature = creature.clone();
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
-            self.active_creature_combats.remove(&creature_guid.raw());
-            self.active_creature_spell_casts
-                .remove(&creature_guid.raw());
-            self.creature_combat_leash.remove(&creature_guid.raw());
-            self.creature_threats.remove(&creature_guid.raw());
+            self.clear_db_creature_combat(creature_guid);
         } else if self
             .active_creature_combats
             .contains_key(&creature_guid.raw())

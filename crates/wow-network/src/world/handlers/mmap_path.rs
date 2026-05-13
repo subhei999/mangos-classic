@@ -47,6 +47,26 @@ extern "C" {
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
     ) -> i32;
+
+    pub(in crate::world) fn wow_mmap_find_random_path(
+        data_dir: *const std::os::raw::c_char,
+        map_id: u32,
+        start_tile_x: u32,
+        start_tile_y: u32,
+        center_x: f32,
+        center_y: f32,
+        center_z: f32,
+        start_x: f32,
+        start_y: f32,
+        start_z: f32,
+        radius: f32,
+        angle_seed: f32,
+        range_seed: f32,
+        include_flags: u16,
+        exclude_flags: u16,
+        out_points: *mut NativeMmapPathPoint,
+        max_points: i32,
+    ) -> i32;
 }
 
 #[cfg(test)]
@@ -124,6 +144,76 @@ pub(in crate::world) fn native_mmap_find_path(
         )
     };
 
+    native_mmap_path_from_count(start.map_id, count, &points)
+}
+
+pub(in crate::world) struct NativeMmapRandomPathRequest {
+    pub(in crate::world) center: WorldPosition,
+    pub(in crate::world) start: WorldPosition,
+    pub(in crate::world) start_tile: (u32, u32),
+    pub(in crate::world) radius: f32,
+    pub(in crate::world) angle_seed: f32,
+    pub(in crate::world) range_seed: f32,
+    pub(in crate::world) filter: NativeMmapPathFilter,
+}
+
+pub(in crate::world) fn native_mmap_find_random_path(
+    data_dir: &CStr,
+    request: NativeMmapRandomPathRequest,
+) -> NativeMmapPath {
+    if request.start.map_id != request.center.map_id
+        || !native_mmap_world_position_is_finite(request.start)
+        || !native_mmap_world_position_is_finite(request.center)
+        || !native_mmap_tile_is_valid(request.start_tile)
+        || !request.radius.is_finite()
+        || request.radius <= 0.0
+        || !request.angle_seed.is_finite()
+        || !request.range_seed.is_finite()
+    {
+        return NativeMmapPath {
+            status: NativeMmapPathStatus::InvalidInput,
+            points: Vec::new(),
+        };
+    }
+
+    let mut points = [NativeMmapPathPoint {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    }; MAX_NATIVE_MMAP_PATH_POINTS];
+
+    // SAFETY: the C string comes from `CString`, the start position and tile are
+    // validated above, and the output buffer length matches `max_points`.
+    let count = unsafe {
+        wow_mmap_find_random_path(
+            data_dir.as_ptr(),
+            request.start.map_id,
+            request.start_tile.0,
+            request.start_tile.1,
+            request.center.x,
+            request.center.y,
+            request.center.z,
+            request.start.x,
+            request.start.y,
+            request.start.z,
+            request.radius,
+            request.angle_seed,
+            request.range_seed,
+            request.filter.include_flags,
+            request.filter.exclude_flags,
+            points.as_mut_ptr(),
+            MAX_NATIVE_MMAP_PATH_POINTS as i32,
+        )
+    };
+
+    native_mmap_path_from_count(request.start.map_id, count, &points)
+}
+
+pub(in crate::world) fn native_mmap_path_from_count(
+    map_id: u32,
+    count: i32,
+    points: &[NativeMmapPathPoint],
+) -> NativeMmapPath {
     if count < 0 {
         return NativeMmapPath {
             status: native_mmap_status_from_error(count),
@@ -151,13 +241,7 @@ pub(in crate::world) fn native_mmap_find_path(
                 points: Vec::new(),
             };
         }
-        path.push(WorldPosition::new(
-            start.map_id,
-            point.x,
-            point.y,
-            point.z,
-            0.0,
-        ));
+        path.push(WorldPosition::new(map_id, point.x, point.y, point.z, 0.0));
     }
     NativeMmapPath {
         status: if count as usize == MAX_NATIVE_MMAP_PATH_POINTS {
@@ -191,7 +275,7 @@ impl NativeMmapPathFilter {
 pub(in crate::world) fn native_mmap_status_from_error(error: i32) -> NativeMmapPathStatus {
     match error {
         -20 | -21 | -22 | -23 | -3 | -4 | -5 | -6 => NativeMmapPathStatus::Unavailable,
-        -1 | -7 | -8 => NativeMmapPathStatus::InvalidInput,
+        -1 | -7 | -8 | -9 => NativeMmapPathStatus::InvalidInput,
         _ => NativeMmapPathStatus::NativeError,
     }
 }

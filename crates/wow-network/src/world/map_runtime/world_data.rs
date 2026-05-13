@@ -11,6 +11,10 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
     pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
+    pub(in crate::world) skill_line_abilities_by_spell: HashMap<u32, Vec<SkillLineAbilityEntry>>,
+    pub(in crate::world) skill_lines: HashMap<u32, SkillLineEntry>,
+    pub(in crate::world) skill_race_class_infos_by_skill:
+        HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
     pub(in crate::world) mmap_headers: HashSet<u32>,
@@ -31,6 +35,9 @@ impl WorldDataFiles {
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers: HashSet::new(),
@@ -52,6 +59,11 @@ impl WorldDataFiles {
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
         let spell_radii = load_spell_radii(&data_dir.join("dbc").join("SpellRadius.dbc"));
         let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
+        let skill_line_abilities_by_spell =
+            load_skill_line_abilities(&data_dir.join("dbc").join("SkillLineAbility.dbc"));
+        let skill_lines = load_skill_lines(&data_dir.join("dbc").join("SkillLine.dbc"));
+        let skill_race_class_infos_by_skill =
+            load_skill_race_class_infos(&data_dir.join("dbc").join("SkillRaceClassInfo.dbc"));
         let faction_templates =
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let item_random_properties =
@@ -109,6 +121,9 @@ impl WorldDataFiles {
             spell_durations,
             spell_radii,
             spell_ranges,
+            skill_line_abilities_by_spell,
+            skill_lines,
+            skill_race_class_infos_by_skill,
             faction_templates,
             item_random_properties,
             mmap_headers,
@@ -161,6 +176,33 @@ pub(in crate::world) struct SpellRangeEntry {
     pub(in crate::world) min_range: f32,
     pub(in crate::world) max_range: f32,
     pub(in crate::world) flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SkillLineAbilityEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) skill_id: u32,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) race_mask: u32,
+    pub(in crate::world) class_mask: u32,
+    pub(in crate::world) min_value: u32,
+    pub(in crate::world) max_value: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SkillLineEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) category_id: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SkillRaceClassInfoEntry {
+    pub(in crate::world) skill_id: u32,
+    pub(in crate::world) race_mask: u32,
+    pub(in crate::world) class_mask: u32,
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) req_level: u32,
+    pub(in crate::world) skill_tier_id: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,6 +618,31 @@ pub(in crate::world) fn load_spell_radii(path: &std::path::Path) -> HashMap<u32,
     parse_spell_radii(&bytes)
 }
 
+pub(in crate::world) fn load_skill_line_abilities(
+    path: &std::path::Path,
+) -> HashMap<u32, Vec<SkillLineAbilityEntry>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_skill_line_abilities(&bytes)
+}
+
+pub(in crate::world) fn load_skill_lines(path: &std::path::Path) -> HashMap<u32, SkillLineEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_skill_lines(&bytes)
+}
+
+pub(in crate::world) fn load_skill_race_class_infos(
+    path: &std::path::Path,
+) -> HashMap<u32, Vec<SkillRaceClassInfoEntry>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_skill_race_class_infos(&bytes)
+}
+
 pub(in crate::world) fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const SPELL_CAST_TIME_FIELD_COUNT: usize = 4;
@@ -724,6 +791,137 @@ pub(in crate::world) fn parse_spell_radii(bytes: &[u8]) -> HashMap<u32, SpellRad
         }
     }
     radii
+}
+
+pub(in crate::world) fn parse_skill_line_abilities(
+    bytes: &[u8],
+) -> HashMap<u32, Vec<SkillLineAbilityEntry>> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SKILL_LINE_ABILITY_FIELD_COUNT: usize = 15;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < SKILL_LINE_ABILITY_FIELD_COUNT
+        || record_size < SKILL_LINE_ABILITY_FIELD_COUNT * 4
+    {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut abilities: HashMap<u32, Vec<SkillLineAbilityEntry>> = HashMap::new();
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        let skill_id = field(1);
+        let spell_id = field(2);
+        if id == 0 || skill_id == 0 || spell_id == 0 {
+            continue;
+        }
+        abilities
+            .entry(spell_id)
+            .or_default()
+            .push(SkillLineAbilityEntry {
+                id,
+                skill_id,
+                spell_id,
+                race_mask: field(3),
+                class_mask: field(4),
+                min_value: field(11),
+                max_value: field(10),
+            });
+    }
+    abilities
+}
+
+pub(in crate::world) fn parse_skill_lines(bytes: &[u8]) -> HashMap<u32, SkillLineEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SKILL_LINE_FIELD_COUNT: usize = 22;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < SKILL_LINE_FIELD_COUNT || record_size < SKILL_LINE_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut lines = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        if id == 0 {
+            continue;
+        }
+        let category_id = i32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        lines.insert(id, SkillLineEntry { id, category_id });
+    }
+    lines
+}
+
+pub(in crate::world) fn parse_skill_race_class_infos(
+    bytes: &[u8],
+) -> HashMap<u32, Vec<SkillRaceClassInfoEntry>> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SKILL_RACE_CLASS_INFO_FIELD_COUNT: usize = 8;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < SKILL_RACE_CLASS_INFO_FIELD_COUNT
+        || record_size < SKILL_RACE_CLASS_INFO_FIELD_COUNT * 4
+    {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut infos: HashMap<u32, Vec<SkillRaceClassInfoEntry>> = HashMap::new();
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let skill_id = field(1);
+        if skill_id == 0 {
+            continue;
+        }
+        infos
+            .entry(skill_id)
+            .or_default()
+            .push(SkillRaceClassInfoEntry {
+                skill_id,
+                race_mask: field(2),
+                class_mask: field(3),
+                flags: field(4),
+                req_level: field(5),
+                skill_tier_id: field(6),
+            });
+    }
+    infos
 }
 
 pub(in crate::world) fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {

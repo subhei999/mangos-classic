@@ -1440,6 +1440,116 @@ fn spell_radius_dbc_parser_reads_cmangos_radius_fields() {
     );
 }
 
+fn test_u32_dbc<const N: usize>(rows: &[[u32; N]]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(N as u32).to_le_bytes());
+    bytes.extend_from_slice(&((N * 4) as u32).to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    for row in rows {
+        for field in row {
+            bytes.extend_from_slice(&field.to_le_bytes());
+        }
+    }
+    bytes.push(0);
+    bytes
+}
+
+#[test]
+fn skill_line_ability_dbc_parser_reads_spell_to_skill_rank_fields() {
+    let bytes = test_u32_dbc(&[
+        [1, 237, 587, 0, 128, 0, 0, 0, 0, 0, 300, 1, 0, 0, 0],
+        [2, 237, 597, 0, 128, 0, 0, 0, 0, 0, 300, 50, 0, 0, 0],
+    ]);
+
+    let abilities = parse_skill_line_abilities(&bytes);
+
+    assert_eq!(
+        abilities.get(&587).and_then(|entries| entries.first()),
+        Some(&SkillLineAbilityEntry {
+            id: 1,
+            skill_id: 237,
+            spell_id: 587,
+            race_mask: 0,
+            class_mask: 128,
+            min_value: 1,
+            max_value: 300,
+        })
+    );
+    assert_eq!(
+        abilities.get(&597).and_then(|entries| entries.first()),
+        Some(&SkillLineAbilityEntry {
+            id: 2,
+            skill_id: 237,
+            spell_id: 597,
+            race_mask: 0,
+            class_mask: 128,
+            min_value: 50,
+            max_value: 300,
+        })
+    );
+}
+
+#[test]
+fn skill_line_dbc_parser_reads_cmangos_skill_categories() {
+    let bytes = test_u32_dbc(&[
+        [
+            43, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        [
+            237, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    ]);
+
+    let lines = parse_skill_lines(&bytes);
+
+    assert_eq!(
+        lines.get(&43).copied(),
+        Some(SkillLineEntry {
+            id: 43,
+            category_id: 6,
+        })
+    );
+    assert_eq!(
+        lines.get(&237).copied(),
+        Some(SkillLineEntry {
+            id: 237,
+            category_id: 7,
+        })
+    );
+}
+
+#[test]
+fn skill_race_class_info_dbc_parser_reads_masks_flags_and_tiers() {
+    let bytes = test_u32_dbc(&[[1, 237, 0, 128, 0x010, 1, 0, 0], [2, 43, 1, 1, 0, 1, 2, 0]]);
+
+    let infos = parse_skill_race_class_infos(&bytes);
+
+    assert_eq!(
+        infos.get(&237).and_then(|entries| entries.first()),
+        Some(&SkillRaceClassInfoEntry {
+            skill_id: 237,
+            race_mask: 0,
+            class_mask: 128,
+            flags: 0x010,
+            req_level: 1,
+            skill_tier_id: 0,
+        })
+    );
+    assert_eq!(
+        infos.get(&43).and_then(|entries| entries.first()),
+        Some(&SkillRaceClassInfoEntry {
+            skill_id: 43,
+            race_mask: 1,
+            class_mask: 1,
+            flags: 0,
+            req_level: 1,
+            skill_tier_id: 2,
+        })
+    );
+}
+
 #[test]
 fn faction_template_dbc_parser_reads_cmangos_relation_fields() {
     let mut bytes = Vec::new();
@@ -2730,7 +2840,8 @@ fn level_up_updates_combat_skill_maxes_without_waiting_for_skill_gain() {
         test_skill(SKILL_UNARMED, 5, 5),
     ];
 
-    let updates = advance_level_capped_combat_skill_maxes(2, &mut skills);
+    let maps = MapRuntimeManager::default();
+    let updates = sync_player_level_backed_skills(&maps, 1, 1, 2, &mut skills);
 
     assert_eq!(updates.len(), 3);
     assert_eq!(skills[0].max, 10);
@@ -6000,6 +6111,9 @@ fn test_mmap_navigation_for_positions(
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers,
@@ -6539,6 +6653,9 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
                     spell_durations: HashMap::new(),
                     spell_radii: HashMap::new(),
                     spell_ranges: HashMap::new(),
+                    skill_line_abilities_by_spell: HashMap::new(),
+                    skill_lines: HashMap::new(),
+                    skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
                     mmap_headers: HashSet::new(),
@@ -7407,6 +7524,9 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
                     spell_durations: HashMap::new(),
                     spell_radii: HashMap::new(),
                     spell_ranges: HashMap::new(),
+                    skill_line_abilities_by_spell: HashMap::new(),
+                    skill_lines: HashMap::new(),
+                    skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
                     mmap_headers: HashSet::new(),
@@ -7958,6 +8078,7 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
         ranged_auto_attack_next_shot_at: None,
+        in_combat: false,
         looting: false,
         position: center,
         movement_flags: 0,
@@ -10907,6 +11028,68 @@ fn map_runtime_db_creature_combat_claim_is_exclusive_until_cleared() {
 }
 
 #[test]
+fn map_runtime_db_creature_death_clears_player_combat_for_regen() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 1;
+    player.spirit = 40;
+    player.health = 40;
+    player.max_health = 80;
+    let world_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 0,
+        stats: [20, 20, 20, 20, 40],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = world_stats;
+    player.effective_world_stats = world_stats;
+    player.power2 = 100;
+    map.add_player(player).unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 901;
+    spawn.position_x = position.x + 1.0;
+    spawn.position_y = position.y;
+    spawn.template.min_level_health = 20;
+    spawn.template.max_level_health = 20;
+    let attacker = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("creature should enter combat with the player");
+    assert!(map.player_runtime_snapshot(7).unwrap().in_combat);
+
+    map.apply_db_creature_damage(DbCreatureDamageRequest {
+        creature_guid: attacker,
+        killer: victim,
+        damage: 20,
+        melee_outcome: None,
+        spell_damage_outcome: None,
+        spell_id: None,
+        spell_school: 0,
+        suppress_attacker_state: false,
+        now,
+        now_epoch_secs: 0,
+        exclude_character_guid: Some(7),
+        corpse_loot: None,
+    })
+    .unwrap()
+    .expect("lethal damage should produce an event");
+
+    assert!(!map.player_runtime_snapshot(7).unwrap().in_combat);
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    map.advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert!(snapshot.health > 40);
+    assert!(snapshot.power2 < 100);
+}
+
+#[test]
 fn map_runtime_db_creature_threat_records_multiple_players() {
     let mut map = MapRuntime::new(0, 0);
     let attacker = creature_spawn_guid(&test_creature_spawn(6));
@@ -12440,6 +12623,7 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
         &immolate,
         creature_guid,
         6,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -12523,6 +12707,7 @@ fn map_runtime_db_creature_dot_keeps_ticking_after_caster_runtime_is_missing() {
         &immolate,
         creature_guid,
         6,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -12603,6 +12788,7 @@ fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
         &immolate,
         creature_guid,
         10,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -12715,6 +12901,7 @@ fn map_runtime_creature_dot_death_presents_release_and_clears_combat() {
         &immolate,
         creature_guid,
         6,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -12829,6 +13016,7 @@ fn map_runtime_db_creature_lethal_immolate_does_not_apply_dot() {
         &immolate,
         creature_guid,
         6,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -12897,6 +13085,7 @@ fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
         &immolate,
         creature_guid,
         6,
+        test_spell_effect_value_context(&immolate),
         now,
         Some(SpellDurationEntry {
             duration_millis: 9_000,
@@ -14165,6 +14354,7 @@ fn test_player_runtime_with_controller(
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
         ranged_auto_attack_next_shot_at: None,
+        in_combat: false,
         looting: false,
         position,
         movement_flags: 0,
@@ -14542,6 +14732,7 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
         &stat_template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&stat_template),
         Instant::now(),
         None,
     );
@@ -14588,6 +14779,7 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
         &resistance_template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&resistance_template),
         Instant::now(),
         None,
     );
@@ -14613,6 +14805,7 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
         &proc_template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&proc_template),
         Instant::now(),
         None,
     );
@@ -14641,6 +14834,7 @@ fn chilled_aura_template_modifies_movement_and_attack_speed() {
         &chilled_template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&chilled_template),
         Instant::now(),
         None,
     );
@@ -14668,6 +14862,7 @@ fn root_aura_template_stops_movement_until_expiration() {
         &root_template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&root_template),
         now,
         Some(SpellDurationEntry {
             duration_millis: 1_000,
@@ -15082,6 +15277,67 @@ fn player_looting_state_sets_unit_flag_for_observers_and_late_visibility() {
         values[UNIT_FIELD_FLAGS],
         Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
     );
+}
+
+#[test]
+fn auto_attack_intent_does_not_mark_player_in_combat() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 46);
+
+    map.set_player_auto_attack(1, Some(target), Some(Instant::now()));
+
+    let snapshot = map.player_runtime_snapshot(1).unwrap();
+    assert_eq!(snapshot.active_combat_target, Some(target));
+    assert!(
+        !snapshot.in_combat,
+        "CMaNGOS keeps attack intent separate from UNIT_FLAG_IN_COMBAT"
+    );
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        player,
+    );
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
+}
+
+#[test]
+fn creature_combat_ownership_marks_player_in_combat() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 46;
+    spawn.position_x = player_position.x + 2.0;
+    spawn.position_y = player_position.y;
+    let attacker = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+
+    map.begin_db_creature_combat(attacker, victim, Instant::now())
+        .expect("creature combat should start");
+
+    assert!(map.player_runtime_snapshot(1).unwrap().in_combat);
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        victim,
+    );
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_IN_COMBAT)
+    );
+
+    map.clear_db_creature_combat(attacker);
+
+    assert!(!map.player_runtime_snapshot(1).unwrap().in_combat);
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        victim,
+    );
+    assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
 }
 
 #[test]
@@ -15998,9 +16254,18 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
     map.sync_player_gameplay_state(1, &session);
 
     let snapshot = map.player_runtime_snapshot(1).unwrap();
-    assert_eq!(snapshot.health, 15);
-    assert_eq!(snapshot.power1, 7);
-    assert_eq!(snapshot.power2, 11);
+    assert_eq!(
+        snapshot.health, 20,
+        "alive player health is map-owned and must not be overwritten by a stale session cache"
+    );
+    assert_eq!(
+        snapshot.power1, 0,
+        "alive player mana is map-owned and must not be overwritten by a stale session cache"
+    );
+    assert_eq!(
+        snapshot.power2, 0,
+        "alive player rage is map-owned and must not be overwritten by a stale session cache"
+    );
     assert!(snapshot
         .active_spells
         .contains(&WARRIOR_HEROIC_STRIKE_RANK_1));
@@ -16165,7 +16430,7 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
 }
 
 #[test]
-fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
+fn sync_player_gameplay_state_ignores_stale_session_health_for_regen_cap() {
     let mut map = MapRuntime::new(0, 0);
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let mut player = test_player_runtime(7, SessionId(7), position);
@@ -16204,16 +16469,139 @@ fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
         ..WorldSessionState::default()
     };
     map.sync_player_gameplay_state(7, &session);
-    assert_eq!(map.players.get(&7).unwrap().max_health, 98);
-    assert_eq!(map.players.get(&7).unwrap().health, 98);
+    assert_eq!(
+        map.players.get(&7).unwrap().max_health,
+        world_stats.max_health()
+    );
+    assert_eq!(
+        map.players.get(&7).unwrap().health,
+        60,
+        "alive player health remains map-owned during ordinary session sync"
+    );
 
-    map.players.get_mut(&7).unwrap().health = 60;
+    map.players.get_mut(&7).unwrap().health = 40;
     let now = Instant::now();
     assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
     map.advance_player_regen_tick(now + Duration::from_secs(2))
         .unwrap();
-    assert!(map.players.get(&7).unwrap().health > 60);
-    assert!(map.players.get(&7).unwrap().health <= 98);
+    assert!(map.players.get(&7).unwrap().health > 40);
+    assert!(map.players.get(&7).unwrap().health <= world_stats.max_health());
+}
+
+#[test]
+fn player_reward_level_up_refreshes_world_stats_for_regen_cap() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    let old_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = old_stats;
+    player.effective_world_stats = old_stats;
+    player.max_health = old_stats.max_health();
+    player.health = old_stats.max_health();
+    map.add_player(player).unwrap();
+
+    let new_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 0,
+        stats: [24, 21, 24, 20, 40],
+        next_level_xp: 900,
+    };
+    let new_max_health = new_stats.max_health();
+    map.update_player_reward_state(
+        7,
+        PlayerRewardRuntimeUpdate {
+            level: 2,
+            xp: 0,
+            health: 40,
+            max_health: new_max_health,
+            power1: 0,
+            max_power1: 0,
+            power2: 0,
+            world_stats: Some(new_stats),
+            combat_stats: Some(test_player_combat_stats()),
+            quest_statuses: HashMap::new(),
+        },
+    );
+
+    assert_eq!(map.players.get(&7).unwrap().max_health, new_max_health);
+    assert_eq!(map.players.get(&7).unwrap().base_world_stats, new_stats);
+
+    let now = Instant::now();
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    map.advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert!(
+        snapshot.health > 40,
+        "regen should use the newly leveled max-health cap"
+    );
+    assert!(snapshot.health <= new_max_health);
+}
+
+#[test]
+fn stale_session_sync_does_not_undo_attack_intent_regen() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 1;
+    player.spirit = 40;
+    player.health = 40;
+    player.max_health = 80;
+    let world_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 0,
+        stats: [20, 20, 20, 20, 40],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = world_stats;
+    player.effective_world_stats = world_stats;
+    player.power2 = 100;
+    map.add_player(player).unwrap();
+
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 46);
+    map.set_player_auto_attack(7, Some(target), Some(Instant::now()));
+    let now = Instant::now();
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    map.advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    let regened = map.player_runtime_snapshot(7).unwrap();
+    assert!(!regened.in_combat);
+    assert_eq!(regened.active_combat_target, Some(target));
+    assert!(regened.health > 40);
+    assert!(regened.power2 < 100);
+
+    let stale_session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 40,
+            player_rage: 100,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    map.sync_player_gameplay_state(7, &stale_session);
+
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.health, regened.health);
+    assert_eq!(snapshot.power2, regened.power2);
 }
 
 #[test]
@@ -17148,6 +17536,79 @@ fn map_runtime_grounded_player_world_damage_sends_corpse_presentation_update() {
 }
 
 #[tokio::test]
+async fn far_attack_swing_starts_intent_without_in_combat_flag() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let parties = PartyManager::default();
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 46;
+    spawn.position_x = player_position.x + 40.0;
+    spawn.position_y = player_position.y;
+    let target = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    let mut body = Vec::new();
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(tx);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_attack_swing(
+        &mut sink,
+        shared_world,
+        &parties,
+        read_attack_swing_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 1).await.unwrap();
+    assert_eq!(snapshot.active_combat_target, Some(target));
+    assert!(!snapshot.in_combat);
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_ATTACKSTART));
+    assert!(
+        packets
+            .iter()
+            .all(|packet| packet.opcode != SMSG_UPDATE_OBJECT),
+        "out-of-range attack intent must not publish UNIT_FLAG_IN_COMBAT"
+    );
+}
+
+#[tokio::test]
 async fn player_attack_stop_broadcasts_to_nearby_observer() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
@@ -17914,6 +18375,212 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
 }
 
 #[tokio::test]
+async fn combat_flag_spell_completion_resets_ready_melee_swing_timer() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let melee_delay = Duration::from_millis(1_800);
+    maps.set_player_auto_attack(
+        map_id,
+        character_guid,
+        Some(target),
+        Some(now - Duration::from_millis(1)),
+    )
+    .await;
+
+    let adjusted = maps
+        .retime_player_auto_attack_after_spell_cast(
+            map_id,
+            character_guid,
+            now,
+            melee_delay,
+            Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+            false,
+        )
+        .await;
+
+    let expected_next = now + melee_delay;
+    assert_eq!(
+        adjusted,
+        PlayerAutoAttackAfterSpellCast::MeleeRetimed {
+            target,
+            next_swing_at: expected_next
+        }
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            expected_next - Duration::from_millis(1)
+        )
+        .await,
+        None,
+        "normal spell casts should reset the white swing timer instead of releasing an overdue swing"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, expected_next)
+            .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Melee,
+        })
+    );
+}
+
+#[tokio::test]
+async fn combat_flag_spell_completion_delays_auto_shot_without_shortening_weapon_cooldown() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let spell_id = 75;
+    maps.set_player_ranged_auto_attack_started(
+        map_id,
+        character_guid,
+        Some(target),
+        now - Duration::from_millis(1),
+        spell_id,
+    )
+    .await;
+
+    let adjusted = maps
+        .retime_player_auto_attack_after_spell_cast(
+            map_id,
+            character_guid,
+            now,
+            Duration::from_millis(2_000),
+            Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+            false,
+        )
+        .await;
+
+    let expected_next = now + Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS);
+    assert_eq!(
+        adjusted,
+        PlayerAutoAttackAfterSpellCast::RangedRetimed {
+            target,
+            spell_id,
+            next_shot_at: expected_next,
+        }
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(
+            map_id,
+            character_guid,
+            expected_next - Duration::from_millis(1)
+        )
+        .await,
+        None
+    );
+
+    let long_cooldown = now + Duration::from_millis(2_400);
+    maps.set_player_ranged_next_shot_at(map_id, character_guid, long_cooldown)
+        .await;
+    let adjusted = maps
+        .retime_player_auto_attack_after_spell_cast(
+            map_id,
+            character_guid,
+            now + Duration::from_millis(100),
+            Duration::from_millis(2_000),
+            Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+            false,
+        )
+        .await;
+    assert_eq!(
+        adjusted,
+        PlayerAutoAttackAfterSpellCast::RangedRetimed {
+            target,
+            spell_id,
+            next_shot_at: long_cooldown,
+        },
+        "the 500 ms post-cast windup must not shorten an existing ranged weapon cooldown"
+    );
+}
+
+#[tokio::test]
+async fn combat_flag_spell_completion_cancels_wand_auto_repeat_when_required() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(character_guid, SessionId(1), position))
+        .await
+        .unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    let shoot_spell_id = 5019;
+    maps.set_player_ranged_auto_attack_started(
+        map_id,
+        character_guid,
+        Some(target),
+        now - Duration::from_millis(1),
+        shoot_spell_id,
+    )
+    .await;
+
+    let adjusted = maps
+        .retime_player_auto_attack_after_spell_cast(
+            map_id,
+            character_guid,
+            now,
+            Duration::from_millis(2_000),
+            Duration::from_millis(PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS),
+            true,
+        )
+        .await;
+
+    assert_eq!(
+        adjusted,
+        PlayerAutoAttackAfterSpellCast::RangedCanceled {
+            target,
+            spell_id: shoot_spell_id,
+        }
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now + Duration::from_secs(10))
+            .await,
+        None,
+        "wand Shoot has CMaNGOS' casting-cancels-autorepeat attribute and should not resume after a spell cast"
+    );
+}
+
+#[test]
+fn combat_interrupt_flag_drives_spell_cast_attack_timer_reset() {
+    let mut fireball = fireball_spell_template();
+    fireball.interrupt_flags = SPELL_INTERRUPT_FLAG_COMBAT | SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK;
+    let profile = SpellInfo::from_template(&fireball)
+        .prepare_player_cast()
+        .unwrap()
+        .profile;
+    assert!(spell_resets_auto_attack_timers_on_cast(&fireball, &profile));
+
+    let mut auto_shot = auto_shot_spell_template();
+    auto_shot.interrupt_flags = SPELL_INTERRUPT_FLAG_COMBAT;
+    let profile = SpellInfo::from_template(&auto_shot)
+        .prepare_player_cast()
+        .unwrap()
+        .profile;
+    assert!(
+        !spell_resets_auto_attack_timers_on_cast(&auto_shot, &profile),
+        "the reset applies to normal spells, not the auto-repeat shot itself"
+    );
+
+    auto_shot.attributes_ex3 = SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT;
+    assert!(auto_repeat_spell_cancels_when_casting(&auto_shot));
+}
+
+#[tokio::test]
 async fn ranged_auto_attack_uses_cmangos_windup_before_weapon_timer() {
     let maps = Arc::new(MapRuntimeManager::default());
     let map_id = 0;
@@ -18324,6 +18991,9 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers: HashSet::from([0]),
@@ -18591,6 +19261,9 @@ fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers: HashSet::from([0]),
@@ -18625,6 +19298,148 @@ fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
         )
         .is_none(),
         "when MMAP data is advertised for both tiles, native query failure should not collapse to a through-geometry straight path"
+    );
+}
+
+#[test]
+fn db_creature_random_path_does_not_generate_movement_when_mmap_unavailable() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = -8950.0;
+    spawn.position_y = -130.0;
+    spawn.position_z = 83.5;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 10.0;
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+
+    let native_missing_navigation = DbCreatureNavigationGuardrail {
+        world_data_files: Arc::new(WorldDataFiles {
+            data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+            data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data").ok(),
+            maps_available: true,
+            vmaps_available: false,
+            creature_display_scales: HashMap::new(),
+            spell_cast_times: HashMap::new(),
+            spell_durations: HashMap::new(),
+            spell_radii: HashMap::new(),
+            spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
+            faction_templates: FactionTemplateStore::fallback_bridge(),
+            item_random_properties: HashMap::new(),
+            mmap_headers: HashSet::from([0]),
+            mmap_tiles: HashSet::from([(0, 48, 32)]),
+            vmap_trees: HashSet::new(),
+            vmap_tiles: HashSet::new(),
+        }),
+        ..DbCreatureNavigationGuardrail::default()
+    };
+
+    assert!(
+        start_db_creature_random_motion_runtime(
+            &native_missing_navigation,
+            None,
+            &mut runtime,
+            now,
+        )
+        .is_none(),
+        "advertised-but-unloadable mmap data must not collapse random wander to a fake straight path"
+    );
+    assert_eq!(
+        runtime.next_random_move_at,
+        Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS))
+    );
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_random_mmap_path_uses_local_detour_data_when_available() {
+    let data = Arc::new(WorldDataFiles::inspect("C:/World of Warcraft Classic"));
+    let home = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let Some(start_tile) = mmap_tile_for_position(home) else {
+        panic!("Northshire home should resolve to a mmap tile");
+    };
+    if !data.has_mmap_tile(0, start_tile.0, start_tile.1) {
+        return;
+    }
+    let Some(data_dir) = data.data_dir_for_native.as_ref() else {
+        return;
+    };
+
+    let native_path = [
+        (0.0, 0.25),
+        (0.125, 0.25),
+        (0.25, 0.25),
+        (0.375, 0.25),
+        (0.5, 0.25),
+        (0.625, 0.25),
+        (0.75, 0.25),
+        (0.875, 0.25),
+        (0.0, 0.5),
+        (0.125, 0.5),
+        (0.25, 0.5),
+        (0.375, 0.5),
+        (0.5, 0.5),
+        (0.625, 0.5),
+        (0.75, 0.5),
+        (0.875, 0.5),
+    ]
+    .into_iter()
+    .map(|(angle_seed, range_seed)| {
+        native_mmap_find_random_path(
+            data_dir,
+            NativeMmapRandomPathRequest {
+                center: home,
+                start: home,
+                start_tile,
+                radius: 10.0,
+                angle_seed,
+                range_seed,
+                filter: NativeMmapPathFilter::ground(),
+            },
+        )
+    })
+    .find(|path| {
+        matches!(
+            path.status,
+            NativeMmapPathStatus::Normal | NativeMmapPathStatus::Incomplete
+        )
+    })
+    .unwrap_or_else(|| {
+        native_mmap_find_random_path(
+            data_dir,
+            NativeMmapRandomPathRequest {
+                center: home,
+                start: home,
+                start_tile,
+                radius: 10.0,
+                angle_seed: 0.0,
+                range_seed: 0.25,
+                filter: NativeMmapPathFilter::ground(),
+            },
+        )
+    });
+
+    assert!(
+        matches!(
+            native_path.status,
+            NativeMmapPathStatus::Normal | NativeMmapPathStatus::Incomplete
+        ),
+        "local Northshire mmap should produce a random Detour path, got {:?}",
+        native_path.status
+    );
+    assert!(native_path.points.len() >= 2);
+    assert!(native_path.points.iter().all(|point| point.map_id == 0));
+    let destination = native_path.points.last().unwrap();
+    assert!(
+        distance_2d(home.x, home.y, destination.x, destination.y) <= 10.5,
+        "random destination should stay inside the DB wander radius with a small smoothing tolerance"
+    );
+    assert!(
+        native_path.points.iter().all(|point| point.z.is_finite()),
+        "native random path should return grounded finite z values"
     );
 }
 
@@ -19180,6 +19995,47 @@ fn db_creature_random_motion_duration_uses_template_walk_speed() {
         .ceil()
         .max(1.0) as u64;
     assert_eq!(motion.duration, Duration::from_millis(expected_millis));
+}
+
+#[test]
+fn db_creature_random_motion_is_blocked_by_root() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+    runtime.active_auras.push(ActiveAura {
+        spell_id: 122,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        visible: true,
+        positive: false,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Root],
+        proc_triggers: Vec::new(),
+    });
+    let mut session = WorldSessionState::default();
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
+
+    assert!(start_db_creature_random_motion(&mut session, creature_guid, now).is_none());
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+    assert_eq!(runtime.next_random_move_at, Some(now));
 }
 
 #[test]
@@ -20035,6 +20891,9 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
             spell_ranges: HashMap::new(),
+            skill_line_abilities_by_spell: HashMap::new(),
+            skill_lines: HashMap::new(),
+            skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             mmap_headers: HashSet::new(),
@@ -20930,8 +21789,12 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         category_recovery_time: 0,
         start_recovery_category: 0,
         start_recovery_time: 0,
+        max_level: 0,
+        base_level: 0,
+        spell_level: 0,
         power_type: 0,
         mana_cost: 0,
+        mana_cost_per_level: 0,
         duration_index: 0,
         stack_amount: 0,
         effect1: 0,
@@ -20946,6 +21809,12 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         effect_base_dice1: 1,
         effect_base_dice2: 1,
         effect_base_dice3: 1,
+        effect_dice_per_level1: 0.0,
+        effect_dice_per_level2: 0.0,
+        effect_dice_per_level3: 0.0,
+        effect_real_points_per_level1: 0.0,
+        effect_real_points_per_level2: 0.0,
+        effect_real_points_per_level3: 0.0,
         effect_points_per_combo_point1: 0.0,
         effect_points_per_combo_point2: 0.0,
         effect_points_per_combo_point3: 0.0,
@@ -20985,6 +21854,12 @@ fn test_spell_template(spell_id: u32) -> wow_db::SpellTemplateQuery {
         proc_chance: 0,
         proc_charges: 0,
     }
+}
+
+fn test_spell_effect_value_context(
+    template: &wow_db::SpellTemplateQuery,
+) -> SpellEffectValueContext {
+    SpellEffectValueContext::unranked(template, 0)
 }
 
 const TEST_SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
@@ -21347,6 +22222,7 @@ fn human_spirit_passive_applies_total_spirit_percent_without_visible_buff() {
         &template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&template),
         Instant::now(),
         None,
     )
@@ -21394,6 +22270,7 @@ fn weapon_specialization_passives_apply_skill_bonus_without_persisting_base_skil
         &template,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&template),
         Instant::now(),
         None,
     )
@@ -21568,7 +22445,8 @@ fn create_item_spell_profile_uses_effect_item_type_and_stack_cap() {
     assert!(!profile.requires_melee);
 
     let spell_info = SpellInfo::from_template(&template);
-    let effects = create_item_spell_effects(&spell_info);
+    let effects =
+        create_item_spell_effects(&spell_info, test_spell_effect_value_context(&template));
     assert_eq!(
         effects,
         vec![CreateItemSpellEffect {
@@ -21577,6 +22455,275 @@ fn create_item_spell_profile_uses_effect_item_type_and_stack_cap() {
         }]
     );
 
+    let mut conjured_food = test_item_template(1113, 0, 0, 0.0, 0.0, 0);
+    conjured_food.stackable = 5;
+    assert_eq!(
+        create_item_count_for_template(effects[0], &conjured_food),
+        5
+    );
+}
+
+#[test]
+fn player_spell_rank_context_uses_skill_line_ability_and_skill_value_caps() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.skill_line_abilities_by_spell.insert(
+        587,
+        vec![SkillLineAbilityEntry {
+            id: 1,
+            skill_id: 237,
+            spell_id: 587,
+            race_mask: 0,
+            class_mask: 128,
+            min_value: 1,
+            max_value: 300,
+        }],
+    );
+    world_data.skill_line_abilities_by_spell.insert(
+        9999,
+        vec![SkillLineAbilityEntry {
+            id: 2,
+            skill_id: 8,
+            spell_id: 9999,
+            race_mask: 0,
+            class_mask: 0,
+            min_value: 1,
+            max_value: 300,
+        }],
+    );
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+    let mut template = test_spell_template(587);
+    template.max_level = 10;
+    template.base_level = 1;
+    template.spell_level = 1;
+
+    let context =
+        player_spell_effect_value_context(&maps, &template, &[test_skill(237, 45, 300)], 0);
+    assert_eq!(context.spell_rank_level, Some(9));
+
+    let capped =
+        player_spell_effect_value_context(&maps, &template, &[test_skill(237, 75, 300)], 0);
+    assert_eq!(capped.spell_rank_level, Some(10));
+
+    let missing_skill =
+        player_spell_effect_value_context(&maps, &template, &[test_skill(8, 300, 300)], 0);
+    assert_eq!(missing_skill.spell_rank_level, Some(0));
+
+    let no_mapping = player_spell_effect_value_context(
+        &maps,
+        &test_spell_template(597),
+        &[test_skill(237, 45, 300)],
+        0,
+    );
+    assert_eq!(no_mapping.spell_rank_level, Some(0));
+
+    let empty_maps = MapRuntimeManager::with_world_data_files(&WorldDataFiles::fallback());
+    let degraded =
+        player_spell_effect_value_context(&empty_maps, &template, &[test_skill(237, 45, 300)], 0);
+    assert_eq!(degraded.spell_rank_level, None);
+}
+
+#[test]
+fn level_backed_skill_sync_maximizes_class_skills_and_preserves_mono_skills() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.skill_lines.insert(
+        237,
+        SkillLineEntry {
+            id: 237,
+            category_id: 7,
+        },
+    );
+    world_data.skill_lines.insert(
+        43,
+        SkillLineEntry {
+            id: 43,
+            category_id: 6,
+        },
+    );
+    world_data.skill_lines.insert(
+        98,
+        SkillLineEntry {
+            id: 98,
+            category_id: 10,
+        },
+    );
+    world_data.skill_lines.insert(
+        415,
+        SkillLineEntry {
+            id: 415,
+            category_id: 8,
+        },
+    );
+    world_data.skill_race_class_infos_by_skill.insert(
+        237,
+        vec![SkillRaceClassInfoEntry {
+            skill_id: 237,
+            race_mask: 0,
+            class_mask: 1,
+            flags: 0x010,
+            req_level: 1,
+            skill_tier_id: 0,
+        }],
+    );
+    world_data.skill_race_class_infos_by_skill.insert(
+        43,
+        vec![SkillRaceClassInfoEntry {
+            skill_id: 43,
+            race_mask: 1,
+            class_mask: 1,
+            flags: 0,
+            req_level: 1,
+            skill_tier_id: 0,
+        }],
+    );
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+    let mut skills = vec![
+        test_skill(237, 5, 5),
+        test_skill(43, 3, 5),
+        test_skill(98, 300, 300),
+        test_skill(415, 1, 1),
+    ];
+
+    let updates = sync_player_level_backed_skills(&maps, 1, 1, 6, &mut skills);
+
+    assert_eq!(skills[0], test_skill(237, 30, 30));
+    assert_eq!(skills[1], test_skill(43, 3, 30));
+    assert_eq!(skills[2], test_skill(98, 300, 300));
+    assert_eq!(skills[3], test_skill(415, 1, 1));
+    assert_eq!(
+        updates
+            .iter()
+            .map(|update| (update.slot, update.skill, update.value, update.max))
+            .collect::<Vec<_>>(),
+        vec![(0, 237, 30, 30), (1, 43, 3, 30)]
+    );
+}
+
+#[test]
+fn spell_effect_value_matches_cmangos_level_scaling_floor_and_caps() {
+    let mut template = test_spell_template(587);
+    template.max_level = 15;
+    template.base_level = 6;
+    template.spell_level = 6;
+    template.effect1 = SPELL_EFFECT_CREATE_ITEM;
+    template.effect_base_points1 = 1;
+    template.effect_base_dice1 = 1;
+    template.effect_die_sides1 = 1;
+    template.effect_real_points_per_level1 = 2.0;
+    let effect = SpellInfo::from_template(&template).effects[0];
+
+    assert_eq!(
+        spell_effect_calculated_i32(
+            effect,
+            SpellEffectValueContext::with_spell_rank_level(&template, 1, 0),
+        ),
+        2
+    );
+    assert_eq!(
+        spell_effect_calculated_i32(
+            effect,
+            SpellEffectValueContext::with_spell_rank_level(&template, 10, 0),
+        ),
+        10
+    );
+    assert_eq!(
+        spell_effect_calculated_i32(
+            effect,
+            SpellEffectValueContext::with_spell_rank_level(&template, 60, 0),
+        ),
+        20
+    );
+}
+
+#[test]
+fn spell_effect_value_keeps_rank_seven_base_amount_without_scaling() {
+    let mut template = test_spell_template(10144);
+    template.effect1 = SPELL_EFFECT_CREATE_ITEM;
+    template.effect_base_points1 = 19;
+    template.effect_base_dice1 = 1;
+    template.effect_die_sides1 = 1;
+    let effect = SpellInfo::from_template(&template).effects[0];
+
+    assert_eq!(
+        spell_effect_calculated_i32(effect, test_spell_effect_value_context(&template)),
+        20
+    );
+}
+
+#[test]
+fn spell_effect_value_handles_signed_aura_die_range_and_combo_points() {
+    let mut negative_template = test_spell_template(6136);
+    negative_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    negative_template.effect_base_points1 = -26;
+    negative_template.effect_base_dice1 = 1;
+    negative_template.effect_die_sides1 = 1;
+    let negative_effect = SpellInfo::from_template(&negative_template).effects[0];
+    assert_eq!(
+        spell_effect_calculated_i32(
+            negative_effect,
+            test_spell_effect_value_context(&negative_template),
+        ),
+        -25
+    );
+
+    let mut random_template = test_spell_template(1000);
+    random_template.effect1 = SPELL_EFFECT_SCHOOL_DAMAGE;
+    random_template.effect_base_points1 = 0;
+    random_template.effect_base_dice1 = 2;
+    random_template.effect_die_sides1 = 4;
+    let random_effect = SpellInfo::from_template(&random_template).effects[0];
+    for _ in 0..16 {
+        let value = spell_effect_calculated_i32(
+            random_effect,
+            test_spell_effect_value_context(&random_template),
+        );
+        assert!(
+            (2..=4).contains(&value),
+            "effect roll {value} outside 2..=4"
+        );
+    }
+
+    let mut combo_template = test_spell_template(1001);
+    combo_template.effect1 = SPELL_EFFECT_SCHOOL_DAMAGE;
+    combo_template.effect_base_points1 = 0;
+    combo_template.effect_base_dice1 = 1;
+    combo_template.effect_die_sides1 = 1;
+    combo_template.effect_points_per_combo_point1 = 5.0;
+    let combo_effect = SpellInfo::from_template(&combo_template).effects[0];
+    assert_eq!(
+        spell_effect_calculated_i32(
+            combo_effect,
+            SpellEffectValueContext::unranked(&combo_template, 3),
+        ),
+        16
+    );
+}
+
+#[test]
+fn create_item_spell_effects_use_scaled_conjure_count_and_stack_cap() {
+    let mut template = test_spell_template(587);
+    template.max_level = 15;
+    template.base_level = 6;
+    template.spell_level = 6;
+    template.effect1 = SPELL_EFFECT_CREATE_ITEM;
+    template.effect_base_points1 = 1;
+    template.effect_base_dice1 = 1;
+    template.effect_die_sides1 = 1;
+    template.effect_real_points_per_level1 = 2.0;
+    template.effect_item_type1 = 1113;
+    let spell_info = SpellInfo::from_template(&template);
+
+    let effects = create_item_spell_effects(
+        &spell_info,
+        SpellEffectValueContext::with_spell_rank_level(&template, 10, 0),
+    );
+
+    assert_eq!(
+        effects,
+        vec![CreateItemSpellEffect {
+            item_template: 1113,
+            requested_count: 10,
+        }]
+    );
     let mut conjured_food = test_item_template(1113, 0, 0, 0.0, 0.0, 0);
     conjured_food.stackable = 5;
     assert_eq!(
@@ -21608,6 +22755,7 @@ fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
         &frost_nova,
         ObjectGuid::new(HighGuid::Player, 0, 7),
         1,
+        test_spell_effect_value_context(&frost_nova),
         Instant::now(),
         None,
     );
@@ -22775,6 +23923,9 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
         spell_ranges: HashMap::new(),
+        skill_line_abilities_by_spell: HashMap::new(),
+        skill_lines: HashMap::new(),
+        skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
         mmap_headers: HashSet::new(),
@@ -23358,6 +24509,9 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
         spell_ranges: HashMap::new(),
+        skill_line_abilities_by_spell: HashMap::new(),
+        skill_lines: HashMap::new(),
+        skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
         mmap_headers: HashSet::new(),
@@ -23609,6 +24763,9 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
                 flags: 0,
             },
         )]),
+        skill_line_abilities_by_spell: HashMap::new(),
+        skill_lines: HashMap::new(),
+        skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
         mmap_headers: HashSet::new(),
@@ -23756,6 +24913,9 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
                 flags: 0,
             },
         )]),
+        skill_line_abilities_by_spell: HashMap::new(),
+        skill_lines: HashMap::new(),
+        skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
         mmap_headers: HashSet::new(),
@@ -24969,6 +26129,40 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
 
     maps.set_player_power2(map_id, character_guid, HEROIC_STRIKE_RAGE_COST)
         .await;
+    maps.set_active_player_spell_cast(
+        map_id,
+        character_guid,
+        ActivePlayerSpellCast {
+            spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+            source: ActivePlayerSpellCastSource::Player,
+            profile,
+            targets: PendingSpellCastTargets {
+                target_mask: targets.target_mask,
+                unit_target: targets.unit_target,
+                gameobject_target: targets.gameobject_target,
+            },
+            due_at: Instant::now() + Duration::from_millis(1_500),
+            cast_time_millis: 1_500,
+            interrupt_flags: 0,
+            damage_pushback_count: 0,
+        },
+    )
+    .await;
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &mut session,
+            &heroic_template,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        Some(SPELL_FAILED_SPELL_IN_PROGRESS)
+    );
+    maps.cancel_active_player_spell_cast(map_id, character_guid)
+        .await;
+
     let gcd_profile = SpellCastProfile {
         spell_id: 999_001,
         kind: SpellCastKind::InstantDamage,
@@ -28453,6 +29647,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         combo_points: 0,
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
+        in_combat: false,
         active_combat_target: None,
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
@@ -28509,6 +29704,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         combo_points: 0,
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
+        in_combat: false,
         active_combat_target: None,
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,

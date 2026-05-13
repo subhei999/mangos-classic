@@ -766,6 +766,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         stream,
         character_db_pool,
         world_db_pool,
+        deps.shared_world.maps,
         session,
         None,
         reward_xp,

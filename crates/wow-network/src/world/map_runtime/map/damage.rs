@@ -98,6 +98,7 @@ impl MapRuntime {
         player.queued_next_melee_spell = None;
         player.combo_target = None;
         player.combo_points = 0;
+        player.in_combat = false;
         player.looting = false;
         let player_position = player.position;
         let direct_session_id = player.client_session_id();

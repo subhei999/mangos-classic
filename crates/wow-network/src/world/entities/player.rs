@@ -99,8 +99,7 @@ pub(in crate::world) fn write_other_player_update_values(
             | ((player.gender as u32) << 16)
             | (u32::from(player.class == 1) << 24),
     )?;
-    let unit_flags =
-        UNIT_FLAG_PLAYER_CONTROLLED | (if player.looting { UNIT_FLAG_LOOTING } else { 0 });
+    let unit_flags = player_unit_flags_with_looting(player.in_combat, player.looting);
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.unit_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;

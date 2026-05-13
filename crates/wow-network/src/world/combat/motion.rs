@@ -227,24 +227,8 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
         return None;
     }
     let start = creature.current_position;
-    let Some(raw_destination) = db_creature_random_destination(
-        creature.home_position,
-        radius,
-        creature.guid().raw(),
-        creature.next_spline_id,
-    ) else {
-        creature.next_random_move_at =
-            Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
-        return None;
-    };
-    let Some(path_result) = db_creature_path_to_destination(
-        navigation,
-        geometry,
-        creature,
-        start,
-        raw_destination,
-        CreaturePathMode::Full,
-    ) else {
+    let Some(path_result) = db_creature_random_path(navigation, geometry, creature, start, radius)
+    else {
         creature.next_random_move_at =
             Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
         return None;
@@ -1040,6 +1024,102 @@ pub(in crate::world) fn db_creature_path_to_destination(
             }
         }
     }
+}
+
+pub(in crate::world) const DB_CREATURE_RANDOM_PATH_ATTEMPTS: u32 = 4;
+
+pub(in crate::world) fn db_creature_random_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    radius: f32,
+) -> Option<DbCreaturePath> {
+    if db_creature_uses_unit_fixture_pathing(navigation) {
+        let raw_destination = db_creature_random_destination(
+            creature.home_position,
+            radius,
+            creature.guid().raw(),
+            creature.next_spline_id,
+        )?;
+        return db_creature_path_to_destination(
+            navigation,
+            geometry,
+            creature,
+            start,
+            raw_destination,
+            CreaturePathMode::Full,
+        );
+    }
+
+    db_creature_mmap_random_path(navigation, creature, start, radius)
+}
+
+pub(in crate::world) fn db_creature_mmap_random_path(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    radius: f32,
+) -> Option<DbCreaturePath> {
+    let data_dir = navigation.world_data_files.data_dir_for_native.as_ref()?;
+    if start.map_id != creature.home_position.map_id || radius <= 0.0 || !radius.is_finite() {
+        return None;
+    }
+    let start_tile = mmap_tile_for_position(start)?;
+    if !navigation
+        .world_data_files
+        .has_mmap_support_for_map(start.map_id)
+        || !navigation
+            .world_data_files
+            .has_mmap_tile(start.map_id, start_tile.0, start_tile.1)
+    {
+        return None;
+    }
+
+    for attempt in 0..DB_CREATURE_RANDOM_PATH_ATTEMPTS {
+        let native_path = native_mmap_find_random_path(
+            data_dir,
+            NativeMmapRandomPathRequest {
+                center: creature.home_position,
+                start,
+                start_tile,
+                radius,
+                angle_seed: db_creature_pseudo_random_unit(
+                    creature.guid().raw(),
+                    creature.next_spline_id,
+                    attempt * 2,
+                ),
+                range_seed: db_creature_pseudo_random_unit(
+                    creature.guid().raw(),
+                    creature.next_spline_id,
+                    attempt * 2 + 1,
+                ),
+                filter: db_creature_mmap_path_filter(creature),
+            },
+        );
+        let flags = match native_path.status {
+            NativeMmapPathStatus::Normal => DbCreaturePathFlags::NORMAL,
+            NativeMmapPathStatus::Incomplete => DbCreaturePathFlags::INCOMPLETE,
+            NativeMmapPathStatus::NoPath => continue,
+            NativeMmapPathStatus::Unavailable
+            | NativeMmapPathStatus::InvalidInput
+            | NativeMmapPathStatus::NativeError => {
+                break;
+            }
+        };
+        let Some(path) = native_mmap_points_to_world_path(start, &native_path.points) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        return Some(DbCreaturePath {
+            flags,
+            points: path,
+        });
+    }
+
+    None
 }
 
 pub(in crate::world) fn db_creature_uses_unit_fixture_pathing(

@@ -350,8 +350,13 @@ pub(in crate::world) async fn change_gm_character_level(
     session.character.player_rage = power2;
     session.character.player_energy = power4;
 
-    let skill_cap_updates =
-        set_level_capped_combat_skill_maxes(new_level, &mut session.character.character_skills);
+    let skill_cap_updates = sync_player_level_backed_skills(
+        deps.maps,
+        character.race,
+        character.class,
+        new_level,
+        &mut session.character.character_skills,
+    );
     for updated in &skill_cap_updates {
         wow_db::upsert_character_skill(
             deps.character_db_pool,

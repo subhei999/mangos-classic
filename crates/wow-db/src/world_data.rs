@@ -612,8 +612,12 @@ pub struct SpellTemplateQuery {
     pub category_recovery_time: u32,
     pub start_recovery_category: u32,
     pub start_recovery_time: u32,
+    pub max_level: u32,
+    pub base_level: u32,
+    pub spell_level: u32,
     pub power_type: u32,
     pub mana_cost: u32,
+    pub mana_cost_per_level: u32,
     pub duration_index: u32,
     pub stack_amount: u32,
     pub effect1: u32,
@@ -628,6 +632,12 @@ pub struct SpellTemplateQuery {
     pub effect_base_dice1: u32,
     pub effect_base_dice2: u32,
     pub effect_base_dice3: u32,
+    pub effect_dice_per_level1: f32,
+    pub effect_dice_per_level2: f32,
+    pub effect_dice_per_level3: f32,
+    pub effect_real_points_per_level1: f32,
+    pub effect_real_points_per_level2: f32,
+    pub effect_real_points_per_level3: f32,
     pub effect_points_per_combo_point1: f32,
     pub effect_points_per_combo_point2: f32,
     pub effect_points_per_combo_point3: f32,
@@ -888,7 +898,8 @@ pub async fn get_spell_template_query(
                 InterruptFlags AS interrupt_flags, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
-                PowerType AS power_type, ManaCost AS mana_cost, DurationIndex AS duration_index, \
+                MaxLevel AS max_level, BaseLevel AS base_level, SpellLevel AS spell_level, \
+                PowerType AS power_type, ManaCost AS mana_cost, ManaCostPerlevel AS mana_cost_per_level, DurationIndex AS duration_index, \
                 StackAmount AS stack_amount, \
                 Effect1 AS effect1, Effect2 AS effect2, Effect3 AS effect3, \
                 EffectBasePoints1 AS effect_base_points1, EffectBasePoints2 AS effect_base_points2, \
@@ -897,6 +908,12 @@ pub async fn get_spell_template_query(
                 EffectDieSides3 AS effect_die_sides3, \
                 EffectBaseDice1 AS effect_base_dice1, EffectBaseDice2 AS effect_base_dice2, \
                 EffectBaseDice3 AS effect_base_dice3, \
+                EffectDicePerLevel1 AS effect_dice_per_level1, \
+                EffectDicePerLevel2 AS effect_dice_per_level2, \
+                EffectDicePerLevel3 AS effect_dice_per_level3, \
+                EffectRealPointsPerLevel1 AS effect_real_points_per_level1, \
+                EffectRealPointsPerLevel2 AS effect_real_points_per_level2, \
+                EffectRealPointsPerLevel3 AS effect_real_points_per_level3, \
                 EffectPointsPerComboPoint1 AS effect_points_per_combo_point1, \
                 EffectPointsPerComboPoint2 AS effect_points_per_combo_point2, \
                 EffectPointsPerComboPoint3 AS effect_points_per_combo_point3, \

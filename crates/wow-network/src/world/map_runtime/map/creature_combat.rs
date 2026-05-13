@@ -161,6 +161,19 @@ pub(in crate::world) struct ReadyDbCreatureSpellCast {
 }
 
 impl MapRuntime {
+    fn set_player_in_combat_from_creature_refs(&mut self, player: ObjectGuid) {
+        if !player.is_player() {
+            return;
+        }
+        let in_combat = self
+            .active_creature_combats
+            .values()
+            .any(|combat| combat.victim == player);
+        if let Some(runtime) = self.players.get_mut(&player.counter()) {
+            runtime.in_combat = in_combat;
+        }
+    }
+
     pub(in crate::world) fn db_creature_combat_snapshot(
         &self,
         creature_guid: ObjectGuid,
@@ -819,6 +832,11 @@ impl MapRuntime {
             next_swing_at: now,
         };
         self.active_creature_combats.insert(attacker.raw(), combat);
+        if victim.is_player() {
+            if let Some(player) = self.players.get_mut(&victim.counter()) {
+                player.in_combat = true;
+            }
+        }
         self.refresh_db_creature_combat_leash(attacker, now);
         self.add_db_creature_threat(attacker, victim, 0.0);
         if let Some(position) = self
@@ -832,10 +850,16 @@ impl MapRuntime {
     }
 
     pub(in crate::world) fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
-        self.active_creature_combats.remove(&attacker.raw());
+        let old_victim = self
+            .active_creature_combats
+            .remove(&attacker.raw())
+            .map(|combat| combat.victim);
         self.active_creature_spell_casts.remove(&attacker.raw());
         self.creature_combat_leash.remove(&attacker.raw());
         self.creature_threats.remove(&attacker.raw());
+        if let Some(victim) = old_victim {
+            self.set_player_in_combat_from_creature_refs(victim);
+        }
         if let Some(position) = self
             .creatures
             .get(&attacker.raw())
@@ -869,6 +893,7 @@ impl MapRuntime {
         }
         self.creature_threats
             .retain(|attacker, threats| active_attackers.contains(attacker) || !threats.is_empty());
+        self.set_player_in_combat_from_creature_refs(victim);
         for grid in changed_grids {
             self.refresh_grid_state(grid);
         }
@@ -1455,12 +1480,22 @@ impl MapRuntime {
         if new_victim == current_combat.victim {
             return Ok(None);
         }
-        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+        let Some(creature_position) = self
+            .creatures
+            .get(&attacker.raw())
+            .map(|creature| creature.current_position)
+        else {
             return Ok(None);
         };
         let mut combat = current_combat;
         combat.victim = new_victim;
         self.active_creature_combats.insert(attacker.raw(), combat);
+        self.set_player_in_combat_from_creature_refs(current_combat.victim);
+        if new_victim.is_player() {
+            if let Some(player) = self.players.get_mut(&new_victim.counter()) {
+                player.in_combat = true;
+            }
+        }
 
         let packets = [
             OutboundWorldPacket {
@@ -1473,7 +1508,7 @@ impl MapRuntime {
             },
         ];
         let direct_packets = if exclude_character_guid
-            .is_some_and(|guid| packets_direct_to_character(self, guid, creature.current_position))
+            .is_some_and(|guid| packets_direct_to_character(self, guid, creature_position))
         {
             packets.to_vec()
         } else {
@@ -1481,7 +1516,7 @@ impl MapRuntime {
         };
         let observer_packets = self
             .nearby_player_guids(
-                creature.current_position,
+                creature_position,
                 CREATURE_SPAWN_RADIUS_YARDS,
                 exclude_character_guid,
             )
@@ -2171,7 +2206,7 @@ pub(in crate::world) fn db_creature_condition_in_combat(
     if guid.is_player() {
         map.players
             .get(&guid.counter())
-            .is_some_and(|player| player.active_combat_target.is_some())
+            .is_some_and(|player| player.in_combat)
     } else {
         map.active_creature_combats.contains_key(&guid.raw())
     }

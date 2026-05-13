@@ -24,7 +24,7 @@ impl SpellEffectDispatch {
     pub(in crate::world) fn from_effect_id(effect_id: u32) -> Self {
         match effect_id {
             0 => Self::Empty,
-            2 => Self::SchoolDamage,
+            SPELL_EFFECT_SCHOOL_DAMAGE => Self::SchoolDamage,
             SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
             | SPELL_EFFECT_WEAPON_DAMAGE
             | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => Self::WeaponDamage,
@@ -76,6 +76,12 @@ pub(in crate::world) async fn apply_player_spell_effects(
         targets,
     )
     .await;
+    let effect_value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        spell_template,
+        &session.character.character_skills,
+        combo_points_for_effects,
+    );
 
     for effect in spell_info.effects {
         match effect.dispatch {
@@ -105,7 +111,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     spell_template,
                     spell_profile,
                     effect,
-                    combo_points_for_effects,
+                    effect_value_context,
                 ) {
                     landed_damage |= apply_player_direct_damage_effect(
                         stream,
@@ -163,6 +169,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     caster,
                     map_id,
                     &spell_info,
+                    effect_value_context,
                     targets,
                     header_crypto,
                 )
@@ -178,6 +185,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     session,
                     character_guid,
                     &spell_info,
+                    effect_value_context,
                     header_crypto,
                 )
                 .await?;
@@ -200,6 +208,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     spell_template,
                     spell_profile,
                     targets,
+                    effect_value_context,
                     now,
                     header_crypto,
                 )
@@ -239,23 +248,27 @@ pub(in crate::world) struct CreateItemSpellEffect {
 
 pub(in crate::world) fn create_item_spell_effect(
     effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
 ) -> Option<CreateItemSpellEffect> {
     if effect.dispatch != SpellEffectDispatch::CreateItem || effect.item_type == 0 {
         return None;
     }
     Some(CreateItemSpellEffect {
         item_template: effect.item_type,
-        requested_count: spell_effect_roll_value(effect, 0).unwrap_or(1).max(1),
+        requested_count: spell_effect_calculated_u32(effect, value_context)
+            .unwrap_or(1)
+            .max(1),
     })
 }
 
 pub(in crate::world) fn create_item_spell_effects(
     spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
 ) -> Vec<CreateItemSpellEffect> {
     spell_info
         .effects
         .into_iter()
-        .filter_map(create_item_spell_effect)
+        .filter_map(|effect| create_item_spell_effect(effect, value_context))
         .collect()
 }
 
@@ -272,7 +285,13 @@ pub(in crate::world) async fn player_create_item_cast_inventory_failure(
     spell_template: &wow_db::SpellTemplateQuery,
 ) -> anyhow::Result<Option<u8>> {
     let spell_info = SpellInfo::from_template(spell_template);
-    let effects = create_item_spell_effects(&spell_info);
+    let value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        spell_template,
+        &session.character.character_skills,
+        0,
+    );
+    let effects = create_item_spell_effects(&spell_info, value_context);
     if effects.is_empty() {
         return Ok(None);
     }
@@ -312,9 +331,10 @@ pub(in crate::world) async fn apply_player_create_item_effects(
     session: &mut WorldSessionState,
     character_guid: u32,
     spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let effects = create_item_spell_effects(spell_info);
+    let effects = create_item_spell_effects(spell_info, value_context);
     if effects.is_empty() {
         return Ok(());
     }
@@ -490,9 +510,9 @@ pub(in crate::world) fn player_direct_damage_effect(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     effect: SpellInfoEffect,
-    combo_points: u8,
+    value_context: SpellEffectValueContext,
 ) -> Option<PlayerDirectDamageEffect> {
-    let damage = spell_effect_roll_value(effect, combo_points)?;
+    let damage = spell_effect_calculated_u32(effect, value_context)?;
     let school = match effect.dispatch {
         SpellEffectDispatch::SchoolDamage => spell_template.school as u8,
         _ => return None,
@@ -549,30 +569,6 @@ pub(in crate::world) async fn spell_combo_points_for_effects(
         .filter(|snapshot| snapshot.combo_target == Some(target) || target == caster)
         .map(|snapshot| snapshot.combo_points)
         .unwrap_or(0)
-}
-
-pub(in crate::world) fn spell_effect_roll_value(
-    effect: SpellInfoEffect,
-    combo_points: u8,
-) -> Option<u32> {
-    let base_dice = effect.base_dice as i32;
-    let mut value = effect.base_points;
-    match effect.die_sides {
-        0 | 1 => {
-            value = value.saturating_add(base_dice);
-        }
-        die_sides => {
-            let low = die_sides.min(base_dice);
-            let high = die_sides.max(base_dice);
-            value = value.saturating_add(rand::thread_rng().gen_range(low..=high));
-        }
-    }
-    if effect.points_per_combo_point != 0.0 && combo_points > 0 {
-        value = value.saturating_add(
-            (effect.points_per_combo_point * f32::from(combo_points)).trunc() as i32,
-        );
-    }
-    (value >= 0).then_some(value as u32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -647,10 +643,11 @@ pub(in crate::world) async fn apply_player_direct_heal_effect(
     caster: ObjectGuid,
     map_id: u32,
     spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
     targets: &SpellCastTargets,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let heal = spell_direct_heal(spell_info);
+    let heal = spell_direct_heal(spell_info, value_context);
     if heal == 0 {
         return Ok(());
     }
@@ -1117,6 +1114,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
+    value_context: SpellEffectValueContext,
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1124,6 +1122,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
         spell_template,
         caster,
         character_level,
+        value_context,
         now,
         deps.shared_world
             .maps
@@ -1398,21 +1397,27 @@ pub(in crate::world) fn spell_effect_radius_yards(
         .filter(|radius| *radius > 0.0)
 }
 
-pub(in crate::world) fn spell_direct_heal(spell_info: &SpellInfo<'_>) -> u32 {
+pub(in crate::world) fn spell_direct_heal(
+    spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
+) -> u32 {
     spell_info
         .effects
         .into_iter()
         .filter(|effect| effect.dispatch == SpellEffectDispatch::Heal)
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+        .filter_map(|effect| spell_effect_calculated_u32(effect, value_context))
         .sum()
 }
 
-pub(in crate::world) fn spell_direct_energize(spell_info: &SpellInfo<'_>) -> u32 {
+pub(in crate::world) fn spell_direct_energize(
+    spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
+) -> u32 {
     spell_info
         .effects
         .into_iter()
         .filter(|effect| effect.dispatch == SpellEffectDispatch::Energize)
-        .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+        .filter_map(|effect| spell_effect_calculated_u32(effect, value_context))
         .sum()
 }
 
@@ -1473,10 +1478,16 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
     let mut direct_heal_applied = false;
     let mut direct_energize_applied = false;
     let mut aura_applied = false;
+    let value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        spell_template,
+        &session.character.character_skills,
+        0,
+    );
     for effect in spell_info.effects {
         match effect.dispatch {
             SpellEffectDispatch::Heal if !direct_heal_applied => {
-                let heal = spell_direct_heal(&spell_info);
+                let heal = spell_direct_heal(&spell_info, value_context);
                 if heal != 0 {
                     let old_health = session.character.player_health;
                     session.character.player_health = session
@@ -1504,7 +1515,7 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
                 direct_heal_applied = true;
             }
             SpellEffectDispatch::Energize if !direct_energize_applied => {
-                let energize = spell_direct_energize(&spell_info);
+                let energize = spell_direct_energize(&spell_info, value_context);
                 if energize != 0 && max_mana != 0 {
                     let old_mana = session.character.player_mana;
                     session.character.player_mana = session
@@ -1549,6 +1560,7 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
                     map_id,
                     spell_template,
                     &character_snapshot,
+                    value_context,
                     now,
                     &mut update_bodies,
                     header_crypto,
@@ -1581,6 +1593,7 @@ pub(in crate::world) async fn apply_item_aura_effect(
     map_id: u32,
     spell_template: &wow_db::SpellTemplateQuery,
     character_snapshot: &Player,
+    value_context: SpellEffectValueContext,
     now: Instant,
     update_bodies: &mut Vec<Vec<u8>>,
     header_crypto: &mut HeaderCrypto,
@@ -1589,6 +1602,7 @@ pub(in crate::world) async fn apply_item_aura_effect(
         spell_template,
         caster,
         character_level,
+        value_context,
         now,
         deps.shared_world
             .maps

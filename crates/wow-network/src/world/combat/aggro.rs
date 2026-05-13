@@ -157,15 +157,7 @@ pub(in crate::world) async fn send_active_db_creature_attack(
         .await;
     if active_combats.is_empty() {
         clear_session_active_creature_combats(session);
-        if context
-            .shared_world
-            .maps
-            .player_auto_attack_target(map_id, character_guid)
-            .await
-            .is_none()
-        {
-            send_player_combat_flag_if_changed(stream, session, false, header_crypto).await?;
-        }
+        send_player_combat_flag_if_changed(stream, session, false, header_crypto).await?;
         return Ok(());
     }
     send_player_combat_flag_if_changed(stream, session, true, header_crypto).await?;
@@ -553,6 +545,16 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
                     .template
                     .max_level
                     .max(creature.spawn.template.min_level),
+                SpellEffectValueContext::with_spell_rank_level(
+                    &template,
+                    (creature
+                        .spawn
+                        .template
+                        .max_level
+                        .max(creature.spawn.template.min_level)
+                        / 5) as i32,
+                    0,
+                ),
                 now,
                 shared_world.maps.spell_duration(template.duration_index),
             )
@@ -965,6 +967,12 @@ pub(in crate::world) async fn apply_player_taken_melee_proc_auras(
                 .as_ref()
                 .map(|character| character.level)
                 .unwrap_or(1),
+            player_spell_effect_value_context(
+                shared_world.maps,
+                &template,
+                &session.character.character_skills,
+                0,
+            ),
             now,
             shared_world.maps.spell_duration(template.duration_index),
         );

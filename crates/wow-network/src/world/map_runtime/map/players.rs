@@ -278,17 +278,11 @@ impl MapRuntime {
             *next_tick += PLAYER_REGEN_TICK;
         }
 
-        let in_combat_victims = self
-            .active_creature_combats
-            .values()
-            .map(|combat| combat.victim)
-            .collect::<HashSet<_>>();
         let mut update_packets = Vec::new();
         for player in self.players.values_mut() {
             let character_guid = player.guid;
             let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-            let in_combat =
-                player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
+            let in_combat = player.in_combat;
             let is_dead_or_ghost = player.health == 0 || (player.flags & PLAYER_FLAGS_GHOST) != 0;
             if is_dead_or_ghost {
                 continue;
@@ -1118,17 +1112,13 @@ impl MapRuntime {
         let map_death_is_newer = player.health == 0
             && player.death_state != PlayerDeathState::Alive
             && session.death.player_death_state == PlayerDeathState::Alive;
+        let session_death_state = session.death.player_death_state;
         if !map_death_is_newer {
             player.death_state = session.death.player_death_state;
-            player.health = if session.death.player_death_state == PlayerDeathState::Alive {
-                session.character.player_health.min(player.max_health)
-            } else {
-                session.character.player_health
+            if session_death_state != PlayerDeathState::Alive {
+                player.health = session.character.player_health;
             };
         }
-        player.power1 = session.character.player_mana.min(player.max_power1);
-        player.power2 = session.character.player_rage.min(POWER_RAGE_DEFAULT);
-        player.power4 = session.character.player_energy.min(player.max_power4);
         if !map_death_is_newer {
             player.stand_state =
                 if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
@@ -1207,6 +1197,7 @@ impl MapRuntime {
             queued_next_melee_spell: player.queued_next_melee_spell,
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
+            in_combat: player.in_combat,
             active_combat_target: player.active_combat_target,
             active_combat_attack_kind: player.active_combat_attack_kind,
             active_combat_next_swing_at: player.active_combat_next_swing_at,
@@ -1240,12 +1231,25 @@ impl MapRuntime {
         };
         player.level = reward.level;
         player.xp = reward.xp;
-        player.max_health = reward.max_health.max(1);
+        if let Some(world_stats) = reward.world_stats {
+            player.base_world_stats = world_stats;
+            player.effective_world_stats =
+                player_world_stats_with_active_auras(player.base_world_stats, &player.active_auras);
+            player.spirit = player.effective_world_stats.stats[4];
+            player.max_health = player.effective_world_stats.max_health().max(1);
+        } else {
+            player.max_health = reward.max_health.max(1);
+        }
         player.max_power1 = reward.max_power1;
         player.health = reward.health.min(player.max_health);
         player.power1 = reward.power1.min(player.max_power1);
         player.power2 = reward.power2.min(POWER_RAGE_DEFAULT);
         player.power4 = player.power4.min(player.max_power4);
+        if let Some(combat_stats) = reward.combat_stats {
+            player.base_combat_stats = combat_stats;
+            player.combat_stats =
+                combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+        }
         player.quest_statuses = reward.quest_statuses;
     }
 
@@ -1864,6 +1868,60 @@ impl MapRuntime {
             })
     }
 
+    pub(in crate::world) fn retime_player_auto_attack_after_spell_cast(
+        &mut self,
+        character_guid: u32,
+        now: Instant,
+        melee_delay: Duration,
+        ranged_windup: Duration,
+        cancel_ranged_auto_repeat: bool,
+    ) -> PlayerAutoAttackAfterSpellCast {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return PlayerAutoAttackAfterSpellCast::None;
+        };
+        let Some(target) = player.active_combat_target else {
+            return PlayerAutoAttackAfterSpellCast::None;
+        };
+
+        match player.active_combat_attack_kind {
+            PlayerAutoAttackKind::Melee => {
+                let next_swing_at = now + melee_delay;
+                player.active_combat_next_swing_at = Some(next_swing_at);
+                PlayerAutoAttackAfterSpellCast::MeleeRetimed {
+                    target,
+                    next_swing_at,
+                }
+            }
+            PlayerAutoAttackKind::Ranged { spell_id, .. } if cancel_ranged_auto_repeat => {
+                player.active_combat_target = None;
+                player.active_combat_attack_kind = PlayerAutoAttackKind::Melee;
+                player.active_combat_next_swing_at = None;
+                player.ranged_auto_attack_next_shot_at = None;
+                PlayerAutoAttackAfterSpellCast::RangedCanceled { target, spell_id }
+            }
+            PlayerAutoAttackKind::Ranged { spell_id, .. } => {
+                let next_shot_at = player
+                    .active_combat_next_swing_at
+                    .into_iter()
+                    .chain(player.ranged_auto_attack_next_shot_at)
+                    .max()
+                    .unwrap_or(now)
+                    .max(now + ranged_windup);
+                player.active_combat_attack_kind = PlayerAutoAttackKind::Ranged {
+                    spell_id,
+                    phase: PlayerRangedAutoAttackPhase::Windup,
+                };
+                player.active_combat_next_swing_at = Some(next_shot_at);
+                player.ranged_auto_attack_next_shot_at = Some(next_shot_at);
+                PlayerAutoAttackAfterSpellCast::RangedRetimed {
+                    target,
+                    spell_id,
+                    next_shot_at,
+                }
+            }
+        }
+    }
+
     pub(in crate::world) fn player_auto_attack_target(
         &self,
         character_guid: u32,
@@ -1918,7 +1976,7 @@ impl MapRuntime {
     ) -> Option<u8> {
         let player = self.players.get(&character_guid)?;
         if self.active_player_spell_casts.contains_key(&character_guid) {
-            return Some(SPELL_FAILED_NOT_READY);
+            return Some(SPELL_FAILED_SPELL_IN_PROGRESS);
         }
         if player
             .spell_cooldowns_until
@@ -2062,11 +2120,6 @@ impl MapRuntime {
         target: ObjectGuid,
         exclude_character_guid: Option<u32>,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let in_combat_victims = self
-            .active_creature_combats
-            .values()
-            .map(|combat| combat.victim)
-            .collect::<HashSet<_>>();
         let affected = self
             .players
             .iter()
@@ -2098,8 +2151,7 @@ impl MapRuntime {
             if exclude_character_guid == Some(character_guid) {
                 continue;
             }
-            let still_in_combat =
-                player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
+            let still_in_combat = player.in_combat;
             let position = player.position;
             let looting = player.looting;
             let mut player_packets = Vec::with_capacity(2);
@@ -2286,7 +2338,7 @@ impl MapRuntime {
         };
         player.looting = looting;
         let player_position = player.position;
-        let in_combat = player.active_combat_target.is_some();
+        let in_combat = player.in_combat;
         let packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_unit_flags_update_body(

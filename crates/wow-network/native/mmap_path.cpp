@@ -24,6 +24,9 @@ constexpr int MAX_SMOOTH_POINTS = 74;
 constexpr int VERTEX_SIZE = 3;
 constexpr float SMOOTH_PATH_STEP_SIZE = 4.0f;
 constexpr float SMOOTH_PATH_SLOP = 0.3f;
+constexpr float WOW_GRID_CENTER_ID = 32.0f;
+constexpr float WOW_GRID_SIZE = 533.3333f;
+constexpr float PI = 3.14159265358979323846f;
 constexpr unsigned short NAV_GROUND = 1;
 
 struct MmapTileHeader
@@ -67,6 +70,30 @@ std::string mapKey(const char* dataDir, unsigned int mapId)
 unsigned int packTile(unsigned int tileX, unsigned int tileY)
 {
     return (tileX << 16) | tileY;
+}
+
+bool tileForPosition(float x, float y, unsigned int& tileX, unsigned int& tileY)
+{
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return false;
+
+    const int computedX = static_cast<int>(WOW_GRID_CENTER_ID - x / WOW_GRID_SIZE);
+    const int computedY = static_cast<int>(WOW_GRID_CENTER_ID - y / WOW_GRID_SIZE);
+    if (computedX < 0 || computedX > 63 || computedY < 0 || computedY > 63)
+        return false;
+
+    tileX = static_cast<unsigned int>(computedX);
+    tileY = static_cast<unsigned int>(computedY);
+    return true;
+}
+
+float clampUnit(float value)
+{
+    if (value < 0.0f)
+        return 0.0f;
+    if (value > 1.0f)
+        return 1.0f;
+    return value;
 }
 
 std::string mmapFileName(const char* dataDir, unsigned int mapId)
@@ -515,6 +542,112 @@ int wow_mmap_find_path(
         {
             return 0;
         }
+
+        for (int i = 0; i < smoothCount; ++i)
+        {
+            const int offset = i * VERTEX_SIZE;
+            outPoints[i].x = smooth[offset + 2];
+            outPoints[i].y = smooth[offset];
+            outPoints[i].z = smooth[offset + 1];
+        }
+
+        return smoothCount;
+    }
+    catch (...)
+    {
+        return -100;
+    }
+}
+
+int wow_mmap_find_random_path(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int startTileX,
+    unsigned int startTileY,
+    float centerX,
+    float centerY,
+    float centerZ,
+    float startX,
+    float startY,
+    float startZ,
+    float radius,
+    float angleSeed,
+    float rangeSeed,
+    unsigned short includeFlags,
+    unsigned short excludeFlags,
+    WowMmapPathPoint* outPoints,
+    int maxPoints) noexcept
+{
+    try
+    {
+        if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
+            return -1;
+        if (startTileX > 63 || startTileY > 63)
+            return -7;
+        if (!std::isfinite(centerX) || !std::isfinite(centerY) || !std::isfinite(centerZ) ||
+            !std::isfinite(startX) || !std::isfinite(startY) || !std::isfinite(startZ) ||
+            !std::isfinite(radius) || !std::isfinite(angleSeed) || !std::isfinite(rangeSeed) ||
+            radius <= 0.0f)
+            return -8;
+
+        const float angle = clampUnit(angleSeed) * 2.0f * PI;
+        const float range = clampUnit(rangeSeed) * radius;
+        const float targetX = centerX + std::cos(angle) * range;
+        const float targetY = centerY + std::sin(angle) * range;
+        const float targetZ = centerZ;
+
+        unsigned int targetTileX = 0;
+        unsigned int targetTileY = 0;
+        if (!tileForPosition(targetX, targetY, targetTileX, targetTileY))
+            return -9;
+
+        std::lock_guard<std::mutex> lock(g_mapsMutex);
+        int loadMapError = -2;
+        CachedMap* cached = loadMapDataLocked(dataDir, mapId, &loadMapError);
+        if (!cached || !cached->mesh)
+            return loadMapError;
+
+        if (!loadNeighborTilesLocked(*cached, dataDir, mapId, startTileX, startTileY))
+            return -3;
+        if (!loadNeighborTilesLocked(*cached, dataDir, mapId, targetTileX, targetTileY))
+            return -4;
+
+        std::unique_ptr<dtNavMeshQuery, decltype(&dtFreeNavMeshQuery)> query(dtAllocNavMeshQuery(), dtFreeNavMeshQuery);
+        if (!query)
+            return -5;
+        if (dtStatusFailed(query->init(cached->mesh, 2048)))
+            return -6;
+
+        dtQueryFilter filter;
+        filter.setIncludeFlags(includeFlags);
+        filter.setExcludeFlags(excludeFlags);
+
+        const float startPoint[3] = { startY, startZ, startX };
+        float targetPoint[3] = { targetY, targetZ, targetX };
+        const float extents[3] = { 5.0f, 5.0f, 5.0f };
+        float nearestStart[3] = { 0.0f, 0.0f, 0.0f };
+        float nearestTarget[3] = { 0.0f, 0.0f, 0.0f };
+        dtPolyRef startRef = 0;
+        dtPolyRef targetRef = 0;
+
+        if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
+            return 0;
+        if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
+            return 0;
+        if (dtStatusFailed(query->getPolyHeight(targetRef, nearestTarget, &nearestTarget[1])))
+            return 0;
+        dtVcopy(targetPoint, nearestTarget);
+
+        dtPolyRef polys[MAX_PATH_POLYS];
+        int polyCount = 0;
+        if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, targetPoint, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
+            return 0;
+
+        const int smoothLimit = maxPoints < MAX_SMOOTH_POINTS ? maxPoints : MAX_SMOOTH_POINTS;
+        std::vector<float> smooth(smoothLimit * VERTEX_SIZE);
+        int smoothCount = 0;
+        if (dtStatusFailed(findSmoothPath(cached->mesh, query.get(), filter, nearestStart, targetPoint, polys, polyCount, smooth.data(), &smoothCount, smoothLimit)) || smoothCount < 2)
+            return 0;
 
         for (int i = 0; i < smoothCount; ++i)
         {

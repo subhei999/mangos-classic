@@ -1,98 +1,100 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy)]
-struct CreatureCombatState {
-    attacker: ObjectGuid,
-    victim: ObjectGuid,
-    next_swing_at: Instant,
+pub(in crate::world) struct CreatureCombatState {
+    pub(in crate::world) attacker: ObjectGuid,
+    pub(in crate::world) victim: ObjectGuid,
+    pub(in crate::world) next_swing_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct CreatureThreatEntry {
-    victim: ObjectGuid,
-    threat: f32,
+pub(in crate::world) struct CreatureThreatEntry {
+    pub(in crate::world) victim: ObjectGuid,
+    pub(in crate::world) threat: f32,
 }
 
 #[derive(Debug, Clone)]
-struct Creature {
-    spawn: CreatureSpawnQuery,
-    home_position: WorldPosition,
-    current_position: WorldPosition,
-    motion: CreatureMotionState,
-    next_random_move_at: Option<Instant>,
-    next_waypoint_move_at: Option<Instant>,
-    waypoint_next_index: usize,
-    waypoint_forward: bool,
-    waypoint_resume_position: Option<WorldPosition>,
-    already_called_assistance: bool,
-    next_spline_id: u32,
-    move_speeds: UnitMoveSpeeds,
-    health: u32,
-    power1: u32,
-    life_state: CreatureLifeState,
-    corpse_expires_at: Option<Instant>,
-    respawn_at: Option<Instant>,
-    respawn_epoch_secs: Option<u64>,
-    life_generation: u64,
-    client_visible: bool,
-    lootable: bool,
-    looting: bool,
-    loot_money: u32,
-    loot_money_available: bool,
-    loot_items: Vec<CreatureLoot>,
-    loot_items_generated: bool,
-    loot_roll_released_slots: HashSet<u8>,
-    loot_current_looter_pass_slots: HashSet<u8>,
-    loot_owner: Option<CreatureLootOwner>,
-    loot_current_looter: Option<u32>,
-    loot_allowed_players: HashSet<u32>,
-    loot_method: Option<CreatureLootMethod>,
-    active_auras: Vec<ActiveAura>,
-    next_spell_list_update_at: Option<Instant>,
-    spell_cooldowns_until: HashMap<u32, Instant>,
-    spell_list_availability_id: Option<u32>,
-    unavailable_spell_list_positions: HashSet<u32>,
-    native_display: CreatureDisplaySelection,
-    display_id_override: Option<u32>,
-    pending_movement_scripts: Vec<u32>,
+pub(in crate::world) struct Creature {
+    pub(in crate::world) spawn: CreatureSpawnQuery,
+    pub(in crate::world) home_position: WorldPosition,
+    pub(in crate::world) current_position: WorldPosition,
+    pub(in crate::world) motion: CreatureMotionState,
+    pub(in crate::world) next_random_move_at: Option<Instant>,
+    pub(in crate::world) next_waypoint_move_at: Option<Instant>,
+    pub(in crate::world) waypoint_next_index: usize,
+    pub(in crate::world) waypoint_forward: bool,
+    pub(in crate::world) waypoint_resume_position: Option<WorldPosition>,
+    pub(in crate::world) already_called_assistance: bool,
+    pub(in crate::world) next_spline_id: u32,
+    pub(in crate::world) move_speeds: UnitMoveSpeeds,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) life_state: CreatureLifeState,
+    pub(in crate::world) corpse_expires_at: Option<Instant>,
+    pub(in crate::world) respawn_at: Option<Instant>,
+    pub(in crate::world) respawn_epoch_secs: Option<u64>,
+    pub(in crate::world) life_generation: u64,
+    pub(in crate::world) client_visible: bool,
+    pub(in crate::world) lootable: bool,
+    pub(in crate::world) looting: bool,
+    pub(in crate::world) loot_money: u32,
+    pub(in crate::world) loot_money_available: bool,
+    pub(in crate::world) loot_items: Vec<CreatureLoot>,
+    pub(in crate::world) loot_items_generated: bool,
+    pub(in crate::world) loot_roll_released_slots: HashSet<u8>,
+    pub(in crate::world) loot_current_looter_pass_slots: HashSet<u8>,
+    pub(in crate::world) loot_owner: Option<CreatureLootOwner>,
+    pub(in crate::world) loot_current_looter: Option<u32>,
+    pub(in crate::world) loot_allowed_players: HashSet<u32>,
+    pub(in crate::world) loot_method: Option<CreatureLootMethod>,
+    pub(in crate::world) active_auras: Vec<ActiveAura>,
+    pub(in crate::world) next_spell_list_update_at: Option<Instant>,
+    pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_list_availability_id: Option<u32>,
+    pub(in crate::world) unavailable_spell_list_positions: HashSet<u32>,
+    pub(in crate::world) native_display: CreatureDisplaySelection,
+    pub(in crate::world) display_id_override: Option<u32>,
+    pub(in crate::world) pending_movement_scripts: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CreatureLootOwner {
+pub(in crate::world) enum CreatureLootOwner {
     Player(u32),
     Party(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CreatureLootMethod {
-    method: u8,
-    threshold: u8,
-    master_looter: u32,
+pub(in crate::world) struct CreatureLootMethod {
+    pub(in crate::world) method: u8,
+    pub(in crate::world) threshold: u8,
+    pub(in crate::world) master_looter: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CreatureLifeState {
+pub(in crate::world) enum CreatureLifeState {
     Alive,
     Corpse,
     Dead,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CreatureDisplaySelection {
-    display_id: u32,
-    gender: u8,
+pub(in crate::world) struct CreatureDisplaySelection {
+    pub(in crate::world) display_id: u32,
+    pub(in crate::world) gender: u8,
 }
 
 #[derive(Debug, Clone)]
-struct CreatureLoot {
-    slot: u8,
-    item: u32,
-    count: u32,
-    display_id: u32,
-    quality: u8,
-    free_for_all: bool,
-    quest_drop: bool,
+pub(in crate::world) struct CreatureLoot {
+    pub(in crate::world) slot: u8,
+    pub(in crate::world) item: u32,
+    pub(in crate::world) count: u32,
+    pub(in crate::world) display_id: u32,
+    pub(in crate::world) quality: u8,
+    pub(in crate::world) free_for_all: bool,
+    pub(in crate::world) quest_drop: bool,
 }
 
-fn build_db_creature_create_blocks_for_player(
+pub(in crate::world) fn build_db_creature_create_blocks_for_player(
     creatures: &[DbCreatureRuntime],
     character_guid: Option<u32>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -103,7 +105,9 @@ fn build_db_creature_create_blocks_for_player(
 }
 
 #[cfg(test)]
-fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_db_creature_create_block(
+    creature: &CreatureSpawnQuery,
+) -> anyhow::Result<Vec<u8>> {
     build_db_creature_create_block_inner(
         creature,
         db_creature_spawn_position(creature),
@@ -118,11 +122,13 @@ fn build_db_creature_create_block(creature: &CreatureSpawnQuery) -> anyhow::Resu
     )
 }
 
-fn build_db_creature_runtime_create_block(creature: &DbCreatureRuntime) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_db_creature_runtime_create_block(
+    creature: &DbCreatureRuntime,
+) -> anyhow::Result<Vec<u8>> {
     build_db_creature_runtime_create_block_for_player(creature, None)
 }
 
-fn build_db_creature_runtime_create_block_for_player(
+pub(in crate::world) fn build_db_creature_runtime_create_block_for_player(
     creature: &DbCreatureRuntime,
     character_guid: Option<u32>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -145,7 +151,7 @@ fn build_db_creature_runtime_create_block_for_player(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_db_creature_create_block_inner(
+pub(in crate::world) fn build_db_creature_create_block_inner(
     creature: &CreatureSpawnQuery,
     position: WorldPosition,
     health: u32,
@@ -197,7 +203,7 @@ fn build_db_creature_create_block_inner(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_db_creature_update_values(
+pub(in crate::world) fn write_db_creature_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     creature: &CreatureSpawnQuery,
@@ -319,8 +325,16 @@ fn write_db_creature_update_values(
         UNIT_VIRTUAL_ITEM_INFO + 5,
         packed_virtual_item_info1(template.equip_sheath3),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_MINDAMAGE, template.min_melee_dmg.to_bits())?;
-    set_update_value(&mut values, UNIT_FIELD_MAXDAMAGE, template.max_melee_dmg.to_bits())?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MINDAMAGE,
+        template.min_melee_dmg.to_bits(),
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_MAXDAMAGE,
+        template.max_melee_dmg.to_bits(),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
@@ -331,7 +345,7 @@ fn write_db_creature_update_values(
     write_update_values(body, &values)
 }
 
-fn build_db_creature_aura_update_body(
+pub(in crate::world) fn build_db_creature_aura_update_body(
     creature: ObjectGuid,
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
@@ -346,7 +360,7 @@ fn build_db_creature_aura_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_db_creature_emote_state_update_body(
+pub(in crate::world) fn build_db_creature_emote_state_update_body(
     creature: ObjectGuid,
     emote: u32,
 ) -> anyhow::Result<Vec<u8>> {
@@ -359,7 +373,7 @@ fn build_db_creature_emote_state_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_db_creature_display_update_body(
+pub(in crate::world) fn build_db_creature_display_update_body(
     creature: ObjectGuid,
     display_id: u32,
 ) -> anyhow::Result<Vec<u8>> {
@@ -372,7 +386,10 @@ fn build_db_creature_display_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_db_creature_power_update_body(creature: ObjectGuid, power1: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_db_creature_power_update_body(
+    creature: ObjectGuid,
+    power1: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, creature)?;
@@ -382,45 +399,50 @@ fn build_db_creature_power_update_body(creature: ObjectGuid, power1: u32) -> any
     Ok(build_update_object_body(&[block]))
 }
 
-fn packed_virtual_item_info0(class: u32, subclass: u32, material: i32, inventory_type: u32) -> u32 {
+pub(in crate::world) fn packed_virtual_item_info0(
+    class: u32,
+    subclass: u32,
+    material: i32,
+    inventory_type: u32,
+) -> u32 {
     (class & 0xFF)
         | ((subclass & 0xFF) << 8)
         | (((material as u32) & 0xFF) << 16)
         | ((inventory_type & 0xFF) << 24)
 }
 
-fn packed_virtual_item_info1(sheath: u32) -> u32 {
+pub(in crate::world) fn packed_virtual_item_info1(sheath: u32) -> u32 {
     sheath & 0xFF
 }
 
-fn creature_unit_bytes_2() -> u32 {
+pub(in crate::world) fn creature_unit_bytes_2() -> u32 {
     const SHEATH_STATE_MELEE: u32 = 1;
     const UNIT_BYTE2_FLAG_AURAS: u32 = 0x10;
     SHEATH_STATE_MELEE | (UNIT_BYTE2_FLAG_AURAS << 8)
 }
 
-fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
+pub(in crate::world) fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> ObjectGuid {
     ObjectGuid::new(HighGuid::Unit, creature.entry, creature.guid)
 }
 
-fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
+pub(in crate::world) fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
     creature.spawn.template.npc_flags
 }
 
-const CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x0000_0002;
+pub(in crate::world) const CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x0000_0002;
 
-fn db_creature_visible_to_ghosts(creature: &DbCreatureRuntime) -> bool {
+pub(in crate::world) fn db_creature_visible_to_ghosts(creature: &DbCreatureRuntime) -> bool {
     creature.spawn.template.creature_type_flags & CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS != 0
 }
 
-fn creature_health(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_health(template: &CreatureTemplateQuery) -> u32 {
     template
         .max_level_health
         .max(template.min_level_health)
         .max(1)
 }
 
-fn creature_mana(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_mana(template: &CreatureTemplateQuery) -> u32 {
     if creature_unit_power_type(template) == POWER_MANA as u32 {
         template.max_level_mana.max(template.min_level_mana)
     } else {
@@ -428,11 +450,11 @@ fn creature_mana(template: &CreatureTemplateQuery) -> u32 {
     }
 }
 
-fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_display_id(template: &CreatureTemplateQuery) -> u32 {
     creature_default_display_id(template)
 }
 
-fn creature_default_display_id(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_default_display_id(template: &CreatureTemplateQuery) -> u32 {
     [
         template.display_id1,
         template.display_id2,
@@ -445,11 +467,15 @@ fn creature_default_display_id(template: &CreatureTemplateQuery) -> u32 {
 }
 
 #[cfg(test)]
-fn creature_native_display(creature: &CreatureSpawnQuery) -> CreatureDisplaySelection {
+pub(in crate::world) fn creature_native_display(
+    creature: &CreatureSpawnQuery,
+) -> CreatureDisplaySelection {
     choose_creature_display_for_roll(&creature.template, creature.guid, false)
 }
 
-fn choose_creature_display(template: &CreatureTemplateQuery) -> CreatureDisplaySelection {
+pub(in crate::world) fn choose_creature_display(
+    template: &CreatureTemplateQuery,
+) -> CreatureDisplaySelection {
     let chance_total = creature_display_chance_total(template);
     let display_roll = if chance_total > 0 {
         rand::thread_rng().gen_range(0..chance_total)
@@ -460,7 +486,7 @@ fn choose_creature_display(template: &CreatureTemplateQuery) -> CreatureDisplayS
     choose_creature_display_for_roll(template, display_roll, use_other_gender)
 }
 
-fn choose_creature_display_for_roll(
+pub(in crate::world) fn choose_creature_display_for_roll(
     template: &CreatureTemplateQuery,
     display_roll: u32,
     use_other_gender: bool,
@@ -487,11 +513,7 @@ fn choose_creature_display_for_roll(
         }
     }
 
-    let selected = selected.or_else(|| {
-        models
-            .into_iter()
-            .find(|model| model.display_id != 0)
-    });
+    let selected = selected.or_else(|| models.into_iter().find(|model| model.display_id != 0));
 
     let Some(selected) = selected else {
         return CreatureDisplaySelection {
@@ -514,15 +536,15 @@ fn choose_creature_display_for_roll(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CreatureTemplateModelCandidate {
-    display_id: u32,
-    probability: u32,
-    gender: u8,
-    other_gender_display_id: u32,
-    other_gender: u8,
+pub(in crate::world) struct CreatureTemplateModelCandidate {
+    pub(in crate::world) display_id: u32,
+    pub(in crate::world) probability: u32,
+    pub(in crate::world) gender: u8,
+    pub(in crate::world) other_gender_display_id: u32,
+    pub(in crate::world) other_gender: u8,
 }
 
-fn creature_template_model_candidates(
+pub(in crate::world) fn creature_template_model_candidates(
     template: &CreatureTemplateQuery,
 ) -> [CreatureTemplateModelCandidate; 4] {
     [
@@ -557,7 +579,7 @@ fn creature_template_model_candidates(
     ]
 }
 
-fn creature_display_chance_total(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_display_chance_total(template: &CreatureTemplateQuery) -> u32 {
     creature_template_model_candidates(template)
         .into_iter()
         .filter(|model| model.display_id != 0)
@@ -565,7 +587,7 @@ fn creature_display_chance_total(template: &CreatureTemplateQuery) -> u32 {
         .sum()
 }
 
-fn sanitize_creature_gender(gender: u8) -> u8 {
+pub(in crate::world) fn sanitize_creature_gender(gender: u8) -> u8 {
     if gender <= 2 {
         gender
     } else {
@@ -573,23 +595,23 @@ fn sanitize_creature_gender(gender: u8) -> u8 {
     }
 }
 
-fn creature_unit_bytes_0(template: &CreatureTemplateQuery, gender: u8) -> u32 {
+pub(in crate::world) fn creature_unit_bytes_0(template: &CreatureTemplateQuery, gender: u8) -> u32 {
     let power_type = creature_unit_power_type(template);
     ((template.unit_class as u32) << 8)
         | ((sanitize_creature_gender(gender) as u32) << 16)
         | (power_type << 24)
 }
 
-fn creature_unit_power_type(template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_unit_power_type(template: &CreatureTemplateQuery) -> u32 {
     match template.unit_class {
-        1 => 1, // warrior rage
+        1 => 1,     // warrior rage
         2 | 8 => 0, // paladin/mage mana
-        4 => 3, // rogue energy
+        4 => 3,     // rogue energy
         _ => 0,
     }
 }
 
-fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
+pub(in crate::world) fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
     if template.scale > 0.0 {
         template.scale
     } else {
@@ -598,12 +620,14 @@ fn creature_scale(template: &CreatureTemplateQuery) -> f32 {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CreatureMovementSpeeds {
-    walk: f32,
-    run: f32,
+pub(in crate::world) struct CreatureMovementSpeeds {
+    pub(in crate::world) walk: f32,
+    pub(in crate::world) run: f32,
 }
 
-fn creature_movement_speeds(template: &CreatureTemplateQuery) -> CreatureMovementSpeeds {
+pub(in crate::world) fn creature_movement_speeds(
+    template: &CreatureTemplateQuery,
+) -> CreatureMovementSpeeds {
     let walk_rate = if template.speed_walk > 0.0 {
         template.speed_walk
     } else {

@@ -1,6 +1,11 @@
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgCastResultResponse, SmsgSpellGoResponse, SmsgSpellStartResponse,
+};
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellPacketPhase {
+pub(in crate::world) enum SpellPacketPhase {
     Start,
     CastResult,
     Go,
@@ -8,37 +13,33 @@ enum SpellPacketPhase {
     Cooldown,
 }
 
-fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(5);
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(0);
-    body
+pub(in crate::world) fn build_cast_result_ok_body(spell_id: u32) -> Vec<u8> {
+    SmsgCastResultResponse {
+        spell_id,
+        status: 0,
+        failure: None,
+    }
+    .body()
 }
 
-fn build_cast_result_failure_body(spell_id: u32, failure: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(6);
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(2);
-    body.push(failure);
-    body
+pub(in crate::world) fn build_cast_result_failure_body(spell_id: u32, failure: u8) -> Vec<u8> {
+    SmsgCastResultResponse {
+        spell_id,
+        status: 2,
+        failure: Some(failure),
+    }
+    .body()
 }
 
-fn build_spell_go_body(
+pub(in crate::world) fn build_spell_go_body(
     caster: ObjectGuid,
     spell_id: u32,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Vec<u8>> {
-    build_spell_go_body_with_source(
-        caster,
-        caster,
-        spell_id,
-        CAST_FLAG_SPELL_GO,
-        targets,
-        None,
-    )
+    build_spell_go_body_with_source(caster, caster, spell_id, CAST_FLAG_SPELL_GO, targets, None)
 }
 
-fn build_spell_go_body_with_miss(
+pub(in crate::world) fn build_spell_go_body_with_miss(
     caster: ObjectGuid,
     spell_id: u32,
     targets: &SpellCastTargets,
@@ -54,7 +55,7 @@ fn build_spell_go_body_with_miss(
     )
 }
 
-fn build_spell_go_body_with_source(
+pub(in crate::world) fn build_spell_go_body_with_source(
     source: ObjectGuid,
     caster: ObjectGuid,
     spell_id: u32,
@@ -62,36 +63,18 @@ fn build_spell_go_body_with_source(
     targets: &SpellCastTargets,
     miss_info: Option<u8>,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(40);
-    PackedGuid::write(&mut body, source)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&cast_flags.to_le_bytes());
-
-    if let Some(miss_info) = miss_info {
-        if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
-            body.push(0);
-            body.push(1);
-            body.extend_from_slice(&target.raw().to_le_bytes());
-            body.push(miss_info);
-        } else {
-            body.push(0);
-            body.push(0);
-        }
-    } else {
-        if let Some(target) = targets.unit_target.or(targets.gameobject_target) {
-            body.push(1);
-            body.extend_from_slice(&target.raw().to_le_bytes());
-        } else {
-            body.push(0);
-        }
-        body.push(0);
+    Ok(SmsgSpellGoResponse {
+        source,
+        caster,
+        spell_id,
+        cast_flags,
+        targets: *targets,
+        miss_info,
     }
-    targets.write(&mut body)?;
-    Ok(body)
+    .body())
 }
 
-fn build_spell_start_body(
+pub(in crate::world) fn build_spell_start_body(
     caster: ObjectGuid,
     spell_id: u32,
     cast_time_ms: u32,
@@ -100,19 +83,20 @@ fn build_spell_start_body(
     build_spell_start_body_with_source(caster, caster, spell_id, cast_time_ms, targets)
 }
 
-fn build_spell_start_body_with_source(
+pub(in crate::world) fn build_spell_start_body_with_source(
     source: ObjectGuid,
     caster: ObjectGuid,
     spell_id: u32,
     cast_time_ms: u32,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(44);
-    PackedGuid::write(&mut body, source)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&CAST_FLAG_SPELL_START.to_le_bytes());
-    body.extend_from_slice(&cast_time_ms.to_le_bytes());
-    targets.write(&mut body)?;
-    Ok(body)
+    Ok(SmsgSpellStartResponse {
+        source,
+        caster,
+        spell_id,
+        cast_flags: CAST_FLAG_SPELL_START,
+        cast_time_ms,
+        targets: *targets,
+    }
+    .body())
 }

@@ -1,7 +1,9 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Handlers/ItemHandler.cpp item query packet builders.
 
 #[cfg(test)]
-fn build_item_query_single_response(
+pub(in crate::world) fn build_item_query_single_response(
     item: u32,
 
     template: Option<&wow_db::ItemTemplateQuery>,
@@ -10,13 +12,13 @@ fn build_item_query_single_response(
 }
 
 #[derive(Clone, Copy)]
-struct ItemQuerySpellCooldown {
-    recovery_time: i32,
-    category: u32,
-    category_recovery_time: i32,
+pub(in crate::world) struct ItemQuerySpellCooldown {
+    pub(in crate::world) recovery_time: i32,
+    pub(in crate::world) category: u32,
+    pub(in crate::world) category_recovery_time: i32,
 }
 
-fn build_item_query_single_response_with_spell_cooldowns(
+pub(in crate::world) fn build_item_query_single_response_with_spell_cooldowns(
     item: u32,
 
     template: Option<&wow_db::ItemTemplateQuery>,
@@ -174,7 +176,7 @@ fn build_item_query_single_response_with_spell_cooldowns(
     body
 }
 
-fn item_query_spell_cooldown(
+pub(in crate::world) fn item_query_spell_cooldown(
     spell: wow_db::ItemTemplateSpell,
     spell_template_cooldown: Option<ItemQuerySpellCooldown>,
 ) -> ItemQuerySpellCooldown {
@@ -193,7 +195,9 @@ fn item_query_spell_cooldown(
     }
 }
 
-fn build_item_name_query_response(template: &wow_db::ItemTemplateQuery) -> Vec<u8> {
+pub(in crate::world) fn build_item_name_query_response(
+    template: &wow_db::ItemTemplateQuery,
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(9 + template.name.len());
     write_u32(&mut body, template.entry);
     write_c_string(&mut body, &template.name);
@@ -201,7 +205,7 @@ fn build_item_name_query_response(template: &wow_db::ItemTemplateQuery) -> Vec<u
     body
 }
 
-fn item_query_subclass(template: &wow_db::ItemTemplateQuery) -> u32 {
+pub(in crate::world) fn item_query_subclass(template: &wow_db::ItemTemplateQuery) -> u32 {
     if template.class == 0 {
         0
     } else {

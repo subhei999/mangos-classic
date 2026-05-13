@@ -1,13 +1,15 @@
-async fn handle_cast_spell(
+use super::*;
+use wow_proto::SpellCastTargets;
+
+pub(in crate::world) async fn handle_cast_spell(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
-    body: &[u8],
+    packet: wow_proto::CastSpellRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let packet = CastSpellPacket::read(body)?;
     expire_session_auras(session, Instant::now());
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!(
             spell_id = packet.spell_id,
             "Ignoring spell cast before character login"
@@ -36,15 +38,15 @@ async fn handle_cast_spell(
         .await;
     }
 
-    if !session.active_spells.contains(&packet.spell_id) {
+    if !session.character.active_spells.contains(&packet.spell_id) {
         warn!(
             spell_id = packet.spell_id,
-            character_guid,
-            "Ignoring spell cast for spell not active on character"
+            character_guid, "Ignoring spell cast for spell not active on character"
         );
         return Ok(());
     }
-    let Some(spell_template) = deps.shared_world
+    let Some(spell_template) = deps
+        .shared_world
         .object_mgr
         .spell_template(deps.world_db_pool, packet.spell_id)
         .await?
@@ -56,8 +58,7 @@ async fn handle_cast_spell(
         return Ok(());
     };
     let spell_info = SpellInfo::from_template(&spell_template);
-    let Some(mut prepared_spell) = spell_info.prepare_player_cast()
-    else {
+    let Some(mut prepared_spell) = spell_info.prepare_player_cast() else {
         warn!(
             spell_id = packet.spell_id,
             spell_name = spell_template.spell_name.as_str(),
@@ -124,7 +125,8 @@ async fn handle_cast_spell(
         Some(&mut *header_crypto),
     )
     .await?;
-    let observer_packets = deps.shared_world
+    let observer_packets = deps
+        .shared_world
         .maps
         .broadcast_nearby_player_packet(
             map_id,
@@ -201,16 +203,19 @@ async fn handle_cast_spell(
     Ok(())
 }
 
-async fn handle_use_item(
+pub(in crate::world) async fn handle_use_item(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
-    body: &[u8],
+    request: wow_proto::UseItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let request = UseItemPacket::read(body)?;
+    let request = wow_proto::UseItemRequest {
+        bag: normalize_client_bag(request.bag),
+        ..request
+    };
     expire_session_auras(session, Instant::now());
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         warn!("Ignoring item use before character login");
         return Ok(());
     };
@@ -220,6 +225,7 @@ async fn handle_use_item(
 
     let Some(source_item) = session
         .inventory
+        .items
         .iter()
         .find(|item| item.bag == request.bag as u32 && item.slot == request.slot)
         .cloned()
@@ -248,7 +254,8 @@ async fn handle_use_item(
     };
 
     if template.inventory_type != 0
-        && !(source_item.bag == INVENTORY_SLOT_BAG_0 as u32 && source_item.slot < EQUIPMENT_SLOT_END)
+        && !(source_item.bag == INVENTORY_SLOT_BAG_0 as u32
+            && source_item.slot < EQUIPMENT_SLOT_END)
     {
         return send_inventory_change_failure(
             stream,
@@ -265,9 +272,9 @@ async fn handle_use_item(
         character.race,
         character.class,
         &template,
-        &session.character_skills,
-        &session.active_spells,
-        &session.character_reputations,
+        &session.character.character_skills,
+        &session.character.active_spells,
+        &session.character.character_reputations,
     );
     if use_result != 0 {
         return send_inventory_change_failure_with_required_level(
@@ -291,7 +298,8 @@ async fn handle_use_item(
         )
         .await;
     };
-    let Some(spell_template) = deps.shared_world
+    let Some(spell_template) = deps
+        .shared_world
         .object_mgr
         .spell_template(deps.world_db_pool, item_spell.spell_id)
         .await?
@@ -311,7 +319,8 @@ async fn handle_use_item(
         .await;
     };
 
-    let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
+    let Some(mut prepared_spell) =
+        SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
     else {
         warn!(
             item = template.entry,
@@ -451,7 +460,7 @@ async fn handle_use_item(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_item_use_spell_cast_by_id(
+pub(in crate::world) async fn complete_item_use_spell_cast_by_id(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -463,7 +472,7 @@ async fn complete_item_use_spell_cast_by_id(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let Some(spell_template) = deps
@@ -472,10 +481,14 @@ async fn complete_item_use_spell_cast_by_id(
         .spell_template(deps.world_db_pool, spell_id)
         .await?
     else {
-        warn!(spell_id, "Dropping pending item spell cast with no spell_template row");
+        warn!(
+            spell_id,
+            "Dropping pending item spell cast with no spell_template row"
+        );
         return Ok(());
     };
-    let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
+    let Some(mut prepared_spell) =
+        SpellInfo::from_template(&spell_template).prepare_item_cast(item_guid)
     else {
         warn!(
             spell_id,
@@ -505,7 +518,7 @@ async fn complete_item_use_spell_cast_by_id(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_item_use_spell_cast(
+pub(in crate::world) async fn complete_item_use_spell_cast(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -519,7 +532,7 @@ async fn complete_item_use_spell_cast(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let character_guid = character.guid;
@@ -602,13 +615,13 @@ impl PendingSpellCastTargets {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_pending_player_spell_cast(
+pub(in crate::world) async fn complete_pending_player_spell_cast(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
@@ -674,16 +687,16 @@ async fn complete_pending_player_spell_cast(
     Ok(())
 }
 
-async fn next_pending_player_spell_cast_due_at(
+pub(in crate::world) async fn next_pending_player_spell_cast_due_at(
     maps: &MapRuntimeManager,
     session: &WorldSessionState,
 ) -> Option<Instant> {
-    let character = session.active_character.as_ref()?;
+    let character = session.character.active_character.as_ref()?;
     maps.next_pending_player_spell_cast_due_at(character.position.map_id, character.guid)
         .await
 }
 
-async fn pending_player_spell_cast_is_due(
+pub(in crate::world) async fn pending_player_spell_cast_is_due(
     maps: &MapRuntimeManager,
     session: &WorldSessionState,
     now: Instant,
@@ -694,7 +707,7 @@ async fn pending_player_spell_cast_is_due(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_player_spell_cast_by_id(
+pub(in crate::world) async fn complete_player_spell_cast_by_id(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -709,7 +722,10 @@ async fn complete_player_spell_cast_by_id(
         .spell_template(deps.world_db_pool, spell_id)
         .await?
     else {
-        warn!(spell_id, "Dropping pending spell cast with no spell_template row");
+        warn!(
+            spell_id,
+            "Dropping pending spell cast with no spell_template row"
+        );
         return Ok(());
     };
     let Some(mut prepared_spell) = SpellInfo::from_template(&spell_template).prepare_player_cast()
@@ -738,7 +754,7 @@ async fn complete_player_spell_cast_by_id(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_player_spell_cast(
+pub(in crate::world) async fn complete_player_spell_cast(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -749,7 +765,7 @@ async fn complete_player_spell_cast(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let character_guid = character.guid;
@@ -797,7 +813,8 @@ async fn complete_player_spell_cast(
         )
         .await;
     }
-    sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid).await;
+    sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid)
+        .await;
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -863,7 +880,7 @@ async fn complete_player_spell_cast(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_spell_impact_by_id(
+pub(in crate::world) async fn apply_player_spell_impact_by_id(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -872,7 +889,7 @@ async fn apply_player_spell_impact_by_id(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let Some(spell_template) = deps
@@ -881,7 +898,10 @@ async fn apply_player_spell_impact_by_id(
         .spell_template(deps.world_db_pool, spell_id)
         .await?
     else {
-        warn!(spell_id, "Dropping pending spell impact with no spell_template row");
+        warn!(
+            spell_id,
+            "Dropping pending spell impact with no spell_template row"
+        );
         return Ok(());
     };
     let Some(prepared_spell) = SpellInfo::from_template(&spell_template).prepare_player_cast()
@@ -913,7 +933,7 @@ async fn apply_player_spell_impact_by_id(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_spell_impact(
+pub(in crate::world) async fn apply_player_spell_impact(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -944,17 +964,18 @@ async fn apply_player_spell_impact(
     .await
 }
 
-async fn stand_player_for_spell_cast(
+pub(in crate::world) async fn stand_player_for_spell_cast(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let has_standing_cancel_aura = session
-        .active_auras
-        .iter()
-        .any(|aura| active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_STANDING_CANCELS != 0);
-    if session.player_stand_state == PLAYER_STAND_STATE_STAND && !has_standing_cancel_aura {
+    let has_standing_cancel_aura =
+        session.auras.active_auras.iter().any(|aura| {
+            active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_STANDING_CANCELS != 0
+        });
+    if session.character.player_stand_state == PLAYER_STAND_STATE_STAND && !has_standing_cancel_aura
+    {
         return Ok(());
     }
     if has_standing_cancel_aura {
@@ -968,8 +989,8 @@ async fn stand_player_for_spell_cast(
         )
         .await?;
     }
-    session.player_stand_state = PLAYER_STAND_STATE_STAND;
-    let Some(character) = session.active_character.as_ref() else {
+    session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     send_packet(
@@ -998,7 +1019,7 @@ async fn stand_player_for_spell_cast(
     Ok(())
 }
 
-async fn cancel_pending_player_spell_cast(
+pub(in crate::world) async fn cancel_pending_player_spell_cast(
     stream: &mut WorldPacketSink,
     maps: &MapRuntimeManager,
     sessions: &SessionRegistry,
@@ -1006,7 +1027,7 @@ async fn cancel_pending_player_spell_cast(
     failure: u8,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(false);
     };
     let map_id = character.position.map_id;
@@ -1033,7 +1054,7 @@ async fn cancel_pending_player_spell_cast(
     Ok(true)
 }
 
-async fn broadcast_spell_interrupt_to_observers(
+pub(in crate::world) async fn broadcast_spell_interrupt_to_observers(
     maps: &MapRuntimeManager,
     sessions: &SessionRegistry,
     session: &WorldSessionState,
@@ -1041,7 +1062,7 @@ async fn broadcast_spell_interrupt_to_observers(
     spell_id: u32,
     failure: u8,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let failure_packet = OutboundWorldPacket {
@@ -1073,7 +1094,7 @@ async fn broadcast_spell_interrupt_to_observers(
     Ok(())
 }
 
-async fn send_spell_cast_failure(
+pub(in crate::world) async fn send_spell_cast_failure(
     stream: &mut WorldPacketSink,
     caster: ObjectGuid,
     spell_id: u32,
@@ -1104,54 +1125,22 @@ async fn send_spell_cast_failure(
 }
 
 #[derive(Clone, Copy)]
-struct SpellCastDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    account_id: u32,
-    shared_world: SharedWorldDeps<'a>,
-    parties: &'a PartyManager,
+pub(in crate::world) struct SpellCastDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) account_id: u32,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) parties: &'a PartyManager,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct UseItemPacket {
-    bag: u8,
-    slot: u8,
-    spell_index: u8,
-    targets: SpellCastTargets,
+pub(in crate::world) struct OpeningSpellRequest {
+    pub(in crate::world) caster: ObjectGuid,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) character_guid: u32,
+    pub(in crate::world) targets: SpellCastTargets,
 }
 
-impl UseItemPacket {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 3 {
-            anyhow::bail!("CMSG_USE_ITEM payload too short: {} bytes", body.len());
-        }
-        let mut cursor = 3;
-        let targets = if body.len() > cursor {
-            SpellCastTargets::read(body, &mut cursor)?
-        } else {
-            SpellCastTargets {
-                target_mask: 0,
-                unit_target: None,
-                gameobject_target: None,
-            }
-        };
-        Ok(Self {
-            bag: normalize_client_bag(body[0]),
-            slot: body[1],
-            spell_index: body[2],
-            targets,
-        })
-    }
-}
-
-struct OpeningSpellRequest {
-    caster: ObjectGuid,
-    map_id: u32,
-    character_guid: u32,
-    targets: SpellCastTargets,
-}
-
-async fn handle_opening_spell(
+pub(in crate::world) async fn handle_opening_spell(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
@@ -1179,7 +1168,7 @@ async fn handle_opening_spell(
         );
         return Ok(());
     };
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     if gameobject.spawn.map != request.map_id
@@ -1217,8 +1206,12 @@ async fn handle_opening_spell(
     };
     let _ = gameobject;
 
-    let spell_start_body =
-        build_spell_start_body(request.caster, OPENING_SPELL_ID, OPENING_SPELL_CAST_TIME_MS, &targets)?;
+    let spell_start_body = build_spell_start_body(
+        request.caster,
+        OPENING_SPELL_ID,
+        OPENING_SPELL_CAST_TIME_MS,
+        &targets,
+    )?;
     send_packet(
         stream,
         SMSG_SPELL_START,
@@ -1272,16 +1265,10 @@ async fn handle_opening_spell(
     shared_world.sessions.dispatch(observer_go).await;
 
     let response = build_gameobject_loot_response_body(gameobject_guid, &loot_items);
-    send_packet(
-        stream,
-        SMSG_LOOT_RESPONSE,
-        &response,
-        Some(header_crypto),
-    )
-    .await
+    send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
 }
 
-async fn spell_melee_cast_failure(
+pub(in crate::world) async fn spell_melee_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     spell_profile: &SpellCastProfile,
@@ -1312,12 +1299,12 @@ async fn spell_melee_cast_failure(
     }
 }
 
-async fn spell_target_is_behind_victim(
+pub(in crate::world) async fn spell_target_is_behind_victim(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     target: ObjectGuid,
 ) -> bool {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return false;
     };
     let Some(player) = shared_world
@@ -1341,13 +1328,13 @@ async fn spell_target_is_behind_victim(
     )
 }
 
-async fn spell_charge_cast_failure(
+pub(in crate::world) async fn spell_charge_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     targets: &SpellCastTargets,
 ) -> Option<u8> {
     let target = targets.unit_target?;
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Some(SPELL_FAILED_OUT_OF_RANGE);
     };
     let validation = shared_world
@@ -1356,7 +1343,7 @@ async fn spell_charge_cast_failure(
             character.position.map_id,
             character.guid,
             target,
-            &session.db_creature_navigation,
+            &session.movement.db_creature_navigation,
         )
         .await;
     match validation.check {
@@ -1375,7 +1362,7 @@ async fn spell_charge_cast_failure(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_charge_movement(
+pub(in crate::world) async fn apply_charge_movement(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
@@ -1385,7 +1372,7 @@ async fn apply_charge_movement(
     spell_id: u32,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
@@ -1405,10 +1392,16 @@ async fn apply_charge_movement(
         BASE_CHARGE_SPEED
     };
     let duration_ms = charge_duration_millis(start, destination, speed);
-    let move_body =
-        build_monster_move_facing_target_body(caster, start, destination, spell_id, duration_ms, target)?;
+    let move_body = build_monster_move_facing_target_body(
+        caster,
+        start,
+        destination,
+        spell_id,
+        duration_ms,
+        target,
+    )?;
 
-    if let Some(character) = session.active_character.as_mut() {
+    if let Some(character) = session.character.active_character.as_mut() {
         character.position = destination;
     }
     shared_world
@@ -1455,7 +1448,10 @@ async fn apply_charge_movement(
     Ok(())
 }
 
-fn charge_destination(start: WorldPosition, target: &DbCreatureRuntime) -> WorldPosition {
+pub(in crate::world) fn charge_destination(
+    start: WorldPosition,
+    target: &DbCreatureRuntime,
+) -> WorldPosition {
     let target_position = target.current_position;
     let dx = start.x - target_position.x;
     let dy = start.y - target_position.y;
@@ -1475,7 +1471,11 @@ fn charge_destination(start: WorldPosition, target: &DbCreatureRuntime) -> World
     )
 }
 
-fn charge_duration_millis(start: WorldPosition, destination: WorldPosition, speed: f32) -> u32 {
+pub(in crate::world) fn charge_duration_millis(
+    start: WorldPosition,
+    destination: WorldPosition,
+    speed: f32,
+) -> u32 {
     let dx = destination.x - start.x;
     let dy = destination.y - start.y;
     let dz = destination.z - start.z;
@@ -1484,11 +1484,11 @@ fn charge_duration_millis(start: WorldPosition, destination: WorldPosition, spee
         .max(1.0) as u32
 }
 
-fn angle_towards(from: WorldPosition, to: WorldPosition) -> f32 {
+pub(in crate::world) fn angle_towards(from: WorldPosition, to: WorldPosition) -> f32 {
     (to.y - from.y).atan2(to.x - from.x)
 }
 
-async fn spell_cast_failure(
+pub(in crate::world) async fn spell_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
@@ -1496,11 +1496,11 @@ async fn spell_cast_failure(
     targets: &SpellCastTargets,
     now: Instant,
 ) -> Option<u8> {
-    if session.player_death_state != PlayerDeathState::Alive {
+    if session.death.player_death_state != PlayerDeathState::Alive {
         return Some(SPELL_FAILED_CASTER_DEAD);
     }
-    if let Some(character) = session.active_character.as_ref() {
-        if session.player_health == 0
+    if let Some(character) = session.character.active_character.as_ref() {
+        if session.character.player_health == 0
             && shared_world
                 .maps
                 .player_runtime_snapshot(character.position.map_id, character.guid)
@@ -1522,10 +1522,17 @@ async fn spell_cast_failure(
             return Some(failure);
         }
     }
-    spell_target_cast_failure(shared_world, session, spell_template, spell_profile, targets).await
+    spell_target_cast_failure(
+        shared_world,
+        session,
+        spell_template,
+        spell_profile,
+        targets,
+    )
+    .await
 }
 
-async fn spell_target_cast_failure(
+pub(in crate::world) async fn spell_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
@@ -1557,7 +1564,7 @@ async fn spell_target_cast_failure(
     spell_melee_cast_failure(shared_world, session, spell_profile, targets).await
 }
 
-async fn spell_combo_point_cast_failure(
+pub(in crate::world) async fn spell_combo_point_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     spell_profile: &SpellCastProfile,
@@ -1567,7 +1574,7 @@ async fn spell_combo_point_cast_failure(
         return None;
     }
     let target = targets.unit_target?;
-    let character = session.active_character.as_ref()?;
+    let character = session.character.active_character.as_ref()?;
     let snapshot = shared_world
         .maps
         .player_runtime_snapshot(character.position.map_id, character.guid)
@@ -1579,13 +1586,13 @@ async fn spell_combo_point_cast_failure(
     }
 }
 
-async fn spell_heal_cast_failure(
+pub(in crate::world) async fn spell_heal_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
     targets: &SpellCastTargets,
 ) -> Option<u8> {
-    let character = session.active_character.as_ref()?;
+    let character = session.character.active_character.as_ref()?;
     if SpellInfo::from_template(spell_template).unit_target_kind(SpellCastKind::DirectHeal)
         == SpellTargetKind::Caster
     {
@@ -1609,7 +1616,7 @@ async fn spell_heal_cast_failure(
     None
 }
 
-async fn spell_unit_target_cast_failure(
+pub(in crate::world) async fn spell_unit_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
@@ -1622,11 +1629,14 @@ async fn spell_unit_target_cast_failure(
     }
     if target_kind != SpellTargetKind::HostileUnit
         || spell_profile.requires_melee
-        || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing | SpellCastKind::Charge)
+        || matches!(
+            spell_profile.kind,
+            SpellCastKind::NextMeleeSwing | SpellCastKind::Charge
+        )
     {
         return None;
     }
-    let character = session.active_character.as_ref()?;
+    let character = session.character.active_character.as_ref()?;
     let target = targets.unit_target?;
     if !target.is_creature() {
         return Some(SPELL_FAILED_OUT_OF_RANGE);
@@ -1646,16 +1656,16 @@ async fn spell_unit_target_cast_failure(
             character.position.map_id,
             character.guid,
             target,
-            &session.db_creature_navigation,
+            &session.movement.db_creature_navigation,
             range,
         )
         .await;
     match validation.check {
         PlayerSpellTargetCheck::Clear => None,
         PlayerSpellTargetCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
-        PlayerSpellTargetCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
-            Some(SPELL_FAILED_LINE_OF_SIGHT)
-        }
+        PlayerSpellTargetCheck::NavigationBlocked(
+            DbCreatureNavigationResult::LineOfSightBlocked,
+        ) => Some(SPELL_FAILED_LINE_OF_SIGHT),
         PlayerSpellTargetCheck::NoActiveCharacter
         | PlayerSpellTargetCheck::MissingTarget
         | PlayerSpellTargetCheck::TargetNotAlive
@@ -1664,7 +1674,7 @@ async fn spell_unit_target_cast_failure(
     }
 }
 
-async fn resolve_player_spell_cast_targets(
+pub(in crate::world) async fn resolve_player_spell_cast_targets(
     maps: &MapRuntimeManager,
     map_id: u32,
     character_guid: u32,
@@ -1675,34 +1685,34 @@ async fn resolve_player_spell_cast_targets(
     let target_kind = spell_info.unit_target_kind(kind);
     if target_kind.requires_unit_target() && targets.unit_target.is_none() {
         if let Some(selected_target) = maps.player_selected_target(map_id, character_guid).await {
-            targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
-                & !SPELL_CAST_TARGET_UNIT_ENEMY;
+            targets.target_mask =
+                (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
             targets.unit_target = Some(selected_target);
         }
     }
     targets
 }
 
-fn spell_blocks_mana_regen(template: &wow_db::SpellTemplateQuery) -> bool {
+pub(in crate::world) fn spell_blocks_mana_regen(template: &wow_db::SpellTemplateQuery) -> bool {
     template.power_type == POWER_TYPE_MANA
         && template.mana_cost > 0
         && (template.attributes_ex2 & SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN) == 0
 }
 
-async fn sync_session_player_power_from_map(
+pub(in crate::world) async fn sync_session_player_power_from_map(
     maps: &MapRuntimeManager,
     session: &mut WorldSessionState,
     map_id: u32,
     character_guid: u32,
 ) {
     if let Some(snapshot) = maps.player_runtime_snapshot(map_id, character_guid).await {
-        session.player_mana = snapshot.power1;
-        session.player_rage = snapshot.power2;
-        session.player_energy = snapshot.power4;
+        session.character.player_mana = snapshot.power1;
+        session.character.player_rage = snapshot.power2;
+        session.character.player_energy = snapshot.power4;
     }
 }
 
-fn spell_cast_time_millis(cast_time: Option<SpellCastTimeEntry>) -> u32 {
+pub(in crate::world) fn spell_cast_time_millis(cast_time: Option<SpellCastTimeEntry>) -> u32 {
     let Some(cast_time) = cast_time else {
         return 0;
     };
@@ -1712,7 +1722,7 @@ fn spell_cast_time_millis(cast_time: Option<SpellCastTimeEntry>) -> u32 {
         .max(0) as u32
 }
 
-async fn spell_travel_delay_millis(
+pub(in crate::world) async fn spell_travel_delay_millis(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
@@ -1729,7 +1739,7 @@ async fn spell_travel_delay_millis(
     if !has_missile_damage {
         return 0;
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return 0;
     };
     let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
@@ -1749,24 +1759,24 @@ async fn spell_travel_delay_millis(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellCastProfile {
-    spell_id: u32,
-    kind: SpellCastKind,
-    aura_target: SpellAuraTarget,
-    bonus_damage: u32,
-    weapon_damage_percent: u32,
-    damage: u32,
-    power: SpellPowerCost,
-    requires_melee: bool,
-    requires_behind: bool,
-    needs_combo_points: bool,
-    global_cooldown_category: u32,
-    global_cooldown_millis: u64,
-    cooldown_millis: u64,
+pub(in crate::world) struct SpellCastProfile {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) kind: SpellCastKind,
+    pub(in crate::world) aura_target: SpellAuraTarget,
+    pub(in crate::world) bonus_damage: u32,
+    pub(in crate::world) weapon_damage_percent: u32,
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) power: SpellPowerCost,
+    pub(in crate::world) requires_melee: bool,
+    pub(in crate::world) requires_behind: bool,
+    pub(in crate::world) needs_combo_points: bool,
+    pub(in crate::world) global_cooldown_category: u32,
+    pub(in crate::world) global_cooldown_millis: u64,
+    pub(in crate::world) cooldown_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellCastKind {
+pub(in crate::world) enum SpellCastKind {
     InstantDamage,
     DirectHeal,
     AuraApplication,
@@ -1776,13 +1786,13 @@ enum SpellCastKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellAuraTarget {
+pub(in crate::world) enum SpellAuraTarget {
     Caster,
     UnitTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellTargetKind {
+pub(in crate::world) enum SpellTargetKind {
     Caster,
     Unit,
     HostileUnit,
@@ -1799,74 +1809,74 @@ impl SpellTargetKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellPowerCost {
+pub(in crate::world) enum SpellPowerCost {
     Rage { cost: u32 },
     Mana { cost: u32 },
     Energy { cost: u32 },
 }
 
-const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
-const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
-const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
-const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
-const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
-const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
-const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
-const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
-const SPELL_EFFECT_WEAPON_DAMAGE: u32 = 58;
-const SPELL_EFFECT_ADD_COMBO_POINTS: u32 = 80;
-const SPELL_EFFECT_NORMALIZED_WEAPON_DMG: u32 = 121;
-const SPELL_EFFECT_APPLY_AURA: u32 = 6;
-const SPELL_EFFECT_TELEPORT_UNITS: u32 = 5;
-const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
-const SPELL_EFFECT_HEAL: u32 = 10;
-const SPELL_EFFECT_ENERGIZE: u32 = 30;
-const SPELL_EFFECT_CHARGE: u32 = 96;
-const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
-const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
-const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
-const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
-const SPELL_AURA_MOD_STAT: u32 = 29;
-const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
-const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
-const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
-const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
-const SPELL_AURA_MOD_SKILL: u32 = 30;
-const SPELL_AURA_MOD_REGEN: u32 = 84;
-const SPELL_AURA_MOD_POWER_REGEN: u32 = 85;
-const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
-const SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE: u32 = 137;
-const SPELL_AURA_MOD_MELEE_HASTE: u32 = 138;
-const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
-const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
-const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
-const AURA_INTERRUPT_FLAG_STANDING_CANCELS: u32 = 0x0004_0000;
-const PLAYER_STAND_STATE_STAND: u8 = 0;
-const PLAYER_STAND_STATE_SIT: u8 = 1;
-const PLAYER_STAND_STATE_SLEEP: u8 = 3;
-const PLAYER_STAND_STATE_DEAD: u8 = 7;
-const PLAYER_STAND_STATE_KNEEL: u8 = 8;
-const POWER_TYPE_MANA: u32 = 0;
-const POWER_TYPE_RAGE: u32 = 1;
-const POWER_TYPE_ENERGY: u32 = 3;
-const POSITIVE_AURA_FLAGS: u32 = 0x05;
-const NEGATIVE_AURA_FLAGS: u32 = 0x08;
-const TARGET_UNIT_CASTER: u32 = 1;
-const TARGET_UNIT_ENEMY: u32 = 6;
-const TARGET_UNIT: u32 = 25;
-const PROC_FLAG_TAKE_MELEE_SWING: u32 = 0x0000_0008;
-const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
-const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
-const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
-const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
-const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
-const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
-const BASE_CHARGE_SPEED: f32 = 27.0;
-const MAX_AURA_SLOTS: usize = 48;
-const MAX_POSITIVE_AURA_SLOTS: usize = 32;
-const MAX_AURA_FLAG_FIELDS: usize = 6;
+pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
+pub(in crate::world) const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
+pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
+pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
+pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
+pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
+pub(in crate::world) const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
+pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE: u32 = 58;
+pub(in crate::world) const SPELL_EFFECT_ADD_COMBO_POINTS: u32 = 80;
+pub(in crate::world) const SPELL_EFFECT_NORMALIZED_WEAPON_DMG: u32 = 121;
+pub(in crate::world) const SPELL_EFFECT_APPLY_AURA: u32 = 6;
+pub(in crate::world) const SPELL_EFFECT_TELEPORT_UNITS: u32 = 5;
+pub(in crate::world) const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
+pub(in crate::world) const SPELL_EFFECT_HEAL: u32 = 10;
+pub(in crate::world) const SPELL_EFFECT_ENERGIZE: u32 = 30;
+pub(in crate::world) const SPELL_EFFECT_CHARGE: u32 = 96;
+pub(in crate::world) const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
+pub(in crate::world) const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
+pub(in crate::world) const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
+pub(in crate::world) const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
+pub(in crate::world) const SPELL_AURA_MOD_STAT: u32 = 29;
+pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
+pub(in crate::world) const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
+pub(in crate::world) const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
+pub(in crate::world) const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
+pub(in crate::world) const SPELL_AURA_MOD_SKILL: u32 = 30;
+pub(in crate::world) const SPELL_AURA_MOD_REGEN: u32 = 84;
+pub(in crate::world) const SPELL_AURA_MOD_POWER_REGEN: u32 = 85;
+pub(in crate::world) const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
+pub(in crate::world) const SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE: u32 = 137;
+pub(in crate::world) const SPELL_AURA_MOD_MELEE_HASTE: u32 = 138;
+pub(in crate::world) const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
+pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
+pub(in crate::world) const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
+pub(in crate::world) const AURA_INTERRUPT_FLAG_STANDING_CANCELS: u32 = 0x0004_0000;
+pub(in crate::world) const PLAYER_STAND_STATE_STAND: u8 = 0;
+pub(in crate::world) const PLAYER_STAND_STATE_SIT: u8 = 1;
+pub(in crate::world) const PLAYER_STAND_STATE_SLEEP: u8 = 3;
+pub(in crate::world) const PLAYER_STAND_STATE_DEAD: u8 = 7;
+pub(in crate::world) const PLAYER_STAND_STATE_KNEEL: u8 = 8;
+pub(in crate::world) const POWER_TYPE_MANA: u32 = 0;
+pub(in crate::world) const POWER_TYPE_RAGE: u32 = 1;
+pub(in crate::world) const POWER_TYPE_ENERGY: u32 = 3;
+pub(in crate::world) const POSITIVE_AURA_FLAGS: u32 = 0x05;
+pub(in crate::world) const NEGATIVE_AURA_FLAGS: u32 = 0x08;
+pub(in crate::world) const TARGET_UNIT_CASTER: u32 = 1;
+pub(in crate::world) const TARGET_UNIT_ENEMY: u32 = 6;
+pub(in crate::world) const TARGET_UNIT: u32 = 25;
+pub(in crate::world) const PROC_FLAG_TAKE_MELEE_SWING: u32 = 0x0000_0008;
+pub(in crate::world) const ITEM_SPELLTRIGGER_ON_USE: u32 = 0;
+pub(in crate::world) const ITEM_SPELLTRIGGER_ON_NO_DELAY_USE: u32 = 5;
+pub(in crate::world) const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_0000;
+pub(in crate::world) const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
+pub(in crate::world) const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
+pub(in crate::world) const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
+pub(in crate::world) const BASE_CHARGE_SPEED: f32 = 27.0;
+pub(in crate::world) const MAX_AURA_SLOTS: usize = 48;
+pub(in crate::world) const MAX_POSITIVE_AURA_SLOTS: usize = 32;
+pub(in crate::world) const MAX_AURA_FLAG_FIELDS: usize = 6;
 
-fn spell_damage_pushback_delay_millis(pushback_count: u8) -> u32 {
+pub(in crate::world) fn spell_damage_pushback_delay_millis(pushback_count: u8) -> u32 {
     match pushback_count {
         0 => 1000,
         1 => 800,
@@ -1875,42 +1885,54 @@ fn spell_damage_pushback_delay_millis(pushback_count: u8) -> u32 {
         _ => 200,
     }
 }
-const MAX_AURA_LEVEL_FIELDS: usize = 12;
+pub(in crate::world) const MAX_AURA_LEVEL_FIELDS: usize = 12;
 
-include!("spells/effects.rs");
-include!("spells/spell.rs");
-include!("spells/spell_mgr.rs");
-include!("spells/targets.rs");
-include!("spells/auras.rs");
-include!("spells/cooldowns.rs");
-include!("spells/packets.rs");
+mod auras;
+mod cooldowns;
+mod effects;
+mod packets;
+mod spell;
+mod spell_mgr;
+mod targets;
+
+pub(in crate::world) use self::auras::*;
+pub(in crate::world) use self::cooldowns::*;
+pub(in crate::world) use self::effects::*;
+pub(in crate::world) use self::packets::*;
+pub(in crate::world) use self::spell::*;
+pub(in crate::world) use self::spell_mgr::*;
+pub(in crate::world) use self::targets::*;
 
 #[cfg(test)]
-fn player_spell_cast_profile(template: &wow_db::SpellTemplateQuery) -> Option<SpellCastProfile> {
+pub(in crate::world) fn player_spell_cast_profile(
+    template: &wow_db::SpellTemplateQuery,
+) -> Option<SpellCastProfile> {
     SpellInfo::from_template(template)
         .prepare_player_cast()
         .map(|prepared| prepared.profile)
 }
 
 #[cfg(test)]
-fn item_use_spell_cast_profile(template: &wow_db::SpellTemplateQuery) -> Option<SpellCastProfile> {
+pub(in crate::world) fn item_use_spell_cast_profile(
+    template: &wow_db::SpellTemplateQuery,
+) -> Option<SpellCastProfile> {
     SpellInfo::from_template(template)
         .prepare_item_cast(ObjectGuid::EMPTY)
         .map(|prepared| prepared.profile)
 }
 
-fn spell_has_aura_application(template: &wow_db::SpellTemplateQuery) -> bool {
+pub(in crate::world) fn spell_has_aura_application(template: &wow_db::SpellTemplateQuery) -> bool {
     SpellInfo::from_template(template)
         .effects
         .iter()
         .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
 }
 
-fn spell_effect_simple_value(base_points: i32) -> Option<u32> {
+pub(in crate::world) fn spell_effect_simple_value(base_points: i32) -> Option<u32> {
     (base_points >= 0).then_some((base_points + 1) as u32)
 }
 
-fn build_active_aura(
+pub(in crate::world) fn build_active_aura(
     template: &wow_db::SpellTemplateQuery,
     caster: ObjectGuid,
     level: u8,
@@ -1943,18 +1965,15 @@ fn build_active_aura(
     }
 }
 
-fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
-    !spell_info
-        .effects
-        .iter()
-        .any(|effect| {
-            effect.dispatch == SpellEffectDispatch::ApplyAura
-                && (effect.implicit_target_a == TARGET_UNIT_ENEMY
-                    || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE)
-        })
+pub(in crate::world) fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
+    !spell_info.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && (effect.implicit_target_a == TARGET_UNIT_ENEMY
+                || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE)
+    })
 }
 
-fn spell_periodic_damage_aura(
+pub(in crate::world) fn spell_periodic_damage_aura(
     spell_info: &SpellInfo<'_>,
     caster_level: u8,
     now: Instant,
@@ -1984,7 +2003,9 @@ fn spell_periodic_damage_aura(
         })
 }
 
-fn spell_periodic_damage_fallback_caster_snapshot(caster_level: u8) -> SpellCombatUnitSnapshot {
+pub(in crate::world) fn spell_periodic_damage_fallback_caster_snapshot(
+    caster_level: u8,
+) -> SpellCombatUnitSnapshot {
     SpellCombatUnitSnapshot {
         level: caster_level.max(1),
         class: 0,
@@ -1993,7 +2014,10 @@ fn spell_periodic_damage_fallback_caster_snapshot(caster_level: u8) -> SpellComb
     }
 }
 
-fn spell_periodic_regen_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option<PeriodicRegenAura> {
+pub(in crate::world) fn spell_periodic_regen_aura(
+    spell_info: &SpellInfo<'_>,
+    now: Instant,
+) -> Option<PeriodicRegenAura> {
     let mut health_amount = 0u32;
     let mut mana_amount = 0u32;
     let mut tick_millis = 0u32;
@@ -2030,7 +2054,9 @@ fn spell_periodic_regen_aura(spell_info: &SpellInfo<'_>, now: Instant) -> Option
     })
 }
 
-fn spell_aura_proc_triggers(spell_info: &SpellInfo<'_>) -> Vec<AuraProcTrigger> {
+pub(in crate::world) fn spell_aura_proc_triggers(
+    spell_info: &SpellInfo<'_>,
+) -> Vec<AuraProcTrigger> {
     spell_info
         .effects
         .into_iter()
@@ -2049,7 +2075,7 @@ fn spell_aura_proc_triggers(spell_info: &SpellInfo<'_>) -> Vec<AuraProcTrigger> 
         .collect()
 }
 
-fn active_aura_proc_trigger_spell_ids(
+pub(in crate::world) fn active_aura_proc_trigger_spell_ids(
     active_auras: &mut [ActiveAura],
     proc_flag: u32,
     now: Instant,
@@ -2078,7 +2104,7 @@ fn active_aura_proc_trigger_spell_ids(
     triggered_spell_ids
 }
 
-fn aura_proc_roll_succeeds(proc_chance: u32) -> bool {
+pub(in crate::world) fn aura_proc_roll_succeeds(proc_chance: u32) -> bool {
     if proc_chance >= 100 {
         return true;
     }
@@ -2088,7 +2114,7 @@ fn aura_proc_roll_succeeds(proc_chance: u32) -> bool {
     rand::thread_rng().gen_range(1..=10_000) <= proc_chance.saturating_mul(100).min(10_000)
 }
 
-fn passive_spell_active_aura(
+pub(in crate::world) fn passive_spell_active_aura(
     template: &wow_db::SpellTemplateQuery,
     caster: ObjectGuid,
     level: u8,
@@ -2103,11 +2129,15 @@ fn passive_spell_active_aura(
     (!aura.stat_modifiers.is_empty()).then_some(aura)
 }
 
-fn spell_needs_passive_cast_at_learn(template: &wow_db::SpellTemplateQuery) -> bool {
+pub(in crate::world) fn spell_needs_passive_cast_at_learn(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
     template.attributes & SPELL_ATTR_PASSIVE != 0 && spell_has_aura_application(template)
 }
 
-fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier> {
+pub(in crate::world) fn spell_aura_stat_modifiers(
+    spell_info: &SpellInfo<'_>,
+) -> Vec<AuraStatModifier> {
     spell_info
         .effects
         .into_iter()
@@ -2118,8 +2148,7 @@ fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier
                 Some(AuraStatModifier::Skill {
                     skill_id,
                     amount: spell_effect_simple_i32(effect.base_points)
-                        .clamp(i16::MIN as i32, i16::MAX as i32)
-                        as i16,
+                        .clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                     permanent: effect.aura_name == SPELL_AURA_MOD_SKILL_TALENT,
                 })
             }
@@ -2158,7 +2187,7 @@ fn spell_aura_stat_modifiers(spell_info: &SpellInfo<'_>) -> Vec<AuraStatModifier
         .collect()
 }
 
-fn active_aura_skill_bonus(active_auras: &[ActiveAura], skill_id: u16) -> i16 {
+pub(in crate::world) fn active_aura_skill_bonus(active_auras: &[ActiveAura], skill_id: u16) -> i16 {
     active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2173,7 +2202,10 @@ fn active_aura_skill_bonus(active_auras: &[ActiveAura], skill_id: u16) -> i16 {
         .sum()
 }
 
-fn active_aura_skill_bonus_pair(active_auras: &[ActiveAura], skill_id: u16) -> u32 {
+pub(in crate::world) fn active_aura_skill_bonus_pair(
+    active_auras: &[ActiveAura],
+    skill_id: u16,
+) -> u32 {
     let mut temporary = 0i32;
     let mut permanent = 0i32;
     for modifier in active_auras
@@ -2201,7 +2233,7 @@ fn active_aura_skill_bonus_pair(active_auras: &[ActiveAura], skill_id: u16) -> u
     )
 }
 
-fn current_skill_value_with_active_auras(
+pub(in crate::world) fn current_skill_value_with_active_auras(
     character_skills: &[CharacterSkill],
     active_auras: &[ActiveAura],
     skill_id: u16,
@@ -2211,7 +2243,9 @@ fn current_skill_value_with_active_auras(
     value.saturating_add(bonus).clamp(0, u16::MAX as i32) as u16
 }
 
-fn reputation_gain_percent_from_active_auras(active_auras: &[ActiveAura]) -> i32 {
+pub(in crate::world) fn reputation_gain_percent_from_active_auras(
+    active_auras: &[ActiveAura],
+) -> i32 {
     active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2222,7 +2256,7 @@ fn reputation_gain_percent_from_active_auras(active_auras: &[ActiveAura]) -> i32
         .sum()
 }
 
-fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
+pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
     let strongest_slow = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2236,7 +2270,9 @@ fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
     (100 + strongest_slow).clamp(0, 100) as f32 / 100.0
 }
 
-fn active_aura_melee_attack_time_multiplier(active_auras: &[ActiveAura]) -> f32 {
+pub(in crate::world) fn active_aura_melee_attack_time_multiplier(
+    active_auras: &[ActiveAura],
+) -> f32 {
     active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2254,7 +2290,7 @@ fn active_aura_melee_attack_time_multiplier(active_auras: &[ActiveAura]) -> f32 
         })
 }
 
-fn player_world_stats_with_active_auras(
+pub(in crate::world) fn player_world_stats_with_active_auras(
     mut world_stats: PlayerWorldStats,
     active_auras: &[ActiveAura],
 ) -> PlayerWorldStats {
@@ -2293,25 +2329,24 @@ fn player_world_stats_with_active_auras(
     world_stats
 }
 
-fn player_stat_mod_deltas(
+pub(in crate::world) fn player_stat_mod_deltas(
     base_world_stats: &PlayerWorldStats,
     effective_world_stats: &PlayerWorldStats,
 ) -> [i32; MAX_STATS] {
     let mut deltas = [0i32; MAX_STATS];
     for (offset, delta) in deltas.iter_mut().enumerate() {
-        *delta =
-            effective_world_stats.stats[offset] as i32 - base_world_stats.stats[offset] as i32;
+        *delta = effective_world_stats.stats[offset] as i32 - base_world_stats.stats[offset] as i32;
     }
     deltas
 }
 
-fn apply_flat_modifier(value: u32, amount: i32) -> u32 {
+pub(in crate::world) fn apply_flat_modifier(value: u32, amount: i32) -> u32 {
     (value as i64)
         .saturating_add(i64::from(amount))
         .clamp(0, u32::MAX as i64) as u32
 }
 
-fn apply_percent_modifier(value: u32, percent: i32) -> u32 {
+pub(in crate::world) fn apply_percent_modifier(value: u32, percent: i32) -> u32 {
     let multiplier = 100i64.saturating_add(i64::from(percent));
     if multiplier <= 0 {
         return 0;
@@ -2319,11 +2354,11 @@ fn apply_percent_modifier(value: u32, percent: i32) -> u32 {
     ((i64::from(value) * multiplier) / 100).clamp(0, u32::MAX as i64) as u32
 }
 
-fn spell_effect_simple_i32(base_points: i32) -> i32 {
+pub(in crate::world) fn spell_effect_simple_i32(base_points: i32) -> i32 {
     base_points.saturating_add(1)
 }
 
-async fn consume_used_item(
+pub(in crate::world) async fn consume_used_item(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
@@ -2342,7 +2377,8 @@ async fn consume_used_item(
     let Some(destroyed) = destroyed else {
         return Ok(());
     };
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     match destroyed {
         wow_db::InventoryDestroyResult::CountChanged { item, count } => {
             let body = build_item_stack_count_update_body(item, count)?;
@@ -2352,7 +2388,7 @@ async fn consume_used_item(
             if source_item.bag == INVENTORY_SLOT_BAG_0 as u32 {
                 let body = build_inventory_slots_update_body(
                     character_guid,
-                    &session.inventory,
+                    &session.inventory.items,
                     &[source_item.slot],
                 )?;
                 send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
@@ -2365,17 +2401,22 @@ async fn consume_used_item(
     Ok(())
 }
 
-fn item_use_spell(
+pub(in crate::world) fn item_use_spell(
     template: &ItemTemplateQuery,
     requested_index: u8,
 ) -> Option<wow_db::ItemTemplateSpell> {
     let requested = template.spells.get(requested_index as usize).copied();
     requested
         .filter(|spell| is_item_use_spell(*spell))
-        .or_else(|| template.spells.into_iter().find(|spell| is_item_use_spell(*spell)))
+        .or_else(|| {
+            template
+                .spells
+                .into_iter()
+                .find(|spell| is_item_use_spell(*spell))
+        })
 }
 
-fn is_item_use_spell(spell: wow_db::ItemTemplateSpell) -> bool {
+pub(in crate::world) fn is_item_use_spell(spell: wow_db::ItemTemplateSpell) -> bool {
     spell.spell_id != 0
         && matches!(
             spell.spell_trigger,
@@ -2383,11 +2424,11 @@ fn is_item_use_spell(spell: wow_db::ItemTemplateSpell) -> bool {
         )
 }
 
-fn apply_player_aura(session: &mut WorldSessionState, aura: ActiveAura) {
-    apply_active_aura(&mut session.active_auras, aura);
+pub(in crate::world) fn apply_player_aura(session: &mut WorldSessionState, aura: ActiveAura) {
+    apply_active_aura(&mut session.auras.active_auras, aura);
 }
 
-fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, aura: ActiveAura) {
+pub(in crate::world) fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, aura: ActiveAura) {
     if let Some(existing) = active_auras
         .iter_mut()
         .find(|existing| existing.spell_id == aura.spell_id && existing.caster == aura.caster)
@@ -2398,21 +2439,24 @@ fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, aura: ActiveAura) {
     }
 }
 
-fn expire_session_auras(session: &mut WorldSessionState, now: Instant) {
+pub(in crate::world) fn expire_session_auras(session: &mut WorldSessionState, now: Instant) {
     session
+        .auras
         .active_auras
         .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
 }
 
-fn active_aura_interrupt_flags(aura: &ActiveAura) -> u32 {
+pub(in crate::world) fn active_aura_interrupt_flags(aura: &ActiveAura) -> u32 {
     if aura.periodic_regen.is_some() {
-        AURA_INTERRUPT_FLAG_DAMAGE | AURA_INTERRUPT_FLAG_MOVING | AURA_INTERRUPT_FLAG_STANDING_CANCELS
+        AURA_INTERRUPT_FLAG_DAMAGE
+            | AURA_INTERRUPT_FLAG_MOVING
+            | AURA_INTERRUPT_FLAG_STANDING_CANCELS
     } else {
         0
     }
 }
 
-fn remove_active_auras_with_interrupt_flag(
+pub(in crate::world) fn remove_active_auras_with_interrupt_flag(
     active_auras: &mut Vec<ActiveAura>,
     interrupt_flag: u32,
 ) -> bool {
@@ -2421,7 +2465,7 @@ fn remove_active_auras_with_interrupt_flag(
     active_auras.len() != before
 }
 
-async fn interrupt_player_consumable_auras(
+pub(in crate::world) async fn interrupt_player_consumable_auras(
     stream: &mut WorldPacketSink,
     maps: &Arc<MapRuntimeManager>,
     sessions: &Arc<SessionRegistry>,
@@ -2429,11 +2473,11 @@ async fn interrupt_player_consumable_auras(
     interrupt_flag: u32,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
-    if !remove_active_auras_with_interrupt_flag(&mut session.active_auras, interrupt_flag) {
+    if !remove_active_auras_with_interrupt_flag(&mut session.auras.active_auras, interrupt_flag) {
         return Ok(false);
     }
-    session.player_stand_state = PLAYER_STAND_STATE_STAND;
-    let Some(character) = session.active_character.as_ref() else {
+    session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(true);
     };
     let map_id = character.position.map_id;
@@ -2443,11 +2487,14 @@ async fn interrupt_player_consumable_auras(
         .await;
     let aura_packet = OutboundWorldPacket {
         opcode: SMSG_UPDATE_OBJECT,
-        body: build_player_aura_update_body(player, &session.active_auras)?,
+        body: build_player_aura_update_body(player, &session.auras.active_auras)?,
     };
     let stand_packet = OutboundWorldPacket {
         opcode: SMSG_UPDATE_OBJECT,
-        body: build_player_stand_state_update_body(character, session.player_stand_state)?,
+        body: build_player_stand_state_update_body(
+            character,
+            session.character.player_stand_state,
+        )?,
     };
     send_packet(
         stream,
@@ -2486,7 +2533,7 @@ async fn interrupt_player_consumable_auras(
     Ok(true)
 }
 
-fn build_player_aura_update_body(
+pub(in crate::world) fn build_player_aura_update_body(
     player: ObjectGuid,
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
@@ -2501,14 +2548,14 @@ fn build_player_aura_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn set_player_aura_update_values(
+pub(in crate::world) fn set_player_aura_update_values(
     values: &mut [Option<u32>],
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
     set_unit_aura_update_values(values, active_auras)
 }
 
-fn set_unit_aura_update_values(
+pub(in crate::world) fn set_unit_aura_update_values(
     values: &mut [Option<u32>],
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
@@ -2548,20 +2595,13 @@ fn set_unit_aura_update_values(
     Ok(())
 }
 
-async fn handle_item_query_single(
+pub(in crate::world) async fn handle_item_query_single(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::ItemQuerySingleRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        anyhow::bail!(
-            "CMSG_ITEM_QUERY_SINGLE payload too short: {} bytes",
-            body.len()
-        );
-    }
-
-    let item = u32::from_le_bytes(body[0..4].try_into()?);
+    let item = request.item_id;
     let template = wow_db::get_item_template_query(world_db_pool, item).await?;
     let spell_cooldowns = if let Some(template) = template.as_ref() {
         Some(item_query_spell_cooldowns(world_db_pool, template).await?)
@@ -2587,7 +2627,7 @@ async fn handle_item_query_single(
     .await
 }
 
-async fn item_query_spell_cooldowns(
+pub(in crate::world) async fn item_query_spell_cooldowns(
     world_db_pool: &MySqlPool,
     template: &wow_db::ItemTemplateQuery,
 ) -> anyhow::Result<[Option<ItemQuerySpellCooldown>; 5]> {
@@ -2596,32 +2636,28 @@ async fn item_query_spell_cooldowns(
         if spell.spell_id == 0 {
             continue;
         }
-        let Some(spell_template) = wow_db::get_spell_template_query(world_db_pool, spell.spell_id).await?
+        let Some(spell_template) =
+            wow_db::get_spell_template_query(world_db_pool, spell.spell_id).await?
         else {
             continue;
         };
         cooldowns[index] = Some(ItemQuerySpellCooldown {
             recovery_time: spell_template.recovery_time.min(i32::MAX as u32) as i32,
             category: spell_template.category,
-            category_recovery_time: spell_template
-                .category_recovery_time
-                .min(i32::MAX as u32) as i32,
+            category_recovery_time: spell_template.category_recovery_time.min(i32::MAX as u32)
+                as i32,
         });
     }
     Ok(cooldowns)
 }
 
-async fn handle_item_name_query(
+pub(in crate::world) async fn handle_item_name_query(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::ItemNameQueryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        anyhow::bail!("CMSG_ITEM_NAME_QUERY payload too short: {} bytes", body.len());
-    }
-
-    let item = u32::from_le_bytes(body[0..4].try_into()?);
+    let item = request.item_id;
     let Some(template) = wow_db::get_item_template_query(world_db_pool, item).await? else {
         warn!(item, "Ignoring item name query for unknown item");
         return Ok(());
@@ -2635,4 +2671,3 @@ async fn handle_item_name_query(
     )
     .await
 }
-

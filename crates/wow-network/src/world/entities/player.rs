@@ -1,20 +1,22 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct Player {
-    guid: u32,
-    name: String,
-    race: u8,
-    class: u8,
-    level: u8,
-    xp: u32,
-    position: WorldPosition,
-    movement_flags: u32,
-    client_time: u32,
-    fall_time: u32,
-    jump: JumpInfo,
+pub(in crate::world) struct Player {
+    pub(in crate::world) guid: u32,
+    pub(in crate::world) name: String,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) level: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) movement_flags: u32,
+    pub(in crate::world) client_time: u32,
+    pub(in crate::world) fall_time: u32,
+    pub(in crate::world) jump: JumpInfo,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum PlayerDeathState {
+pub(in crate::world) enum PlayerDeathState {
     #[default]
     Alive,
     JustDied,
@@ -23,16 +25,18 @@ enum PlayerDeathState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct PlayerVisualState {
-    gender: u8,
-    player_bytes: u32,
-    player_bytes2: u32,
-    equipment_cache: Option<String>,
-    guildid: Option<u32>,
+pub(in crate::world) struct PlayerVisualState {
+    pub(in crate::world) gender: u8,
+    pub(in crate::world) player_bytes: u32,
+    pub(in crate::world) player_bytes2: u32,
+    pub(in crate::world) equipment_cache: Option<String>,
+    pub(in crate::world) guildid: Option<u32>,
 }
 
 // CMaNGOS reference: src/game/Entities/Player.* player update builders.
-fn build_other_player_create_block(player: &PlayerRuntime) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_other_player_create_block(
+    player: &PlayerRuntime,
+) -> anyhow::Result<Vec<u8>> {
     let guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -65,7 +69,7 @@ fn build_other_player_create_block(player: &PlayerRuntime) -> anyhow::Result<Vec
     Ok(block)
 }
 
-fn write_other_player_update_values(
+pub(in crate::world) fn write_other_player_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     player: &PlayerRuntime,
@@ -100,8 +104,16 @@ fn write_other_player_update_values(
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.unit_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
-    set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME + 1, BASE_ATTACK_TIME_MS)?;
-    set_update_value(&mut values, UNIT_FIELD_RANGEDATTACKTIME, BASE_ATTACK_TIME_MS)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASEATTACKTIME + 1,
+        BASE_ATTACK_TIME_MS,
+    )?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_RANGEDATTACKTIME,
+        BASE_ATTACK_TIME_MS,
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_BOUNDINGRADIUS,
@@ -112,7 +124,11 @@ fn write_other_player_update_values(
         UNIT_FIELD_COMBATREACH,
         PLAYER_COMBAT_REACH_YARDS.to_bits(),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_DISPLAYID, display_id_for_runtime_player(player))?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_DISPLAYID,
+        display_id_for_runtime_player(player),
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_NATIVEDISPLAYID,
@@ -137,7 +153,7 @@ fn write_other_player_update_values(
     write_update_values(body, &values)
 }
 
-fn display_id_for_runtime_player(player: &PlayerRuntime) -> u32 {
+pub(in crate::world) fn display_id_for_runtime_player(player: &PlayerRuntime) -> u32 {
     match (player.race, player.gender) {
         (1, 0) => 49,
         (1, 1) => 50,
@@ -159,10 +175,9 @@ fn display_id_for_runtime_player(player: &PlayerRuntime) -> u32 {
     }
 }
 
-
 // CMaNGOS reference: src/game/Entities/Player.* self/player update fields.
 #[allow(clippy::too_many_arguments)]
-fn write_minimal_player_update_values(
+pub(in crate::world) fn write_minimal_player_update_values(
     body: &mut Vec<u8>,
     guid: ObjectGuid,
     character: &CharacterEnumEntry,
@@ -268,7 +283,11 @@ fn write_minimal_player_update_values(
     set_player_stat_update_values(&mut values, world_stats)?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, unit_bytes_2())?;
     set_player_resistance_update_values(&mut values, &combat_stats)?;
-    set_update_value(&mut values, UNIT_FIELD_ATTACK_POWER, combat_stats.melee_attack_power)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_ATTACK_POWER,
+        combat_stats.melee_attack_power,
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_ATTACK_POWER_MODS,
@@ -310,12 +329,11 @@ fn write_minimal_player_update_values(
         UNIT_FIELD_MAXRANGEDDAMAGE,
         combat_stats.ranged_max_damage.to_bits(),
     )?;
-    for index in UNIT_FIELD_POWER_COST_MODIFIER..UNIT_FIELD_POWER_COST_MODIFIER + MAX_SPELL_SCHOOL
-    {
+    for index in UNIT_FIELD_POWER_COST_MODIFIER..UNIT_FIELD_POWER_COST_MODIFIER + MAX_SPELL_SCHOOL {
         set_update_value(&mut values, index, 0)?;
     }
-    for index in UNIT_FIELD_POWER_COST_MULTIPLIER
-        ..UNIT_FIELD_POWER_COST_MULTIPLIER + MAX_SPELL_SCHOOL
+    for index in
+        UNIT_FIELD_POWER_COST_MULTIPLIER..UNIT_FIELD_POWER_COST_MULTIPLIER + MAX_SPELL_SCHOOL
     {
         set_update_value(&mut values, index, 0.0f32.to_bits())?;
     }
@@ -363,7 +381,7 @@ fn write_minimal_player_update_values(
     Ok(())
 }
 
-fn set_player_quest_log_update_values(
+pub(in crate::world) fn set_player_quest_log_update_values(
     values: &mut [Option<u32>],
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> anyhow::Result<()> {
@@ -384,7 +402,7 @@ fn set_player_quest_log_update_values(
     Ok(())
 }
 
-fn set_player_vital_update_values(
+pub(in crate::world) fn set_player_vital_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
     world_stats: &PlayerWorldStats,
@@ -459,7 +477,7 @@ fn set_player_vital_update_values(
     Ok(())
 }
 
-fn player_bytes2_with_rest_state(player_bytes2: u32) -> u32 {
+pub(in crate::world) fn player_bytes2_with_rest_state(player_bytes2: u32) -> u32 {
     if (player_bytes2 >> 24) & 0xFF == 0 {
         player_bytes2 | ((REST_STATE_NORMAL as u32) << 24)
     } else {
@@ -467,7 +485,7 @@ fn player_bytes2_with_rest_state(player_bytes2: u32) -> u32 {
     }
 }
 
-fn set_object_guid_update_values(
+pub(in crate::world) fn set_object_guid_update_values(
     values: &mut [Option<u32>],
     field: usize,
     guid: Option<ObjectGuid>,
@@ -478,14 +496,14 @@ fn set_object_guid_update_values(
     Ok(())
 }
 
-fn build_player_selection_update_body(
+pub(in crate::world) fn build_player_selection_update_body(
     player_guid: u32,
     selected_target: Option<ObjectGuid>,
 ) -> anyhow::Result<Vec<u8>> {
     build_player_target_update_body(player_guid, selected_target)
 }
 
-fn build_player_target_update_body(
+pub(in crate::world) fn build_player_target_update_body(
     player_guid: u32,
     unit_target: Option<ObjectGuid>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -501,14 +519,14 @@ fn build_player_target_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_player_stand_state_update_body(
+pub(in crate::world) fn build_player_stand_state_update_body(
     character: &Player,
     stand_state: u8,
 ) -> anyhow::Result<Vec<u8>> {
     build_player_stand_state_update_body_for_class(character.guid, character.class, stand_state)
 }
 
-fn build_player_stand_state_update_body_for_class(
+pub(in crate::world) fn build_player_stand_state_update_body_for_class(
     character_guid: u32,
     class: u8,
     stand_state: u8,
@@ -529,7 +547,7 @@ fn build_player_stand_state_update_body_for_class(
     Ok(build_update_object_body(&[block]))
 }
 
-fn set_player_stat_update_values(
+pub(in crate::world) fn set_player_stat_update_values(
     values: &mut [Option<u32>],
     world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
@@ -540,7 +558,7 @@ fn set_player_stat_update_values(
     Ok(())
 }
 
-fn set_player_skill_update_values(
+pub(in crate::world) fn set_player_skill_update_values(
     values: &mut [Option<u32>],
     skills: &[CharacterSkill],
     active_auras: &[ActiveAura],
@@ -559,7 +577,7 @@ fn set_player_skill_update_values(
     Ok(())
 }
 
-fn set_player_resistance_update_values(
+pub(in crate::world) fn set_player_resistance_update_values(
     values: &mut [Option<u32>],
     combat_stats: &PlayerCombatStats,
 ) -> anyhow::Result<()> {
@@ -570,7 +588,7 @@ fn set_player_resistance_update_values(
     Ok(())
 }
 
-fn set_player_secondary_stat_update_values(
+pub(in crate::world) fn set_player_secondary_stat_update_values(
     values: &mut [Option<u32>],
     combat_stats: &PlayerCombatStats,
 ) -> anyhow::Result<()> {
@@ -608,7 +626,7 @@ fn set_player_secondary_stat_update_values(
     Ok(())
 }
 
-fn set_player_explored_zone_update_values(
+pub(in crate::world) fn set_player_explored_zone_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
 ) -> anyhow::Result<()> {
@@ -620,7 +638,9 @@ fn set_player_explored_zone_update_values(
     Ok(())
 }
 
-fn parse_explored_zones(explored_zones: Option<&str>) -> [u32; PLAYER_EXPLORED_ZONES_SIZE] {
+pub(in crate::world) fn parse_explored_zones(
+    explored_zones: Option<&str>,
+) -> [u32; PLAYER_EXPLORED_ZONES_SIZE] {
     let mut fields = [0u32; PLAYER_EXPLORED_ZONES_SIZE];
     let Some(explored_zones) = explored_zones else {
         return fields;
@@ -639,18 +659,14 @@ fn parse_explored_zones(explored_zones: Option<&str>) -> [u32; PLAYER_EXPLORED_Z
     fields
 }
 
-fn set_player_stat_mod_update_values(
+pub(in crate::world) fn set_player_stat_mod_update_values(
     values: &mut [Option<u32>],
     base_world_stats: &PlayerWorldStats,
     effective_world_stats: &PlayerWorldStats,
 ) -> anyhow::Result<()> {
     let stat_deltas = player_stat_mod_deltas(base_world_stats, effective_world_stats);
     for (offset, delta) in stat_deltas.iter().copied().enumerate() {
-        set_update_value(
-            values,
-            PLAYER_FIELD_POSSTAT0 + offset,
-            delta.max(0) as u32,
-        )?;
+        set_update_value(values, PLAYER_FIELD_POSSTAT0 + offset, delta.max(0) as u32)?;
         set_update_value(
             values,
             PLAYER_FIELD_NEGSTAT0 + offset,
@@ -660,7 +676,7 @@ fn set_player_stat_mod_update_values(
     Ok(())
 }
 
-fn set_player_resistance_buff_mod_update_values(
+pub(in crate::world) fn set_player_resistance_buff_mod_update_values(
     values: &mut [Option<u32>],
     combat_stats: &PlayerCombatStats,
 ) -> anyhow::Result<()> {
@@ -680,16 +696,21 @@ fn set_player_resistance_buff_mod_update_values(
     Ok(())
 }
 
-fn set_player_damage_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Result<()> {
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_POS..PLAYER_FIELD_MOD_DAMAGE_DONE_POS + MAX_SPELL_SCHOOL
+pub(in crate::world) fn set_player_damage_mod_update_values(
+    values: &mut [Option<u32>],
+) -> anyhow::Result<()> {
+    for index in
+        PLAYER_FIELD_MOD_DAMAGE_DONE_POS..PLAYER_FIELD_MOD_DAMAGE_DONE_POS + MAX_SPELL_SCHOOL
     {
         set_update_value(values, index, 0)?;
     }
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_NEG..PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + MAX_SPELL_SCHOOL
+    for index in
+        PLAYER_FIELD_MOD_DAMAGE_DONE_NEG..PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + MAX_SPELL_SCHOOL
     {
         set_update_value(values, index, 0)?;
     }
-    for index in PLAYER_FIELD_MOD_DAMAGE_DONE_PCT..PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + MAX_SPELL_SCHOOL
+    for index in
+        PLAYER_FIELD_MOD_DAMAGE_DONE_PCT..PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + MAX_SPELL_SCHOOL
     {
         set_update_value(values, index, 1.0f32.to_bits())?;
     }
@@ -698,42 +719,42 @@ fn set_player_damage_mod_update_values(values: &mut [Option<u32>]) -> anyhow::Re
 }
 
 #[derive(Debug, Clone)]
-struct EquippedItemTemplate {
-    slot: u8,
-    template: ItemTemplateQuery,
+pub(in crate::world) struct EquippedItemTemplate {
+    pub(in crate::world) slot: u8,
+    pub(in crate::world) template: ItemTemplateQuery,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerCombatStats {
-    intellect: u32,
-    armor: u32,
-    shield_block_value: u32,
-    resistances: [u32; MAX_SPELL_SCHOOL],
-    resistance_buff_mod_positive: [i32; MAX_SPELL_SCHOOL],
-    resistance_buff_mod_negative: [i32; MAX_SPELL_SCHOOL],
-    main_attack_time_ms: u32,
-    off_attack_time_ms: u32,
-    ranged_attack_time_ms: u32,
-    melee_attack_power: u32,
-    ranged_attack_power: u32,
-    melee_attack_power_mod_positive: i16,
-    melee_attack_power_mod_negative: i16,
-    ranged_attack_power_mod_positive: i16,
-    ranged_attack_power_mod_negative: i16,
-    main_min_damage: f32,
-    main_max_damage: f32,
-    off_min_damage: f32,
-    off_max_damage: f32,
-    ranged_min_damage: f32,
-    ranged_max_damage: f32,
-    block_percent: f32,
-    dodge_percent: f32,
-    parry_percent: f32,
-    crit_percent: f32,
-    ranged_crit_percent: f32,
+pub(in crate::world) struct PlayerCombatStats {
+    pub(in crate::world) intellect: u32,
+    pub(in crate::world) armor: u32,
+    pub(in crate::world) shield_block_value: u32,
+    pub(in crate::world) resistances: [u32; MAX_SPELL_SCHOOL],
+    pub(in crate::world) resistance_buff_mod_positive: [i32; MAX_SPELL_SCHOOL],
+    pub(in crate::world) resistance_buff_mod_negative: [i32; MAX_SPELL_SCHOOL],
+    pub(in crate::world) main_attack_time_ms: u32,
+    pub(in crate::world) off_attack_time_ms: u32,
+    pub(in crate::world) ranged_attack_time_ms: u32,
+    pub(in crate::world) melee_attack_power: u32,
+    pub(in crate::world) ranged_attack_power: u32,
+    pub(in crate::world) melee_attack_power_mod_positive: i16,
+    pub(in crate::world) melee_attack_power_mod_negative: i16,
+    pub(in crate::world) ranged_attack_power_mod_positive: i16,
+    pub(in crate::world) ranged_attack_power_mod_negative: i16,
+    pub(in crate::world) main_min_damage: f32,
+    pub(in crate::world) main_max_damage: f32,
+    pub(in crate::world) off_min_damage: f32,
+    pub(in crate::world) off_max_damage: f32,
+    pub(in crate::world) ranged_min_damage: f32,
+    pub(in crate::world) ranged_max_damage: f32,
+    pub(in crate::world) block_percent: f32,
+    pub(in crate::world) dodge_percent: f32,
+    pub(in crate::world) parry_percent: f32,
+    pub(in crate::world) crit_percent: f32,
+    pub(in crate::world) ranged_crit_percent: f32,
 }
 
-fn player_combat_stats(
+pub(in crate::world) fn player_combat_stats(
     character: &CharacterEnumEntry,
     world_stats: &PlayerWorldStats,
     equipped_templates: &[EquippedItemTemplate],
@@ -746,7 +767,7 @@ fn player_combat_stats(
     )
 }
 
-fn player_combat_stats_for_values(
+pub(in crate::world) fn player_combat_stats_for_values(
     class: u8,
     level: u8,
     world_stats: &PlayerWorldStats,
@@ -813,7 +834,7 @@ fn player_combat_stats_for_values(
     }
 }
 
-fn build_player_combat_stats_update_body(
+pub(in crate::world) fn build_player_combat_stats_update_body(
     character_guid: u32,
     combat_stats: &PlayerCombatStats,
 ) -> anyhow::Result<Vec<u8>> {
@@ -912,7 +933,7 @@ fn build_player_combat_stats_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_player_world_stats_update_body(
+pub(in crate::world) fn build_player_world_stats_update_body(
     character_guid: u32,
     base_world_stats: &PlayerWorldStats,
     effective_world_stats: &PlayerWorldStats,
@@ -931,7 +952,11 @@ fn build_player_world_stats_update_body(
     set_update_value(&mut values, UNIT_FIELD_POWER1, power1.min(max_mana))?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
     set_update_value(&mut values, UNIT_FIELD_MAXPOWER1, max_mana)?;
-    set_update_value(&mut values, UNIT_FIELD_BASE_MANA, effective_world_stats.base_mana)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BASE_MANA,
+        effective_world_stats.base_mana,
+    )?;
     set_update_value(
         &mut values,
         UNIT_FIELD_BASE_HEALTH,
@@ -944,7 +969,12 @@ fn build_player_world_stats_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn class_melee_attack_power(class: u8, level: u32, strength: u32, agility: u32) -> u32 {
+pub(in crate::world) fn class_melee_attack_power(
+    class: u8,
+    level: u32,
+    strength: u32,
+    agility: u32,
+) -> u32 {
     let value = match class {
         1 | 2 => level as i32 * 3 + strength as i32 * 2 - 20,
         3 | 4 => level as i32 * 2 + strength as i32 + agility as i32 - 20,
@@ -955,7 +985,7 @@ fn class_melee_attack_power(class: u8, level: u32, strength: u32, agility: u32) 
     value.max(0) as u32
 }
 
-fn class_ranged_attack_power(class: u8, level: u32, agility: u32) -> u32 {
+pub(in crate::world) fn class_ranged_attack_power(class: u8, level: u32, agility: u32) -> u32 {
     let value = match class {
         3 => level as i32 * 2 + agility as i32 * 2 - 10,
         1 | 4 => level as i32 + agility as i32 - 10,
@@ -965,7 +995,7 @@ fn class_ranged_attack_power(class: u8, level: u32, agility: u32) -> u32 {
     value.max(0) as u32
 }
 
-fn equipped_weapon_template(
+pub(in crate::world) fn equipped_weapon_template(
     equipped_templates: &[EquippedItemTemplate],
     slot: u8,
 ) -> Option<&ItemTemplateQuery> {
@@ -975,7 +1005,7 @@ fn equipped_weapon_template(
         .map(|item| &item.template)
 }
 
-fn weapon_damage_with_attack_power(
+pub(in crate::world) fn weapon_damage_with_attack_power(
     weapon: Option<&ItemTemplateQuery>,
     attack_power: u32,
     attack_time_ms: u32,
@@ -987,11 +1017,11 @@ fn weapon_damage_with_attack_power(
     (weapon.dmg_min1 + ap_damage, weapon.dmg_max1 + ap_damage)
 }
 
-fn attack_power_mod_pair(positive: i16, negative: i16) -> u32 {
+pub(in crate::world) fn attack_power_mod_pair(positive: i16, negative: i16) -> u32 {
     make_pair32(positive as u16, negative as u16)
 }
 
-fn combat_stats_with_active_auras(
+pub(in crate::world) fn combat_stats_with_active_auras(
     base_stats: PlayerCombatStats,
     active_auras: &[ActiveAura],
 ) -> PlayerCombatStats {
@@ -1056,11 +1086,15 @@ fn combat_stats_with_active_auras(
     apply_attack_power_delta(stats, attack_power_delta, 0)
 }
 
-fn multiply_attack_time(attack_time_ms: u32, multiplier: f32) -> u32 {
+pub(in crate::world) fn multiply_attack_time(attack_time_ms: u32, multiplier: f32) -> u32 {
     ((attack_time_ms.max(1) as f32 * multiplier).round() as u32).max(1)
 }
 
-fn apply_resistance_delta(stats: &mut PlayerCombatStats, school_mask: u32, amount: i32) {
+pub(in crate::world) fn apply_resistance_delta(
+    stats: &mut PlayerCombatStats,
+    school_mask: u32,
+    amount: i32,
+) {
     for school in 0..MAX_SPELL_SCHOOL {
         if school_mask & (1u32 << school) == 0 {
             continue;
@@ -1079,7 +1113,7 @@ fn apply_resistance_delta(stats: &mut PlayerCombatStats, school_mask: u32, amoun
     stats.armor = stats.resistances[0];
 }
 
-fn apply_attack_power_delta(
+pub(in crate::world) fn apply_attack_power_delta(
     mut stats: PlayerCombatStats,
     melee_delta: i32,
     ranged_delta: i32,
@@ -1089,8 +1123,7 @@ fn apply_attack_power_delta(
     stats.ranged_attack_power_mod_positive = ranged_delta.max(0).min(i16::MAX as i32) as i16;
     stats.ranged_attack_power_mod_negative = ranged_delta.min(0).max(i16::MIN as i32) as i16;
 
-    let melee_effective_delta =
-        effective_attack_power_delta(stats.melee_attack_power, melee_delta);
+    let melee_effective_delta = effective_attack_power_delta(stats.melee_attack_power, melee_delta);
     let ranged_effective_delta =
         effective_attack_power_delta(stats.ranged_attack_power, ranged_delta);
     let main_damage_delta = attack_power_damage_delta(
@@ -1117,19 +1150,23 @@ fn apply_attack_power_delta(
     stats
 }
 
-fn effective_attack_power_delta(base_attack_power: u32, delta: i32) -> i32 {
+pub(in crate::world) fn effective_attack_power_delta(base_attack_power: u32, delta: i32) -> i32 {
     let effective = (base_attack_power as i32 + delta).max(0);
     effective - base_attack_power as i32
 }
 
-fn attack_power_damage_delta(delta: i32, attack_time_ms: u32, has_weapon_damage: bool) -> f32 {
+pub(in crate::world) fn attack_power_damage_delta(
+    delta: i32,
+    attack_time_ms: u32,
+    has_weapon_damage: bool,
+) -> f32 {
     if !has_weapon_damage || delta == 0 {
         return 0.0;
     }
     delta as f32 / 14.0 * attack_time_ms as f32 / 1000.0
 }
 
-fn equipment_resistances(
+pub(in crate::world) fn equipment_resistances(
     world_stats: &PlayerWorldStats,
     equipped_templates: &[EquippedItemTemplate],
 ) -> [u32; MAX_SPELL_SCHOOL] {
@@ -1148,7 +1185,10 @@ fn equipment_resistances(
     resistances
 }
 
-fn player_armor(world_stats: &PlayerWorldStats, equipped_templates: &[EquippedItemTemplate]) -> u32 {
+pub(in crate::world) fn player_armor(
+    world_stats: &PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+) -> u32 {
     let mut armor = world_stats.stats[1] * 2;
     for equipped in equipped_templates {
         armor += equipped.template.armor;
@@ -1156,7 +1196,9 @@ fn player_armor(world_stats: &PlayerWorldStats, equipped_templates: &[EquippedIt
     armor
 }
 
-fn equipped_shield_block_value(equipped_templates: &[EquippedItemTemplate]) -> u32 {
+pub(in crate::world) fn equipped_shield_block_value(
+    equipped_templates: &[EquippedItemTemplate],
+) -> u32 {
     equipped_templates
         .iter()
         .find(|equipped| {
@@ -1168,7 +1210,7 @@ fn equipped_shield_block_value(equipped_templates: &[EquippedItemTemplate]) -> u
         .unwrap_or(0)
 }
 
-fn player_shield_block_value(
+pub(in crate::world) fn player_shield_block_value(
     world_stats: &PlayerWorldStats,
     equipped_templates: &[EquippedItemTemplate],
 ) -> u32 {
@@ -1176,10 +1218,12 @@ fn player_shield_block_value(
     if shield_block == 0 {
         return 0;
     }
-    shield_block.saturating_add(world_stats.stats[0] / 20).saturating_sub(1)
+    shield_block
+        .saturating_add(world_stats.stats[0] / 20)
+        .saturating_sub(1)
 }
 
-fn has_equipped_shield(equipped_templates: &[EquippedItemTemplate]) -> bool {
+pub(in crate::world) fn has_equipped_shield(equipped_templates: &[EquippedItemTemplate]) -> bool {
     equipped_templates.iter().any(|equipped| {
         equipped.slot == EQUIPMENT_SLOT_OFFHAND
             && equipped.template.class == ITEM_CLASS_ARMOR
@@ -1187,11 +1231,11 @@ fn has_equipped_shield(equipped_templates: &[EquippedItemTemplate]) -> bool {
     })
 }
 
-fn melee_crit_percent(class: u8, level: u8, agility: u32) -> f32 {
+pub(in crate::world) fn melee_crit_percent(class: u8, level: u8, agility: u32) -> f32 {
     agility as f32 / agility_rating_for_class(class, level, false).unwrap_or(f32::INFINITY)
 }
 
-fn dodge_percent(class: u8, level: u8, agility: u32) -> f32 {
+pub(in crate::world) fn dodge_percent(class: u8, level: u8, agility: u32) -> f32 {
     let base = match class {
         2 => 0.75,
         3 => 0.64,
@@ -1205,7 +1249,7 @@ fn dodge_percent(class: u8, level: u8, agility: u32) -> f32 {
     base + agility as f32 / agility_rating_for_class(class, level, true).unwrap_or(f32::INFINITY)
 }
 
-fn agility_rating_for_class(class: u8, level: u8, dodge: bool) -> Option<f32> {
+pub(in crate::world) fn agility_rating_for_class(class: u8, level: u8, dodge: bool) -> Option<f32> {
     let (level_one, level_sixty) = match (class, dodge) {
         (2 | 7 | 11, _) => (4.6, 20.0),
         (8, _) => (12.9, 20.0),
@@ -1222,9 +1266,8 @@ fn agility_rating_for_class(class: u8, level: u8, dodge: bool) -> Option<f32> {
     Some(level_one * (60.0 - level) / 59.0 + level_sixty * (level - 1.0) / 59.0)
 }
 
-
 // CMaNGOS reference: src/game/Entities/Player.* packed player identity fields.
-fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
+pub(in crate::world) fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
     let power_type = match character.class {
         1 => 1, // warrior rage
         4 => 3, // rogue energy
@@ -1236,11 +1279,11 @@ fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
         | (power_type << 24)
 }
 
-fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
+pub(in crate::world) fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
     unit_bytes_1_for_class(character.class)
 }
 
-fn unit_bytes_1_for_class(class: u8) -> u32 {
+pub(in crate::world) fn unit_bytes_1_for_class(class: u8) -> u32 {
     let pet_loyalty = match class {
         1 | 8 => 0xEE, // CMaNGOS initializes this for rage and mana users.
         _ => 0,
@@ -1253,11 +1296,11 @@ fn unit_bytes_1_for_class(class: u8) -> u32 {
     ((pet_loyalty as u32) << 8) | ((shapeshift_form as u32) << 16)
 }
 
-fn unit_bytes_2() -> u32 {
+pub(in crate::world) fn unit_bytes_2() -> u32 {
     (0x08 | 0x20) << 8
 }
 
-fn create_power_for_class_power(class: u8, power: u8) -> u32 {
+pub(in crate::world) fn create_power_for_class_power(class: u8, power: u8) -> u32 {
     match (class, power) {
         (_, POWER_MANA) => 0,
         (1, POWER_RAGE) => POWER_RAGE_DEFAULT,
@@ -1266,9 +1309,8 @@ fn create_power_for_class_power(class: u8, power: u8) -> u32 {
     }
 }
 
-
 // CMaNGOS reference: src/game/Entities/Player.* race display and faction helpers.
-fn faction_for_race(race: u8) -> u32 {
+pub(in crate::world) fn faction_for_race(race: u8) -> u32 {
     match race {
         1 | 3 | 4 | 7 => 1,
         2 | 5 | 6 | 8 => 2,
@@ -1276,7 +1318,7 @@ fn faction_for_race(race: u8) -> u32 {
     }
 }
 
-fn display_id_for_character(character: &CharacterEnumEntry) -> u32 {
+pub(in crate::world) fn display_id_for_character(character: &CharacterEnumEntry) -> u32 {
     match (character.race, character.gender) {
         (1, 0) => 49,
         (1, 1) => 50,
@@ -1297,4 +1339,3 @@ fn display_id_for_character(character: &CharacterEnumEntry) -> u32 {
         _ => 49,
     }
 }
-

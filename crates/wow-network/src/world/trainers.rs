@@ -1,12 +1,19 @@
-async fn handle_trainer_list(
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgLearnedSpellResponse, SmsgPlaySpellImpactResponse,
+    SmsgPlaySpellVisualResponse, SmsgTrainerBuyFailedResponse, SmsgTrainerBuySucceededResponse,
+    SmsgTrainerListResponse, TrainerListSpellResponse,
+};
+
+pub(in crate::world) async fn handle_trainer_list(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::TrainerListRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let guid = read_packet_guid(body, "CMSG_TRAINER_LIST")?;
+    let guid = ObjectGuid::from_raw(request.raw_guid);
     send_trainer_list(
         stream,
         character_db_pool,
@@ -18,7 +25,7 @@ async fn handle_trainer_list(
     .await
 }
 
-async fn send_trainer_list(
+pub(in crate::world) async fn send_trainer_list(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
@@ -26,7 +33,7 @@ async fn send_trainer_list(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring trainer list before character login");
         return Ok(());
     };
@@ -48,7 +55,10 @@ async fn send_trainer_list(
     };
     let spells = wow_db::get_trainer_spells(world_db_pool, guid.entry()).await?;
     if spells.is_empty() {
-        warn!(entry = guid.entry(), "Ignoring trainer list request with no DB trainer spells");
+        warn!(
+            entry = guid.entry(),
+            "Ignoring trainer list request with no DB trainer spells"
+        );
         return Ok(());
     }
     if template.npc_flags & UNIT_NPC_FLAG_TRAINER == 0 {
@@ -76,19 +86,19 @@ async fn send_trainer_list(
     send_packet(stream, SMSG_TRAINER_LIST, &body, Some(header_crypto)).await
 }
 
-async fn handle_trainer_buy_spell(
+pub(in crate::world) async fn handle_trainer_buy_spell(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::TrainerBuySpellRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring trainer buy before character login");
         return Ok(());
     };
-    let request = TrainerBuySpellRequest::read(body)?;
+    let request = TrainerBuySpellRequest::from(request);
     if !request.trainer_guid.is_creature() {
         return Ok(());
     }
@@ -125,7 +135,10 @@ async fn handle_trainer_buy_spell(
         )
         .await;
     };
-    session.active_spells.insert(list_spell.learned_spell);
+    session
+        .character
+        .active_spells
+        .insert(list_spell.learned_spell);
     send_packet(
         stream,
         SMSG_PLAY_SPELL_VISUAL,
@@ -182,47 +195,41 @@ async fn handle_trainer_buy_spell(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TrainerBuySpellRequest {
-    trainer_guid: ObjectGuid,
-    spell: u32,
+pub(in crate::world) struct TrainerBuySpellRequest {
+    pub(in crate::world) trainer_guid: ObjectGuid,
+    pub(in crate::world) spell: u32,
 }
 
-impl TrainerBuySpellRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 12 {
-            anyhow::bail!(
-                "CMSG_TRAINER_BUY_SPELL payload too short: {} bytes",
-                body.len()
-            );
+impl From<wow_proto::TrainerBuySpellRequest> for TrainerBuySpellRequest {
+    fn from(request: wow_proto::TrainerBuySpellRequest) -> Self {
+        Self {
+            trainer_guid: ObjectGuid::from_raw(request.trainer_raw_guid),
+            spell: request.spell,
         }
-        Ok(Self {
-            trainer_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
-            spell: u32::from_le_bytes(body[8..12].try_into()?),
-        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TrainerListSpell {
-    spell: u32,
-    learned_spell: u32,
-    state: u8,
-    cost: u32,
-    req_level: u8,
-    req_skill: u32,
-    req_skill_value: u32,
-    req_ability: [u32; 3],
+pub(in crate::world) struct TrainerListSpell {
+    pub(in crate::world) spell: u32,
+    pub(in crate::world) learned_spell: u32,
+    pub(in crate::world) state: u8,
+    pub(in crate::world) cost: u32,
+    pub(in crate::world) req_level: u8,
+    pub(in crate::world) req_skill: u32,
+    pub(in crate::world) req_skill_value: u32,
+    pub(in crate::world) req_ability: [u32; 3],
 }
 
 impl TrainerListSpell {
-    fn from_query(
+    pub(in crate::world) fn from_query(
         query: &wow_db::TrainerSpellQuery,
         character: &ActiveCharacter,
         known_spells: &[wow_db::CharacterSpell],
     ) -> Self {
-        let known = known_spells
-            .iter()
-            .any(|spell| spell.spell == query.learned_spell && spell.active != 0 && spell.disabled == 0);
+        let known = known_spells.iter().any(|spell| {
+            spell.spell == query.learned_spell && spell.active != 0 && spell.disabled == 0
+        });
         let req_ability = [
             query.req_ability1.unwrap_or(0),
             query.req_ability2.unwrap_or(0),
@@ -230,9 +237,9 @@ impl TrainerListSpell {
         ];
         let missing_required_ability = req_ability.iter().any(|ability| {
             *ability != 0
-                && !known_spells
-                    .iter()
-                    .any(|spell| spell.spell == *ability && spell.active != 0 && spell.disabled == 0)
+                && !known_spells.iter().any(|spell| {
+                    spell.spell == *ability && spell.active != 0 && spell.disabled == 0
+                })
         });
         let state = if known {
             TRAINER_SPELL_GRAY
@@ -257,70 +264,82 @@ impl TrainerListSpell {
     }
 }
 
-fn trainer_spell_matches_class(template: &wow_db::CreatureTemplateQuery, class: u8) -> bool {
+pub(in crate::world) fn trainer_spell_matches_class(
+    template: &wow_db::CreatureTemplateQuery,
+    class: u8,
+) -> bool {
     template.trainer_class == 0 || template.trainer_class == class
 }
 
-fn build_trainer_list_body(
+pub(in crate::world) fn build_trainer_list_body(
     trainer: ObjectGuid,
     trainer_type: u32,
     spells: &[TrainerListSpell],
     greeting: &str,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(8 + 4 + 4 + spells.len() * 38 + greeting.len() + 1);
-    body.extend_from_slice(&trainer.raw().to_le_bytes());
-    body.extend_from_slice(&trainer_type.to_le_bytes());
-    body.extend_from_slice(&(spells.len() as u32).to_le_bytes());
-    for spell in spells {
-        body.extend_from_slice(&spell.spell.to_le_bytes());
-        body.push(spell.state);
-        body.extend_from_slice(&spell.cost.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.push(spell.req_level);
-        body.extend_from_slice(&spell.req_skill.to_le_bytes());
-        body.extend_from_slice(&spell.req_skill_value.to_le_bytes());
-        for ability in spell.req_ability {
-            body.extend_from_slice(&ability.to_le_bytes());
-        }
+    SmsgTrainerListResponse {
+        trainer,
+        trainer_type,
+        spells: spells
+            .iter()
+            .map(|spell| TrainerListSpellResponse {
+                spell: spell.spell,
+                state: spell.state,
+                cost: spell.cost,
+                req_level: spell.req_level,
+                req_skill: spell.req_skill,
+                req_skill_value: spell.req_skill_value,
+                req_ability: spell.req_ability,
+            })
+            .collect(),
+        greeting: greeting.to_string(),
     }
-    write_c_string(&mut body, greeting);
-    body
+    .body()
 }
 
-fn build_trainer_buy_succeeded_body(trainer: ObjectGuid, spell: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&trainer.raw().to_le_bytes());
-    body.extend_from_slice(&spell.to_le_bytes());
-    body
+pub(in crate::world) fn build_trainer_buy_succeeded_body(
+    trainer: ObjectGuid,
+    spell: u32,
+) -> Vec<u8> {
+    SmsgTrainerBuySucceededResponse { trainer, spell }.body()
 }
 
-fn build_trainer_buy_failed_body(trainer: ObjectGuid, spell: u32, reason: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(16);
-    body.extend_from_slice(&trainer.raw().to_le_bytes());
-    body.extend_from_slice(&spell.to_le_bytes());
-    body.extend_from_slice(&reason.to_le_bytes());
-    body
+pub(in crate::world) fn build_trainer_buy_failed_body(
+    trainer: ObjectGuid,
+    spell: u32,
+    reason: u32,
+) -> Vec<u8> {
+    SmsgTrainerBuyFailedResponse {
+        trainer,
+        spell,
+        reason,
+    }
+    .body()
 }
 
-fn build_learned_spell_body(spell: u32) -> Vec<u8> {
-    spell.to_le_bytes().to_vec()
+pub(in crate::world) fn build_learned_spell_body(spell: u32) -> Vec<u8> {
+    SmsgLearnedSpellResponse { spell }.body()
 }
 
-fn build_play_spell_visual_body(guid: ObjectGuid, spell_visual_kit: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-    body.extend_from_slice(&spell_visual_kit.to_le_bytes());
-    body
+pub(in crate::world) fn build_play_spell_visual_body(
+    guid: ObjectGuid,
+    spell_visual_kit: u32,
+) -> Vec<u8> {
+    SmsgPlaySpellVisualResponse {
+        guid,
+        spell_visual_kit,
+    }
+    .body()
 }
 
-fn build_play_spell_impact_body(guid: u32, spell_visual_kit: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, REALM_ID, guid).raw().to_le_bytes());
-    body.extend_from_slice(&spell_visual_kit.to_le_bytes());
-    body
+pub(in crate::world) fn build_play_spell_impact_body(guid: u32, spell_visual_kit: u32) -> Vec<u8> {
+    SmsgPlaySpellImpactResponse {
+        guid: ObjectGuid::new(HighGuid::Player, REALM_ID, guid),
+        spell_visual_kit,
+    }
+    .body()
 }
 
-const TRAINER_SPELL_GREEN: u8 = 0;
-const TRAINER_SPELL_RED: u8 = 1;
-const TRAINER_SPELL_GRAY: u8 = 2;
+pub(in crate::world) const TRAINER_SPELL_GREEN: u8 = 0;
+pub(in crate::world) const TRAINER_SPELL_RED: u8 = 1;
+pub(in crate::world) const TRAINER_SPELL_GRAY: u8 = 2;

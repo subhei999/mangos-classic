@@ -1,5 +1,7 @@
-﻿impl DbCreatureRuntime {
-    fn new(spawn: CreatureSpawnQuery) -> Self {
+use super::*;
+
+impl DbCreatureRuntime {
+    pub(in crate::world) fn new(spawn: CreatureSpawnQuery) -> Self {
         let health = creature_health(&spawn.template);
         let power1 = creature_mana(&spawn.template);
         let home_position = db_creature_spawn_position(&spawn);
@@ -51,19 +53,19 @@
         }
     }
 
-    fn guid(&self) -> ObjectGuid {
+    pub(in crate::world) fn guid(&self) -> ObjectGuid {
         creature_spawn_guid(&self.spawn)
     }
 
-    fn is_alive(&self) -> bool {
+    pub(in crate::world) fn is_alive(&self) -> bool {
         self.life_state == DbCreatureLifeState::Alive && self.health > 0
     }
 
-    fn is_evading_home(&self) -> bool {
+    pub(in crate::world) fn is_evading_home(&self) -> bool {
         matches!(self.motion, CreatureMotionState::ReturnHome(_))
     }
 
-    fn default_movement_type(&self) -> u8 {
+    pub(in crate::world) fn default_movement_type(&self) -> u8 {
         if self.spawn.movement_type != DB_MOTION_TYPE_IDLE {
             self.spawn.movement_type
         } else {
@@ -71,7 +73,7 @@
         }
     }
 
-    fn new_with_persisted_respawn(
+    pub(in crate::world) fn new_with_persisted_respawn(
         spawn: CreatureSpawnQuery,
         now: Instant,
         now_epoch_secs: u64,
@@ -113,7 +115,7 @@
         creature
     }
 
-    fn random_wander_radius(&self) -> f32 {
+    pub(in crate::world) fn random_wander_radius(&self) -> f32 {
         if self.default_movement_type() == DB_MOTION_TYPE_RANDOM {
             self.spawn.spawn_dist.max(0.0)
         } else {
@@ -121,14 +123,14 @@
         }
     }
 
-    fn has_waypoint_movement(&self) -> bool {
+    pub(in crate::world) fn has_waypoint_movement(&self) -> bool {
         matches!(
             self.default_movement_type(),
             DB_MOTION_TYPE_WAYPOINT | DB_MOTION_TYPE_LINEAR_WAYPOINT
         ) && !self.spawn.waypoint_path.is_empty()
     }
 
-    fn initial_random_move_at(spawn: &CreatureSpawnQuery) -> Option<Instant> {
+    pub(in crate::world) fn initial_random_move_at(spawn: &CreatureSpawnQuery) -> Option<Instant> {
         let movement_type = if spawn.movement_type != DB_MOTION_TYPE_IDLE {
             spawn.movement_type
         } else {
@@ -136,11 +138,16 @@
         };
         (movement_type == DB_MOTION_TYPE_RANDOM && spawn.spawn_dist > 0.0).then(|| {
             Instant::now()
-                + Duration::from_millis(db_creature_random_pause_millis(creature_spawn_guid(spawn).raw(), 0))
+                + Duration::from_millis(db_creature_random_pause_millis(
+                    creature_spawn_guid(spawn).raw(),
+                    0,
+                ))
         })
     }
 
-    fn initial_waypoint_move_at(spawn: &CreatureSpawnQuery) -> Option<Instant> {
+    pub(in crate::world) fn initial_waypoint_move_at(
+        spawn: &CreatureSpawnQuery,
+    ) -> Option<Instant> {
         let movement_type = if spawn.movement_type != DB_MOTION_TYPE_IDLE {
             spawn.movement_type
         } else {
@@ -154,51 +161,51 @@
         .filter(|_| !spawn.waypoint_path.is_empty())
     }
 
-    fn max_health(&self) -> u32 {
+    pub(in crate::world) fn max_health(&self) -> u32 {
         creature_health(&self.spawn.template)
     }
 
     #[allow(dead_code)]
-    fn hit_damage(&self) -> u32 {
+    pub(in crate::world) fn hit_damage(&self) -> u32 {
         self.spawn.template.max_melee_dmg.ceil().max(1.0) as u32
     }
 
-    fn melee_outcome_against_player(
+    pub(in crate::world) fn melee_outcome_against_player(
         &self,
         defense: PlayerMeleeDefenseInput,
     ) -> MeleeDamageOutcome {
         roll_melee_damage(creature_melee_input_against_player(self, defense))
     }
 
-    fn base_attack_duration(&self) -> Duration {
+    pub(in crate::world) fn base_attack_duration(&self) -> Duration {
         let base_millis = self.spawn.template.melee_base_attack_time.max(1) as f32;
         let multiplier = active_aura_melee_attack_time_multiplier(&self.active_auras);
         Duration::from_millis((base_millis * multiplier).round().max(1.0) as u64)
     }
 
-    fn combat_reach(&self) -> f32 {
+    pub(in crate::world) fn combat_reach(&self) -> f32 {
         creature_combat_reach(&self.spawn.template)
     }
 
-    fn walk_speed(&self) -> f32 {
+    pub(in crate::world) fn walk_speed(&self) -> f32 {
         self.move_speeds.walk
     }
 
-    fn run_speed(&self) -> f32 {
+    pub(in crate::world) fn run_speed(&self) -> f32 {
         self.move_speeds.run
     }
 
-    fn refresh_move_speeds(&mut self) -> UnitMoveSpeeds {
+    pub(in crate::world) fn refresh_move_speeds(&mut self) -> UnitMoveSpeeds {
         let previous = self.move_speeds;
         self.move_speeds = db_creature_move_speeds(&self.spawn.template, &self.active_auras);
         previous
     }
 
-    fn loot_money(&self) -> u32 {
+    pub(in crate::world) fn loot_money(&self) -> u32 {
         self.loot_money
     }
 
-    fn roll_loot_money(&self) -> u32 {
+    pub(in crate::world) fn roll_loot_money(&self) -> u32 {
         let min = self.spawn.template.min_loot_gold;
         let max = self.spawn.template.max_loot_gold.max(min);
         if min == max {
@@ -208,11 +215,11 @@
         }
     }
 
-    fn dynamic_flags(&self) -> u32 {
+    pub(in crate::world) fn dynamic_flags(&self) -> u32 {
         self.dynamic_flags_for_player(None)
     }
 
-    fn dynamic_flags_for_player(&self, character_guid: Option<u32>) -> u32 {
+    pub(in crate::world) fn dynamic_flags_for_player(&self, character_guid: Option<u32>) -> u32 {
         if self.life_state == DbCreatureLifeState::Corpse && self.lootable {
             if self.can_loot_for_player(character_guid) {
                 UNIT_DYNFLAG_LOOTABLE
@@ -224,7 +231,7 @@
         }
     }
 
-    fn can_loot_for_player(&self, character_guid: Option<u32>) -> bool {
+    pub(in crate::world) fn can_loot_for_player(&self, character_guid: Option<u32>) -> bool {
         if self.life_state != DbCreatureLifeState::Corpse || !self.lootable {
             return false;
         }
@@ -248,7 +255,7 @@
             .any(|loot| self.can_loot_item_for_player(character_guid, loot))
     }
 
-    fn loot_owner_allows_character(&self, character_guid: u32) -> bool {
+    pub(in crate::world) fn loot_owner_allows_character(&self, character_guid: u32) -> bool {
         match self.loot_owner {
             None => true,
             Some(CreatureLootOwner::Player(owner)) => owner == character_guid,
@@ -259,7 +266,11 @@
         }
     }
 
-    fn can_loot_item_for_player(&self, character_guid: u32, loot: &DbCreatureLootRuntime) -> bool {
+    pub(in crate::world) fn can_loot_item_for_player(
+        &self,
+        character_guid: u32,
+        loot: &DbCreatureLootRuntime,
+    ) -> bool {
         if loot.free_for_all {
             return true;
         }
@@ -291,7 +302,7 @@
         }
     }
 
-    fn begin_corpse(&mut self, now: Instant, now_epoch_secs: u64) {
+    pub(in crate::world) fn begin_corpse(&mut self, now: Instant, now_epoch_secs: u64) {
         let respawn_delay = db_creature_respawn_delay(&self.spawn);
         self.health = 0;
         self.power1 = 0;
@@ -303,7 +314,8 @@
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
         self.refresh_move_speeds();
-        self.corpse_expires_at = Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
+        self.corpse_expires_at =
+            Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
         self.respawn_at = Some(now + respawn_delay);
         self.respawn_epoch_secs = Some(now_epoch_secs + respawn_delay.as_secs());
         self.client_visible = true;
@@ -325,7 +337,7 @@
         self.already_called_assistance = false;
     }
 
-    fn reduce_corpse_decay_after_loot(&mut self, now: Instant) {
+    pub(in crate::world) fn reduce_corpse_decay_after_loot(&mut self, now: Instant) {
         if self.life_state != DbCreatureLifeState::Corpse {
             return;
         }
@@ -342,12 +354,14 @@
         }
     }
 
-    fn is_corpse_expired(&self, now: Instant) -> bool {
+    pub(in crate::world) fn is_corpse_expired(&self, now: Instant) -> bool {
         self.life_state == DbCreatureLifeState::Corpse
-            && self.corpse_expires_at.is_some_and(|expires_at| now >= expires_at)
+            && self
+                .corpse_expires_at
+                .is_some_and(|expires_at| now >= expires_at)
     }
 
-    fn remove_corpse(&mut self) {
+    pub(in crate::world) fn remove_corpse(&mut self) {
         self.life_state = DbCreatureLifeState::Dead;
         self.active_auras.clear();
         self.next_spell_list_update_at = None;
@@ -383,12 +397,12 @@
         self.already_called_assistance = false;
     }
 
-    fn is_ready_to_respawn(&self, now: Instant) -> bool {
+    pub(in crate::world) fn is_ready_to_respawn(&self, now: Instant) -> bool {
         self.life_state == DbCreatureLifeState::Dead
             && self.respawn_at.is_none_or(|respawn_at| now >= respawn_at)
     }
 
-    fn respawn(&mut self) {
+    pub(in crate::world) fn respawn(&mut self) {
         self.health = self.max_health();
         self.power1 = creature_mana(&self.spawn.template);
         self.life_state = DbCreatureLifeState::Alive;
@@ -425,7 +439,7 @@
         self.already_called_assistance = false;
     }
 
-    fn can_aggro_player(
+    pub(in crate::world) fn can_aggro_player(
         &self,
         faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
@@ -443,7 +457,10 @@
             )
     }
 
-    fn distance_to_player_squared(&self, character: &ActiveCharacter) -> Option<f32> {
+    pub(in crate::world) fn distance_to_player_squared(
+        &self,
+        character: &ActiveCharacter,
+    ) -> Option<f32> {
         (self.current_position.map_id == character.position.map_id).then(|| {
             let dx = self.current_position.x - character.position.x;
             let dy = self.current_position.y - character.position.y;
@@ -452,7 +469,7 @@
     }
 }
 
-fn db_creature_move_speeds(
+pub(in crate::world) fn db_creature_move_speeds(
     template: &CreatureTemplateQuery,
     active_auras: &[ActiveAura],
 ) -> UnitMoveSpeeds {
@@ -476,21 +493,23 @@ fn db_creature_move_speeds(
     }
 }
 
-const CMANGOS_MINIMUM_LOOTING_TIME_MILLIS: u64 = 2 * 60 * 1000;
-const CMANGOS_CORPSE_DECAY_NORMAL_SECS: u64 = 300;
-const CMANGOS_CORPSE_DECAY_RARE_SECS: u64 = 900;
-const CMANGOS_CORPSE_DECAY_ELITE_SECS: u64 = 600;
-const CMANGOS_CORPSE_DECAY_RARE_ELITE_SECS: u64 = 1200;
-const CMANGOS_CORPSE_DECAY_WORLD_BOSS_SECS: u64 = 3600;
+pub(in crate::world) const CMANGOS_MINIMUM_LOOTING_TIME_MILLIS: u64 = 2 * 60 * 1000;
+pub(in crate::world) const CMANGOS_CORPSE_DECAY_NORMAL_SECS: u64 = 300;
+pub(in crate::world) const CMANGOS_CORPSE_DECAY_RARE_SECS: u64 = 900;
+pub(in crate::world) const CMANGOS_CORPSE_DECAY_ELITE_SECS: u64 = 600;
+pub(in crate::world) const CMANGOS_CORPSE_DECAY_RARE_ELITE_SECS: u64 = 1200;
+pub(in crate::world) const CMANGOS_CORPSE_DECAY_WORLD_BOSS_SECS: u64 = 3600;
 
-fn current_unix_epoch_secs() -> u64 {
+pub(in crate::world) fn current_unix_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
 }
 
-fn db_creature_corpse_decay_duration(template: &CreatureTemplateQuery) -> Duration {
+pub(in crate::world) fn db_creature_corpse_decay_duration(
+    template: &CreatureTemplateQuery,
+) -> Duration {
     let seconds = if template.corpse_decay != 0 {
         template.corpse_decay as u64
     } else {
@@ -505,7 +524,7 @@ fn db_creature_corpse_decay_duration(template: &CreatureTemplateQuery) -> Durati
     Duration::from_secs(seconds)
 }
 
-fn db_creature_respawn_delay(spawn: &CreatureSpawnQuery) -> Duration {
+pub(in crate::world) fn db_creature_respawn_delay(spawn: &CreatureSpawnQuery) -> Duration {
     let min = spawn.spawn_time_secs_min;
     let max = spawn.spawn_time_secs_max.max(min);
     let seconds = if min == max {
@@ -516,7 +535,7 @@ fn db_creature_respawn_delay(spawn: &CreatureSpawnQuery) -> Duration {
     Duration::from_secs(seconds as u64)
 }
 
-fn db_creature_spawn_position(spawn: &CreatureSpawnQuery) -> WorldPosition {
+pub(in crate::world) fn db_creature_spawn_position(spawn: &CreatureSpawnQuery) -> WorldPosition {
     WorldPosition::new(
         spawn.map,
         spawn.position_x,
@@ -525,4 +544,3 @@ fn db_creature_spawn_position(spawn: &CreatureSpawnQuery) -> WorldPosition {
         spawn.orientation,
     )
 }
-

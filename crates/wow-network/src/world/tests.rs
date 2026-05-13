@@ -1,5 +1,303 @@
 use super::*;
 
+fn test_smsg_pong_opcode() -> u16 {
+    u32::from(wow_proto::WorldOpcode::SmsgPong) as u16
+}
+
+fn read_char_create_request(body: &[u8]) -> wow_proto::CharCreateRequest {
+    let mut body = body;
+    wow_proto::CharCreateRequest::read(&mut body).unwrap()
+}
+
+fn read_gossip_select_option_request(body: &[u8]) -> wow_proto::GossipSelectOptionRequest {
+    let mut body = body;
+    wow_proto::GossipSelectOptionRequest::read(&mut body).unwrap()
+}
+
+fn read_trainer_buy_spell_request(body: &[u8]) -> wow_proto::TrainerBuySpellRequest {
+    let mut body = body;
+    wow_proto::TrainerBuySpellRequest::read(&mut body).unwrap()
+}
+
+fn read_buy_item_request(body: &[u8]) -> wow_proto::BuyItemRequest {
+    let mut body = body;
+    wow_proto::BuyItemRequest::read(&mut body).unwrap()
+}
+
+fn read_use_item_request(body: &[u8]) -> wow_proto::UseItemRequest {
+    let mut body = body;
+    wow_proto::UseItemRequest::read(&mut body).unwrap()
+}
+
+fn read_destroy_item_request(body: &[u8]) -> wow_proto::DestroyItemRequest {
+    let mut body = body;
+    wow_proto::DestroyItemRequest::read(&mut body).unwrap()
+}
+
+fn read_split_item_request(body: &[u8]) -> wow_proto::SplitItemRequest {
+    let mut body = body;
+    wow_proto::SplitItemRequest::read(&mut body).unwrap()
+}
+
+fn read_message_chat_request(body: &[u8]) -> wow_proto::MessageChatRequest {
+    let mut body = body;
+    wow_proto::MessageChatRequest::read(&mut body).unwrap()
+}
+
+fn read_join_channel_request(body: &[u8]) -> wow_proto::JoinChannelRequest {
+    let mut body = body;
+    wow_proto::JoinChannelRequest::read(&mut body).unwrap()
+}
+
+fn read_text_emote_request(body: &[u8]) -> wow_proto::TextEmoteRequest {
+    let mut body = body;
+    wow_proto::TextEmoteRequest::read(&mut body).unwrap()
+}
+
+fn read_cast_spell_request(body: &[u8]) -> wow_proto::CastSpellRequest {
+    let mut body = body;
+    wow_proto::CastSpellRequest::read(&mut body).unwrap()
+}
+
+fn read_attack_swing_request(body: &[u8]) -> wow_proto::AttackSwingRequest {
+    let mut body = body;
+    wow_proto::AttackSwingRequest::read(&mut body).unwrap()
+}
+
+fn read_loot_request(body: &[u8]) -> wow_proto::LootRequest {
+    let mut body = body;
+    wow_proto::LootRequest::read(&mut body).unwrap()
+}
+
+fn read_loot_release_request(body: &[u8]) -> wow_proto::LootReleaseRequest {
+    let mut body = body;
+    wow_proto::LootReleaseRequest::read(&mut body).unwrap()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CharCreatePacket {
+    name: String,
+    race: u8,
+    class: u8,
+    gender: u8,
+    skin: u8,
+    face: u8,
+    hair_style: u8,
+    hair_color: u8,
+    facial_hair: u8,
+    outfit_id: u8,
+}
+
+impl CharCreatePacket {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_char_create_request(body);
+        Ok(Self {
+            name: request.name,
+            race: request.race,
+            class: request.class,
+            gender: request.gender,
+            skin: request.skin,
+            face: request.face,
+            hair_style: request.hair_style,
+            hair_color: request.hair_color,
+            facial_hair: request.facial_hair,
+            outfit_id: request.outfit_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GossipSelectOption {
+    guid: ObjectGuid,
+    option: u32,
+}
+
+impl GossipSelectOption {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_gossip_select_option_request(body);
+        Ok(Self {
+            guid: ObjectGuid::from_raw(request.raw_guid),
+            option: request.option,
+        })
+    }
+
+    fn is_supported_browse_option(&self) -> bool {
+        self.option == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrainerBuySpellRequest {
+    trainer_guid: ObjectGuid,
+    spell: u32,
+}
+
+impl TrainerBuySpellRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_trainer_buy_spell_request(body);
+        Ok(Self {
+            trainer_guid: ObjectGuid::from_raw(request.trainer_raw_guid),
+            spell: request.spell,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuyItemRequest {
+    vendor_guid: ObjectGuid,
+    item: u32,
+    count: u8,
+}
+
+impl BuyItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_buy_item_request(body);
+        Ok(Self {
+            vendor_guid: ObjectGuid::from_raw(request.vendor_raw_guid),
+            item: request.item,
+            count: request.count,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UseItemPacket {
+    bag: u8,
+    slot: u8,
+    spell_index: u8,
+    targets: SpellCastTargets,
+}
+
+impl UseItemPacket {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_use_item_request(body);
+        Ok(Self {
+            bag: normalize_client_bag(request.bag),
+            slot: request.slot,
+            spell_index: request.spell_index,
+            targets: request.targets,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DestroyItemRequest {
+    bag: u8,
+    slot: u8,
+    count: u8,
+}
+
+impl DestroyItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_destroy_item_request(body);
+        Ok(Self {
+            bag: normalize_client_bag(request.bag),
+            slot: request.slot,
+            count: request.count,
+        })
+    }
+
+    fn is_supported_destroy(&self) -> bool {
+        is_supported_storage_position(self.bag, self.slot)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SplitItemRequest {
+    src_bag: u8,
+    src_slot: u8,
+    dst_bag: u8,
+    dst_slot: u8,
+    count: u8,
+}
+
+impl SplitItemRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_split_item_request(body);
+        Ok(Self {
+            src_bag: normalize_client_bag(request.src_bag),
+            src_slot: request.src_slot,
+            dst_bag: normalize_client_bag(request.dst_bag),
+            dst_slot: request.dst_slot,
+            count: request.count,
+        })
+    }
+
+    fn is_supported_split(&self) -> bool {
+        self.count != 0
+            && is_supported_storage_position(self.src_bag, self.src_slot)
+            && is_supported_storage_position(self.dst_bag, self.dst_slot)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChatMessage {
+    chat_type: u32,
+    language: u32,
+    message: String,
+}
+
+impl ChatMessage {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_message_chat_request(body);
+        Ok(Self {
+            chat_type: request.chat_type,
+            language: request.language,
+            message: request.message,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JoinChannelRequest {
+    channel_name: String,
+    password: String,
+}
+
+impl JoinChannelRequest {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_join_channel_request(body);
+        Ok(Self {
+            channel_name: request.channel_name,
+            password: request.password,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEmote {
+    text_emote: u32,
+    emote_num: u32,
+    target_guid: u64,
+}
+
+impl TextEmote {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_text_emote_request(body);
+        Ok(Self {
+            text_emote: request.text_emote,
+            emote_num: request.emote_num,
+            target_guid: request.target_raw_guid,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CastSpellPacket {
+    spell_id: u32,
+    targets: SpellCastTargets,
+}
+
+impl CastSpellPacket {
+    fn read(body: &[u8]) -> anyhow::Result<Self> {
+        let request = read_cast_spell_request(body);
+        Ok(Self {
+            spell_id: request.spell_id,
+            targets: request.targets,
+        })
+    }
+}
+
 fn decode_update_values(body: &[u8]) -> Vec<Option<u32>> {
     let block_count = body[0] as usize;
     let mask_start = 1;
@@ -696,11 +994,11 @@ fn parses_unknown_db_creature_query_and_marks_entry_unknown() {
     query.extend_from_slice(&98_765u32.to_le_bytes());
     query.extend_from_slice(&guid.raw().to_le_bytes());
 
-    let parsed = CreatureQuery::read(&query).unwrap();
+    let parsed = wow_proto::CreatureQueryRequest::read(&mut &query[..]).unwrap();
     let response = build_creature_query_response(parsed.entry, None);
 
     assert_eq!(parsed.entry, 98_765);
-    assert_eq!(parsed.guid, guid);
+    assert_eq!(ObjectGuid::from_raw(parsed.raw_guid), guid);
     assert_eq!(response, (98_765u32 | 0x8000_0000).to_le_bytes());
 }
 
@@ -1351,7 +1649,7 @@ fn db_gameobject_create_block_sets_quest_chest_dynamic_flags_for_condition_chest
 
     let block = build_db_gameobject_runtime_create_block_for_quest_statuses(
         &runtime,
-        &session.quest_statuses,
+        &session.quests.quest_statuses,
     )
     .unwrap();
     let (values, trailing) =
@@ -1435,9 +1733,10 @@ fn gameobject_visibility_stages_destroy_for_out_of_range_objects() {
     let out_guid = gameobject_spawn_guid(&out_of_range).raw();
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_gameobjects
         .insert(out_guid, DbGameObjectRuntime::new(out_of_range));
-    session.last_gameobject_visibility_position =
+    session.visibility.last_gameobject_visibility_position =
         Some(WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0));
 
     let updates = stage_db_gameobject_visibility_updates(
@@ -1462,6 +1761,7 @@ fn gameobject_visibility_stages_destroy_for_shared_consumed_object() {
     let guid = gameobject_spawn_guid(&spawn).raw();
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_gameobjects
         .insert(guid, DbGameObjectRuntime::new(spawn.clone()));
     let mut shared = DbGameObjectRuntime::new(spawn);
@@ -1479,7 +1779,14 @@ fn gameobject_visibility_stages_destroy_for_shared_consumed_object() {
         .destroy_guids
         .iter()
         .any(|destroy| destroy.raw() == guid));
-    assert!(!session.db_gameobjects.get(&guid).unwrap().client_visible);
+    assert!(
+        !session
+            .visibility
+            .db_gameobjects
+            .get(&guid)
+            .unwrap()
+            .client_visible
+    );
 }
 
 #[test]
@@ -1496,6 +1803,7 @@ fn movement_visibility_stages_only_new_db_creature_create_blocks() {
     let new_guid = creature_spawn_guid(&new_spawn).raw();
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_creatures
         .insert(known_guid, DbCreatureRuntime::new(known.clone()));
 
@@ -1512,8 +1820,8 @@ fn movement_visibility_stages_only_new_db_creature_create_blocks() {
 
     assert_eq!(bodies.len(), 1);
     assert!(updates.destroy_guids.is_empty());
-    assert!(session.db_creatures.contains_key(&known_guid));
-    assert!(session.db_creatures.contains_key(&new_guid));
+    assert!(session.visibility.db_creatures.contains_key(&known_guid));
+    assert!(session.visibility.db_creatures.contains_key(&new_guid));
     assert!(
         bodies[0]
             .windows(new_guid.to_le_bytes().len())
@@ -1552,7 +1860,7 @@ fn movement_visibility_tracks_persisted_dead_creature_without_create_block() {
 
     assert!(updates.create_bodies.is_empty());
     assert!(updates.destroy_guids.is_empty());
-    let runtime = session.db_creatures.get(&dead_guid).unwrap();
+    let runtime = session.visibility.db_creatures.get(&dead_guid).unwrap();
     assert_eq!(runtime.life_state, DbCreatureLifeState::Dead);
     assert_eq!(runtime.respawn_epoch_secs, Some(1_120));
     assert!(runtime.is_ready_to_respawn(now + Duration::from_secs(120)));
@@ -1585,7 +1893,7 @@ fn movement_visibility_refreshes_existing_creature_from_shared_dead_snapshot() {
     shared.lootable = false;
     shared.looting = false;
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(guid, local);
+    session.visibility.db_creatures.insert(guid, local);
 
     let updates = stage_db_creature_visibility_updates(
         &mut session,
@@ -1595,7 +1903,7 @@ fn movement_visibility_refreshes_existing_creature_from_shared_dead_snapshot() {
     .unwrap();
 
     assert_eq!(updates.destroy_guids, vec![ObjectGuid::from_raw(guid)]);
-    let runtime = session.db_creatures.get(&guid).unwrap();
+    let runtime = session.visibility.db_creatures.get(&guid).unwrap();
     assert_eq!(runtime.life_state, DbCreatureLifeState::Dead);
     assert!(!runtime.client_visible);
     assert!(!runtime.lootable);
@@ -1622,7 +1930,7 @@ fn db_creature_death_motion_stop_clears_active_motion() {
         duration: Duration::from_secs(2),
     });
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(guid.raw(), runtime);
+    session.visibility.db_creatures.insert(guid.raw(), runtime);
 
     let body = build_db_creature_motion_stop_body(&mut session, guid)
         .unwrap()
@@ -1630,7 +1938,12 @@ fn db_creature_death_motion_stop_clears_active_motion() {
 
     assert!(!body.is_empty());
     assert!(matches!(
-        session.db_creatures.get(&guid.raw()).unwrap().motion,
+        session
+            .visibility
+            .db_creatures
+            .get(&guid.raw())
+            .unwrap()
+            .motion,
         CreatureMotionState::Idle
     ));
 }
@@ -1648,7 +1961,7 @@ fn movement_visibility_recreates_unloaded_corpse_before_respawn() {
     let mut corpse = DbCreatureRuntime::new(spawn.clone());
     corpse.begin_corpse(Instant::now(), 1_000);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(guid, corpse);
+    session.visibility.db_creatures.insert(guid, corpse);
 
     let unload = stage_db_creature_visibility_updates(
         &mut session,
@@ -1657,9 +1970,21 @@ fn movement_visibility_recreates_unloaded_corpse_before_respawn() {
     )
     .unwrap();
     assert_eq!(unload.destroy_guids, vec![ObjectGuid::from_raw(guid)]);
-    assert!(!session.db_creatures.get(&guid).unwrap().client_visible);
+    assert!(
+        !session
+            .visibility
+            .db_creatures
+            .get(&guid)
+            .unwrap()
+            .client_visible
+    );
     assert_eq!(
-        session.db_creatures.get(&guid).unwrap().life_state,
+        session
+            .visibility
+            .db_creatures
+            .get(&guid)
+            .unwrap()
+            .life_state,
         DbCreatureLifeState::Corpse
     );
 
@@ -1672,7 +1997,14 @@ fn movement_visibility_recreates_unloaded_corpse_before_respawn() {
 
     assert_eq!(reload.create_count, 1);
     assert!(reload.destroy_guids.is_empty());
-    assert!(session.db_creatures.get(&guid).unwrap().client_visible);
+    assert!(
+        session
+            .visibility
+            .db_creatures
+            .get(&guid)
+            .unwrap()
+            .client_visible
+    );
     let body = &reload.create_bodies[0];
     let block_start = 5;
     let packed_guid_mask = body[block_start + 1];
@@ -1698,9 +2030,10 @@ fn movement_visibility_stages_destroy_for_out_of_range_db_creatures() {
     let out_of_range_guid = creature_spawn_guid(&out_of_range);
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_creatures
         .insert(nearby_guid, DbCreatureRuntime::new(nearby.clone()));
-    session.db_creatures.insert(
+    session.visibility.db_creatures.insert(
         out_of_range_guid.raw(),
         DbCreatureRuntime::new(out_of_range),
     );
@@ -1717,10 +2050,13 @@ fn movement_visibility_stages_destroy_for_out_of_range_db_creatures() {
 
     assert!(updates.create_bodies.is_empty());
     assert_eq!(updates.destroy_guids, vec![out_of_range_guid]);
-    assert!(session.db_creatures.contains_key(&nearby_guid));
-    assert!(!session.db_creatures.contains_key(&out_of_range_guid.raw()));
-    assert_eq!(session.active_combat_target, None);
-    assert!(session.active_creature_combats.is_empty());
+    assert!(session.visibility.db_creatures.contains_key(&nearby_guid));
+    assert!(!session
+        .visibility
+        .db_creatures
+        .contains_key(&out_of_range_guid.raw()));
+    assert_eq!(session.combat.active_combat_target, None);
+    assert!(session.combat.active_creature_combats.is_empty());
     assert_eq!(
         build_destroy_guid_body(out_of_range_guid),
         out_of_range_guid.raw().to_le_bytes()
@@ -1741,9 +2077,10 @@ fn movement_visibility_retains_recently_visible_creature_until_unload_radius() {
     let edge_visible_guid = creature_spawn_guid(&edge_visible);
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_creatures
         .insert(nearby_guid, DbCreatureRuntime::new(nearby.clone()));
-    session.db_creatures.insert(
+    session.visibility.db_creatures.insert(
         edge_visible_guid.raw(),
         DbCreatureRuntime::new(edge_visible),
     );
@@ -1760,7 +2097,10 @@ fn movement_visibility_retains_recently_visible_creature_until_unload_radius() {
 
     assert!(updates.create_bodies.is_empty());
     assert!(updates.destroy_guids.is_empty());
-    assert!(session.db_creatures.contains_key(&edge_visible_guid.raw()));
+    assert!(session
+        .visibility
+        .db_creatures
+        .contains_key(&edge_visible_guid.raw()));
 }
 
 #[test]
@@ -1777,14 +2117,15 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
     let out_of_query_guid = creature_spawn_guid(&out_of_query);
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_creatures
         .insert(nearby_guid, DbCreatureRuntime::new(nearby.clone()));
-    session.db_creatures.insert(
+    session.visibility.db_creatures.insert(
         out_of_query_guid.raw(),
         DbCreatureRuntime::new(out_of_query),
     );
-    session.active_combat_target = Some(out_of_query_guid);
-    session.active_creature_combats.insert(
+    session.combat.active_combat_target = Some(out_of_query_guid);
+    session.combat.active_creature_combats.insert(
         out_of_query_guid.raw(),
         CreatureCombatState {
             attacker: out_of_query_guid,
@@ -1805,16 +2146,22 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
 
     assert!(updates.create_bodies.is_empty());
     assert!(updates.destroy_guids.is_empty());
-    assert!(session.db_creatures.contains_key(&nearby_guid));
-    assert!(session.db_creatures.contains_key(&out_of_query_guid.raw()));
-    assert_eq!(session.active_combat_target, Some(out_of_query_guid));
-    assert!(!session.active_creature_combats.is_empty());
+    assert!(session.visibility.db_creatures.contains_key(&nearby_guid));
+    assert!(session
+        .visibility
+        .db_creatures
+        .contains_key(&out_of_query_guid.raw()));
+    assert_eq!(session.combat.active_combat_target, Some(out_of_query_guid));
+    assert!(!session.combat.active_creature_combats.is_empty());
 }
 
 #[test]
 fn movement_visibility_rescan_uses_distance_threshold() {
     let session = WorldSessionState {
-        last_creature_visibility_position: Some(WorldPosition::new(0, 10.0, 10.0, 0.0, 0.0)),
+        visibility: VisibilitySessionState {
+            last_creature_visibility_position: Some(WorldPosition::new(0, 10.0, 10.0, 0.0, 0.0)),
+            ..VisibilitySessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -3209,7 +3556,7 @@ fn repeatable_quest_status_can_be_started_again_after_reward() {
 fn quest_accept_requires_free_quest_log_slot() {
     let mut session = WorldSessionState::default();
     for quest in 1..=MAX_QUEST_LOG_SIZE as u32 {
-        session.quest_statuses.insert(
+        session.quests.quest_statuses.insert(
             quest,
             CharacterQuestStatus {
                 quest,
@@ -3222,7 +3569,7 @@ fn quest_accept_requires_free_quest_log_slot() {
             },
         );
     }
-    session.quest_log_slots = quest_log_slots_from_statuses(&session.quest_statuses);
+    session.quests.quest_log_slots = quest_log_slots_from_statuses(&session.quests.quest_statuses);
 
     assert!(!quest_log_has_free_slot(&session));
     assert_eq!(quest_log_slot_for_quest(&session, 1), Some(0));
@@ -3240,7 +3587,7 @@ fn quest_accept_requires_free_quest_log_slot() {
 fn rewarded_historical_quests_do_not_consume_quest_log_slots() {
     let mut session = WorldSessionState::default();
     for quest in 1..=MAX_QUEST_LOG_SIZE as u32 {
-        session.quest_statuses.insert(
+        session.quests.quest_statuses.insert(
             quest,
             CharacterQuestStatus {
                 quest,
@@ -3562,7 +3909,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
         )
         .await;
     let mut session = WorldSessionState::default();
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         33,
         CharacterQuestStatus {
             quest: 33,
@@ -3753,19 +4100,22 @@ async fn questgiver_list_hides_visible_but_untakeable_start_quests() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -3818,19 +4168,22 @@ async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiv
         sessions: &sessions,
     };
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
@@ -3856,6 +4209,61 @@ async fn quest_state_refresh_sends_gray_status_for_level_locked_visible_questgiv
         build_questgiver_status_body(giver, DIALOG_STATUS_UNAVAILABLE)
     );
     assert!(outbound_rx.try_recv().is_err());
+}
+
+#[test]
+fn world_packet_sink_rejects_full_bounded_queue() {
+    let (outbound_tx, _outbound_rx) = mpsc::channel(1);
+    let mut sink = WorldPacketSink::new(outbound_tx);
+
+    sink.send(test_smsg_pong_opcode(), &[1, 2, 3]).unwrap();
+    let error = sink.send(test_smsg_pong_opcode(), &[4, 5, 6]).unwrap_err();
+
+    assert!(error.to_string().contains("outbound queue full"));
+}
+
+#[tokio::test]
+async fn session_registry_requests_disconnect_when_bounded_queue_is_full() {
+    let sessions = SessionRegistry::default();
+    let session_id = SessionId(42);
+    let (outbound_tx, _outbound_rx) = mpsc::channel(1);
+    let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
+    sessions
+        .register(
+            session_id,
+            SessionHandle {
+                account_id: 1,
+                character_guid: None,
+                character_name: None,
+                outbound: WorldPacketSender::Bounded(outbound_tx),
+                disconnect: Some(disconnect_tx),
+            },
+        )
+        .await;
+
+    sessions
+        .send_packet(
+            session_id,
+            OutboundWorldPacket {
+                opcode: test_smsg_pong_opcode(),
+                body: vec![1],
+            },
+        )
+        .await;
+    sessions
+        .send_packet(
+            session_id,
+            OutboundWorldPacket {
+                opcode: test_smsg_pong_opcode(),
+                body: vec![2],
+            },
+        )
+        .await;
+
+    assert_eq!(
+        disconnect_rx.try_recv().unwrap(),
+        WorldSessionDisconnectReason::OutboundQueueFull
+    );
 }
 
 #[tokio::test]
@@ -3907,22 +4315,25 @@ async fn quest_state_refresh_updates_visible_gameobject_dynamic_flags() {
         sessions: &sessions,
     };
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         18,
         CharacterQuestStatus {
             quest: 18,
@@ -3982,22 +4393,25 @@ async fn quest_dialog_status_allows_any_satisfied_previous_quest() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         10,
         CharacterQuestStatus {
             quest: 10,
@@ -4036,19 +4450,22 @@ async fn quest_dialog_status_requires_db_required_skill() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -4059,7 +4476,10 @@ async fn quest_dialog_status_requires_db_required_skill() {
         None
     );
 
-    session.character_skills.push(test_skill(164, 75, 75));
+    session
+        .character
+        .character_skills
+        .push(test_skill(164, 75, 75));
 
     assert_eq!(
         quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
@@ -4087,19 +4507,22 @@ async fn quest_dialog_status_hides_unwired_required_condition() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -4143,19 +4566,22 @@ async fn quest_required_condition_uses_cmangos_team_condition() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -4166,7 +4592,7 @@ async fn quest_required_condition_uses_cmangos_team_condition() {
         Some(DIALOG_STATUS_AVAILABLE)
     );
 
-    session.active_character.as_mut().unwrap().race = 2;
+    session.character.active_character.as_mut().unwrap().race = 2;
     assert_eq!(
         quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
             .await
@@ -4212,19 +4638,22 @@ async fn quest_required_condition_uses_active_game_event() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -4283,22 +4712,25 @@ async fn quest_required_condition_uses_quest_taken_rewarded_and_boolean_conditio
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         7,
         CharacterQuestStatus {
             quest: 7,
@@ -4310,7 +4742,7 @@ async fn quest_required_condition_uses_quest_taken_rewarded_and_boolean_conditio
             mobcount4: 0,
         },
     );
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         8,
         CharacterQuestStatus {
             quest: 8,
@@ -4330,7 +4762,7 @@ async fn quest_required_condition_uses_quest_taken_rewarded_and_boolean_conditio
         Some(DIALOG_STATUS_AVAILABLE)
     );
 
-    session.quest_statuses.remove(&8);
+    session.quests.quest_statuses.remove(&8);
     assert_eq!(
         quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
             .await
@@ -4357,19 +4789,22 @@ async fn quest_dialog_status_requires_db_reputation_bounds() {
         .prime_exclusive_group_quests_for_test(0, Vec::new())
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -4380,11 +4815,14 @@ async fn quest_dialog_status_requires_db_reputation_bounds() {
         None
     );
 
-    session.character_reputations.push(CharacterReputation {
-        faction: 72,
-        standing: 500,
-        flags: 0,
-    });
+    session
+        .character
+        .character_reputations
+        .push(CharacterReputation {
+            faction: 72,
+            standing: 500,
+            flags: 0,
+        });
 
     assert_eq!(
         quest_start_dialog_status(&object_mgr, &pool, &quest, &session)
@@ -5113,25 +5551,31 @@ fn progression_update_sets_level_xp_vitals_and_stats() {
 #[test]
 fn db_creature_retaliation_can_kill_player() {
     let mut session = WorldSessionState {
-        player_health: 5,
+        character: CharacterSessionState {
+            player_health: 5,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let creature = test_creature_spawn(299);
     let target = creature_spawn_guid(&creature);
     let expected_hit = DbCreatureRuntime::new(creature).hit_damage().max(1);
-    session.db_creatures.insert(
+    session.visibility.db_creatures.insert(
         target.raw(),
         DbCreatureRuntime::new(test_creature_spawn(299)),
     );
 
     let retaliation = retaliation_damage_for_db_creature(&mut session, target);
     assert_eq!(retaliation, expected_hit);
-    assert_eq!(session.player_health, (5u32).saturating_sub(expected_hit));
+    assert_eq!(
+        session.character.player_health,
+        (5u32).saturating_sub(expected_hit)
+    );
 
-    session.player_health = 1;
+    session.character.player_health = 1;
     let retaliation = retaliation_damage_for_db_creature(&mut session, target);
     assert_eq!(retaliation, expected_hit);
-    assert_eq!(session.player_health, 0);
+    assert_eq!(session.character.player_health, 0);
 }
 
 #[test]
@@ -5524,29 +5968,38 @@ fn db_creature_aggro_selects_nearest_hostile_in_range() {
     friendly.template.faction = RUST_GUIDE_FACTION_TEMPLATE;
     friendly.template.npc_flags = UNIT_NPC_FLAG_GOSSIP;
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        db_creature_navigation: test_mmap_navigation_for_positions(&[
-            character_position,
-            WorldPosition::new(
-                0,
-                far_hostile.position_x,
-                far_hostile.position_y,
-                far_hostile.position_z,
-                0.0,
-            ),
-            WorldPosition::new(
-                0,
-                near_hostile.position_x,
-                near_hostile.position_y,
-                near_hostile.position_z,
-                0.0,
-            ),
-        ]),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: test_mmap_navigation_for_positions(&[
+                character_position,
+                WorldPosition::new(
+                    0,
+                    far_hostile.position_x,
+                    far_hostile.position_y,
+                    far_hostile.position_z,
+                    0.0,
+                ),
+                WorldPosition::new(
+                    0,
+                    near_hostile.position_x,
+                    near_hostile.position_y,
+                    near_hostile.position_z,
+                    0.0,
+                ),
+            ]),
+            ..MovementSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     for creature in [far_hostile.clone(), near_hostile.clone(), friendly] {
         let runtime = DbCreatureRuntime::new(creature);
-        session.db_creatures.insert(runtime.guid().raw(), runtime);
+        session
+            .visibility
+            .db_creatures
+            .insert(runtime.guid().raw(), runtime);
     }
 
     assert_eq!(
@@ -5587,11 +6040,20 @@ fn db_creature_aggro_ignores_ghost_players() {
     let attacker = creature_spawn_guid(&defias);
     let runtime = DbCreatureRuntime::new(defias);
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        player_death_state: PlayerDeathState::Ghost,
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Ghost,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
     assert!(!begin_db_creature_combat(
@@ -5622,7 +6084,10 @@ fn db_creature_combat_can_track_multiple_attackers() {
     let second = creature_spawn_guid(&second_spawn);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -5632,7 +6097,7 @@ fn db_creature_combat_can_track_multiple_attackers() {
         second,
         now + Duration::from_millis(10)
     ));
-    assert_eq!(session.active_creature_combats.len(), 2);
+    assert_eq!(session.combat.active_creature_combats.len(), 2);
     assert!(!begin_db_creature_combat(
         &mut session,
         first,
@@ -5640,8 +6105,14 @@ fn db_creature_combat_can_track_multiple_attackers() {
     ));
 
     clear_db_creature_combat_if_attacker(&mut session, first);
-    assert!(!session.active_creature_combats.contains_key(&first.raw()));
-    assert!(session.active_creature_combats.contains_key(&second.raw()));
+    assert!(!session
+        .combat
+        .active_creature_combats
+        .contains_key(&first.raw()));
+    assert!(session
+        .combat
+        .active_creature_combats
+        .contains_key(&second.raw()));
 }
 
 #[test]
@@ -5668,28 +6139,40 @@ fn db_creature_aggro_uses_template_detection_range() {
     kobold.template.detection_range = 18;
     let character_position = character.position;
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        db_creature_navigation: test_mmap_navigation_for_positions(&[
-            character_position,
-            WorldPosition::new(
-                0,
-                kobold.position_x,
-                kobold.position_y,
-                kobold.position_z,
-                0.0,
-            ),
-        ]),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: test_mmap_navigation_for_positions(&[
+                character_position,
+                WorldPosition::new(
+                    0,
+                    kobold.position_x,
+                    kobold.position_y,
+                    kobold.position_z,
+                    0.0,
+                ),
+            ]),
+            ..MovementSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold.clone());
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
 
-    session.db_creatures.clear();
+    session.visibility.db_creatures.clear();
     kobold.template.detection_range = 20;
     let runtime = DbCreatureRuntime::new(kobold.clone());
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(
         select_db_creature_aggro_target(&session),
@@ -5728,15 +6211,24 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
         0.0,
     );
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        db_creature_navigation: test_mmap_navigation_for_positions(&[
-            character_position,
-            kobold_position,
-        ]),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: test_mmap_navigation_for_positions(&[
+                character_position,
+                kobold_position,
+            ]),
+            ..MovementSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(
         db_creature_player_melee_check(&session, target),
@@ -5744,6 +6236,7 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
     );
 
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -5755,12 +6248,14 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
     );
 
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
         .position
         .orientation = 0.0;
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
@@ -5772,6 +6267,7 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
     );
 
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
@@ -5783,12 +6279,14 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
     );
 
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
         .current_position
         .x = 4.0;
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
@@ -5830,11 +6328,17 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
         jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(
         db_creature_player_melee_check(&session, target),
@@ -5842,6 +6346,7 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
     );
 
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
@@ -5853,6 +6358,7 @@ fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
     );
 
     session
+        .visibility
         .db_creatures
         .get_mut(&target.raw())
         .unwrap()
@@ -5935,32 +6441,43 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
         jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        db_creature_navigation: DbCreatureNavigationGuardrail {
-            line_of_sight_clear: false,
-            path_available: true,
-            world_data_files: Arc::new(WorldDataFiles {
-                data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
-                data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data")
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                line_of_sight_clear: false,
+                path_available: true,
+                world_data_files: Arc::new(WorldDataFiles {
+                    data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+                    data_dir_for_native: std::ffi::CString::new(
+                        "Z:/definitely-missing-cmangos-data",
+                    )
                     .ok(),
-                maps_available: true,
-                vmaps_available: false,
-                creature_display_scales: HashMap::new(),
-                spell_cast_times: HashMap::new(),
-                spell_durations: HashMap::new(),
-                spell_ranges: HashMap::new(),
-                faction_templates: FactionTemplateStore::fallback_bridge(),
-                item_random_properties: HashMap::new(),
-                mmap_headers: HashSet::new(),
-                mmap_tiles: HashSet::new(),
-                vmap_trees: HashSet::new(),
-                vmap_tiles: HashSet::new(),
-            }),
+                    maps_available: true,
+                    vmaps_available: false,
+                    creature_display_scales: HashMap::new(),
+                    spell_cast_times: HashMap::new(),
+                    spell_durations: HashMap::new(),
+                    spell_ranges: HashMap::new(),
+                    faction_templates: FactionTemplateStore::fallback_bridge(),
+                    item_random_properties: HashMap::new(),
+                    mmap_headers: HashSet::new(),
+                    mmap_tiles: HashSet::new(),
+                    vmap_trees: HashSet::new(),
+                    vmap_tiles: HashSet::new(),
+                }),
+            },
+            ..MovementSessionState::default()
         },
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(
         db_creature_player_melee_check(&session, target),
@@ -5998,7 +6515,10 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
         jump: JumpInfo::default(),
     };
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let runtime = DbCreatureRuntime::new(kobold);
@@ -6028,6 +6548,7 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     closer.current_position.x = 4.0;
     maps.update_db_creature_snapshot(0, closer).await;
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -6040,6 +6561,7 @@ async fn starter_melee_spell_failure_uses_melee_validity_before_damage() {
     );
 
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -6093,14 +6615,21 @@ fn db_creature_aggro_ignores_friendly_critter_lootable_and_out_of_range_units() 
     lootable_runtime.health = 0;
     lootable_runtime.lootable = true;
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     for creature in [friendly, critter, out_of_range] {
         let runtime = DbCreatureRuntime::new(creature);
-        session.db_creatures.insert(runtime.guid().raw(), runtime);
+        session
+            .visibility
+            .db_creatures
+            .insert(runtime.guid().raw(), runtime);
     }
     session
+        .visibility
         .db_creatures
         .insert(lootable_runtime.guid().raw(), lootable_runtime);
 
@@ -6130,10 +6659,16 @@ fn db_creature_aggro_ignores_unknown_faction_templates() {
     guard.template.creature_type = 7;
     let runtime = DbCreatureRuntime::new(guard);
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
 }
@@ -6162,10 +6697,16 @@ fn db_creature_aggro_ignores_neutral_young_wolves() {
     wolf.template.creature_type = 7;
     let runtime = DbCreatureRuntime::new(wolf);
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
 }
@@ -6194,10 +6735,16 @@ fn db_creature_aggro_ignores_neutral_kobold_vermin() {
     kobold.template.creature_type = 7;
     let runtime = DbCreatureRuntime::new(kobold);
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
 }
@@ -6236,14 +6783,23 @@ fn db_creature_aggro_includes_real_defias_thugs() {
     let defias_guid = creature_spawn_guid(&defias);
     let runtime = DbCreatureRuntime::new(defias);
     let mut session = WorldSessionState {
-        active_character: Some(character),
-        db_creature_navigation: test_mmap_navigation_for_positions(&[
-            character_position,
-            defias_position,
-        ]),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: test_mmap_navigation_for_positions(&[
+                character_position,
+                defias_position,
+            ]),
+            ..MovementSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(runtime.guid().raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), Some(defias_guid));
 }
@@ -6301,21 +6857,27 @@ async fn dead_player_attack_swing_does_not_start_map_auto_attack() {
         .await;
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_death_state: PlayerDeathState::Corpse,
-        player_health: 0,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 0,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Corpse,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut body = Vec::new();
@@ -6325,7 +6887,7 @@ async fn dead_player_attack_swing_does_not_start_map_auto_attack() {
         &mut stream,
         shared_world,
         &PartyManager::default(),
-        &body,
+        read_attack_swing_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -6357,31 +6919,36 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
         sessions: &sessions,
     };
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let attacker_runtime = DbCreatureRuntime::new(test_creature_spawn(299));
     maps.share_db_creature_snapshots(0, vec![attacker_runtime.clone()])
         .await;
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), attacker_runtime);
 
     assert!(begin_shared_db_creature_combat(shared_world, &mut session, attacker, now).await);
 
     let combat = session
+        .combat
         .active_creature_combats
         .get(&attacker.raw())
         .copied()
@@ -6393,6 +6960,7 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     let later = now + Duration::from_secs(1);
     assert!(!begin_shared_db_creature_combat(shared_world, &mut session, attacker, later).await);
     let combat = session
+        .combat
         .active_creature_combats
         .get(&attacker.raw())
         .copied()
@@ -6413,6 +6981,7 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     )
     .await;
     let combat = session
+        .combat
         .active_creature_combats
         .get(&attacker.raw())
         .copied()
@@ -6424,7 +6993,7 @@ async fn db_creature_combat_state_tracks_victim_and_next_swing() {
     );
 
     clear_db_creature_combat_if_attacker(&mut session, attacker);
-    assert!(session.active_creature_combats.is_empty());
+    assert!(session.combat.active_creature_combats.is_empty());
 }
 
 #[tokio::test]
@@ -6447,20 +7016,26 @@ async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_sessio
         sessions: &sessions,
     };
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_death_state: PlayerDeathState::Alive,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(attacker_spawn)])
@@ -6470,8 +7045,12 @@ async fn begin_shared_db_creature_combat_uses_mapruntime_liveness_without_sessio
         begin_shared_db_creature_combat(shared_world, &mut session, attacker, Instant::now()).await,
         "shared combat should start from MapRuntime even when the session viewer cache is empty"
     );
-    assert!(session.db_creatures.contains_key(&attacker.raw()));
     assert!(session
+        .visibility
+        .db_creatures
+        .contains_key(&attacker.raw()));
+    assert!(session
+        .combat
         .active_creature_combats
         .contains_key(&attacker.raw()));
 }
@@ -6504,20 +7083,26 @@ async fn player_melee_validation_refreshes_stale_session_cache_from_mapruntime()
     let mut stale_spawn = spawn;
     stale_spawn.position_x = 30.0;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        db_creatures: HashMap::from([(target.raw(), DbCreatureRuntime::new(stale_spawn))]),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        visibility: VisibilitySessionState {
+            db_creatures: HashMap::from([(target.raw(), DbCreatureRuntime::new(stale_spawn))]),
+            ..VisibilitySessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -6527,6 +7112,7 @@ async fn player_melee_validation_refreshes_stale_session_cache_from_mapruntime()
     );
     assert_eq!(
         session
+            .visibility
             .db_creatures
             .get(&target.raw())
             .unwrap()
@@ -6536,7 +7122,7 @@ async fn player_melee_validation_refreshes_stale_session_cache_from_mapruntime()
         "the session cache should be refreshed from the authoritative map snapshot"
     );
 
-    session.db_creatures.clear();
+    session.visibility.db_creatures.clear();
     assert_eq!(
         db_creature_player_melee_check_from_map(shared_world, &mut session, target).await,
         PlayerMeleeCheck::Clear,
@@ -6557,27 +7143,34 @@ async fn player_hit_announces_db_creature_retaliation_start() {
         sessions: &sessions,
     };
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 1,
-        player_death_state: PlayerDeathState::Alive,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 1,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let attacker_runtime = DbCreatureRuntime::new(attacker_spawn);
     maps.share_db_creature_snapshots(0, vec![attacker_runtime.clone()])
         .await;
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), attacker_runtime);
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
@@ -6599,6 +7192,7 @@ async fn player_hit_announces_db_creature_retaliation_start() {
 
     let packets = std::iter::from_fn(|| outbound_rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(session
+        .combat
         .active_creature_combats
         .contains_key(&attacker.raw()));
     assert!(packets
@@ -6617,34 +7211,44 @@ fn db_creature_melee_reach_is_position_gated() {
     creature.orientation = 0.0;
     let target = creature_spawn_guid(&creature);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(
-                0,
-                -8950.0 + ATTACK_DISTANCE_YARDS - 0.1,
-                -130.0,
-                83.5,
-                0.0,
-            ),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(
+                    0,
+                    -8950.0 + ATTACK_DISTANCE_YARDS - 0.1,
+                    -130.0,
+                    83.5,
+                    0.0,
+                ),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(target.raw(), DbCreatureRuntime::new(creature));
 
     assert!(db_creature_can_reach_player(&session, target));
     assert!(db_creature_has_player_in_arc(&session, target));
-    session.active_character.as_mut().unwrap().position.x = -8950.0 - ATTACK_DISTANCE_YARDS + 0.1;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = -8950.0 - ATTACK_DISTANCE_YARDS + 0.1;
     assert!(db_creature_can_reach_player(&session, target));
     assert!(!db_creature_has_player_in_arc(&session, target));
     let (facing_position, spline_id) =
@@ -6654,6 +7258,7 @@ fn db_creature_melee_reach_is_position_gated() {
     assert!(db_creature_has_player_in_arc(&session, target));
     assert_eq!(
         session
+            .visibility
             .db_creatures
             .get(&target.raw())
             .expect("creature should stay loaded")
@@ -6661,10 +7266,22 @@ fn db_creature_melee_reach_is_position_gated() {
         1
     );
 
-    session.active_character.as_mut().unwrap().position.x = -8950.0 + ATTACK_DISTANCE_YARDS;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = -8950.0 + ATTACK_DISTANCE_YARDS;
     assert!(db_creature_can_reach_player(&session, target));
 
-    session.active_character.as_mut().unwrap().position.x = -8950.0 + ATTACK_DISTANCE_YARDS + 0.1;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = -8950.0 + ATTACK_DISTANCE_YARDS + 0.1;
     assert!(!db_creature_can_reach_player(&session, target));
 }
 
@@ -6679,55 +7296,70 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
     let attacker = creature_spawn_guid(&creature);
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        db_creature_navigation: DbCreatureNavigationGuardrail {
-            line_of_sight_clear: false,
-            path_available: true,
-            world_data_files: Arc::new(WorldDataFiles {
-                data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
-                data_dir_for_native: std::ffi::CString::new("Z:/definitely-missing-cmangos-data")
-                    .ok(),
-                maps_available: true,
-                vmaps_available: false,
-                creature_display_scales: HashMap::new(),
-                spell_cast_times: HashMap::new(),
-                spell_durations: HashMap::new(),
-                spell_ranges: HashMap::new(),
-                faction_templates: FactionTemplateStore::fallback_bridge(),
-                item_random_properties: HashMap::new(),
-                mmap_headers: HashSet::new(),
-                mmap_tiles: HashSet::new(),
-                vmap_trees: HashSet::new(),
-                vmap_tiles: HashSet::new(),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
             }),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                line_of_sight_clear: false,
+                path_available: true,
+                world_data_files: Arc::new(WorldDataFiles {
+                    data_dir: std::path::PathBuf::from("Z:/definitely-missing-cmangos-data"),
+                    data_dir_for_native: std::ffi::CString::new(
+                        "Z:/definitely-missing-cmangos-data",
+                    )
+                    .ok(),
+                    maps_available: true,
+                    vmaps_available: false,
+                    creature_display_scales: HashMap::new(),
+                    spell_cast_times: HashMap::new(),
+                    spell_durations: HashMap::new(),
+                    spell_ranges: HashMap::new(),
+                    faction_templates: FactionTemplateStore::fallback_bridge(),
+                    item_random_properties: HashMap::new(),
+                    mmap_headers: HashSet::new(),
+                    mmap_tiles: HashSet::new(),
+                    vmap_trees: HashSet::new(),
+                    vmap_tiles: HashSet::new(),
+                }),
+            },
+            ..MovementSessionState::default()
         },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
     assert!(!db_creature_can_reach_player(&session, attacker));
-    session.active_character.as_mut().unwrap().position.x = 10.0;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = 10.0;
     assert!(
         start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none(),
         "missing mmap data must not create generated aggro/chase movement"
     );
 
-    session.db_creature_navigation.path_available = false;
+    session.movement.db_creature_navigation.path_available = false;
     assert!(
         start_db_creature_chase_motion(&mut session, attacker, player, Instant::now()).is_none(),
         "path availability still gates chase movement"
@@ -9613,19 +10245,22 @@ async fn unauthorized_creature_loot_request_sends_cmangos_loot_error() {
     let mut body = Vec::new();
     body.extend_from_slice(&target.raw().to_le_bytes());
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 2,
-            name: "Alt".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 2,
+                name: "Alt".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
@@ -9635,7 +10270,7 @@ async fn unauthorized_creature_loot_request_sends_cmangos_loot_error() {
         &world_db_pool,
         shared_world,
         &parties,
-        &body,
+        read_loot_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -9687,7 +10322,8 @@ async fn creature_loot_open_and_release_toggle_player_looting_for_observers() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Bert".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -9714,19 +10350,22 @@ async fn creature_loot_open_and_release_toggle_player_looting_for_observers() {
     let mut body = Vec::new();
     body.extend_from_slice(&target.raw().to_le_bytes());
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: looter_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: looter_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
@@ -9736,7 +10375,7 @@ async fn creature_loot_open_and_release_toggle_player_looting_for_observers() {
         &world_db_pool,
         shared_world,
         &parties,
-        &body,
+        read_loot_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -9764,7 +10403,7 @@ async fn creature_loot_open_and_release_toggle_player_looting_for_observers() {
     handle_loot_release(
         &mut stream,
         shared_world,
-        &body,
+        read_loot_release_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -10080,7 +10719,8 @@ async fn loot_removed_fanout_notifies_all_open_non_targets_after_master_assignme
                 account_id: 1,
                 character_guid: Some(1),
                 character_name: Some("Master".to_string()),
-                outbound: master_tx,
+                outbound: WorldPacketSender::Unbounded(master_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -10091,7 +10731,8 @@ async fn loot_removed_fanout_notifies_all_open_non_targets_after_master_assignme
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Target".to_string()),
-                outbound: target_tx,
+                outbound: WorldPacketSender::Unbounded(target_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -10102,7 +10743,8 @@ async fn loot_removed_fanout_notifies_all_open_non_targets_after_master_assignme
                 account_id: 3,
                 character_guid: Some(3),
                 character_name: Some("Viewer".to_string()),
-                outbound: viewer_tx,
+                outbound: WorldPacketSender::Unbounded(viewer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -11522,19 +12164,22 @@ async fn creature_spell_start_packets_use_current_session_socket_without_registr
         body: vec![1, 2, 3, 4],
     };
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -12158,20 +12803,23 @@ fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
         .expect("instant cast should complete");
 
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 12,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 12,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     map.sync_player_gameplay_state(1, &session);
@@ -14564,7 +15212,8 @@ async fn shared_db_creature_idle_motion_prioritizes_player_interest_over_far_gui
                 account_id: 1,
                 character_guid: Some(1),
                 character_name: Some("Player1".to_string()),
-                outbound: direct_tx,
+                outbound: WorldPacketSender::Unbounded(direct_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -15042,22 +15691,28 @@ fn map_runtime_ghost_visible_creature_visibility_updates_after_death_state_sync_
     assert!(alive_stage.destroy_guids.is_empty());
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_flags: PLAYER_FLAGS_GHOST,
-        player_death_state: PlayerDeathState::Ghost,
-        player_health: PLAYER_SURVIVOR_HEALTH_FLOOR,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_flags: PLAYER_FLAGS_GHOST,
+            player_health: PLAYER_SURVIVOR_HEALTH_FLOOR,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Ghost,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     map.sync_player_gameplay_state(1, &session);
@@ -15074,9 +15729,9 @@ fn map_runtime_ghost_visible_creature_visibility_updates_after_death_state_sync_
         .visible_objects
         .contains(&ghost_visible_guid));
 
-    session.player_flags &= !PLAYER_FLAGS_GHOST;
-    session.player_death_state = PlayerDeathState::Alive;
-    session.player_health = 42;
+    session.character.player_flags &= !PLAYER_FLAGS_GHOST;
+    session.death.player_death_state = PlayerDeathState::Alive;
+    session.character.player_health = 42;
     map.sync_player_gameplay_state(1, &session);
     map.reset_player_visibility_scan_positions(1);
 
@@ -15108,26 +15763,32 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
     player.max_power1 = world_stats.max_mana();
     map.add_player(player).unwrap();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 15,
-        player_mana: 7,
-        player_rage: 11,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 15,
+            player_mana: 7,
+            player_rage: 11,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.active_spells.insert(WARRIOR_HEROIC_STRIKE_RANK_1);
-    session.inventory.push(CharacterInventoryItem {
+    session
+        .character
+        .active_spells
+        .insert(WARRIOR_HEROIC_STRIKE_RANK_1);
+    session.inventory.items.push(CharacterInventoryItem {
         bag: 0,
         slot: 23,
         item: 100,
@@ -15137,7 +15798,7 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
         enchantments: String::new(),
         durability: 0,
     });
-    session.quest_statuses.insert(
+    session.quests.quest_statuses.insert(
         33,
         CharacterQuestStatus {
             quest: 33,
@@ -15171,21 +15832,27 @@ fn map_runtime_gameplay_sync_preserves_dead_player_zero_health() {
         .unwrap();
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_death_state: PlayerDeathState::Corpse,
-        player_health: 0,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 0,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Corpse,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -15196,9 +15863,9 @@ fn map_runtime_gameplay_sync_preserves_dead_player_zero_health() {
         "stat/aura refresh during session sync must not resurrect a corpse to 1 health"
     );
 
-    session.player_death_state = PlayerDeathState::Alive;
-    session.player_health = 42;
-    if let Some(character) = session.active_character.as_mut() {
+    session.death.player_death_state = PlayerDeathState::Alive;
+    session.character.player_health = 42;
+    if let Some(character) = session.character.active_character.as_mut() {
         character.position = WorldPosition::new(0, -8940.0, -120.0, 90.0, 1.0);
         character.movement_flags = MOVEFLAG_JUMPING;
         character.fall_time = 456;
@@ -15250,32 +15917,35 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
     let stale_session_health = 10;
     let stale_session_rage = 100;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: stale_session_health,
-        player_rage: stale_session_rage,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: stale_session_health,
+            player_rage: stale_session_rage,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
     refresh_active_player_session_cache(&maps, &mut session).await;
-    assert!(session.player_health > stale_session_health);
-    assert!(session.player_rage < stale_session_rage);
+    assert!(session.character.player_health > stale_session_health);
+    assert!(session.character.player_rage < stale_session_rage);
 
     sync_active_player_gameplay_state(&maps, &session).await;
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
-    assert_eq!(snapshot.health, session.player_health);
-    assert_eq!(snapshot.power2, session.player_rage);
+    assert_eq!(snapshot.health, session.character.player_health);
+    assert_eq!(snapshot.power2, session.character.player_rage);
 }
 
 #[test]
@@ -15298,20 +15968,23 @@ fn sync_player_gameplay_state_raises_map_max_health_for_regen_cap() {
     map.add_player(player).unwrap();
 
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 2,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 98,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 2,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 98,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     map.sync_player_gameplay_state(7, &session);
@@ -15684,7 +16357,8 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Player2".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -15709,24 +16383,33 @@ async fn shared_creature_combat_start_broadcasts_to_nearby_observer() {
     maps.share_db_creature_snapshots(0, vec![creature.clone()])
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: victim_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 20,
-        player_death_state: PlayerDeathState::Alive,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: victim_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 20,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(attacker.raw(), creature);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), creature);
     let player = ObjectGuid::new(HighGuid::Player, 0, 1);
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
 
@@ -15987,23 +16670,29 @@ async fn repop_refreshes_session_after_map_presents_delayed_death() {
     maps.add_player(player).await.unwrap();
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: MOVEFLAG_JUMPING,
-            client_time: 123,
-            fall_time: 456,
-            jump: JumpInfo::default(),
-        }),
-        player_death_state: PlayerDeathState::JustDied,
-        player_death_presentation_pending: true,
-        player_health: 0,
-        player_stand_state: PLAYER_STAND_STATE_STAND,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: MOVEFLAG_JUMPING,
+                client_time: 123,
+                fall_time: 456,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 0,
+            player_stand_state: PLAYER_STAND_STATE_STAND,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::JustDied,
+            player_death_presentation_pending: true,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -16012,11 +16701,14 @@ async fn repop_refreshes_session_after_map_presents_delayed_death() {
         .unwrap();
 
     assert!(packets.is_empty());
-    assert_eq!(session.player_death_state, PlayerDeathState::Corpse);
-    assert!(!session.player_death_presentation_pending);
-    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_DEAD);
-    assert_eq!(session.player_health, 0);
-    let character = session.active_character.as_ref().unwrap();
+    assert_eq!(session.death.player_death_state, PlayerDeathState::Corpse);
+    assert!(!session.death.player_death_presentation_pending);
+    assert_eq!(
+        session.character.player_stand_state,
+        PLAYER_STAND_STATE_DEAD
+    );
+    assert_eq!(session.character.player_health, 0);
+    let character = session.character.active_character.as_ref().unwrap();
     assert_eq!(character.position, position);
     assert_eq!(character.movement_flags, 0);
     assert_eq!(character.fall_time, 0);
@@ -16035,23 +16727,29 @@ async fn repop_forces_pending_just_died_presentation_before_refresh() {
     maps.add_player(player).await.unwrap();
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: MOVEFLAG_JUMPING,
-            client_time: 123,
-            fall_time: 456,
-            jump: JumpInfo::default(),
-        }),
-        player_death_state: PlayerDeathState::JustDied,
-        player_death_presentation_pending: true,
-        player_health: 0,
-        player_stand_state: PLAYER_STAND_STATE_STAND,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: MOVEFLAG_JUMPING,
+                client_time: 123,
+                fall_time: 456,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 0,
+            player_stand_state: PLAYER_STAND_STATE_STAND,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::JustDied,
+            player_death_presentation_pending: true,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -16062,10 +16760,13 @@ async fn repop_forces_pending_just_died_presentation_before_refresh() {
     assert!(packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_FORCE_MOVE_ROOT));
-    assert_eq!(session.player_death_state, PlayerDeathState::Corpse);
-    assert!(!session.player_death_presentation_pending);
-    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_DEAD);
-    assert_eq!(session.player_health, 0);
+    assert_eq!(session.death.player_death_state, PlayerDeathState::Corpse);
+    assert!(!session.death.player_death_presentation_pending);
+    assert_eq!(
+        session.character.player_stand_state,
+        PLAYER_STAND_STATE_DEAD
+    );
+    assert_eq!(session.character.player_health, 0);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.death_state, PlayerDeathState::Corpse);
     assert_eq!(snapshot.movement_flags & MOVEFLAG_JUMPING, 0);
@@ -16254,7 +16955,8 @@ async fn player_attack_stop_broadcasts_to_nearby_observer() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Player2".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -16273,19 +16975,22 @@ async fn player_attack_stop_broadcasts_to_nearby_observer() {
     maps.set_player_auto_attack(0, 1, Some(target), Some(Instant::now()))
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
@@ -16340,19 +17045,22 @@ async fn player_attack_stop_clears_queued_next_melee_spell_without_active_target
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut sink = WorldPacketSink::new(tx);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
@@ -16392,24 +17100,33 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     maps.share_db_creature_snapshots(0, vec![creature.clone()])
         .await;
     let mut owner_session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: victim_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 20,
-        player_death_state: PlayerDeathState::Alive,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: victim_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 20,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    owner_session.db_creatures.insert(attacker.raw(), creature);
+    owner_session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), creature);
     let now = Instant::now();
     let motion = start_db_creature_chase_motion(
         &mut owner_session,
@@ -16421,6 +17138,7 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
     maps.update_db_creature_snapshot(
         0,
         owner_session
+            .visibility
             .db_creatures
             .get(&attacker.raw())
             .cloned()
@@ -16443,29 +17161,39 @@ async fn shared_chase_motion_advances_map_position_for_other_attackers() {
         .await
         .pop()
         .expect("shared creature snapshot");
-    let owner = owner_session.db_creatures.get(&attacker.raw()).unwrap();
+    let owner = owner_session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .unwrap();
     assert!(shared.current_position.x > motion.start.x);
     assert_eq!(shared.current_position.x, owner.current_position.x);
 
     let mut observer_session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 2,
-            name: "Ben".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: shared.current_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: 20,
-        player_death_state: PlayerDeathState::Alive,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 2,
+                name: "Ben".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: shared.current_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 20,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    observer_session.db_creatures.insert(
+    observer_session.visibility.db_creatures.insert(
         attacker.raw(),
         DbCreatureRuntime::new(test_creature_spawn(6)),
     );
@@ -16497,19 +17225,22 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     let swing_delay = Duration::from_millis(1200);
 
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: character_guid,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: character_guid,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -16598,7 +17329,7 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
         "a preserved cooldown without an active target must not swing by itself"
     );
 
-    session.active_character = None;
+    session.character.active_character = None;
 }
 
 #[tokio::test]
@@ -16682,19 +17413,22 @@ async fn killing_blow_target_clear_preserves_weapon_swing_cooldown_for_retarget(
     let weapon_delay = Duration::from_millis(1600);
     let next_swing = now + weapon_delay;
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: character_guid,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: character_guid,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -17187,24 +17921,36 @@ fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
     runtime.current_position.x = DB_CREATURE_LEASH_RADIUS_YARDS + 1.0;
     runtime.health = runtime.max_health() - 1;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_combat_target: Some(attacker),
-        active_combat_next_swing_at: Some(now),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(
+                    0,
+                    DB_CREATURE_LEASH_RADIUS_YARDS + 5.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        combat: CombatSessionState {
+            active_combat_target: Some(attacker),
+            active_combat_next_swing_at: Some(now),
+            ..CombatSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.active_creature_combats.insert(
+    session.combat.active_creature_combats.insert(
         attacker.raw(),
         CreatureCombatState {
             attacker,
@@ -17212,7 +17958,10 @@ fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
             next_swing_at: now,
         },
     );
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     assert!(db_creature_should_evade(&session, attacker));
     prepare_db_creature_evade(&mut session, attacker);
@@ -17224,10 +17973,14 @@ fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
     assert_eq!(destination.y, 0.0);
     assert_eq!(motion.spline_id, 0);
     assert!(motion.duration > Duration::ZERO);
-    assert!(session.active_combat_target.is_none());
-    assert!(session.active_combat_next_swing_at.is_none());
-    assert!(session.active_creature_combats.is_empty());
-    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    assert!(session.combat.active_combat_target.is_none());
+    assert!(session.combat.active_combat_next_swing_at.is_none());
+    assert!(session.combat.active_creature_combats.is_empty());
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .unwrap();
     assert_eq!(runtime.health, runtime.max_health());
     assert!(matches!(runtime.motion, CreatureMotionState::ReturnHome(_)));
     assert!(!db_creature_should_evade(&session, attacker));
@@ -17244,13 +17997,17 @@ fn db_creature_return_home_motion_finishes_at_home() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.current_position.x = 14.0;
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
         .expect("away creature should start return-home motion");
     let half_duration = Duration::from_millis((motion.duration.as_millis() as u64 / 2).max(1));
     advance_db_creature_motion(&mut session, attacker, now + half_duration);
     let mid_x = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded")
@@ -17261,7 +18018,11 @@ fn db_creature_return_home_motion_finishes_at_home() {
     assert!(mid_x > destination.x);
 
     advance_db_creature_motion(&mut session, attacker, now + motion.duration);
-    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .unwrap();
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert_eq!(runtime.current_position.y, runtime.home_position.y);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
@@ -17286,26 +18047,36 @@ fn waypoint_creature_return_home_resumes_patrol_after_evade() {
     runtime.current_position = WorldPosition::new(0, 4.0, 0.0, 0.0, 0.0);
     runtime.next_waypoint_move_at = Some(now);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 30.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 30.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     start_db_creature_chase_motion(&mut session, attacker, player, now)
         .expect("waypoint creature should chase");
-    let runtime = session.db_creatures.get_mut(&attacker.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get_mut(&attacker.raw())
+        .unwrap();
     runtime.current_position = WorldPosition::new(0, 16.0, 0.0, 0.0, 0.0);
     let motion = start_db_creature_return_home_motion(&mut session, attacker, now)
         .expect("waypoint creature should return to patrol reset point");
@@ -17313,7 +18084,11 @@ fn waypoint_creature_return_home_resumes_patrol_after_evade() {
     assert_eq!(destination.x, 4.0);
 
     advance_db_creature_motion(&mut session, attacker, now + motion.duration);
-    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .unwrap();
     assert_eq!(runtime.current_position.x, 4.0);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert_eq!(runtime.next_waypoint_move_at, Some(now + motion.duration));
@@ -17343,33 +18118,51 @@ async fn db_creature_return_home_motion_advances_without_active_combat() {
     maps.share_db_creature_snapshots(0, vec![runtime.clone()])
         .await;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     let (creature, motion) = maps
-        .start_db_creature_return_home_motion(0, &session.db_creature_navigation, attacker, now)
+        .start_db_creature_return_home_motion(
+            0,
+            &session.movement.db_creature_navigation,
+            attacker,
+            now,
+        )
         .await
         .expect("away creature should start return-home motion");
-    session.db_creatures.insert(attacker.raw(), creature);
-    assert!(session.active_creature_combats.is_empty());
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), creature);
+    assert!(session.combat.active_creature_combats.is_empty());
 
     advance_db_creature_return_home_motions(shared_world, &mut session, now + motion.duration)
         .await;
-    let runtime = session.db_creatures.get(&attacker.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .unwrap();
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
 }
@@ -17384,18 +18177,29 @@ fn db_creature_return_home_motion_ignores_combat_path_guardrail() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.current_position.x = 9.0;
     let mut session = WorldSessionState {
-        db_creature_navigation: DbCreatureNavigationGuardrail {
-            line_of_sight_clear: false,
-            path_available: false,
-            ..DbCreatureNavigationGuardrail::default()
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                line_of_sight_clear: false,
+                path_available: false,
+                ..DbCreatureNavigationGuardrail::default()
+            },
+            ..MovementSessionState::default()
         },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     assert!(start_db_creature_return_home_motion(&mut session, attacker, Instant::now()).is_some());
     assert!(matches!(
-        session.db_creatures.get(&attacker.raw()).unwrap().motion,
+        session
+            .visibility
+            .db_creatures
+            .get(&attacker.raw())
+            .unwrap()
+            .motion,
         CreatureMotionState::ReturnHome(_)
     ));
 }
@@ -17421,27 +18225,38 @@ fn db_creature_returning_home_does_not_reaggro_or_take_damage() {
     });
     let health = runtime.health;
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 5.5, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 5.5, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(attacker.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), runtime);
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
     assert_eq!(apply_db_creature_damage(&mut session, attacker, 1), None);
     assert_eq!(
-        session.db_creatures.get(&attacker.raw()).unwrap().health,
+        session
+            .visibility
+            .db_creatures
+            .get(&attacker.raw())
+            .unwrap()
+            .health,
         health
     );
 }
@@ -17459,7 +18274,10 @@ fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.next_random_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     let motion = start_db_creature_random_motion(&mut session, creature_guid, now)
         .expect("random movement creature should start a wander spline");
@@ -17477,12 +18295,20 @@ fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
         ) <= 5.0,
         "wander destination should stay inside spawndist"
     );
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Random(_)));
     assert_eq!(runtime.next_spline_id, 1);
 
     advance_db_creature_motion(&mut session, creature_guid, now + motion.duration);
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert!(runtime.next_random_move_at.is_some());
 }
@@ -17501,7 +18327,10 @@ fn db_creature_random_motion_duration_uses_template_walk_speed() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.next_random_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     let motion = start_db_creature_random_motion(&mut session, creature_guid, now)
         .expect("random movement creature should start a wander spline");
@@ -17537,22 +18366,28 @@ fn db_creature_chase_motion_duration_applies_temporary_run_speed_slow() {
     });
     runtime.refresh_move_speeds();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     let motion = start_db_creature_chase_motion(&mut session, creature_guid, player, now)
         .expect("out-of-range slowed creature should start chase motion");
@@ -17736,9 +18571,10 @@ fn db_creature_random_motion_ignores_idle_or_zero_spawndist_creatures() {
     let now = Instant::now();
     let mut session = WorldSessionState::default();
     session
+        .visibility
         .db_creatures
         .insert(idle_guid.raw(), DbCreatureRuntime::new(idle_spawn));
-    session.db_creatures.insert(
+    session.visibility.db_creatures.insert(
         zero_radius_guid.raw(),
         DbCreatureRuntime::new(zero_radius_spawn),
     );
@@ -17760,7 +18596,7 @@ fn db_creature_idle_motion_start_guids_return_all_ready_creatures() {
         let guid = creature_spawn_guid(&spawn);
         let mut runtime = DbCreatureRuntime::new(spawn);
         runtime.next_random_move_at = Some(now);
-        session.db_creatures.insert(guid.raw(), runtime);
+        session.visibility.db_creatures.insert(guid.raw(), runtime);
     }
 
     let start_guids = db_creature_idle_motion_start_guids(&session, now);
@@ -17780,10 +18616,17 @@ fn db_creature_random_motion_failed_path_defers_retry() {
     runtime.current_position.map_id = 1;
     runtime.next_random_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     assert!(start_db_creature_random_motion(&mut session, creature_guid, now).is_none());
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert_eq!(
         runtime.next_random_move_at,
         Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS))
@@ -17811,7 +18654,8 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
                 account_id: 1,
                 character_guid: Some(1),
                 character_name: Some("Player1".to_string()),
-                outbound: direct_tx,
+                outbound: WorldPacketSender::Unbounded(direct_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -17822,7 +18666,8 @@ async fn shared_db_creature_idle_motion_updates_map_and_observers() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Player2".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -17877,7 +18722,8 @@ async fn shared_db_creature_idle_motion_recreates_local_visibility_before_move()
                 account_id: 1,
                 character_guid: Some(1),
                 character_name: Some("Player1".to_string()),
-                outbound: direct_tx,
+                outbound: WorldPacketSender::Unbounded(direct_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -17917,7 +18763,10 @@ fn db_creature_waypoint_motion_uses_db_path_and_wait_time() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.next_waypoint_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     let motion = start_db_creature_waypoint_motion(&mut session, creature_guid, now)
         .expect("waypoint creature should start a DB path spline");
@@ -17925,13 +18774,21 @@ fn db_creature_waypoint_motion_uses_db_path_and_wait_time() {
     assert_eq!(motion.spline_id, 0);
     assert_eq!(motion.start.x, 0.0);
     assert_eq!(motion.path.last().unwrap().x, 5.0);
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Waypoint(_)));
     assert_eq!(runtime.next_spline_id, 1);
     assert_eq!(runtime.next_waypoint_move_at, None);
 
     advance_db_creature_motion(&mut session, creature_guid, now + motion.duration);
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert_eq!(runtime.current_position.x, 5.0);
     assert_eq!(runtime.waypoint_next_index, 0);
@@ -17956,10 +18813,17 @@ fn db_creature_waypoint_motion_advances_zero_distance_node_with_wait() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.next_waypoint_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     assert!(start_db_creature_waypoint_motion(&mut session, creature_guid, now).is_none());
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
     assert_eq!(runtime.current_position.x, 0.0);
     assert_eq!(runtime.waypoint_next_index, 1);
@@ -18000,13 +18864,20 @@ fn db_creature_waypoint_motion_buffers_short_zero_wait_paths() {
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.next_waypoint_move_at = Some(now);
     let mut session = WorldSessionState::default();
-    session.db_creatures.insert(creature_guid.raw(), runtime);
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
 
     let first = start_db_creature_waypoint_motion(&mut session, creature_guid, now).unwrap();
     assert_eq!(first.path.len(), 3);
     assert_eq!(first.path.last().unwrap().x, 15.0);
     advance_db_creature_motion(&mut session, creature_guid, now + first.duration);
-    let runtime = session.db_creatures.get(&creature_guid.raw()).unwrap();
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&creature_guid.raw())
+        .unwrap();
     assert_eq!(runtime.current_position.x, 15.0);
     assert_eq!(runtime.waypoint_next_index, 1);
     assert!(!runtime.waypoint_forward);
@@ -18048,17 +18919,23 @@ fn db_creature_assistance_calls_nearby_same_faction_hostiles_once() {
     far_spawn.template.npc_flags = 0;
     far_spawn.template.faction = 17;
     let mut session = WorldSessionState {
-        active_character: Some(character),
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(caller.raw(), DbCreatureRuntime::new(caller_spawn));
     session
+        .visibility
         .db_creatures
         .insert(helper.raw(), DbCreatureRuntime::new(helper_spawn));
     let far_runtime = DbCreatureRuntime::new(far_spawn);
     session
+        .visibility
         .db_creatures
         .insert(far_runtime.guid().raw(), far_runtime);
 
@@ -18079,22 +18956,26 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
@@ -18108,6 +18989,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
         10.0 - ATTACK_DISTANCE_YARDS * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
     );
     let runtime = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded");
@@ -18125,6 +19007,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
     let half_duration = Duration::from_millis((motion.duration.as_millis() as u64 / 2).max(1));
     advance_db_creature_motion(&mut session, attacker, now + half_duration);
     let mid_x = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded")
@@ -18137,6 +19020,7 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
 
     advance_db_creature_motion(&mut session, attacker, now + motion.duration);
     let runtime = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded");
@@ -18240,22 +19124,26 @@ fn db_creature_chase_motion_stop_distance_uses_combined_reach() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 20.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 20.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
@@ -18332,28 +19220,38 @@ fn db_creature_chase_motion_waits_for_recheck_before_repathing() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
     let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
         .expect("out-of-range creature should start chase motion");
-    session.active_character.as_mut().unwrap().position.x = 20.0;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = 20.0;
 
     let before_recheck = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS - 1);
     assert!(
@@ -18361,6 +19259,7 @@ fn db_creature_chase_motion_waits_for_recheck_before_repathing() {
     );
 
     let runtime = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded");
@@ -18382,22 +19281,26 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
@@ -18406,13 +19309,20 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
     let recheck_at = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS);
     advance_db_creature_motion(&mut session, attacker, recheck_at);
     let moved_start = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded")
         .current_position;
     assert!(moved_start.x > 0.0);
 
-    session.active_character.as_mut().unwrap().position.x = 20.0;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = 20.0;
     let second_motion = start_db_creature_chase_motion(&mut session, attacker, player, recheck_at)
         .expect("moved player should trigger a refreshed chase spline");
 
@@ -18423,6 +19333,7 @@ fn db_creature_chase_motion_repaths_to_moved_player_after_recheck() {
             > first_motion.path.last().unwrap().x + DB_CREATURE_CHASE_REPATH_YARDS
     );
     let runtime = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded");
@@ -18446,33 +19357,43 @@ fn db_creature_chase_motion_ignores_tiny_destination_shift_after_recheck() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let now = Instant::now();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     session
+        .visibility
         .db_creatures
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
     let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
         .expect("out-of-range creature should start chase motion");
-    session.active_character.as_mut().unwrap().position.x =
-        10.0 + DB_CREATURE_CHASE_REPATH_YARDS * 0.5;
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = 10.0 + DB_CREATURE_CHASE_REPATH_YARDS * 0.5;
     let recheck_at = now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS);
 
     assert!(start_db_creature_chase_motion(&mut session, attacker, player, recheck_at).is_none());
     let runtime = session
+        .visibility
         .db_creatures
         .get(&attacker.raw())
         .expect("creature should still be loaded");
@@ -19997,20 +20918,23 @@ async fn player_damage_spell_executes_each_damage_effect_slot() {
     let mut active_spells = HashSet::new();
     active_spells.insert(999_011);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20023,7 +20947,7 @@ async fn player_damage_spell_executes_each_damage_effect_slot() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20106,22 +21030,25 @@ async fn sinister_strike_cast_uses_energy_and_spell_damage_log_result() {
     let mut active_spells = HashSet::new();
     active_spells.insert(1752);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 4,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        player_energy: POWER_ENERGY_DEFAULT,
-        character_skills: vec![test_skill(SKILL_UNARMED, 500, 500)],
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_UNARMED, 500, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20134,7 +21061,7 @@ async fn sinister_strike_cast_uses_energy_and_spell_damage_log_result() {
             parties: &PartyManager::default(),
             account_id: 7,
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20217,21 +21144,24 @@ async fn backstab_cast_requires_caster_behind_target_from_spell_metadata() {
     let mut active_spells = HashSet::new();
     active_spells.insert(53);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 4,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        player_energy: POWER_ENERGY_DEFAULT,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20244,7 +21174,7 @@ async fn backstab_cast_requires_caster_behind_target_from_spell_metadata() {
             parties: &PartyManager::default(),
             account_id: 7,
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20306,21 +21236,24 @@ async fn eviscerate_requires_matching_combo_points_before_spending_energy() {
     let mut active_spells = HashSet::new();
     active_spells.insert(2098);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 4,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        player_energy: POWER_ENERGY_DEFAULT,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20333,7 +21266,7 @@ async fn eviscerate_requires_matching_combo_points_before_spending_energy() {
             parties: &PartyManager::default(),
             account_id: 7,
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20395,21 +21328,24 @@ async fn eviscerate_uses_combo_points_for_damage_and_clears_them_on_hit() {
     let mut active_spells = HashSet::new();
     active_spells.insert(2098);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 4,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        player_energy: POWER_ENERGY_DEFAULT,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20422,7 +21358,7 @@ async fn eviscerate_uses_combo_points_for_damage_and_clears_them_on_hit() {
             parties: &PartyManager::default(),
             account_id: 7,
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20482,22 +21418,25 @@ async fn player_heal_spell_cast_restores_self_health_through_map_runtime() {
     let mut active_spells = HashSet::new();
     active_spells.insert(2050);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 5,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        player_health: 10,
-        player_mana: 100,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 5,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 10,
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20510,7 +21449,7 @@ async fn player_heal_spell_cast_restores_self_health_through_map_runtime() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20520,8 +21459,8 @@ async fn player_heal_spell_cast_restores_self_health_through_map_runtime() {
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.health, 30);
     assert_eq!(snapshot.power1, 75);
-    assert_eq!(session.player_health, 30);
-    assert_eq!(session.player_mana, 75);
+    assert_eq!(session.character.player_health, 30);
+    assert_eq!(session.character.player_mana, 75);
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let opcodes = packets
         .iter()
@@ -20615,21 +21554,24 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
     let mut active_spells = HashSet::new();
     active_spells.insert(133);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_mana: 100,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -20642,7 +21584,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20677,7 +21619,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         .spell_global_cooldowns_until
         .get(&133)
         .is_some_and(|until| *until > Instant::now()));
-    assert_eq!(session.player_mana, 100);
+    assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -20728,7 +21670,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -20809,7 +21751,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         .next_pending_player_spell_cast_due_at(0, 7)
         .await
         .is_some());
-    assert_eq!(session.player_mana, 50);
+    assert_eq!(session.character.player_mana, 50);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         106
@@ -20861,7 +21803,8 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
                 account_id: 8,
                 character_guid: Some(8),
                 character_name: Some("Babbage".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -20890,22 +21833,25 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
     let mut active_spells = HashSet::new();
     active_spells.insert(6673);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: 100,
-        player_stand_state: PLAYER_STAND_STATE_SIT,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: 100,
+            player_stand_state: PLAYER_STAND_STATE_SIT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut cast_body = Vec::new();
@@ -20921,7 +21867,7 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &cast_body,
+        read_cast_spell_request(&cast_body),
         &mut session,
         &mut header_crypto,
     )
@@ -20930,7 +21876,10 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
-    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_STAND);
+    assert_eq!(
+        session.character.player_stand_state,
+        PLAYER_STAND_STATE_STAND
+    );
     assert!(packets
         .iter()
         .any(|packet| packet.opcode == SMSG_STANDSTATE_UPDATE && packet.body == [0]));
@@ -20992,28 +21941,33 @@ async fn stand_state_change_to_stand_cancels_consumable_regen_aura() {
     player.active_auras.push(regen_aura.clone());
     maps.add_player(player).await.unwrap();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_stand_state: PLAYER_STAND_STATE_SIT,
-        active_auras: vec![regen_aura],
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_stand_state: PLAYER_STAND_STATE_SIT,
+            ..CharacterSessionState::default()
+        },
+        auras: AuraSessionState {
+            active_auras: vec![regen_aura],
+        },
         ..WorldSessionState::default()
     };
 
     handle_stand_state_change(
         &mut stream,
         shared_world,
-        &0u32.to_le_bytes(),
+        wow_proto::StandStateChangeRequest { stand_state: 0 },
         &mut session,
         &mut header_crypto,
     )
@@ -21022,8 +21976,11 @@ async fn stand_state_change_to_stand_cancels_consumable_regen_aura() {
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
-    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_STAND);
-    assert!(session.active_auras.is_empty());
+    assert_eq!(
+        session.character.player_stand_state,
+        PLAYER_STAND_STATE_STAND
+    );
+    assert!(session.auras.active_auras.is_empty());
     assert_eq!(snapshot.active_auras, Vec::new());
     assert!(
         packets
@@ -21052,27 +22009,32 @@ async fn client_stand_state_change_updates_map_without_self_echo() {
         .await
         .unwrap();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_stand_state: PLAYER_STAND_STATE_STAND,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_stand_state: PLAYER_STAND_STATE_STAND,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
     handle_stand_state_change(
         &mut stream,
         shared_world,
-        &u32::from(PLAYER_STAND_STATE_SIT).to_le_bytes(),
+        wow_proto::StandStateChangeRequest {
+            stand_state: u32::from(PLAYER_STAND_STATE_SIT),
+        },
         &mut session,
         &mut header_crypto,
     )
@@ -21081,7 +22043,7 @@ async fn client_stand_state_change_updates_map_without_self_echo() {
 
     let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
     let stand_state = map.lock().await.players.get(&7).unwrap().stand_state;
-    assert_eq!(session.player_stand_state, PLAYER_STAND_STATE_SIT);
+    assert_eq!(session.character.player_stand_state, PLAYER_STAND_STATE_SIT);
     assert_eq!(stand_state, PLAYER_STAND_STATE_SIT);
     assert!(
         rx.try_recv().is_err(),
@@ -21128,7 +22090,8 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
                 account_id: 8,
                 character_guid: Some(8),
                 character_name: Some("Babbage".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -21168,21 +22131,24 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     let mut active_spells = HashSet::new();
     active_spells.insert(133);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_mana: 100,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21195,7 +22161,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
             shared_world,
             parties: &PartyManager::default(),
         },
-        &cast_body,
+        read_cast_spell_request(&cast_body),
         &mut session,
         &mut header_crypto,
     )
@@ -21226,7 +22192,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         .next_pending_player_spell_cast_due_at(0, 7)
         .await
         .is_none());
-    assert_eq!(session.player_mana, 100);
+    assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -21265,7 +22231,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
             shared_world,
             parties: &PartyManager::default(),
         },
-        &cast_body,
+        read_cast_spell_request(&cast_body),
         &mut session,
         &mut header_crypto,
     )
@@ -21397,21 +22363,24 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
     let mut active_spells = HashSet::new();
     active_spells.insert(133);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_mana: 100,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21424,7 +22393,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &cast_body,
+        read_cast_spell_request(&cast_body),
         &mut session,
         &mut header_crypto,
     )
@@ -21432,6 +22401,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
     .unwrap();
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -21463,7 +22433,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
     assert!(!packets
         .iter()
         .any(|packet| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG));
-    assert_eq!(session.player_mana, 100);
+    assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -21539,21 +22509,24 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
     let mut active_spells = HashSet::new();
     active_spells.insert(133);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 1,
-            xp: 0,
-            position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_mana: 100,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21566,14 +22539,14 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &cast_body,
+        read_cast_spell_request(&cast_body),
         &mut session,
         &mut header_crypto,
     )
     .await
     .unwrap();
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    session.db_creature_navigation.line_of_sight_clear = false;
+    session.movement.db_creature_navigation.line_of_sight_clear = false;
 
     tokio::time::sleep(Duration::from_millis(60)).await;
     complete_pending_player_spell_cast(
@@ -21599,7 +22572,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
     assert!(!packets
         .iter()
         .any(|packet| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG));
-    assert_eq!(session.player_mana, 100);
+    assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -21659,21 +22632,24 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
     let mut active_spells = HashSet::new();
     active_spells.insert(133);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 4,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_mana: 100,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21686,14 +22662,14 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
     .await
     .unwrap();
 
-    assert_eq!(session.player_mana, 75);
+    assert_eq!(session.character.player_mana, 75);
     let creature = maps.db_creature_snapshot(0, target).await.unwrap();
     assert_eq!(
         creature.health, 106,
@@ -21750,21 +22726,24 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
     let mut active_spells = HashSet::new();
     active_spells.insert(WARRIOR_HEROIC_STRIKE_RANK_1);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: POWER_RAGE_DEFAULT,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: POWER_RAGE_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21777,7 +22756,7 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -21798,7 +22777,7 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
         })
     );
     assert_eq!(
-        session.player_rage, POWER_RAGE_DEFAULT,
+        session.character.player_rage, POWER_RAGE_DEFAULT,
         "next-melee rage is spent when the queued swing fires, not when it is queued"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
@@ -21857,21 +22836,24 @@ async fn heroic_strike_can_queue_before_target_is_in_melee_range() {
     let mut active_spells = HashSet::new();
     active_spells.insert(WARRIOR_HEROIC_STRIKE_RANK_1);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: POWER_RAGE_DEFAULT,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: POWER_RAGE_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -21884,7 +22866,7 @@ async fn heroic_strike_can_queue_before_target_is_in_melee_range() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -22096,21 +23078,24 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
     let mut active_spells = HashSet::new();
     active_spells.insert(6673);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 3,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: 250,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 3,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: 250,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -22123,21 +23108,21 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
     .await
     .unwrap();
 
-    assert_eq!(session.player_rage, 150);
+    assert_eq!(session.character.player_rage, 150);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert!(snapshot
         .spell_global_cooldowns_until
         .get(&133)
         .is_some_and(|until| *until > Instant::now()));
-    assert_eq!(session.active_auras.len(), 1);
-    let active_aura = &session.active_auras[0];
+    assert_eq!(session.auras.active_auras.len(), 1);
+    let active_aura = &session.auras.active_auras[0];
     assert_eq!(active_aura.spell_id, 6673);
     assert_eq!(active_aura.caster, ObjectGuid::new(HighGuid::Player, 0, 7));
     assert_eq!(active_aura.level, 3);
@@ -22199,14 +23184,14 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
     .await
     .unwrap();
 
-    assert_eq!(session.player_rage, 150);
+    assert_eq!(session.character.player_rage, 150);
     let second_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(second_packets
         .iter()
@@ -22272,21 +23257,24 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
     let mut active_spells = HashSet::new();
     active_spells.insert(772);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 4,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: 200,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: 200,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -22299,16 +23287,16 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
     .await
     .unwrap();
 
-    assert_eq!(session.player_rage, 100);
+    assert_eq!(session.character.player_rage, 100);
     assert!(
-        session.active_auras.is_empty(),
+        session.auras.active_auras.is_empty(),
         "Rend must not become a player buff"
     );
     let creature = maps.db_creature_snapshot(0, target).await.unwrap();
@@ -22453,21 +23441,24 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
     let mut active_spells = HashSet::new();
     active_spells.insert(100);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 4,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_rage: 0,
-        active_spells,
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: 0,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -22480,7 +23471,7 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -22492,9 +23483,14 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
         creature.health, 120,
         "Charge must not apply fake remote damage"
     );
-    let charged_position = session.active_character.as_ref().unwrap().position;
+    let charged_position = session
+        .character
+        .active_character
+        .as_ref()
+        .unwrap()
+        .position;
     assert!(charged_position.x > 0.0 && charged_position.x < 10.0);
-    assert_eq!(session.active_combat_target, Some(target));
+    assert_eq!(session.combat.active_combat_target, Some(target));
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(packets
         .iter()
@@ -22545,23 +23541,29 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
     let mut active_spells = HashSet::new();
     active_spells.insert(100);
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 7,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 4,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        active_spells,
-        db_creature_navigation: DbCreatureNavigationGuardrail {
-            line_of_sight_clear: false,
-            ..DbCreatureNavigationGuardrail::default()
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                line_of_sight_clear: false,
+                ..DbCreatureNavigationGuardrail::default()
+            },
+            ..MovementSessionState::default()
         },
         ..WorldSessionState::default()
     };
@@ -22575,7 +23577,7 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
             shared_world,
             parties: &PartyManager::default(),
         },
-        &body,
+        read_cast_spell_request(&body),
         &mut session,
         &mut header_crypto,
     )
@@ -22583,7 +23585,12 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
     .unwrap();
 
     assert_eq!(
-        session.active_character.as_ref().unwrap().position,
+        session
+            .character
+            .active_character
+            .as_ref()
+            .unwrap()
+            .position,
         player_position
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
@@ -22625,25 +23632,28 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     .await
     .unwrap();
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: character_guid,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(map_id, 0.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: character_guid,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(map_id, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let heroic_template = heroic_strike_spell_template();
     let profile = player_spell_cast_profile(&heroic_template).unwrap();
-    session.player_death_state = PlayerDeathState::Corpse;
-    session.player_health = 0;
+    session.death.player_death_state = PlayerDeathState::Corpse;
+    session.character.player_health = 0;
     assert_eq!(
         spell_cast_failure(
             shared_world,
@@ -22657,7 +23667,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
         Some(SPELL_FAILED_CASTER_DEAD)
     );
 
-    session.player_death_state = PlayerDeathState::Alive;
+    session.death.player_death_state = PlayerDeathState::Alive;
     assert_eq!(
         spell_cast_failure(
             shared_world,
@@ -22779,22 +23789,28 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
         gameobject_target: None,
     };
     let mut session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: character_guid,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 8,
-            level: 1,
-            xp: 0,
-            position: player_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
-        player_health: caster_world_stats.max_health(),
-        player_mana: 100,
-        db_creature_navigation: DbCreatureNavigationGuardrail::default(),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: character_guid,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: caster_world_stats.max_health(),
+            player_mana: 100,
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail::default(),
+            ..MovementSessionState::default()
+        },
         ..WorldSessionState::default()
     };
 
@@ -22814,7 +23830,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     let mut closer = maps.db_creature_snapshot(map_id, target).await.unwrap();
     closer.current_position.x = 10.0;
     maps.update_db_creature_snapshot(map_id, closer).await;
-    session.db_creature_navigation.line_of_sight_clear = false;
+    session.movement.db_creature_navigation.line_of_sight_clear = false;
     assert_eq!(
         spell_cast_failure(
             shared_world,
@@ -22828,8 +23844,9 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
         Some(SPELL_FAILED_LINE_OF_SIGHT)
     );
 
-    session.db_creature_navigation.line_of_sight_clear = true;
+    session.movement.db_creature_navigation.line_of_sight_clear = true;
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -22851,6 +23868,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     );
 
     session
+        .character
         .active_character
         .as_mut()
         .unwrap()
@@ -23097,7 +24115,8 @@ fn action_buttons_pack_cmangos_action_type_layout() {
 
 #[test]
 fn set_action_button_reads_cmangos_packed_layout() {
-    let request = SetActionButtonRequest::read(&[11, 0x75, 0x00, 0x00, 0x80]).unwrap();
+    let request =
+        wow_proto::SetActionButtonRequest::read(&mut &[11, 0x75, 0x00, 0x00, 0x80][..]).unwrap();
 
     assert_eq!(request.button, 11);
     assert_eq!(request.action(), 117);
@@ -23107,7 +24126,7 @@ fn set_action_button_reads_cmangos_packed_layout() {
 
 #[test]
 fn set_action_button_reads_remove_binding_packet() {
-    let request = SetActionButtonRequest::read(&[3, 0, 0, 0, 0]).unwrap();
+    let request = wow_proto::SetActionButtonRequest::read(&mut &[3, 0, 0, 0, 0][..]).unwrap();
 
     assert_eq!(request.button, 3);
     assert!(request.removes_binding());
@@ -23117,7 +24136,7 @@ fn set_action_button_reads_remove_binding_packet() {
 
 #[test]
 fn set_action_button_rejects_truncated_payload() {
-    let err = SetActionButtonRequest::read(&[3, 0, 0, 0]).unwrap_err();
+    let err = wow_proto::SetActionButtonRequest::read(&mut &[3, 0, 0, 0][..]).unwrap_err();
     assert!(err
         .to_string()
         .contains("CMSG_SET_ACTION_BUTTON payload must be 5 bytes"));
@@ -25043,36 +26062,42 @@ fn movement_info_rejects_truncated_payload() {
 
 #[test]
 fn active_mover_rejects_truncated_payload() {
-    let err = handle_set_active_mover(&[0; 4], &WorldSessionState::default())
+    let err = wow_proto::SetActiveMoverRequest::read(&mut &[0; 4][..])
         .unwrap_err()
         .to_string();
-    assert!(err.contains("CMSG_SET_ACTIVE_MOVER payload must be 8 bytes"));
+    assert!(err.contains("CMSG_SET_ACTIVE_MOVER payload too short"));
 }
 
 #[test]
 fn active_mover_accepts_matching_player_guid() {
     let guid = 77u32;
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid,
-            name: "Mover".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid,
+                name: "Mover".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    let mover_guid = ObjectGuid::new(HighGuid::Player, 0, guid)
-        .raw()
-        .to_le_bytes();
+    let mover_guid = ObjectGuid::new(HighGuid::Player, 0, guid).raw();
 
-    let result = handle_set_active_mover(&mover_guid, &session);
+    let result = handle_set_active_mover(
+        wow_proto::SetActiveMoverRequest {
+            raw_guid: mover_guid,
+        },
+        &session,
+    );
 
     assert!(result.is_ok());
 }
@@ -25080,24 +26105,32 @@ fn active_mover_accepts_matching_player_guid() {
 #[test]
 fn active_mover_mismatch_is_non_fatal() {
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 77,
-            name: "Mover".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 77,
+                name: "Mover".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
-    let mismatched_mover_guid = ObjectGuid::new(HighGuid::Player, 0, 99).raw().to_le_bytes();
+    let mismatched_mover_guid = ObjectGuid::new(HighGuid::Player, 0, 99).raw();
 
-    let result = handle_set_active_mover(&mismatched_mover_guid, &session);
+    let result = handle_set_active_mover(
+        wow_proto::SetActiveMoverRequest {
+            raw_guid: mismatched_mover_guid,
+        },
+        &session,
+    );
 
     assert!(result.is_ok());
 }
@@ -26253,7 +27286,7 @@ async fn handle_join_channel_sends_you_joined_notify_packet() {
 
     handle_join_channel(
         &mut sink,
-        b"General - Elwynn Forest\0hunter2\0",
+        read_join_channel_request(b"General - Elwynn Forest\0hunter2\0"),
         &mut header_crypto,
     )
     .await
@@ -26273,9 +27306,13 @@ async fn handle_join_channel_ignores_empty_channel_name() {
     let mut sink = WorldPacketSink::new(outbound_tx);
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
 
-    handle_join_channel(&mut sink, b"\0hunter2\0", &mut header_crypto)
-        .await
-        .unwrap();
+    handle_join_channel(
+        &mut sink,
+        read_join_channel_request(b"\0hunter2\0"),
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
 
     assert!(outbound_rx.try_recv().is_err());
 }
@@ -26768,7 +27805,8 @@ async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Bert".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
@@ -26780,25 +27818,29 @@ async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
                 account_id: 3,
                 character_guid: Some(3),
                 character_name: Some("Clio".to_string()),
-                outbound: far_tx,
+                outbound: WorldPacketSender::Unbounded(far_tx),
+                disconnect: None,
             },
         )
         .await;
 
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: actor_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: actor_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut body = Vec::new();
@@ -26816,7 +27858,7 @@ async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
             maps: &maps,
             sessions: &sessions,
         },
-        &body,
+        read_text_emote_request(&body),
         &session,
         &mut header_crypto,
     )
@@ -26861,25 +27903,29 @@ async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
                 account_id: 2,
                 character_guid: Some(2),
                 character_name: Some("Bert".to_string()),
-                outbound: observer_tx,
+                outbound: WorldPacketSender::Unbounded(observer_tx),
+                disconnect: None,
             },
         )
         .await;
 
     let session = WorldSessionState {
-        active_character: Some(ActiveCharacter {
-            guid: 1,
-            name: "Ada".to_string(),
-            race: 1,
-            class: 1,
-            level: 1,
-            xp: 0,
-            position: actor_position,
-            movement_flags: 0,
-            client_time: 0,
-            fall_time: 0,
-            jump: JumpInfo::default(),
-        }),
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 1,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: actor_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
         ..WorldSessionState::default()
     };
     let mut body = Vec::new();
@@ -26897,7 +27943,7 @@ async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
             maps: &maps,
             sessions: &sessions,
         },
-        &body,
+        read_text_emote_request(&body),
         &session,
         &mut header_crypto,
     )
@@ -26965,7 +28011,7 @@ fn parses_auth_session_packet() {
     payload.extend_from_slice(&[0x11; 20]);
     payload.extend_from_slice(&[0x22, 0x33]);
 
-    let auth = AuthSessionPacket::read(&payload).unwrap();
+    let auth = packets::parse_world_auth_session_packet(&payload).unwrap();
     assert_eq!(auth.client_build, 5875);
     assert_eq!(auth.account, "RUSTAUTH");
     assert_eq!(auth.client_seed, 0xAABBCCDD);

@@ -1,5 +1,8 @@
+use super::*;
+use std::ffi::CStr;
+
 extern "C" {
-    fn wow_vmap_line_of_sight(
+    pub(in crate::world) fn wow_vmap_line_of_sight(
         data_dir: *const std::os::raw::c_char,
         map_id: u32,
         start_tile_x: u32,
@@ -16,7 +19,7 @@ extern "C" {
     ) -> i32;
 }
 
-fn native_vmap_line_of_sight(
+pub(in crate::world) fn native_vmap_line_of_sight(
     data_dir: &CStr,
     start: WorldPosition,
     target: WorldPosition,

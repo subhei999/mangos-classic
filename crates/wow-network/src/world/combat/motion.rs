@@ -1,36 +1,45 @@
-﻿#[derive(Debug, Clone)]
-struct StartedCreatureMotion {
-    start: WorldPosition,
-    path: Vec<WorldPosition>,
-    spline_id: u32,
-    duration: Duration,
+use super::*;
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct StartedCreatureMotion {
+    pub(in crate::world) start: WorldPosition,
+    pub(in crate::world) path: Vec<WorldPosition>,
+    pub(in crate::world) spline_id: u32,
+    pub(in crate::world) duration: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StoppedCreatureMotion {
-    position: WorldPosition,
-    spline_id: u32,
+pub(in crate::world) struct StoppedCreatureMotion {
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) spline_id: u32,
 }
 
 // The LOS-only straight chase path reused the creature's start Z for the
 // destination, which made wolves hover/jitter on uneven Northshire terrain.
 // Keep chase on mmap-backed paths until the fast path can sample terrain/nav
 // height like CMaNGOS' straight-line PathFinder branch.
-const DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED: bool = false;
+pub(in crate::world) const DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED: bool = false;
 
 #[cfg(test)]
-fn advance_db_creature_motion(
+pub(in crate::world) fn advance_db_creature_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) {
-    let Some(creature) = session.db_creatures.get_mut(&creature_guid.raw()) else {
+    let Some(creature) = session
+        .visibility
+        .db_creatures
+        .get_mut(&creature_guid.raw())
+    else {
         return;
     };
     advance_db_creature_motion_runtime(creature, now);
 }
 
-fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Instant) {
+pub(in crate::world) fn advance_db_creature_motion_runtime(
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) {
     match &creature.motion {
         CreatureMotionState::Idle => {}
         CreatureMotionState::Random(random) => {
@@ -126,7 +135,10 @@ fn advance_db_creature_motion_runtime(creature: &mut DbCreatureRuntime, now: Ins
     }
 }
 
-fn queue_db_creature_waypoint_script(creature: &mut DbCreatureRuntime, node_index: usize) {
+pub(in crate::world) fn queue_db_creature_waypoint_script(
+    creature: &mut DbCreatureRuntime,
+    node_index: usize,
+) {
     if let Some(script_id) = creature
         .spawn
         .waypoint_path
@@ -138,7 +150,10 @@ fn queue_db_creature_waypoint_script(creature: &mut DbCreatureRuntime, node_inde
     }
 }
 
-fn advance_db_creature_waypoint_index(creature: &mut DbCreatureRuntime, arrived_node: usize) {
+pub(in crate::world) fn advance_db_creature_waypoint_index(
+    creature: &mut DbCreatureRuntime,
+    arrived_node: usize,
+) {
     let node_count = creature.spawn.waypoint_path.len();
     let (next_index, next_forward) = db_creature_next_waypoint_state(
         node_count,
@@ -150,7 +165,7 @@ fn advance_db_creature_waypoint_index(creature: &mut DbCreatureRuntime, arrived_
     creature.waypoint_forward = next_forward;
 }
 
-fn db_creature_next_waypoint_state(
+pub(in crate::world) fn db_creature_next_waypoint_state(
     node_count: usize,
     movement_type: u8,
     arrived_node: usize,
@@ -178,16 +193,24 @@ fn db_creature_next_waypoint_state(
 }
 
 #[cfg(test)]
-fn start_db_creature_random_motion(
+pub(in crate::world) fn start_db_creature_random_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_random_motion_runtime(&session.db_creature_navigation, None, creature, now)
+    let creature = session
+        .visibility
+        .db_creatures
+        .get_mut(&creature_guid.raw())?;
+    start_db_creature_random_motion_runtime(
+        &session.movement.db_creature_navigation,
+        None,
+        creature,
+        now,
+    )
 }
 
-fn start_db_creature_random_motion_runtime(
+pub(in crate::world) fn start_db_creature_random_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
@@ -251,16 +274,24 @@ fn start_db_creature_random_motion_runtime(
 }
 
 #[cfg(test)]
-fn start_db_creature_waypoint_motion(
+pub(in crate::world) fn start_db_creature_waypoint_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_waypoint_motion_runtime(&session.db_creature_navigation, None, creature, now)
+    let creature = session
+        .visibility
+        .db_creatures
+        .get_mut(&creature_guid.raw())?;
+    start_db_creature_waypoint_motion_runtime(
+        &session.movement.db_creature_navigation,
+        None,
+        creature,
+        now,
+    )
 }
 
-fn start_db_creature_waypoint_motion_runtime(
+pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
@@ -293,13 +324,9 @@ fn start_db_creature_waypoint_motion_runtime(
         creature.next_waypoint_move_at = Some(now + Duration::from_millis(node_wait_time as u64));
         return None;
     }
-    let Some((path, arrived_node)) = db_creature_waypoint_buffered_path(
-        navigation,
-        geometry,
-        creature,
-        start,
-        node_index,
-    ) else {
+    let Some((path, arrived_node)) =
+        db_creature_waypoint_buffered_path(navigation, geometry, creature, start, node_index)
+    else {
         creature.next_waypoint_move_at =
             Some(now + Duration::from_millis(DB_CREATURE_IDLE_MOTION_FAILED_RETRY_MILLIS));
         return None;
@@ -339,7 +366,7 @@ fn start_db_creature_waypoint_motion_runtime(
     })
 }
 
-fn db_creature_waypoint_buffered_path(
+pub(in crate::world) fn db_creature_waypoint_buffered_path(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &DbCreatureRuntime,
@@ -402,16 +429,19 @@ fn db_creature_waypoint_buffered_path(
 }
 
 #[cfg(test)]
-fn start_db_creature_chase_motion(
+pub(in crate::world) fn start_db_creature_chase_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     target: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let target_position = session.active_character.as_ref()?.position;
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
+    let target_position = session.character.active_character.as_ref()?.position;
+    let creature = session
+        .visibility
+        .db_creatures
+        .get_mut(&creature_guid.raw())?;
     start_db_creature_chase_motion_runtime(
-        &session.db_creature_navigation,
+        &session.movement.db_creature_navigation,
         None,
         creature,
         target,
@@ -421,7 +451,7 @@ fn start_db_creature_chase_motion(
     )
 }
 
-fn start_db_creature_chase_motion_runtime(
+pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
@@ -497,16 +527,24 @@ fn start_db_creature_chase_motion_runtime(
 }
 
 #[cfg(test)]
-fn start_db_creature_return_home_motion(
+pub(in crate::world) fn start_db_creature_return_home_motion(
     session: &mut WorldSessionState,
     creature_guid: ObjectGuid,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    let creature = session.db_creatures.get_mut(&creature_guid.raw())?;
-    start_db_creature_return_home_motion_runtime(&session.db_creature_navigation, None, creature, now)
+    let creature = session
+        .visibility
+        .db_creatures
+        .get_mut(&creature_guid.raw())?;
+    start_db_creature_return_home_motion_runtime(
+        &session.movement.db_creature_navigation,
+        None,
+        creature,
+        now,
+    )
 }
 
-fn start_db_creature_return_home_motion_runtime(
+pub(in crate::world) fn start_db_creature_return_home_motion_runtime(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &mut DbCreatureRuntime,
@@ -572,7 +610,9 @@ fn start_db_creature_return_home_motion_runtime(
     })
 }
 
-fn stop_db_creature_motion_runtime(creature: &mut DbCreatureRuntime) -> StoppedCreatureMotion {
+pub(in crate::world) fn stop_db_creature_motion_runtime(
+    creature: &mut DbCreatureRuntime,
+) -> StoppedCreatureMotion {
     let stop = StoppedCreatureMotion {
         position: creature.current_position,
         spline_id: creature.next_spline_id,
@@ -582,7 +622,7 @@ fn stop_db_creature_motion_runtime(creature: &mut DbCreatureRuntime) -> StoppedC
     stop
 }
 
-fn retime_db_creature_motion_for_speed_change(
+pub(in crate::world) fn retime_db_creature_motion_for_speed_change(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> anyhow::Result<Option<OutboundWorldPacket>> {
@@ -621,16 +661,16 @@ fn retime_db_creature_motion_for_speed_change(
 }
 
 #[derive(Debug, Clone)]
-struct RetimedCreatureMotion {
-    start: WorldPosition,
-    path: Vec<WorldPosition>,
-    spline_id: u32,
-    duration: Duration,
-    run: bool,
-    facing_target: Option<ObjectGuid>,
+pub(in crate::world) struct RetimedCreatureMotion {
+    pub(in crate::world) start: WorldPosition,
+    pub(in crate::world) path: Vec<WorldPosition>,
+    pub(in crate::world) spline_id: u32,
+    pub(in crate::world) duration: Duration,
+    pub(in crate::world) run: bool,
+    pub(in crate::world) facing_target: Option<ObjectGuid>,
 }
 
-fn retimed_db_creature_motion(
+pub(in crate::world) fn retimed_db_creature_motion(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<RetimedCreatureMotion> {
@@ -741,7 +781,7 @@ fn retimed_db_creature_motion(
     })
 }
 
-fn remaining_timed_path_after_speed_change(
+pub(in crate::world) fn remaining_timed_path_after_speed_change(
     start: WorldPosition,
     path: &[WorldPosition],
     started_at: Instant,
@@ -762,7 +802,7 @@ fn remaining_timed_path_after_speed_change(
     Some((current, remaining))
 }
 
-fn remaining_path_after_travel_distance(
+pub(in crate::world) fn remaining_path_after_travel_distance(
     start: WorldPosition,
     path: &[WorldPosition],
     mut travelled: f32,
@@ -784,10 +824,9 @@ fn remaining_path_after_travel_distance(
         } else {
             path[index..].to_vec()
         };
-        if remaining
-            .first()
-            .is_some_and(|first| distance_2d(previous.x, previous.y, first.x, first.y) <= f32::EPSILON)
-        {
+        if remaining.first().is_some_and(|first| {
+            distance_2d(previous.x, previous.y, first.x, first.y) <= f32::EPSILON
+        }) {
             remaining.remove(0);
         }
         return (!remaining.is_empty()).then_some(remaining);
@@ -796,44 +835,43 @@ fn remaining_path_after_travel_distance(
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CreaturePathMode {
+pub(in crate::world) enum CreaturePathMode {
     Full,
     StopShort(f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DbCreaturePathFlags(u8);
+pub(in crate::world) struct DbCreaturePathFlags(pub(in crate::world) u8);
 
 impl DbCreaturePathFlags {
-    const NORMAL: Self = Self(0x01);
+    pub(in crate::world) const NORMAL: Self = Self(0x01);
     #[allow(dead_code)]
-    const SHORTCUT: Self = Self(0x02);
-    const INCOMPLETE: Self = Self(0x04);
-    const NOPATH: Self = Self(0x08);
-    const NOT_USING_PATH: Self = Self(0x10);
+    pub(in crate::world) const SHORTCUT: Self = Self(0x02);
+    pub(in crate::world) const INCOMPLETE: Self = Self(0x04);
+    pub(in crate::world) const NOPATH: Self = Self(0x08);
+    pub(in crate::world) const NOT_USING_PATH: Self = Self(0x10);
     #[allow(dead_code)]
-    const SHORT: Self = Self(0x20);
+    pub(in crate::world) const SHORT: Self = Self(0x20);
 
-    fn contains(self, flag: Self) -> bool {
+    pub(in crate::world) fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 != 0
     }
-
 }
 
 #[derive(Debug, Clone)]
-struct DbCreaturePath {
-    flags: DbCreaturePathFlags,
-    points: Vec<WorldPosition>,
+pub(in crate::world) struct DbCreaturePath {
+    pub(in crate::world) flags: DbCreaturePathFlags,
+    pub(in crate::world) points: Vec<WorldPosition>,
 }
 
 #[derive(Debug)]
-enum DbCreaturePathBuild {
+pub(in crate::world) enum DbCreaturePathBuild {
     Path(DbCreaturePath),
     NoPath(DbCreaturePathFlags),
     Unavailable,
 }
 
-fn db_creature_chase_path(
+pub(in crate::world) fn db_creature_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &DbCreatureRuntime,
@@ -847,9 +885,11 @@ fn db_creature_chase_path(
     if DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED
         && db_creature_can_use_straight_chase_path(navigation, start, target_position)
     {
-        if let Some(points) =
-            db_creature_straight_path(start, target_position, CreaturePathMode::StopShort(stop_distance))
-        {
+        if let Some(points) = db_creature_straight_path(
+            start,
+            target_position,
+            CreaturePathMode::StopShort(stop_distance),
+        ) {
             return Some(DbCreaturePath {
                 flags: DbCreaturePathFlags::NORMAL,
                 points,
@@ -868,17 +908,23 @@ fn db_creature_chase_path(
     path.points = if path.flags.contains(DbCreaturePathFlags::NOT_USING_PATH) {
         db_creature_trim_path_to_travel_distance(start, path.points, stop_distance)?
     } else {
-        db_creature_cut_chase_path(navigation, start, path.points, target_position, stop_distance)?
+        db_creature_cut_chase_path(
+            navigation,
+            start,
+            path.points,
+            target_position,
+            stop_distance,
+        )?
     };
     Some(path)
 }
 
-fn db_creature_chase_stop_distance(creature: &DbCreatureRuntime) -> f32 {
+pub(in crate::world) fn db_creature_chase_stop_distance(creature: &DbCreatureRuntime) -> f32 {
     combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS)
         * DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR
 }
 
-fn db_creature_chase_angle_from_target(
+pub(in crate::world) fn db_creature_chase_angle_from_target(
     creature_position: WorldPosition,
     target_position: WorldPosition,
 ) -> f32 {
@@ -891,7 +937,7 @@ fn db_creature_chase_angle_from_target(
     }
 }
 
-fn db_creature_chase_near_point(
+pub(in crate::world) fn db_creature_chase_near_point(
     target_position: WorldPosition,
     distance: f32,
     angle: f32,
@@ -905,7 +951,7 @@ fn db_creature_chase_near_point(
     )
 }
 
-fn db_creature_can_use_straight_chase_path(
+pub(in crate::world) fn db_creature_can_use_straight_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -922,7 +968,7 @@ fn db_creature_can_use_straight_chase_path(
     distance_2d(start.x, start.y, target_position.x, target_position.y) <= 200.0
 }
 
-fn db_creature_cut_chase_path(
+pub(in crate::world) fn db_creature_cut_chase_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     path: Vec<WorldPosition>,
@@ -949,7 +995,7 @@ fn db_creature_cut_chase_path(
     db_creature_trim_path_to_travel_distance(start, path, stop_distance)
 }
 
-fn db_creature_path_to_destination(
+pub(in crate::world) fn db_creature_path_to_destination(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     creature: &DbCreatureRuntime,
@@ -984,7 +1030,9 @@ fn db_creature_path_to_destination(
     }
 }
 
-fn db_creature_uses_unit_fixture_pathing(navigation: &DbCreatureNavigationGuardrail) -> bool {
+pub(in crate::world) fn db_creature_uses_unit_fixture_pathing(
+    navigation: &DbCreatureNavigationGuardrail,
+) -> bool {
     navigation.world_data_files.data_dir_for_native.is_none()
         && !navigation.world_data_files.maps_available
         && !navigation.world_data_files.vmaps_available
@@ -992,7 +1040,7 @@ fn db_creature_uses_unit_fixture_pathing(navigation: &DbCreatureNavigationGuardr
         && navigation.world_data_files.vmap_tiles.is_empty()
 }
 
-fn db_creature_ground_destination(
+pub(in crate::world) fn db_creature_ground_destination(
     geometry: Option<&WorldGeometry>,
     target_position: WorldPosition,
 ) -> Option<WorldPosition> {
@@ -1002,7 +1050,7 @@ fn db_creature_ground_destination(
     }
 }
 
-fn db_creature_straight_path(
+pub(in crate::world) fn db_creature_straight_path(
     start: WorldPosition,
     target_position: WorldPosition,
     mode: CreaturePathMode,
@@ -1039,7 +1087,7 @@ fn db_creature_straight_path(
     )])
 }
 
-fn db_creature_navigation_check(
+pub(in crate::world) fn db_creature_navigation_check(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1062,7 +1110,7 @@ fn db_creature_navigation_check(
     DbCreatureNavigationResult::Clear
 }
 
-fn db_creature_pathing_check(
+pub(in crate::world) fn db_creature_pathing_check(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1080,7 +1128,7 @@ fn db_creature_pathing_check(
     DbCreatureNavigationResult::Clear
 }
 
-fn player_charge_navigation_check(
+pub(in crate::world) fn player_charge_navigation_check(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     destination: WorldPosition,
@@ -1091,7 +1139,8 @@ fn player_charge_navigation_check(
     if !world_position_is_finite(start) || !world_position_is_finite(destination) {
         return DbCreatureNavigationResult::InvalidCoordinate;
     }
-    if !navigation.line_of_sight_clear || !db_creature_has_line_of_sight(navigation, start, destination)
+    if !navigation.line_of_sight_clear
+        || !db_creature_has_line_of_sight(navigation, start, destination)
     {
         return DbCreatureNavigationResult::LineOfSightBlocked;
     }
@@ -1101,14 +1150,14 @@ fn player_charge_navigation_check(
     DbCreatureNavigationResult::Clear
 }
 
-fn world_position_is_finite(position: WorldPosition) -> bool {
+pub(in crate::world) fn world_position_is_finite(position: WorldPosition) -> bool {
     position.x.is_finite()
         && position.y.is_finite()
         && position.z.is_finite()
         && position.orientation.is_finite()
 }
 
-fn player_charge_has_valid_path(
+pub(in crate::world) fn player_charge_has_valid_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     destination: WorldPosition,
@@ -1155,7 +1204,7 @@ fn player_charge_has_valid_path(
     ) && path.points.len() >= 2
 }
 
-fn db_creature_has_line_of_sight(
+pub(in crate::world) fn db_creature_has_line_of_sight(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1196,7 +1245,7 @@ fn db_creature_has_line_of_sight(
     .unwrap_or(true)
 }
 
-fn unit_line_of_sight_position(position: WorldPosition) -> WorldPosition {
+pub(in crate::world) fn unit_line_of_sight_position(position: WorldPosition) -> WorldPosition {
     WorldPosition::new(
         position.map_id,
         position.x,
@@ -1206,7 +1255,7 @@ fn unit_line_of_sight_position(position: WorldPosition) -> WorldPosition {
     )
 }
 
-fn db_creature_has_native_los_data_for_positions(
+pub(in crate::world) fn db_creature_has_native_los_data_for_positions(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1230,7 +1279,7 @@ fn db_creature_has_native_los_data_for_positions(
             .has_vmap_tile(map_id, target_tile_x, target_tile_y)
 }
 
-fn db_creature_has_valid_path(
+pub(in crate::world) fn db_creature_has_valid_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1257,7 +1306,7 @@ fn db_creature_has_valid_path(
             .has_mmap_tile(map_id, target_tile_x, target_tile_y)
 }
 
-fn mmap_tile_for_position(position: WorldPosition) -> Option<(u32, u32)> {
+pub(in crate::world) fn mmap_tile_for_position(position: WorldPosition) -> Option<(u32, u32)> {
     const MAX_NUMBER_OF_GRIDS: i32 = 64;
     const CENTER_GRID_ID: f32 = 32.0;
     const SIZE_OF_GRIDS: f32 = 533.333_3;
@@ -1267,30 +1316,31 @@ fn mmap_tile_for_position(position: WorldPosition) -> Option<(u32, u32)> {
     }
     let tile_x = (CENTER_GRID_ID - position.x / SIZE_OF_GRIDS) as i32;
     let tile_y = (CENTER_GRID_ID - position.y / SIZE_OF_GRIDS) as i32;
-    (0..MAX_NUMBER_OF_GRIDS)
-        .contains(&tile_x)
-        .then_some(())?;
-    (0..MAX_NUMBER_OF_GRIDS)
-        .contains(&tile_y)
-        .then_some(())?;
+    (0..MAX_NUMBER_OF_GRIDS).contains(&tile_x).then_some(())?;
+    (0..MAX_NUMBER_OF_GRIDS).contains(&tile_y).then_some(())?;
     Some((tile_x as u32, tile_y as u32))
 }
 
 #[cfg(test)]
-fn db_creature_mmap_next_path_corner(
+pub(in crate::world) fn db_creature_mmap_next_path_corner(
     navigation: &DbCreatureNavigationGuardrail,
     creature: &DbCreatureRuntime,
     start: WorldPosition,
     target_position: WorldPosition,
 ) -> Option<WorldPosition> {
-    match db_creature_mmap_path(navigation, creature, start, target_position, CreaturePathMode::Full)
-    {
+    match db_creature_mmap_path(
+        navigation,
+        creature,
+        start,
+        target_position,
+        CreaturePathMode::Full,
+    ) {
         DbCreaturePathBuild::Path(path) => path.points.into_iter().next(),
         DbCreaturePathBuild::NoPath(_) | DbCreaturePathBuild::Unavailable => None,
     }
 }
 
-fn db_creature_mmap_path(
+pub(in crate::world) fn db_creature_mmap_path(
     navigation: &DbCreatureNavigationGuardrail,
     creature: &DbCreatureRuntime,
     start: WorldPosition,
@@ -1306,7 +1356,9 @@ fn db_creature_mmap_path(
     let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(target_position) else {
         return DbCreaturePathBuild::Unavailable;
     };
-    if !navigation.world_data_files.has_mmap_support_for_map(start.map_id)
+    if !navigation
+        .world_data_files
+        .has_mmap_support_for_map(start.map_id)
         || !navigation
             .world_data_files
             .has_mmap_tile(start.map_id, start_tile_x, start_tile_y)
@@ -1352,12 +1404,14 @@ fn db_creature_mmap_path(
     }
 }
 
-const INHABIT_GROUND: u32 = 0x01;
-const INHABIT_WATER: u32 = 0x02;
-const INHABIT_AIR: u32 = 0x04;
-const INHABIT_ANYWHERE: u32 = INHABIT_GROUND | INHABIT_WATER | INHABIT_AIR;
+pub(in crate::world) const INHABIT_GROUND: u32 = 0x01;
+pub(in crate::world) const INHABIT_WATER: u32 = 0x02;
+pub(in crate::world) const INHABIT_AIR: u32 = 0x04;
+pub(in crate::world) const INHABIT_ANYWHERE: u32 = INHABIT_GROUND | INHABIT_WATER | INHABIT_AIR;
 
-fn db_creature_mmap_path_filter(creature: &DbCreatureRuntime) -> NativeMmapPathFilter {
+pub(in crate::world) fn db_creature_mmap_path_filter(
+    creature: &DbCreatureRuntime,
+) -> NativeMmapPathFilter {
     let inhabit_type = db_creature_normalized_inhabit_type(creature.spawn.template.inhabit_type);
     let mut include_flags = 0;
     if inhabit_type & INHABIT_GROUND != 0 {
@@ -1375,7 +1429,7 @@ fn db_creature_mmap_path_filter(creature: &DbCreatureRuntime) -> NativeMmapPathF
     }
 }
 
-fn db_creature_normalized_inhabit_type(inhabit_type: u32) -> u32 {
+pub(in crate::world) fn db_creature_normalized_inhabit_type(inhabit_type: u32) -> u32 {
     if inhabit_type == 0 || inhabit_type > INHABIT_ANYWHERE {
         INHABIT_ANYWHERE
     } else {
@@ -1383,7 +1437,7 @@ fn db_creature_normalized_inhabit_type(inhabit_type: u32) -> u32 {
     }
 }
 
-fn native_mmap_points_to_world_path(
+pub(in crate::world) fn native_mmap_points_to_world_path(
     start: WorldPosition,
     points: &[WorldPosition],
 ) -> Option<Vec<WorldPosition>> {
@@ -1409,7 +1463,7 @@ fn native_mmap_points_to_world_path(
     (!path.is_empty()).then_some(path)
 }
 
-fn db_creature_trim_path_for_mode(
+pub(in crate::world) fn db_creature_trim_path_for_mode(
     start: WorldPosition,
     path: Vec<WorldPosition>,
     mode: CreaturePathMode,
@@ -1422,7 +1476,7 @@ fn db_creature_trim_path_for_mode(
     }
 }
 
-fn db_creature_trim_path_to_travel_distance(
+pub(in crate::world) fn db_creature_trim_path_to_travel_distance(
     start: WorldPosition,
     path: Vec<WorldPosition>,
     stop_distance: f32,
@@ -1457,7 +1511,7 @@ fn db_creature_trim_path_to_travel_distance(
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-fn db_creature_path_motion_duration(
+pub(in crate::world) fn db_creature_path_motion_duration(
     start: WorldPosition,
     path: &[WorldPosition],
     run_speed: f32,
@@ -1469,7 +1523,7 @@ fn db_creature_path_motion_duration(
     )
 }
 
-fn db_creature_walk_path_motion_duration(
+pub(in crate::world) fn db_creature_walk_path_motion_duration(
     start: WorldPosition,
     path: &[WorldPosition],
     walk_speed: f32,
@@ -1481,7 +1535,7 @@ fn db_creature_walk_path_motion_duration(
     )
 }
 
-fn db_creature_random_destination(
+pub(in crate::world) fn db_creature_random_destination(
     home: WorldPosition,
     radius: f32,
     guid: u64,
@@ -1503,13 +1557,17 @@ fn db_creature_random_destination(
     ))
 }
 
-fn db_creature_random_pause_millis(guid: u64, spline_id: u32) -> u64 {
+pub(in crate::world) fn db_creature_random_pause_millis(guid: u64, spline_id: u32) -> u64 {
     let span = DB_CREATURE_RANDOM_DELAY_MAX_MILLIS - DB_CREATURE_RANDOM_DELAY_MIN_MILLIS;
     DB_CREATURE_RANDOM_DELAY_MIN_MILLIS
         + (db_creature_pseudo_random_unit(guid, spline_id, 2) * span as f32) as u64
 }
 
-fn db_creature_pseudo_random_unit(guid: u64, spline_id: u32, salt: u32) -> f32 {
+pub(in crate::world) fn db_creature_pseudo_random_unit(
+    guid: u64,
+    spline_id: u32,
+    salt: u32,
+) -> f32 {
     let mut value = guid
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add((spline_id as u64) << 32)
@@ -1520,7 +1578,7 @@ fn db_creature_pseudo_random_unit(guid: u64, spline_id: u32, salt: u32) -> f32 {
     ((value & 0xFFFF_FFFF) as f32) / (u32::MAX as f32)
 }
 
-fn interpolate_position(
+pub(in crate::world) fn interpolate_position(
     start: WorldPosition,
     destination: WorldPosition,
     progress: f32,
@@ -1534,7 +1592,7 @@ fn interpolate_position(
     )
 }
 
-fn advance_timed_path_motion(
+pub(in crate::world) fn advance_timed_path_motion(
     start: WorldPosition,
     path: &[WorldPosition],
     started_at: Instant,
@@ -1554,7 +1612,7 @@ fn advance_timed_path_motion(
     position_along_path(start, path, travel_distance)
 }
 
-fn position_along_path(
+pub(in crate::world) fn position_along_path(
     start: WorldPosition,
     path: &[WorldPosition],
     mut travel_distance: f32,
@@ -1580,7 +1638,7 @@ fn position_along_path(
     path.last().copied()
 }
 
-fn path_distance_2d(start: WorldPosition, path: &[WorldPosition]) -> f32 {
+pub(in crate::world) fn path_distance_2d(start: WorldPosition, path: &[WorldPosition]) -> f32 {
     let mut distance = 0.0;
     let mut previous = start;
     for point in path {
@@ -1590,9 +1648,8 @@ fn path_distance_2d(start: WorldPosition, path: &[WorldPosition]) -> f32 {
     distance
 }
 
-fn distance_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> f32 {
+pub(in crate::world) fn distance_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> f32 {
     let dx = left_x - right_x;
     let dy = left_y - right_y;
     (dx * dx + dy * dy).sqrt()
 }
-

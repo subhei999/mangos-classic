@@ -1,11 +1,16 @@
+use super::*;
+use wow_proto::{ServerWorldPacket, SmsgUpdateAuraDurationResponse};
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuraOwnerKind {
+pub(in crate::world) enum AuraOwnerKind {
     Player,
     DbCreature,
 }
 
-fn visible_aura_slots(active_auras: &[ActiveAura]) -> Vec<(usize, &ActiveAura)> {
+pub(in crate::world) fn visible_aura_slots(
+    active_auras: &[ActiveAura],
+) -> Vec<(usize, &ActiveAura)> {
     let mut positive_slot = 0;
     let mut negative_slot = MAX_POSITIVE_AURA_SLOTS;
     let mut slots = Vec::new();
@@ -30,14 +35,18 @@ fn visible_aura_slots(active_auras: &[ActiveAura]) -> Vec<(usize, &ActiveAura)> 
     slots
 }
 
-fn build_aura_duration_update_body(slot: u8, remaining_millis: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(5);
-    body.push(slot);
-    body.extend_from_slice(&remaining_millis.to_le_bytes());
-    body
+pub(in crate::world) fn build_aura_duration_update_body(
+    slot: u8,
+    remaining_millis: u32,
+) -> Vec<u8> {
+    SmsgUpdateAuraDurationResponse {
+        slot,
+        remaining_millis,
+    }
+    .body()
 }
 
-fn build_player_aura_duration_update_packets(
+pub(in crate::world) fn build_player_aura_duration_update_packets(
     active_auras: &[ActiveAura],
     now: Instant,
 ) -> Vec<OutboundWorldPacket> {

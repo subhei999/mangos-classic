@@ -1,7 +1,9 @@
+use super::*;
+
 // Shared DB-creature corpse expiry, respawn, and lifecycle packet production.
 
 impl MapRuntime {
-    fn advance_db_creature_lifecycle(
+    pub(in crate::world) fn advance_db_creature_lifecycle(
         &mut self,
         creature_guids: &[u64],
         viewer_position: WorldPosition,

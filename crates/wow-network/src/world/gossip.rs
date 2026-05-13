@@ -1,25 +1,26 @@
+use super::*;
+
 #[derive(Clone, Copy)]
-struct GossipSelectDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    maps: &'a Arc<MapRuntimeManager>,
-    sessions: &'a Arc<SessionRegistry>,
-    account_id: u32,
+pub(in crate::world) struct GossipSelectDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
+    pub(in crate::world) account_id: u32,
 }
 
-async fn handle_gossip_hello(
+pub(in crate::world) async fn handle_gossip_hello(
     stream: &mut WorldPacketSink,
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     maps: &Arc<MapRuntimeManager>,
-    body: &[u8],
+    request: wow_proto::GossipHelloRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let guid = read_packet_guid(body, "CMSG_GOSSIP_HELLO")?;
+    let guid = ObjectGuid::from_raw(request.raw_guid);
     if guid == rust_guide_guid() {
-        let text_update =
-            build_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID, RUST_GUIDE_GOSSIP_TEXT);
+        let text_update = build_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID, RUST_GUIDE_GOSSIP_TEXT);
         send_packet(
             stream,
             SMSG_NPC_TEXT_UPDATE,
@@ -36,8 +37,8 @@ async fn handle_gossip_hello(
     }
 
     if guid.is_creature() {
-        let is_spirit_healer = if session.player_death_state == PlayerDeathState::Ghost {
-            if let Some(character) = session.active_character.as_ref() {
+        let is_spirit_healer = if session.death.player_death_state == PlayerDeathState::Ghost {
+            if let Some(character) = session.character.active_character.as_ref() {
                 maps.db_creature_snapshot(character.position.map_id, guid)
                     .await
                     .is_some_and(|creature| is_spirit_healer_creature(&creature))
@@ -137,14 +138,14 @@ async fn handle_gossip_hello(
     Ok(())
 }
 
-async fn handle_gossip_select_option(
+pub(in crate::world) async fn handle_gossip_select_option(
     stream: &mut WorldPacketSink,
     deps: GossipSelectDeps<'_>,
-    body: &[u8],
+    request: wow_proto::GossipSelectOptionRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let selection = GossipSelectOption::read(body)?;
+    let selection = GossipSelectOption::from(request);
     if selection.guid == rust_guide_guid() {
         if selection.is_supported_browse_option() {
             return send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await;
@@ -165,8 +166,8 @@ async fn handle_gossip_select_option(
             );
             return Ok(());
         }
-        let is_spirit_healer = if session.player_death_state == PlayerDeathState::Ghost {
-            if let Some(character) = session.active_character.as_ref() {
+        let is_spirit_healer = if session.death.player_death_state == PlayerDeathState::Ghost {
+            if let Some(character) = session.character.active_character.as_ref() {
                 deps.maps
                     .db_creature_snapshot(character.position.map_id, selection.guid)
                     .await
@@ -178,13 +179,7 @@ async fn handle_gossip_select_option(
             false
         };
         if is_spirit_healer {
-            send_packet(
-                stream,
-                SMSG_GOSSIP_COMPLETE,
-                &[],
-                Some(&mut *header_crypto),
-            )
-            .await?;
+            send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(&mut *header_crypto)).await?;
             return handle_spirit_healer_activate(
                 stream,
                 PlayerDeathDeps {
@@ -194,7 +189,9 @@ async fn handle_gossip_select_option(
                     sessions: deps.sessions,
                     account_id: deps.account_id,
                 },
-                body,
+                wow_proto::SpiritHealerActivateRequest {
+                    raw_guid: selection.guid.raw(),
+                },
                 session,
                 header_crypto,
             )
@@ -233,27 +230,22 @@ async fn handle_gossip_select_option(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GossipSelectOption {
-    guid: ObjectGuid,
-    option: u32,
+pub(in crate::world) struct GossipSelectOption {
+    pub(in crate::world) guid: ObjectGuid,
+    pub(in crate::world) option: u32,
 }
 
 impl GossipSelectOption {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 12 {
-            anyhow::bail!(
-                "CMSG_GOSSIP_SELECT_OPTION payload too short: {} bytes",
-                body.len()
-            );
-        }
-        Ok(Self {
-            guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
-            option: u32::from_le_bytes(body[8..12].try_into()?),
-        })
-    }
-
-    fn is_supported_browse_option(&self) -> bool {
+    pub(in crate::world) fn is_supported_browse_option(&self) -> bool {
         self.option == 0
     }
 }
 
+impl From<wow_proto::GossipSelectOptionRequest> for GossipSelectOption {
+    fn from(request: wow_proto::GossipSelectOptionRequest) -> Self {
+        Self {
+            guid: ObjectGuid::from_raw(request.raw_guid),
+            option: request.option,
+        }
+    }
+}

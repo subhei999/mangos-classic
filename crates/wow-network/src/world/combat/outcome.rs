@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MeleeHitOutcome {
+pub(in crate::world) enum MeleeHitOutcome {
     Miss,
     Dodge,
     Block,
@@ -10,74 +12,74 @@ enum MeleeHitOutcome {
     Normal,
 }
 
-const SKILL_DEFENSE: u16 = 95;
-const SKILL_SWORDS: u16 = 43;
-const SKILL_AXES: u16 = 44;
-const SKILL_BOWS: u16 = 45;
-const SKILL_GUNS: u16 = 46;
-const SKILL_MACES: u16 = 54;
-const SKILL_TWO_HANDED_SWORDS: u16 = 55;
-const SKILL_STAVES: u16 = 136;
-const SKILL_TWO_HANDED_MACES: u16 = 160;
-const SKILL_UNARMED: u16 = 162;
-const SKILL_TWO_HANDED_AXES: u16 = 172;
-const SKILL_DAGGERS: u16 = 173;
-const SKILL_THROWN: u16 = 176;
-const SKILL_CROSSBOWS: u16 = 226;
-const SKILL_WANDS: u16 = 228;
-const SKILL_POLEARMS: u16 = 229;
-const SKILL_SPEARS: u16 = 253;
-const SKILL_FISHING: u16 = 356;
-const SKILL_FIST_WEAPONS: u16 = 473;
+pub(in crate::world) const SKILL_DEFENSE: u16 = 95;
+pub(in crate::world) const SKILL_SWORDS: u16 = 43;
+pub(in crate::world) const SKILL_AXES: u16 = 44;
+pub(in crate::world) const SKILL_BOWS: u16 = 45;
+pub(in crate::world) const SKILL_GUNS: u16 = 46;
+pub(in crate::world) const SKILL_MACES: u16 = 54;
+pub(in crate::world) const SKILL_TWO_HANDED_SWORDS: u16 = 55;
+pub(in crate::world) const SKILL_STAVES: u16 = 136;
+pub(in crate::world) const SKILL_TWO_HANDED_MACES: u16 = 160;
+pub(in crate::world) const SKILL_UNARMED: u16 = 162;
+pub(in crate::world) const SKILL_TWO_HANDED_AXES: u16 = 172;
+pub(in crate::world) const SKILL_DAGGERS: u16 = 173;
+pub(in crate::world) const SKILL_THROWN: u16 = 176;
+pub(in crate::world) const SKILL_CROSSBOWS: u16 = 226;
+pub(in crate::world) const SKILL_WANDS: u16 = 228;
+pub(in crate::world) const SKILL_POLEARMS: u16 = 229;
+pub(in crate::world) const SKILL_SPEARS: u16 = 253;
+pub(in crate::world) const SKILL_FISHING: u16 = 356;
+pub(in crate::world) const SKILL_FIST_WEAPONS: u16 = 473;
 
 #[derive(Debug, Clone, Copy)]
-struct MeleeRollChances {
-    miss: f32,
-    dodge: f32,
-    parry: f32,
-    block: f32,
-    glancing: f32,
-    crit: f32,
-    crushing: f32,
+pub(in crate::world) struct MeleeRollChances {
+    pub(in crate::world) miss: f32,
+    pub(in crate::world) dodge: f32,
+    pub(in crate::world) parry: f32,
+    pub(in crate::world) block: f32,
+    pub(in crate::world) glancing: f32,
+    pub(in crate::world) crit: f32,
+    pub(in crate::world) crushing: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MeleeDamageInput {
-    attacker_level: u8,
-    attacker_skill: u16,
-    victim_defense: u16,
-    min_damage: f32,
-    max_damage: f32,
-    victim_armor: u32,
-    victim_block_value: u32,
-    chances: MeleeRollChances,
+pub(in crate::world) struct MeleeDamageInput {
+    pub(in crate::world) attacker_level: u8,
+    pub(in crate::world) attacker_skill: u16,
+    pub(in crate::world) victim_defense: u16,
+    pub(in crate::world) min_damage: f32,
+    pub(in crate::world) max_damage: f32,
+    pub(in crate::world) victim_armor: u32,
+    pub(in crate::world) victim_block_value: u32,
+    pub(in crate::world) chances: MeleeRollChances,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerMeleeDefenseInput {
-    level: u8,
-    defense_skill: u16,
-    armor: u32,
-    block_value: u32,
-    dodge_percent: f32,
-    parry_percent: f32,
-    block_percent: f32,
+pub(in crate::world) struct PlayerMeleeDefenseInput {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) defense_skill: u16,
+    pub(in crate::world) armor: u32,
+    pub(in crate::world) block_value: u32,
+    pub(in crate::world) dodge_percent: f32,
+    pub(in crate::world) parry_percent: f32,
+    pub(in crate::world) block_percent: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct MeleeDamageOutcome {
-    hit_info: u32,
-    victim_state: u32,
-    outcome: MeleeHitOutcome,
-    total_damage: u32,
-    school_damage: u32,
-    absorbed: u32,
-    resisted: i32,
-    blocked: u32,
+pub(in crate::world) struct MeleeDamageOutcome {
+    pub(in crate::world) hit_info: u32,
+    pub(in crate::world) victim_state: u32,
+    pub(in crate::world) outcome: MeleeHitOutcome,
+    pub(in crate::world) total_damage: u32,
+    pub(in crate::world) school_damage: u32,
+    pub(in crate::world) absorbed: u32,
+    pub(in crate::world) resisted: i32,
+    pub(in crate::world) blocked: u32,
 }
 
 impl MeleeDamageOutcome {
-    fn normal_hit(damage: u32) -> Self {
+    pub(in crate::world) fn normal_hit(damage: u32) -> Self {
         Self {
             hit_info: HITINFO_NORMALSWING2,
             victim_state: VICTIMSTATE_NORMAL,
@@ -90,7 +92,7 @@ impl MeleeDamageOutcome {
         }
     }
 
-    fn with_next_melee_spell_bonus(mut self, bonus_damage: u32) -> Self {
+    pub(in crate::world) fn with_next_melee_spell_bonus(mut self, bonus_damage: u32) -> Self {
         if self.total_damage > 0 {
             self.total_damage = self.total_damage.saturating_add(bonus_damage);
             self.school_damage = self.school_damage.saturating_add(bonus_damage);
@@ -98,23 +100,21 @@ impl MeleeDamageOutcome {
         self
     }
 
-    fn with_weapon_spell_modifier(mut self, bonus_damage: u32, weapon_damage_percent: u32) -> Self {
+    pub(in crate::world) fn with_weapon_spell_modifier(
+        mut self,
+        bonus_damage: u32,
+        weapon_damage_percent: u32,
+    ) -> Self {
         if self.total_damage > 0 {
-            self.total_damage = self
-                .total_damage
-                .saturating_mul(weapon_damage_percent)
-                / 100;
-            self.school_damage = self
-                .school_damage
-                .saturating_mul(weapon_damage_percent)
-                / 100;
+            self.total_damage = self.total_damage.saturating_mul(weapon_damage_percent) / 100;
+            self.school_damage = self.school_damage.saturating_mul(weapon_damage_percent) / 100;
             self.total_damage = self.total_damage.saturating_add(bonus_damage);
             self.school_damage = self.school_damage.saturating_add(bonus_damage);
         }
         self
     }
 
-    fn spell_miss_info(self) -> Option<u8> {
+    pub(in crate::world) fn spell_miss_info(self) -> Option<u8> {
         if self.total_damage > 0 {
             return None;
         }
@@ -129,18 +129,18 @@ impl MeleeDamageOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellDamageOutcome {
-    original_damage: u32,
-    final_damage: u32,
-    absorb: u32,
-    resist: i32,
-    blocked: u32,
-    hit_info: u32,
-    miss_info: Option<u8>,
+pub(in crate::world) struct SpellDamageOutcome {
+    pub(in crate::world) original_damage: u32,
+    pub(in crate::world) final_damage: u32,
+    pub(in crate::world) absorb: u32,
+    pub(in crate::world) resist: i32,
+    pub(in crate::world) blocked: u32,
+    pub(in crate::world) hit_info: u32,
+    pub(in crate::world) miss_info: Option<u8>,
 }
 
 impl SpellDamageOutcome {
-    fn normal_hit(damage: u32) -> Self {
+    pub(in crate::world) fn normal_hit(damage: u32) -> Self {
         Self {
             original_damage: damage,
             final_damage: damage,
@@ -152,7 +152,7 @@ impl SpellDamageOutcome {
         }
     }
 
-    fn full_resist(damage: u32) -> Self {
+    pub(in crate::world) fn full_resist(damage: u32) -> Self {
         Self {
             original_damage: damage,
             final_damage: 0,
@@ -166,41 +166,41 @@ impl SpellDamageOutcome {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SpellDamageOutcomeInput {
-    damage: u32,
-    school: u8,
-    dmg_class: u32,
-    attributes_ex2: u32,
-    attributes_ex3: u32,
-    caster_class: u8,
-    caster_level: u8,
-    caster_intellect: u32,
-    target_level: u8,
-    target_resistances: [i16; MAX_SPELL_SCHOOL],
+pub(in crate::world) struct SpellDamageOutcomeInput {
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) school: u8,
+    pub(in crate::world) dmg_class: u32,
+    pub(in crate::world) attributes_ex2: u32,
+    pub(in crate::world) attributes_ex3: u32,
+    pub(in crate::world) caster_class: u8,
+    pub(in crate::world) caster_level: u8,
+    pub(in crate::world) caster_intellect: u32,
+    pub(in crate::world) target_level: u8,
+    pub(in crate::world) target_resistances: [i16; MAX_SPELL_SCHOOL],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellCombatUnitSnapshot {
-    level: u8,
-    class: u8,
-    intellect: u32,
-    resistances: [i16; MAX_SPELL_SCHOOL],
+pub(in crate::world) struct SpellCombatUnitSnapshot {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) intellect: u32,
+    pub(in crate::world) resistances: [i16; MAX_SPELL_SCHOOL],
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SpellDamageOutcomeRolls {
-    hit_roll: u32,
-    crit_roll: u32,
-    partial_resist_roll: u32,
+pub(in crate::world) struct SpellDamageOutcomeRolls {
+    pub(in crate::world) hit_roll: u32,
+    pub(in crate::world) crit_roll: u32,
+    pub(in crate::world) partial_resist_roll: u32,
 }
 
-const SPELL_DAMAGE_CLASS_NONE: u32 = 0;
-const SPELL_DAMAGE_CLASS_MAGIC: u32 = 1;
-const SPELL_DAMAGE_CLASS_MELEE: u32 = 2;
-const SPELL_ATTR_EX2_CANT_CRIT: u32 = 0x2000_0000;
-const SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
-const SPELL_ATTR_EX3_IGNORE_CASTER_MODIFIERS: u32 = 0x2000_0000;
-const PARTIAL_RESIST_DISTRIBUTION: [[u32; 5]; 101] = [
+pub(in crate::world) const SPELL_DAMAGE_CLASS_NONE: u32 = 0;
+pub(in crate::world) const SPELL_DAMAGE_CLASS_MAGIC: u32 = 1;
+pub(in crate::world) const SPELL_DAMAGE_CLASS_MELEE: u32 = 2;
+pub(in crate::world) const SPELL_ATTR_EX2_CANT_CRIT: u32 = 0x2000_0000;
+pub(in crate::world) const SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
+pub(in crate::world) const SPELL_ATTR_EX3_IGNORE_CASTER_MODIFIERS: u32 = 0x2000_0000;
+pub(in crate::world) const PARTIAL_RESIST_DISTRIBUTION: [[u32; 5]; 101] = [
     [10000, 0, 0, 0, 0],
     [9700, 200, 100, 0, 0],
     [9400, 400, 200, 0, 0],
@@ -304,7 +304,9 @@ const PARTIAL_RESIST_DISTRIBUTION: [[u32; 5]; 101] = [
     [0, 0, 0, 0, 10000],
 ];
 
-fn roll_spell_damage_outcome(input: SpellDamageOutcomeInput) -> SpellDamageOutcome {
+pub(in crate::world) fn roll_spell_damage_outcome(
+    input: SpellDamageOutcomeInput,
+) -> SpellDamageOutcome {
     let mut rng = rand::thread_rng();
     calculate_spell_damage_outcome(
         input,
@@ -316,7 +318,7 @@ fn roll_spell_damage_outcome(input: SpellDamageOutcomeInput) -> SpellDamageOutco
     )
 }
 
-fn spell_damage_outcome_input(
+pub(in crate::world) fn spell_damage_outcome_input(
     damage: u32,
     school: u8,
     dmg_class: u32,
@@ -339,7 +341,7 @@ fn spell_damage_outcome_input(
     }
 }
 
-fn calculate_spell_damage_outcome(
+pub(in crate::world) fn calculate_spell_damage_outcome(
     input: SpellDamageOutcomeInput,
     rolls: SpellDamageOutcomeRolls,
 ) -> SpellDamageOutcome {
@@ -370,7 +372,10 @@ fn calculate_spell_damage_outcome(
     }
 }
 
-fn spell_full_resist_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool {
+pub(in crate::world) fn spell_full_resist_succeeds(
+    input: SpellDamageOutcomeInput,
+    roll: u32,
+) -> bool {
     if input.attributes_ex3 & SPELL_ATTR_EX3_ALWAYS_HIT != 0 {
         return false;
     }
@@ -391,7 +396,7 @@ fn spell_full_resist_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool
     roll <= chance_to_basis_points(chance)
 }
 
-fn spell_miss_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
+pub(in crate::world) fn spell_miss_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
     let difference = input.target_level as i32 - input.caster_level as i32;
     let chance = if difference > 2 {
         2 + (difference - 2) * 11
@@ -401,17 +406,20 @@ fn spell_miss_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
     (chance as f32).clamp(1.0, 100.0)
 }
 
-fn spell_crit_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool {
+pub(in crate::world) fn spell_crit_succeeds(input: SpellDamageOutcomeInput, roll: u32) -> bool {
     if input.attributes_ex2 & SPELL_ATTR_EX2_CANT_CRIT != 0 {
         return false;
     }
-    if !matches!(input.dmg_class, SPELL_DAMAGE_CLASS_MAGIC | SPELL_DAMAGE_CLASS_NONE) {
+    if !matches!(
+        input.dmg_class,
+        SPELL_DAMAGE_CLASS_MAGIC | SPELL_DAMAGE_CLASS_NONE
+    ) {
         return false;
     }
     roll <= chance_to_basis_points(spell_crit_chance_percent(input))
 }
 
-fn spell_crit_amount(input: SpellDamageOutcomeInput, damage: u32) -> u32 {
+pub(in crate::world) fn spell_crit_amount(input: SpellDamageOutcomeInput, damage: u32) -> u32 {
     if input.attributes_ex3 & SPELL_ATTR_EX3_IGNORE_CASTER_MODIFIERS != 0 {
         damage
     } else {
@@ -419,12 +427,16 @@ fn spell_crit_amount(input: SpellDamageOutcomeInput, damage: u32) -> u32 {
     }
 }
 
-fn spell_crit_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
-    spell_crit_from_intellect(input.caster_class, input.caster_level, input.caster_intellect)
-        .clamp(0.0, 100.0)
+pub(in crate::world) fn spell_crit_chance_percent(input: SpellDamageOutcomeInput) -> f32 {
+    spell_crit_from_intellect(
+        input.caster_class,
+        input.caster_level,
+        input.caster_intellect,
+    )
+    .clamp(0.0, 100.0)
 }
 
-fn spell_crit_from_intellect(class: u8, level: u8, intellect: u32) -> f32 {
+pub(in crate::world) fn spell_crit_from_intellect(class: u8, level: u8, intellect: u32) -> f32 {
     let (base, rate0, rate1) = match class {
         2 => (3.70, 14.77, 0.65),
         5 => (2.97, 10.03, 0.82),
@@ -442,7 +454,7 @@ fn spell_crit_from_intellect(class: u8, level: u8, intellect: u32) -> f32 {
     }
 }
 
-fn spell_partial_resist_amount(
+pub(in crate::world) fn spell_partial_resist_amount(
     input: SpellDamageOutcomeInput,
     damage: u32,
     roll: u32,
@@ -466,7 +478,7 @@ fn spell_partial_resist_amount(
     0
 }
 
-fn effective_magic_resistance_percent(input: SpellDamageOutcomeInput) -> f32 {
+pub(in crate::world) fn effective_magic_resistance_percent(input: SpellDamageOutcomeInput) -> f32 {
     if input.school as usize >= MAX_SPELL_SCHOOL || input.school == 0 || input.school == 1 {
         return 0.0;
     }
@@ -483,11 +495,13 @@ fn effective_magic_resistance_percent(input: SpellDamageOutcomeInput) -> f32 {
     percent.clamp(0.0, 75.0)
 }
 
-fn is_resistable_spell_school(school: u8) -> bool {
+pub(in crate::world) fn is_resistable_spell_school(school: u8) -> bool {
     school != 0 && school != 1
 }
 
-fn creature_spell_resistances(template: &CreatureTemplateQuery) -> [i16; MAX_SPELL_SCHOOL] {
+pub(in crate::world) fn creature_spell_resistances(
+    template: &CreatureTemplateQuery,
+) -> [i16; MAX_SPELL_SCHOOL] {
     [
         template.armor.min(i16::MAX as u32) as i16,
         template.resistance_holy,
@@ -499,7 +513,9 @@ fn creature_spell_resistances(template: &CreatureTemplateQuery) -> [i16; MAX_SPE
     ]
 }
 
-fn db_creature_spell_snapshot(creature: &DbCreatureRuntime) -> SpellCombatUnitSnapshot {
+pub(in crate::world) fn db_creature_spell_snapshot(
+    creature: &DbCreatureRuntime,
+) -> SpellCombatUnitSnapshot {
     SpellCombatUnitSnapshot {
         level: creature
             .spawn
@@ -513,7 +529,7 @@ fn db_creature_spell_snapshot(creature: &DbCreatureRuntime) -> SpellCombatUnitSn
     }
 }
 
-fn player_spell_snapshot(
+pub(in crate::world) fn player_spell_snapshot(
     level: u8,
     class: u8,
     combat_stats: &PlayerCombatStats,
@@ -530,7 +546,7 @@ fn player_spell_snapshot(
     }
 }
 
-fn partial_resist_chances(percent: f32) -> [u32; 5] {
+pub(in crate::world) fn partial_resist_chances(percent: f32) -> [u32; 5] {
     let basis = (percent.clamp(0.0, 100.0) * 100.0).round() as usize;
     let row = (basis / 100).min(PARTIAL_RESIST_DISTRIBUTION.len() - 1);
     let intermediate = basis % 100;
@@ -542,20 +558,21 @@ fn partial_resist_chances(percent: f32) -> [u32; 5] {
     let mut values = [0; 5];
     for index in 0..5 {
         let diff = next[index] as i64 - base[index] as i64;
-        values[index] = (base[index] as i64 + ((diff as f64 * intermediate as f64 / 100.0).round() as i64))
+        values[index] = (base[index] as i64
+            + ((diff as f64 * intermediate as f64 / 100.0).round() as i64))
             .max(0) as u32;
     }
     values
 }
 
-fn roll_melee_damage(input: MeleeDamageInput) -> MeleeDamageOutcome {
+pub(in crate::world) fn roll_melee_damage(input: MeleeDamageInput) -> MeleeDamageOutcome {
     let mut rng = rand::thread_rng();
     let damage_roll = rng.gen_range(1..=10_000);
     let outcome_roll = rng.gen_range(1..=10_000);
     calculate_melee_damage(input, damage_roll, outcome_roll)
 }
 
-fn calculate_melee_damage(
+pub(in crate::world) fn calculate_melee_damage(
     input: MeleeDamageInput,
     damage_roll: u32,
     outcome_roll: u32,
@@ -656,7 +673,10 @@ fn calculate_melee_damage(
     }
 }
 
-fn roll_melee_outcome(chances: MeleeRollChances, roll: u32) -> MeleeHitOutcome {
+pub(in crate::world) fn roll_melee_outcome(
+    chances: MeleeRollChances,
+    roll: u32,
+) -> MeleeHitOutcome {
     let mut threshold = chance_to_basis_points(chances.miss);
     if roll <= threshold {
         return MeleeHitOutcome::Miss;
@@ -688,18 +708,22 @@ fn roll_melee_outcome(chances: MeleeRollChances, roll: u32) -> MeleeHitOutcome {
     MeleeHitOutcome::Normal
 }
 
-fn chance_to_basis_points(chance_percent: f32) -> u32 {
+pub(in crate::world) fn chance_to_basis_points(chance_percent: f32) -> u32 {
     (chance_percent.clamp(0.0, 100.0) * 100.0).round() as u32
 }
 
-fn roll_damage_between(min_damage: f32, max_damage: f32, roll: u32) -> f32 {
+pub(in crate::world) fn roll_damage_between(min_damage: f32, max_damage: f32, roll: u32) -> f32 {
     let min_damage = min_damage.max(1.0);
     let max_damage = max_damage.max(min_damage);
     let t = (roll.clamp(1, 10_000) - 1) as f32 / 9_999.0;
     min_damage + (max_damage - min_damage) * t
 }
 
-fn armor_reduced_damage(attacker_level: u8, victim_armor: u32, damage: f32) -> u32 {
+pub(in crate::world) fn armor_reduced_damage(
+    attacker_level: u8,
+    victim_armor: u32,
+    damage: f32,
+) -> u32 {
     let armor = victim_armor as f32;
     let level_modifier = attacker_level.max(1) as f32;
     let reduction = if armor <= 0.0 {
@@ -711,7 +735,7 @@ fn armor_reduced_damage(attacker_level: u8, victim_armor: u32, damage: f32) -> u
     (damage - damage * reduction).round().max(1.0) as u32
 }
 
-fn glancing_multiplier(input: MeleeDamageInput) -> f32 {
+pub(in crate::world) fn glancing_multiplier(input: MeleeDamageInput) -> f32 {
     let difference = input.victim_defense as i32 - input.attacker_skill as i32;
     if difference < 0 {
         return 1.0;
@@ -721,11 +745,15 @@ fn glancing_multiplier(input: MeleeDamageInput) -> f32 {
     (low_end + high_end) / 2.0
 }
 
-fn creature_melee_input_against_player(
+pub(in crate::world) fn creature_melee_input_against_player(
     creature: &DbCreatureRuntime,
     defense: PlayerMeleeDefenseInput,
 ) -> MeleeDamageInput {
-    let level = creature.spawn.template.max_level.max(creature.spawn.template.min_level);
+    let level = creature
+        .spawn
+        .template
+        .max_level
+        .max(creature.spawn.template.min_level);
     let attacker_skill = u16::from(level.max(1)).saturating_mul(5);
     MeleeDamageInput {
         attacker_level: level.max(1),
@@ -740,7 +768,7 @@ fn creature_melee_input_against_player(
 }
 
 #[cfg(test)]
-fn calculate_player_main_hand_melee_damage(
+pub(in crate::world) fn calculate_player_main_hand_melee_damage(
     combat_stats: &PlayerCombatStats,
     attacker_level: u8,
     victim_armor: u32,
@@ -754,7 +782,7 @@ fn calculate_player_main_hand_melee_damage(
     armor_reduced_damage(attacker_level, victim_armor, damage)
 }
 
-fn player_main_hand_melee_outcome_against_db_creature(
+pub(in crate::world) fn player_main_hand_melee_outcome_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_level: u8,
     attacker_skill: u16,
@@ -771,7 +799,7 @@ fn player_main_hand_melee_outcome_against_db_creature(
     )
 }
 
-fn calculate_player_main_hand_melee_outcome_against_db_creature(
+pub(in crate::world) fn calculate_player_main_hand_melee_outcome_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_level: u8,
     attacker_skill: u16,
@@ -807,7 +835,7 @@ fn calculate_player_main_hand_melee_outcome_against_db_creature(
     )
 }
 
-fn player_main_hand_chances_against_db_creature(
+pub(in crate::world) fn player_main_hand_chances_against_db_creature(
     combat_stats: &PlayerCombatStats,
     attacker_skill: u16,
     creature_defense: u16,
@@ -833,7 +861,7 @@ fn player_main_hand_chances_against_db_creature(
     }
 }
 
-fn starter_player_defense_chances(
+pub(in crate::world) fn starter_player_defense_chances(
     creature_level: u8,
     defense: PlayerMeleeDefenseInput,
 ) -> MeleeRollChances {
@@ -856,7 +884,7 @@ fn starter_player_defense_chances(
     }
 }
 
-fn player_melee_defense_input(
+pub(in crate::world) fn player_melee_defense_input(
     character: &ActiveCharacter,
     combat_stats: &PlayerCombatStats,
     character_skills: &[CharacterSkill],
@@ -877,7 +905,11 @@ fn player_melee_defense_input(
     }
 }
 
-fn cmangos_melee_miss_chance(attacker_skill: i32, victim_defense: i32, victim_is_player: bool) -> f32 {
+pub(in crate::world) fn cmangos_melee_miss_chance(
+    attacker_skill: i32,
+    victim_defense: i32,
+    victim_is_player: bool,
+) -> f32 {
     let mut chance = 5.0;
     let mut difference = victim_defense - attacker_skill;
     let mut factor = 0.04;
@@ -895,7 +927,10 @@ fn cmangos_melee_miss_chance(attacker_skill: i32, victim_defense: i32, victim_is
     chance.clamp(0.0, 100.0)
 }
 
-fn current_skill_value(character_skills: &[CharacterSkill], skill_id: u16) -> u16 {
+pub(in crate::world) fn current_skill_value(
+    character_skills: &[CharacterSkill],
+    skill_id: u16,
+) -> u16 {
     character_skills
         .iter()
         .find(|skill| skill.skill == skill_id)

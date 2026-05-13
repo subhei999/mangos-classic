@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GmDotCommand {
+pub(in crate::world) enum GmDotCommand {
     Gm(Option<bool>),
     LevelUp(i32),
     LevelSet(u8),
@@ -8,7 +10,7 @@ enum GmDotCommand {
     Die,
 }
 
-async fn handle_gm_dot_command(
+pub(in crate::world) async fn handle_gm_dot_command(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     message: &str,
@@ -33,9 +35,9 @@ async fn handle_gm_dot_command(
                 return Ok(());
             }
             if let Some(value) = value {
-                session.gm_mode = value;
+                session.account.gm_mode = value;
             }
-            let message = if session.gm_mode {
+            let message = if session.account.gm_mode {
                 "GM mode is ON."
             } else {
                 "GM mode is OFF."
@@ -76,7 +78,9 @@ async fn handle_gm_dot_command(
     Ok(())
 }
 
-fn parse_gm_dot_command(message: &str) -> Option<Result<GmDotCommand, String>> {
+pub(in crate::world) fn parse_gm_dot_command(
+    message: &str,
+) -> Option<Result<GmDotCommand, String>> {
     let trimmed = message.trim();
     let without_dot = trimmed.strip_prefix('.')?.trim();
     let normalized = without_dot.to_ascii_lowercase();
@@ -129,7 +133,7 @@ fn parse_gm_dot_command(message: &str) -> Option<Result<GmDotCommand, String>> {
     None
 }
 
-fn first_u32(input: &str) -> Option<u32> {
+pub(in crate::world) fn first_u32(input: &str) -> Option<u32> {
     let mut current = String::new();
     for ch in input.chars() {
         if ch.is_ascii_digit() {
@@ -138,10 +142,12 @@ fn first_u32(input: &str) -> Option<u32> {
             return current.parse().ok();
         }
     }
-    (!current.is_empty()).then(|| current.parse().ok()).flatten()
+    (!current.is_empty())
+        .then(|| current.parse().ok())
+        .flatten()
 }
 
-fn first_i32(input: &str) -> Option<i32> {
+pub(in crate::world) fn first_i32(input: &str) -> Option<i32> {
     let trimmed = input.trim_start();
     let mut chars = trimmed.chars();
     let mut current = String::new();
@@ -160,32 +166,36 @@ fn first_i32(input: &str) -> Option<i32> {
         .flatten()
 }
 
-fn gm_relative_level(old_level: u8, delta: i32) -> u8 {
+pub(in crate::world) fn gm_relative_level(old_level: u8, delta: i32) -> u8 {
     (i32::from(old_level) + delta).clamp(1, i32::from(DEFAULT_MAX_PLAYER_LEVEL)) as u8
 }
 
-async fn require_gm_security(
+pub(in crate::world) async fn require_gm_security(
     stream: &mut WorldPacketSink,
     session: &WorldSessionState,
     required_security: u8,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
-    if session.account_security >= required_security {
+    if session.account.account_security >= required_security {
         return Ok(true);
     }
-    send_system_message(stream, "You do not have permission to use that command.", header_crypto)
-        .await?;
+    send_system_message(
+        stream,
+        "You do not have permission to use that command.",
+        header_crypto,
+    )
+    .await?;
     Ok(false)
 }
 
-async fn spawn_gm_creature_from_template(
+pub(in crate::world) async fn spawn_gm_creature_from_template(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &WorldSessionState,
     entry: u32,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.clone() else {
+    let Some(character) = session.character.active_character.clone() else {
         return Ok(());
     };
     let Some(template) = wow_db::get_creature_template_query(deps.world_db_pool, entry).await?
@@ -221,8 +231,15 @@ async fn spawn_gm_creature_from_template(
         .spawn_gm_db_creature(spawn, Some(character.guid))
         .await?;
     deps.sessions.dispatch(observer_packets).await;
-    let create_body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &create_body, Some(&mut *header_crypto)).await?;
+    let create_body =
+        build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &create_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     send_system_message(
         stream,
         &format!(
@@ -236,14 +253,14 @@ async fn spawn_gm_creature_from_template(
     .await
 }
 
-async fn change_gm_character_level_relative(
+pub(in crate::world) async fn change_gm_character_level_relative(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &mut WorldSessionState,
     delta: i32,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.clone() else {
+    let Some(character) = session.character.active_character.clone() else {
         return Ok(());
     };
     let old_level = character.level;
@@ -251,21 +268,21 @@ async fn change_gm_character_level_relative(
     change_gm_character_level(stream, deps, session, old_level, new_level, header_crypto).await
 }
 
-async fn change_gm_character_level_absolute(
+pub(in crate::world) async fn change_gm_character_level_absolute(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &mut WorldSessionState,
     new_level: u8,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let old_level = character.level;
     change_gm_character_level(stream, deps, session, old_level, new_level, header_crypto).await
 }
 
-async fn change_gm_character_level(
+pub(in crate::world) async fn change_gm_character_level(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &mut WorldSessionState,
@@ -273,7 +290,7 @@ async fn change_gm_character_level(
     new_level: u8,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.clone() else {
+    let Some(character) = session.character.active_character.clone() else {
         return Ok(());
     };
     if new_level == old_level {
@@ -286,15 +303,23 @@ async fn change_gm_character_level(
         return Ok(());
     }
 
-    let previous_stats =
-        wow_db::get_player_world_stats(deps.world_db_pool, character.race, character.class, old_level)
-            .await?;
-    let new_stats =
-        wow_db::get_player_world_stats(deps.world_db_pool, character.race, character.class, new_level)
-            .await?;
+    let previous_stats = wow_db::get_player_world_stats(
+        deps.world_db_pool,
+        character.race,
+        character.class,
+        old_level,
+    )
+    .await?;
+    let new_stats = wow_db::get_player_world_stats(
+        deps.world_db_pool,
+        character.race,
+        character.class,
+        new_level,
+    )
+    .await?;
     let health = new_stats.max_health().max(1);
     let power1 = new_stats.max_mana();
-    let power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
+    let power2 = session.character.player_rage.min(POWER_RAGE_DEFAULT);
     let power3 = 0;
     let power4 = create_power_for_class_power(character.class, POWER_ENERGY);
     let power5 = 0;
@@ -316,17 +341,17 @@ async fn change_gm_character_level(
     )
     .await?;
 
-    if let Some(active) = session.active_character.as_mut() {
+    if let Some(active) = session.character.active_character.as_mut() {
         active.level = new_level;
         active.xp = xp;
     }
-    session.player_health = health;
-    session.player_mana = power1;
-    session.player_rage = power2;
-    session.player_energy = power4;
+    session.character.player_health = health;
+    session.character.player_mana = power1;
+    session.character.player_rage = power2;
+    session.character.player_energy = power4;
 
     let skill_cap_updates =
-        set_level_capped_combat_skill_maxes(new_level, &mut session.character_skills);
+        set_level_capped_combat_skill_maxes(new_level, &mut session.character.character_skills);
     for updated in &skill_cap_updates {
         wow_db::upsert_character_skill(
             deps.character_db_pool,
@@ -339,13 +364,9 @@ async fn change_gm_character_level(
     }
 
     let equipped_templates =
-        load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
-    let combat_stats = player_combat_stats_for_values(
-        character.class,
-        new_level,
-        &new_stats,
-        &equipped_templates,
-    );
+        load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
+    let combat_stats =
+        player_combat_stats_for_values(character.class, new_level, &new_stats, &equipped_templates);
     deps.maps
         .update_player_level_progression_state(
             character.position.map_id,
@@ -402,7 +423,7 @@ async fn change_gm_character_level(
             &build_player_skill_updates_body(
                 character.guid,
                 &skill_cap_updates,
-                &session.active_auras,
+                &session.auras.active_auras,
             )?,
             Some(&mut *header_crypto),
         )
@@ -421,16 +442,16 @@ async fn change_gm_character_level(
     .await
 }
 
-async fn kill_selected_db_creature(
+pub(in crate::world) async fn kill_selected_db_creature(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.clone() else {
+    let Some(character) = session.character.active_character.clone() else {
         return Ok(());
     };
-    let Some(target) = session.selected_target else {
+    let Some(target) = session.character.selected_target else {
         send_system_message(stream, "Select a creature first.", header_crypto).await?;
         return Ok(());
     };
@@ -443,8 +464,12 @@ async fn kill_selected_db_creature(
         .db_creature_snapshot(character.position.map_id, target)
         .await
     else {
-        send_system_message(stream, "Selected creature is not spawned on this map.", header_crypto)
-            .await?;
+        send_system_message(
+            stream,
+            "Selected creature is not spawned on this map.",
+            header_crypto,
+        )
+        .await?;
         return Ok(());
     };
     if !target_creature.is_alive() {
@@ -485,12 +510,23 @@ async fn kill_selected_db_creature(
         )
         .await?
     else {
-        send_system_message(stream, "Selected creature could not be killed.", header_crypto).await?;
+        send_system_message(
+            stream,
+            "Selected creature could not be killed.",
+            header_crypto,
+        )
+        .await?;
         return Ok(());
     };
     mirror_session_db_creature(session, target.raw(), event.creature.clone());
     if let Some(body) = event.attacker_state_body.as_ref() {
-        send_packet(stream, SMSG_ATTACKERSTATEUPDATE, body, Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            SMSG_ATTACKERSTATEUPDATE,
+            body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
     }
     send_packet(
         stream,
@@ -531,39 +567,45 @@ async fn kill_selected_db_creature(
     send_system_message(stream, "Selected creature killed.", header_crypto).await
 }
 
-async fn delete_gm_creature_runtime(
+pub(in crate::world) async fn delete_gm_creature_runtime(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
     session: &mut WorldSessionState,
     db_guid: Option<u32>,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.clone() else {
+    let Some(character) = session.character.active_character.clone() else {
         return Ok(());
     };
     let target = if db_guid.is_some() {
         None
     } else {
-        let Some(target) = session.selected_target else {
+        let Some(target) = session.character.selected_target else {
             send_system_message(stream, "Select a creature first.", header_crypto).await?;
             return Ok(());
         };
         if !target.is_creature() {
-            send_system_message(stream, "Selected target is not a creature.", header_crypto).await?;
+            send_system_message(stream, "Selected target is not a creature.", header_crypto)
+                .await?;
             return Ok(());
         }
         Some(target)
     };
     let Some(deleted) = deps
         .maps
-        .delete_db_creature_runtime(character.position.map_id, target, db_guid, Some(character.guid))
+        .delete_db_creature_runtime(
+            character.position.map_id,
+            target,
+            db_guid,
+            Some(character.guid),
+        )
         .await?
     else {
         send_system_message(stream, "Creature was not found on this map.", header_crypto).await?;
         return Ok(());
     };
-    if session.selected_target == Some(deleted.creature.guid()) {
-        session.selected_target = None;
+    if session.character.selected_target == Some(deleted.creature.guid()) {
+        session.character.selected_target = None;
     }
     send_packet(
         stream,
@@ -584,7 +626,7 @@ async fn delete_gm_creature_runtime(
     .await
 }
 
-async fn send_system_message(
+pub(in crate::world) async fn send_system_message(
     stream: &mut WorldPacketSink,
     message: &str,
     header_crypto: &mut HeaderCrypto,

@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub struct PlayerbotSpawnConfig {
     pub guid: u32,
@@ -13,25 +15,25 @@ pub struct PlayerbotSpawnConfig {
 }
 
 #[derive(Debug, Clone)]
-struct PlayerbotRosterEntry {
-    guid: u32,
-    name: String,
-    race: u8,
-    gender: u8,
-    class: u8,
+pub(in crate::world) struct PlayerbotRosterEntry {
+    pub(in crate::world) guid: u32,
+    pub(in crate::world) name: String,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) gender: u8,
+    pub(in crate::world) class: u8,
 }
 
 #[derive(Debug, Default)]
-struct PlayerbotRoster {
-    bots: HashMap<u32, PlayerbotRosterEntry>,
+pub(in crate::world) struct PlayerbotRoster {
+    pub(in crate::world) bots: HashMap<u32, PlayerbotRosterEntry>,
 }
 
 impl PlayerbotRoster {
-    fn insert(&mut self, bot: PlayerbotRosterEntry) {
+    pub(in crate::world) fn insert(&mut self, bot: PlayerbotRosterEntry) {
         self.bots.insert(bot.guid, bot);
     }
 
-    fn name_query(&self, guid: u32) -> Option<CharacterNameQuery> {
+    pub(in crate::world) fn name_query(&self, guid: u32) -> Option<CharacterNameQuery> {
         let bot = self.bots.get(&guid)?;
         Some(CharacterNameQuery {
             guid: bot.guid,
@@ -43,7 +45,7 @@ impl PlayerbotRoster {
     }
 }
 
-async fn initialize_playerbots(
+pub(in crate::world) async fn initialize_playerbots(
     maps: &Arc<MapRuntimeManager>,
     world_db_pool: &MySqlPool,
     configs: &[PlayerbotSpawnConfig],
@@ -93,7 +95,7 @@ async fn initialize_playerbots(
     Ok(roster)
 }
 
-fn build_playerbot_runtime(
+pub(in crate::world) fn build_playerbot_runtime(
     config: &PlayerbotSpawnConfig,
     world_stats: PlayerWorldStats,
 ) -> anyhow::Result<PlayerRuntime> {

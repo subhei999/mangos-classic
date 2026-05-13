@@ -1,7 +1,9 @@
+use super::*;
+
 // Shared DB-gameobject loot open/take/restore/release authority.
 
 impl MapRuntime {
-    fn open_db_gameobject_loot(
+    pub(in crate::world) fn open_db_gameobject_loot(
         &mut self,
         gameobject_guid: u64,
         character_guid: u32,
@@ -30,13 +32,16 @@ impl MapRuntime {
         Some((gameobject, state.loot_items.clone()))
     }
 
-    fn db_gameobject_loot_guid_for_character(&self, character_guid: u32) -> Option<u64> {
+    pub(in crate::world) fn db_gameobject_loot_guid_for_character(
+        &self,
+        character_guid: u32,
+    ) -> Option<u64> {
         self.gameobject_looting_by_character
             .get(&character_guid)
             .copied()
     }
 
-    fn take_db_gameobject_loot_item(
+    pub(in crate::world) fn take_db_gameobject_loot_item(
         &mut self,
         character_guid: u32,
         loot_slot: u8,
@@ -51,7 +56,7 @@ impl MapRuntime {
         Some((gameobject_guid, loot_slot, loot))
     }
 
-    fn restore_db_gameobject_loot_item(
+    pub(in crate::world) fn restore_db_gameobject_loot_item(
         &mut self,
         gameobject_guid: u64,
         loot_slot: u8,
@@ -66,7 +71,7 @@ impl MapRuntime {
         Some(state.loot_items.clone())
     }
 
-    fn release_db_gameobject_loot(
+    pub(in crate::world) fn release_db_gameobject_loot(
         &mut self,
         gameobject_guid: u64,
         character_guid: u32,
@@ -76,18 +81,20 @@ impl MapRuntime {
         Some(())
     }
 
-    fn clear_db_gameobject_loot(&mut self, gameobject_guid: u64) {
+    pub(in crate::world) fn clear_db_gameobject_loot(&mut self, gameobject_guid: u64) {
         if let Some(state) = self.gameobject_loots.remove(&gameobject_guid) {
             for character_guid in state.open_characters {
-                self.gameobject_looting_by_character
-                    .remove(&character_guid);
+                self.gameobject_looting_by_character.remove(&character_guid);
             }
         }
     }
 
-    fn remove_db_gameobject_looter(&mut self, gameobject_guid: u64, character_guid: u32) {
-        self.gameobject_looting_by_character
-            .remove(&character_guid);
+    pub(in crate::world) fn remove_db_gameobject_looter(
+        &mut self,
+        gameobject_guid: u64,
+        character_guid: u32,
+    ) {
+        self.gameobject_looting_by_character.remove(&character_guid);
         if let Some(state) = self.gameobject_loots.get_mut(&gameobject_guid) {
             state.open_characters.remove(&character_guid);
             if state.open_characters.is_empty() && state.loot_items.is_empty() {

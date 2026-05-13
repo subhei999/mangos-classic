@@ -1,11 +1,13 @@
+use super::*;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellCooldownKey {
-    spell_id: u32,
-    category: u32,
+pub(in crate::world) struct SpellCooldownKey {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) category: u32,
 }
 
-async fn apply_item_use_spell_cooldowns(
+pub(in crate::world) async fn apply_item_use_spell_cooldowns(
     maps: &MapRuntimeManager,
     map_id: u32,
     character_guid: u32,
@@ -13,17 +15,11 @@ async fn apply_item_use_spell_cooldowns(
     now: Instant,
     skip_spell_cooldown: bool,
 ) {
-    maps.apply_player_spell_cooldowns(
-        map_id,
-        character_guid,
-        item_spell,
-        now,
-        skip_spell_cooldown,
-    )
-    .await;
+    maps.apply_player_spell_cooldowns(map_id, character_guid, item_spell, now, skip_spell_cooldown)
+        .await;
 }
 
-async fn item_use_spell_failure(
+pub(in crate::world) async fn item_use_spell_failure(
     maps: &MapRuntimeManager,
     map_id: u32,
     character_guid: u32,
@@ -37,8 +33,8 @@ async fn item_use_spell_failure(
             .await
             .is_some_and(|snapshot| {
                 snapshot
-            .active_auras
-            .iter()
+                    .active_auras
+                    .iter()
                     .any(|aura| aura.spell_id == item_spell.spell_id)
             });
     if refreshing_active_aura {

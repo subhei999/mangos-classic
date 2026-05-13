@@ -1,45 +1,11 @@
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgAuthResponse, SmsgCharCreateResponse, SmsgCharDeleteResponse,
+};
+
 // CMaNGOS reference: src/game/Handlers/CharacterHandler.cpp character screen flow.
 
-#[derive(Debug, Clone, PartialEq)]
-struct CharCreatePacket {
-    name: String,
-    race: u8,
-    class: u8,
-    gender: u8,
-    skin: u8,
-    face: u8,
-    hair_style: u8,
-    hair_color: u8,
-    facial_hair: u8,
-    outfit_id: u8,
-}
-
-impl CharCreatePacket {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let name_end = body
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or_else(|| anyhow::anyhow!("CMSG_CHAR_CREATE name is not NUL-terminated"))?;
-        let name = String::from_utf8(body[..name_end].to_vec())?;
-        let cursor = name_end + 1;
-        ensure_available(body, cursor + 9)?;
-
-        Ok(Self {
-            name,
-            race: body[cursor],
-            class: body[cursor + 1],
-            gender: body[cursor + 2],
-            skin: body[cursor + 3],
-            face: body[cursor + 4],
-            hair_style: body[cursor + 5],
-            hair_color: body[cursor + 6],
-            facial_hair: body[cursor + 7],
-            outfit_id: body[cursor + 8],
-        })
-    }
-}
-
-fn normalize_character_name(name: &str) -> Result<String, u8> {
+pub(in crate::world) fn normalize_character_name(name: &str) -> Result<String, u8> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(CHAR_NAME_NO_NAME);
@@ -60,7 +26,7 @@ fn normalize_character_name(name: &str) -> Result<String, u8> {
     Ok(normalized)
 }
 
-fn is_valid_race_class(race: u8, class: u8) -> bool {
+pub(in crate::world) fn is_valid_race_class(race: u8, class: u8) -> bool {
     matches!(
         (race, class),
         (1, 1 | 2 | 4 | 5 | 8 | 9)
@@ -74,24 +40,35 @@ fn is_valid_race_class(race: u8, class: u8) -> bool {
     )
 }
 
-async fn send_auth_response(stream: &mut TcpStream, response: u8) -> anyhow::Result<()> {
-    send_packet_direct(stream, SMSG_AUTH_RESPONSE, &[response], None).await
+pub(in crate::world) async fn send_auth_response(
+    stream: &mut TcpStream,
+    response: u8,
+) -> anyhow::Result<()> {
+    send_packet_direct(
+        stream,
+        SMSG_AUTH_RESPONSE,
+        &SmsgAuthResponse {
+            result: response,
+            billing_time_remaining: 0,
+            billing_plan_flags: 0,
+            billing_time_rested: 0,
+            expansion: 0,
+        }
+        .body(),
+        None,
+    )
+    .await
 }
 
-async fn send_auth_ok(
+pub(in crate::world) async fn send_auth_ok(
     stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(11);
-    body.push(AUTH_OK);
-    body.extend_from_slice(&0u32.to_le_bytes()); // BillingTimeRemaining
-    body.push(0); // BillingPlanFlags
-    body.extend_from_slice(&0u32.to_le_bytes()); // BillingTimeRested
-    body.push(0); // expansion
+    let body = SmsgAuthResponse::ok().body();
     send_packet(stream, SMSG_AUTH_RESPONSE, &body, header_crypto).await
 }
 
-async fn send_char_enum(
+pub(in crate::world) async fn send_char_enum(
     stream: &mut WorldPacketSink,
     characters: &[CharacterEnumEntry],
     header_crypto: Option<&mut HeaderCrypto>,
@@ -100,21 +77,16 @@ async fn send_char_enum(
     send_packet(stream, SMSG_CHAR_ENUM, &body, header_crypto).await
 }
 
-async fn handle_char_delete(
+pub(in crate::world) async fn handle_char_delete(
     stream: &mut WorldPacketSink,
     login_db_pool: &MySqlPool,
     character_db_pool: &MySqlPool,
     account_id: u32,
-    body: &[u8],
+    request: wow_proto::CharDeleteRequest,
     header_crypto: &mut HeaderCrypto,
     runtime_state: &WorldRuntimeState,
 ) -> anyhow::Result<()> {
-    if body.len() != 8 {
-        warn!("Rejected malformed CMSG_CHAR_DELETE bytes={}", body.len());
-        return send_char_delete_result(stream, CHAR_DELETE_FAILED, Some(header_crypto)).await;
-    }
-
-    let raw_guid = u64::from_le_bytes(body.try_into()?);
+    let raw_guid = request.raw_guid;
     let guid = ObjectGuid::from_raw(raw_guid).counter();
     if runtime_state.online_characters.lock().await.contains(&guid) {
         warn!(account_id, guid, "Rejected loaded character delete");
@@ -148,32 +120,29 @@ async fn handle_char_delete(
     }
 }
 
-async fn send_char_delete_result(
+pub(in crate::world) async fn send_char_delete_result(
     stream: &mut WorldPacketSink,
     result: u8,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_CHAR_DELETE, &[result], header_crypto).await
+    send_packet(
+        stream,
+        SMSG_CHAR_DELETE,
+        &SmsgCharDeleteResponse { result }.body(),
+        header_crypto,
+    )
+    .await
 }
 
-async fn handle_char_create(
+pub(in crate::world) async fn handle_char_create(
     stream: &mut WorldPacketSink,
     login_db_pool: &MySqlPool,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     account_id: u32,
-    body: &[u8],
+    create: wow_proto::CharCreateRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let create = match CharCreatePacket::read(body) {
-        Ok(create) => create,
-        Err(e) => {
-            warn!("Rejected malformed CMSG_CHAR_CREATE: {}", e);
-            send_char_create_result(stream, CHAR_CREATE_FAILED, Some(header_crypto)).await?;
-            return Ok(());
-        }
-    };
-
     let name = match normalize_character_name(&create.name) {
         Ok(name) => name,
         Err(code) => {
@@ -244,11 +213,16 @@ async fn handle_char_create(
     send_char_create_result(stream, CHAR_CREATE_SUCCESS, Some(header_crypto)).await
 }
 
-async fn send_char_create_result(
+pub(in crate::world) async fn send_char_create_result(
     stream: &mut WorldPacketSink,
     result: u8,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_CHAR_CREATE, &[result], header_crypto).await
+    send_packet(
+        stream,
+        SMSG_CHAR_CREATE,
+        &SmsgCharCreateResponse { result }.body(),
+        header_crypto,
+    )
+    .await
 }
-

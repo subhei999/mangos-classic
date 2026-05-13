@@ -1,12 +1,14 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct GameObjectRuntime {
-    spawn: wow_db::GameObjectSpawnQuery,
-    client_visible: bool,
-    consumed_until: Option<Instant>,
+pub(in crate::world) struct GameObjectRuntime {
+    pub(in crate::world) spawn: wow_db::GameObjectSpawnQuery,
+    pub(in crate::world) client_visible: bool,
+    pub(in crate::world) consumed_until: Option<Instant>,
 }
 
 impl GameObjectRuntime {
-    fn new(spawn: wow_db::GameObjectSpawnQuery) -> Self {
+    pub(in crate::world) fn new(spawn: wow_db::GameObjectSpawnQuery) -> Self {
         Self {
             spawn,
             client_visible: true,
@@ -14,26 +16,26 @@ impl GameObjectRuntime {
         }
     }
 
-    fn guid(&self) -> ObjectGuid {
+    pub(in crate::world) fn guid(&self) -> ObjectGuid {
         gameobject_spawn_guid(&self.spawn)
     }
 
-    fn position(&self) -> WorldPosition {
+    pub(in crate::world) fn position(&self) -> WorldPosition {
         gameobject_spawn_position(&self.spawn)
     }
 
-    fn is_consumed(&self, now: Instant) -> bool {
+    pub(in crate::world) fn is_consumed(&self, now: Instant) -> bool {
         self.consumed_until.is_some_and(|until| now < until)
     }
 
-    fn mark_consumed(&mut self, now: Instant) {
+    pub(in crate::world) fn mark_consumed(&mut self, now: Instant) {
         let delay = gameobject_respawn_delay(&self.spawn);
         self.client_visible = false;
         self.consumed_until = Some(now + delay);
     }
 }
 
-fn build_db_gameobject_create_blocks(
+pub(in crate::world) fn build_db_gameobject_create_blocks(
     gameobjects: &[DbGameObjectRuntime],
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -46,13 +48,13 @@ fn build_db_gameobject_create_blocks(
 }
 
 #[cfg(test)]
-fn build_db_gameobject_runtime_create_block(
+pub(in crate::world) fn build_db_gameobject_runtime_create_block(
     gameobject: &DbGameObjectRuntime,
 ) -> anyhow::Result<Vec<u8>> {
     build_db_gameobject_runtime_create_block_with_dynamic_flags(gameobject, 0)
 }
 
-fn build_db_gameobject_runtime_create_block_for_quest_statuses(
+pub(in crate::world) fn build_db_gameobject_runtime_create_block_for_quest_statuses(
     gameobject: &DbGameObjectRuntime,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -62,7 +64,7 @@ fn build_db_gameobject_runtime_create_block_for_quest_statuses(
     )
 }
 
-fn build_db_gameobject_dynamic_flags_update_block(
+pub(in crate::world) fn build_db_gameobject_dynamic_flags_update_block(
     gameobject: &DbGameObjectRuntime,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -81,7 +83,7 @@ fn build_db_gameobject_dynamic_flags_update_block(
     Ok(block)
 }
 
-fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
+pub(in crate::world) fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
     gameobject: &DbGameObjectRuntime,
     dynamic_flags: u32,
 ) -> anyhow::Result<Vec<u8>> {
@@ -123,7 +125,11 @@ fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
         GAMEOBJECT_FLAGS,
         gameobject.spawn.template.flags & !GO_FLAG_IN_USE,
     )?;
-    set_update_value(&mut values, GAMEOBJECT_ROTATION, gameobject.spawn.rotation0.to_bits())?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_ROTATION,
+        gameobject.spawn.rotation0.to_bits(),
+    )?;
     set_update_value(
         &mut values,
         GAMEOBJECT_ROTATION + 1,
@@ -169,7 +175,11 @@ fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
         gameobject.spawn.orientation.to_bits(),
     )?;
     set_update_value(&mut values, GAMEOBJECT_DYN_FLAGS, dynamic_flags)?;
-    set_update_value(&mut values, GAMEOBJECT_FACTION, gameobject.spawn.template.faction)?;
+    set_update_value(
+        &mut values,
+        GAMEOBJECT_FACTION,
+        gameobject.spawn.template.faction,
+    )?;
     set_update_value(
         &mut values,
         GAMEOBJECT_TYPE_ID,
@@ -186,7 +196,7 @@ fn build_db_gameobject_runtime_create_block_with_dynamic_flags(
     Ok(block)
 }
 
-fn gameobject_dynamic_flags_for_quest_statuses(
+pub(in crate::world) fn gameobject_dynamic_flags_for_quest_statuses(
     gameobject: &DbGameObjectRuntime,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> u32 {
@@ -201,7 +211,7 @@ fn gameobject_dynamic_flags_for_quest_statuses(
     }
 }
 
-fn gameobject_activates_for_quest_statuses(
+pub(in crate::world) fn gameobject_activates_for_quest_statuses(
     gameobject: &DbGameObjectRuntime,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
 ) -> bool {
@@ -209,24 +219,32 @@ fn gameobject_activates_for_quest_statuses(
     if template.flags & GO_FLAG_INTERACT_COND == 0 {
         return matches!(
             template.object_type,
-            GO_TYPE_CHEST | GO_TYPE_QUESTGIVER | GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER
+            GO_TYPE_CHEST
+                | GO_TYPE_QUESTGIVER
+                | GO_TYPE_GENERIC
+                | GO_TYPE_SPELL_FOCUS
+                | GO_TYPE_GOOBER
         );
     }
 
     if let Some(required_quest) = gameobject_required_active_quest(template) {
-        return quest_statuses
-            .get(&required_quest)
-            .is_some_and(|status| status.status == QUEST_STATUS_INCOMPLETE && status.rewarded == 0);
+        return quest_statuses.get(&required_quest).is_some_and(|status| {
+            status.status == QUEST_STATUS_INCOMPLETE && status.rewarded == 0
+        });
     }
 
     template.object_type == GO_TYPE_CHEST && gameobject_chest_has_loot_id(template)
 }
 
-fn gameobject_spawn_guid(gameobject: &wow_db::GameObjectSpawnQuery) -> ObjectGuid {
+pub(in crate::world) fn gameobject_spawn_guid(
+    gameobject: &wow_db::GameObjectSpawnQuery,
+) -> ObjectGuid {
     ObjectGuid::new(HighGuid::GameObject, gameobject.entry, gameobject.guid)
 }
 
-fn gameobject_spawn_position(gameobject: &wow_db::GameObjectSpawnQuery) -> WorldPosition {
+pub(in crate::world) fn gameobject_spawn_position(
+    gameobject: &wow_db::GameObjectSpawnQuery,
+) -> WorldPosition {
     WorldPosition::new(
         gameobject.map,
         gameobject.position_x,
@@ -236,9 +254,12 @@ fn gameobject_spawn_position(gameobject: &wow_db::GameObjectSpawnQuery) -> World
     )
 }
 
-fn gameobject_respawn_delay(spawn: &wow_db::GameObjectSpawnQuery) -> Duration {
+pub(in crate::world) fn gameobject_respawn_delay(spawn: &wow_db::GameObjectSpawnQuery) -> Duration {
     let min = spawn.spawn_time_secs_min.max(0) as u64;
-    let max = spawn.spawn_time_secs_max.max(spawn.spawn_time_secs_min).max(0) as u64;
+    let max = spawn
+        .spawn_time_secs_max
+        .max(spawn.spawn_time_secs_min)
+        .max(0) as u64;
     if max <= min {
         Duration::from_secs(min)
     } else {

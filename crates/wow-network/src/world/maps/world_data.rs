@@ -1,23 +1,25 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct WorldDataFiles {
-    data_dir: std::path::PathBuf,
-    data_dir_for_native: Option<std::ffi::CString>,
-    maps_available: bool,
-    vmaps_available: bool,
-    creature_display_scales: HashMap<u32, f32>,
-    spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
-    spell_durations: HashMap<u32, SpellDurationEntry>,
-    spell_ranges: HashMap<u32, SpellRangeEntry>,
-    faction_templates: FactionTemplateStore,
-    item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
-    mmap_headers: HashSet<u32>,
-    mmap_tiles: HashSet<(u32, u32, u32)>,
-    vmap_trees: HashSet<u32>,
-    vmap_tiles: HashSet<(u32, u32, u32)>,
+pub(in crate::world) struct WorldDataFiles {
+    pub(in crate::world) data_dir: std::path::PathBuf,
+    pub(in crate::world) data_dir_for_native: Option<std::ffi::CString>,
+    pub(in crate::world) maps_available: bool,
+    pub(in crate::world) vmaps_available: bool,
+    pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
+    pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
+    pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
+    pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
+    pub(in crate::world) faction_templates: FactionTemplateStore,
+    pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
+    pub(in crate::world) mmap_headers: HashSet<u32>,
+    pub(in crate::world) mmap_tiles: HashSet<(u32, u32, u32)>,
+    pub(in crate::world) vmap_trees: HashSet<u32>,
+    pub(in crate::world) vmap_tiles: HashSet<(u32, u32, u32)>,
 }
 
 impl WorldDataFiles {
-    fn fallback() -> Self {
+    pub(in crate::world) fn fallback() -> Self {
         Self {
             data_dir: std::path::PathBuf::new(),
             data_dir_for_native: None,
@@ -36,13 +38,15 @@ impl WorldDataFiles {
         }
     }
 
-    fn inspect(data_dir: impl Into<std::path::PathBuf>) -> Self {
+    pub(in crate::world) fn inspect(data_dir: impl Into<std::path::PathBuf>) -> Self {
         let data_dir = data_dir.into();
         let maps_available = data_dir.join("maps").is_dir();
         let vmaps_available = data_dir.join("vmaps").is_dir();
-        let creature_display_scales =
-            load_creature_display_info_scales(&data_dir.join("dbc").join("CreatureDisplayInfo.dbc"));
-        let spell_cast_times = load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
+        let creature_display_scales = load_creature_display_info_scales(
+            &data_dir.join("dbc").join("CreatureDisplayInfo.dbc"),
+        );
+        let spell_cast_times =
+            load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
         let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
         let faction_templates =
@@ -110,84 +114,84 @@ impl WorldDataFiles {
         }
     }
 
-    fn has_mmap_support_for_map(&self, map_id: u32) -> bool {
+    pub(in crate::world) fn has_mmap_support_for_map(&self, map_id: u32) -> bool {
         self.mmap_headers.contains(&map_id)
     }
 
-    fn has_mmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
+    pub(in crate::world) fn has_mmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
         self.mmap_tiles.contains(&(map_id, tile_x, tile_y))
     }
 
-    fn has_vmap_support_for_map(&self, map_id: u32) -> bool {
+    pub(in crate::world) fn has_vmap_support_for_map(&self, map_id: u32) -> bool {
         self.vmap_trees.contains(&map_id)
     }
 
-    fn has_vmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
+    pub(in crate::world) fn has_vmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
         self.vmap_tiles.contains(&(map_id, tile_x, tile_y))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellCastTimeEntry {
-    cast_time_millis: i32,
-    cast_time_per_level_millis: i32,
-    min_cast_time_millis: i32,
+pub(in crate::world) struct SpellCastTimeEntry {
+    pub(in crate::world) cast_time_millis: i32,
+    pub(in crate::world) cast_time_per_level_millis: i32,
+    pub(in crate::world) min_cast_time_millis: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpellDurationEntry {
-    duration_millis: i32,
-    duration_per_level_millis: i32,
-    max_duration_millis: i32,
+pub(in crate::world) struct SpellDurationEntry {
+    pub(in crate::world) duration_millis: i32,
+    pub(in crate::world) duration_per_level_millis: i32,
+    pub(in crate::world) max_duration_millis: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct SpellRangeEntry {
-    min_range: f32,
-    max_range: f32,
-    flags: u32,
+pub(in crate::world) struct SpellRangeEntry {
+    pub(in crate::world) min_range: f32,
+    pub(in crate::world) max_range: f32,
+    pub(in crate::world) flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ItemRandomPropertyEntry {
-    id: u32,
-    enchant_ids: [u32; 3],
+pub(in crate::world) struct ItemRandomPropertyEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) enchant_ids: [u32; 3],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FactionReaction {
+pub(in crate::world) enum FactionReaction {
     Hostile,
     Neutral,
     Friendly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FactionTemplateEntry {
-    id: u32,
-    faction: u32,
-    faction_flags: u32,
-    faction_group_mask: u32,
-    friend_group_mask: u32,
-    enemy_group_mask: u32,
-    enemy_faction: [u32; 4],
-    friend_faction: [u32; 4],
+pub(in crate::world) struct FactionTemplateEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) faction: u32,
+    pub(in crate::world) faction_flags: u32,
+    pub(in crate::world) faction_group_mask: u32,
+    pub(in crate::world) friend_group_mask: u32,
+    pub(in crate::world) enemy_group_mask: u32,
+    pub(in crate::world) enemy_faction: [u32; 4],
+    pub(in crate::world) friend_faction: [u32; 4],
 }
 
 #[derive(Debug, Clone)]
-struct FactionTemplateStore {
-    entries: HashMap<u32, FactionTemplateEntry>,
-    source: FactionTemplateStoreSource,
+pub(in crate::world) struct FactionTemplateStore {
+    pub(in crate::world) entries: HashMap<u32, FactionTemplateEntry>,
+    pub(in crate::world) source: FactionTemplateStoreSource,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum FactionTemplateStoreSource {
+pub(in crate::world) enum FactionTemplateStoreSource {
     Dbc,
     #[default]
     FallbackBridge,
 }
 
 impl FactionTemplateStore {
-    fn fallback_bridge() -> Self {
+    pub(in crate::world) fn fallback_bridge() -> Self {
         let entries = [
             faction_template_from_fields([
                 1,
@@ -328,7 +332,7 @@ impl FactionTemplateStore {
         }
     }
 
-    fn from_dbc(entries: HashMap<u32, FactionTemplateEntry>) -> Self {
+    pub(in crate::world) fn from_dbc(entries: HashMap<u32, FactionTemplateEntry>) -> Self {
         if entries.is_empty() {
             Self::fallback_bridge()
         } else {
@@ -339,15 +343,15 @@ impl FactionTemplateStore {
         }
     }
 
-    fn entry(&self, id: u32) -> Option<FactionTemplateEntry> {
+    pub(in crate::world) fn entry(&self, id: u32) -> Option<FactionTemplateEntry> {
         self.entries.get(&id).copied()
     }
 
-    fn len(&self) -> usize {
+    pub(in crate::world) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    fn is_dbc_backed(&self) -> bool {
+    pub(in crate::world) fn is_dbc_backed(&self) -> bool {
         self.source == FactionTemplateStoreSource::Dbc
     }
 }
@@ -358,12 +362,12 @@ impl Default for FactionTemplateStore {
     }
 }
 
-const FACTION_GROUP_MASK_PLAYER: u32 = 1;
-const FACTION_GROUP_MASK_ALLIANCE: u32 = 2;
-const FACTION_GROUP_MASK_HORDE: u32 = 4;
-const FACTION_GROUP_MASK_MONSTER: u32 = 8;
+pub(in crate::world) const FACTION_GROUP_MASK_PLAYER: u32 = 1;
+pub(in crate::world) const FACTION_GROUP_MASK_ALLIANCE: u32 = 2;
+pub(in crate::world) const FACTION_GROUP_MASK_HORDE: u32 = 4;
+pub(in crate::world) const FACTION_GROUP_MASK_MONSTER: u32 = 8;
 
-fn faction_template_from_fields(fields: [u32; 14]) -> FactionTemplateEntry {
+pub(in crate::world) fn faction_template_from_fields(fields: [u32; 14]) -> FactionTemplateEntry {
     FactionTemplateEntry {
         id: fields[0],
         faction: fields[1],
@@ -376,14 +380,16 @@ fn faction_template_from_fields(fields: [u32; 14]) -> FactionTemplateEntry {
     }
 }
 
-fn load_faction_templates(path: &std::path::Path) -> FactionTemplateStore {
+pub(in crate::world) fn load_faction_templates(path: &std::path::Path) -> FactionTemplateStore {
     let Ok(bytes) = std::fs::read(path) else {
         return FactionTemplateStore::fallback_bridge();
     };
     FactionTemplateStore::from_dbc(parse_faction_templates(&bytes))
 }
 
-fn parse_faction_templates(bytes: &[u8]) -> HashMap<u32, FactionTemplateEntry> {
+pub(in crate::world) fn parse_faction_templates(
+    bytes: &[u8],
+) -> HashMap<u32, FactionTemplateEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const FACTION_TEMPLATE_FIELD_COUNT: usize = 14;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -392,8 +398,7 @@ fn parse_faction_templates(bytes: &[u8]) -> HashMap<u32, FactionTemplateEntry> {
     let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
     let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    if field_count != FACTION_TEMPLATE_FIELD_COUNT
-        || record_size < FACTION_TEMPLATE_FIELD_COUNT * 4
+    if field_count != FACTION_TEMPLATE_FIELD_COUNT || record_size < FACTION_TEMPLATE_FIELD_COUNT * 4
     {
         return HashMap::new();
     }
@@ -436,14 +441,18 @@ fn parse_faction_templates(bytes: &[u8]) -> HashMap<u32, FactionTemplateEntry> {
     templates
 }
 
-fn load_item_random_properties(path: &std::path::Path) -> HashMap<u32, ItemRandomPropertyEntry> {
+pub(in crate::world) fn load_item_random_properties(
+    path: &std::path::Path,
+) -> HashMap<u32, ItemRandomPropertyEntry> {
     let Ok(bytes) = std::fs::read(path) else {
         return HashMap::new();
     };
     parse_item_random_properties(&bytes)
 }
 
-fn parse_item_random_properties(bytes: &[u8]) -> HashMap<u32, ItemRandomPropertyEntry> {
+pub(in crate::world) fn parse_item_random_properties(
+    bytes: &[u8],
+) -> HashMap<u32, ItemRandomPropertyEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const MIN_ITEM_RANDOM_PROPERTY_FIELDS: usize = 5;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -484,14 +493,16 @@ fn parse_item_random_properties(bytes: &[u8]) -> HashMap<u32, ItemRandomProperty
     properties
 }
 
-fn load_creature_display_info_scales(path: &std::path::Path) -> HashMap<u32, f32> {
+pub(in crate::world) fn load_creature_display_info_scales(
+    path: &std::path::Path,
+) -> HashMap<u32, f32> {
     let Ok(bytes) = std::fs::read(path) else {
         return HashMap::new();
     };
     parse_creature_display_info_scales(&bytes)
 }
 
-fn parse_creature_display_info_scales(bytes: &[u8]) -> HashMap<u32, f32> {
+pub(in crate::world) fn parse_creature_display_info_scales(bytes: &[u8]) -> HashMap<u32, f32> {
     const DBC_HEADER_SIZE: usize = 20;
     const CREATURE_DISPLAY_INFO_SCALE_FIELD: usize = 4;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -522,28 +533,32 @@ fn parse_creature_display_info_scales(bytes: &[u8]) -> HashMap<u32, f32> {
     scales
 }
 
-fn load_spell_durations(path: &std::path::Path) -> HashMap<u32, SpellDurationEntry> {
+pub(in crate::world) fn load_spell_durations(
+    path: &std::path::Path,
+) -> HashMap<u32, SpellDurationEntry> {
     let Ok(bytes) = std::fs::read(path) else {
         return HashMap::new();
     };
     parse_spell_durations(&bytes)
 }
 
-fn load_spell_cast_times(path: &std::path::Path) -> HashMap<u32, SpellCastTimeEntry> {
+pub(in crate::world) fn load_spell_cast_times(
+    path: &std::path::Path,
+) -> HashMap<u32, SpellCastTimeEntry> {
     let Ok(bytes) = std::fs::read(path) else {
         return HashMap::new();
     };
     parse_spell_cast_times(&bytes)
 }
 
-fn load_spell_ranges(path: &std::path::Path) -> HashMap<u32, SpellRangeEntry> {
+pub(in crate::world) fn load_spell_ranges(path: &std::path::Path) -> HashMap<u32, SpellRangeEntry> {
     let Ok(bytes) = std::fs::read(path) else {
         return HashMap::new();
     };
     parse_spell_ranges(&bytes)
 }
 
-fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
+pub(in crate::world) fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const SPELL_CAST_TIME_FIELD_COUNT: usize = 4;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -563,14 +578,22 @@ fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
     let mut cast_times = HashMap::with_capacity(record_count);
     for record_index in 0..record_count {
         let record_offset = DBC_HEADER_SIZE + record_index * record_size;
-        let id =
-            u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
-        let cast_time_millis =
-            i32::from_le_bytes(bytes[record_offset + 4..record_offset + 8].try_into().unwrap());
-        let cast_time_per_level_millis =
-            i32::from_le_bytes(bytes[record_offset + 8..record_offset + 12].try_into().unwrap());
-        let min_cast_time_millis =
-            i32::from_le_bytes(bytes[record_offset + 12..record_offset + 16].try_into().unwrap());
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let cast_time_millis = i32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let cast_time_per_level_millis = i32::from_le_bytes(
+            bytes[record_offset + 8..record_offset + 12]
+                .try_into()
+                .unwrap(),
+        );
+        let min_cast_time_millis = i32::from_le_bytes(
+            bytes[record_offset + 12..record_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
         if id != 0 {
             cast_times.insert(
                 id,
@@ -585,7 +608,7 @@ fn parse_spell_cast_times(bytes: &[u8]) -> HashMap<u32, SpellCastTimeEntry> {
     cast_times
 }
 
-fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRangeEntry> {
+pub(in crate::world) fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRangeEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const SPELL_RANGE_FIELD_COUNT: usize = 22;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -606,12 +629,21 @@ fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRangeEntry> {
     for record_index in 0..record_count {
         let record_offset = DBC_HEADER_SIZE + record_index * record_size;
         let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
-        let min_range =
-            f32::from_le_bytes(bytes[record_offset + 4..record_offset + 8].try_into().unwrap());
-        let max_range =
-            f32::from_le_bytes(bytes[record_offset + 8..record_offset + 12].try_into().unwrap());
-        let flags =
-            u32::from_le_bytes(bytes[record_offset + 12..record_offset + 16].try_into().unwrap());
+        let min_range = f32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let max_range = f32::from_le_bytes(
+            bytes[record_offset + 8..record_offset + 12]
+                .try_into()
+                .unwrap(),
+        );
+        let flags = u32::from_le_bytes(
+            bytes[record_offset + 12..record_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
         if id != 0 {
             ranges.insert(
                 id,
@@ -626,7 +658,7 @@ fn parse_spell_ranges(bytes: &[u8]) -> HashMap<u32, SpellRangeEntry> {
     ranges
 }
 
-fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {
+pub(in crate::world) fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const SPELL_DURATION_FIELD_COUNT: usize = 4;
     if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
@@ -646,14 +678,22 @@ fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {
     let mut durations = HashMap::with_capacity(record_count);
     for record_index in 0..record_count {
         let record_offset = DBC_HEADER_SIZE + record_index * record_size;
-        let id =
-            u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
-        let duration_millis =
-            i32::from_le_bytes(bytes[record_offset + 4..record_offset + 8].try_into().unwrap());
-        let duration_per_level_millis =
-            i32::from_le_bytes(bytes[record_offset + 8..record_offset + 12].try_into().unwrap());
-        let max_duration_millis =
-            i32::from_le_bytes(bytes[record_offset + 12..record_offset + 16].try_into().unwrap());
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let duration_millis = i32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let duration_per_level_millis = i32::from_le_bytes(
+            bytes[record_offset + 8..record_offset + 12]
+                .try_into()
+                .unwrap(),
+        );
+        let max_duration_millis = i32::from_le_bytes(
+            bytes[record_offset + 12..record_offset + 16]
+                .try_into()
+                .unwrap(),
+        );
         if id != 0 {
             durations.insert(
                 id,
@@ -668,14 +708,14 @@ fn parse_spell_durations(bytes: &[u8]) -> HashMap<u32, SpellDurationEntry> {
     durations
 }
 
-fn parse_mmap_header_file_name(file_name: &str) -> Option<u32> {
+pub(in crate::world) fn parse_mmap_header_file_name(file_name: &str) -> Option<u32> {
     let stem = file_name.strip_suffix(".mmap")?;
     (stem.len() == 3)
         .then(|| stem.parse::<u32>().ok())
         .flatten()
 }
 
-fn parse_mmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
+pub(in crate::world) fn parse_mmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
     let stem = file_name.strip_suffix(".mmtile")?;
     if stem.len() != 7 {
         return None;
@@ -686,14 +726,14 @@ fn parse_mmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
     Some((map_id, tile_x, tile_y))
 }
 
-fn parse_vmap_tree_file_name(file_name: &str) -> Option<u32> {
+pub(in crate::world) fn parse_vmap_tree_file_name(file_name: &str) -> Option<u32> {
     let stem = file_name.strip_suffix(".vmtree")?;
     (stem.len() == 3)
         .then(|| stem.parse::<u32>().ok())
         .flatten()
 }
 
-fn parse_vmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
+pub(in crate::world) fn parse_vmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
     let stem = file_name.strip_suffix(".vmtile")?;
     if stem.len() != 9 || &stem[3..4] != "_" || &stem[6..7] != "_" {
         return None;
@@ -704,7 +744,7 @@ fn parse_vmap_tile_file_name(file_name: &str) -> Option<(u32, u32, u32)> {
     Some((map_id, tile_x, tile_y))
 }
 
-fn file_has_magic(path: &std::path::Path, magic: &[u8]) -> bool {
+pub(in crate::world) fn file_has_magic(path: &std::path::Path, magic: &[u8]) -> bool {
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };

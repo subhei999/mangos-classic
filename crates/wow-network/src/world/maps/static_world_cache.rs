@@ -1,21 +1,25 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct StaticWorldCacheCounts {
-    creature_spawns: u64,
-    creature_grids: u64,
-    gameobject_spawns: u64,
-    gameobject_grids: u64,
+pub(in crate::world) struct StaticWorldCacheCounts {
+    pub(in crate::world) creature_spawns: u64,
+    pub(in crate::world) creature_grids: u64,
+    pub(in crate::world) gameobject_spawns: u64,
+    pub(in crate::world) gameobject_grids: u64,
 }
 
 #[derive(Debug, Default)]
-struct StaticWorldSpawnCache {
-    creature_spawns_by_grid: HashMap<(u32, GridCoord), Vec<CreatureSpawnQuery>>,
-    gameobject_spawns_by_grid: HashMap<(u32, GridCoord), Vec<wow_db::GameObjectSpawnQuery>>,
-    active_game_events: RwLock<GameEventState>,
+pub(in crate::world) struct StaticWorldSpawnCache {
+    pub(in crate::world) creature_spawns_by_grid:
+        HashMap<(u32, GridCoord), Vec<CreatureSpawnQuery>>,
+    pub(in crate::world) gameobject_spawns_by_grid:
+        HashMap<(u32, GridCoord), Vec<wow_db::GameObjectSpawnQuery>>,
+    pub(in crate::world) active_game_events: RwLock<GameEventState>,
 }
 
 impl StaticWorldSpawnCache {
     #[cfg(test)]
-    fn from_spawns(
+    pub(in crate::world) fn from_spawns(
         creature_spawns: Vec<CreatureSpawnQuery>,
         gameobject_spawns: Vec<wow_db::GameObjectSpawnQuery>,
     ) -> Self {
@@ -26,7 +30,7 @@ impl StaticWorldSpawnCache {
         )
     }
 
-    fn from_spawns_for_game_events(
+    pub(in crate::world) fn from_spawns_for_game_events(
         creature_spawns: Vec<CreatureSpawnQuery>,
         gameobject_spawns: Vec<wow_db::GameObjectSpawnQuery>,
         game_events: &GameEventState,
@@ -80,7 +84,7 @@ impl StaticWorldSpawnCache {
         }
     }
 
-    fn counts(&self) -> StaticWorldCacheCounts {
+    pub(in crate::world) fn counts(&self) -> StaticWorldCacheCounts {
         let game_events = self.active_game_events();
         let creature_spawns = self
             .creature_spawns_by_grid
@@ -120,14 +124,14 @@ impl StaticWorldSpawnCache {
         }
     }
 
-    fn active_game_events(&self) -> GameEventState {
+    pub(in crate::world) fn active_game_events(&self) -> GameEventState {
         self.active_game_events
             .read()
             .map(|events| events.clone())
             .unwrap_or_default()
     }
 
-    fn replace_active_game_events(&self, game_events: GameEventState) -> bool {
+    pub(in crate::world) fn replace_active_game_events(&self, game_events: GameEventState) -> bool {
         let Ok(mut active_game_events) = self.active_game_events.write() else {
             return false;
         };
@@ -138,7 +142,11 @@ impl StaticWorldSpawnCache {
         true
     }
 
-    fn creature_spawns_for_grid(&self, map_id: u32, grid: GridCoord) -> Vec<CreatureSpawnQuery> {
+    pub(in crate::world) fn creature_spawns_for_grid(
+        &self,
+        map_id: u32,
+        grid: GridCoord,
+    ) -> Vec<CreatureSpawnQuery> {
         let game_events = self.active_game_events();
         self.creature_spawns_by_grid
             .get(&(map_id, grid))
@@ -152,7 +160,7 @@ impl StaticWorldSpawnCache {
             .unwrap_or_default()
     }
 
-    fn gameobject_spawns_for_grid(
+    pub(in crate::world) fn gameobject_spawns_for_grid(
         &self,
         map_id: u32,
         grid: GridCoord,

@@ -6,6 +6,7 @@ use rand::Rng;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::MySqlPool;
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -19,7 +20,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{debug, error, info, warn};
-use wow_common::guid::{write_guid, HighGuid, ObjectGuid, PackedGuid};
+use wow_common::guid::{HighGuid, ObjectGuid, PackedGuid};
 use wow_common::position::WorldPosition;
 use wow_crypto::HeaderCrypto;
 use wow_db::{
@@ -29,26 +30,47 @@ use wow_db::{
     ItemTemplateQuery, NewCharacter, NewPlayerCorpse, PlayerCorpseQuery, PlayerWorldStats,
     QuestTemplateQuery,
 };
+use wow_proto::SpellCastTargets;
 
-include!("opcodes.rs");
-include!("game_events.rs");
-include!("scripts.rs");
-include!("globals/object_mgr.rs");
-include!("globals/conditions.rs");
-include!("session.rs");
-include!("fixtures/legacy_npcs.rs");
-include!("server/world_session.rs");
-include!("entities/update_data.rs");
-include!("server/runtime_helpers.rs");
-include!("server/map_update.rs");
-include!("server/session_loop.rs");
-include!("server/character_screen.rs");
-include!("server/player_login.rs");
-include!("server/logout.rs");
-include!("server/movement.rs");
-include!("server/visibility.rs");
-include!("server/action_buttons.rs");
-include!("playerbots.rs");
+mod combat;
+mod entities;
+mod fixtures;
+mod game_events;
+mod globals;
+mod handlers;
+mod map_runtime;
+mod motion;
+mod opcodes;
+mod packet_builders;
+mod packets;
+mod playerbots;
+mod scripts;
+mod server;
+mod session;
+mod social;
+mod spells;
+mod wire;
+
+use self::combat::*;
+use self::entities::*;
+use self::fixtures::*;
+use self::game_events::*;
+use self::globals::*;
+use self::handlers::*;
+use self::map_runtime::*;
+use self::motion::*;
+use self::opcodes::*;
+use self::packet_builders::*;
+#[cfg(test)]
+use self::playerbots::PlayerbotRosterEntry;
+pub use self::playerbots::PlayerbotSpawnConfig;
+use self::playerbots::{initialize_playerbots, PlayerbotRoster};
+use self::scripts::*;
+use self::server::*;
+use self::session::*;
+use self::social::*;
+use self::spells::*;
+use self::wire::*;
 
 pub struct WorldServer {
     bind_addr: SocketAddr,
@@ -238,7 +260,5 @@ impl WorldServer {
     }
 }
 
-include!("interactions.rs");
-include!("wire.rs");
 #[cfg(test)]
 mod tests;

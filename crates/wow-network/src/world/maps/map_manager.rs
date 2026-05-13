@@ -1,33 +1,35 @@
+use super::*;
+
 #[derive(Debug, Default)]
-struct MapRuntimeManager {
-    maps: Mutex<MapRuntimeHandles>,
-    static_world_cache: Arc<StaticWorldSpawnCache>,
-    geometry: Arc<WorldGeometry>,
-    db_scripts: Arc<DbScriptRegistry>,
-    creature_display_scales: HashMap<u32, f32>,
-    spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
-    spell_durations: HashMap<u32, SpellDurationEntry>,
-    spell_ranges: HashMap<u32, SpellRangeEntry>,
-    faction_templates: FactionTemplateStore,
-    next_gm_creature_guid: AtomicU64,
-    creature_grid_load_ensure_calls: AtomicU64,
-    creature_grid_load_cache_hits: AtomicU64,
-    creature_grid_load_db_queries: AtomicU64,
-    creature_grid_load_rows: AtomicU64,
+pub(in crate::world) struct MapRuntimeManager {
+    pub(in crate::world) maps: Mutex<MapRuntimeHandles>,
+    pub(in crate::world) static_world_cache: Arc<StaticWorldSpawnCache>,
+    pub(in crate::world) geometry: Arc<WorldGeometry>,
+    pub(in crate::world) db_scripts: Arc<DbScriptRegistry>,
+    pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
+    pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
+    pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
+    pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
+    pub(in crate::world) faction_templates: FactionTemplateStore,
+    pub(in crate::world) next_gm_creature_guid: AtomicU64,
+    pub(in crate::world) creature_grid_load_ensure_calls: AtomicU64,
+    pub(in crate::world) creature_grid_load_cache_hits: AtomicU64,
+    pub(in crate::world) creature_grid_load_db_queries: AtomicU64,
+    pub(in crate::world) creature_grid_load_rows: AtomicU64,
 }
 
-type MapRuntimeHandles = HashMap<(u32, u32), Arc<Mutex<MapRuntime>>>;
+pub(in crate::world) type MapRuntimeHandles = HashMap<(u32, u32), Arc<Mutex<MapRuntime>>>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(dead_code)]
-struct CreatureGridLoadStats {
-    ensure_calls: u64,
-    cache_hits: u64,
-    db_queries: u64,
-    rows_loaded: u64,
+pub(in crate::world) struct CreatureGridLoadStats {
+    pub(in crate::world) ensure_calls: u64,
+    pub(in crate::world) cache_hits: u64,
+    pub(in crate::world) db_queries: u64,
+    pub(in crate::world) rows_loaded: u64,
 }
 
-fn apply_creature_display_scale_fallbacks(
+pub(in crate::world) fn apply_creature_display_scale_fallbacks(
     spawns: &mut [CreatureSpawnQuery],
     display_scales: &HashMap<u32, f32>,
 ) {
@@ -42,8 +44,12 @@ fn apply_creature_display_scale_fallbacks(
             spawn.template.display_id4,
         ]
         .into_iter()
-        .find_map(|display_id| display_scales.get(&display_id).copied().filter(|scale| *scale > 0.0))
-        else {
+        .find_map(|display_id| {
+            display_scales
+                .get(&display_id)
+                .copied()
+                .filter(|scale| *scale > 0.0)
+        }) else {
             continue;
         };
         spawn.template.scale = scale;
@@ -52,14 +58,14 @@ fn apply_creature_display_scale_fallbacks(
 
 impl MapRuntimeManager {
     #[allow(dead_code)]
-    fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
+    pub(in crate::world) fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
         Self::with_world_data_files_and_static_cache(
             world_data_files,
             Arc::new(StaticWorldSpawnCache::default()),
         )
     }
 
-    fn with_world_data_files_and_static_cache(
+    pub(in crate::world) fn with_world_data_files_and_static_cache(
         world_data_files: &WorldDataFiles,
         static_world_cache: Arc<StaticWorldSpawnCache>,
     ) -> Self {
@@ -71,7 +77,7 @@ impl MapRuntimeManager {
         )
     }
 
-    fn with_world_data_files_static_cache_and_next_gm_guid(
+    pub(in crate::world) fn with_world_data_files_static_cache_and_next_gm_guid(
         world_data_files: &WorldDataFiles,
         static_world_cache: Arc<StaticWorldSpawnCache>,
         next_gm_creature_guid: u64,
@@ -93,26 +99,34 @@ impl MapRuntimeManager {
     }
 
     #[cfg(test)]
-    fn with_static_world_cache(static_world_cache: StaticWorldSpawnCache) -> Self {
+    pub(in crate::world) fn with_static_world_cache(
+        static_world_cache: StaticWorldSpawnCache,
+    ) -> Self {
         Self {
             static_world_cache: Arc::new(static_world_cache),
             ..Self::default()
         }
     }
 
-    fn spell_duration(&self, duration_index: u32) -> Option<SpellDurationEntry> {
+    pub(in crate::world) fn spell_duration(
+        &self,
+        duration_index: u32,
+    ) -> Option<SpellDurationEntry> {
         self.spell_durations.get(&duration_index).copied()
     }
 
-    fn spell_cast_time(&self, casting_time_index: u32) -> Option<SpellCastTimeEntry> {
+    pub(in crate::world) fn spell_cast_time(
+        &self,
+        casting_time_index: u32,
+    ) -> Option<SpellCastTimeEntry> {
         self.spell_cast_times.get(&casting_time_index).copied()
     }
 
-    fn spell_range(&self, range_index: u32) -> Option<SpellRangeEntry> {
+    pub(in crate::world) fn spell_range(&self, range_index: u32) -> Option<SpellRangeEntry> {
         self.spell_ranges.get(&range_index).copied()
     }
 
-    async fn set_active_player_spell_cast(
+    pub(in crate::world) async fn set_active_player_spell_cast(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -125,7 +139,7 @@ impl MapRuntimeManager {
             .insert(character_guid, active_cast);
     }
 
-    async fn take_due_active_player_spell_cast(
+    pub(in crate::world) async fn take_due_active_player_spell_cast(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -143,7 +157,7 @@ impl MapRuntimeManager {
         map.active_player_spell_casts.remove(&character_guid)
     }
 
-    async fn cancel_active_player_spell_cast(
+    pub(in crate::world) async fn cancel_active_player_spell_cast(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -157,7 +171,7 @@ impl MapRuntimeManager {
         active_cast
     }
 
-    async fn delay_active_player_spell_cast_for_damage(
+    pub(in crate::world) async fn delay_active_player_spell_cast_for_damage(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -188,7 +202,7 @@ impl MapRuntimeManager {
         Some(delay)
     }
 
-    async fn push_pending_spell_event(
+    pub(in crate::world) async fn push_pending_spell_event(
         &self,
         map_id: u32,
         caster_character_guid: u32,
@@ -218,7 +232,7 @@ impl MapRuntimeManager {
         });
     }
 
-    async fn take_due_pending_spell_event(
+    pub(in crate::world) async fn take_due_pending_spell_event(
         &self,
         map_id: u32,
         caster_character_guid: u32,
@@ -240,9 +254,9 @@ impl MapRuntimeManager {
             let stale = event
                 .unit_target_generation
                 .is_some_and(|(target, generation)| {
-                    !map.creatures
-                        .get(&target.raw())
-                        .is_some_and(|creature| creature.is_alive() && creature.life_generation == generation)
+                    !map.creatures.get(&target.raw()).is_some_and(|creature| {
+                        creature.is_alive() && creature.life_generation == generation
+                    })
                 });
             if !stale {
                 return Some(event);
@@ -250,7 +264,7 @@ impl MapRuntimeManager {
         }
     }
 
-    async fn next_pending_player_spell_cast_due_at(
+    pub(in crate::world) async fn next_pending_player_spell_cast_due_at(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -270,7 +284,7 @@ impl MapRuntimeManager {
         active_due_at.into_iter().chain(event_due_at).min()
     }
 
-    async fn add_player(
+    pub(in crate::world) async fn add_player(
         &self,
         player: PlayerRuntime,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -292,7 +306,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn remove_player(
+    pub(in crate::world) async fn remove_player(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -305,7 +319,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn update_player_position(
+    pub(in crate::world) async fn update_player_position(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -317,14 +331,14 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Ok(Vec::new());
         };
-        let packets = map
-            .lock()
-            .await
-            .update_player_position(character_guid, opcode, movement, server_time);
+        let packets =
+            map.lock()
+                .await
+                .update_player_position(character_guid, opcode, movement, server_time);
         packets
     }
 
-    fn allocate_gm_creature_guid(&self) -> u32 {
+    pub(in crate::world) fn allocate_gm_creature_guid(&self) -> u32 {
         loop {
             let stored = self.next_gm_creature_guid.load(Ordering::Relaxed);
             let current = stored.clamp(1, 0x00FF_FFFF);
@@ -339,7 +353,7 @@ impl MapRuntimeManager {
         }
     }
 
-    async fn spawn_gm_db_creature(
+    pub(in crate::world) async fn spawn_gm_db_creature(
         &self,
         mut spawn: CreatureSpawnQuery,
         exclude_character_guid: Option<u32>,
@@ -351,15 +365,18 @@ impl MapRuntimeManager {
         );
         let creature = DbCreatureRuntime::new(spawn);
         let body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
-        let map = self.get_or_create_map(creature.current_position.map_id, 0).await;
-        let packets = map
-            .lock()
-            .await
-            .spawn_db_creature_and_broadcast(creature.clone(), exclude_character_guid, body);
+        let map = self
+            .get_or_create_map(creature.current_position.map_id, 0)
+            .await;
+        let packets = map.lock().await.spawn_db_creature_and_broadcast(
+            creature.clone(),
+            exclude_character_guid,
+            body,
+        );
         Ok((creature, packets))
     }
 
-    async fn delete_db_creature_runtime(
+    pub(in crate::world) async fn delete_db_creature_runtime(
         &self,
         map_id: u32,
         creature_guid: Option<ObjectGuid>,
@@ -378,7 +395,7 @@ impl MapRuntimeManager {
         Ok(event)
     }
 
-    async fn update_player_visible_equipment(
+    pub(in crate::world) async fn update_player_visible_equipment(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -389,14 +406,15 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Ok(Vec::new());
         };
-        let packets = map
-            .lock()
-            .await
-            .update_player_visible_equipment(character_guid, visible_equipment, changed_slots);
+        let packets = map.lock().await.update_player_visible_equipment(
+            character_guid,
+            visible_equipment,
+            changed_slots,
+        );
         packets
     }
 
-    async fn update_player_health(
+    pub(in crate::world) async fn update_player_health(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -413,7 +431,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn apply_player_heal(
+    pub(in crate::world) async fn apply_player_heal(
         &self,
         map_id: u32,
         target_character_guid: u32,
@@ -430,7 +448,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn sync_player_gameplay_state(
+    pub(in crate::world) async fn sync_player_gameplay_state(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -445,7 +463,7 @@ impl MapRuntimeManager {
             .sync_player_gameplay_state(character_guid, session);
     }
 
-    async fn remove_player_auras_with_interrupt_flag(
+    pub(in crate::world) async fn remove_player_auras_with_interrupt_flag(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -462,7 +480,7 @@ impl MapRuntimeManager {
         removed
     }
 
-    async fn player_runtime_snapshot(
+    pub(in crate::world) async fn player_runtime_snapshot(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -473,7 +491,7 @@ impl MapRuntimeManager {
         snapshot
     }
 
-    async fn update_player_reward_state(
+    pub(in crate::world) async fn update_player_reward_state(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -488,7 +506,7 @@ impl MapRuntimeManager {
             .update_player_reward_state(character_guid, reward);
     }
 
-    async fn update_player_level_progression_state(
+    pub(in crate::world) async fn update_player_level_progression_state(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -503,7 +521,7 @@ impl MapRuntimeManager {
             .update_player_level_progression_state(character_guid, progression);
     }
 
-    async fn update_player_inventory(
+    pub(in crate::world) async fn update_player_inventory(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -518,7 +536,11 @@ impl MapRuntimeManager {
             .update_player_inventory(character_guid, inventory);
     }
 
-    async fn player_visible_db_creature_guids(&self, map_id: u32, character_guid: u32) -> Vec<u64> {
+    pub(in crate::world) async fn player_visible_db_creature_guids(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Vec<u64> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return Vec::new();
@@ -530,7 +552,7 @@ impl MapRuntimeManager {
         guids
     }
 
-    async fn player_visible_db_gameobject_guids(
+    pub(in crate::world) async fn player_visible_db_gameobject_guids(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -546,7 +568,7 @@ impl MapRuntimeManager {
         guids
     }
 
-    async fn should_rescan_player_creature_visibility(
+    pub(in crate::world) async fn should_rescan_player_creature_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -563,7 +585,7 @@ impl MapRuntimeManager {
         should_rescan
     }
 
-    async fn should_rescan_player_gameobject_visibility(
+    pub(in crate::world) async fn should_rescan_player_gameobject_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -580,7 +602,7 @@ impl MapRuntimeManager {
         should_rescan
     }
 
-    async fn should_rescan_player_corpse_visibility(
+    pub(in crate::world) async fn should_rescan_player_corpse_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -597,7 +619,11 @@ impl MapRuntimeManager {
         should_rescan
     }
 
-    async fn reset_player_visibility_scan_positions(&self, map_id: u32, character_guid: u32) {
+    pub(in crate::world) async fn reset_player_visibility_scan_positions(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return;
@@ -607,7 +633,7 @@ impl MapRuntimeManager {
             .reset_player_visibility_scan_positions(character_guid);
     }
 
-    async fn update_player_combat_stats(
+    pub(in crate::world) async fn update_player_combat_stats(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -624,7 +650,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn player_combat_stats(
+    pub(in crate::world) async fn player_combat_stats(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -635,7 +661,7 @@ impl MapRuntimeManager {
         combat_stats
     }
 
-    async fn set_player_auto_attack(
+    pub(in crate::world) async fn set_player_auto_attack(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -651,7 +677,7 @@ impl MapRuntimeManager {
             .set_player_auto_attack(character_guid, target, next_swing_at);
     }
 
-    async fn player_auto_attack_due(
+    pub(in crate::world) async fn player_auto_attack_due(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -663,7 +689,7 @@ impl MapRuntimeManager {
         target
     }
 
-    async fn player_auto_attack_target(
+    pub(in crate::world) async fn player_auto_attack_target(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -674,7 +700,7 @@ impl MapRuntimeManager {
         target
     }
 
-    async fn set_player_next_swing_at(
+    pub(in crate::world) async fn set_player_next_swing_at(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -689,7 +715,12 @@ impl MapRuntimeManager {
             .set_player_next_swing_at(character_guid, next_swing_at);
     }
 
-    async fn set_player_power2(&self, map_id: u32, character_guid: u32, power2: u32) {
+    pub(in crate::world) async fn set_player_power2(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        power2: u32,
+    ) {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return;
@@ -697,7 +728,7 @@ impl MapRuntimeManager {
         map.lock().await.set_player_power2(character_guid, power2);
     }
 
-    async fn player_selected_target(
+    pub(in crate::world) async fn player_selected_target(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -708,7 +739,7 @@ impl MapRuntimeManager {
         selected_target
     }
 
-    async fn player_spell_cast_failure(
+    pub(in crate::world) async fn player_spell_cast_failure(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -717,14 +748,14 @@ impl MapRuntimeManager {
     ) -> Option<u8> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let failure = map
-            .lock()
-            .await
-            .player_spell_cast_failure(character_guid, spell_profile, now);
+        let failure =
+            map.lock()
+                .await
+                .player_spell_cast_failure(character_guid, spell_profile, now);
         failure
     }
 
-    async fn apply_player_spell_cooldowns(
+    pub(in crate::world) async fn apply_player_spell_cooldowns(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -736,12 +767,15 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return;
         };
-        map.lock()
-            .await
-            .apply_player_spell_cooldowns(character_guid, spell_profile, now, skip_spell_cooldown);
+        map.lock().await.apply_player_spell_cooldowns(
+            character_guid,
+            spell_profile,
+            now,
+            skip_spell_cooldown,
+        );
     }
 
-    async fn clear_player_spell_recovery(
+    pub(in crate::world) async fn clear_player_spell_recovery(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -756,7 +790,7 @@ impl MapRuntimeManager {
             .clear_player_spell_recovery(character_guid, spell_profile);
     }
 
-    async fn spend_player_spell_power(
+    pub(in crate::world) async fn spend_player_spell_power(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -768,14 +802,16 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Ok(());
         };
-        let result = map
-            .lock()
-            .await
-            .spend_player_spell_power(character_guid, spell_profile, now, blocks_mana_regen);
+        let result = map.lock().await.spend_player_spell_power(
+            character_guid,
+            spell_profile,
+            now,
+            blocks_mana_regen,
+        );
         result
     }
 
-    async fn queue_player_next_melee_spell(
+    pub(in crate::world) async fn queue_player_next_melee_spell(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -790,7 +826,7 @@ impl MapRuntimeManager {
             .queue_player_next_melee_spell(character_guid, queued);
     }
 
-    async fn queued_player_next_melee_spell(
+    pub(in crate::world) async fn queued_player_next_melee_spell(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -805,7 +841,11 @@ impl MapRuntimeManager {
         queued
     }
 
-    async fn clear_player_next_melee_spell(&self, map_id: u32, character_guid: u32) {
+    pub(in crate::world) async fn clear_player_next_melee_spell(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
             return;
@@ -815,7 +855,7 @@ impl MapRuntimeManager {
             .clear_player_next_melee_spell(character_guid);
     }
 
-    async fn spend_queued_player_next_melee_spell_power(
+    pub(in crate::world) async fn spend_queued_player_next_melee_spell_power(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -832,7 +872,7 @@ impl MapRuntimeManager {
         result
     }
 
-    async fn update_player_selection(
+    pub(in crate::world) async fn update_player_selection(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -849,7 +889,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn update_player_target(
+    pub(in crate::world) async fn update_player_target(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -866,7 +906,7 @@ impl MapRuntimeManager {
         packets
     }
 
-    async fn add_player_combo_points(
+    pub(in crate::world) async fn add_player_combo_points(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -882,7 +922,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn clear_player_combo_points(
+    pub(in crate::world) async fn clear_player_combo_points(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -894,7 +934,7 @@ impl MapRuntimeManager {
     }
 
     #[cfg(test)]
-    async fn update_player_db_creature_visibility(
+    pub(in crate::world) async fn update_player_db_creature_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -912,7 +952,7 @@ impl MapRuntimeManager {
         );
     }
 
-    async fn broadcast_nearby_player_packet(
+    pub(in crate::world) async fn broadcast_nearby_player_packet(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -923,14 +963,14 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Vec::new();
         };
-        let packets = map
-            .lock()
-            .await
-            .broadcast_nearby_player_packet(character_guid, radius, packet);
+        let packets =
+            map.lock()
+                .await
+                .broadcast_nearby_player_packet(character_guid, radius, packet);
         packets
     }
 
-    async fn set_player_looting_state(
+    pub(in crate::world) async fn set_player_looting_state(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -947,7 +987,7 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn set_player_stand_state(
+    pub(in crate::world) async fn set_player_stand_state(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -965,7 +1005,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn share_db_creature_snapshots(
+    pub(in crate::world) async fn share_db_creature_snapshots(
         &self,
         map_id: u32,
         creatures: Vec<DbCreatureRuntime>,
@@ -975,7 +1015,7 @@ impl MapRuntimeManager {
         creatures
     }
 
-    async fn ensure_db_creature_grids_loaded(
+    pub(in crate::world) async fn ensure_db_creature_grids_loaded(
         &self,
         character_db_pool: &MySqlPool,
         _world_db_pool: &MySqlPool,
@@ -1009,7 +1049,9 @@ impl MapRuntimeManager {
         for grid in grids {
             let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
             let lookup_started_at = Instant::now();
-            let spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+            let spawns = self
+                .static_world_cache
+                .creature_spawns_for_grid(map_id, grid);
             crate::observability::record_static_world_cache_lookup(
                 crate::observability::StaticWorldCacheKind::Creature,
                 lookup_started_at.elapsed(),
@@ -1026,7 +1068,8 @@ impl MapRuntimeManager {
                 .fetch_add(spawn_count, Ordering::Relaxed)
                 + spawn_count;
             let instantiation_started_at = Instant::now();
-            let runtimes = build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
+            let runtimes =
+                build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
             crate::observability::record_static_world_cache_instantiation(
                 crate::observability::StaticWorldCacheKind::Creature,
                 spawn_count,
@@ -1050,13 +1093,16 @@ impl MapRuntimeManager {
         Ok(())
     }
 
-    async fn refresh_static_game_event_spawns(
+    pub(in crate::world) async fn refresh_static_game_event_spawns(
         &self,
         character_db_pool: &MySqlPool,
         game_events: GameEventState,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        if !self.static_world_cache.replace_active_game_events(game_events) {
+        if !self
+            .static_world_cache
+            .replace_active_game_events(game_events)
+        {
             return Ok(Vec::new());
         }
 
@@ -1076,9 +1122,12 @@ impl MapRuntimeManager {
             };
 
             for grid in creature_grids {
-                let mut spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+                let mut spawns = self
+                    .static_world_cache
+                    .creature_spawns_for_grid(map_id, grid);
                 apply_creature_display_scale_fallbacks(&mut spawns, &self.creature_display_scales);
-                let runtimes = build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
+                let runtimes =
+                    build_db_creature_runtimes_with_respawns(character_db_pool, spawns).await?;
                 packets.extend(
                     map.lock()
                         .await
@@ -1101,7 +1150,7 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn apply_player_aura(
+    pub(in crate::world) async fn apply_player_aura(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1115,7 +1164,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn apply_db_creature_aura(
+    pub(in crate::world) async fn apply_db_creature_aura(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -1134,7 +1183,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn set_player_position(
+    pub(in crate::world) async fn set_player_position(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1144,11 +1193,13 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return;
         };
-        map.lock().await.set_player_position(character_guid, position);
+        map.lock()
+            .await
+            .set_player_position(character_guid, position);
     }
 
     #[cfg(test)]
-    async fn ensure_db_creature_grids_loaded_for_test(
+    pub(in crate::world) async fn ensure_db_creature_grids_loaded_for_test(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1179,7 +1230,7 @@ impl MapRuntimeManager {
     }
 
     #[cfg(test)]
-    async fn ensure_static_creature_grids_loaded_for_test(
+    pub(in crate::world) async fn ensure_static_creature_grids_loaded_for_test(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1200,7 +1251,9 @@ impl MapRuntimeManager {
         }
         for grid in grids {
             let lookup_started_at = Instant::now();
-            let spawns = self.static_world_cache.creature_spawns_for_grid(map_id, grid);
+            let spawns = self
+                .static_world_cache
+                .creature_spawns_for_grid(map_id, grid);
             crate::observability::record_static_world_cache_lookup(
                 crate::observability::StaticWorldCacheKind::Creature,
                 lookup_started_at.elapsed(),
@@ -1222,22 +1275,16 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    fn creature_grid_load_stats(&self) -> CreatureGridLoadStats {
+    pub(in crate::world) fn creature_grid_load_stats(&self) -> CreatureGridLoadStats {
         CreatureGridLoadStats {
-            ensure_calls: self
-                .creature_grid_load_ensure_calls
-                .load(Ordering::Relaxed),
-            cache_hits: self
-                .creature_grid_load_cache_hits
-                .load(Ordering::Relaxed),
-            db_queries: self
-                .creature_grid_load_db_queries
-                .load(Ordering::Relaxed),
+            ensure_calls: self.creature_grid_load_ensure_calls.load(Ordering::Relaxed),
+            cache_hits: self.creature_grid_load_cache_hits.load(Ordering::Relaxed),
+            db_queries: self.creature_grid_load_db_queries.load(Ordering::Relaxed),
             rows_loaded: self.creature_grid_load_rows.load(Ordering::Relaxed),
         }
     }
 
-    async fn nearby_db_creature_snapshots(
+    pub(in crate::world) async fn nearby_db_creature_snapshots(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1255,7 +1302,7 @@ impl MapRuntimeManager {
         snapshots
     }
 
-    async fn stage_player_db_creature_visibility(
+    pub(in crate::world) async fn stage_player_db_creature_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1277,7 +1324,7 @@ impl MapRuntimeManager {
         stage
     }
 
-    async fn stage_player_db_gameobject_visibility(
+    pub(in crate::world) async fn stage_player_db_gameobject_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1292,19 +1339,16 @@ impl MapRuntimeManager {
                 ..Default::default()
             };
         };
-        let stage = map
-            .lock()
-            .await
-            .stage_player_db_gameobject_visibility(
-                character_guid,
-                position,
-                nearby_gameobjects,
-                now,
-            );
+        let stage = map.lock().await.stage_player_db_gameobject_visibility(
+            character_guid,
+            position,
+            nearby_gameobjects,
+            now,
+        );
         stage
     }
 
-    async fn ensure_db_gameobject_grids_loaded(
+    pub(in crate::world) async fn ensure_db_gameobject_grids_loaded(
         &self,
         _world_db_pool: &MySqlPool,
         map_id: u32,
@@ -1354,7 +1398,7 @@ impl MapRuntimeManager {
     }
 
     #[cfg(test)]
-    async fn ensure_db_gameobject_grids_loaded_for_test(
+    pub(in crate::world) async fn ensure_db_gameobject_grids_loaded_for_test(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1376,7 +1420,7 @@ impl MapRuntimeManager {
     }
 
     #[cfg(test)]
-    async fn ensure_static_gameobject_grids_loaded_for_test(
+    pub(in crate::world) async fn ensure_static_gameobject_grids_loaded_for_test(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1411,7 +1455,7 @@ impl MapRuntimeManager {
         }
     }
 
-    async fn nearby_db_gameobject_snapshots(
+    pub(in crate::world) async fn nearby_db_gameobject_snapshots(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1429,7 +1473,7 @@ impl MapRuntimeManager {
         snapshots
     }
 
-    async fn ensure_player_corpse_grids_loaded(
+    pub(in crate::world) async fn ensure_player_corpse_grids_loaded(
         &self,
         character_db_pool: &MySqlPool,
         map_id: u32,
@@ -1471,7 +1515,7 @@ impl MapRuntimeManager {
         Ok(())
     }
 
-    async fn nearby_player_corpse_snapshots(
+    pub(in crate::world) async fn nearby_player_corpse_snapshots(
         &self,
         map_id: u32,
         position: WorldPosition,
@@ -1489,7 +1533,7 @@ impl MapRuntimeManager {
         snapshots
     }
 
-    async fn stage_player_corpse_visibility(
+    pub(in crate::world) async fn stage_player_corpse_visibility(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1503,19 +1547,24 @@ impl MapRuntimeManager {
                 ..Default::default()
             };
         };
-        let stage = map
-            .lock()
-            .await
-            .stage_player_corpse_visibility(character_guid, position, nearby_corpses);
+        let stage = map.lock().await.stage_player_corpse_visibility(
+            character_guid,
+            position,
+            nearby_corpses,
+        );
         stage
     }
 
-    async fn upsert_player_corpse(&self, map_id: u32, corpse: PlayerCorpseRuntime) {
+    pub(in crate::world) async fn upsert_player_corpse(
+        &self,
+        map_id: u32,
+        corpse: PlayerCorpseRuntime,
+    ) {
         let map = self.get_or_create_map(map_id, 0).await;
         map.lock().await.upsert_player_corpse(corpse);
     }
 
-    async fn db_gameobject_snapshot(
+    pub(in crate::world) async fn db_gameobject_snapshot(
         &self,
         map_id: u32,
         gameobject_guid: ObjectGuid,
@@ -1526,7 +1575,7 @@ impl MapRuntimeManager {
         snapshot
     }
 
-    async fn consume_db_gameobject(
+    pub(in crate::world) async fn consume_db_gameobject(
         &self,
         map_id: u32,
         gameobject_guid: ObjectGuid,
@@ -1535,14 +1584,14 @@ impl MapRuntimeManager {
     ) -> Option<(DbGameObjectRuntime, Vec<(SessionId, OutboundWorldPacket)>)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let consumed = map
-            .lock()
-            .await
-            .consume_db_gameobject(gameobject_guid, now, exclude_character_guid);
+        let consumed =
+            map.lock()
+                .await
+                .consume_db_gameobject(gameobject_guid, now, exclude_character_guid);
         consumed
     }
 
-    async fn open_db_gameobject_loot(
+    pub(in crate::world) async fn open_db_gameobject_loot(
         &self,
         map_id: u32,
         gameobject_guid: u64,
@@ -1551,15 +1600,14 @@ impl MapRuntimeManager {
     ) -> Option<(DbGameObjectRuntime, Vec<DbCreatureLootRuntime>)> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let opened = map.lock().await.open_db_gameobject_loot(
-            gameobject_guid,
-            character_guid,
-            loot_items,
-        );
+        let opened =
+            map.lock()
+                .await
+                .open_db_gameobject_loot(gameobject_guid, character_guid, loot_items);
         opened
     }
 
-    async fn db_gameobject_loot_guid_for_character(
+    pub(in crate::world) async fn db_gameobject_loot_guid_for_character(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1573,7 +1621,7 @@ impl MapRuntimeManager {
         gameobject_guid
     }
 
-    async fn take_db_gameobject_loot_item(
+    pub(in crate::world) async fn take_db_gameobject_loot_item(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1588,7 +1636,7 @@ impl MapRuntimeManager {
         loot
     }
 
-    async fn restore_db_gameobject_loot_item(
+    pub(in crate::world) async fn restore_db_gameobject_loot_item(
         &self,
         map_id: u32,
         gameobject_guid: u64,
@@ -1597,14 +1645,14 @@ impl MapRuntimeManager {
     ) -> Option<Vec<DbCreatureLootRuntime>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let restored = map
-            .lock()
-            .await
-            .restore_db_gameobject_loot_item(gameobject_guid, loot_slot, loot);
+        let restored =
+            map.lock()
+                .await
+                .restore_db_gameobject_loot_item(gameobject_guid, loot_slot, loot);
         restored
     }
 
-    async fn release_db_gameobject_loot(
+    pub(in crate::world) async fn release_db_gameobject_loot(
         &self,
         map_id: u32,
         gameobject_guid: u64,
@@ -1619,7 +1667,7 @@ impl MapRuntimeManager {
         released
     }
 
-    async fn db_creature_snapshots(
+    pub(in crate::world) async fn db_creature_snapshots(
         &self,
         map_id: u32,
         creature_guids: &[u64],
@@ -1629,7 +1677,7 @@ impl MapRuntimeManager {
         snapshots
     }
 
-    async fn db_gameobject_snapshots(
+    pub(in crate::world) async fn db_gameobject_snapshots(
         &self,
         map_id: u32,
         gameobject_guids: &[u64],
@@ -1639,7 +1687,7 @@ impl MapRuntimeManager {
         snapshots
     }
 
-    async fn db_creature_snapshot(
+    pub(in crate::world) async fn db_creature_snapshot(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -1650,7 +1698,7 @@ impl MapRuntimeManager {
         snapshot
     }
 
-    async fn db_creature_combat_snapshot(
+    pub(in crate::world) async fn db_creature_combat_snapshot(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -1661,7 +1709,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn validate_player_melee_against_db_creature(
+    pub(in crate::world) async fn validate_player_melee_against_db_creature(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1674,14 +1722,15 @@ impl MapRuntimeManager {
                 check: PlayerMeleeCheck::MissingTarget,
             };
         };
-        let validation = map
-            .lock()
-            .await
-            .validate_player_melee_against_db_creature(character_guid, target, navigation);
+        let validation = map.lock().await.validate_player_melee_against_db_creature(
+            character_guid,
+            target,
+            navigation,
+        );
         validation
     }
 
-    async fn validate_player_charge_against_db_creature(
+    pub(in crate::world) async fn validate_player_charge_against_db_creature(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1694,14 +1743,15 @@ impl MapRuntimeManager {
                 check: PlayerChargeCheck::MissingTarget,
             };
         };
-        let validation = map
-            .lock()
-            .await
-            .validate_player_charge_against_db_creature(character_guid, target, navigation);
+        let validation = map.lock().await.validate_player_charge_against_db_creature(
+            character_guid,
+            target,
+            navigation,
+        );
         validation
     }
 
-    async fn validate_player_spell_against_db_creature(
+    pub(in crate::world) async fn validate_player_spell_against_db_creature(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1715,14 +1765,16 @@ impl MapRuntimeManager {
                 check: PlayerSpellTargetCheck::MissingTarget,
             };
         };
-        let validation = map
-            .lock()
-            .await
-            .validate_player_spell_against_db_creature(character_guid, target, navigation, range);
+        let validation = map.lock().await.validate_player_spell_against_db_creature(
+            character_guid,
+            target,
+            navigation,
+            range,
+        );
         validation
     }
 
-    async fn validate_db_creature_spell_against_target(
+    pub(in crate::world) async fn validate_db_creature_spell_against_target(
         &self,
         map_id: u32,
         caster: ObjectGuid,
@@ -1744,12 +1796,16 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn update_db_creature_snapshot(&self, map_id: u32, creature: DbCreatureRuntime) {
+    pub(in crate::world) async fn update_db_creature_snapshot(
+        &self,
+        map_id: u32,
+        creature: DbCreatureRuntime,
+    ) {
         let map = self.get_or_create_map(map_id, 0).await;
         map.lock().await.update_db_creature_snapshot(creature);
     }
 
-    async fn update_db_creature_snapshot_and_broadcast(
+    pub(in crate::world) async fn update_db_creature_snapshot_and_broadcast(
         &self,
         map_id: u32,
         creature: DbCreatureRuntime,
@@ -1757,18 +1813,15 @@ impl MapRuntimeManager {
         packet: OutboundWorldPacket,
     ) -> Vec<(SessionId, OutboundWorldPacket)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let packets = map
-            .lock()
-            .await
-            .update_db_creature_snapshot_and_broadcast(
-                creature,
-                exclude_character_guid,
-                packet,
+        let packets = map.lock().await.update_db_creature_snapshot_and_broadcast(
+            creature,
+            exclude_character_guid,
+            packet,
         );
         packets
     }
 
-    async fn apply_db_creature_damage(
+    pub(in crate::world) async fn apply_db_creature_damage(
         &self,
         map_id: u32,
         request: DbCreatureDamageRequest,
@@ -1778,7 +1831,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn advance_db_creature_lifecycle(
+    pub(in crate::world) async fn advance_db_creature_lifecycle(
         &self,
         map_id: u32,
         creature_guids: &[u64],
@@ -1796,7 +1849,7 @@ impl MapRuntimeManager {
         events
     }
 
-    async fn open_db_creature_loot(
+    pub(in crate::world) async fn open_db_creature_loot(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1806,20 +1859,17 @@ impl MapRuntimeManager {
         loot_items: Vec<DbCreatureLootRuntime>,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let creature = map
-            .lock()
-            .await
-            .open_db_creature_loot(
-                creature_guid,
-                character_guid,
-                access_owner,
-                current_looter,
-                loot_items,
-            );
+        let creature = map.lock().await.open_db_creature_loot(
+            creature_guid,
+            character_guid,
+            access_owner,
+            current_looter,
+            loot_items,
+        );
         creature
     }
 
-    async fn set_db_creature_loot_owner(
+    pub(in crate::world) async fn set_db_creature_loot_owner(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -1833,7 +1883,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn force_db_creature_loot_owner(
+    pub(in crate::world) async fn force_db_creature_loot_owner(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -1847,7 +1897,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn db_creature_loot_guid_for_character(
+    pub(in crate::world) async fn db_creature_loot_guid_for_character(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1861,7 +1911,7 @@ impl MapRuntimeManager {
         creature_guid
     }
 
-    async fn db_creature_looting_characters(
+    pub(in crate::world) async fn db_creature_looting_characters(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1876,14 +1926,18 @@ impl MapRuntimeManager {
         characters
     }
 
-    async fn db_creature_needs_loot_item(&self, map_id: u32, creature_guid: u64) -> Option<bool> {
+    pub(in crate::world) async fn db_creature_needs_loot_item(
+        &self,
+        map_id: u32,
+        creature_guid: u64,
+    ) -> Option<bool> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let needs_loot_item = map.lock().await.db_creature_needs_loot_item(creature_guid);
         needs_loot_item
     }
 
-    async fn take_db_creature_loot_money(
+    pub(in crate::world) async fn take_db_creature_loot_money(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1893,7 +1947,7 @@ impl MapRuntimeManager {
         loot
     }
 
-    async fn take_db_creature_loot_item(
+    pub(in crate::world) async fn take_db_creature_loot_item(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1907,7 +1961,7 @@ impl MapRuntimeManager {
         loot
     }
 
-    async fn take_db_creature_loot_item_by_guid(
+    pub(in crate::world) async fn take_db_creature_loot_item_by_guid(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1921,7 +1975,7 @@ impl MapRuntimeManager {
         loot
     }
 
-    async fn restore_db_creature_loot_item(
+    pub(in crate::world) async fn restore_db_creature_loot_item(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1929,14 +1983,14 @@ impl MapRuntimeManager {
         loot: DbCreatureLootRuntime,
     ) -> Option<DbCreatureRuntime> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let creature = map
-            .lock()
-            .await
-            .restore_db_creature_loot_item(creature_guid, loot_slot, loot);
+        let creature =
+            map.lock()
+                .await
+                .restore_db_creature_loot_item(creature_guid, loot_slot, loot);
         creature
     }
 
-    async fn release_db_creature_loot_roll_item(
+    pub(in crate::world) async fn release_db_creature_loot_roll_item(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1950,7 +2004,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn release_db_creature_current_looter_pass_item(
+    pub(in crate::world) async fn release_db_creature_current_looter_pass_item(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1964,7 +2018,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn release_db_creature_loot(
+    pub(in crate::world) async fn release_db_creature_loot(
         &self,
         map_id: u32,
         creature_guid: u64,
@@ -1972,14 +2026,14 @@ impl MapRuntimeManager {
         exclude_character_guid: Option<u32>,
     ) -> anyhow::Result<Option<DbCreatureLootReleaseEvent>> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let event = map
-            .lock()
-            .await
-            .release_db_creature_loot(creature_guid, now, exclude_character_guid);
+        let event =
+            map.lock()
+                .await
+                .release_db_creature_loot(creature_guid, now, exclude_character_guid);
         event
     }
 
-    async fn begin_db_creature_combat(
+    pub(in crate::world) async fn begin_db_creature_combat(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -1993,19 +2047,27 @@ impl MapRuntimeManager {
         Some((combat, creature))
     }
 
-    async fn clear_db_creature_combat(&self, map_id: u32, attacker: ObjectGuid) {
+    pub(in crate::world) async fn clear_db_creature_combat(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+    ) {
         let map = self.get_or_create_map(map_id, 0).await;
         map.lock().await.clear_db_creature_combat(attacker);
     }
 
-    async fn clear_db_creature_combats_for_victim(&self, map_id: u32, victim: ObjectGuid) {
+    pub(in crate::world) async fn clear_db_creature_combats_for_victim(
+        &self,
+        map_id: u32,
+        victim: ObjectGuid,
+    ) {
         let map = self.get_or_create_map(map_id, 0).await;
         map.lock()
             .await
             .clear_db_creature_combats_for_victim(victim);
     }
 
-    async fn active_db_creature_combats_for_victim(
+    pub(in crate::world) async fn active_db_creature_combats_for_victim(
         &self,
         map_id: u32,
         victim: ObjectGuid,
@@ -2018,7 +2080,7 @@ impl MapRuntimeManager {
         combats
     }
 
-    async fn active_db_creature_combat_snapshot(
+    pub(in crate::world) async fn active_db_creature_combat_snapshot(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2034,7 +2096,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn apply_db_creature_player_damage(
+    pub(in crate::world) async fn apply_db_creature_player_damage(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2044,14 +2106,17 @@ impl MapRuntimeManager {
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let event = map
-            .lock()
-            .await
-            .apply_db_creature_player_damage(attacker, victim, damage, now, next_swing_at);
+        let event = map.lock().await.apply_db_creature_player_damage(
+            attacker,
+            victim,
+            damage,
+            now,
+            next_swing_at,
+        );
         event
     }
 
-    async fn apply_db_creature_player_melee_outcome(
+    pub(in crate::world) async fn apply_db_creature_player_melee_outcome(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2074,7 +2139,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn ready_db_creature_spell_cast(
+    pub(in crate::world) async fn ready_db_creature_spell_cast(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2092,7 +2157,7 @@ impl MapRuntimeManager {
         ready
     }
 
-    async fn start_db_creature_spell_cast(
+    pub(in crate::world) async fn start_db_creature_spell_cast(
         &self,
         map_id: u32,
         cast: ActiveDbCreatureSpellCast,
@@ -2105,7 +2170,7 @@ impl MapRuntimeManager {
         event
     }
 
-    async fn apply_db_creature_spell_cooldowns(
+    pub(in crate::world) async fn apply_db_creature_spell_cooldowns(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2122,7 +2187,7 @@ impl MapRuntimeManager {
             .apply_db_creature_spell_cooldowns(attacker, spell, template, now);
     }
 
-    async fn complete_ready_db_creature_spell_cast(
+    pub(in crate::world) async fn complete_ready_db_creature_spell_cast(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2137,11 +2202,13 @@ impl MapRuntimeManager {
         let event = map
             .lock()
             .await
-            .complete_ready_db_creature_spell_cast_with_navigation(attacker, victim, now, navigation);
+            .complete_ready_db_creature_spell_cast_with_navigation(
+                attacker, victim, now, navigation,
+            );
         event
     }
 
-    async fn active_db_creature_spell_cast_due_at(
+    pub(in crate::world) async fn active_db_creature_spell_cast_due_at(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2155,7 +2222,7 @@ impl MapRuntimeManager {
         due_at
     }
 
-    async fn db_creature_should_evade(
+    pub(in crate::world) async fn db_creature_should_evade(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2169,7 +2236,7 @@ impl MapRuntimeManager {
         should_evade
     }
 
-    async fn defer_ready_db_creature_swing_retry(
+    pub(in crate::world) async fn defer_ready_db_creature_swing_retry(
         &self,
         map_id: u32,
         attacker: ObjectGuid,
@@ -2184,7 +2251,7 @@ impl MapRuntimeManager {
         combat
     }
 
-    async fn advance_db_creature_motion(
+    pub(in crate::world) async fn advance_db_creature_motion(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -2200,7 +2267,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn advance_active_db_creature_idle_motions(
+    pub(in crate::world) async fn advance_active_db_creature_idle_motions(
         &self,
         map_id: u32,
         navigation: &DbCreatureNavigationGuardrail,
@@ -2215,7 +2282,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn advance_all_active_db_creature_idle_motions(
+    pub(in crate::world) async fn advance_all_active_db_creature_idle_motions(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
@@ -2228,20 +2295,13 @@ impl MapRuntimeManager {
         .await
     }
 
-    async fn advance_all_active_db_creature_idle_motions_with_interval(
+    pub(in crate::world) async fn advance_all_active_db_creature_idle_motions_with_interval(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
         world_tick_interval: Duration,
     ) -> anyhow::Result<DbCreatureIdleMotionTick> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut creatures = Vec::new();
         let mut packets = Vec::new();
         for map in maps {
@@ -2259,18 +2319,11 @@ impl MapRuntimeManager {
         Ok(DbCreatureIdleMotionTick { creatures, packets })
     }
 
-    async fn advance_all_player_regen_ticks(
+    pub(in crate::world) async fn advance_all_player_regen_ticks(
         &self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_regen_tick(now)?);
@@ -2278,18 +2331,11 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn advance_all_player_environment_ticks(
+    pub(in crate::world) async fn advance_all_player_environment_ticks(
         &self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_environment_tick(now)?);
@@ -2297,19 +2343,12 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn advance_all_playerbot_movement_ticks(
+    pub(in crate::world) async fn advance_all_playerbot_movement_ticks(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
     ) -> anyhow::Result<PlayerbotMovementTick> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut aggregate = PlayerbotMovementTick::default();
         for map in maps {
             let tick = map
@@ -2323,7 +2362,7 @@ impl MapRuntimeManager {
         Ok(aggregate)
     }
 
-    async fn plan_all_playerbot_intents(
+    pub(in crate::world) async fn plan_all_playerbot_intents(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
@@ -2347,12 +2386,8 @@ impl MapRuntimeManager {
             combat_thinks_remaining: PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK * map_count,
             ..PlayerbotPlannerBudget::default()
         };
-        let planned = plan_playerbot_intents(
-            inputs,
-            &self.faction_templates,
-            navigation,
-            &mut budget,
-        );
+        let planned =
+            plan_playerbot_intents(inputs, &self.faction_templates, navigation, &mut budget);
         let planned_bots = planned.len() as u32;
 
         let mut by_map: HashMap<(u32, u32), Vec<(u32, PlayerbotQueuedIntents)>> = HashMap::new();
@@ -2374,19 +2409,12 @@ impl MapRuntimeManager {
         })
     }
 
-    async fn advance_all_playerbot_combat_ticks(
+    pub(in crate::world) async fn advance_all_playerbot_combat_ticks(
         &self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
     ) -> anyhow::Result<PlayerbotCombatTick> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut aggregate = PlayerbotCombatTick::default();
         for map in maps {
             let tick = map.lock().await.advance_playerbot_combat_tick(
@@ -2402,18 +2430,11 @@ impl MapRuntimeManager {
         Ok(aggregate)
     }
 
-    async fn advance_all_player_aura_expirations(
+    pub(in crate::world) async fn advance_all_player_aura_expirations(
         &self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_aura_expirations(now)?);
@@ -2421,18 +2442,11 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn advance_all_player_death_presentations(
+    pub(in crate::world) async fn advance_all_player_death_presentations(
         &self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
             packets.extend(map.lock().await.advance_player_death_presentations(now)?);
@@ -2440,7 +2454,7 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn force_player_death_presentation(
+    pub(in crate::world) async fn force_player_death_presentation(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -2457,35 +2471,25 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
-    async fn advance_all_db_creature_auras(
+    pub(in crate::world) async fn advance_all_db_creature_auras(
         &self,
         now: Instant,
         now_epoch_secs: u64,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
-            packets.extend(map.lock().await.advance_db_creature_auras(now, now_epoch_secs)?);
+            packets.extend(
+                map.lock()
+                    .await
+                    .advance_db_creature_auras(now, now_epoch_secs)?,
+            );
         }
         Ok(packets)
     }
 
-    async fn record_observability_snapshots(&self) {
-        let maps = {
-            self.maps
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+    pub(in crate::world) async fn record_observability_snapshots(&self) {
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut snapshots = Vec::with_capacity(maps.len());
         let mut playerbot_snapshots = Vec::new();
         let now = Instant::now();
@@ -2499,7 +2503,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn db_creature_idle_motion_advancement_guids(
+    pub(in crate::world) async fn db_creature_idle_motion_advancement_guids(
         &self,
         map_id: u32,
     ) -> Vec<u64> {
@@ -2509,7 +2513,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn db_creature_idle_motion_start_guids(
+    pub(in crate::world) async fn db_creature_idle_motion_start_guids(
         &self,
         map_id: u32,
         now: Instant,
@@ -2520,7 +2524,7 @@ impl MapRuntimeManager {
     }
 
     #[allow(dead_code)]
-    async fn start_db_creature_idle_motion(
+    pub(in crate::world) async fn start_db_creature_idle_motion(
         &self,
         map_id: u32,
         navigation: &DbCreatureNavigationGuardrail,
@@ -2528,14 +2532,14 @@ impl MapRuntimeManager {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let (creature, motion, _script_ids) = map
-            .lock()
-            .await
-            .start_db_creature_idle_motion(navigation, creature_guid, now)?;
+        let (creature, motion, _script_ids) =
+            map.lock()
+                .await
+                .start_db_creature_idle_motion(navigation, creature_guid, now)?;
         motion.map(|motion| (creature, motion))
     }
 
-    async fn start_db_creature_chase_motion(
+    pub(in crate::world) async fn start_db_creature_chase_motion(
         &self,
         map_id: u32,
         navigation: &DbCreatureNavigationGuardrail,
@@ -2555,7 +2559,7 @@ impl MapRuntimeManager {
         motion
     }
 
-    async fn start_db_creature_return_home_motion(
+    pub(in crate::world) async fn start_db_creature_return_home_motion(
         &self,
         map_id: u32,
         navigation: &DbCreatureNavigationGuardrail,
@@ -2563,14 +2567,14 @@ impl MapRuntimeManager {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let motion = map
-            .lock()
-            .await
-            .start_db_creature_return_home_motion(navigation, creature_guid, now);
+        let motion =
+            map.lock()
+                .await
+                .start_db_creature_return_home_motion(navigation, creature_guid, now);
         motion
     }
 
-    async fn stop_db_creature_motion(
+    pub(in crate::world) async fn stop_db_creature_motion(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -2580,7 +2584,7 @@ impl MapRuntimeManager {
         motion
     }
 
-    async fn face_db_creature_toward_position(
+    pub(in crate::world) async fn face_db_creature_toward_position(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -2594,7 +2598,7 @@ impl MapRuntimeManager {
         result
     }
 
-    async fn prepare_db_creature_evade(
+    pub(in crate::world) async fn prepare_db_creature_evade(
         &self,
         map_id: u32,
         creature_guid: ObjectGuid,
@@ -2604,7 +2608,7 @@ impl MapRuntimeManager {
         creature
     }
 
-    async fn select_db_creature_sight_aggro_targets(
+    pub(in crate::world) async fn select_db_creature_sight_aggro_targets(
         &self,
         map_id: u32,
         character: &ActiveCharacter,
@@ -2620,21 +2624,26 @@ impl MapRuntimeManager {
         targets
     }
 
-    async fn select_db_creature_assist_targets(
+    pub(in crate::world) async fn select_db_creature_assist_targets(
         &self,
         map_id: u32,
         caller_guid: ObjectGuid,
         character: &ActiveCharacter,
     ) -> Option<(DbCreatureRuntime, Vec<ObjectGuid>)> {
         let map = self.get_or_create_map(map_id, 0).await;
-        let targets = map
-            .lock()
-            .await
-            .select_db_creature_assist_targets(&self.faction_templates, caller_guid, character);
+        let targets = map.lock().await.select_db_creature_assist_targets(
+            &self.faction_templates,
+            caller_guid,
+            character,
+        );
         targets
     }
 
-    async fn get_or_create_map(&self, map_id: u32, instance_id: u32) -> Arc<Mutex<MapRuntime>> {
+    pub(in crate::world) async fn get_or_create_map(
+        &self,
+        map_id: u32,
+        instance_id: u32,
+    ) -> Arc<Mutex<MapRuntime>> {
         let map_key = (map_id, instance_id);
         let mut maps = self.maps.lock().await;
         maps.entry(map_key)
@@ -2650,11 +2659,11 @@ impl MapRuntimeManager {
     }
 }
 
-fn grid_world_center(grid: GridCoord) -> (f32, f32) {
+pub(in crate::world) fn grid_world_center(grid: GridCoord) -> (f32, f32) {
     let (min_x, max_x, min_y, max_y) = grid_world_bounds(grid);
     ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
 }
 
-fn player_corpse_grid_query_radius() -> f32 {
+pub(in crate::world) fn player_corpse_grid_query_radius() -> f32 {
     GRID_SIZE_YARDS * std::f32::consts::SQRT_2 * 0.5
 }

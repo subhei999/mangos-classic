@@ -1,63 +1,67 @@
+use super::*;
+
 // Map-owned playerbot actor updates. Bots emit movement intent; MapRuntime owns
 // the player-like position, visibility, cell buckets, and observer packets.
 
 #[derive(Debug, Default)]
-struct PlayerbotMovementTick {
-    advanced_bots: u32,
-    budget_exhausted: bool,
-    packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct PlayerbotMovementTick {
+    pub(in crate::world) advanced_bots: u32,
+    pub(in crate::world) budget_exhausted: bool,
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Default)]
-struct PlayerbotCombatTick {
-    advanced_bots: u32,
-    creature_swings: u32,
-    budget_exhausted: bool,
-    packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct PlayerbotCombatTick {
+    pub(in crate::world) advanced_bots: u32,
+    pub(in crate::world) creature_swings: u32,
+    pub(in crate::world) budget_exhausted: bool,
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Clone)]
-struct PlayerbotMovementUpdate {
-    opcode: u16,
-    movement: MovementInfo,
+pub(in crate::world) struct PlayerbotMovementUpdate {
+    pub(in crate::world) opcode: u16,
+    pub(in crate::world) movement: MovementInfo,
 }
 
 #[derive(Debug, Default)]
-struct PlayerbotPlannerBudget {
-    route_plans_remaining: usize,
-    combat_thinks_remaining: usize,
-    route_budget_exhausted: bool,
-    combat_budget_exhausted: bool,
+pub(in crate::world) struct PlayerbotPlannerBudget {
+    pub(in crate::world) route_plans_remaining: usize,
+    pub(in crate::world) combat_thinks_remaining: usize,
+    pub(in crate::world) route_budget_exhausted: bool,
+    pub(in crate::world) combat_budget_exhausted: bool,
 }
 
-const PLAYERBOT_ROAM_THINK_INTERVAL: Duration = Duration::from_millis(1_250);
-const PLAYERBOT_COMBAT_THINK_INTERVAL: Duration = Duration::from_millis(500);
-const PLAYERBOT_PLANNER_TICK_INTERVAL: Duration = Duration::from_millis(100);
-const PLAYERBOT_MAX_MOVES_PER_MAP_TICK: usize = 1028;
-const PLAYERBOT_MAX_UNOBSERVED_MOVES_PER_MAP_TICK: usize = 128;
-const PLAYERBOT_MAX_ACTIVE_COMBAT_ACTIONS_PER_MAP_TICK: usize = 16;
-const PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK: usize = 4;
-const PLAYERBOT_MAX_CREATURE_SWINGS_PER_MAP_TICK: usize = 128;
-const PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK: usize = 2;
-const PLAYERBOT_TARGET_SEARCH_RADIUS_YARDS: f32 = 35.0;
-const PLAYERBOT_WANDER_MIN_RADIUS_YARDS: f32 = 35.0;
-const PLAYERBOT_WANDER_MAX_RADIUS_YARDS: f32 = 180.0;
-const PLAYERBOT_RUN_SPEED_YARDS_PER_SECOND: f32 = 7.0;
-const PLAYERBOT_DESTINATION_EPSILON_YARDS: f32 = 0.05;
-const PLAYERBOT_ROUTE_MIN_SEGMENT_YARDS: f32 = 14.0;
-const PLAYERBOT_ROUTE_TURN_ANGLE_RADIANS: f32 = 0.35;
-const PLAYERBOT_TRAVEL_ROUTE_LEG_YARDS: f32 = 180.0;
-const PLAYERBOT_TRAVEL_ROUTE_LEG_CANDIDATES_YARDS: [f32; 5] = [180.0, 120.0, 80.0, 40.0, 20.0];
-const PLAYERBOT_ROUTE_REANCHOR_YARDS: f32 = 4.0;
-const PLAYERBOT_TRAVEL_ARRIVED_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
-const PLAYERBOT_ROUTE_PLAN_DEFER_BASE_MILLIS: u64 = 100;
-const PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS: u64 = 5_000;
-const PLAYERBOT_MISSING_INTENT_DEFER_BASE_MILLIS: u64 = 150;
-const PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS: u64 = 7_500;
+pub(in crate::world) const PLAYERBOT_ROAM_THINK_INTERVAL: Duration = Duration::from_millis(1_250);
+pub(in crate::world) const PLAYERBOT_COMBAT_THINK_INTERVAL: Duration = Duration::from_millis(500);
+pub(in crate::world) const PLAYERBOT_PLANNER_TICK_INTERVAL: Duration = Duration::from_millis(100);
+pub(in crate::world) const PLAYERBOT_MAX_MOVES_PER_MAP_TICK: usize = 1028;
+pub(in crate::world) const PLAYERBOT_MAX_UNOBSERVED_MOVES_PER_MAP_TICK: usize = 128;
+pub(in crate::world) const PLAYERBOT_MAX_ACTIVE_COMBAT_ACTIONS_PER_MAP_TICK: usize = 16;
+pub(in crate::world) const PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK: usize = 4;
+pub(in crate::world) const PLAYERBOT_MAX_CREATURE_SWINGS_PER_MAP_TICK: usize = 128;
+pub(in crate::world) const PLAYERBOT_MAX_ROUTE_PLANS_PER_MAP_TICK: usize = 2;
+pub(in crate::world) const PLAYERBOT_TARGET_SEARCH_RADIUS_YARDS: f32 = 35.0;
+pub(in crate::world) const PLAYERBOT_WANDER_MIN_RADIUS_YARDS: f32 = 35.0;
+pub(in crate::world) const PLAYERBOT_WANDER_MAX_RADIUS_YARDS: f32 = 180.0;
+pub(in crate::world) const PLAYERBOT_RUN_SPEED_YARDS_PER_SECOND: f32 = 7.0;
+pub(in crate::world) const PLAYERBOT_DESTINATION_EPSILON_YARDS: f32 = 0.05;
+pub(in crate::world) const PLAYERBOT_ROUTE_MIN_SEGMENT_YARDS: f32 = 14.0;
+pub(in crate::world) const PLAYERBOT_ROUTE_TURN_ANGLE_RADIANS: f32 = 0.35;
+pub(in crate::world) const PLAYERBOT_TRAVEL_ROUTE_LEG_YARDS: f32 = 180.0;
+pub(in crate::world) const PLAYERBOT_TRAVEL_ROUTE_LEG_CANDIDATES_YARDS: [f32; 5] =
+    [180.0, 120.0, 80.0, 40.0, 20.0];
+pub(in crate::world) const PLAYERBOT_ROUTE_REANCHOR_YARDS: f32 = 4.0;
+pub(in crate::world) const PLAYERBOT_TRAVEL_ARRIVED_RECHECK_INTERVAL: Duration =
+    Duration::from_secs(30);
+pub(in crate::world) const PLAYERBOT_ROUTE_PLAN_DEFER_BASE_MILLIS: u64 = 100;
+pub(in crate::world) const PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS: u64 = 5_000;
+pub(in crate::world) const PLAYERBOT_MISSING_INTENT_DEFER_BASE_MILLIS: u64 = 150;
+pub(in crate::world) const PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS: u64 = 7_500;
 
 impl MapRuntime {
     #[cfg(test)]
-    fn plan_playerbot_intents_for_test(
+    pub(in crate::world) fn plan_playerbot_intents_for_test(
         &mut self,
         faction_templates: &FactionTemplateStore,
         navigation: &DbCreatureNavigationGuardrail,
@@ -69,8 +73,7 @@ impl MapRuntime {
             combat_thinks_remaining: PLAYERBOT_MAX_COMBAT_THINKS_PER_MAP_TICK,
             ..PlayerbotPlannerBudget::default()
         };
-        let planned =
-            plan_playerbot_intents(inputs, faction_templates, navigation, &mut budget);
+        let planned = plan_playerbot_intents(inputs, faction_templates, navigation, &mut budget);
         let planned_bots = planned.len() as u32;
         let intents = planned
             .into_iter()
@@ -84,7 +87,10 @@ impl MapRuntime {
         }
     }
 
-    fn collect_playerbot_plan_inputs(&self, now: Instant) -> Vec<PlayerbotPlanInput> {
+    pub(in crate::world) fn collect_playerbot_plan_inputs(
+        &self,
+        now: Instant,
+    ) -> Vec<PlayerbotPlanInput> {
         self.players
             .iter()
             .filter_map(|(guid, player)| {
@@ -97,10 +103,9 @@ impl MapRuntime {
                     .active_leg
                     .map(|leg| playerbot_position_on_leg(leg, now))
                     .unwrap_or(player.position);
-                let movement_due_at = (bot.active_leg.is_none()
-                    && bot.route.is_empty()
-                    && now >= bot.next_think_at)
-                    .then_some(bot.next_think_at);
+                let movement_due_at =
+                    (bot.active_leg.is_none() && bot.route.is_empty() && now >= bot.next_think_at)
+                        .then_some(bot.next_think_at);
                 let combat_due_at = (player.active_combat_target.is_none()
                     && now >= bot.next_combat_think_at)
                     .then_some(bot.next_combat_think_at);
@@ -141,7 +146,10 @@ impl MapRuntime {
             .collect()
     }
 
-    fn queue_playerbot_intents(&mut self, intents: Vec<(u32, PlayerbotQueuedIntents)>) {
+    pub(in crate::world) fn queue_playerbot_intents(
+        &mut self,
+        intents: Vec<(u32, PlayerbotQueuedIntents)>,
+    ) {
         for (bot_guid, intent) in intents {
             if intent.is_empty()
                 || self
@@ -161,7 +169,7 @@ impl MapRuntime {
         }
     }
 
-    fn take_playerbot_movement_intent(
+    pub(in crate::world) fn take_playerbot_movement_intent(
         &mut self,
         bot_guid: u32,
     ) -> Option<PlayerbotMovementIntent> {
@@ -179,7 +187,10 @@ impl MapRuntime {
         intent
     }
 
-    fn take_playerbot_combat_intent(&mut self, bot_guid: u32) -> Option<PlayerbotCombatIntent> {
+    pub(in crate::world) fn take_playerbot_combat_intent(
+        &mut self,
+        bot_guid: u32,
+    ) -> Option<PlayerbotCombatIntent> {
         let intent = self
             .playerbot_intents
             .get_mut(&bot_guid)
@@ -194,7 +205,7 @@ impl MapRuntime {
         intent
     }
 
-    fn playerbot_debug_snapshots(
+    pub(in crate::world) fn playerbot_debug_snapshots(
         &self,
         now: Instant,
     ) -> Vec<crate::observability::PlayerbotDebugSnapshot> {
@@ -257,7 +268,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn advance_playerbot_movement_tick(
+    pub(in crate::world) fn advance_playerbot_movement_tick(
         &mut self,
         _navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
@@ -269,7 +280,10 @@ impl MapRuntime {
             now,
         );
 
-        let has_client_players = self.players.values().any(PlayerRuntime::is_client_controlled);
+        let has_client_players = self
+            .players
+            .values()
+            .any(PlayerRuntime::is_client_controlled);
         let move_budget = if has_client_players {
             PLAYERBOT_MAX_MOVES_PER_MAP_TICK
         } else {
@@ -321,7 +335,7 @@ impl MapRuntime {
         })
     }
 
-    fn advance_playerbot_combat_tick(
+    pub(in crate::world) fn advance_playerbot_combat_tick(
         &mut self,
         faction_templates: &FactionTemplateStore,
         navigation: &DbCreatureNavigationGuardrail,
@@ -411,7 +425,7 @@ impl MapRuntime {
         })
     }
 
-    fn advance_single_playerbot_combat(
+    pub(in crate::world) fn advance_single_playerbot_combat(
         &mut self,
         bot_guid: u32,
         faction_templates: &FactionTemplateStore,
@@ -433,7 +447,7 @@ impl MapRuntime {
         self.apply_playerbot_combat_intent(bot_guid, intent, faction_templates, navigation, now)
     }
 
-    fn apply_playerbot_combat_intent(
+    pub(in crate::world) fn apply_playerbot_combat_intent(
         &mut self,
         bot_guid: u32,
         intent: PlayerbotCombatIntent,
@@ -454,20 +468,19 @@ impl MapRuntime {
                 }
                 Ok(Vec::new())
             }
-            PlayerbotCombatIntent::Target { target, route } => {
-                self.advance_playerbot_planned_target(
+            PlayerbotCombatIntent::Target { target, route } => self
+                .advance_playerbot_planned_target(
                     bot_guid,
                     target,
                     route,
                     faction_templates,
                     navigation,
                     now,
-                )
-            }
+                ),
         }
     }
 
-    fn advance_playerbot_planned_target(
+    pub(in crate::world) fn advance_playerbot_planned_target(
         &mut self,
         bot_guid: u32,
         target: ObjectGuid,
@@ -531,7 +544,7 @@ impl MapRuntime {
     }
 
     #[allow(dead_code)]
-    fn start_playerbot_attack_if_target_available(
+    pub(in crate::world) fn start_playerbot_attack_if_target_available(
         &mut self,
         bot_guid: u32,
         faction_templates: &FactionTemplateStore,
@@ -598,7 +611,7 @@ impl MapRuntime {
     }
 
     #[allow(dead_code)]
-    fn advance_playerbot_engagement(
+    pub(in crate::world) fn advance_playerbot_engagement(
         &mut self,
         bot_guid: u32,
         target: ObjectGuid,
@@ -658,7 +671,7 @@ impl MapRuntime {
         Ok(Vec::new())
     }
 
-    fn set_playerbot_engage_target(
+    pub(in crate::world) fn set_playerbot_engage_target(
         &mut self,
         bot_guid: u32,
         target: ObjectGuid,
@@ -677,7 +690,7 @@ impl MapRuntime {
         self.update_player_selection(bot_guid, Some(target))
     }
 
-    fn clear_playerbot_engage_target(
+    pub(in crate::world) fn clear_playerbot_engage_target(
         &mut self,
         bot_guid: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -692,12 +705,15 @@ impl MapRuntime {
         self.update_player_selection(bot_guid, None)
     }
 
-    fn stop_playerbot_active_leg_for_combat(
+    pub(in crate::world) fn stop_playerbot_active_leg_for_combat(
         &mut self,
         bot_guid: u32,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let has_client_players = self.players.values().any(PlayerRuntime::is_client_controlled);
+        let has_client_players = self
+            .players
+            .values()
+            .any(PlayerRuntime::is_client_controlled);
         let geometry = self.geometry.clone();
         let Some(player) = self.players.get_mut(&bot_guid) else {
             return Ok(Vec::new());
@@ -736,7 +752,7 @@ impl MapRuntime {
         }
     }
 
-    fn start_playerbot_attack(
+    pub(in crate::world) fn start_playerbot_attack(
         &mut self,
         bot_guid: u32,
         target: ObjectGuid,
@@ -771,7 +787,10 @@ impl MapRuntime {
         ));
 
         if let Some(creature) = self.db_creature_combat_snapshot(target) {
-            if self.begin_db_creature_combat(target, bot_object, now).is_some() {
+            if self
+                .begin_db_creature_combat(target, bot_object, now)
+                .is_some()
+            {
                 packets.extend(self.broadcast_packet_near_position(
                     creature.current_position,
                     CREATURE_SPAWN_RADIUS_YARDS,
@@ -798,7 +817,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn advance_playerbot_auto_attack(
+    pub(in crate::world) fn advance_playerbot_auto_attack(
         &mut self,
         bot_guid: u32,
         target: ObjectGuid,
@@ -813,7 +832,8 @@ impl MapRuntime {
         }
 
         self.face_playerbot_toward(bot_guid, target_creature.current_position);
-        let validation = self.validate_player_melee_against_db_creature(bot_guid, target, navigation);
+        let validation =
+            self.validate_player_melee_against_db_creature(bot_guid, target, navigation);
         if validation.check != PlayerMeleeCheck::Clear {
             if matches!(
                 validation.check,
@@ -844,8 +864,12 @@ impl MapRuntime {
         let bot_object = ObjectGuid::new(HighGuid::Player, 0, bot_guid);
         let combat_stats = player.combat_stats;
         let player_level = player.level;
-        let melee_outcome =
-            player_main_hand_melee_outcome_against_db_creature(&combat_stats, player_level, 0, &target_creature);
+        let melee_outcome = player_main_hand_melee_outcome_against_db_creature(
+            &combat_stats,
+            player_level,
+            0,
+            &target_creature,
+        );
         let Some(event) = self.apply_db_creature_damage(DbCreatureDamageRequest {
             creature_guid: target,
             killer: bot_object,
@@ -909,7 +933,12 @@ impl MapRuntime {
             let new_rage = self
                 .players
                 .get(&bot_guid)
-                .map(|player| player.power2.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT))
+                .map(|player| {
+                    player
+                        .power2
+                        .saturating_add(rage_gain)
+                        .min(POWER_RAGE_DEFAULT)
+                })
                 .unwrap_or(0);
             self.set_player_power2(bot_guid, new_rage);
             packets.extend(self.broadcast_nearby_player_packet(
@@ -925,7 +954,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn advance_playerbot_creature_swing(
+    pub(in crate::world) fn advance_playerbot_creature_swing(
         &mut self,
         combat: CreatureCombatState,
         navigation: &DbCreatureNavigationGuardrail,
@@ -991,7 +1020,12 @@ impl MapRuntime {
             let new_rage = self
                 .players
                 .get(&bot_guid)
-                .map(|player| player.power2.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT))
+                .map(|player| {
+                    player
+                        .power2
+                        .saturating_add(rage_gain)
+                        .min(POWER_RAGE_DEFAULT)
+                })
                 .unwrap_or(0);
             self.set_player_power2(bot_guid, new_rage);
             packets.extend(self.broadcast_nearby_player_packet(
@@ -1010,7 +1044,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn clear_playerbot_auto_attack(
+    pub(in crate::world) fn clear_playerbot_auto_attack(
         &mut self,
         bot_guid: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -1051,7 +1085,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn face_playerbot_toward(&mut self, bot_guid: u32, target: WorldPosition) {
+    pub(in crate::world) fn face_playerbot_toward(&mut self, bot_guid: u32, target: WorldPosition) {
         if let Some(player) = self.players.get_mut(&bot_guid) {
             player.position = WorldPosition::new(
                 player.position.map_id,
@@ -1063,7 +1097,7 @@ impl MapRuntime {
         }
     }
 
-    fn broadcast_packet_near_position(
+    pub(in crate::world) fn broadcast_packet_near_position(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -1080,7 +1114,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn playerbot_is_in_active_grid(&self, player: &PlayerRuntime) -> bool {
+    pub(in crate::world) fn playerbot_is_in_active_grid(&self, player: &PlayerRuntime) -> bool {
         if player
             .bot_runtime
             .as_ref()
@@ -1094,7 +1128,7 @@ impl MapRuntime {
         })
     }
 
-    fn prepare_playerbot_roam_movement(
+    pub(in crate::world) fn prepare_playerbot_roam_movement(
         &mut self,
         bot_guid: u32,
         now: Instant,
@@ -1159,8 +1193,10 @@ impl MapRuntime {
                     if bot.engage_target.is_some() {
                         bot.engage_target = None;
                         bot.route.clear();
-                        bot.next_think_at = now + playerbot_next_roam_delay(bot_guid, bot.roam_step);
-                        bot.next_combat_think_at = now + playerbot_failed_engage_backoff_delay(bot_guid);
+                        bot.next_think_at =
+                            now + playerbot_next_roam_delay(bot_guid, bot.roam_step);
+                        bot.next_combat_think_at =
+                            now + playerbot_failed_engage_backoff_delay(bot_guid);
                         crate::observability::record_playerbot_event("engage_route_failed_backoff");
                     } else {
                         bot.next_think_at = now + playerbot_failed_route_retry_delay(bot_guid);
@@ -1207,7 +1243,7 @@ impl MapRuntime {
         None
     }
 
-    fn commit_unobserved_playerbot_movement(
+    pub(in crate::world) fn commit_unobserved_playerbot_movement(
         &mut self,
         bot_guid: u32,
         movement: &MovementInfo,
@@ -1258,9 +1294,9 @@ impl MapRuntime {
     }
 }
 
-const PLAYERBOT_ROAM_STEPS: u8 = u8::MAX;
+pub(in crate::world) const PLAYERBOT_ROAM_STEPS: u8 = u8::MAX;
 
-fn plan_playerbot_intents(
+pub(in crate::world) fn plan_playerbot_intents(
     mut inputs: Vec<PlayerbotPlanInput>,
     faction_templates: &FactionTemplateStore,
     navigation: &DbCreatureNavigationGuardrail,
@@ -1314,11 +1350,11 @@ fn plan_playerbot_intents(
     planned
 }
 
-fn playerbot_movement_route_uses_budget(input: &PlayerbotPlanInput) -> bool {
+pub(in crate::world) fn playerbot_movement_route_uses_budget(input: &PlayerbotPlanInput) -> bool {
     input.travel_destination.is_some() || input.engage_target_creature.is_some()
 }
 
-fn plan_playerbot_movement_route(
+pub(in crate::world) fn plan_playerbot_movement_route(
     input: &PlayerbotPlanInput,
     navigation: &DbCreatureNavigationGuardrail,
 ) -> Option<Vec<WorldPosition>> {
@@ -1337,7 +1373,13 @@ fn plan_playerbot_movement_route(
         );
     }
     if input.travel_destination.is_none() {
-        return playerbot_roam_route_points(geometry, input.position, input.home_position, input.roam_step, input.bot_guid);
+        return playerbot_roam_route_points(
+            geometry,
+            input.position,
+            input.home_position,
+            input.roam_step,
+            input.bot_guid,
+        );
     }
     playerbot_route_points(
         navigation,
@@ -1350,7 +1392,7 @@ fn plan_playerbot_movement_route(
     )
 }
 
-fn playerbot_roam_route_points(
+pub(in crate::world) fn playerbot_roam_route_points(
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     home_position: WorldPosition,
@@ -1362,16 +1404,20 @@ fn playerbot_roam_route_points(
     if start.distance_2d(&target) <= PLAYERBOT_DESTINATION_EPSILON_YARDS {
         return Some(Vec::new());
     }
-    Some(playerbot_local_grounded_route_points(geometry, start, target))
+    Some(playerbot_local_grounded_route_points(
+        geometry, start, target,
+    ))
 }
 
-fn playerbot_local_grounded_route_points(
+pub(in crate::world) fn playerbot_local_grounded_route_points(
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     target: WorldPosition,
 ) -> Vec<WorldPosition> {
     let distance = start.distance_2d(&target);
-    let steps = (distance / PLAYERBOT_ROUTE_MIN_SEGMENT_YARDS).ceil().max(1.0) as u32;
+    let steps = (distance / PLAYERBOT_ROUTE_MIN_SEGMENT_YARDS)
+        .ceil()
+        .max(1.0) as u32;
     let mut points = Vec::new();
     for step in 1..=steps {
         let ratio = step as f32 / steps as f32;
@@ -1382,12 +1428,15 @@ fn playerbot_local_grounded_route_points(
             start.z + (target.z - start.z) * ratio,
             playerbot_orientation_toward(start, target),
         );
-        push_playerbot_route_point(&mut points, playerbot_grounded_position(geometry, candidate));
+        push_playerbot_route_point(
+            &mut points,
+            playerbot_grounded_position(geometry, candidate),
+        );
     }
     points
 }
 
-fn plan_playerbot_combat_intent(
+pub(in crate::world) fn plan_playerbot_combat_intent(
     input: &PlayerbotPlanInput,
     faction_templates: &FactionTemplateStore,
     navigation: &DbCreatureNavigationGuardrail,
@@ -1414,7 +1463,7 @@ fn plan_playerbot_combat_intent(
     PlayerbotCombatIntent::NoTarget
 }
 
-fn plan_playerbot_combat_route(
+pub(in crate::world) fn plan_playerbot_combat_route(
     input: &PlayerbotPlanInput,
     creature: &DbCreatureRuntime,
     navigation: &DbCreatureNavigationGuardrail,
@@ -1437,7 +1486,7 @@ fn plan_playerbot_combat_route(
     )
 }
 
-fn playerbot_route_points(
+pub(in crate::world) fn playerbot_route_points(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
@@ -1456,7 +1505,7 @@ fn playerbot_route_points(
     )
 }
 
-fn playerbot_route_points_to_target(
+pub(in crate::world) fn playerbot_route_points_to_target(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
@@ -1470,25 +1519,30 @@ fn playerbot_route_points_to_target(
         return Some(Vec::new());
     }
     let route_start = playerbot_grounded_route_start(geometry, start);
-    let mut points =
-        playerbot_route_points_from_anchor(navigation, geometry, route_start, target, allow_travel_partials)
-            .or_else(|| {
-                allow_travel_partials
-                    .then(|| playerbot_reanchored_route_points(navigation, geometry, start, target))
-                    .flatten()
-            })?;
+    let mut points = playerbot_route_points_from_anchor(
+        navigation,
+        geometry,
+        route_start,
+        target,
+        allow_travel_partials,
+    )
+    .or_else(|| {
+        allow_travel_partials
+            .then(|| playerbot_reanchored_route_points(navigation, geometry, start, target))
+            .flatten()
+    })?;
     playerbot_prefix_route_anchor(start, route_start, &mut points);
     (!points.is_empty()).then_some(points)
 }
 
-fn playerbot_grounded_route_start(
+pub(in crate::world) fn playerbot_grounded_route_start(
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
 ) -> WorldPosition {
     playerbot_grounded_position(geometry, start)
 }
 
-fn playerbot_grounded_position(
+pub(in crate::world) fn playerbot_grounded_position(
     geometry: Option<&WorldGeometry>,
     position: WorldPosition,
 ) -> WorldPosition {
@@ -1497,25 +1551,20 @@ fn playerbot_grounded_position(
         .unwrap_or(position)
 }
 
-fn playerbot_route_points_from_anchor(
+pub(in crate::world) fn playerbot_route_points_from_anchor(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     anchor: WorldPosition,
     target: WorldPosition,
     allow_travel_partials: bool,
 ) -> Option<Vec<WorldPosition>> {
-    let path = playerbot_path_to_destination(
-        navigation,
-        geometry,
-        anchor,
-        target,
-        CreaturePathMode::Full,
-    )
-    .or_else(|| {
-        allow_travel_partials
-            .then(|| playerbot_partial_travel_path(navigation, geometry, anchor, target))
-            .flatten()
-    })?;
+    let path =
+        playerbot_path_to_destination(navigation, geometry, anchor, target, CreaturePathMode::Full)
+            .or_else(|| {
+                allow_travel_partials
+                    .then(|| playerbot_partial_travel_path(navigation, geometry, anchor, target))
+                    .flatten()
+            })?;
     let points = playerbot_compact_route_points(anchor, path.points);
     if allow_travel_partials && !playerbot_route_makes_progress(anchor, target, &points) {
         return None;
@@ -1523,7 +1572,7 @@ fn playerbot_route_points_from_anchor(
     (!points.is_empty()).then_some(points)
 }
 
-fn playerbot_path_to_destination(
+pub(in crate::world) fn playerbot_path_to_destination(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
@@ -1539,8 +1588,7 @@ fn playerbot_path_to_destination(
                 db_creature_straight_path(start, target_position, mode).map(|points| {
                     DbCreaturePath {
                         flags: DbCreaturePathFlags(
-                            DbCreaturePathFlags::NORMAL.0
-                                | DbCreaturePathFlags::NOT_USING_PATH.0,
+                            DbCreaturePathFlags::NORMAL.0 | DbCreaturePathFlags::NOT_USING_PATH.0,
                         ),
                         points,
                     }
@@ -1552,7 +1600,7 @@ fn playerbot_path_to_destination(
     }
 }
 
-fn playerbot_mmap_path(
+pub(in crate::world) fn playerbot_mmap_path(
     navigation: &DbCreatureNavigationGuardrail,
     start: WorldPosition,
     target_position: WorldPosition,
@@ -1567,7 +1615,9 @@ fn playerbot_mmap_path(
     let Some((target_tile_x, target_tile_y)) = mmap_tile_for_position(target_position) else {
         return DbCreaturePathBuild::Unavailable;
     };
-    if !navigation.world_data_files.has_mmap_support_for_map(start.map_id)
+    if !navigation
+        .world_data_files
+        .has_mmap_support_for_map(start.map_id)
         || !navigation
             .world_data_files
             .has_mmap_tile(start.map_id, start_tile_x, start_tile_y)
@@ -1611,7 +1661,7 @@ fn playerbot_mmap_path(
     }
 }
 
-fn playerbot_partial_travel_path(
+pub(in crate::world) fn playerbot_partial_travel_path(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     anchor: WorldPosition,
@@ -1632,7 +1682,7 @@ fn playerbot_partial_travel_path(
     None
 }
 
-fn playerbot_reanchored_route_points(
+pub(in crate::world) fn playerbot_reanchored_route_points(
     navigation: &DbCreatureNavigationGuardrail,
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
@@ -1669,7 +1719,7 @@ fn playerbot_reanchored_route_points(
     None
 }
 
-fn playerbot_reanchor_candidates(
+pub(in crate::world) fn playerbot_reanchor_candidates(
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     target: WorldPosition,
@@ -1696,7 +1746,7 @@ fn playerbot_reanchor_candidates(
     .collect()
 }
 
-fn playerbot_prefix_route_anchor(
+pub(in crate::world) fn playerbot_prefix_route_anchor(
     start: WorldPosition,
     anchor: WorldPosition,
     points: &mut Vec<WorldPosition>,
@@ -1707,7 +1757,7 @@ fn playerbot_prefix_route_anchor(
     points.insert(0, anchor);
 }
 
-fn playerbot_route_makes_progress(
+pub(in crate::world) fn playerbot_route_makes_progress(
     start: WorldPosition,
     target: WorldPosition,
     points: &[WorldPosition],
@@ -1718,7 +1768,7 @@ fn playerbot_route_makes_progress(
     last.distance_2d(&target) + PLAYERBOT_DESTINATION_EPSILON_YARDS < start.distance_2d(&target)
 }
 
-fn playerbot_route_target(
+pub(in crate::world) fn playerbot_route_target(
     bot_guid: u32,
     travel_destination: Option<WorldPosition>,
     home_position: WorldPosition,
@@ -1730,13 +1780,13 @@ fn playerbot_route_target(
     }
 }
 
-fn playerbot_movement_due_at(bot: &PlayerbotRuntimeState) -> Instant {
+pub(in crate::world) fn playerbot_movement_due_at(bot: &PlayerbotRuntimeState) -> Instant {
     bot.active_leg
         .map(|leg| leg.arrival_time)
         .unwrap_or(bot.next_think_at)
 }
 
-fn playerbot_combat_due_at(
+pub(in crate::world) fn playerbot_combat_due_at(
     player: &PlayerRuntime,
     bot: &PlayerbotRuntimeState,
     now: Instant,
@@ -1747,55 +1797,60 @@ fn playerbot_combat_due_at(
     bot.next_combat_think_at
 }
 
-fn playerbot_next_roam_delay(bot_guid: u32, roam_step: u8) -> Duration {
+pub(in crate::world) fn playerbot_next_roam_delay(bot_guid: u32, roam_step: u8) -> Duration {
     let stagger_window_ms = PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64;
-    let stagger_ms = (u64::from(bot_guid).wrapping_mul(37) + u64::from(roam_step).wrapping_mul(149))
+    let stagger_ms = (u64::from(bot_guid).wrapping_mul(37)
+        + u64::from(roam_step).wrapping_mul(149))
         % stagger_window_ms;
     PLAYERBOT_ROAM_THINK_INTERVAL + Duration::from_millis(stagger_ms)
 }
 
-fn playerbot_next_combat_think_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_next_combat_think_delay(bot_guid: u32) -> Duration {
     let stagger_window_ms = PLAYERBOT_COMBAT_THINK_INTERVAL.as_millis() as u64;
     let stagger_ms = u64::from(bot_guid).wrapping_mul(43) % stagger_window_ms;
     PLAYERBOT_COMBAT_THINK_INTERVAL + Duration::from_millis(stagger_ms)
 }
 
-fn playerbot_route_plan_defer_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_route_plan_defer_delay(bot_guid: u32) -> Duration {
     Duration::from_millis(
         PLAYERBOT_ROUTE_PLAN_DEFER_BASE_MILLIS
-            + (u64::from(bot_guid).wrapping_mul(17) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+            + (u64::from(bot_guid).wrapping_mul(17)
+                % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
     )
 }
 
-fn playerbot_missing_intent_defer_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_missing_intent_defer_delay(bot_guid: u32) -> Duration {
     Duration::from_millis(
         PLAYERBOT_MISSING_INTENT_DEFER_BASE_MILLIS
-            + (u64::from(bot_guid).wrapping_mul(23) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+            + (u64::from(bot_guid).wrapping_mul(23)
+                % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
     )
 }
 
-fn playerbot_failed_route_retry_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_failed_route_retry_delay(bot_guid: u32) -> Duration {
     Duration::from_millis(
         PLAYERBOT_ROUTE_PLAN_FAILED_RETRY_MILLIS
-            + (u64::from(bot_guid).wrapping_mul(37) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+            + (u64::from(bot_guid).wrapping_mul(37)
+                % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
     )
 }
 
-fn playerbot_failed_engage_backoff_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_failed_engage_backoff_delay(bot_guid: u32) -> Duration {
     Duration::from_millis(
         PLAYERBOT_ENGAGE_FAILED_BACKOFF_MILLIS
-            + (u64::from(bot_guid).wrapping_mul(41) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
+            + (u64::from(bot_guid).wrapping_mul(41)
+                % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64),
     )
 }
 
-fn playerbot_travel_arrived_recheck_delay(bot_guid: u32) -> Duration {
+pub(in crate::world) fn playerbot_travel_arrived_recheck_delay(bot_guid: u32) -> Duration {
     PLAYERBOT_TRAVEL_ARRIVED_RECHECK_INTERVAL
         + Duration::from_millis(
             u64::from(bot_guid).wrapping_mul(53) % PLAYERBOT_ROAM_THINK_INTERVAL.as_millis() as u64,
         )
 }
 
-fn playerbot_partial_travel_target(
+pub(in crate::world) fn playerbot_partial_travel_target(
     geometry: Option<&WorldGeometry>,
     start: WorldPosition,
     target: WorldPosition,
@@ -1810,7 +1865,12 @@ fn playerbot_partial_travel_target(
     if distance <= PLAYERBOT_DESTINATION_EPSILON_YARDS {
         return None;
     }
-    let travel = leg_yards.clamp(PLAYERBOT_DESTINATION_EPSILON_YARDS, PLAYERBOT_TRAVEL_ROUTE_LEG_YARDS).min(distance);
+    let travel = leg_yards
+        .clamp(
+            PLAYERBOT_DESTINATION_EPSILON_YARDS,
+            PLAYERBOT_TRAVEL_ROUTE_LEG_YARDS,
+        )
+        .min(distance);
     let ratio = travel / distance;
     let partial_target = WorldPosition::new(
         start.map_id,
@@ -1826,7 +1886,7 @@ fn playerbot_partial_travel_target(
     )
 }
 
-fn playerbot_compact_route_points(
+pub(in crate::world) fn playerbot_compact_route_points(
     start: WorldPosition,
     points: Vec<WorldPosition>,
 ) -> Vec<WorldPosition> {
@@ -1857,7 +1917,10 @@ fn playerbot_compact_route_points(
     compact
 }
 
-fn push_playerbot_route_point(points: &mut Vec<WorldPosition>, point: WorldPosition) {
+pub(in crate::world) fn push_playerbot_route_point(
+    points: &mut Vec<WorldPosition>,
+    point: WorldPosition,
+) {
     let should_push = match points.last() {
         Some(last) => last.distance_2d(&point) > PLAYERBOT_DESTINATION_EPSILON_YARDS,
         None => true,
@@ -1867,7 +1930,7 @@ fn push_playerbot_route_point(points: &mut Vec<WorldPosition>, point: WorldPosit
     }
 }
 
-fn playerbot_turn_angle(
+pub(in crate::world) fn playerbot_turn_angle(
     anchor: WorldPosition,
     corner: WorldPosition,
     next: WorldPosition,
@@ -1878,8 +1941,7 @@ fn playerbot_turn_angle(
     let by = next.y - corner.y;
     let a_len = (ax.mul_add(ax, ay * ay)).sqrt();
     let b_len = (bx.mul_add(bx, by * by)).sqrt();
-    if a_len <= PLAYERBOT_DESTINATION_EPSILON_YARDS
-        || b_len <= PLAYERBOT_DESTINATION_EPSILON_YARDS
+    if a_len <= PLAYERBOT_DESTINATION_EPSILON_YARDS || b_len <= PLAYERBOT_DESTINATION_EPSILON_YARDS
     {
         return 0.0;
     }
@@ -1887,7 +1949,11 @@ fn playerbot_turn_angle(
     dot.clamp(-1.0, 1.0).acos()
 }
 
-fn playerbot_roam_destination(home: WorldPosition, bot_guid: u32, step: u8) -> WorldPosition {
+pub(in crate::world) fn playerbot_roam_destination(
+    home: WorldPosition,
+    bot_guid: u32,
+    step: u8,
+) -> WorldPosition {
     let angle_seed = playerbot_hash64(u64::from(bot_guid) << 32 | u64::from(step));
     let radius_seed = playerbot_hash64(angle_seed ^ 0x9E37_79B9_7F4A_7C15);
     let angle = playerbot_unit_float(angle_seed) * std::f32::consts::TAU;
@@ -1903,18 +1969,18 @@ fn playerbot_roam_destination(home: WorldPosition, bot_guid: u32, step: u8) -> W
     )
 }
 
-fn playerbot_hash64(mut value: u64) -> u64 {
+pub(in crate::world) fn playerbot_hash64(mut value: u64) -> u64 {
     value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
 }
 
-fn playerbot_unit_float(value: u64) -> f32 {
+pub(in crate::world) fn playerbot_unit_float(value: u64) -> f32 {
     ((value >> 40) as f32) / ((1u64 << 24) as f32)
 }
 
-fn playerbot_movement_leg(
+pub(in crate::world) fn playerbot_movement_leg(
     start_position: WorldPosition,
     destination: WorldPosition,
     start_time: Instant,
@@ -1934,7 +2000,10 @@ fn playerbot_movement_leg(
     }
 }
 
-fn playerbot_position_on_leg(leg: PlayerbotMovementLeg, now: Instant) -> WorldPosition {
+pub(in crate::world) fn playerbot_position_on_leg(
+    leg: PlayerbotMovementLeg,
+    now: Instant,
+) -> WorldPosition {
     if now >= leg.arrival_time {
         return WorldPosition::new(
             leg.destination.map_id,
@@ -1949,7 +2018,10 @@ fn playerbot_position_on_leg(leg: PlayerbotMovementLeg, now: Instant) -> WorldPo
     playerbot_step_toward(leg.start_position, leg.destination, max_distance).0
 }
 
-fn playerbot_orientation_toward(start: WorldPosition, destination: WorldPosition) -> f32 {
+pub(in crate::world) fn playerbot_orientation_toward(
+    start: WorldPosition,
+    destination: WorldPosition,
+) -> f32 {
     let dx = destination.x - start.x;
     let dy = destination.y - start.y;
     if dx.abs() <= f32::EPSILON && dy.abs() <= f32::EPSILON {
@@ -1958,7 +2030,7 @@ fn playerbot_orientation_toward(start: WorldPosition, destination: WorldPosition
     normalize_orientation(dy.atan2(dx))
 }
 
-fn playerbot_step_toward(
+pub(in crate::world) fn playerbot_step_toward(
     start: WorldPosition,
     destination: WorldPosition,
     max_distance: f32,
@@ -1994,7 +2066,7 @@ fn playerbot_step_toward(
     (next, false)
 }
 
-fn playerbot_can_attack_db_creature(
+pub(in crate::world) fn playerbot_can_attack_db_creature(
     faction_templates: &FactionTemplateStore,
     creature: &DbCreatureRuntime,
     player_race: u8,
@@ -2012,7 +2084,7 @@ fn playerbot_can_attack_db_creature(
             ) != FactionReaction::Friendly)
 }
 
-fn playerbot_creature_can_reach_player(
+pub(in crate::world) fn playerbot_creature_can_reach_player(
     creature: &DbCreatureRuntime,
     player: &PlayerRuntime,
     navigation: &DbCreatureNavigationGuardrail,
@@ -2030,7 +2102,7 @@ fn playerbot_creature_can_reach_player(
     db_creature_navigation_check(navigation, creature.current_position, player.position).is_clear()
 }
 
-fn playerbot_can_melee_db_creature_from_position(
+pub(in crate::world) fn playerbot_can_melee_db_creature_from_position(
     position: WorldPosition,
     creature: &DbCreatureRuntime,
     navigation: &DbCreatureNavigationGuardrail,

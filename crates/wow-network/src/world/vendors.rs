@@ -1,12 +1,12 @@
-async fn handle_npc_text_query(
+use super::*;
+
+pub(in crate::world) async fn handle_npc_text_query(
     stream: &mut WorldPacketSink,
-    body: &[u8],
+    request: wow_proto::NpcTextQueryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let mut cursor = 0;
-    let text_id = read_u32(body, &mut cursor)?;
-    ensure_available(body, cursor + 8)?;
-    let guid = ObjectGuid::from_raw(u64::from_le_bytes(body[cursor..cursor + 8].try_into()?));
+    let text_id = request.text_id;
+    let guid = ObjectGuid::from_raw(request.raw_guid);
     info!(
         text_id,
         guid = format_args!("0x{:016X}", guid.raw()),
@@ -21,13 +21,13 @@ async fn handle_npc_text_query(
     send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
 }
 
-async fn handle_list_inventory(
+pub(in crate::world) async fn handle_list_inventory(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::ListInventoryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let guid = read_packet_guid(body, "CMSG_LIST_INVENTORY")?;
+    let guid = ObjectGuid::from_raw(request.raw_guid);
     let response = if guid == rust_guide_guid() {
         build_rust_guide_vendor_inventory()
     } else if guid.is_creature() {
@@ -50,20 +50,20 @@ async fn handle_list_inventory(
     send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await
 }
 
-async fn handle_buy_item(
+pub(in crate::world) async fn handle_buy_item(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::BuyItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring vendor buy before character login");
         return Ok(());
     };
     let character_guid = character.guid;
-    let buy = BuyItemRequest::read(body)?;
+    let buy = BuyItemRequest::from(request);
     let vendor_item = vendor_buy_item(world_db_pool, buy).await?;
     let Some(vendor_item) = vendor_item else {
         warn!(
@@ -83,23 +83,17 @@ async fn handle_buy_item(
     };
     let count = buy.count.max(1);
     let total_count = vendor_item.buy_count.max(1).saturating_mul(count as u32);
-    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
     let Some(store_plan) = plan_store_item(
-        &session.inventory,
+        &session.inventory.items,
         &template,
         total_count,
         &equipped_bags,
         None,
         None,
     ) else {
-        send_inventory_change_failure(
-            stream,
-            EQUIP_ERR_INVENTORY_FULL,
-            None,
-            None,
-            header_crypto,
-        )
-        .await?;
+        send_inventory_change_failure(stream, EQUIP_ERR_INVENTORY_FULL, None, None, header_crypto)
+            .await?;
         return Ok(());
     };
 
@@ -120,17 +114,17 @@ async fn handle_buy_item(
             }
         }
     };
-    let random_properties =
-        generate_item_instance_random_properties(
-            world_db_pool,
-            &session.db_creature_navigation.world_data_files,
-            buy.item,
-        )
-        .await?;
+    let random_properties = generate_item_instance_random_properties(
+        world_db_pool,
+        &session.movement.db_creature_navigation.world_data_files,
+        buy.item,
+    )
+    .await?;
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
             let existing_count = session
                 .inventory
+                .items
                 .iter()
                 .find(|item| item.item == item_guid)
                 .map(|item| item.count)
@@ -158,7 +152,8 @@ async fn handle_buy_item(
             .await?;
         }
     }
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
 
     send_packet(
         stream,
@@ -176,26 +171,35 @@ async fn handle_buy_item(
     let mut update_blocks = Vec::new();
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
-            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+            if let Some(item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.item == item_guid)
+            {
                 update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
             }
             continue;
         }
         if let Some(new_item) = session
             .inventory
+            .items
             .iter()
             .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
         {
-            let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
+            let contained_guid =
+                item_contained_guid(owner_guid, &session.inventory.items, new_item);
             update_blocks.push(build_item_create_update_block(
                 owner_guid,
                 contained_guid,
                 new_item,
-                (new_item.item_template == buy.item).then_some(container_slots).flatten(),
+                (new_item.item_template == buy.item)
+                    .then_some(container_slots)
+                    .flatten(),
             )?);
             update_blocks.extend(build_inventory_position_update_blocks(
                 character_guid,
-                &session.inventory,
+                &session.inventory.items,
                 slot.bag,
                 slot.slot,
             )?);
@@ -215,22 +219,75 @@ async fn handle_buy_item(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-struct VendorBuyItem {
-    slot: u32,
-    container_slots: u32,
-    buy_count: u32,
-    price: u32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct BuyItemRequest {
+    pub(in crate::world) vendor_guid: ObjectGuid,
+    pub(in crate::world) item: u32,
+    pub(in crate::world) count: u8,
 }
 
-async fn vendor_buy_item(
+impl From<wow_proto::BuyItemRequest> for BuyItemRequest {
+    fn from(request: wow_proto::BuyItemRequest) -> Self {
+        Self {
+            vendor_guid: ObjectGuid::from_raw(request.vendor_raw_guid),
+            item: request.item,
+            count: request.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SellItemRequest {
+    pub(in crate::world) vendor_guid: ObjectGuid,
+    pub(in crate::world) item_guid: ObjectGuid,
+    pub(in crate::world) count: u8,
+}
+
+impl From<wow_proto::SellItemRequest> for SellItemRequest {
+    fn from(request: wow_proto::SellItemRequest) -> Self {
+        Self {
+            vendor_guid: ObjectGuid::from_raw(request.vendor_raw_guid),
+            item_guid: ObjectGuid::from_raw(request.item_raw_guid),
+            count: request.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct BuybackItemRequest {
+    pub(in crate::world) vendor_guid: ObjectGuid,
+    pub(in crate::world) slot: u8,
+}
+
+impl From<wow_proto::BuybackItemRequest> for BuybackItemRequest {
+    fn from(request: wow_proto::BuybackItemRequest) -> Self {
+        Self {
+            vendor_guid: ObjectGuid::from_raw(request.vendor_raw_guid),
+            slot: request.slot,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct VendorBuyItem {
+    pub(in crate::world) slot: u32,
+    pub(in crate::world) container_slots: u32,
+    pub(in crate::world) buy_count: u32,
+    pub(in crate::world) price: u32,
+}
+
+pub(in crate::world) async fn vendor_buy_item(
     world_db_pool: &MySqlPool,
     buy: BuyItemRequest,
 ) -> anyhow::Result<Option<VendorBuyItem>> {
     if buy.vendor_guid == rust_guide_guid() {
         return Ok(rust_guide_vendor_slot(buy.item).map(|slot| VendorBuyItem {
             slot,
-            container_slots: if buy.item == RUST_VENDOR_BAG_ITEM { 6 } else { 0 },
+            container_slots: if buy.item == RUST_VENDOR_BAG_ITEM {
+                6
+            } else {
+                0
+            },
             buy_count: 1,
             price: 0,
         }));
@@ -253,29 +310,29 @@ async fn vendor_buy_item(
         }))
 }
 
-fn vendor_buyback_slot_index(slot: u8) -> Option<usize> {
+pub(in crate::world) fn vendor_buyback_slot_index(slot: u8) -> Option<usize> {
     (BUYBACK_SLOT_START..BUYBACK_SLOT_END)
         .contains(&slot)
         .then_some((slot - BUYBACK_SLOT_START) as usize)
 }
 
-fn next_buyback_slot(session: &WorldSessionState) -> u8 {
-    if (BUYBACK_SLOT_START..BUYBACK_SLOT_END).contains(&session.next_buyback_slot) {
-        session.next_buyback_slot
+pub(in crate::world) fn next_buyback_slot(session: &WorldSessionState) -> u8 {
+    if (BUYBACK_SLOT_START..BUYBACK_SLOT_END).contains(&session.inventory.next_buyback_slot) {
+        session.inventory.next_buyback_slot
     } else {
         BUYBACK_SLOT_START
     }
 }
 
-fn advance_buyback_slot(session: &mut WorldSessionState, used_slot: u8) {
-    session.next_buyback_slot = if used_slot < BUYBACK_SLOT_END - 1 {
+pub(in crate::world) fn advance_buyback_slot(session: &mut WorldSessionState, used_slot: u8) {
+    session.inventory.next_buyback_slot = if used_slot < BUYBACK_SLOT_END - 1 {
         used_slot + 1
     } else {
         BUYBACK_SLOT_START
     };
 }
 
-fn build_buyback_slot_update_body(
+pub(in crate::world) fn build_buyback_slot_update_body(
     character_guid: u32,
     entry: Option<BuybackItem>,
     slot: u8,
@@ -315,7 +372,7 @@ fn build_buyback_slot_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-async fn remove_existing_buyback_slot(
+pub(in crate::world) async fn remove_existing_buyback_slot(
     character_db_pool: &MySqlPool,
     character_guid: u32,
     session: &mut WorldSessionState,
@@ -329,39 +386,50 @@ async fn remove_existing_buyback_slot(
         0,
     )
     .await?;
-    session.buyback_items.retain(|entry| entry.slot != slot);
+    session
+        .inventory
+        .buyback_items
+        .retain(|entry| entry.slot != slot);
     Ok(())
 }
 
-fn push_buyback_entry(session: &mut WorldSessionState, slot: u8, item: u32, price: u32) -> BuybackItem {
+pub(in crate::world) fn push_buyback_entry(
+    session: &mut WorldSessionState,
+    slot: u8,
+    item: u32,
+    price: u32,
+) -> BuybackItem {
     let timestamp = 30 * 3600;
-    session.buyback_items.retain(|entry| entry.slot != slot);
+    session
+        .inventory
+        .buyback_items
+        .retain(|entry| entry.slot != slot);
     let entry = BuybackItem {
         slot,
         item,
         price,
         timestamp,
     };
-    session.buyback_items.push(entry);
+    session.inventory.buyback_items.push(entry);
     advance_buyback_slot(session, slot);
     entry
 }
 
-async fn handle_sell_item(
+pub(in crate::world) async fn handle_sell_item(
     stream: &mut WorldPacketSink,
     deps: QuestMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::SellItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let character_db_pool = deps.character_db_pool;
     let world_db_pool = deps.world_db_pool;
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring vendor sell before character login");
         return Ok(());
     };
     let character_guid = character.guid;
-    let request = SellItemRequest::read(body)?;
+    let request = SellItemRequest::from(request);
     let vendor_valid = if request.vendor_guid == rust_guide_guid() {
         true
     } else if request.vendor_guid.is_creature() {
@@ -387,13 +455,15 @@ async fn handle_sell_item(
 
     let Some(source_item) = session
         .inventory
+        .items
         .iter()
         .find(|item| item.item == request.item_guid.counter())
         .cloned()
     else {
         return Ok(());
     };
-    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
     else {
         return send_packet(
             stream,
@@ -418,6 +488,7 @@ async fn handle_sell_item(
         || (template.container_slots > 0
             && session
                 .inventory
+                .items
                 .iter()
                 .any(|item| item.bag == source_item.slot as u32))
     {
@@ -470,7 +541,8 @@ async fn handle_sell_item(
         template.sell_price.saturating_mul(count),
     )
     .await?;
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let buyback_entry = push_buyback_entry(
         session,
         buyback_slot,
@@ -481,23 +553,40 @@ async fn handle_sell_item(
 
     let mut update_blocks = Vec::new();
     if count < source_item.count {
-        if let Some(item) = session.inventory.iter().find(|item| item.item == source_item.item) {
+        if let Some(item) = session
+            .inventory
+            .items
+            .iter()
+            .find(|item| item.item == source_item.item)
+        {
             update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
         }
-        if let Some(item) = session.inventory.iter().find(|item| item.item == buyback_item) {
-            update_blocks.push(build_item_create_update_block(owner_guid, owner_guid, item, None)?);
+        if let Some(item) = session
+            .inventory
+            .items
+            .iter()
+            .find(|item| item.item == buyback_item)
+        {
+            update_blocks.push(build_item_create_update_block(
+                owner_guid, owner_guid, item, None,
+            )?);
         }
     } else {
         update_blocks.extend(build_inventory_position_update_blocks(
             character_guid,
-            &session.inventory,
+            &session.inventory.items,
             source_item.bag as u8,
             source_item.slot,
         )?);
-        if let Some(item) = session.inventory.iter().find(|item| item.item == buyback_item) {
+        if let Some(item) = session
+            .inventory
+            .items
+            .iter()
+            .find(|item| item.item == buyback_item)
+        {
             update_blocks.push(build_item_contained_update_block(
                 owner_guid,
-                &session.inventory,
+                &session.inventory.items,
                 item,
             )?);
         }
@@ -536,21 +625,21 @@ async fn handle_sell_item(
     .await
 }
 
-async fn handle_buyback_item(
+pub(in crate::world) async fn handle_buyback_item(
     stream: &mut WorldPacketSink,
     deps: QuestMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::BuybackItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let character_db_pool = deps.character_db_pool;
     let world_db_pool = deps.world_db_pool;
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring vendor buyback before character login");
         return Ok(());
     };
     let character_guid = character.guid;
-    let request = BuybackItemRequest::read(body)?;
+    let request = BuybackItemRequest::from(request);
     let vendor_valid = if request.vendor_guid == rust_guide_guid() {
         true
     } else if request.vendor_guid.is_creature() {
@@ -575,6 +664,7 @@ async fn handle_buyback_item(
     }
 
     let Some(entry_index) = session
+        .inventory
         .buyback_items
         .iter()
         .position(|entry| entry.slot == request.slot)
@@ -587,9 +677,10 @@ async fn handle_buyback_item(
         )
         .await;
     };
-    let entry = session.buyback_items[entry_index];
+    let entry = session.inventory.buyback_items[entry_index];
     let Some(source_item) = session
         .inventory
+        .items
         .iter()
         .find(|item| {
             item.item == entry.item
@@ -598,7 +689,7 @@ async fn handle_buyback_item(
         })
         .cloned()
     else {
-        session.buyback_items.remove(entry_index);
+        session.inventory.buyback_items.remove(entry_index);
         return send_packet(
             stream,
             SMSG_BUY_FAILED,
@@ -607,7 +698,8 @@ async fn handle_buyback_item(
         )
         .await;
     };
-    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
     else {
         return send_packet(
             stream,
@@ -621,9 +713,9 @@ async fn handle_buyback_item(
         )
         .await;
     };
-    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
     let Some(store_plan) = plan_store_item(
-        &session.inventory,
+        &session.inventory.items,
         &template,
         source_item.count,
         &equipped_bags,
@@ -659,6 +751,7 @@ async fn handle_buyback_item(
         if let Some(item_guid) = slot.existing_item {
             let existing_count = session
                 .inventory
+                .items
                 .iter()
                 .find(|item| item.item == item_guid)
                 .map(|item| item.count)
@@ -689,24 +782,31 @@ async fn handle_buyback_item(
             .await?;
         }
     }
-    session.buyback_items.remove(entry_index);
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    session.inventory.buyback_items.remove(entry_index);
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
 
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut update_blocks = Vec::new();
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
-            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+            if let Some(item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.item == item_guid)
+            {
                 update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
             }
             continue;
         }
         if let Some(item) = session
             .inventory
+            .items
             .iter()
             .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
         {
-            let contained_guid = item_contained_guid(owner_guid, &session.inventory, item);
+            let contained_guid = item_contained_guid(owner_guid, &session.inventory.items, item);
             let container_slots = if template.container_slots > 0 {
                 Some(template.container_slots)
             } else {
@@ -720,7 +820,7 @@ async fn handle_buyback_item(
             )?);
             update_blocks.extend(build_inventory_position_update_blocks(
                 character_guid,
-                &session.inventory,
+                &session.inventory.items,
                 slot.bag,
                 slot.slot,
             )?);

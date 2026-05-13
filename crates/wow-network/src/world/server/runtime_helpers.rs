@@ -1,13 +1,15 @@
+use super::*;
+
 // Shared worldserver runtime helpers used by login, maps, and death.
 
-fn current_unix_epoch_secs_u64() -> u64 {
+pub(in crate::world) fn current_unix_epoch_secs_u64() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
 }
 
-async fn build_db_creature_runtimes_with_respawns(
+pub(in crate::world) async fn build_db_creature_runtimes_with_respawns(
     character_db_pool: &MySqlPool,
     spawns: Vec<CreatureSpawnQuery>,
 ) -> anyhow::Result<Vec<DbCreatureRuntime>> {
@@ -30,11 +32,12 @@ async fn build_db_creature_runtimes_with_respawns(
         .collect())
 }
 
-fn visible_db_creature_runtimes(creatures: &[DbCreatureRuntime]) -> Vec<DbCreatureRuntime> {
+pub(in crate::world) fn visible_db_creature_runtimes(
+    creatures: &[DbCreatureRuntime],
+) -> Vec<DbCreatureRuntime> {
     creatures
         .iter()
         .filter(|creature| creature.life_state != DbCreatureLifeState::Dead)
         .cloned()
         .collect()
 }
-

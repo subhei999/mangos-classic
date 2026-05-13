@@ -1,6 +1,8 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Maps/Map.cpp map-owned object update loop.
 
-async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
+pub(in crate::world) async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
     let navigation = DbCreatureNavigationGuardrail {
         world_data_files: runtime_state.world_data_files.clone(),
         ..DbCreatureNavigationGuardrail::default()
@@ -43,7 +45,7 @@ async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
     }
 }
 
-async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
+pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
     let navigation = DbCreatureNavigationGuardrail {
         world_data_files: runtime_state.world_data_files.clone(),
         ..DbCreatureNavigationGuardrail::default()
@@ -64,11 +66,7 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
         );
         match runtime_state
             .maps
-            .refresh_static_game_event_spawns(
-                &runtime_state.character_db_pool,
-                game_events,
-                now,
-            )
+            .refresh_static_game_event_spawns(&runtime_state.character_db_pool, game_events, now)
             .await
         {
             Ok(packets) => {
@@ -115,7 +113,11 @@ async fn run_map_runtime_update_loop(runtime_state: WorldRuntimeState) {
             }
         }
         let phase_started_at = Instant::now();
-        match runtime_state.maps.advance_all_player_environment_ticks(now).await {
+        match runtime_state
+            .maps
+            .advance_all_player_environment_ticks(now)
+            .await
+        {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
                     crate::observability::MapTickPhase::PlayerEnvironment,

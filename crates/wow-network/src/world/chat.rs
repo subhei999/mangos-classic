@@ -1,31 +1,32 @@
-async fn handle_ping(
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgEmoteResponse, SmsgMessageChatResponse, SmsgNameQueryResponse,
+    SmsgTextEmoteResponse,
+};
+
+pub(in crate::world) async fn handle_ping(
     stream: &mut WorldPacketSink,
-    body: &[u8],
+    ping: wow_proto::PingRequest,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        anyhow::bail!("CMSG_PING payload too short: {} bytes", body.len());
-    }
-
-    let ping = u32::from_le_bytes(body[0..4].try_into()?);
-    send_packet(stream, SMSG_PONG, &ping.to_le_bytes(), header_crypto).await
+    let pong = wow_proto::PongResponse::from(ping);
+    send_packet(
+        stream,
+        u32::from(wow_proto::WorldOpcode::SmsgPong) as u16,
+        &pong.to_body(),
+        header_crypto,
+    )
+    .await
 }
 
-async fn handle_name_query(
+pub(in crate::world) async fn handle_name_query(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     playerbots: &PlayerbotRoster,
-    body: &[u8],
+    request: wow_proto::NameQueryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() != 8 {
-        anyhow::bail!(
-            "CMSG_NAME_QUERY payload must be 8 bytes, got {}",
-            body.len()
-        );
-    }
-
-    let raw_guid = u64::from_le_bytes(body.try_into()?);
+    let raw_guid = request.raw_guid;
     let guid = ObjectGuid::from_raw(raw_guid);
     let character_guid = guid.counter();
     let character = wow_db::get_character_name_query(character_db_pool, character_guid).await?;
@@ -48,41 +49,39 @@ async fn handle_name_query(
     .await
 }
 
-fn build_name_query_response(
+pub(in crate::world) fn build_name_query_response(
     requested_guid: u64,
     character: Option<&CharacterNameQuery>,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(8 + 1 + 1 + 12);
-    match character {
-        Some(character) => {
-            let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-            body.extend_from_slice(&guid.raw().to_le_bytes());
-            write_c_string(&mut body, &character.name);
-            body.push(0); // realm name
-            body.extend_from_slice(&(character.race as u32).to_le_bytes());
-            body.extend_from_slice(&(character.gender as u32).to_le_bytes());
-            body.extend_from_slice(&(character.class as u32).to_le_bytes());
+    let response = if let Some(character) = character {
+        SmsgNameQueryResponse {
+            guid: ObjectGuid::new(HighGuid::Player, 0, character.guid),
+            name: character.name.clone(),
+            realm_name: String::new(),
+            race: character.race as u32,
+            gender: character.gender as u32,
+            class: character.class as u32,
         }
-        None => {
-            body.extend_from_slice(&requested_guid.to_le_bytes());
-            write_c_string(&mut body, "Unknown");
-            body.push(0); // realm name
-            body.extend_from_slice(&0u32.to_le_bytes());
-            body.extend_from_slice(&0u32.to_le_bytes());
-            body.extend_from_slice(&0u32.to_le_bytes());
+    } else {
+        SmsgNameQueryResponse {
+            guid: ObjectGuid::from_raw(requested_guid),
+            name: "Unknown".to_string(),
+            realm_name: String::new(),
+            race: 0,
+            gender: 0,
+            class: 0,
         }
-    }
-    body
+    };
+    response.body()
 }
 
-async fn handle_message_chat(
+pub(in crate::world) async fn handle_message_chat(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
-    body: &[u8],
+    chat: wow_proto::MessageChatRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let chat = ChatMessage::read(body)?;
     if !matches!(
         chat.chat_type,
         CHAT_MSG_SAY | CHAT_MSG_PARTY | CHAT_MSG_YELL | CHAT_MSG_EMOTE
@@ -95,7 +94,7 @@ async fn handle_message_chat(
         return Ok(());
     }
 
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!(
             chat_type = chat.chat_type,
             "Ignoring chat before character login"
@@ -153,73 +152,50 @@ async fn handle_message_chat(
     Ok(())
 }
 
-struct ChatDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    object_mgr: &'a ObjectMgr,
-    maps: &'a Arc<MapRuntimeManager>,
-    sessions: &'a Arc<SessionRegistry>,
-    parties: &'a Arc<PartyManager>,
+pub(in crate::world) struct ChatDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) object_mgr: &'a ObjectMgr,
+    pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
+    pub(in crate::world) parties: &'a Arc<PartyManager>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChatMessage {
-    chat_type: u32,
-    language: u32,
-    message: String,
-}
-
-impl ChatMessage {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let mut cursor = 0;
-        let chat_type = read_u32(body, &mut cursor)?;
-        let language = read_u32(body, &mut cursor)?;
-        let message = read_c_string(body, &mut cursor)?;
-        Ok(Self {
-            chat_type,
-            language,
-            message,
-        })
-    }
-}
-
-fn build_message_chat_body(
+pub(in crate::world) fn build_message_chat_body(
     chat_type: u32,
     language: u32,
     message: &str,
     character: &ActiveCharacter,
 ) -> Vec<u8> {
     let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let mut body = Vec::with_capacity(1 + 4 + 16 + 4 + message.len() + 2);
-    body.push(chat_type as u8);
-    body.extend_from_slice(&language.to_le_bytes());
-    match chat_type {
-        CHAT_MSG_SAY | CHAT_MSG_PARTY | CHAT_MSG_YELL => {
-            body.extend_from_slice(&sender.raw().to_le_bytes());
-            body.extend_from_slice(&sender.raw().to_le_bytes());
-        }
-        _ => {
-            body.extend_from_slice(&sender.raw().to_le_bytes());
-        }
+    let target = match chat_type {
+        CHAT_MSG_SAY | CHAT_MSG_PARTY | CHAT_MSG_YELL => Some(sender),
+        _ => None,
+    };
+    SmsgMessageChatResponse {
+        chat_type: chat_type as u8,
+        language,
+        sender,
+        target,
+        message: message.to_string(),
+        tag: CHAT_TAG_NONE,
     }
-    body.extend_from_slice(&((message.len() + 1) as u32).to_le_bytes());
-    write_c_string(&mut body, message);
-    body.push(CHAT_TAG_NONE);
-    body
+    .body()
 }
 
-fn build_system_message_chat_body(message: &str) -> Vec<u8> {
-    let mut body = Vec::with_capacity(1 + 4 + 8 + 4 + message.len() + 2);
-    body.push(CHAT_MSG_SYSTEM as u8);
-    body.extend_from_slice(&LANG_UNIVERSAL.to_le_bytes());
-    body.extend_from_slice(&0u64.to_le_bytes());
-    body.extend_from_slice(&((message.len() + 1) as u32).to_le_bytes());
-    write_c_string(&mut body, message);
-    body.push(CHAT_TAG_NONE);
-    body
+pub(in crate::world) fn build_system_message_chat_body(message: &str) -> Vec<u8> {
+    SmsgMessageChatResponse {
+        chat_type: CHAT_MSG_SYSTEM as u8,
+        language: LANG_UNIVERSAL,
+        sender: ObjectGuid::EMPTY,
+        target: None,
+        message: message.to_string(),
+        tag: CHAT_TAG_NONE,
+    }
+    .body()
 }
 
-fn chat_radius_yards(chat_type: u32) -> f32 {
+pub(in crate::world) fn chat_radius_yards(chat_type: u32) -> f32 {
     match chat_type {
         CHAT_MSG_SAY => CHAT_SAY_RADIUS_YARDS,
         CHAT_MSG_YELL => CHAT_YELL_RADIUS_YARDS,
@@ -228,35 +204,29 @@ fn chat_radius_yards(chat_type: u32) -> f32 {
     }
 }
 
-async fn handle_text_emote(
+pub(in crate::world) async fn handle_text_emote(
     stream: &mut WorldPacketSink,
     deps: TextEmoteDeps<'_>,
-    body: &[u8],
+    emote: wow_proto::TextEmoteRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let emote = TextEmote::read(body)?;
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!(
             text_emote = emote.text_emote,
             "Ignoring text emote before character login"
         );
         return Ok(());
     };
-    let target_name = text_emote_target_name(deps, character.position.map_id, emote.target_guid)
-        .await
-        .unwrap_or_default();
+    let target_name =
+        text_emote_target_name(deps, character.position.map_id, emote.target_raw_guid)
+            .await
+            .unwrap_or_default();
     if let Some(animation) = animation_emote_for_text_emote(emote.text_emote) {
         if matches!(emote.text_emote, TEXTEMOTE_DANCE | TEXTEMOTE_SLEEP) {
             let body = build_emote_state_update_body(character, animation)?;
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
-            dispatch_nearby_text_emote_packet(
-                deps,
-                character,
-                SMSG_UPDATE_OBJECT,
-                body,
-            )
-            .await;
+            dispatch_nearby_text_emote_packet(deps, character, SMSG_UPDATE_OBJECT, body).await;
         } else {
             let body = build_emote_body(character, animation);
             send_packet(stream, SMSG_EMOTE, &body, Some(header_crypto)).await?;
@@ -275,12 +245,12 @@ async fn handle_text_emote(
 }
 
 #[derive(Clone, Copy)]
-struct TextEmoteDeps<'a> {
-    maps: &'a Arc<MapRuntimeManager>,
-    sessions: &'a Arc<SessionRegistry>,
+pub(in crate::world) struct TextEmoteDeps<'a> {
+    pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
 }
 
-async fn dispatch_nearby_text_emote_packet(
+pub(in crate::world) async fn dispatch_nearby_text_emote_packet(
     deps: TextEmoteDeps<'_>,
     character: &ActiveCharacter,
     opcode: u16,
@@ -298,7 +268,7 @@ async fn dispatch_nearby_text_emote_packet(
     deps.sessions.dispatch(packets).await;
 }
 
-async fn text_emote_target_name(
+pub(in crate::world) async fn text_emote_target_name(
     deps: TextEmoteDeps<'_>,
     map_id: u32,
     target_guid: u64,
@@ -308,7 +278,11 @@ async fn text_emote_target_name(
     }
     let target = ObjectGuid::from_raw(target_guid);
     match target.high_type() {
-        Some(HighGuid::Player) => deps.sessions.character_name_for_guid(target.counter()).await,
+        Some(HighGuid::Player) => {
+            deps.sessions
+                .character_name_for_guid(target.counter())
+                .await
+        }
         Some(HighGuid::Unit) => deps
             .maps
             .db_creature_snapshot(map_id, target)
@@ -318,87 +292,7 @@ async fn text_emote_target_name(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TextEmote {
-    text_emote: u32,
-    emote_num: u32,
-    target_guid: u64,
-}
-
-impl TextEmote {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let mut cursor = 0;
-        let text_emote = read_u32(body, &mut cursor)?;
-        let emote_num = read_u32(body, &mut cursor)?;
-        ensure_available(body, cursor + 8)?;
-        let target_guid = u64::from_le_bytes(body[cursor..cursor + 8].try_into()?);
-        Ok(Self {
-            text_emote,
-            emote_num,
-            target_guid,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CastSpellPacket {
-    spell_id: u32,
-    targets: SpellCastTargets,
-}
-
-impl CastSpellPacket {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let mut cursor = 0;
-        let spell_id = read_u32(body, &mut cursor)?;
-        let targets = SpellCastTargets::read(body, &mut cursor)?;
-        Ok(Self { spell_id, targets })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SpellCastTargets {
-    target_mask: u16,
-    unit_target: Option<ObjectGuid>,
-    gameobject_target: Option<ObjectGuid>,
-}
-
-impl SpellCastTargets {
-    fn read(body: &[u8], cursor: &mut usize) -> anyhow::Result<Self> {
-        let target_mask = read_u16(body, cursor)?;
-        let unit_target =
-            if target_mask & (SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY) != 0 {
-                Some(read_packed_guid(body, cursor)?)
-            } else {
-                None
-            };
-        let gameobject_target =
-            if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
-                Some(read_packed_guid(body, cursor)?)
-            } else {
-                None
-            };
-
-        Ok(Self {
-            target_mask,
-            unit_target,
-            gameobject_target,
-        })
-    }
-
-    fn write(&self, body: &mut Vec<u8>) -> anyhow::Result<()> {
-        let target_mask = self.target_mask & !SPELL_CAST_TARGET_UNIT_ENEMY;
-        body.extend_from_slice(&target_mask.to_le_bytes());
-        if target_mask & SPELL_CAST_TARGET_UNIT != 0 {
-            PackedGuid::write(body, self.unit_target.unwrap_or(ObjectGuid::EMPTY))?;
-        }
-        if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
-            PackedGuid::write(body, self.gameobject_target.unwrap_or(ObjectGuid::EMPTY))?;
-        }
-        Ok(())
-    }
-}
-
-fn build_text_emote_body(
+pub(in crate::world) fn build_text_emote_body(
     character: &ActiveCharacter,
     text_emote: u32,
     emote_num: u32,
@@ -406,17 +300,16 @@ fn build_text_emote_body(
 ) -> Vec<u8> {
     let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let target_name = target_name.unwrap_or("");
-    let target_name_len = target_name.len() + 1;
-    let mut body = Vec::with_capacity(8 + 4 + 4 + 4 + target_name_len);
-    body.extend_from_slice(&sender.raw().to_le_bytes());
-    body.extend_from_slice(&text_emote.to_le_bytes());
-    body.extend_from_slice(&emote_num.to_le_bytes());
-    body.extend_from_slice(&(target_name_len as u32).to_le_bytes());
-    write_c_string(&mut body, target_name);
-    body
+    SmsgTextEmoteResponse {
+        sender,
+        text_emote,
+        emote_num,
+        target_name: target_name.to_string(),
+    }
+    .body()
 }
 
-fn animation_emote_for_text_emote(text_emote: u32) -> Option<u32> {
+pub(in crate::world) fn animation_emote_for_text_emote(text_emote: u32) -> Option<u32> {
     match text_emote {
         TEXTEMOTE_WAVE => Some(EMOTE_ONESHOT_WAVE),
         TEXTEMOTE_POINT => Some(EMOTE_ONESHOT_POINT),
@@ -426,15 +319,12 @@ fn animation_emote_for_text_emote(text_emote: u32) -> Option<u32> {
     }
 }
 
-fn build_emote_body(character: &ActiveCharacter, emote: u32) -> Vec<u8> {
+pub(in crate::world) fn build_emote_body(character: &ActiveCharacter, emote: u32) -> Vec<u8> {
     let sender = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&emote.to_le_bytes());
-    body.extend_from_slice(&sender.raw().to_le_bytes());
-    body
+    SmsgEmoteResponse { emote, sender }.body()
 }
 
-fn build_emote_state_update_body(
+pub(in crate::world) fn build_emote_state_update_body(
     character: &ActiveCharacter,
     emote: u32,
 ) -> anyhow::Result<Vec<u8>> {
@@ -452,4 +342,3 @@ fn build_emote_state_update_body(
     body.extend_from_slice(&block);
     Ok(body)
 }
-

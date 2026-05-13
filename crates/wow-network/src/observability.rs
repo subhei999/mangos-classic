@@ -43,6 +43,10 @@ struct MetricsRegistry {
     world_packets_in: Mutex<HashMap<u32, u64>>,
     world_packets_out: Mutex<HashMap<u32, u64>>,
     world_unknown_opcodes: Mutex<HashMap<u32, u64>>,
+    world_session_disconnects: Mutex<HashMap<&'static str, u64>>,
+    world_outbound_queue_full_total: AtomicU64,
+    world_outbound_queue_depth_latest: AtomicU64,
+    world_outbound_queue_depth_max: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -378,6 +382,33 @@ pub fn record_world_unknown_opcode(opcode: u32) {
     increment_opcode(&registry().world_unknown_opcodes, opcode);
 }
 
+pub fn record_world_session_disconnect(reason: &'static str) {
+    let mut counters = registry()
+        .world_session_disconnects
+        .lock()
+        .expect("metrics world session disconnect counter poisoned");
+    *counters.entry(reason).or_insert(0) += 1;
+}
+
+pub fn record_world_outbound_queue_depth(depth: usize) {
+    let metrics = registry();
+    let depth = depth as u64;
+    metrics
+        .world_outbound_queue_depth_latest
+        .store(depth, Ordering::Relaxed);
+    let _ = metrics.world_outbound_queue_depth_max.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |current| (depth > current).then_some(depth),
+    );
+}
+
+pub fn record_world_outbound_queue_full() {
+    registry()
+        .world_outbound_queue_full_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
 pub fn record_map_tick(duration: Duration, lag: Duration, budget: Duration) {
     let metrics = registry();
     metrics.map_ticks_total.fetch_add(1, Ordering::Relaxed);
@@ -670,9 +701,72 @@ pub fn render_prometheus() -> String {
         "Total authenticated world packets with no handler.",
         &metrics.world_unknown_opcodes,
     );
+    write_label_counter(
+        &mut body,
+        "wow_world_session_disconnects_total",
+        "Total world session disconnects by reason.",
+        "reason",
+        &metrics.world_session_disconnects,
+    );
+    write_counter(
+        &mut body,
+        "wow_world_outbound_queue_full_total",
+        "Total outbound world packets rejected because a session queue was full.",
+        metrics
+            .world_outbound_queue_full_total
+            .load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut body,
+        "wow_world_outbound_queue_depth_latest",
+        "Most recently observed world session outbound queue depth.",
+        metrics
+            .world_outbound_queue_depth_latest
+            .load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut body,
+        "wow_world_outbound_queue_depth_max",
+        "Maximum observed world session outbound queue depth since server start.",
+        metrics
+            .world_outbound_queue_depth_max
+            .load(Ordering::Relaxed),
+    );
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
     body
+}
+
+fn write_label_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    counters: &Mutex<HashMap<&'static str, u64>>,
+) {
+    let values = counters
+        .lock()
+        .expect("metrics label counter registry poisoned");
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    let mut rows = values.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for (label, value) in rows {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&value.to_string());
+        body.push('\n');
+    }
 }
 
 fn write_playerbot_event_counters(body: &mut String, counters: &Mutex<HashMap<&'static str, u64>>) {

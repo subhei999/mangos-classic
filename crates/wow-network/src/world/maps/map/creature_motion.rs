@@ -1,13 +1,15 @@
+use super::*;
+
 // Shared DB-creature motion and AI-transition authority.
 
 #[derive(Debug)]
-struct DbCreatureIdleMotionTick {
-    creatures: Vec<DbCreatureRuntime>,
-    packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureIdleMotionTick {
+    pub(in crate::world) creatures: Vec<DbCreatureRuntime>,
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 impl MapRuntime {
-    fn advance_active_db_creature_idle_motions(
+    pub(in crate::world) fn advance_active_db_creature_idle_motions(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
@@ -19,7 +21,7 @@ impl MapRuntime {
         )
     }
 
-    fn advance_active_db_creature_idle_motions_with_interval(
+    pub(in crate::world) fn advance_active_db_creature_idle_motions_with_interval(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
@@ -108,11 +110,11 @@ impl MapRuntime {
         Ok(DbCreatureIdleMotionTick { creatures, packets })
     }
 
-    fn invalidate_idle_motion_start_schedule(&mut self) {
+    pub(in crate::world) fn invalidate_idle_motion_start_schedule(&mut self) {
         self.next_idle_motion_start_check_at = None;
     }
 
-    fn schedule_db_creature_movement_script(
+    pub(in crate::world) fn schedule_db_creature_movement_script(
         &mut self,
         creature_guid: ObjectGuid,
         script_id: u32,
@@ -122,16 +124,21 @@ impl MapRuntime {
             return;
         };
         self.pending_db_scripts
-            .extend(commands.iter().cloned().map(|command| PendingDbScriptAction {
-                due_at: now + Duration::from_millis(command.delay as u64),
-                source: creature_guid,
-                command,
-            }));
+            .extend(
+                commands
+                    .iter()
+                    .cloned()
+                    .map(|command| PendingDbScriptAction {
+                        due_at: now + Duration::from_millis(command.delay as u64),
+                        source: creature_guid,
+                        command,
+                    }),
+            );
         self.pending_db_scripts
             .sort_by_key(|action| (action.due_at, action.command.priority));
     }
 
-    fn advance_pending_db_scripts(
+    pub(in crate::world) fn advance_pending_db_scripts(
         &mut self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -157,7 +164,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn execute_db_creature_script_action(
+    pub(in crate::world) fn execute_db_creature_script_action(
         &mut self,
         action: PendingDbScriptAction,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -174,7 +181,7 @@ impl MapRuntime {
         }
     }
 
-    fn execute_db_script_talk(
+    pub(in crate::world) fn execute_db_script_talk(
         &mut self,
         source: ObjectGuid,
         command: &wow_db::DbScriptCommandQuery,
@@ -225,7 +232,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn execute_db_script_emote(
+    pub(in crate::world) fn execute_db_script_emote(
         &mut self,
         source: ObjectGuid,
         command: &wow_db::DbScriptCommandQuery,
@@ -242,7 +249,7 @@ impl MapRuntime {
         self.execute_db_script_emote_id(source, emote)
     }
 
-    fn execute_db_script_emote_id(
+    pub(in crate::world) fn execute_db_script_emote_id(
         &mut self,
         source: ObjectGuid,
         emote: u32,
@@ -263,7 +270,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn execute_db_script_morph(
+    pub(in crate::world) fn execute_db_script_morph(
         &mut self,
         source: ObjectGuid,
         command: &wow_db::DbScriptCommandQuery,
@@ -292,7 +299,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn nearby_db_script_player_sessions(
+    pub(in crate::world) fn nearby_db_script_player_sessions(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -302,40 +309,49 @@ impl MapRuntime {
             .values()
             .filter(|player| player.visible_objects.contains(&source))
             .filter(|player| {
-                radius.is_infinite()
-                    || is_position_inside_radius(position, player.position, radius)
+                radius.is_infinite() || is_position_inside_radius(position, player.position, radius)
             })
             .filter_map(PlayerRuntime::client_session_id)
             .collect()
     }
 
-    fn db_creatures_in_active_or_blocked_grids(&self) -> Vec<(u64, &DbCreatureRuntime)> {
+    pub(in crate::world) fn db_creatures_in_active_or_blocked_grids(
+        &self,
+    ) -> Vec<(u64, &DbCreatureRuntime)> {
         self.creatures
             .iter()
             .filter(|(_, creature)| {
                 let grid = grid_coord_for_position(creature.current_position);
                 self.grids.get(&grid).is_some_and(|grid| {
-                    matches!(
-                        grid.state,
-                        GridState::Active | GridState::UnloadBlocked(_)
-                    )
+                    matches!(grid.state, GridState::Active | GridState::UnloadBlocked(_))
                 })
             })
             .map(|(guid, creature)| (*guid, creature))
             .collect()
     }
 
-    fn db_creatures_in_player_interest_radius(&self) -> Vec<(u64, &DbCreatureRuntime)> {
-        if !self.players.values().any(PlayerRuntime::is_client_controlled) {
+    pub(in crate::world) fn db_creatures_in_player_interest_radius(
+        &self,
+    ) -> Vec<(u64, &DbCreatureRuntime)> {
+        if !self
+            .players
+            .values()
+            .any(PlayerRuntime::is_client_controlled)
+        {
             return Vec::new();
         }
         let mut guids = HashSet::new();
-        for player in self.players.values().filter(|player| player.is_client_controlled()) {
+        for player in self
+            .players
+            .values()
+            .filter(|player| player.is_client_controlled())
+        {
             self.visit_nearby_cells(player.position, CREATURE_SPAWN_RADIUS_YARDS, |cell| {
                 guids.extend(cell.creatures.iter().copied());
             });
         }
-        guids.into_iter()
+        guids
+            .into_iter()
             .filter_map(|guid| {
                 let creature = self.creatures.get(&guid)?;
                 self.players
@@ -353,7 +369,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn db_creature_idle_motion_advancement_guids(&self) -> Vec<u64> {
+    pub(in crate::world) fn db_creature_idle_motion_advancement_guids(&self) -> Vec<u64> {
         let mut guids = self
             .db_creatures_in_active_or_blocked_grids()
             .into_iter()
@@ -371,7 +387,7 @@ impl MapRuntime {
         guids
     }
 
-    fn db_creature_idle_motion_start_guids(&self, now: Instant) -> Vec<u64> {
+    pub(in crate::world) fn db_creature_idle_motion_start_guids(&self, now: Instant) -> Vec<u64> {
         let mut guids = self
             .db_creatures_in_player_interest_radius()
             .into_iter()
@@ -388,7 +404,7 @@ impl MapRuntime {
         guids
     }
 
-    fn next_db_creature_idle_motion_start_at(&self) -> Option<Instant> {
+    pub(in crate::world) fn next_db_creature_idle_motion_start_at(&self) -> Option<Instant> {
         self.db_creatures_in_player_interest_radius()
             .into_iter()
             .filter(|(guid, creature)| {
@@ -405,7 +421,7 @@ impl MapRuntime {
             .min()
     }
 
-    fn advance_db_creature_motion(
+    pub(in crate::world) fn advance_db_creature_motion(
         &mut self,
         creature_guid: ObjectGuid,
         now: Instant,
@@ -423,7 +439,7 @@ impl MapRuntime {
         Some((snapshot, script_ids))
     }
 
-    fn start_db_creature_idle_motion(
+    pub(in crate::world) fn start_db_creature_idle_motion(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
@@ -441,20 +457,16 @@ impl MapRuntime {
         if !creature.is_alive() {
             return None;
         }
-        let motion = start_db_creature_random_motion_runtime(
-            navigation,
-            Some(&geometry),
-            creature,
-            now,
-        )
-        .or_else(|| {
-            start_db_creature_waypoint_motion_runtime(
-                navigation,
-                Some(&geometry),
-                creature,
-                now,
-            )
-        });
+        let motion =
+            start_db_creature_random_motion_runtime(navigation, Some(&geometry), creature, now)
+                .or_else(|| {
+                    start_db_creature_waypoint_motion_runtime(
+                        navigation,
+                        Some(&geometry),
+                        creature,
+                        now,
+                    )
+                });
         let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         if motion.is_none() && script_ids.is_empty() {
             return None;
@@ -468,7 +480,7 @@ impl MapRuntime {
         Some((snapshot, motion, script_ids))
     }
 
-    fn start_db_creature_chase_motion(
+    pub(in crate::world) fn start_db_creature_chase_motion(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
@@ -502,7 +514,7 @@ impl MapRuntime {
         Some((snapshot, motion))
     }
 
-    fn start_db_creature_return_home_motion(
+    pub(in crate::world) fn start_db_creature_return_home_motion(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
@@ -526,7 +538,7 @@ impl MapRuntime {
         Some((snapshot, motion))
     }
 
-    fn stop_db_creature_motion(
+    pub(in crate::world) fn stop_db_creature_motion(
         &mut self,
         creature_guid: ObjectGuid,
     ) -> Option<(DbCreatureRuntime, StoppedCreatureMotion)> {
@@ -545,7 +557,7 @@ impl MapRuntime {
         Some((snapshot, stop))
     }
 
-    fn face_db_creature_toward_position(
+    pub(in crate::world) fn face_db_creature_toward_position(
         &mut self,
         creature_guid: ObjectGuid,
         target_position: WorldPosition,
@@ -564,7 +576,7 @@ impl MapRuntime {
         Some((creature.clone(), creature.current_position, spline_id))
     }
 
-    fn prepare_db_creature_evade(
+    pub(in crate::world) fn prepare_db_creature_evade(
         &mut self,
         creature_guid: ObjectGuid,
     ) -> Option<DbCreatureRuntime> {
@@ -587,7 +599,7 @@ impl MapRuntime {
         self.creatures.get(&creature_guid.raw()).cloned()
     }
 
-    fn select_db_creature_sight_aggro_targets(
+    pub(in crate::world) fn select_db_creature_sight_aggro_targets(
         &self,
         faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
@@ -602,7 +614,11 @@ impl MapRuntime {
         let mut targets = guids
             .into_iter()
             .filter_map(|guid| self.creatures.get(&guid))
-            .filter(|creature| !self.active_creature_combats.contains_key(&creature.guid().raw()))
+            .filter(|creature| {
+                !self
+                    .active_creature_combats
+                    .contains_key(&creature.guid().raw())
+            })
             .filter(|creature| creature.can_aggro_player(faction_templates, character))
             .filter_map(|creature| {
                 let distance_sq = creature.distance_to_player_squared(character)?;
@@ -615,18 +631,20 @@ impl MapRuntime {
                     .then(|| (distance_sq, creature.guid(), creature.clone()))
             })
             .collect::<Vec<_>>();
-        targets.sort_by(|(left_distance, left_guid, _), (right_distance, right_guid, _)| {
-            left_distance
-                .total_cmp(right_distance)
-                .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
-        });
+        targets.sort_by(
+            |(left_distance, left_guid, _), (right_distance, right_guid, _)| {
+                left_distance
+                    .total_cmp(right_distance)
+                    .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
+            },
+        );
         targets
             .into_iter()
             .map(|(_, _, creature)| creature)
             .collect()
     }
 
-    fn select_db_creature_assist_targets(
+    pub(in crate::world) fn select_db_creature_assist_targets(
         &mut self,
         faction_templates: &FactionTemplateStore,
         caller_guid: ObjectGuid,
@@ -672,7 +690,7 @@ impl MapRuntime {
         Some((caller, targets.into_iter().map(|(_, guid)| guid).collect()))
     }
 
-    fn refresh_db_creature_spatial_index(
+    pub(in crate::world) fn refresh_db_creature_spatial_index(
         &mut self,
         creature_guid: u64,
         old_position: WorldPosition,
@@ -704,7 +722,7 @@ impl MapRuntime {
         self.refresh_grid_state(new_grid);
     }
 
-    fn db_creature_chase_slot_destination(
+    pub(in crate::world) fn db_creature_chase_slot_destination(
         &self,
         creature_guid: ObjectGuid,
         target: ObjectGuid,
@@ -712,7 +730,8 @@ impl MapRuntime {
     ) -> Option<WorldPosition> {
         let creature = self.creatures.get(&creature_guid.raw())?;
         let stop_distance = db_creature_chase_stop_distance(creature);
-        let base_angle = db_creature_chase_angle_from_target(creature.current_position, target_position);
+        let base_angle =
+            db_creature_chase_angle_from_target(creature.current_position, target_position);
         let fan_angle = self.db_creature_chase_fan_angle(
             creature_guid,
             target,
@@ -727,7 +746,7 @@ impl MapRuntime {
         ))
     }
 
-    fn db_creature_chase_fan_angle(
+    pub(in crate::world) fn db_creature_chase_fan_angle(
         &self,
         creature_guid: ObjectGuid,
         target: ObjectGuid,
@@ -752,7 +771,9 @@ impl MapRuntime {
                 }
                 let occupied_position = match &other.motion {
                     CreatureMotionState::Idle => other.current_position,
-                    CreatureMotionState::Chase(chase) if chase.target == target => chase.destination,
+                    CreatureMotionState::Chase(chase) if chase.target == target => {
+                        chase.destination
+                    }
                     _ => return false,
                 };
                 distance_2d(

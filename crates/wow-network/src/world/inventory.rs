@@ -1,29 +1,36 @@
-const INVTYPE_BAG: u32 = 18;
-const ITEM_CLASS_CONTAINER: u32 = 1;
-const ITEM_CLASS_QUIVER: u32 = 11;
-const ITEM_SUBCLASS_CONTAINER: u32 = 0;
-const ITEM_SUBCLASS_SOUL_CONTAINER: u32 = 1;
-const ITEM_SUBCLASS_HERB_CONTAINER: u32 = 2;
-const ITEM_SUBCLASS_ENCHANTING_CONTAINER: u32 = 3;
-const ITEM_SUBCLASS_ENGINEERING_CONTAINER: u32 = 4;
-const ITEM_SUBCLASS_QUIVER: u32 = 2;
-const ITEM_SUBCLASS_AMMO_POUCH: u32 = 3;
-const BAG_FAMILY_ARROWS: i32 = 1;
-const BAG_FAMILY_BULLETS: i32 = 2;
-const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
-const BAG_FAMILY_HERBS: i32 = 6;
-const BAG_FAMILY_ENCHANTING_SUPP: i32 = 7;
-const BAG_FAMILY_ENGINEERING_SUPP: i32 = 8;
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgBuyFailedResponse, SmsgBuyItemResponse,
+    SmsgInventoryChangeFailureResponse, SmsgListInventoryResponse, SmsgSellItemResponse,
+    VendorListItemResponse,
+};
 
-async fn handle_inventory_swap(
+pub(in crate::world) const INVTYPE_BAG: u32 = 18;
+pub(in crate::world) const ITEM_CLASS_CONTAINER: u32 = 1;
+pub(in crate::world) const ITEM_CLASS_QUIVER: u32 = 11;
+pub(in crate::world) const ITEM_SUBCLASS_CONTAINER: u32 = 0;
+pub(in crate::world) const ITEM_SUBCLASS_SOUL_CONTAINER: u32 = 1;
+pub(in crate::world) const ITEM_SUBCLASS_HERB_CONTAINER: u32 = 2;
+pub(in crate::world) const ITEM_SUBCLASS_ENCHANTING_CONTAINER: u32 = 3;
+pub(in crate::world) const ITEM_SUBCLASS_ENGINEERING_CONTAINER: u32 = 4;
+pub(in crate::world) const ITEM_SUBCLASS_QUIVER: u32 = 2;
+pub(in crate::world) const ITEM_SUBCLASS_AMMO_POUCH: u32 = 3;
+pub(in crate::world) const BAG_FAMILY_ARROWS: i32 = 1;
+pub(in crate::world) const BAG_FAMILY_BULLETS: i32 = 2;
+pub(in crate::world) const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
+pub(in crate::world) const BAG_FAMILY_HERBS: i32 = 6;
+pub(in crate::world) const BAG_FAMILY_ENCHANTING_SUPP: i32 = 7;
+pub(in crate::world) const BAG_FAMILY_ENGINEERING_SUPP: i32 = 8;
+
+pub(in crate::world) async fn handle_inventory_swap(
     stream: &mut WorldPacketSink,
     deps: InventoryDeps<'_>,
-    opcode: u32,
-    body: &[u8],
+    request: wow_proto::InventoryMoveClientRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let opcode = inventory_move_client_request_opcode(request);
+    let Some(character) = &session.character.active_character else {
         warn!(
             opcode = inventory_opcode_name(opcode),
             "Ignoring inventory move before character login"
@@ -31,14 +38,20 @@ async fn handle_inventory_swap(
         return Ok(());
     };
     let character_guid = character.guid;
-    let Some(move_request) = (match opcode {
-        CMSG_AUTOEQUIP_ITEM => {
-            let auto_equip =
-                InventoryMoveRequest::read_auto_equip(body, deps.world_db_pool, session).await?;
+    let Some(move_request) = (match request {
+        wow_proto::InventoryMoveClientRequest::AutoEquip { src_bag, src_slot } => {
+            let auto_equip = InventoryMoveRequest::read_auto_equip(
+                src_bag,
+                src_slot,
+                deps.world_db_pool,
+                session,
+            )
+            .await?;
             if auto_equip.is_none() {
                 send_auto_equip_failure_if_known(
                     stream,
-                    body,
+                    src_bag,
+                    src_slot,
                     deps.world_db_pool,
                     session,
                     header_crypto,
@@ -48,10 +61,21 @@ async fn handle_inventory_swap(
             }
             auto_equip
         }
-        CMSG_AUTOSTORE_BAG_ITEM => {
-            InventoryMoveRequest::read_auto_store_bag(body, deps.world_db_pool, session).await?
+        wow_proto::InventoryMoveClientRequest::AutoStoreBag {
+            src_bag,
+            src_slot,
+            dst_bag,
+        } => {
+            InventoryMoveRequest::read_auto_store_bag(
+                src_bag,
+                src_slot,
+                dst_bag,
+                deps.world_db_pool,
+                session,
+            )
+            .await?
         }
-        _ => Some(InventoryMoveRequest::read(opcode, body)?),
+        _ => Some(InventoryMoveRequest::from_client_request(request)?),
     }) else {
         info!(
             opcode = inventory_opcode_name(opcode),
@@ -72,7 +96,8 @@ async fn handle_inventory_swap(
         return Ok(());
     }
 
-    let equipped_bags = load_equipped_bag_infos(deps.world_db_pool, &session.inventory).await?;
+    let equipped_bags =
+        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
     if !move_request.uses_existing_storage(&equipped_bags) {
         info!(
             opcode = inventory_opcode_name(opcode),
@@ -92,14 +117,16 @@ async fn handle_inventory_swap(
         .await;
     }
 
-    if move_request.src_bag == move_request.dst_bag && move_request.src_slot == move_request.dst_slot {
+    if move_request.src_bag == move_request.dst_bag
+        && move_request.src_slot == move_request.dst_slot
+    {
         return Ok(());
     }
 
-    let Some(src_item) = session
-        .inventory
-        .iter()
-        .find(|item| item.bag == move_request.src_bag as u32 && item.slot == move_request.src_slot)
+    let Some(src_item) =
+        session.inventory.items.iter().find(|item| {
+            item.bag == move_request.src_bag as u32 && item.slot == move_request.src_slot
+        })
     else {
         warn!(
             opcode = inventory_opcode_name(opcode),
@@ -113,10 +140,10 @@ async fn handle_inventory_swap(
         return Ok(());
     };
 
-    let dst_item = session
-        .inventory
-        .iter()
-        .find(|item| item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot);
+    let dst_item =
+        session.inventory.items.iter().find(|item| {
+            item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot
+        });
 
     if move_request.moves_equipped_bag_into_itself() {
         info!(
@@ -176,15 +203,16 @@ async fn handle_inventory_swap(
             .await;
         }
         if move_request.dst_slot < EQUIPMENT_SLOT_END {
-            let skills = wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
+            let skills =
+                wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
             let equip_result = character_can_equip_item_template(
                 character.level,
                 character.race,
                 character.class,
                 &template,
                 &skills,
-                &session.active_spells,
-                &session.character_reputations,
+                &session.character.active_spells,
+                &session.character.character_reputations,
             );
             if equip_result != 0 {
                 info!(
@@ -202,7 +230,8 @@ async fn handle_inventory_swap(
                     equip_result,
                     Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
                     None,
-                    (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I).then_some(template.required_level),
+                    (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
+                        .then_some(template.required_level),
                     header_crypto,
                 )
                 .await;
@@ -215,6 +244,7 @@ async fn handle_inventory_swap(
         && !is_bag_slot(move_request.dst_slot)
         && session
             .inventory
+            .items
             .iter()
             .any(|item| item.bag == move_request.src_slot as u32)
     {
@@ -234,9 +264,9 @@ async fn handle_inventory_swap(
         .await;
     }
 
-    let max_stack = if let Some(dst_item) = dst_item.filter(|item| {
-        item.item_template == src_item.item_template && item.item != src_item.item
-    }) {
+    let max_stack = if let Some(dst_item) = dst_item
+        .filter(|item| item.item_template == src_item.item_template && item.item != src_item.item)
+    {
         let Some(template) =
             wow_db::get_item_template_query(deps.world_db_pool, dst_item.item_template).await?
         else {
@@ -270,15 +300,15 @@ async fn handle_inventory_swap(
         return Ok(());
     };
 
-    session.inventory = wow_db::get_character_inventory_items(deps.character_db_pool, character_guid)
-        .await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
     let changed_equipment_slots = bag0_changed_slots(&move_request)
         .into_iter()
         .filter(|slot| *slot < EQUIPMENT_SLOT_END)
         .collect::<Vec<_>>();
     let mut combat_stats_update_body = None;
     if !changed_equipment_slots.is_empty() {
-        if let Some(character) = session.active_character.as_ref() {
+        if let Some(character) = session.character.active_character.as_ref() {
             let world_stats = wow_db::get_player_world_stats(
                 deps.world_db_pool,
                 character.race,
@@ -287,15 +317,17 @@ async fn handle_inventory_swap(
             )
             .await?;
             let equipped_templates =
-                load_equipped_item_templates(deps.world_db_pool, &session.inventory).await?;
+                load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
             let combat_stats = player_combat_stats_for_values(
                 character.class,
                 character.level,
                 &world_stats,
                 &equipped_templates,
             );
-            combat_stats_update_body =
-                Some(build_player_combat_stats_update_body(character_guid, &combat_stats)?);
+            combat_stats_update_body = Some(build_player_combat_stats_update_body(
+                character_guid,
+                &combat_stats,
+            )?);
             let packets = deps
                 .shared_world
                 .maps
@@ -305,10 +337,11 @@ async fn handle_inventory_swap(
 
             let visible_equipment = visible_equipment_for_inventory(
                 session
+                    .character
                     .player_visual
                     .as_ref()
                     .and_then(|visual| visual.equipment_cache.as_deref()),
-                &session.inventory,
+                &session.inventory.items,
             );
             let packets = deps
                 .shared_world
@@ -325,8 +358,11 @@ async fn handle_inventory_swap(
     }
     match moved {
         wow_db::InventoryMoveResult::Swapped => {
-            let blocks =
-                build_inventory_move_update_blocks(character_guid, &session.inventory, &move_request)?;
+            let blocks = build_inventory_move_update_blocks(
+                character_guid,
+                &session.inventory.items,
+                &move_request,
+            )?;
             let body = build_update_object_body(&blocks);
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
             if let Some(body) = combat_stats_update_body {
@@ -342,11 +378,14 @@ async fn handle_inventory_swap(
         } => {
             let mut blocks = Vec::new();
             if let Some(source_count) = source_count {
-                blocks.push(build_item_stack_count_update_block(source_item, source_count)?);
+                blocks.push(build_item_stack_count_update_block(
+                    source_item,
+                    source_count,
+                )?);
             } else {
                 blocks.extend(build_inventory_position_update_blocks(
                     character_guid,
-                    &session.inventory,
+                    &session.inventory.items,
                     move_request.src_bag,
                     move_request.src_slot,
                 )?);
@@ -365,34 +404,31 @@ async fn handle_inventory_swap(
     }
 }
 
-async fn send_auto_equip_failure_if_known(
+pub(in crate::world) async fn send_auto_equip_failure_if_known(
     stream: &mut WorldPacketSink,
-    body: &[u8],
+    src_bag: u8,
+    src_slot: u8,
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() < 2 {
-        return Ok(());
-    }
-    let src_bag = normalize_client_bag(body[0]);
-    let src_slot = body[1];
+    let src_bag = normalize_client_bag(src_bag);
     let Some(src_item) = session
         .inventory
+        .items
         .iter()
         .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
     else {
         return Ok(());
     };
-    let result =
-        if wow_db::get_item_template_query(world_db_pool, src_item.item_template)
-            .await?
-            .is_some()
-        {
-            EQUIP_ERR_ITEM_CANT_BE_EQUIPPED
-        } else {
-            EQUIP_ERR_ITEM_NOT_FOUND
-        };
+    let result = if wow_db::get_item_template_query(world_db_pool, src_item.item_template)
+        .await?
+        .is_some()
+    {
+        EQUIP_ERR_ITEM_CANT_BE_EQUIPPED
+    } else {
+        EQUIP_ERR_ITEM_NOT_FOUND
+    };
     send_inventory_change_failure(
         stream,
         result,
@@ -403,27 +439,38 @@ async fn send_auto_equip_failure_if_known(
     .await
 }
 
-struct InventoryDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    shared_world: SharedWorldDeps<'a>,
+pub(in crate::world) struct InventoryDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
 }
 
-async fn handle_destroy_item(
+pub(in crate::world) fn inventory_move_client_request_opcode(
+    request: wow_proto::InventoryMoveClientRequest,
+) -> u32 {
+    match request {
+        wow_proto::InventoryMoveClientRequest::AutoEquip { .. } => CMSG_AUTOEQUIP_ITEM,
+        wow_proto::InventoryMoveClientRequest::AutoStoreBag { .. } => CMSG_AUTOSTORE_BAG_ITEM,
+        wow_proto::InventoryMoveClientRequest::SwapItem { .. } => CMSG_SWAP_ITEM,
+        wow_proto::InventoryMoveClientRequest::SwapInvItem { .. } => CMSG_SWAP_INV_ITEM,
+    }
+}
+
+pub(in crate::world) async fn handle_destroy_item(
     stream: &mut WorldPacketSink,
     deps: QuestMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::DestroyItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let character_db_pool = deps.character_db_pool;
     let world_db_pool = deps.world_db_pool;
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring item destroy before character login");
         return Ok(());
     };
     let character_guid = character.guid;
-    let request = DestroyItemRequest::read(body)?;
+    let request = DestroyItemRequest::from(request);
 
     if !request.is_supported_destroy() {
         info!(
@@ -437,6 +484,7 @@ async fn handle_destroy_item(
 
     let Some(source_item) = session
         .inventory
+        .items
         .iter()
         .find(|item| item.bag == request.bag as u32 && item.slot == request.slot)
     else {
@@ -449,7 +497,8 @@ async fn handle_destroy_item(
         return Ok(());
     };
 
-    let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, source_item.item_template).await?
     else {
         warn!(
             guid = character_guid,
@@ -492,8 +541,8 @@ async fn handle_destroy_item(
         return Ok(());
     };
 
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
-        .await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     match destroyed {
         wow_db::InventoryDestroyResult::CountChanged { item, count } => {
             let body = build_item_stack_count_update_body(item, count)?;
@@ -501,12 +550,21 @@ async fn handle_destroy_item(
         }
         wow_db::InventoryDestroyResult::Removed { item } => {
             if request.bag == INVENTORY_SLOT_BAG_0 {
-                let body =
-                    build_inventory_slots_update_body(character_guid, &session.inventory, &[request.slot])?;
+                let body = build_inventory_slots_update_body(
+                    character_guid,
+                    &session.inventory.items,
+                    &[request.slot],
+                )?;
                 send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
             } else {
                 let body = build_destroy_object_body(item);
-                send_packet(stream, SMSG_DESTROY_OBJECT, &body, Some(&mut *header_crypto)).await?;
+                send_packet(
+                    stream,
+                    SMSG_DESTROY_OBJECT,
+                    &body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
             }
         }
     };
@@ -521,20 +579,22 @@ async fn handle_destroy_item(
     .await
 }
 
-async fn handle_split_item(
+pub(in crate::world) async fn handle_split_item(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
-    body: &[u8],
+    request: wow_proto::SplitItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring item split before character login");
         return Ok(());
     };
     let character_guid = character.guid;
-    let request = SplitItemRequest::read(body)?;
-    if !request.is_supported_split() || request.src_bag == request.dst_bag && request.src_slot == request.dst_slot {
+    let request = SplitItemRequest::from(request);
+    if !request.is_supported_split()
+        || request.src_bag == request.dst_bag && request.src_slot == request.dst_slot
+    {
         info!(
             src_bag = request.src_bag,
             src_slot = request.src_slot,
@@ -575,15 +635,20 @@ async fn handle_split_item(
         .await;
     };
 
-    session.inventory = wow_db::get_character_inventory_items(character_db_pool, character_guid)
-        .await?;
+    session.inventory.items =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let mut blocks = vec![build_item_stack_count_update_block(
         split.source_item,
         split.source_count,
     )?];
-    if let Some(new_item) = session.inventory.iter().find(|item| item.item == split.new_item) {
+    if let Some(new_item) = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.item == split.new_item)
+    {
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
+        let contained_guid = item_contained_guid(owner_guid, &session.inventory.items, new_item);
         blocks.push(build_item_create_update_block(
             owner_guid,
             contained_guid,
@@ -592,7 +657,7 @@ async fn handle_split_item(
         )?);
         blocks.extend(build_inventory_position_update_blocks(
             character_guid,
-            &session.inventory,
+            &session.inventory.items,
             new_item.bag as u8,
             new_item.slot,
         )?);
@@ -602,54 +667,65 @@ async fn handle_split_item(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InventoryMoveRequest {
-    src_bag: u8,
-    src_slot: u8,
-    dst_bag: u8,
-    dst_slot: u8,
+pub(in crate::world) struct InventoryMoveRequest {
+    pub(in crate::world) src_bag: u8,
+    pub(in crate::world) src_slot: u8,
+    pub(in crate::world) dst_bag: u8,
+    pub(in crate::world) dst_slot: u8,
 }
 
 impl InventoryMoveRequest {
-    fn read(opcode: u32, body: &[u8]) -> anyhow::Result<Self> {
-        match opcode {
+    #[cfg(test)]
+    pub(in crate::world) fn read(opcode: u32, body: &[u8]) -> anyhow::Result<Self> {
+        let mut body = body;
+        let request = match opcode {
             CMSG_SWAP_INV_ITEM => {
-                if body.len() < 2 {
-                    anyhow::bail!("CMSG_SWAP_INV_ITEM payload too short: {} bytes", body.len());
-                }
-                Ok(Self {
-                    src_bag: INVENTORY_SLOT_BAG_0,
-                    src_slot: body[0],
-                    dst_bag: INVENTORY_SLOT_BAG_0,
-                    dst_slot: body[1],
-                })
+                wow_proto::InventoryMoveClientRequest::read_swap_inv_item(&mut body)?
             }
-            CMSG_SWAP_ITEM => {
-                if body.len() < 4 {
-                    anyhow::bail!("CMSG_SWAP_ITEM payload too short: {} bytes", body.len());
-                }
-                Ok(Self {
-                    dst_bag: normalize_client_bag(body[0]),
-                    dst_slot: body[1],
-                    src_bag: normalize_client_bag(body[2]),
-                    src_slot: body[3],
-                })
-            }
+            CMSG_SWAP_ITEM => wow_proto::InventoryMoveClientRequest::read_swap_item(&mut body)?,
             _ => anyhow::bail!("unsupported inventory opcode 0x{opcode:04X}"),
+        };
+        Self::from_client_request(request)
+    }
+
+    pub(in crate::world) fn from_client_request(
+        request: wow_proto::InventoryMoveClientRequest,
+    ) -> anyhow::Result<Self> {
+        match request {
+            wow_proto::InventoryMoveClientRequest::SwapInvItem { src_slot, dst_slot } => Ok(Self {
+                src_bag: INVENTORY_SLOT_BAG_0,
+                src_slot,
+                dst_bag: INVENTORY_SLOT_BAG_0,
+                dst_slot,
+            }),
+            wow_proto::InventoryMoveClientRequest::SwapItem {
+                dst_bag,
+                dst_slot,
+                src_bag,
+                src_slot,
+            } => Ok(Self {
+                dst_bag: normalize_client_bag(dst_bag),
+                dst_slot,
+                src_bag: normalize_client_bag(src_bag),
+                src_slot,
+            }),
+            wow_proto::InventoryMoveClientRequest::AutoEquip { .. }
+            | wow_proto::InventoryMoveClientRequest::AutoStoreBag { .. } => {
+                anyhow::bail!("auto inventory requests require async slot resolution")
+            }
         }
     }
 
-    async fn read_auto_equip(
-        body: &[u8],
+    pub(in crate::world) async fn read_auto_equip(
+        src_bag: u8,
+        src_slot: u8,
         world_db_pool: &MySqlPool,
         session: &WorldSessionState,
     ) -> anyhow::Result<Option<Self>> {
-        if body.len() < 2 {
-            anyhow::bail!("CMSG_AUTOEQUIP_ITEM payload too short: {} bytes", body.len());
-        }
-        let src_bag = normalize_client_bag(body[0]);
-        let src_slot = body[1];
+        let src_bag = normalize_client_bag(src_bag);
         let Some(src_item) = session
             .inventory
+            .items
             .iter()
             .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
         else {
@@ -660,7 +736,8 @@ impl InventoryMoveRequest {
         else {
             return Ok(None);
         };
-        let Some(dst_slot) = preferred_equipment_slot_for_inventory(&template, &session.inventory)
+        let Some(dst_slot) =
+            preferred_equipment_slot_for_inventory(&template, &session.inventory.items)
         else {
             return Ok(None);
         };
@@ -672,22 +749,18 @@ impl InventoryMoveRequest {
         }))
     }
 
-    async fn read_auto_store_bag(
-        body: &[u8],
+    pub(in crate::world) async fn read_auto_store_bag(
+        src_bag: u8,
+        src_slot: u8,
+        dst_bag: u8,
         world_db_pool: &MySqlPool,
         session: &WorldSessionState,
     ) -> anyhow::Result<Option<Self>> {
-        if body.len() < 3 {
-            anyhow::bail!(
-                "CMSG_AUTOSTORE_BAG_ITEM payload too short: {} bytes",
-                body.len()
-            );
-        }
-        let src_bag = normalize_client_bag(body[0]);
-        let src_slot = body[1];
-        let dst_bag = normalize_client_bag(body[2]);
+        let src_bag = normalize_client_bag(src_bag);
+        let dst_bag = normalize_client_bag(dst_bag);
         let Some(src_item) = session
             .inventory
+            .items
             .iter()
             .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
         else {
@@ -698,10 +771,15 @@ impl InventoryMoveRequest {
         else {
             return Ok(None);
         };
-        let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
-        let Some((dst_bag, dst_slot)) =
-            first_autostore_destination(&session.inventory, src_item, &template, &equipped_bags, dst_bag)
-        else {
+        let equipped_bags =
+            load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
+        let Some((dst_bag, dst_slot)) = first_autostore_destination(
+            &session.inventory.items,
+            src_item,
+            &template,
+            &equipped_bags,
+            dst_bag,
+        ) else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -712,17 +790,20 @@ impl InventoryMoveRequest {
         }))
     }
 
-    fn is_supported_inventory_move(&self) -> bool {
+    pub(in crate::world) fn is_supported_inventory_move(&self) -> bool {
         is_supported_move_position(self.src_bag, self.src_slot)
             && is_supported_move_position(self.dst_bag, self.dst_slot)
     }
 
-    fn uses_existing_storage(&self, equipped_bags: &[EquippedBagInfo]) -> bool {
+    pub(in crate::world) fn uses_existing_storage(
+        &self,
+        equipped_bags: &[EquippedBagInfo],
+    ) -> bool {
         move_position_exists(self.src_bag, self.src_slot, equipped_bags)
             && move_position_exists(self.dst_bag, self.dst_slot, equipped_bags)
     }
 
-    fn moves_equipped_bag_into_itself(&self) -> bool {
+    pub(in crate::world) fn moves_equipped_bag_into_itself(&self) -> bool {
         (self.src_bag == INVENTORY_SLOT_BAG_0
             && is_bag_slot(self.src_slot)
             && self.dst_bag == self.src_slot)
@@ -733,134 +814,74 @@ impl InventoryMoveRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DestroyItemRequest {
-    bag: u8,
-    slot: u8,
-    count: u8,
+pub(in crate::world) struct DestroyItemRequest {
+    pub(in crate::world) bag: u8,
+    pub(in crate::world) slot: u8,
+    pub(in crate::world) count: u8,
 }
 
 impl DestroyItemRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 6 {
-            anyhow::bail!("CMSG_DESTROYITEM payload too short: {} bytes", body.len());
-        }
-        Ok(Self {
-            bag: normalize_client_bag(body[0]),
-            slot: body[1],
-            count: body[2],
-        })
-    }
-
-    fn is_supported_destroy(&self) -> bool {
+    pub(in crate::world) fn is_supported_destroy(&self) -> bool {
         is_supported_storage_position(self.bag, self.slot)
     }
 }
 
+impl From<wow_proto::DestroyItemRequest> for DestroyItemRequest {
+    fn from(request: wow_proto::DestroyItemRequest) -> Self {
+        Self {
+            bag: normalize_client_bag(request.bag),
+            slot: request.slot,
+            count: request.count,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SplitItemRequest {
-    src_bag: u8,
-    src_slot: u8,
-    dst_bag: u8,
-    dst_slot: u8,
-    count: u8,
+pub(in crate::world) struct SplitItemRequest {
+    pub(in crate::world) src_bag: u8,
+    pub(in crate::world) src_slot: u8,
+    pub(in crate::world) dst_bag: u8,
+    pub(in crate::world) dst_slot: u8,
+    pub(in crate::world) count: u8,
 }
 
 impl SplitItemRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 5 {
-            anyhow::bail!("CMSG_SPLIT_ITEM payload too short: {} bytes", body.len());
-        }
-        Ok(Self {
-            src_bag: normalize_client_bag(body[0]),
-            src_slot: body[1],
-            dst_bag: normalize_client_bag(body[2]),
-            dst_slot: body[3],
-            count: body[4],
-        })
-    }
-
-    fn is_supported_split(&self) -> bool {
+    pub(in crate::world) fn is_supported_split(&self) -> bool {
         self.count != 0
             && is_supported_storage_position(self.src_bag, self.src_slot)
             && is_supported_storage_position(self.dst_bag, self.dst_slot)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BuyItemRequest {
-    vendor_guid: ObjectGuid,
-    item: u32,
-    count: u8,
-}
-
-impl BuyItemRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 14 {
-            anyhow::bail!("CMSG_BUY_ITEM payload too short: {} bytes", body.len());
+impl From<wow_proto::SplitItemRequest> for SplitItemRequest {
+    fn from(request: wow_proto::SplitItemRequest) -> Self {
+        Self {
+            src_bag: normalize_client_bag(request.src_bag),
+            src_slot: request.src_slot,
+            dst_bag: normalize_client_bag(request.dst_bag),
+            dst_slot: request.dst_slot,
+            count: request.count,
         }
-        Ok(Self {
-            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
-            item: u32::from_le_bytes(body[8..12].try_into()?),
-            count: body[12],
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SellItemRequest {
-    vendor_guid: ObjectGuid,
-    item_guid: ObjectGuid,
-    count: u8,
-}
-
-impl SellItemRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 17 {
-            anyhow::bail!("CMSG_SELL_ITEM payload too short: {} bytes", body.len());
-        }
-        Ok(Self {
-            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
-            item_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[8..16].try_into()?)),
-            count: body[16],
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BuybackItemRequest {
-    vendor_guid: ObjectGuid,
-    slot: u8,
-}
-
-impl BuybackItemRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        if body.len() < 12 {
-            anyhow::bail!("CMSG_BUYBACK_ITEM payload too short: {} bytes", body.len());
-        }
-        Ok(Self {
-            vendor_guid: ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?)),
-            slot: u32::from_le_bytes(body[8..12].try_into()?) as u8,
-        })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EquippedBagInfo {
-    slot: u8,
-    container_slots: u8,
-    class: u32,
-    subclass: u32,
+pub(in crate::world) struct EquippedBagInfo {
+    pub(in crate::world) slot: u8,
+    pub(in crate::world) container_slots: u8,
+    pub(in crate::world) class: u32,
+    pub(in crate::world) subclass: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StoreSlot {
-    bag: u8,
-    slot: u8,
-    count: u32,
-    existing_item: Option<u32>,
+pub(in crate::world) struct StoreSlot {
+    pub(in crate::world) bag: u8,
+    pub(in crate::world) slot: u8,
+    pub(in crate::world) count: u32,
+    pub(in crate::world) existing_item: Option<u32>,
 }
 
-async fn load_equipped_bag_infos(
+pub(in crate::world) async fn load_equipped_bag_infos(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Vec<EquippedBagInfo>> {
@@ -872,7 +893,8 @@ async fn load_equipped_bag_infos(
         else {
             continue;
         };
-        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, item.item_template).await?
         else {
             continue;
         };
@@ -889,7 +911,7 @@ async fn load_equipped_bag_infos(
     Ok(bags)
 }
 
-fn preferred_equipment_slot_for_inventory(
+pub(in crate::world) fn preferred_equipment_slot_for_inventory(
     template: &ItemTemplateQuery,
     inventory: &[CharacterInventoryItem],
 ) -> Option<u8> {
@@ -903,7 +925,11 @@ fn preferred_equipment_slot_for_inventory(
     preferred_equipment_slot(template.inventory_type)
 }
 
-fn move_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo]) -> bool {
+pub(in crate::world) fn move_position_exists(
+    bag: u8,
+    slot: u8,
+    equipped_bags: &[EquippedBagInfo],
+) -> bool {
     if bag == INVENTORY_SLOT_BAG_0 {
         return slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot);
     }
@@ -912,7 +938,11 @@ fn move_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo]) ->
         .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
 }
 
-fn storage_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo]) -> bool {
+pub(in crate::world) fn storage_position_exists(
+    bag: u8,
+    slot: u8,
+    equipped_bags: &[EquippedBagInfo],
+) -> bool {
     if bag == INVENTORY_SLOT_BAG_0 {
         return is_backpack_item_slot(slot);
     }
@@ -921,7 +951,10 @@ fn storage_position_exists(bag: u8, slot: u8, equipped_bags: &[EquippedBagInfo])
         .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
 }
 
-fn item_can_go_into_bag(item: &ItemTemplateQuery, bag: &EquippedBagInfo) -> bool {
+pub(in crate::world) fn item_can_go_into_bag(
+    item: &ItemTemplateQuery,
+    bag: &EquippedBagInfo,
+) -> bool {
     match bag.class {
         ITEM_CLASS_CONTAINER => match bag.subclass {
             ITEM_SUBCLASS_CONTAINER => true,
@@ -940,7 +973,11 @@ fn item_can_go_into_bag(item: &ItemTemplateQuery, bag: &EquippedBagInfo) -> bool
     }
 }
 
-fn bag_accepts_item(bag: u8, template: &ItemTemplateQuery, equipped_bags: &[EquippedBagInfo]) -> bool {
+pub(in crate::world) fn bag_accepts_item(
+    bag: u8,
+    template: &ItemTemplateQuery,
+    equipped_bags: &[EquippedBagInfo],
+) -> bool {
     if bag == INVENTORY_SLOT_BAG_0 {
         return true;
     }
@@ -950,11 +987,14 @@ fn bag_accepts_item(bag: u8, template: &ItemTemplateQuery, equipped_bags: &[Equi
         .is_some_and(|equipped| item_can_go_into_bag(template, equipped))
 }
 
-fn is_normal_container_bag(bag: &EquippedBagInfo) -> bool {
+pub(in crate::world) fn is_normal_container_bag(bag: &EquippedBagInfo) -> bool {
     bag.class == ITEM_CLASS_CONTAINER && bag.subclass == ITEM_SUBCLASS_CONTAINER
 }
 
-fn storage_slot_range(bag: u8, equipped_bags: &[EquippedBagInfo]) -> Option<(u8, u8)> {
+pub(in crate::world) fn storage_slot_range(
+    bag: u8,
+    equipped_bags: &[EquippedBagInfo],
+) -> Option<(u8, u8)> {
     if bag == INVENTORY_SLOT_BAG_0 {
         return Some((INVENTORY_SLOT_ITEM_START, INVENTORY_SLOT_ITEM_END));
     }
@@ -964,7 +1004,7 @@ fn storage_slot_range(bag: u8, equipped_bags: &[EquippedBagInfo]) -> Option<(u8,
         .map(|equipped| (0, equipped.container_slots))
 }
 
-fn inventory_store_bag_order(
+pub(in crate::world) fn inventory_store_bag_order(
     template: &ItemTemplateQuery,
     equipped_bags: &[EquippedBagInfo],
     specific_bag: Option<u8>,
@@ -995,7 +1035,7 @@ fn inventory_store_bag_order(
     bags
 }
 
-fn plan_store_item(
+pub(in crate::world) fn plan_store_item(
     inventory: &[CharacterInventoryItem],
     template: &ItemTemplateQuery,
     count: u32,
@@ -1014,16 +1054,13 @@ fn plan_store_item(
 
     if max_stack > 1 {
         for bag in &bags {
-            for item in inventory
-                .iter()
-                .filter(|item| {
-                    item.bag == *bag as u32
-                        && item.item_template == template.entry
-                        && Some(item.item) != skip_item
-                        && item.count < max_stack
-                        && storage_position_exists(*bag, item.slot, equipped_bags)
-                })
-            {
+            for item in inventory.iter().filter(|item| {
+                item.bag == *bag as u32
+                    && item.item_template == template.entry
+                    && Some(item.item) != skip_item
+                    && item.count < max_stack
+                    && storage_position_exists(*bag, item.slot, equipped_bags)
+            }) {
                 let move_count = remaining.min(max_stack - item.count);
                 if move_count == 0 {
                     continue;
@@ -1069,7 +1106,7 @@ fn plan_store_item(
     None
 }
 
-fn first_autostore_destination(
+pub(in crate::world) fn first_autostore_destination(
     inventory: &[CharacterInventoryItem],
     source: &CharacterInventoryItem,
     template: &ItemTemplateQuery,
@@ -1093,7 +1130,7 @@ fn first_autostore_destination(
     })
 }
 
-fn normalize_client_bag(bag: u8) -> u8 {
+pub(in crate::world) fn normalize_client_bag(bag: u8) -> u8 {
     if bag == CLIENT_INVENTORY_SLOT_BAG_0 {
         INVENTORY_SLOT_BAG_0
     } else {
@@ -1101,26 +1138,26 @@ fn normalize_client_bag(bag: u8) -> u8 {
     }
 }
 
-fn is_backpack_item_slot(slot: u8) -> bool {
+pub(in crate::world) fn is_backpack_item_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&slot)
 }
 
-fn is_bag_slot(slot: u8) -> bool {
+pub(in crate::world) fn is_bag_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).contains(&slot)
 }
 
-fn is_supported_storage_position(bag: u8, slot: u8) -> bool {
+pub(in crate::world) fn is_supported_storage_position(bag: u8, slot: u8) -> bool {
     (bag == INVENTORY_SLOT_BAG_0 && slot < INVENTORY_SLOT_ITEM_END)
         || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
 }
 
-fn is_supported_move_position(bag: u8, slot: u8) -> bool {
+pub(in crate::world) fn is_supported_move_position(bag: u8, slot: u8) -> bool {
     (bag == INVENTORY_SLOT_BAG_0
         && (slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot)))
         || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
 }
 
-fn bag0_changed_slots(request: &InventoryMoveRequest) -> Vec<u8> {
+pub(in crate::world) fn bag0_changed_slots(request: &InventoryMoveRequest) -> Vec<u8> {
     let mut slots = Vec::with_capacity(2);
     if request.src_bag == INVENTORY_SLOT_BAG_0 {
         slots.push(request.src_slot);
@@ -1131,7 +1168,7 @@ fn bag0_changed_slots(request: &InventoryMoveRequest) -> Vec<u8> {
     slots
 }
 
-fn build_inventory_move_update_blocks(
+pub(in crate::world) fn build_inventory_move_update_blocks(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
     request: &InventoryMoveRequest,
@@ -1163,7 +1200,7 @@ fn build_inventory_move_update_blocks(
     Ok(blocks)
 }
 
-fn build_inventory_position_update_blocks(
+pub(in crate::world) fn build_inventory_position_update_blocks(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
     bag: u8,
@@ -1179,7 +1216,7 @@ fn build_inventory_position_update_blocks(
     build_container_position_update_blocks(character_guid, inventory, bag, slot)
 }
 
-fn build_container_position_update_blocks(
+pub(in crate::world) fn build_container_position_update_blocks(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
     bag: u8,
@@ -1197,12 +1234,16 @@ fn build_container_position_update_blocks(
         .find(|item| item.bag == bag as u32 && item.slot == slot)
     {
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        blocks.push(build_item_contained_update_block(owner_guid, inventory, item)?);
+        blocks.push(build_item_contained_update_block(
+            owner_guid, inventory, item,
+        )?);
     }
     Ok(blocks)
 }
 
-fn first_empty_backpack_slot(inventory: &[CharacterInventoryItem]) -> Option<u8> {
+pub(in crate::world) fn first_empty_backpack_slot(
+    inventory: &[CharacterInventoryItem],
+) -> Option<u8> {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).find(|slot| {
         inventory
             .iter()
@@ -1210,30 +1251,28 @@ fn first_empty_backpack_slot(inventory: &[CharacterInventoryItem]) -> Option<u8>
     })
 }
 
-fn build_rust_guide_vendor_inventory() -> Vec<u8> {
+pub(in crate::world) fn build_rust_guide_vendor_inventory() -> Vec<u8> {
     build_vendor_inventory_body(
         rust_guide_guid(),
-        &[
-            VendorListItem {
-                item: RUST_VENDOR_BAG_ITEM,
-                display: RUST_VENDOR_BAG_DISPLAY,
-                max_count: 0,
-                price: 0,
-                durability: 0,
-                buy_count: 1,
-            },
-        ],
+        &[VendorListItem {
+            item: RUST_VENDOR_BAG_ITEM,
+            display: RUST_VENDOR_BAG_DISPLAY,
+            max_count: 0,
+            price: 0,
+            durability: 0,
+            buy_count: 1,
+        }],
     )
 }
 
 #[derive(Debug, Clone, Copy)]
-struct VendorListItem {
-    item: u32,
-    display: u32,
-    max_count: u32,
-    price: u32,
-    durability: u32,
-    buy_count: u32,
+pub(in crate::world) struct VendorListItem {
+    pub(in crate::world) item: u32,
+    pub(in crate::world) display: u32,
+    pub(in crate::world) max_count: u32,
+    pub(in crate::world) price: u32,
+    pub(in crate::world) durability: u32,
+    pub(in crate::world) buy_count: u32,
 }
 
 impl From<&wow_db::VendorItemQuery> for VendorListItem {
@@ -1249,101 +1288,98 @@ impl From<&wow_db::VendorItemQuery> for VendorListItem {
     }
 }
 
-fn build_vendor_inventory_body(vendor_guid: ObjectGuid, items: &[VendorListItem]) -> Vec<u8> {
-    if items.is_empty() {
-        let mut body = Vec::with_capacity(10);
-        body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
-        body.push(0);
-        body.push(0);
-        return body;
+pub(in crate::world) fn build_vendor_inventory_body(
+    vendor_guid: ObjectGuid,
+    items: &[VendorListItem],
+) -> Vec<u8> {
+    SmsgListInventoryResponse {
+        vendor_guid,
+        items: items
+            .iter()
+            .map(|item| VendorListItemResponse {
+                item: item.item,
+                display: item.display,
+                max_count: item.max_count,
+                price: item.price,
+                durability: item.durability,
+                buy_count: item.buy_count,
+            })
+            .collect(),
     }
+    .body()
+}
 
-    let mut body = Vec::with_capacity(8 + 1 + items.len().min(128) * 28);
-    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
-    body.push(items.len().min(128) as u8);
-    for (index, item) in items.iter().take(128).enumerate() {
-        let available_count = if item.max_count == 0 {
-            u32::MAX
-        } else {
-            item.max_count
-        };
-        write_vendor_item(
-            &mut body,
-            (index + 1) as u32,
-            available_count,
-            *item,
-        );
+pub(in crate::world) fn build_buy_item_body(
+    vendor_guid: ObjectGuid,
+    vendor_slot: u32,
+    count: u8,
+) -> Vec<u8> {
+    SmsgBuyItemResponse {
+        vendor_guid,
+        vendor_slot,
+        count,
     }
-    body
+    .body()
 }
 
-fn write_vendor_item(body: &mut Vec<u8>, slot: u32, available_count: u32, item: VendorListItem) {
-    body.extend_from_slice(&slot.to_le_bytes());
-    body.extend_from_slice(&item.item.to_le_bytes());
-    body.extend_from_slice(&item.display.to_le_bytes());
-    body.extend_from_slice(&available_count.to_le_bytes());
-    body.extend_from_slice(&item.price.to_le_bytes());
-    body.extend_from_slice(&item.durability.to_le_bytes());
-    body.extend_from_slice(&item.buy_count.to_le_bytes());
+pub(in crate::world) fn build_buy_failed_body(
+    vendor_guid: ObjectGuid,
+    item: u32,
+    result: u8,
+) -> Vec<u8> {
+    SmsgBuyFailedResponse {
+        vendor_guid,
+        item,
+        result,
+    }
+    .body()
 }
 
-fn build_buy_item_body(vendor_guid: ObjectGuid, vendor_slot: u32, count: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(20);
-    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
-    body.extend_from_slice(&vendor_slot.to_le_bytes());
-    body.extend_from_slice(&u32::MAX.to_le_bytes());
-    body.extend_from_slice(&(count as u32).to_le_bytes());
-    body
+pub(in crate::world) fn build_sell_item_error_body(
+    vendor_guid: ObjectGuid,
+    item_guid: ObjectGuid,
+    result: u8,
+) -> Vec<u8> {
+    SmsgSellItemResponse {
+        vendor_guid,
+        item_guid,
+        result,
+    }
+    .body()
 }
 
-fn build_buy_failed_body(vendor_guid: ObjectGuid, item: u32, result: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(13);
-    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
-    body.extend_from_slice(&item.to_le_bytes());
-    body.push(result);
-    body
-}
-
-fn build_sell_item_error_body(vendor_guid: ObjectGuid, item_guid: ObjectGuid, result: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(17);
-    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
-    body.extend_from_slice(&item_guid.raw().to_le_bytes());
-    body.push(result);
-    body
-}
-
-fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
+pub(in crate::world) fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
     match item {
         RUST_VENDOR_BAG_ITEM => Some(1),
         _ => None,
     }
 }
 
-fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
+pub(in crate::world) fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
     match inventory_type {
-        1 => Some(0),   // INVTYPE_HEAD
-        2 => Some(1),   // INVTYPE_NECK
-        3 => Some(2),   // INVTYPE_SHOULDERS
-        4 => Some(3),   // INVTYPE_BODY
-        5 | 20 => Some(4), // INVTYPE_CHEST / ROBE
-        6 => Some(5),   // INVTYPE_WAIST
-        7 => Some(6),   // INVTYPE_LEGS
-        8 => Some(7),   // INVTYPE_FEET
-        9 => Some(8),   // INVTYPE_WRISTS
-        10 => Some(9),  // INVTYPE_HANDS
-        11 => Some(10), // INVTYPE_FINGER
-        12 => Some(12), // INVTYPE_TRINKET
+        1 => Some(0),             // INVTYPE_HEAD
+        2 => Some(1),             // INVTYPE_NECK
+        3 => Some(2),             // INVTYPE_SHOULDERS
+        4 => Some(3),             // INVTYPE_BODY
+        5 | 20 => Some(4),        // INVTYPE_CHEST / ROBE
+        6 => Some(5),             // INVTYPE_WAIST
+        7 => Some(6),             // INVTYPE_LEGS
+        8 => Some(7),             // INVTYPE_FEET
+        9 => Some(8),             // INVTYPE_WRISTS
+        10 => Some(9),            // INVTYPE_HANDS
+        11 => Some(10),           // INVTYPE_FINGER
+        12 => Some(12),           // INVTYPE_TRINKET
         13 | 17 | 21 => Some(15), // one-hand/two-hand/main-hand weapon
         14 | 22 | 23 => Some(16), // shield/offhand/held-in-offhand
         15 | 25 | 26 => Some(17), // ranged/thrown/ranged right
-        18 => Some(19), // INVTYPE_BAG
-        16 => Some(14), // INVTYPE_CLOAK
-        19 => Some(18), // INVTYPE_TABARD
+        18 => Some(19),           // INVTYPE_BAG
+        16 => Some(14),           // INVTYPE_CLOAK
+        19 => Some(18),           // INVTYPE_TABARD
         _ => None,
     }
 }
 
-fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
+pub(in crate::world) fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
     match slot {
         0 => inventory_type == 1,
         1 => inventory_type == 2,
@@ -1367,7 +1403,7 @@ fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {
     }
 }
 
-fn character_can_equip_item_template(
+pub(in crate::world) fn character_can_equip_item_template(
     level: u8,
     race: u8,
     class: u8,
@@ -1379,8 +1415,15 @@ fn character_can_equip_item_template(
     if template.inventory_type == 0 {
         return EQUIP_ERR_ITEM_CANT_BE_EQUIPPED;
     }
-    let use_result =
-        character_can_use_item_template(level, race, class, template, skills, active_spells, reputations);
+    let use_result = character_can_use_item_template(
+        level,
+        race,
+        class,
+        template,
+        skills,
+        active_spells,
+        reputations,
+    );
     if use_result != 0 {
         return use_result;
     }
@@ -1394,7 +1437,7 @@ fn character_can_equip_item_template(
     0
 }
 
-fn character_can_use_item_template(
+pub(in crate::world) fn character_can_use_item_template(
     level: u8,
     race: u8,
     class: u8,
@@ -1451,7 +1494,7 @@ fn character_can_use_item_template(
     0
 }
 
-fn reputation_rank_from_standing(standing: i32) -> u32 {
+pub(in crate::world) fn reputation_rank_from_standing(standing: i32) -> u32 {
     match standing {
         i32::MIN..=-6001 => 0,
         -6000..=-3001 => 1,
@@ -1464,7 +1507,7 @@ fn reputation_rank_from_standing(standing: i32) -> u32 {
     }
 }
 
-fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
+pub(in crate::world) fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
     // CMaNGOS reference: src/game/Entities/Item.cpp Item::GetSkill().
     match template.class {
         ITEM_CLASS_ARMOR => match template.subclass {
@@ -1476,15 +1519,15 @@ fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
             _ => None,
         },
         ITEM_CLASS_WEAPON => match template.subclass {
-            0 => Some(44),  // Axes
-            1 => Some(172), // Two-Handed Axes
-            2 => Some(45),  // Bows
-            3 => Some(46),  // Guns
-            4 => Some(54),  // Maces
-            5 => Some(160), // Two-Handed Maces
-            6 => Some(229), // Polearms
-            7 => Some(43),  // Swords
-            8 => Some(55),  // Two-Handed Swords
+            0 => Some(44),   // Axes
+            1 => Some(172),  // Two-Handed Axes
+            2 => Some(45),   // Bows
+            3 => Some(46),   // Guns
+            4 => Some(54),   // Maces
+            5 => Some(160),  // Two-Handed Maces
+            6 => Some(229),  // Polearms
+            7 => Some(43),   // Swords
+            8 => Some(55),   // Two-Handed Swords
             10 => Some(136), // Staves
             13 => Some(473), // Fist Weapons
             15 => Some(173), // Daggers
@@ -1499,7 +1542,7 @@ fn item_proficiency_skill(template: &ItemTemplateQuery) -> Option<u32> {
     }
 }
 
-fn inventory_opcode_name(opcode: u32) -> &'static str {
+pub(in crate::world) fn inventory_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
         CMSG_AUTOSTORE_BAG_ITEM => "CMSG_AUTOSTORE_BAG_ITEM",
@@ -1511,7 +1554,7 @@ fn inventory_opcode_name(opcode: u32) -> &'static str {
     }
 }
 
-async fn send_inventory_change_failure(
+pub(in crate::world) async fn send_inventory_change_failure(
     stream: &mut WorldPacketSink,
     result: u8,
     item: Option<ObjectGuid>,
@@ -1529,7 +1572,7 @@ async fn send_inventory_change_failure(
     .await
 }
 
-async fn send_inventory_change_failure_with_required_level(
+pub(in crate::world) async fn send_inventory_change_failure_with_required_level(
     stream: &mut WorldPacketSink,
     result: u8,
     item: Option<ObjectGuid>,
@@ -1547,23 +1590,18 @@ async fn send_inventory_change_failure_with_required_level(
     .await
 }
 
-fn build_inventory_change_failure_body(
+pub(in crate::world) fn build_inventory_change_failure_body(
     result: u8,
     item: Option<ObjectGuid>,
     item2: Option<ObjectGuid>,
     required_level: Option<u32>,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(if result == EQUIP_ERR_CANT_EQUIP_LEVEL_I {
-        22
-    } else {
-        18
-    });
-    body.push(result);
-    if result == EQUIP_ERR_CANT_EQUIP_LEVEL_I {
-        body.extend_from_slice(&required_level.unwrap_or(0).to_le_bytes());
+    SmsgInventoryChangeFailureResponse {
+        result,
+        required_level: (result == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
+            .then_some(required_level.unwrap_or(0)),
+        item_guid: item,
+        item2_guid: item2,
     }
-    body.extend_from_slice(&item.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
-    body.extend_from_slice(&item2.map(|guid| guid.raw()).unwrap_or(0).to_le_bytes());
-    body.push(0);
-    body
+    .body()
 }

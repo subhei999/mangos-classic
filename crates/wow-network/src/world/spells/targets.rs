@@ -1,19 +1,21 @@
+use super::*;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellTargetResolution {
+pub(in crate::world) enum SpellTargetResolution {
     ClientProvided,
     CasterSelf,
     SelectedUnit,
     MissingTargetFallback,
 }
 
-fn normalize_spell_cast_targets(
+pub(in crate::world) fn normalize_spell_cast_targets(
     mut targets: SpellCastTargets,
     spell_profile: &SpellCastProfile,
     caster: ObjectGuid,
 ) -> SpellCastTargets {
-    targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
-        & !SPELL_CAST_TARGET_UNIT_ENEMY;
+    targets.target_mask =
+        (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
     if targets.unit_target.is_none()
         && matches!(
             spell_profile.kind,
@@ -27,7 +29,7 @@ fn normalize_spell_cast_targets(
     targets
 }
 
-fn normalize_item_use_targets(
+pub(in crate::world) fn normalize_item_use_targets(
     mut targets: SpellCastTargets,
     item_spell: &SpellCastProfile,
     caster: ObjectGuid,
@@ -40,8 +42,8 @@ fn normalize_item_use_targets(
     if item_spell.kind == SpellCastKind::AuraApplication
         && item_spell.aura_target == SpellAuraTarget::Caster
     {
-        targets.target_mask = (targets.target_mask | SPELL_CAST_TARGET_UNIT)
-            & !SPELL_CAST_TARGET_UNIT_ENEMY;
+        targets.target_mask =
+            (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
         targets.unit_target = Some(caster);
         targets.gameobject_target = None;
     }

@@ -1,14 +1,16 @@
-async fn handle_loot(
+use super::*;
+
+pub(in crate::world) async fn handle_loot(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
     parties: &PartyManager,
-    body: &[u8],
+    request: wow_proto::LootRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let target = read_packet_guid(body, "CMSG_LOOT")?;
-    let Some(character) = session.active_character.as_ref() else {
+    let target = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         warn!("Ignoring loot request before character login");
         return Ok(());
     };
@@ -51,14 +53,8 @@ async fn handle_loot(
             return Ok(());
         };
         let _ = gameobject;
-        send_player_looting_state_update(
-            stream,
-            shared_world,
-            session,
-            true,
-            &mut *header_crypto,
-        )
-        .await?;
+        send_player_looting_state_update(stream, shared_world, session, true, &mut *header_crypto)
+            .await?;
         let response = build_gameobject_loot_response_body(target, &loot_items);
         return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
     }
@@ -138,21 +134,21 @@ async fn handle_loot(
         )
         .await;
     };
-    send_player_looting_state_update(
-        stream,
-        shared_world,
-        session,
-        true,
-        &mut *header_crypto,
-    )
-    .await?;
+    send_player_looting_state_update(stream, shared_world, session, true, &mut *header_crypto)
+        .await?;
     let response = build_db_creature_loot_response_body_for_player(
         target,
         &creature,
         db_creature_loot_method_tuple(creature.loot_method),
         character.guid,
     );
-    send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(&mut *header_crypto)).await?;
+    send_packet(
+        stream,
+        SMSG_LOOT_RESPONSE,
+        &response,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     start_group_loot_rolls_for_open_creature(
         shared_world,
         parties,
@@ -177,18 +173,18 @@ async fn handle_loot(
     Ok(())
 }
 
-async fn send_player_looting_state_update(
+pub(in crate::world) async fn send_player_looting_state_update(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     looting: bool,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    let flags = player_unit_flags_with_looting(session.player_in_combat, looting);
+    let flags = player_unit_flags_with_looting(session.combat.player_in_combat, looting);
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
@@ -204,7 +200,7 @@ async fn send_player_looting_state_update(
     Ok(())
 }
 
-async fn select_db_creature_loot_item_for_character(
+pub(in crate::world) async fn select_db_creature_loot_item_for_character(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
@@ -220,6 +216,7 @@ async fn select_db_creature_loot_item_for_character(
         load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
 
     let active_quest_ids: Vec<u32> = session
+        .quests
         .quest_statuses
         .values()
         .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
@@ -238,8 +235,8 @@ async fn select_db_creature_loot_item_for_character(
         &loot_rows,
         &reference_loot_templates,
         &active_quests,
-        &session.quest_statuses,
-        &session.inventory,
+        &session.quests.quest_statuses,
+        &session.inventory.items,
         &source_item_default_counts,
     )
     .into_iter()
@@ -249,7 +246,7 @@ async fn select_db_creature_loot_item_for_character(
     Ok(loot_items)
 }
 
-async fn prepare_db_creature_corpse_loot(
+pub(in crate::world) async fn prepare_db_creature_corpse_loot(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     parties: &PartyManager,
@@ -280,9 +277,13 @@ async fn prepare_db_creature_corpse_loot(
                 threshold,
                 master_looter,
             });
-    let loot_items =
-        select_db_creature_loot_item_for_character(object_mgr, world_db_pool, session, creature_entry)
-            .await?;
+    let loot_items = select_db_creature_loot_item_for_character(
+        object_mgr,
+        world_db_pool,
+        session,
+        creature_entry,
+    )
+    .await?;
     Ok(DbCreatureCorpseLootInit {
         owner,
         allowed_players,
@@ -292,7 +293,7 @@ async fn prepare_db_creature_corpse_loot(
     })
 }
 
-async fn select_db_gameobject_loot_item_for_character(
+pub(in crate::world) async fn select_db_gameobject_loot_item_for_character(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
@@ -311,6 +312,7 @@ async fn select_db_gameobject_loot_item_for_character(
         load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
 
     let active_quest_ids: Vec<u32> = session
+        .quests
         .quest_statuses
         .values()
         .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
@@ -329,8 +331,8 @@ async fn select_db_gameobject_loot_item_for_character(
         &loot_rows,
         &reference_loot_templates,
         &active_quests,
-        &session.quest_statuses,
-        &session.inventory,
+        &session.quests.quest_statuses,
+        &session.inventory.items,
         &source_item_default_counts,
     )
     .into_iter()
@@ -341,7 +343,7 @@ async fn select_db_gameobject_loot_item_for_character(
     Ok(loot_items)
 }
 
-async fn apply_loot_item_template_metadata(
+pub(in crate::world) async fn apply_loot_item_template_metadata(
     world_db_pool: &MySqlPool,
     loot_items: &mut [DbCreatureLootRuntime],
 ) -> anyhow::Result<()> {
@@ -353,8 +355,7 @@ async fn apply_loot_item_template_metadata(
             Err(error) => {
                 warn!(
                     item = loot.item,
-                    "Could not load item template metadata for loot item: {}",
-                    error
+                    "Could not load item template metadata for loot item: {}", error
                 );
                 continue;
             }
@@ -365,7 +366,7 @@ async fn apply_loot_item_template_metadata(
     Ok(())
 }
 
-async fn start_group_loot_rolls_for_open_creature(
+pub(in crate::world) async fn start_group_loot_rolls_for_open_creature(
     shared_world: SharedWorldDeps<'_>,
     parties: &PartyManager,
     character_guid: u32,
@@ -378,16 +379,12 @@ async fn start_group_loot_rolls_for_open_creature(
     if loot_method.method != 3 {
         return;
     }
-    for loot in creature
-        .loot_items
-        .iter()
-        .filter(|loot| {
-            !loot.quest_drop
-                && !loot.free_for_all
-                && loot.quality >= loot_method.threshold
-                && !creature.loot_roll_released_slots.contains(&loot.slot)
-        })
-    {
+    for loot in creature.loot_items.iter().filter(|loot| {
+        !loot.quest_drop
+            && !loot.free_for_all
+            && loot.quality >= loot_method.threshold
+            && !creature.loot_roll_released_slots.contains(&loot.slot)
+    }) {
         if let Some(start) = parties
             .start_loot_roll(
                 character_guid,
@@ -403,7 +400,7 @@ async fn start_group_loot_rolls_for_open_creature(
     }
 }
 
-async fn load_reference_loot_templates(
+pub(in crate::world) async fn load_reference_loot_templates(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     root_rows: &[CreatureLootQuery],
@@ -435,7 +432,7 @@ async fn load_reference_loot_templates(
     Ok(templates)
 }
 
-fn select_creature_loot_for_active_quests(
+pub(in crate::world) fn select_creature_loot_for_active_quests(
     loot_rows: &[CreatureLootQuery],
     reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
@@ -458,7 +455,7 @@ fn select_creature_loot_for_active_quests(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_creature_loot_for_active_quests_with_rolls(
+pub(in crate::world) fn select_creature_loot_for_active_quests_with_rolls(
     loot_rows: &[CreatureLootQuery],
     reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
@@ -481,7 +478,7 @@ fn select_creature_loot_for_active_quests_with_rolls(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_creature_loot_for_active_quests_with_rolls_inner(
+pub(in crate::world) fn select_creature_loot_for_active_quests_with_rolls_inner(
     loot_rows: &[CreatureLootQuery],
     reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
@@ -562,7 +559,7 @@ fn select_creature_loot_for_active_quests_with_rolls_inner(
     rolled
 }
 
-fn roll_loot_group(
+pub(in crate::world) fn roll_loot_group(
     rows: Vec<CreatureLootQuery>,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
@@ -628,7 +625,7 @@ fn roll_loot_group(
     )
 }
 
-fn roll_loot_row(
+pub(in crate::world) fn roll_loot_row(
     loot: &CreatureLootQuery,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
@@ -675,7 +672,7 @@ fn roll_loot_row(
     Some(rolled_loot)
 }
 
-fn player_needs_quest_loot_item(
+pub(in crate::world) fn player_needs_quest_loot_item(
     item_id: u32,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
@@ -695,7 +692,8 @@ fn player_needs_quest_loot_item(
             let Some(quest) = active_quests.get(&status.quest) else {
                 return false;
             };
-            quest.req_item_id
+            quest
+                .req_item_id
                 .iter()
                 .zip(quest.req_item_count.iter())
                 .any(|(req_item_id, req_count)| {
@@ -712,24 +710,33 @@ fn player_needs_quest_loot_item(
                         let required_count = if *req_source_count > 0 {
                             *req_source_count
                         } else {
-                            source_item_default_counts.get(&item_id).copied().unwrap_or(0)
+                            source_item_default_counts
+                                .get(&item_id)
+                                .copied()
+                                .unwrap_or(0)
                         };
                         required_count > 0 && owned_count < required_count
                     })
         })
 }
 
-async fn load_quest_source_item_default_counts(
+pub(in crate::world) async fn load_quest_source_item_default_counts(
     world_db_pool: &MySqlPool,
     active_quests: &HashMap<u32, QuestTemplateQuery>,
 ) -> anyhow::Result<HashMap<u32, u32>> {
     let mut counts = HashMap::new();
     for quest in active_quests.values() {
-        for source_item in quest.req_source_id.iter().copied().filter(|item| *item != 0) {
+        for source_item in quest
+            .req_source_id
+            .iter()
+            .copied()
+            .filter(|item| *item != 0)
+        {
             if counts.contains_key(&source_item) {
                 continue;
             }
-            let Some(template) = wow_db::get_item_template_query(world_db_pool, source_item).await?
+            let Some(template) =
+                wow_db::get_item_template_query(world_db_pool, source_item).await?
             else {
                 continue;
             };
@@ -745,10 +752,10 @@ async fn load_quest_source_item_default_counts(
     Ok(counts)
 }
 
-async fn handle_autostore_loot_item(
+pub(in crate::world) async fn handle_autostore_loot_item(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::AutostoreLootItemRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -758,16 +765,13 @@ async fn handle_autostore_loot_item(
         shared_world,
         parties,
     } = deps;
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring loot item request before character login");
         return Ok(());
     };
     let character_guid = character.guid;
     let character_map_id = character.position.map_id;
-    if body.is_empty() {
-        anyhow::bail!("CMSG_AUTOSTORE_LOOT_ITEM payload too short: {} bytes", body.len());
-    }
-    let loot_slot = body[0];
+    let loot_slot = request.loot_slot;
     if shared_world
         .maps
         .db_creature_loot_guid_for_character(character_map_id, character_guid)
@@ -800,7 +804,12 @@ async fn handle_autostore_loot_item(
         {
             shared_world
                 .maps
-                .restore_db_creature_loot_item(character_map_id, creature_guid, loot_slot, loot.clone())
+                .restore_db_creature_loot_item(
+                    character_map_id,
+                    creature_guid,
+                    loot_slot,
+                    loot.clone(),
+                )
                 .await;
             if let Some(start) = parties
                 .start_loot_roll(
@@ -920,37 +929,35 @@ async fn handle_autostore_loot_item(
 }
 
 #[derive(Clone, Copy)]
-struct LootMutationDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    shared_world: SharedWorldDeps<'a>,
-    parties: &'a PartyManager,
+pub(in crate::world) struct LootMutationDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) parties: &'a PartyManager,
 }
 
-struct LootGrantRequest {
-    target_guid: u32,
-    loot_slot: u8,
-    loot: DbCreatureLootRuntime,
+pub(in crate::world) struct LootGrantRequest {
+    pub(in crate::world) target_guid: u32,
+    pub(in crate::world) loot_slot: u8,
+    pub(in crate::world) loot: DbCreatureLootRuntime,
 }
 
 #[derive(Clone, Copy)]
-struct LootItemReleaseState {
-    roll_released: bool,
-    current_looter_pass: bool,
+pub(in crate::world) struct LootItemReleaseState {
+    pub(in crate::world) roll_released: bool,
+    pub(in crate::world) current_looter_pass: bool,
 }
 
 impl LootItemReleaseState {
-    fn from_creature(creature: &DbCreatureRuntime, loot_slot: u8) -> Self {
+    pub(in crate::world) fn from_creature(creature: &DbCreatureRuntime, loot_slot: u8) -> Self {
         Self {
             roll_released: creature.loot_roll_released_slots.contains(&loot_slot),
-            current_looter_pass: creature
-                .loot_current_looter_pass_slots
-                .contains(&loot_slot),
+            current_looter_pass: creature.loot_current_looter_pass_slots.contains(&loot_slot),
         }
     }
 }
 
-async fn restore_db_creature_loot_item_with_release_state(
+pub(in crate::world) async fn restore_db_creature_loot_item_with_release_state(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     creature_guid: u64,
@@ -976,11 +983,13 @@ async fn restore_db_creature_loot_item_with_release_state(
     }
 }
 
-fn db_creature_loot_method_tuple(method: Option<CreatureLootMethod>) -> Option<(u8, u8, u32)> {
+pub(in crate::world) fn db_creature_loot_method_tuple(
+    method: Option<CreatureLootMethod>,
+) -> Option<(u8, u8, u32)> {
     method.map(|method| (method.method, method.threshold, method.master_looter))
 }
 
-async fn resolve_loot_roll_outcome(
+pub(in crate::world) async fn resolve_loot_roll_outcome(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
     outcome: LootRollVoteOutcome,
@@ -1003,7 +1012,12 @@ async fn resolve_loot_roll_outcome(
         if removed_loot.item != loot.item || loot_slot != outcome.loot_slot {
             deps.shared_world
                 .maps
-                .restore_db_creature_loot_item(outcome.map_id, creature_guid, loot_slot, removed_loot)
+                .restore_db_creature_loot_item(
+                    outcome.map_id,
+                    creature_guid,
+                    loot_slot,
+                    removed_loot,
+                )
                 .await;
             return Ok(());
         }
@@ -1031,7 +1045,12 @@ async fn resolve_loot_roll_outcome(
         } else {
             deps.shared_world
                 .maps
-                .restore_db_creature_loot_item(outcome.map_id, creature_guid, loot_slot, removed_loot)
+                .restore_db_creature_loot_item(
+                    outcome.map_id,
+                    creature_guid,
+                    loot_slot,
+                    removed_loot,
+                )
                 .await;
             deps.shared_world
                 .maps
@@ -1047,7 +1066,10 @@ async fn resolve_loot_roll_outcome(
     Ok(())
 }
 
-fn should_use_group_loot_roll(creature: &DbCreatureRuntime, loot: &DbCreatureLootRuntime) -> bool {
+pub(in crate::world) fn should_use_group_loot_roll(
+    creature: &DbCreatureRuntime,
+    loot: &DbCreatureLootRuntime,
+) -> bool {
     let Some(loot_method) = creature.loot_method else {
         return false;
     };
@@ -1060,7 +1082,7 @@ fn should_use_group_loot_roll(creature: &DbCreatureRuntime, loot: &DbCreatureLoo
     loot.quality >= loot_method.threshold
 }
 
-fn can_autostore_shared_creature_loot(
+pub(in crate::world) fn can_autostore_shared_creature_loot(
     character_guid: u32,
     creature: &DbCreatureRuntime,
     loot: &DbCreatureLootRuntime,
@@ -1096,7 +1118,7 @@ fn can_autostore_shared_creature_loot(
     }
 }
 
-fn should_block_master_loot(
+pub(in crate::world) fn should_block_master_loot(
     creature: &DbCreatureRuntime,
     character_guid: u32,
     loot: &DbCreatureLootRuntime,
@@ -1110,10 +1132,10 @@ fn should_block_master_loot(
     loot.quality >= loot_method.threshold
 }
 
-async fn handle_loot_master_give(
+pub(in crate::world) async fn handle_loot_master_give(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::LootMasterGiveRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1123,14 +1145,13 @@ async fn handle_loot_master_give(
         shared_world,
         parties,
     } = deps;
-    ensure_available(body, 17)?;
-    let loot_guid = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let loot_slot = body[8];
-    let target_guid = ObjectGuid::from_raw(u64::from_le_bytes(body[9..17].try_into()?));
+    let loot_guid = ObjectGuid::from_raw(request.loot_raw_guid);
+    let loot_slot = request.loot_slot;
+    let target_guid = ObjectGuid::from_raw(request.target_raw_guid);
     if !target_guid.is_player() {
         return Ok(());
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
 
@@ -1148,7 +1169,9 @@ async fn handle_loot_master_give(
                 && loot_method.master_looter == character.guid
                 && loot.quality >= loot_method.threshold
         })
-        && creature.loot_allowed_players.contains(&target_guid.counter());
+        && creature
+            .loot_allowed_players
+            .contains(&target_guid.counter());
     if !valid_assignment {
         shared_world
             .maps
@@ -1191,7 +1214,7 @@ async fn handle_loot_master_give(
     Ok(())
 }
 
-async fn grant_loot_item_to_character(
+pub(in crate::world) async fn grant_loot_item_to_character(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
     request: LootGrantRequest,
@@ -1209,15 +1232,20 @@ async fn grant_loot_item_to_character(
         loot_slot,
         loot,
     } = request;
-    let current_guid = session.active_character.as_ref().map(|character| character.guid);
+    let current_guid = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.guid);
     let target_is_current = current_guid == Some(target_guid);
     let target_map_id = if target_is_current {
         session
+            .character
             .active_character
             .as_ref()
             .map(|character| character.position.map_id)
     } else {
-        let Some(character) = session.active_character.as_ref() else {
+        let Some(character) = session.character.active_character.as_ref() else {
             return Ok(false);
         };
         shared_world
@@ -1229,13 +1257,16 @@ async fn grant_loot_item_to_character(
     let Some(target_map_id) = target_map_id else {
         return Ok(false);
     };
-    let target_session_id = shared_world.sessions.session_for_character(target_guid).await;
+    let target_session_id = shared_world
+        .sessions
+        .session_for_character(target_guid)
+        .await;
     if target_session_id.is_none() && !target_is_current {
         return Ok(false);
     }
 
     let inventory = if target_is_current {
-        session.inventory.clone()
+        session.inventory.items.clone()
     } else {
         wow_db::get_character_inventory_items(character_db_pool, target_guid).await?
     };
@@ -1270,7 +1301,7 @@ async fn grant_loot_item_to_character(
 
     let random_properties = generate_item_instance_random_properties(
         world_db_pool,
-        &session.db_creature_navigation.world_data_files,
+        &session.movement.db_creature_navigation.world_data_files,
         loot.item,
     )
     .await?;
@@ -1305,7 +1336,8 @@ async fn grant_loot_item_to_character(
         }
     }
 
-    let new_inventory = wow_db::get_character_inventory_items(character_db_pool, target_guid).await?;
+    let new_inventory =
+        wow_db::get_character_inventory_items(character_db_pool, target_guid).await?;
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
             if let Some(item) = new_inventory.iter().find(|item| item.item == item_guid) {
@@ -1336,7 +1368,7 @@ async fn grant_loot_item_to_character(
     }
 
     if target_is_current {
-        session.inventory = new_inventory.clone();
+        session.inventory.items = new_inventory.clone();
     }
     shared_world
         .maps
@@ -1393,14 +1425,14 @@ async fn grant_loot_item_to_character(
     Ok(true)
 }
 
-async fn handle_loot_money(
+pub(in crate::world) async fn handle_loot_money(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         warn!("Ignoring loot money request before character login");
         return Ok(());
     };
@@ -1426,7 +1458,13 @@ async fn handle_loot_money(
         else {
             return Ok(());
         };
-        send_packet(stream, SMSG_LOOT_CLEAR_MONEY, &[], Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            SMSG_LOOT_CLEAR_MONEY,
+            &[],
+            Some(&mut *header_crypto),
+        )
+        .await?;
         dispatch_creature_loot_clear_money_to_other_open_looters(
             shared_world,
             character_map_id,
@@ -1452,7 +1490,7 @@ async fn handle_loot_money(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn grant_creature_loot_money(
+pub(in crate::world) async fn grant_creature_loot_money(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
@@ -1510,6 +1548,7 @@ async fn grant_creature_loot_money(
         }
     }
     if session
+        .character
         .active_character
         .as_ref()
         .is_some_and(|character| character.guid == looter_guid)
@@ -1519,11 +1558,18 @@ async fn grant_creature_loot_money(
     Ok(())
 }
 
-fn creature_loot_money_recipients(creature: &DbCreatureRuntime, looter_guid: u32) -> Vec<u32> {
+pub(in crate::world) fn creature_loot_money_recipients(
+    creature: &DbCreatureRuntime,
+    looter_guid: u32,
+) -> Vec<u32> {
     if creature.loot_method.is_none() {
         return vec![looter_guid];
     }
-    let mut recipients = creature.loot_allowed_players.iter().copied().collect::<Vec<_>>();
+    let mut recipients = creature
+        .loot_allowed_players
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
     if recipients.is_empty() {
         recipients.push(looter_guid);
     }
@@ -1532,7 +1578,10 @@ fn creature_loot_money_recipients(creature: &DbCreatureRuntime, looter_guid: u32
     recipients
 }
 
-fn creature_loot_money_share(creature: &DbCreatureRuntime, gained_money: u32) -> u32 {
+pub(in crate::world) fn creature_loot_money_share(
+    creature: &DbCreatureRuntime,
+    gained_money: u32,
+) -> u32 {
     let divisor = if creature.loot_method.is_some() {
         creature.loot_allowed_players.len().max(1)
     } else {
@@ -1541,7 +1590,7 @@ fn creature_loot_money_share(creature: &DbCreatureRuntime, gained_money: u32) ->
     gained_money / divisor as u32
 }
 
-async fn dispatch_creature_loot_removed_to_other_open_looters(
+pub(in crate::world) async fn dispatch_creature_loot_removed_to_other_open_looters(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     creature_guid: u64,
@@ -1567,7 +1616,7 @@ async fn dispatch_creature_loot_removed_to_other_open_looters(
     dispatch_party_member_packets(shared_world.sessions, packets).await;
 }
 
-async fn dispatch_creature_loot_clear_money_to_other_open_looters(
+pub(in crate::world) async fn dispatch_creature_loot_clear_money_to_other_open_looters(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     creature_guid: u64,
@@ -1592,23 +1641,19 @@ async fn dispatch_creature_loot_clear_money_to_other_open_looters(
     dispatch_party_member_packets(shared_world.sessions, packets).await;
 }
 
-async fn handle_loot_release(
+pub(in crate::world) async fn handle_loot_release(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
-    body: &[u8],
+    request: wow_proto::LootReleaseRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let target = read_packet_guid(body, "CMSG_LOOT_RELEASE")?;
+    let target = ObjectGuid::from_raw(request.raw_guid);
     if target.is_game_object() {
-        if let Some(character) = session.active_character.as_ref() {
+        if let Some(character) = session.character.active_character.as_ref() {
             shared_world
                 .maps
-                .release_db_gameobject_loot(
-                    character.position.map_id,
-                    target.raw(),
-                    character.guid,
-                )
+                .release_db_gameobject_loot(character.position.map_id, target.raw(), character.guid)
                 .await;
             send_player_looting_state_update(
                 stream,
@@ -1627,7 +1672,7 @@ async fn handle_loot_release(
         )
         .await;
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         warn!("Ignoring loot release before character login");
         return Ok(());
     };
@@ -1648,14 +1693,8 @@ async fn handle_loot_release(
         return Ok(());
     };
     let _ = event.creature;
-    send_player_looting_state_update(
-        stream,
-        shared_world,
-        session,
-        false,
-        &mut *header_crypto,
-    )
-    .await?;
+    send_player_looting_state_update(stream, shared_world, session, false, &mut *header_crypto)
+        .await?;
     send_packet(
         stream,
         SMSG_LOOT_RELEASE_RESPONSE,

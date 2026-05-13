@@ -1,11 +1,25 @@
-include!("combat/entrypoints.rs");
-include!("combat/outcome.rs");
-include!("combat/runtime.rs");
-include!("combat/faction.rs");
-include!("combat/lifecycle.rs");
-include!("combat/aggro.rs");
-include!("combat/melee.rs");
-include!("combat/evade.rs");
-include!("combat/broadcast.rs");
-include!("combat/motion.rs");
-include!("combat/stop.rs");
+use super::*;
+
+mod aggro;
+mod broadcast;
+mod entrypoints;
+mod evade;
+mod faction;
+mod lifecycle;
+mod melee;
+mod motion;
+mod outcome;
+mod runtime;
+mod stop;
+
+pub(in crate::world) use self::aggro::*;
+pub(in crate::world) use self::broadcast::*;
+pub(in crate::world) use self::entrypoints::*;
+pub(in crate::world) use self::evade::*;
+pub(in crate::world) use self::faction::*;
+pub(in crate::world) use self::lifecycle::*;
+pub(in crate::world) use self::melee::*;
+pub(in crate::world) use self::motion::*;
+pub(in crate::world) use self::outcome::*;
+pub(in crate::world) use self::runtime::*;
+pub(in crate::world) use self::stop::*;

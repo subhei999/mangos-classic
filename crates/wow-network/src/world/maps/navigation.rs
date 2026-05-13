@@ -1,8 +1,10 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct DbCreatureNavigationGuardrail {
-    line_of_sight_clear: bool,
-    path_available: bool,
-    world_data_files: Arc<WorldDataFiles>,
+pub(in crate::world) struct DbCreatureNavigationGuardrail {
+    pub(in crate::world) line_of_sight_clear: bool,
+    pub(in crate::world) path_available: bool,
+    pub(in crate::world) world_data_files: Arc<WorldDataFiles>,
 }
 
 impl Default for DbCreatureNavigationGuardrail {
@@ -16,7 +18,7 @@ impl Default for DbCreatureNavigationGuardrail {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DbCreatureNavigationResult {
+pub(in crate::world) enum DbCreatureNavigationResult {
     Clear,
     MapMismatch,
     InvalidCoordinate,
@@ -25,7 +27,7 @@ enum DbCreatureNavigationResult {
 }
 
 impl DbCreatureNavigationResult {
-    fn is_clear(self) -> bool {
+    pub(in crate::world) fn is_clear(self) -> bool {
         self == Self::Clear
     }
 }

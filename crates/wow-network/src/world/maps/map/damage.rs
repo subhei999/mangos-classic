@@ -1,9 +1,11 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Entities/Unit.cpp Unit::DealDamage/Kill/SetDeathState.
-const AIRBORNE_DEATH_PRESENTATION_FALLBACK: Duration = Duration::from_secs(3);
+pub(in crate::world) const AIRBORNE_DEATH_PRESENTATION_FALLBACK: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum WorldDamageKind {
+pub(in crate::world) enum WorldDamageKind {
     Melee,
     SpellDirect,
     PeriodicAura,
@@ -15,37 +17,37 @@ enum WorldDamageKind {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct AppliedPlayerWorldDamage {
-    target: ObjectGuid,
-    source: Option<ObjectGuid>,
-    kind: WorldDamageKind,
-    requested_damage: u32,
-    applied_damage: u32,
-    remaining_health: u32,
-    died: bool,
-    position: WorldPosition,
-    direct_session_id: Option<SessionId>,
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
-    health_packet: OutboundWorldPacket,
-    aura_packet: Option<OutboundWorldPacket>,
-    death_presentation_deferred: bool,
+pub(in crate::world) struct AppliedPlayerWorldDamage {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) source: Option<ObjectGuid>,
+    pub(in crate::world) kind: WorldDamageKind,
+    pub(in crate::world) requested_damage: u32,
+    pub(in crate::world) applied_damage: u32,
+    pub(in crate::world) remaining_health: u32,
+    pub(in crate::world) died: bool,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) direct_session_id: Option<SessionId>,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) health_packet: OutboundWorldPacket,
+    pub(in crate::world) aura_packet: Option<OutboundWorldPacket>,
+    pub(in crate::world) death_presentation_deferred: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-struct AppliedCreatureWorldDamage {
-    target: ObjectGuid,
-    source: ObjectGuid,
-    kind: WorldDamageKind,
-    requested_damage: u32,
-    applied_damage: u32,
-    remaining_health: u32,
-    died: bool,
+pub(in crate::world) struct AppliedCreatureWorldDamage {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) source: ObjectGuid,
+    pub(in crate::world) kind: WorldDamageKind,
+    pub(in crate::world) requested_damage: u32,
+    pub(in crate::world) applied_damage: u32,
+    pub(in crate::world) remaining_health: u32,
+    pub(in crate::world) died: bool,
 }
 
 impl MapRuntime {
-    fn apply_player_world_damage(
+    pub(in crate::world) fn apply_player_world_damage(
         &mut self,
         target: ObjectGuid,
         source: Option<ObjectGuid>,
@@ -75,7 +77,7 @@ impl MapRuntime {
         Ok(applied)
     }
 
-    fn finalize_player_death_cleanup(
+    pub(in crate::world) fn finalize_player_death_cleanup(
         &mut self,
         player_guid: ObjectGuid,
         now: Instant,
@@ -107,17 +109,19 @@ impl MapRuntime {
             body: build_unit_flags_update_body(player_guid, player_unit_flags(false))?,
         };
         direct_packets.push(player_combat_flags.clone());
-        observer_packets.extend(self.nearby_player_guids(
-            player_position,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            Some(character_guid),
-        )
-        .into_iter()
-        .filter_map(|observer_guid| {
-            self.players
-                .get(&observer_guid)
-                .and_then(|observer| observer.packet_to_client(player_combat_flags.clone()))
-        }));
+        observer_packets.extend(
+            self.nearby_player_guids(
+                player_position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .and_then(|observer| observer.packet_to_client(player_combat_flags.clone()))
+            }),
+        );
 
         let active_combats = self.active_db_creature_combats_for_victim(player_guid);
         for combat in active_combats {
@@ -142,9 +146,11 @@ impl MapRuntime {
                     body: build_db_creature_state_update_body(attacker, creature.health, 0)?,
                 },
             ];
-            if let Some((returned, motion)) =
-                self.start_db_creature_return_home_motion(&DbCreatureNavigationGuardrail::default(), attacker, now)
-            {
+            if let Some((returned, motion)) = self.start_db_creature_return_home_motion(
+                &DbCreatureNavigationGuardrail::default(),
+                attacker,
+                now,
+            ) {
                 creature = returned;
                 creature_packets.push(OutboundWorldPacket {
                     opcode: SMSG_MONSTER_MOVE,
@@ -160,24 +166,26 @@ impl MapRuntime {
                 });
             }
             direct_packets.extend(creature_packets.iter().cloned());
-            observer_packets.extend(self.nearby_player_guids(
-                creature.current_position,
-                CREATURE_SPAWN_RADIUS_YARDS,
-                Some(character_guid),
-            )
-            .into_iter()
-            .flat_map(|observer_guid| {
-                self.players
-                    .get(&observer_guid)
-                    .map(|observer| {
-                        creature_packets
-                            .iter()
-                            .cloned()
-                            .filter_map(|packet| observer.packet_to_client(packet))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            }));
+            observer_packets.extend(
+                self.nearby_player_guids(
+                    creature.current_position,
+                    CREATURE_SPAWN_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+                .into_iter()
+                .flat_map(|observer_guid| {
+                    self.players
+                        .get(&observer_guid)
+                        .map(|observer| {
+                            creature_packets
+                                .iter()
+                                .cloned()
+                                .filter_map(|packet| observer.packet_to_client(packet))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                }),
+            );
         }
 
         self.clear_db_creature_combats_for_victim(player_guid);
@@ -194,7 +202,7 @@ impl MapRuntime {
         })
     }
 
-    fn advance_player_death_presentations(
+    pub(in crate::world) fn advance_player_death_presentations(
         &mut self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -212,7 +220,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn force_player_death_presentation(
+    pub(in crate::world) fn force_player_death_presentation(
         &mut self,
         character_guid: u32,
         now: Instant,
@@ -220,7 +228,7 @@ impl MapRuntime {
         self.present_player_death_if_ready(character_guid, now, true)
     }
 
-    fn present_player_death_if_ready(
+    pub(in crate::world) fn present_player_death_if_ready(
         &mut self,
         character_guid: u32,
         _now: Instant,
@@ -228,15 +236,18 @@ impl MapRuntime {
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         let Some(player) = self.players.get_mut(&character_guid) else {
-            self.pending_player_death_presentations.remove(&character_guid);
+            self.pending_player_death_presentations
+                .remove(&character_guid);
             return Ok(Vec::new());
         };
         if player.health != 0 || player.death_state == PlayerDeathState::Alive {
-            self.pending_player_death_presentations.remove(&character_guid);
+            self.pending_player_death_presentations
+                .remove(&character_guid);
             return Ok(Vec::new());
         }
         if player.death_state == PlayerDeathState::Corpse {
-            self.pending_player_death_presentations.remove(&character_guid);
+            self.pending_player_death_presentations
+                .remove(&character_guid);
             return Ok(Vec::new());
         }
         let airborne = player_runtime_is_airborne(player);
@@ -255,7 +266,8 @@ impl MapRuntime {
         let flags = player.flags;
         let class = player.class;
         let direct_session_id = player.client_session_id();
-        self.pending_player_death_presentations.remove(&character_guid);
+        self.pending_player_death_presentations
+            .remove(&character_guid);
 
         let death_packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
@@ -280,22 +292,24 @@ impl MapRuntime {
             ));
             packets.push((session_id, death_packet.clone()));
         }
-        packets.extend(self.nearby_player_guids(
-            position,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            Some(character_guid),
-        )
-        .into_iter()
-        .filter_map(|observer_guid| {
-            self.players
-                .get(&observer_guid)
-                .and_then(|observer| observer.packet_to_client(death_packet.clone()))
-        }));
+        packets.extend(
+            self.nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .and_then(|observer| observer.packet_to_client(death_packet.clone()))
+            }),
+        );
         Ok(packets)
     }
 }
 
-fn apply_player_runtime_world_damage(
+pub(in crate::world) fn apply_player_runtime_world_damage(
     player: &mut PlayerRuntime,
     target: ObjectGuid,
     source: Option<ObjectGuid>,
@@ -397,12 +411,12 @@ fn apply_player_runtime_world_damage(
     }))
 }
 
-fn player_runtime_is_airborne(player: &PlayerRuntime) -> bool {
+pub(in crate::world) fn player_runtime_is_airborne(player: &PlayerRuntime) -> bool {
     player.movement_flags & MOVEFLAG_JUMPING != 0
         || (player.fall_time > 0 && player.last_fall_z.is_some())
 }
 
-fn clear_player_fall_state_for_death_presentation(player: &mut PlayerRuntime) {
+pub(in crate::world) fn clear_player_fall_state_for_death_presentation(player: &mut PlayerRuntime) {
     player.movement_flags &= !MOVEFLAG_JUMPING;
     player.fall_time = 0;
     player.last_fall_z = None;
@@ -411,13 +425,13 @@ fn clear_player_fall_state_for_death_presentation(player: &mut PlayerRuntime) {
 }
 
 #[derive(Default)]
-struct PlayerDeathCleanupPackets {
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct PlayerDeathCleanupPackets {
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 impl MapRuntime {
-    fn apply_creature_world_damage(
+    pub(in crate::world) fn apply_creature_world_damage(
         &mut self,
         target: ObjectGuid,
         source: ObjectGuid,
@@ -441,7 +455,7 @@ impl MapRuntime {
     }
 }
 
-fn apply_creature_runtime_world_damage(
+pub(in crate::world) fn apply_creature_runtime_world_damage(
     creature: &mut DbCreatureRuntime,
     target: ObjectGuid,
     source: ObjectGuid,
@@ -454,29 +468,29 @@ fn apply_creature_runtime_world_damage(
         return Ok(None);
     }
 
-        let previous_health = creature.health;
-        let applied_damage = requested_damage.min(previous_health);
-        creature.health = previous_health.saturating_sub(applied_damage);
-        let died = creature.health == 0;
-        if died {
-            creature.begin_corpse(now, now_epoch_secs);
-            warn!(
-                target = format_args!("0x{:016X}", target.raw()),
-                source = format_args!("0x{:016X}", source.raw()),
-                ?kind,
-                requested_damage,
-                applied_damage,
-                old_health = previous_health,
-                "MapRuntime finalized creature death from world damage"
-            );
-        }
-        Ok(Some(AppliedCreatureWorldDamage {
-            target,
-            source,
-            kind,
+    let previous_health = creature.health;
+    let applied_damage = requested_damage.min(previous_health);
+    creature.health = previous_health.saturating_sub(applied_damage);
+    let died = creature.health == 0;
+    if died {
+        creature.begin_corpse(now, now_epoch_secs);
+        warn!(
+            target = format_args!("0x{:016X}", target.raw()),
+            source = format_args!("0x{:016X}", source.raw()),
+            ?kind,
             requested_damage,
             applied_damage,
-            remaining_health: creature.health,
-            died,
-        }))
+            old_health = previous_health,
+            "MapRuntime finalized creature death from world damage"
+        );
+    }
+    Ok(Some(AppliedCreatureWorldDamage {
+        target,
+        source,
+        kind,
+        requested_damage,
+        applied_damage,
+        remaining_health: creature.health,
+        died,
+    }))
 }

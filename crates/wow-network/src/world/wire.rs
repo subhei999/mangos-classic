@@ -1,4 +1,11 @@
-async fn handle_query_time(
+use super::*;
+use wow_proto::{
+    CharEnumEntryResponse, CharEnumEquipmentResponse, MsgQueryNextMailTimeResponse,
+    ServerWorldPacket, SmsgChannelNotifyResponse, SmsgCharEnumResponse,
+    SmsgGmTicketGetTicketResponse, SmsgQueryTimeResponse, SmsgUpdateAccountDataResponse,
+};
+
+pub(in crate::world) async fn handle_query_time(
     stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -6,29 +13,17 @@ async fn handle_query_time(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as u32)
         .unwrap_or(0);
-    send_packet(
-        stream,
-        SMSG_QUERY_TIME_RESPONSE,
-        &unix_time.to_le_bytes(),
-        Some(header_crypto),
-    )
-    .await
+    let body = SmsgQueryTimeResponse { unix_time }.body();
+    send_packet(stream, SMSG_QUERY_TIME_RESPONSE, &body, Some(header_crypto)).await
 }
 
-async fn handle_request_account_data(
+pub(in crate::world) async fn handle_request_account_data(
     stream: &mut WorldPacketSink,
-    body: &[u8],
+    request: wow_proto::RequestAccountDataRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        anyhow::bail!(
-            "CMSG_REQUEST_ACCOUNT_DATA payload too short: {} bytes",
-            body.len()
-        );
-    }
-
-    let account_data_type = u32::from_le_bytes(body[0..4].try_into()?);
+    let account_data_type = request.data_type;
     if account_data_type >= ACCOUNT_DATA_TYPES as u32 {
         warn!(
             account_data_type,
@@ -37,6 +32,7 @@ async fn handle_request_account_data(
         return Ok(());
     }
     let account_data = session
+        .account
         .account_data
         .get(&account_data_type)
         .map(|entry| entry.data.as_slice())
@@ -46,10 +42,12 @@ async fn handle_request_account_data(
     } else {
         zlib_compress(account_data)?
     };
-    let mut response = Vec::with_capacity(8 + compressed.len());
-    response.extend_from_slice(&account_data_type.to_le_bytes());
-    response.extend_from_slice(&(account_data.len() as u32).to_le_bytes());
-    response.extend_from_slice(&compressed);
+    let response = SmsgUpdateAccountDataResponse {
+        account_data_type,
+        decompressed_size: account_data.len() as u32,
+        compressed_data: compressed,
+    }
+    .body();
     send_packet(
         stream,
         SMSG_UPDATE_ACCOUNT_DATA,
@@ -59,17 +57,14 @@ async fn handle_request_account_data(
     .await
 }
 
-async fn handle_update_account_data(
+pub(in crate::world) async fn handle_update_account_data(
     character_db_pool: &MySqlPool,
     account_id: u32,
-    body: &[u8],
+    request: wow_proto::UpdateAccountDataRequest,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
-    if body.len() < 8 {
-        anyhow::bail!("CMSG_UPDATE_ACCOUNT_DATA payload too short: {} bytes", body.len());
-    }
-    let account_data_type = u32::from_le_bytes(body[0..4].try_into()?);
-    let decompressed_size = u32::from_le_bytes(body[4..8].try_into()?);
+    let account_data_type = request.data_type;
+    let decompressed_size = request.decompressed_size;
     if account_data_type >= ACCOUNT_DATA_TYPES as u32 {
         warn!(
             account_data_type,
@@ -80,7 +75,7 @@ async fn handle_update_account_data(
     let data = if decompressed_size == 0 {
         Vec::new()
     } else {
-        let mut data = zlib_decompress(&body[8..], decompressed_size as usize)?;
+        let mut data = zlib_decompress(&request.compressed_data, decompressed_size as usize)?;
         if data.last() == Some(&0) {
             data.pop();
         }
@@ -95,7 +90,7 @@ async fn handle_update_account_data(
             &data,
         )
         .await?;
-    } else if let Some(character) = session.active_character.as_ref() {
+    } else if let Some(character) = session.character.active_character.as_ref() {
         wow_db::replace_character_account_data(
             character_db_pool,
             character.guid,
@@ -106,15 +101,14 @@ async fn handle_update_account_data(
     } else {
         warn!(
             account_data_type,
-            account_id,
-            "Ignoring per-character account data update with no active character"
+            account_id, "Ignoring per-character account data update with no active character"
         );
         return Ok(());
     }
     if data.is_empty() {
-        session.account_data.remove(&account_data_type);
+        session.account.account_data.remove(&account_data_type);
     } else {
-        session.account_data.insert(
+        session.account.account_data.insert(
             account_data_type,
             AccountDataCache {
                 time: current_unix_time(),
@@ -125,35 +119,38 @@ async fn handle_update_account_data(
     Ok(())
 }
 
-async fn load_global_account_data_into_session(
+pub(in crate::world) async fn load_global_account_data_into_session(
     character_db_pool: &MySqlPool,
     account_id: u32,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
-    clear_account_data_mask(&mut session.account_data, GLOBAL_ACCOUNT_DATA_MASK);
+    clear_account_data_mask(&mut session.account.account_data, GLOBAL_ACCOUNT_DATA_MASK);
     load_account_data_entries(
-        &mut session.account_data,
+        &mut session.account.account_data,
         wow_db::get_global_account_data(character_db_pool, account_id).await?,
         GLOBAL_ACCOUNT_DATA_MASK,
     );
     Ok(())
 }
 
-async fn load_character_account_data_into_session(
+pub(in crate::world) async fn load_character_account_data_into_session(
     character_db_pool: &MySqlPool,
     character_guid: u32,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
-    clear_account_data_mask(&mut session.account_data, PER_CHARACTER_ACCOUNT_DATA_MASK);
+    clear_account_data_mask(
+        &mut session.account.account_data,
+        PER_CHARACTER_ACCOUNT_DATA_MASK,
+    );
     load_account_data_entries(
-        &mut session.account_data,
+        &mut session.account.account_data,
         wow_db::get_character_account_data(character_db_pool, character_guid).await?,
         PER_CHARACTER_ACCOUNT_DATA_MASK,
     );
     Ok(())
 }
 
-fn load_account_data_entries(
+pub(in crate::world) fn load_account_data_entries(
     account_data: &mut HashMap<u32, AccountDataCache>,
     entries: Vec<wow_db::AccountDataEntry>,
     mask: u32,
@@ -175,21 +172,27 @@ fn load_account_data_entries(
     }
 }
 
-fn clear_account_data_mask(account_data: &mut HashMap<u32, AccountDataCache>, mask: u32) {
+pub(in crate::world) fn clear_account_data_mask(
+    account_data: &mut HashMap<u32, AccountDataCache>,
+    mask: u32,
+) {
     account_data.retain(|data_type, _| mask & (1 << *data_type) == 0);
 }
 
-fn account_data_is_global(account_data_type: u32) -> bool {
+pub(in crate::world) fn account_data_is_global(account_data_type: u32) -> bool {
     GLOBAL_ACCOUNT_DATA_MASK & (1 << account_data_type) != 0
 }
 
-fn zlib_compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn zlib_compress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;
     Ok(encoder.finish()?)
 }
 
-fn zlib_decompress(data: &[u8], expected_size: usize) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn zlib_decompress(
+    data: &[u8],
+    expected_size: usize,
+) -> anyhow::Result<Vec<u8>> {
     let mut decoder = ZlibDecoder::new(data);
     let mut decoded = Vec::with_capacity(expected_size);
     decoder.read_to_end(&mut decoded)?;
@@ -203,32 +206,31 @@ fn zlib_decompress(data: &[u8], expected_size: usize) -> anyhow::Result<Vec<u8>>
     Ok(decoded)
 }
 
-fn current_unix_time() -> u64 {
+pub(in crate::world) fn current_unix_time() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
 }
 
-async fn handle_gmticket_getticket(
+pub(in crate::world) async fn handle_gmticket_getticket(
     stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
         SMSG_GMTICKET_GETTICKET,
-        &0u32.to_le_bytes(),
+        &SmsgGmTicketGetTicketResponse { status: 0 }.body(),
         Some(header_crypto),
     )
     .await
 }
 
-async fn handle_join_channel(
+pub(in crate::world) async fn handle_join_channel(
     stream: &mut WorldPacketSink,
-    body: &[u8],
+    request: wow_proto::JoinChannelRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let request = JoinChannelRequest::read(body)?;
     if request.channel_name.is_empty() {
         return Ok(());
     }
@@ -237,17 +239,12 @@ async fn handle_join_channel(
     send_packet(stream, SMSG_CHANNEL_NOTIFY, &response, Some(header_crypto)).await
 }
 
-fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::Result<()> {
-    if body.len() != 8 {
-        anyhow::bail!(
-            "CMSG_SET_ACTIVE_MOVER payload must be 8 bytes, got {}",
-            body.len()
-        );
-    }
-
-    let raw_guid = u64::from_le_bytes(body.try_into()?);
-    let mover = ObjectGuid::from_raw(raw_guid);
-    if let Some(character) = &session.active_character {
+pub(in crate::world) fn handle_set_active_mover(
+    request: wow_proto::SetActiveMoverRequest,
+    session: &WorldSessionState,
+) -> anyhow::Result<()> {
+    let mover = ObjectGuid::from_raw(request.raw_guid);
+    if let Some(character) = &session.character.active_character {
         if mover.counter() != character.guid {
             warn!(
                 active_guid = character.guid,
@@ -259,20 +256,20 @@ fn handle_set_active_mover(body: &[u8], session: &WorldSessionState) -> anyhow::
     Ok(())
 }
 
-async fn handle_set_selection(
+pub(in crate::world) async fn handle_set_selection(
     shared_world: SharedWorldDeps<'_>,
-    body: &[u8],
+    request: wow_proto::SetSelectionRequest,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
-    let selected_target = read_packet_guid(body, "CMSG_SET_SELECTION")?;
+    let selected_target = ObjectGuid::from_raw(request.raw_guid);
     let selected_target = if selected_target == ObjectGuid::EMPTY {
         None
     } else {
         Some(selected_target)
     };
-    session.selected_target = selected_target;
+    session.character.selected_target = selected_target;
 
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let packets = shared_world
@@ -283,19 +280,19 @@ async fn handle_set_selection(
     Ok(())
 }
 
-async fn handle_set_target_obsolete(
+pub(in crate::world) async fn handle_set_target_obsolete(
     shared_world: SharedWorldDeps<'_>,
-    body: &[u8],
+    request: wow_proto::SetTargetObsoleteRequest,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    let unit_target = read_packet_guid(body, "CMSG_SET_TARGET_OBSOLETE")?;
+    let unit_target = ObjectGuid::from_raw(request.raw_guid);
     let unit_target = if unit_target == ObjectGuid::EMPTY {
         None
     } else {
         Some(unit_target)
     };
 
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let packets = shared_world
@@ -306,18 +303,14 @@ async fn handle_set_target_obsolete(
     Ok(())
 }
 
-async fn handle_stand_state_change(
+pub(in crate::world) async fn handle_stand_state_change(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
-    body: &[u8],
+    request: wow_proto::StandStateChangeRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        anyhow::bail!("CMSG_STANDSTATECHANGE payload must include a stand state");
-    }
-    let mut cursor = 0;
-    let stand_state = read_u32(body, &mut cursor)?;
+    let stand_state = request.stand_state;
     let Ok(stand_state) = u8::try_from(stand_state) else {
         return Ok(());
     };
@@ -341,9 +334,9 @@ async fn handle_stand_state_change(
         )
         .await?;
     }
-    session.player_stand_state = stand_state;
+    session.character.player_stand_state = stand_state;
 
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let packets = shared_world
@@ -354,13 +347,13 @@ async fn handle_stand_state_change(
     Ok(())
 }
 
-async fn handle_query_next_mail_time(
+pub(in crate::world) async fn handle_query_next_mail_time(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let has_unread = if let Some(character) = &session.active_character {
+    let has_unread = if let Some(character) = &session.character.active_character {
         wow_db::character_has_unread_mail(character_db_pool, character.guid).await?
     } else {
         false
@@ -375,51 +368,33 @@ async fn handle_query_next_mail_time(
     .await
 }
 
-fn build_query_next_mail_time_body(has_unread: bool) -> Vec<u8> {
+pub(in crate::world) fn build_query_next_mail_time_body(has_unread: bool) -> Vec<u8> {
     let delay = if has_unread { 0.0f32 } else { -86400.0f32 };
-    delay.to_le_bytes().to_vec()
-}
-
-const CHAT_YOU_JOINED_NOTICE: u8 = 0x02;
-const CHANNEL_FLAG_CUSTOM: u32 = 0x01;
-const CHANNEL_FLAG_TRADE: u32 = 0x04;
-const CHANNEL_FLAG_NOT_LFG: u32 = 0x08;
-const CHANNEL_FLAG_GENERAL: u32 = 0x10;
-const CHANNEL_FLAG_CITY: u32 = 0x20;
-const CHANNEL_FLAG_LFG: u32 = 0x40;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JoinChannelRequest {
-    channel_name: String,
-    password: String,
-}
-
-impl JoinChannelRequest {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let mut cursor = 0;
-        let channel_name = read_c_string(body, &mut cursor)?;
-        let password = if cursor < body.len() {
-            read_c_string(body, &mut cursor)?
-        } else {
-            String::new()
-        };
-        Ok(Self {
-            channel_name,
-            password,
-        })
+    MsgQueryNextMailTimeResponse {
+        delay_seconds: delay,
     }
+    .body()
 }
 
-fn build_channel_notify_you_joined_body(channel_name: &str) -> Vec<u8> {
-    let mut body = Vec::with_capacity(1 + channel_name.len() + 1 + 4 + 4);
-    body.push(CHAT_YOU_JOINED_NOTICE);
-    write_c_string(&mut body, channel_name);
-    write_u32(&mut body, channel_join_flags(channel_name));
-    write_u32(&mut body, 0);
-    body
+pub(in crate::world) const CHAT_YOU_JOINED_NOTICE: u8 = 0x02;
+pub(in crate::world) const CHANNEL_FLAG_CUSTOM: u32 = 0x01;
+pub(in crate::world) const CHANNEL_FLAG_TRADE: u32 = 0x04;
+pub(in crate::world) const CHANNEL_FLAG_NOT_LFG: u32 = 0x08;
+pub(in crate::world) const CHANNEL_FLAG_GENERAL: u32 = 0x10;
+pub(in crate::world) const CHANNEL_FLAG_CITY: u32 = 0x20;
+pub(in crate::world) const CHANNEL_FLAG_LFG: u32 = 0x40;
+
+pub(in crate::world) fn build_channel_notify_you_joined_body(channel_name: &str) -> Vec<u8> {
+    SmsgChannelNotifyResponse {
+        notice: CHAT_YOU_JOINED_NOTICE,
+        channel_name: channel_name.to_string(),
+        flags: channel_join_flags(channel_name),
+        channel_id: 0,
+    }
+    .body()
 }
 
-fn channel_join_flags(channel_name: &str) -> u32 {
+pub(in crate::world) fn channel_join_flags(channel_name: &str) -> u32 {
     let lowercase = channel_name.to_ascii_lowercase();
     if lowercase.starts_with("general") {
         CHANNEL_FLAG_GENERAL | CHANNEL_FLAG_NOT_LFG
@@ -437,11 +412,11 @@ fn channel_join_flags(channel_name: &str) -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct JumpInfo {
-    z_speed: f32,
-    cos_angle: f32,
-    sin_angle: f32,
-    xy_speed: f32,
+pub(in crate::world) struct JumpInfo {
+    pub(in crate::world) z_speed: f32,
+    pub(in crate::world) cos_angle: f32,
+    pub(in crate::world) sin_angle: f32,
+    pub(in crate::world) xy_speed: f32,
 }
 
 impl Default for JumpInfo {
@@ -456,16 +431,16 @@ impl Default for JumpInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct MovementInfo {
-    flags: u32,
-    client_time: u32,
-    position: WorldPosition,
-    fall_time: u32,
-    jump: JumpInfo,
+pub(in crate::world) struct MovementInfo {
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) client_time: u32,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) fall_time: u32,
+    pub(in crate::world) jump: JumpInfo,
 }
 
 impl MovementInfo {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
+    pub(in crate::world) fn read(body: &[u8]) -> anyhow::Result<Self> {
         let mut cursor = 0;
         let flags = read_u32(body, &mut cursor)?;
         let client_time = read_u32(body, &mut cursor)?;
@@ -512,7 +487,7 @@ impl MovementInfo {
     }
 }
 
-fn write_movement_info(
+pub(in crate::world) fn write_movement_info(
     body: &mut Vec<u8>,
     flags: u32,
     client_time: u32,
@@ -535,7 +510,7 @@ fn write_movement_info(
     }
 }
 
-fn build_player_movement_broadcast_body(
+pub(in crate::world) fn build_player_movement_broadcast_body(
     player_guid: u32,
     movement: &MovementInfo,
     server_time: u32,
@@ -553,21 +528,18 @@ fn build_player_movement_broadcast_body(
     Ok(body)
 }
 
-fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
+pub(in crate::world) fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
     ensure_available(body, *cursor + 4)?;
     let value = u32::from_le_bytes(body[*cursor..*cursor + 4].try_into()?);
     *cursor += 4;
     Ok(value)
 }
 
-fn read_u16(body: &[u8], cursor: &mut usize) -> anyhow::Result<u16> {
-    ensure_available(body, *cursor + 2)?;
-    let value = u16::from_le_bytes(body[*cursor..*cursor + 2].try_into()?);
-    *cursor += 2;
-    Ok(value)
-}
-
-fn read_packed_guid(body: &[u8], cursor: &mut usize) -> anyhow::Result<ObjectGuid> {
+#[cfg(test)]
+pub(in crate::world) fn read_packed_guid(
+    body: &[u8],
+    cursor: &mut usize,
+) -> anyhow::Result<ObjectGuid> {
     ensure_available(body, *cursor + 1)?;
     let mask = body[*cursor];
     let packed_len = 1 + mask.count_ones() as usize;
@@ -578,7 +550,8 @@ fn read_packed_guid(body: &[u8], cursor: &mut usize) -> anyhow::Result<ObjectGui
     Ok(guid)
 }
 
-fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
+#[cfg(test)]
+pub(in crate::world) fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
     let end = body[*cursor..]
         .iter()
         .position(|byte| *byte == 0)
@@ -589,14 +562,14 @@ fn read_c_string(body: &[u8], cursor: &mut usize) -> anyhow::Result<String> {
     Ok(value)
 }
 
-fn read_f32(body: &[u8], cursor: &mut usize) -> anyhow::Result<f32> {
+pub(in crate::world) fn read_f32(body: &[u8], cursor: &mut usize) -> anyhow::Result<f32> {
     ensure_available(body, *cursor + 4)?;
     let value = f32::from_le_bytes(body[*cursor..*cursor + 4].try_into()?);
     *cursor += 4;
     Ok(value)
 }
 
-fn ensure_available(body: &[u8], end: usize) -> anyhow::Result<()> {
+pub(in crate::world) fn ensure_available(body: &[u8], end: usize) -> anyhow::Result<()> {
     if end > body.len() {
         anyhow::bail!(
             "movement packet truncated: need {} bytes, got {}",
@@ -607,7 +580,7 @@ fn ensure_available(body: &[u8], end: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_movement_opcode(opcode: u32) -> bool {
+pub(in crate::world) fn is_movement_opcode(opcode: u32) -> bool {
     matches!(
         opcode,
         MSG_MOVE_START_FORWARD
@@ -635,7 +608,7 @@ fn is_movement_opcode(opcode: u32) -> bool {
     )
 }
 
-fn is_expected_noop_opcode(opcode: u32) -> bool {
+pub(in crate::world) fn is_expected_noop_opcode(opcode: u32) -> bool {
     matches!(
         opcode,
         CMSG_CANCEL_TRADE
@@ -649,7 +622,7 @@ fn is_expected_noop_opcode(opcode: u32) -> bool {
     )
 }
 
-fn expected_noop_opcode_name(opcode: u32) -> &'static str {
+pub(in crate::world) fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
         CMSG_CANCEL_CAST => "CMSG_CANCEL_CAST",
@@ -667,7 +640,7 @@ fn expected_noop_opcode_name(opcode: u32) -> &'static str {
     }
 }
 
-fn movement_opcode_name(opcode: u32) -> &'static str {
+pub(in crate::world) fn movement_opcode_name(opcode: u32) -> &'static str {
     match opcode {
         MSG_MOVE_START_FORWARD => "MSG_MOVE_START_FORWARD",
         MSG_MOVE_START_BACKWARD => "MSG_MOVE_START_BACKWARD",
@@ -695,7 +668,9 @@ fn movement_opcode_name(opcode: u32) -> &'static str {
     }
 }
 
-fn build_char_enum_body(characters: &[CharacterEnumEntry]) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_char_enum_body(
+    characters: &[CharacterEnumEntry],
+) -> anyhow::Result<Vec<u8>> {
     if characters.len() > u8::MAX as usize {
         anyhow::bail!(
             "too many characters for SMSG_CHAR_ENUM: {}",
@@ -703,95 +678,81 @@ fn build_char_enum_body(characters: &[CharacterEnumEntry]) -> anyhow::Result<Vec
         );
     }
 
-    let mut body = Vec::with_capacity(1 + characters.len() * 90);
-    body.push(characters.len() as u8);
-
-    for character in characters {
-        write_character_enum_entry(&mut body, character)?;
+    Ok(SmsgCharEnumResponse {
+        characters: characters.iter().map(char_enum_entry_response).collect(),
     }
-
-    Ok(body)
+    .body())
 }
 
-fn write_character_enum_entry(
-    body: &mut Vec<u8>,
+pub(in crate::world) fn char_enum_entry_response(
     character: &CharacterEnumEntry,
-) -> anyhow::Result<()> {
-    let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-    write_guid(body, guid)?;
-    write_c_string(body, &character.name);
-    body.push(character.race);
-    body.push(character.class);
-    body.push(character.gender);
-
-    body.push((character.player_bytes & 0xFF) as u8);
-    body.push(((character.player_bytes >> 8) & 0xFF) as u8);
-    body.push(((character.player_bytes >> 16) & 0xFF) as u8);
-    body.push(((character.player_bytes >> 24) & 0xFF) as u8);
-    body.push((character.player_bytes2 & 0xFF) as u8);
-
-    body.push(character.level);
-    body.extend_from_slice(&character.zone.to_le_bytes());
-    body.extend_from_slice(&character.map.to_le_bytes());
-    body.extend_from_slice(&character.position_x.to_le_bytes());
-    body.extend_from_slice(&character.position_y.to_le_bytes());
-    body.extend_from_slice(&character.position_z.to_le_bytes());
-    body.extend_from_slice(&character.guildid.unwrap_or(0).to_le_bytes());
-    body.extend_from_slice(&character_flags(character).to_le_bytes());
-    body.push(if character.at_login & AT_LOGIN_FIRST != 0 {
-        1
-    } else {
-        0
-    });
-
+) -> CharEnumEntryResponse {
     let show_pet =
         character.player_flags & PLAYER_FLAGS_GHOST == 0 && matches!(character.class, 3 | 9);
-    let pet_display_id = if show_pet {
-        character.pet_modelid.unwrap_or(0)
-    } else {
-        0
-    };
-    let pet_level = if show_pet {
-        character.pet_level.unwrap_or(0)
-    } else {
-        0
-    };
-    body.extend_from_slice(&pet_display_id.to_le_bytes());
-    body.extend_from_slice(&pet_level.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes()); // pet family requires creature template data.
-
-    let equipment = parse_equipment_cache(character.equipment_cache.as_deref());
-    for item_id in equipment {
-        if let Some(visual) = starter_item_visual(item_id) {
-            body.extend_from_slice(&visual.display_id.to_le_bytes());
-            body.push(visual.inventory_type);
+    let equipment = parse_equipment_cache(character.equipment_cache.as_deref())
+        .into_iter()
+        .map(|item_id| {
+            starter_item_visual(item_id)
+                .map(|visual| CharEnumEquipmentResponse {
+                    display_id: visual.display_id,
+                    inventory_type: visual.inventory_type,
+                })
+                .unwrap_or(CharEnumEquipmentResponse {
+                    display_id: 0,
+                    inventory_type: 0,
+                })
+        })
+        .collect();
+    CharEnumEntryResponse {
+        guid: ObjectGuid::new(HighGuid::Player, 0, character.guid),
+        name: character.name.clone(),
+        race: character.race,
+        class: character.class,
+        gender: character.gender,
+        player_bytes: character.player_bytes,
+        player_bytes2: character.player_bytes2,
+        level: character.level,
+        zone: character.zone,
+        map: character.map,
+        x: character.position_x,
+        y: character.position_y,
+        z: character.position_z,
+        guild_id: character.guildid.unwrap_or(0),
+        flags: character_flags(character),
+        first_login: character.at_login & AT_LOGIN_FIRST != 0,
+        pet_display_id: if show_pet {
+            character.pet_modelid.unwrap_or(0)
         } else {
-            body.extend_from_slice(&0u32.to_le_bytes());
-            body.push(0);
-        }
+            0
+        },
+        pet_level: if show_pet {
+            character.pet_level.unwrap_or(0)
+        } else {
+            0
+        },
+        pet_family: 0,
+        equipment,
     }
-
-    Ok(())
 }
 
-fn write_c_string(body: &mut Vec<u8>, value: &str) {
+pub(in crate::world) fn write_c_string(body: &mut Vec<u8>, value: &str) {
     body.extend_from_slice(value.as_bytes());
     body.push(0);
 }
 
-fn write_u32(body: &mut Vec<u8>, value: u32) {
+pub(in crate::world) fn write_u32(body: &mut Vec<u8>, value: u32) {
     body.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_i32(body: &mut Vec<u8>, value: i32) {
+pub(in crate::world) fn write_i32(body: &mut Vec<u8>, value: i32) {
     body.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_f32(body: &mut Vec<u8>, value: f32) {
+pub(in crate::world) fn write_f32(body: &mut Vec<u8>, value: f32) {
     body.extend_from_slice(&value.to_le_bytes());
 }
 
-fn character_flags(character: &CharacterEnumEntry) -> u32 {
+pub(in crate::world) fn character_flags(character: &CharacterEnumEntry) -> u32 {
     let mut flags = 0;
     if character.player_flags & PLAYER_FLAGS_HIDE_HELM != 0 {
         flags |= CHARACTER_FLAG_HIDE_HELM;
@@ -808,7 +769,7 @@ fn character_flags(character: &CharacterEnumEntry) -> u32 {
     flags
 }
 
-async fn send_packet(
+pub(in crate::world) async fn send_packet(
     stream: &mut WorldPacketSink,
     opcode: u16,
     body: &[u8],
@@ -817,7 +778,7 @@ async fn send_packet(
     stream.send(opcode, body)
 }
 
-async fn send_packet_direct<W>(
+pub(in crate::world) async fn send_packet_direct<W>(
     stream: &mut W,
     opcode: u16,
     body: &[u8],
@@ -841,7 +802,7 @@ where
     Ok(())
 }
 
-async fn read_client_packet<R>(
+pub(in crate::world) async fn read_client_packet<R>(
     stream: &mut R,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<(u32, Vec<u8>)>
@@ -871,60 +832,10 @@ where
     Ok((opcode, body))
 }
 
-#[derive(Debug)]
-struct AuthSessionPacket {
-    client_build: u32,
-    account: String,
-    client_seed: u32,
-    digest: [u8; 20],
-    addon_data: Vec<u8>,
-}
-
-impl AuthSessionPacket {
-    fn read(payload: &[u8]) -> anyhow::Result<Self> {
-        if payload.len() < 4 + 4 + 1 + 4 + 20 {
-            anyhow::bail!(
-                "CMSG_AUTH_SESSION payload too short: {} bytes",
-                payload.len()
-            );
-        }
-
-        let client_build = u32::from_le_bytes(payload[0..4].try_into()?);
-        let _unk2 = u32::from_le_bytes(payload[4..8].try_into()?);
-
-        let mut cursor = 8;
-        let account_end = payload[cursor..]
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or_else(|| anyhow::anyhow!("CMSG_AUTH_SESSION account is not NUL-terminated"))?
-            + cursor;
-        let account = String::from_utf8(payload[cursor..account_end].to_vec())?;
-        cursor = account_end + 1;
-
-        if payload.len() < cursor + 4 + 20 {
-            anyhow::bail!("CMSG_AUTH_SESSION truncated after account");
-        }
-
-        let client_seed = u32::from_le_bytes(payload[cursor..cursor + 4].try_into()?);
-        cursor += 4;
-
-        let mut digest = [0u8; 20];
-        digest.copy_from_slice(&payload[cursor..cursor + 20]);
-        cursor += 20;
-
-        let addon_data = payload[cursor..].to_vec();
-
-        Ok(Self {
-            client_build,
-            account,
-            client_seed,
-            digest,
-            addon_data,
-        })
-    }
-}
-
-fn verify_world_digest(auth: &AuthSessionPacket, session_key: &[u8; 40]) -> bool {
+pub(in crate::world) fn verify_world_digest(
+    auth: &wow_proto::WorldAuthSessionRequest,
+    session_key: &[u8; 40],
+) -> bool {
     let mut hasher = Sha1::new();
     hasher.update(auth.account.as_bytes());
     hasher.update(0u32.to_le_bytes());
@@ -935,7 +846,7 @@ fn verify_world_digest(auth: &AuthSessionPacket, session_key: &[u8; 40]) -> bool
     digest == auth.digest
 }
 
-fn hex_to_array40(hex: &str) -> anyhow::Result<[u8; 40]> {
+pub(in crate::world) fn hex_to_array40(hex: &str) -> anyhow::Result<[u8; 40]> {
     let bytes = hex_to_vec(hex)?;
     if bytes.len() != 40 {
         anyhow::bail!("expected 40-byte session key, got {} bytes", bytes.len());
@@ -946,7 +857,7 @@ fn hex_to_array40(hex: &str) -> anyhow::Result<[u8; 40]> {
     Ok(out)
 }
 
-fn hex_to_vec(hex: &str) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn hex_to_vec(hex: &str) -> anyhow::Result<Vec<u8>> {
     let hex = hex.trim();
     if !hex.len().is_multiple_of(2) {
         anyhow::bail!("hex string has odd length");
@@ -959,7 +870,7 @@ fn hex_to_vec(hex: &str) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-fn hex_nibble(c: u8) -> anyhow::Result<u8> {
+pub(in crate::world) fn hex_nibble(c: u8) -> anyhow::Result<u8> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),
         b'a'..=b'f' => Ok(c - b'a' + 10),
@@ -967,4 +878,3 @@ fn hex_nibble(c: u8) -> anyhow::Result<u8> {
         _ => anyhow::bail!("invalid hex character 0x{c:02X}"),
     }
 }
-

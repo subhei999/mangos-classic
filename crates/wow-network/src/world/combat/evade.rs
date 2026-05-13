@@ -1,4 +1,6 @@
-async fn db_creature_should_evade_from_map(
+use super::*;
+
+pub(in crate::world) async fn db_creature_should_evade_from_map(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     attacker: ObjectGuid,
@@ -11,8 +13,11 @@ async fn db_creature_should_evade_from_map(
 }
 
 #[cfg(test)]
-fn db_creature_should_evade(session: &WorldSessionState, attacker: ObjectGuid) -> bool {
-    let Some(creature) = session.db_creatures.get(&attacker.raw()) else {
+pub(in crate::world) fn db_creature_should_evade(
+    session: &WorldSessionState,
+    attacker: ObjectGuid,
+) -> bool {
+    let Some(creature) = session.visibility.db_creatures.get(&attacker.raw()) else {
         return false;
     };
     if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
@@ -26,7 +31,7 @@ fn db_creature_should_evade(session: &WorldSessionState, attacker: ObjectGuid) -
     ) > DB_CREATURE_LEASH_RADIUS_YARDS
 }
 
-async fn send_db_creature_evade_and_return_home(
+pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     stream: &mut WorldPacketSink,
     broadcast: CreatureCombatBroadcast<'_>,
     session: &mut WorldSessionState,
@@ -43,7 +48,7 @@ async fn send_db_creature_evade_and_return_home(
         return Ok(());
     };
     mirror_session_db_creature(session, attacker.raw(), creature.clone());
-    if let Some(character) = session.active_character.as_ref().cloned() {
+    if let Some(character) = session.character.active_character.as_ref().cloned() {
         if broadcast
             .shared_world
             .maps
@@ -122,7 +127,7 @@ async fn send_db_creature_evade_and_return_home(
         .maps
         .start_db_creature_return_home_motion(
             broadcast.map_id,
-            &session.db_creature_navigation,
+            &session.movement.db_creature_navigation,
             attacker,
             now,
         )
@@ -145,8 +150,11 @@ async fn send_db_creature_evade_and_return_home(
 }
 
 #[cfg(test)]
-fn prepare_db_creature_evade(session: &mut WorldSessionState, attacker: ObjectGuid) {
-    if let Some(creature) = session.db_creatures.get_mut(&attacker.raw()) {
+pub(in crate::world) fn prepare_db_creature_evade(
+    session: &mut WorldSessionState,
+    attacker: ObjectGuid,
+) {
+    if let Some(creature) = session.visibility.db_creatures.get_mut(&attacker.raw()) {
         creature.health = creature.max_health();
         creature.power1 = creature_mana(&creature.spawn.template);
         creature.life_state = DbCreatureLifeState::Alive;
@@ -162,14 +170,14 @@ fn prepare_db_creature_evade(session: &mut WorldSessionState, attacker: ObjectGu
         creature.loot_current_looter_pass_slots.clear();
         creature.loot_owner = None;
     }
-    if session.active_combat_target == Some(attacker) {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+    if session.combat.active_combat_target == Some(attacker) {
+        session.combat.active_combat_target = None;
+        session.combat.active_combat_next_swing_at = None;
     }
     clear_db_creature_combat_if_attacker(session, attacker);
 }
 
-async fn send_db_creature_chase_if_needed(
+pub(in crate::world) async fn send_db_creature_chase_if_needed(
     stream: &mut WorldPacketSink,
     broadcast: CreatureCombatBroadcast<'_>,
     session: &mut WorldSessionState,
@@ -198,6 +206,7 @@ async fn send_db_creature_chase_if_needed(
         return Ok(());
     }
     let Some(target_position) = session
+        .character
         .active_character
         .as_ref()
         .map(|character| character.position)
@@ -209,7 +218,7 @@ async fn send_db_creature_chase_if_needed(
         .maps
         .start_db_creature_chase_motion(
             broadcast.map_id,
-            &session.db_creature_navigation,
+            &session.movement.db_creature_navigation,
             attacker,
             broadcast.player,
             target_position,

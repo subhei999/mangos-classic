@@ -1,66 +1,64 @@
+use super::*;
+
 #[derive(Clone, Copy)]
-struct PlayerDeathDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    maps: &'a Arc<MapRuntimeManager>,
-    sessions: &'a Arc<SessionRegistry>,
-    account_id: u32,
+pub(in crate::world) struct PlayerDeathDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
+    pub(in crate::world) account_id: u32,
 }
 
-async fn handle_repop_request(
+pub(in crate::world) async fn handle_repop_request(
     stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let presentation_packets =
-        refresh_session_death_state_before_repop(deps.maps, session).await?;
+    let presentation_packets = refresh_session_death_state_before_repop(deps.maps, session).await?;
     deps.sessions.dispatch(presentation_packets).await;
-    if session.player_death_state != PlayerDeathState::Corpse {
+    if session.death.player_death_state != PlayerDeathState::Corpse {
         warn!(
-            player_death_state = ?session.player_death_state,
-            pending = session.player_death_presentation_pending,
-            health = session.player_health,
+            player_death_state = ?session.death.player_death_state,
+            pending = session.death.player_death_presentation_pending,
+            health = session.character.player_health,
             "Ignoring Release Spirit request before player is in corpse state"
         );
         return Ok(());
     }
-    if session.active_character.is_none() {
+    if session.character.active_character.is_none() {
         return Ok(());
     }
 
-    let corpse = create_or_get_player_corpse(
-        deps.character_db_pool,
-        deps.maps,
-        session,
-    )
-    .await?;
+    let corpse = create_or_get_player_corpse(deps.character_db_pool, deps.maps, session).await?;
     let corpse_position = corpse.position;
     let graveyard_position =
         select_repop_graveyard_position(deps.world_db_pool, corpse_position).await?;
 
     let (character_guid, character_class) = session
+        .character
         .active_character
         .as_ref()
         .map(|character| (character.guid, character.class))
         .unwrap_or_default();
     let old_map_id = session
+        .character
         .active_character
         .as_ref()
         .map(|character| character.position.map_id)
         .unwrap_or(corpse_position.map_id);
-    session.player_death_state = PlayerDeathState::Ghost;
-    session.player_death_presentation_pending = false;
-    session.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
-    session.player_flags |= PLAYER_FLAGS_GHOST;
-    session.player_stand_state = PLAYER_STAND_STATE_STAND;
-    session.player_in_combat = false;
+    session.death.player_death_state = PlayerDeathState::Ghost;
+    session.death.player_death_presentation_pending = false;
+    session.character.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
+    session.character.player_flags |= PLAYER_FLAGS_GHOST;
+    session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
+    session.combat.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);
     deps.maps
         .set_player_auto_attack(old_map_id, character_guid, None, None)
         .await;
-    if let Some(character) = &mut session.active_character {
+    if let Some(character) = &mut session.character.active_character {
         character.position = graveyard_position;
         character.movement_flags = 0;
         character.fall_time = 0;
@@ -78,8 +76,8 @@ async fn handle_repop_request(
         SMSG_UPDATE_OBJECT,
         &build_player_death_update_body(
             player,
-            session.player_health,
-            session.player_flags,
+            session.character.player_health,
+            session.character.player_flags,
             0,
             player_unit_flags(false),
             character_class,
@@ -112,7 +110,7 @@ async fn handle_repop_request(
     send_packet(
         stream,
         MSG_MOVE_TELEPORT_ACK,
-        &build_near_teleport_ack_body(session.active_character.as_ref().unwrap(), 0)?,
+        &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -128,11 +126,11 @@ async fn handle_repop_request(
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await
 }
 
-async fn refresh_session_death_state_before_repop(
+pub(in crate::world) async fn refresh_session_death_state_before_repop(
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(Vec::new());
     };
     let map_id = character.position.map_id;
@@ -142,9 +140,9 @@ async fn refresh_session_death_state_before_repop(
     };
     let mut presentation_packets = Vec::new();
     if snapshot.health == 0 && snapshot.death_state == PlayerDeathState::JustDied {
-        presentation_packets =
-            maps.force_player_death_presentation(map_id, character_guid, Instant::now())
-                .await?;
+        presentation_packets = maps
+            .force_player_death_presentation(map_id, character_guid, Instant::now())
+            .await?;
         if let Some(updated) = maps.player_runtime_snapshot(map_id, character_guid).await {
             snapshot = updated;
         }
@@ -155,7 +153,7 @@ async fn refresh_session_death_state_before_repop(
     Ok(presentation_packets)
 }
 
-async fn select_repop_graveyard_position(
+pub(in crate::world) async fn select_repop_graveyard_position(
     world_db_pool: &MySqlPool,
     corpse_position: WorldPosition,
 ) -> anyhow::Result<WorldPosition> {
@@ -188,12 +186,7 @@ async fn select_repop_graveyard_position(
         );
         let linked_distance = linked_position
             .map(|position| {
-                distance_2d(
-                    corpse_position.x,
-                    corpse_position.y,
-                    position.x,
-                    position.y,
-                )
+                distance_2d(corpse_position.x, corpse_position.y, position.x, position.y)
             })
             .unwrap_or(f32::MAX);
         if spirit_distance <= GRAVEYARD_SPIRIT_HEALER_FALLBACK_RADIUS_YARDS
@@ -206,17 +199,31 @@ async fn select_repop_graveyard_position(
     Ok(linked_position.unwrap_or(corpse_position))
 }
 
-fn graveyard_query_position(graveyard: &wow_db::GraveyardQuery) -> WorldPosition {
-    WorldPosition::new(graveyard.map, graveyard.x, graveyard.y, graveyard.z, graveyard.o)
+pub(in crate::world) fn graveyard_query_position(
+    graveyard: &wow_db::GraveyardQuery,
+) -> WorldPosition {
+    WorldPosition::new(
+        graveyard.map,
+        graveyard.x,
+        graveyard.y,
+        graveyard.z,
+        graveyard.o,
+    )
 }
 
-async fn handle_corpse_query(
+pub(in crate::world) async fn handle_corpse_query(
     stream: &mut WorldPacketSink,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let corpse_position = (session.player_death_state == PlayerDeathState::Ghost)
-        .then_some(session.player_corpse.as_ref().map(|corpse| corpse.position))
+    let corpse_position = (session.death.player_death_state == PlayerDeathState::Ghost)
+        .then_some(
+            session
+                .death
+                .player_corpse
+                .as_ref()
+                .map(|corpse| corpse.position),
+        )
         .flatten();
     send_packet(
         stream,
@@ -227,23 +234,21 @@ async fn handle_corpse_query(
     .await
 }
 
-async fn handle_reclaim_corpse(
+pub(in crate::world) async fn handle_reclaim_corpse(
     stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
-    body: &[u8],
+    request: wow_proto::ReclaimCorpseRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.player_death_state != PlayerDeathState::Ghost {
+    if session.death.player_death_state != PlayerDeathState::Ghost {
         return Ok(());
     }
-    if body.len() >= 8 {
-        let _requested_corpse = read_packet_guid(body, "CMSG_RECLAIM_CORPSE").ok();
-    }
-    let Some(character) = &mut session.active_character else {
+    let _requested_corpse = request.requested_corpse_raw_guid.map(ObjectGuid::from_raw);
+    let Some(character) = &mut session.character.active_character else {
         return Ok(());
     };
-    let Some(corpse) = session.player_corpse.as_ref() else {
+    let Some(corpse) = session.death.player_corpse.as_ref() else {
         return Ok(());
     };
     let corpse_position = corpse.position;
@@ -252,17 +257,10 @@ async fn handle_reclaim_corpse(
         return Ok(());
     }
 
-    resurrect_player_at_position(
-        stream,
-        deps,
-        session,
-        header_crypto,
-        ghost_position,
-    )
-    .await
+    resurrect_player_at_position(stream, deps, session, header_crypto, ghost_position).await
 }
 
-fn can_reclaim_corpse_at_ghost_position(
+pub(in crate::world) fn can_reclaim_corpse_at_ghost_position(
     ghost_position: WorldPosition,
     corpse_position: WorldPosition,
 ) -> bool {
@@ -277,21 +275,21 @@ fn can_reclaim_corpse_at_ghost_position(
     ) <= CORPSE_RECLAIM_RADIUS_YARDS
 }
 
-async fn handle_spirit_healer_activate(
+pub(in crate::world) async fn handle_spirit_healer_activate(
     stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
-    body: &[u8],
+    request: wow_proto::SpiritHealerActivateRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.player_death_state != PlayerDeathState::Ghost {
+    if session.death.player_death_state != PlayerDeathState::Ghost {
         return Ok(());
     }
-    let healer_guid = read_packet_guid(body, "CMSG_SPIRIT_HEALER_ACTIVATE")?;
+    let healer_guid = ObjectGuid::from_raw(request.raw_guid);
     if !healer_guid.is_creature() {
         return Ok(());
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let character_position = character.position;
@@ -327,28 +325,21 @@ async fn handle_spirit_healer_activate(
         return Ok(());
     }
 
-    resurrect_player_at_position(
-        stream,
-        deps,
-        session,
-        header_crypto,
-        character_position,
-    )
-    .await
+    resurrect_player_at_position(stream, deps, session, header_crypto, character_position).await
 }
 
-fn is_spirit_healer_creature(creature: &DbCreatureRuntime) -> bool {
+pub(in crate::world) fn is_spirit_healer_creature(creature: &DbCreatureRuntime) -> bool {
     creature.spawn.template.npc_flags & UNIT_NPC_FLAG_SPIRITHEALER != 0
 }
 
-async fn resurrect_player_at_position(
+pub(in crate::world) async fn resurrect_player_at_position(
     stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
     position: WorldPosition,
 ) -> anyhow::Result<()> {
-    let Some(character_snapshot) = session.active_character.as_ref() else {
+    let Some(character_snapshot) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let (race, class, level) = (
@@ -356,16 +347,17 @@ async fn resurrect_player_at_position(
         character_snapshot.class,
         character_snapshot.level,
     );
-    let world_stats = wow_db::get_player_world_stats(deps.world_db_pool, race, class, level).await?;
+    let world_stats =
+        wow_db::get_player_world_stats(deps.world_db_pool, race, class, level).await?;
     let resurrected_health = (world_stats.max_health().max(1) / 2).max(1);
-    session.player_death_state = PlayerDeathState::Alive;
-    session.player_death_presentation_pending = false;
-    let corpse_to_bones = session.player_corpse.take();
-    session.player_health = resurrected_health;
-    session.player_flags &= !PLAYER_FLAGS_GHOST;
-    session.player_stand_state = PLAYER_STAND_STATE_STAND;
+    session.death.player_death_state = PlayerDeathState::Alive;
+    session.death.player_death_presentation_pending = false;
+    let corpse_to_bones = session.death.player_corpse.take();
+    session.character.player_health = resurrected_health;
+    session.character.player_flags &= !PLAYER_FLAGS_GHOST;
+    session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
     let (character_guid, map_id) = {
-        let Some(character) = &mut session.active_character else {
+        let Some(character) = &mut session.character.active_character else {
             return Ok(());
         };
         character.position = position;
@@ -376,7 +368,7 @@ async fn resurrect_player_at_position(
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let packets = deps
         .maps
-        .update_player_health(map_id, character_guid, session.player_health)
+        .update_player_health(map_id, character_guid, session.character.player_health)
         .await?;
     deps.sessions.dispatch(packets).await;
     deps.maps
@@ -390,8 +382,8 @@ async fn resurrect_player_at_position(
         SMSG_UPDATE_OBJECT,
         &build_player_death_update_body(
             player,
-            session.player_health,
-            session.player_flags,
+            session.character.player_health,
+            session.character.player_flags,
             0,
             player_unit_flags(false),
             class,
@@ -424,7 +416,7 @@ async fn resurrect_player_at_position(
     send_packet(
         stream,
         MSG_MOVE_TELEPORT_ACK,
-        &build_near_teleport_ack_body(session.active_character.as_ref().unwrap(), 0)?,
+        &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -440,17 +432,17 @@ async fn resurrect_player_at_position(
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await
 }
 
-async fn create_or_get_player_corpse(
+pub(in crate::world) async fn create_or_get_player_corpse(
     character_db_pool: &MySqlPool,
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<PlayerCorpseRuntime> {
-    if let Some(corpse) = &session.player_corpse {
+    if let Some(corpse) = &session.death.player_corpse {
         maps.upsert_player_corpse(corpse.position.map_id, corpse.clone())
             .await;
         return Ok(corpse.clone());
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         anyhow::bail!("cannot create player corpse without an active character");
     };
     let corpse = player_corpse_runtime_from_active_character(character, session);
@@ -468,15 +460,15 @@ async fn create_or_get_player_corpse(
     .await?;
     maps.upsert_player_corpse(corpse.position.map_id, corpse.clone())
         .await;
-    session.player_corpse = Some(corpse.clone());
+    session.death.player_corpse = Some(corpse.clone());
     Ok(corpse)
 }
 
-fn player_corpse_runtime_from_active_character(
+pub(in crate::world) fn player_corpse_runtime_from_active_character(
     character: &ActiveCharacter,
     session: &WorldSessionState,
 ) -> PlayerCorpseRuntime {
-    let visual = session.player_visual.as_ref();
+    let visual = session.character.player_visual.as_ref();
     PlayerCorpseRuntime {
         guid: ObjectGuid::new(HighGuid::Corpse, 0, character.guid),
         owner: ObjectGuid::new(HighGuid::Player, 0, character.guid),
@@ -486,23 +478,29 @@ fn player_corpse_runtime_from_active_character(
         class: character.class,
         gender: visual.map(|visual| visual.gender).unwrap_or(0),
         player_bytes: visual.map(|visual| visual.player_bytes).unwrap_or_default(),
-        player_bytes2: visual.map(|visual| visual.player_bytes2).unwrap_or_default(),
+        player_bytes2: visual
+            .map(|visual| visual.player_bytes2)
+            .unwrap_or_default(),
         equipment_cache: Some(equipment_cache_for_corpse(
             visual.and_then(|visual| visual.equipment_cache.as_deref()),
-            &session.inventory,
+            &session.inventory.items,
         )),
         guildid: visual.and_then(|visual| visual.guildid),
-        player_flags: session.player_flags,
+        player_flags: session.character.player_flags,
     }
 }
 
-fn player_bones_runtime_from_corpse(mut corpse: PlayerCorpseRuntime) -> PlayerCorpseRuntime {
+pub(in crate::world) fn player_bones_runtime_from_corpse(
+    mut corpse: PlayerCorpseRuntime,
+) -> PlayerCorpseRuntime {
     corpse.corpse_type = PLAYER_CORPSE_TYPE_BONES;
     corpse.player_flags &= !(PLAYER_FLAGS_HIDE_HELM | PLAYER_FLAGS_HIDE_CLOAK);
     corpse
 }
 
-fn player_corpse_runtime_from_query(corpse: PlayerCorpseQuery) -> PlayerCorpseRuntime {
+pub(in crate::world) fn player_corpse_runtime_from_query(
+    corpse: PlayerCorpseQuery,
+) -> PlayerCorpseRuntime {
     PlayerCorpseRuntime {
         guid: ObjectGuid::new(HighGuid::Corpse, 0, corpse.guid),
         owner: ObjectGuid::new(HighGuid::Player, 0, corpse.player),
@@ -525,7 +523,7 @@ fn player_corpse_runtime_from_query(corpse: PlayerCorpseQuery) -> PlayerCorpseRu
     }
 }
 
-fn equipment_cache_for_corpse(
+pub(in crate::world) fn equipment_cache_for_corpse(
     equipment_cache: Option<&str>,
     inventory: &[CharacterInventoryItem],
 ) -> String {
@@ -543,12 +541,12 @@ fn equipment_cache_for_corpse(
         .join(" ")
 }
 
-async fn persist_player_death_state(
+pub(in crate::world) async fn persist_player_death_state(
     character_db_pool: &MySqlPool,
     account_id: u32,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let rows = wow_db::update_character_death_state(
@@ -556,8 +554,8 @@ async fn persist_player_death_state(
         account_id,
         character.guid,
         character.position,
-        session.player_health,
-        session.player_flags,
+        session.character.player_health,
+        session.character.player_flags,
     )
     .await?;
     if rows == 0 {

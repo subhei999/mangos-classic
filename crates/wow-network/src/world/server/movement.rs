@@ -1,6 +1,9 @@
+use super::*;
+use wow_proto::{ServerWorldPacket, SmsgLogoutCancelAckResponse};
+
 // CMaNGOS reference: src/game/Handlers/MovementHandler.cpp movement flow.
 
-fn current_movement_server_time_millis() -> u32 {
+pub(in crate::world) fn current_movement_server_time_millis() -> u32 {
     static MOVEMENT_SERVER_TIME_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     MOVEMENT_SERVER_TIME_START
         .get_or_init(Instant::now)
@@ -8,23 +11,24 @@ fn current_movement_server_time_millis() -> u32 {
         .as_millis() as u32
 }
 
-fn synchronize_movement_server_time(
+pub(in crate::world) fn synchronize_movement_server_time(
     session: &mut WorldSessionState,
     client_time: u32,
 ) -> u32 {
     let delay = *session
+        .movement
         .movement_client_time_delay
         .get_or_insert_with(|| current_movement_server_time_millis().wrapping_sub(client_time));
     client_time.wrapping_add(delay)
 }
 
-async fn persist_active_character_position(
+pub(in crate::world) async fn persist_active_character_position(
     character_db_pool: &MySqlPool,
     account_id: u32,
     maps: &Arc<MapRuntimeManager>,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let snapshot = maps
@@ -37,15 +41,15 @@ async fn persist_active_character_position(
     let health = snapshot
         .as_ref()
         .map(|snapshot| snapshot.health)
-        .unwrap_or(session.player_health);
+        .unwrap_or(session.character.player_health);
     let power1 = snapshot
         .as_ref()
         .map(|snapshot| snapshot.power1)
-        .unwrap_or(session.player_mana);
+        .unwrap_or(session.character.player_mana);
     let power2 = snapshot
         .as_ref()
         .map(|snapshot| snapshot.power2)
-        .unwrap_or(session.player_rage);
+        .unwrap_or(session.character.player_rage);
 
     let rows = wow_db::update_character_position_and_vitals(
         character_db_pool,
@@ -80,14 +84,20 @@ async fn persist_active_character_position(
     Ok(())
 }
 
-async fn handle_logout_cancel(
+pub(in crate::world) async fn handle_logout_cancel(
     stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_LOGOUT_CANCEL_ACK, &[], Some(header_crypto)).await
+    send_packet(
+        stream,
+        SMSG_LOGOUT_CANCEL_ACK,
+        &SmsgLogoutCancelAckResponse.body(),
+        Some(header_crypto),
+    )
+    .await
 }
 
-async fn handle_movement(
+pub(in crate::world) async fn handle_movement(
     stream: &mut WorldPacketSink,
     deps: MovementDeps<'_>,
     opcode: u32,
@@ -96,7 +106,7 @@ async fn handle_movement(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
-    let map_death_state = if let Some(character) = session.active_character.as_ref() {
+    let map_death_state = if let Some(character) = session.character.active_character.as_ref() {
         deps.maps
             .player_runtime_snapshot(character.position.map_id, character.guid)
             .await
@@ -105,7 +115,7 @@ async fn handle_movement(
         None
     };
     let corpse_movement = matches!(
-        session.player_death_state,
+        session.death.player_death_state,
         PlayerDeathState::JustDied | PlayerDeathState::Corpse
     ) || matches!(
         map_death_state,
@@ -127,8 +137,8 @@ async fn handle_movement(
     }
     let server_time = synchronize_movement_server_time(session, movement.client_time);
     let mut map_owned_death_detected = false;
-    if let Some(character) = &mut session.active_character {
-        let previous_player_health = session.player_health;
+    if let Some(character) = &mut session.character.active_character {
+        let previous_player_health = session.character.player_health;
         character.position.x = movement.position.x;
         character.position.y = movement.position.y;
         character.position.z = movement.position.z;
@@ -172,14 +182,14 @@ async fn handle_movement(
                 .player_runtime_snapshot(character.position.map_id, character.guid)
                 .await
             {
-                session.player_health = snapshot.health;
-                session.player_mana = snapshot.power1;
-                session.player_rage = snapshot.power2;
-                session.player_energy = snapshot.power4;
+                session.character.player_health = snapshot.health;
+                session.character.player_mana = snapshot.power1;
+                session.character.player_rage = snapshot.power2;
+                session.character.player_energy = snapshot.power4;
                 if !corpse_movement
                     && previous_player_health > 0
-                    && session.player_health == 0
-                    && session.player_death_state == PlayerDeathState::Alive
+                    && session.character.player_health == 0
+                    && session.death.player_death_state == PlayerDeathState::Alive
                 {
                     map_owned_death_detected = true;
                 }
@@ -239,7 +249,7 @@ async fn handle_movement(
         );
     }
     if map_owned_death_detected {
-        if let Some(character) = session.active_character.as_ref() {
+        if let Some(character) = session.character.active_character.as_ref() {
             refresh_session_from_map_owned_player_death(
                 deps.maps,
                 character.position.map_id,
@@ -251,7 +261,10 @@ async fn handle_movement(
     Ok(())
 }
 
-fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool {
+pub(in crate::world) fn corpse_falling_movement_allowed(
+    opcode: u32,
+    movement: &MovementInfo,
+) -> bool {
     if opcode == MSG_MOVE_FALL_LAND {
         return true;
     }
@@ -266,7 +279,7 @@ fn corpse_falling_movement_allowed(opcode: u32, movement: &MovementInfo) -> bool
     ) && movement.fall_time > 0
 }
 
-fn tracked_session_fall_time(opcode: u32, movement: &MovementInfo) -> u32 {
+pub(in crate::world) fn tracked_session_fall_time(opcode: u32, movement: &MovementInfo) -> u32 {
     if opcode == MSG_MOVE_FALL_LAND || movement.flags & MOVEFLAG_JUMPING == 0 {
         0
     } else {
@@ -274,7 +287,7 @@ fn tracked_session_fall_time(opcode: u32, movement: &MovementInfo) -> u32 {
     }
 }
 
-fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
+pub(in crate::world) fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
     matches!(
         opcode,
         MSG_MOVE_START_FORWARD
@@ -286,11 +299,10 @@ fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
     )
 }
 
-struct MovementDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    object_mgr: &'a ObjectMgr,
-    maps: &'a Arc<MapRuntimeManager>,
-    sessions: &'a Arc<SessionRegistry>,
+pub(in crate::world) struct MovementDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) object_mgr: &'a ObjectMgr,
+    pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
 }
-

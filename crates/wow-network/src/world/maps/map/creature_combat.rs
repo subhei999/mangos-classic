@@ -1,91 +1,95 @@
+use super::*;
+
 // Shared DB-creature combat claim and player-damage authority.
-const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
-const DB_CREATURE_SPELL_LIST_UPDATE_MILLIS: u64 = 1_200;
-const CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION: u32 = 0x1;
-const CREATURE_SPELL_LIST_FLAG_RANGED_ACTION: u32 = 0x2;
-const CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN: u32 = 0x4;
-const CREATURE_SPELL_LIST_FLAG_NON_BLOCKING: u32 = 0x8;
-const CREATURE_SPELL_CATEGORY_COOLDOWN_KEY: u32 = 0x8000_0000;
-const CREATURE_SPELL_LIST_TARGETING_HARDCODED: u32 = 0;
-const CREATURE_SPELL_LIST_TARGETING_ATTACK: u32 = 1;
-const CREATURE_SPELL_LIST_TARGETING_SUPPORT: u32 = 2;
-const CREATURE_SPELL_LIST_TARGET_CURRENT: u32 = 1;
-const CREATURE_SPELL_LIST_TARGET_SELF: u32 = 2;
-const CREATURE_SPELL_LIST_TARGET_CURRENT_NOT_ALONE: u32 = 7;
-const CREATURE_ATTACKING_TARGET_RANDOM: i32 = 0;
-const CREATURE_ATTACKING_TARGET_TOP_AGGRO: i32 = 1;
-const CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO: i32 = 2;
-const CREATURE_ATTACKING_TARGET_NEAREST: i32 = 3;
-const CREATURE_ATTACKING_TARGET_FARTHEST: i32 = 4;
-const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
-const CONDITION_LOGIC_NONE: i32 = 0;
-const CONDITION_LOGIC_AND: i32 = 1;
-const CONDITION_LOGIC_OR: i32 = 2;
-const CONDITION_LOGIC_XOR: i32 = 3;
-const UNIT_CONDITION_NONE: u32 = 0;
-const UNIT_CONDITION_RACE: u32 = 1;
-const UNIT_CONDITION_CLASS: u32 = 2;
-const UNIT_CONDITION_LEVEL: u32 = 3;
-const UNIT_CONDITION_IS_SELF: u32 = 4;
-const UNIT_CONDITION_IS_TARGET: u32 = 7;
-const UNIT_CONDITION_HEALTH_PERCENT: u32 = 12;
-const UNIT_CONDITION_MANA_PERCENT: u32 = 13;
-const UNIT_CONDITION_RAGE_PERCENT: u32 = 14;
-const UNIT_CONDITION_ENERGY_PERCENT: u32 = 15;
-const UNIT_CONDITION_IN_COMBAT: u32 = 31;
-const UNIT_CONDITION_NUMBER_OF_MELEE_ATTACKERS: u32 = 37;
-const UNIT_CONDITION_IS_ATTACKING_ME: u32 = 38;
-const UNIT_CONDITION_RANGE: u32 = 39;
-const UNIT_CONDITION_IN_MELEE_RANGE: u32 = 40;
-const UNIT_CONDITION_NUMBER_OF_ENEMIES: u32 = 44;
-const UNIT_CONDITION_NUMBER_OF_ATTACKERS: u32 = 54;
-const UNIT_CONDITION_NUMBER_OF_RANGED_ATTACKERS: u32 = 55;
-const UNIT_CONDITION_CREATURE_TYPE: u32 = 56;
-const UNIT_CONDITION_IS_MELEE_ATTACKING: u32 = 57;
-const UNIT_CONDITION_IS_RANGED_ATTACKING: u32 = 58;
-const UNIT_CONDITION_HEALTH: u32 = 59;
-const UNIT_CONDITION_IS_INTERRUPTIBLE: u32 = 53;
-const UNIT_CONDITION_IS_PLAYER: u32 = 63;
-const UNIT_CONDITION_CREATURE_ID: u32 = 74;
-const UNIT_CONDITION_IS_ENEMY: u32 = 77;
-const UNIT_CONDITION_IS_DYING: u32 = 83;
+pub(in crate::world) const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
+pub(in crate::world) const DB_CREATURE_SPELL_LIST_UPDATE_MILLIS: u64 = 1_200;
+pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION: u32 = 0x1;
+pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_RANGED_ACTION: u32 = 0x2;
+pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN: u32 = 0x4;
+pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_NON_BLOCKING: u32 = 0x8;
+pub(in crate::world) const CREATURE_SPELL_CATEGORY_COOLDOWN_KEY: u32 = 0x8000_0000;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGETING_HARDCODED: u32 = 0;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGETING_ATTACK: u32 = 1;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGETING_SUPPORT: u32 = 2;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGET_CURRENT: u32 = 1;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGET_SELF: u32 = 2;
+pub(in crate::world) const CREATURE_SPELL_LIST_TARGET_CURRENT_NOT_ALONE: u32 = 7;
+pub(in crate::world) const CREATURE_ATTACKING_TARGET_RANDOM: i32 = 0;
+pub(in crate::world) const CREATURE_ATTACKING_TARGET_TOP_AGGRO: i32 = 1;
+pub(in crate::world) const CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO: i32 = 2;
+pub(in crate::world) const CREATURE_ATTACKING_TARGET_NEAREST: i32 = 3;
+pub(in crate::world) const CREATURE_ATTACKING_TARGET_FARTHEST: i32 = 4;
+pub(in crate::world) const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
+pub(in crate::world) const CONDITION_LOGIC_NONE: i32 = 0;
+pub(in crate::world) const CONDITION_LOGIC_AND: i32 = 1;
+pub(in crate::world) const CONDITION_LOGIC_OR: i32 = 2;
+pub(in crate::world) const CONDITION_LOGIC_XOR: i32 = 3;
+pub(in crate::world) const UNIT_CONDITION_NONE: u32 = 0;
+pub(in crate::world) const UNIT_CONDITION_RACE: u32 = 1;
+pub(in crate::world) const UNIT_CONDITION_CLASS: u32 = 2;
+pub(in crate::world) const UNIT_CONDITION_LEVEL: u32 = 3;
+pub(in crate::world) const UNIT_CONDITION_IS_SELF: u32 = 4;
+pub(in crate::world) const UNIT_CONDITION_IS_TARGET: u32 = 7;
+pub(in crate::world) const UNIT_CONDITION_HEALTH_PERCENT: u32 = 12;
+pub(in crate::world) const UNIT_CONDITION_MANA_PERCENT: u32 = 13;
+pub(in crate::world) const UNIT_CONDITION_RAGE_PERCENT: u32 = 14;
+pub(in crate::world) const UNIT_CONDITION_ENERGY_PERCENT: u32 = 15;
+pub(in crate::world) const UNIT_CONDITION_IN_COMBAT: u32 = 31;
+pub(in crate::world) const UNIT_CONDITION_NUMBER_OF_MELEE_ATTACKERS: u32 = 37;
+pub(in crate::world) const UNIT_CONDITION_IS_ATTACKING_ME: u32 = 38;
+pub(in crate::world) const UNIT_CONDITION_RANGE: u32 = 39;
+pub(in crate::world) const UNIT_CONDITION_IN_MELEE_RANGE: u32 = 40;
+pub(in crate::world) const UNIT_CONDITION_NUMBER_OF_ENEMIES: u32 = 44;
+pub(in crate::world) const UNIT_CONDITION_NUMBER_OF_ATTACKERS: u32 = 54;
+pub(in crate::world) const UNIT_CONDITION_NUMBER_OF_RANGED_ATTACKERS: u32 = 55;
+pub(in crate::world) const UNIT_CONDITION_CREATURE_TYPE: u32 = 56;
+pub(in crate::world) const UNIT_CONDITION_IS_MELEE_ATTACKING: u32 = 57;
+pub(in crate::world) const UNIT_CONDITION_IS_RANGED_ATTACKING: u32 = 58;
+pub(in crate::world) const UNIT_CONDITION_HEALTH: u32 = 59;
+pub(in crate::world) const UNIT_CONDITION_IS_INTERRUPTIBLE: u32 = 53;
+pub(in crate::world) const UNIT_CONDITION_IS_PLAYER: u32 = 63;
+pub(in crate::world) const UNIT_CONDITION_CREATURE_ID: u32 = 74;
+pub(in crate::world) const UNIT_CONDITION_IS_ENEMY: u32 = 77;
+pub(in crate::world) const UNIT_CONDITION_IS_DYING: u32 = 83;
 
 #[derive(Debug, Clone, Default)]
-struct DbCreatureSpellConditionCache {
-    unit_conditions: std::collections::HashMap<i32, wow_db::UnitConditionQuery>,
-    combat_conditions: std::collections::HashMap<i32, wow_db::CombatConditionQuery>,
+pub(in crate::world) struct DbCreatureSpellConditionCache {
+    pub(in crate::world) unit_conditions:
+        std::collections::HashMap<i32, wow_db::UnitConditionQuery>,
+    pub(in crate::world) combat_conditions:
+        std::collections::HashMap<i32, wow_db::CombatConditionQuery>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DbCreatureCombatConditionCountClause {
-    ids: [i32; 2],
-    ops: [i32; 2],
-    counts: [i32; 2],
-    logic: i32,
+pub(in crate::world) struct DbCreatureCombatConditionCountClause {
+    pub(in crate::world) ids: [i32; 2],
+    pub(in crate::world) ops: [i32; 2],
+    pub(in crate::world) counts: [i32; 2],
+    pub(in crate::world) logic: i32,
 }
 
 #[derive(Debug, Clone)]
-struct DbCreaturePlayerMeleeValidation {
-    check: PlayerMeleeCheck,
+pub(in crate::world) struct DbCreaturePlayerMeleeValidation {
+    pub(in crate::world) check: PlayerMeleeCheck,
 }
 
 #[derive(Debug, Clone)]
-struct PlayerChargeValidation {
-    check: PlayerChargeCheck,
+pub(in crate::world) struct PlayerChargeValidation {
+    pub(in crate::world) check: PlayerChargeCheck,
 }
 
 #[derive(Debug, Clone)]
-struct PlayerSpellTargetValidation {
-    check: PlayerSpellTargetCheck,
+pub(in crate::world) struct PlayerSpellTargetValidation {
+    pub(in crate::world) check: PlayerSpellTargetCheck,
 }
 
 #[derive(Debug, Clone)]
-struct DbCreatureSpellTargetValidation {
-    check: DbCreatureSpellTargetCheck,
+pub(in crate::world) struct DbCreatureSpellTargetValidation {
+    pub(in crate::world) check: DbCreatureSpellTargetCheck,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlayerChargeCheck {
+pub(in crate::world) enum PlayerChargeCheck {
     Clear,
     NoActiveCharacter,
     MissingTarget,
@@ -94,7 +98,7 @@ enum PlayerChargeCheck {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlayerSpellTargetCheck {
+pub(in crate::world) enum PlayerSpellTargetCheck {
     Clear,
     NoActiveCharacter,
     MissingTarget,
@@ -105,7 +109,7 @@ enum PlayerSpellTargetCheck {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DbCreatureSpellTargetCheck {
+pub(in crate::world) enum DbCreatureSpellTargetCheck {
     Clear,
     MissingCaster,
     CasterNotAlive,
@@ -116,26 +120,29 @@ enum DbCreatureSpellTargetCheck {
 }
 
 #[derive(Debug, Clone)]
-struct ActiveDbCreatureCombatSnapshot {
-    combat: CreatureCombatState,
-    creature: DbCreatureRuntime,
+pub(in crate::world) struct ActiveDbCreatureCombatSnapshot {
+    pub(in crate::world) combat: CreatureCombatState,
+    pub(in crate::world) creature: DbCreatureRuntime,
 }
 
 #[derive(Debug, Clone)]
-struct ReadyDbCreatureSpellCast {
-    spell: wow_db::CreatureSpellListQuery,
-    target: ObjectGuid,
+pub(in crate::world) struct ReadyDbCreatureSpellCast {
+    pub(in crate::world) spell: wow_db::CreatureSpellListQuery,
+    pub(in crate::world) target: ObjectGuid,
 }
 
 impl MapRuntime {
-    fn db_creature_combat_snapshot(&self, creature_guid: ObjectGuid) -> Option<DbCreatureRuntime> {
+    pub(in crate::world) fn db_creature_combat_snapshot(
+        &self,
+        creature_guid: ObjectGuid,
+    ) -> Option<DbCreatureRuntime> {
         self.creatures
             .get(&creature_guid.raw())
             .filter(|creature| creature.is_alive() && !creature.is_evading_home())
             .cloned()
     }
 
-    fn validate_player_melee_against_db_creature(
+    pub(in crate::world) fn validate_player_melee_against_db_creature(
         &self,
         character_guid: u32,
         target: ObjectGuid,
@@ -186,7 +193,7 @@ impl MapRuntime {
         }
     }
 
-    fn validate_player_charge_against_db_creature(
+    pub(in crate::world) fn validate_player_charge_against_db_creature(
         &self,
         character_guid: u32,
         target: ObjectGuid,
@@ -220,7 +227,7 @@ impl MapRuntime {
         }
     }
 
-    fn validate_player_spell_against_db_creature(
+    pub(in crate::world) fn validate_player_spell_against_db_creature(
         &self,
         character_guid: u32,
         target: ObjectGuid,
@@ -255,8 +262,7 @@ impl MapRuntime {
             let dz = player.position.z - creature.current_position.z;
             let distance_squared = dx * dx + dy * dy + dz * dz;
             let range_mod = PLAYER_COMBAT_REACH_YARDS + creature.combat_reach();
-            let min_range = if range.min_range > 0.0
-                && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
+            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
             {
                 range.min_range + range_mod
             } else {
@@ -278,7 +284,11 @@ impl MapRuntime {
                 };
             }
         }
-        if !has_in_arc(player.position, creature.current_position, SPELL_CAST_ARC_RADIANS) {
+        if !has_in_arc(
+            player.position,
+            creature.current_position,
+            SPELL_CAST_ARC_RADIANS,
+        ) {
             return PlayerSpellTargetValidation {
                 check: PlayerSpellTargetCheck::BadFacing,
             };
@@ -288,7 +298,7 @@ impl MapRuntime {
         }
     }
 
-    fn validate_db_creature_spell_against_target(
+    pub(in crate::world) fn validate_db_creature_spell_against_target(
         &self,
         caster_guid: ObjectGuid,
         target_guid: ObjectGuid,
@@ -329,8 +339,10 @@ impl MapRuntime {
             let dy = caster.current_position.y - target_position.y;
             let dz = caster.current_position.z - target_position.z;
             let distance_squared = dx * dx + dy * dy + dz * dz;
-            let range_mod = caster.combat_reach() + self.db_creature_spell_target_combat_reach(target_guid);
-            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0 {
+            let range_mod =
+                caster.combat_reach() + self.db_creature_spell_target_combat_reach(target_guid);
+            let min_range = if range.min_range > 0.0 && (range.flags & SPELL_RANGE_FLAG_RANGED) == 0
+            {
                 range.min_range + range_mod
             } else {
                 range.min_range
@@ -356,7 +368,7 @@ impl MapRuntime {
         }
     }
 
-    fn active_db_creature_combat_snapshot(
+    pub(in crate::world) fn active_db_creature_combat_snapshot(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -372,7 +384,7 @@ impl MapRuntime {
         Some(ActiveDbCreatureCombatSnapshot { combat, creature })
     }
 
-    fn ready_db_creature_spell_cast(
+    pub(in crate::world) fn ready_db_creature_spell_cast(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -380,7 +392,11 @@ impl MapRuntime {
         conditions: &DbCreatureSpellConditionCache,
         now: Instant,
     ) -> Option<ReadyDbCreatureSpellCast> {
-        if spell_list.is_empty() || self.active_creature_spell_casts.contains_key(&attacker.raw()) {
+        if spell_list.is_empty()
+            || self
+                .active_creature_spell_casts
+                .contains_key(&attacker.raw())
+        {
             return None;
         }
         let combat = self.active_creature_combats.get(&attacker.raw()).copied()?;
@@ -447,9 +463,7 @@ impl MapRuntime {
                     true
                 }
             })
-            .filter(|(spell, _)| {
-                db_creature_spell_cooldown_ready(&cooldowns_until, spell, now)
-            })
+            .filter(|(spell, _)| db_creature_spell_cooldown_ready(&cooldowns_until, spell, now))
             .map(|(spell, target)| (spell.clone(), target))
             .inspect(|(spell, target)| {
                 if (spell.flags & CREATURE_SPELL_LIST_FLAG_NON_BLOCKING) != 0 {
@@ -466,7 +480,7 @@ impl MapRuntime {
         Some(ReadyDbCreatureSpellCast { spell, target })
     }
 
-    fn apply_db_creature_spell_cooldowns(
+    pub(in crate::world) fn apply_db_creature_spell_cooldowns(
         &mut self,
         attacker: ObjectGuid,
         spell: &wow_db::CreatureSpellListQuery,
@@ -501,7 +515,7 @@ impl MapRuntime {
         }
     }
 
-    fn start_db_creature_spell_cast(
+    pub(in crate::world) fn start_db_creature_spell_cast(
         &mut self,
         cast: ActiveDbCreatureSpellCast,
     ) -> anyhow::Result<Option<Vec<(SessionId, OutboundWorldPacket)>>> {
@@ -522,18 +536,17 @@ impl MapRuntime {
             unit_target: Some(cast.target),
             gameobject_target: None,
         };
-        let start_body = build_spell_start_body(
-            cast.caster,
-            cast.spell_id,
-            cast.cast_time_millis,
-            &targets,
-        )?;
+        let start_body =
+            build_spell_start_body(cast.caster, cast.spell_id, cast.cast_time_millis, &targets)?;
         let start_packet = OutboundWorldPacket {
             opcode: SMSG_SPELL_START,
             body: start_body,
         };
         let (position, motion_stop_packet, power_update_packet) = {
-            let creature = self.creatures.get_mut(&cast.caster.raw()).expect("checked above");
+            let creature = self
+                .creatures
+                .get_mut(&cast.caster.raw())
+                .expect("checked above");
             let position = creature.current_position;
             let motion_stop_packet = if matches!(creature.motion, CreatureMotionState::Idle) {
                 None
@@ -545,15 +558,18 @@ impl MapRuntime {
                 })
             };
             creature.power1 = creature.power1.saturating_sub(cast.mana_cost);
-            let power_update_packet = (cast.mana_cost > 0).then(|| {
-                Ok::<_, anyhow::Error>(OutboundWorldPacket {
-                    opcode: SMSG_UPDATE_OBJECT,
-                    body: build_db_creature_power_update_body(cast.caster, creature.power1)?,
+            let power_update_packet = (cast.mana_cost > 0)
+                .then(|| {
+                    Ok::<_, anyhow::Error>(OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_db_creature_power_update_body(cast.caster, creature.power1)?,
+                    })
                 })
-            }).transpose()?;
+                .transpose()?;
             (position, motion_stop_packet, power_update_packet)
         };
-        self.active_creature_spell_casts.insert(cast.caster.raw(), cast);
+        self.active_creature_spell_casts
+            .insert(cast.caster.raw(), cast);
         Ok(Some(
             self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
                 .into_iter()
@@ -581,7 +597,7 @@ impl MapRuntime {
     }
 
     #[allow(dead_code)]
-    fn complete_ready_db_creature_spell_cast(
+    pub(in crate::world) fn complete_ready_db_creature_spell_cast(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -595,14 +611,18 @@ impl MapRuntime {
         )
     }
 
-    fn complete_ready_db_creature_spell_cast_with_navigation(
+    pub(in crate::world) fn complete_ready_db_creature_spell_cast_with_navigation(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
         now: Instant,
         navigation: &DbCreatureNavigationGuardrail,
     ) -> anyhow::Result<Option<DbCreatureCompletedSpellCastEvent>> {
-        let Some(cast) = self.active_creature_spell_casts.get(&attacker.raw()).cloned() else {
+        let Some(cast) = self
+            .active_creature_spell_casts
+            .get(&attacker.raw())
+            .cloned()
+        else {
             return Ok(None);
         };
         if now < cast.due_at {
@@ -615,15 +635,23 @@ impl MapRuntime {
         {
             return Ok(None);
         }
-        let target_validation =
-            self.validate_db_creature_spell_against_target(attacker, cast.target, navigation, cast.range);
+        let target_validation = self.validate_db_creature_spell_against_target(
+            attacker,
+            cast.target,
+            navigation,
+            cast.range,
+        );
         if target_validation.check != DbCreatureSpellTargetCheck::Clear {
             self.active_creature_spell_casts.remove(&attacker.raw());
             let failure = db_creature_spell_failure_from_target_check(target_validation.check);
             return Ok(Some(DbCreatureCompletedSpellCastEvent {
                 spell_go_body: Vec::new(),
                 effect: DbCreatureCompletedSpellEffect::Interrupted(
-                    self.db_creature_interrupted_spell_cast_event(attacker, cast.spell_id, failure)?,
+                    self.db_creature_interrupted_spell_cast_event(
+                        attacker,
+                        cast.spell_id,
+                        failure,
+                    )?,
                 ),
                 aura_event: None,
             }));
@@ -671,8 +699,12 @@ impl MapRuntime {
                 )
             }
             ActiveDbCreatureSpellEffect::Heal { amount } => {
-                let Some(heal) =
-                    self.apply_db_creature_creature_spell_heal(attacker, cast.target, cast.spell_id, amount)?
+                let Some(heal) = self.apply_db_creature_creature_spell_heal(
+                    attacker,
+                    cast.target,
+                    cast.spell_id,
+                    amount,
+                )?
                 else {
                     return Ok(None);
                 };
@@ -683,12 +715,10 @@ impl MapRuntime {
             }
         };
         let aura_event = match (pending_aura, &effect) {
-            (
-                Some(aura),
-                DbCreatureCompletedSpellEffect::PlayerDamage(damage),
-            ) if cast.target.is_player()
-                && damage.victim_health > 0
-                && damage.outcome.miss_info.is_none() =>
+            (Some(aura), DbCreatureCompletedSpellEffect::PlayerDamage(damage))
+                if cast.target.is_player()
+                    && damage.victim_health > 0
+                    && damage.outcome.miss_info.is_none() =>
             {
                 self.apply_player_aura(cast.target.counter(), aura)?
             }
@@ -701,7 +731,7 @@ impl MapRuntime {
         }))
     }
 
-    fn db_creature_interrupted_spell_cast_event(
+    pub(in crate::world) fn db_creature_interrupted_spell_cast_event(
         &self,
         caster: ObjectGuid,
         spell_id: u32,
@@ -744,13 +774,16 @@ impl MapRuntime {
         })
     }
 
-    fn active_db_creature_spell_cast_due_at(&self, attacker: ObjectGuid) -> Option<Instant> {
+    pub(in crate::world) fn active_db_creature_spell_cast_due_at(
+        &self,
+        attacker: ObjectGuid,
+    ) -> Option<Instant> {
         self.active_creature_spell_casts
             .get(&attacker.raw())
             .map(|cast| cast.due_at)
     }
 
-    fn begin_db_creature_combat(
+    pub(in crate::world) fn begin_db_creature_combat(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -784,7 +817,7 @@ impl MapRuntime {
         Some(combat)
     }
 
-    fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
+    pub(in crate::world) fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
         self.active_creature_combats.remove(&attacker.raw());
         self.active_creature_spell_casts.remove(&attacker.raw());
         self.creature_combat_leash.remove(&attacker.raw());
@@ -798,7 +831,7 @@ impl MapRuntime {
         }
     }
 
-    fn clear_db_creature_combats_for_victim(&mut self, victim: ObjectGuid) {
+    pub(in crate::world) fn clear_db_creature_combats_for_victim(&mut self, victim: ObjectGuid) {
         let changed_grids = self
             .active_creature_combats
             .values()
@@ -827,7 +860,7 @@ impl MapRuntime {
         }
     }
 
-    fn active_db_creature_combats_for_victim(
+    pub(in crate::world) fn active_db_creature_combats_for_victim(
         &self,
         victim: ObjectGuid,
     ) -> Vec<CreatureCombatState> {
@@ -842,7 +875,7 @@ impl MapRuntime {
     }
 
     #[allow(dead_code)]
-    fn apply_db_creature_player_damage(
+    pub(in crate::world) fn apply_db_creature_player_damage(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -859,7 +892,7 @@ impl MapRuntime {
         )
     }
 
-    fn apply_db_creature_player_melee_outcome(
+    pub(in crate::world) fn apply_db_creature_player_melee_outcome(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -881,11 +914,9 @@ impl MapRuntime {
             .creatures
             .get(&attacker.raw())
             .map(|creature| creature.motion.clone());
-        if !self
-            .players
-            .get(&victim.counter())
-            .is_some_and(|player| player.health > 0 && player.death_state == PlayerDeathState::Alive)
-        {
+        if !self.players.get(&victim.counter()).is_some_and(|player| {
+            player.health > 0 && player.death_state == PlayerDeathState::Alive
+        }) {
             return Ok(None);
         };
         let damage = outcome.total_damage;
@@ -936,7 +967,8 @@ impl MapRuntime {
             damage,
             WorldDamageKind::Melee,
             now,
-        )? else {
+        )?
+        else {
             return Ok(None);
         };
         let victim_health = applied.remaining_health;
@@ -987,7 +1019,7 @@ impl MapRuntime {
     }
 
     #[allow(clippy::too_many_arguments, dead_code)]
-    fn apply_db_creature_player_spell_damage(
+    pub(in crate::world) fn apply_db_creature_player_spell_damage(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -1024,7 +1056,11 @@ impl MapRuntime {
             attributes_ex2,
             attributes_ex3,
             db_creature_spell_snapshot(creature),
-            player_spell_snapshot(victim_player.level, victim_player.class, &victim_player.combat_stats),
+            player_spell_snapshot(
+                victim_player.level,
+                victim_player.class,
+                &victim_player.combat_stats,
+            ),
         ));
         let requested_damage = outcome.final_damage;
         let damage = victim_player.health.min(requested_damage);
@@ -1075,7 +1111,8 @@ impl MapRuntime {
                 damage,
                 WorldDamageKind::SpellDirect,
                 now,
-            )? else {
+            )?
+            else {
                 return Ok(None);
             };
             (
@@ -1135,7 +1172,7 @@ impl MapRuntime {
         }))
     }
 
-    fn apply_db_creature_creature_spell_heal(
+    pub(in crate::world) fn apply_db_creature_creature_spell_heal(
         &mut self,
         caster: ObjectGuid,
         target: ObjectGuid,
@@ -1169,10 +1206,13 @@ impl MapRuntime {
         let target_health = target_creature.health;
         let dynamic_flags = target_creature.spawn.template.dynamic_flags;
         let target_position = target_creature.current_position;
-        let spell_heal_log_body = build_spell_heal_log_body(caster, target, spell_id, amount, false)?;
-        let health_update_body = build_db_creature_state_update_body(target, target_health, dynamic_flags)?;
+        let spell_heal_log_body =
+            build_spell_heal_log_body(caster, target, spell_id, amount, false)?;
+        let health_update_body =
+            build_db_creature_state_update_body(target, target_health, dynamic_flags)?;
         let mut observer_packets = Vec::new();
-        for player_guid in self.nearby_player_guids(target_position, CREATURE_SPAWN_RADIUS_YARDS, None)
+        for player_guid in
+            self.nearby_player_guids(target_position, CREATURE_SPAWN_RADIUS_YARDS, None)
         {
             let Some(player) = self.players.get(&player_guid) else {
                 continue;
@@ -1200,7 +1240,7 @@ impl MapRuntime {
         }))
     }
 
-    fn db_creature_spell_cast_target_alive(&self, target: ObjectGuid) -> bool {
+    pub(in crate::world) fn db_creature_spell_cast_target_alive(&self, target: ObjectGuid) -> bool {
         if target.is_player() {
             return self
                 .players
@@ -1212,16 +1252,25 @@ impl MapRuntime {
             .is_some_and(|creature| creature.is_alive() && !creature.is_evading_home())
     }
 
-    fn db_creature_spell_target_position(&self, target: ObjectGuid) -> Option<WorldPosition> {
+    pub(in crate::world) fn db_creature_spell_target_position(
+        &self,
+        target: ObjectGuid,
+    ) -> Option<WorldPosition> {
         if target.is_player() {
-            return self.players.get(&target.counter()).map(|player| player.position);
+            return self
+                .players
+                .get(&target.counter())
+                .map(|player| player.position);
         }
         self.creatures
             .get(&target.raw())
             .map(|creature| creature.current_position)
     }
 
-    fn db_creature_spell_target_combat_reach(&self, target: ObjectGuid) -> f32 {
+    pub(in crate::world) fn db_creature_spell_target_combat_reach(
+        &self,
+        target: ObjectGuid,
+    ) -> f32 {
         if target.is_player() {
             return PLAYER_COMBAT_REACH_YARDS;
         }
@@ -1231,7 +1280,7 @@ impl MapRuntime {
             .unwrap_or(0.0)
     }
 
-    fn defer_ready_db_creature_swing_retry(
+    pub(in crate::world) fn defer_ready_db_creature_swing_retry(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -1244,7 +1293,11 @@ impl MapRuntime {
         Some(*combat)
     }
 
-    fn refresh_db_creature_combat_leash(&mut self, attacker: ObjectGuid, now: Instant) {
+    pub(in crate::world) fn refresh_db_creature_combat_leash(
+        &mut self,
+        attacker: ObjectGuid,
+        now: Instant,
+    ) {
         let Some(creature) = self.creatures.get(&attacker.raw()) else {
             return;
         };
@@ -1264,7 +1317,11 @@ impl MapRuntime {
         );
     }
 
-    fn db_creature_should_evade(&self, attacker: ObjectGuid, now: Instant) -> bool {
+    pub(in crate::world) fn db_creature_should_evade(
+        &self,
+        attacker: ObjectGuid,
+        now: Instant,
+    ) -> bool {
         let Some(creature) = self.creatures.get(&attacker.raw()) else {
             return false;
         };
@@ -1301,7 +1358,7 @@ impl MapRuntime {
         ) > DB_CREATURE_LEASH_RADIUS_YARDS
     }
 
-    fn add_db_creature_threat(
+    pub(in crate::world) fn add_db_creature_threat(
         &mut self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -1325,21 +1382,24 @@ impl MapRuntime {
     }
 
     #[cfg(test)]
-    fn db_creature_threat_entries(&self, attacker: ObjectGuid) -> Vec<CreatureThreatEntry> {
+    pub(in crate::world) fn db_creature_threat_entries(
+        &self,
+        attacker: ObjectGuid,
+    ) -> Vec<CreatureThreatEntry> {
         self.creature_threats
             .get(&attacker.raw())
             .cloned()
             .unwrap_or_default()
     }
 
-    fn select_db_creature_threat_victim(
+    pub(in crate::world) fn select_db_creature_threat_victim(
         &self,
         attacker: ObjectGuid,
         current_victim: Option<ObjectGuid>,
     ) -> Option<ObjectGuid> {
         let threats = self.creature_threats.get(&attacker.raw())?;
-        let current_entry = current_victim
-            .and_then(|victim| threats.iter().find(|entry| entry.victim == victim));
+        let current_entry =
+            current_victim.and_then(|victim| threats.iter().find(|entry| entry.victim == victim));
 
         for entry in threats {
             if entry.threat <= 0.0 {
@@ -1364,7 +1424,7 @@ impl MapRuntime {
         current_victim
     }
 
-    fn switch_db_creature_threat_victim_if_needed(
+    pub(in crate::world) fn switch_db_creature_threat_victim_if_needed(
         &mut self,
         attacker: ObjectGuid,
         exclude_character_guid: Option<u32>,
@@ -1398,9 +1458,9 @@ impl MapRuntime {
                 body: build_attack_start_body(attacker, new_victim),
             },
         ];
-        let direct_packets = if exclude_character_guid.is_some_and(|guid| {
-            packets_direct_to_character(self, guid, creature.current_position)
-        }) {
+        let direct_packets = if exclude_character_guid
+            .is_some_and(|guid| packets_direct_to_character(self, guid, creature.current_position))
+        {
             packets.to_vec()
         } else {
             Vec::new()
@@ -1434,7 +1494,7 @@ impl MapRuntime {
         }))
     }
 
-    fn db_creature_threat_victim_in_melee(
+    pub(in crate::world) fn db_creature_threat_victim_in_melee(
         &self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
@@ -1452,7 +1512,9 @@ impl MapRuntime {
     }
 }
 
-fn db_creature_pursuit_duration_millis(creature: &DbCreatureRuntime) -> Duration {
+pub(in crate::world) fn db_creature_pursuit_duration_millis(
+    creature: &DbCreatureRuntime,
+) -> Duration {
     let pursuit_millis = if creature.spawn.template.pursuit == 0 {
         DB_CREATURE_DEFAULT_PURSUIT_MILLIS
     } else {
@@ -1461,7 +1523,7 @@ fn db_creature_pursuit_duration_millis(creature: &DbCreatureRuntime) -> Duration
     Duration::from_millis(pursuit_millis as u64)
 }
 
-fn initialize_db_creature_spell_cooldowns(
+pub(in crate::world) fn initialize_db_creature_spell_cooldowns(
     creature: &mut DbCreatureRuntime,
     spell_list: &[wow_db::CreatureSpellListQuery],
     now: Instant,
@@ -1471,13 +1533,14 @@ fn initialize_db_creature_spell_cooldowns(
         if cooldown_millis == 0 {
             continue;
         }
-        creature
-            .spell_cooldowns_until
-            .insert(spell.spell_id, now + Duration::from_millis(cooldown_millis as u64));
+        creature.spell_cooldowns_until.insert(
+            spell.spell_id,
+            now + Duration::from_millis(cooldown_millis as u64),
+        );
     }
 }
 
-fn db_creature_spell_cooldown_ready(
+pub(in crate::world) fn db_creature_spell_cooldown_ready(
     cooldowns_until: &std::collections::HashMap<u32, Instant>,
     spell: &wow_db::CreatureSpellListQuery,
     now: Instant,
@@ -1491,7 +1554,7 @@ fn db_creature_spell_cooldown_ready(
                 .is_none_or(|cooldown| now >= *cooldown))
 }
 
-fn db_creature_spell_list_repeat_cooldown_key(
+pub(in crate::world) fn db_creature_spell_list_repeat_cooldown_key(
     spell: &wow_db::CreatureSpellListQuery,
     template_category: u32,
 ) -> u32 {
@@ -1508,17 +1571,19 @@ fn db_creature_spell_list_repeat_cooldown_key(
     spell.spell_id
 }
 
-fn db_creature_spell_category_cooldown_key(category: u32) -> u32 {
+pub(in crate::world) fn db_creature_spell_category_cooldown_key(category: u32) -> u32 {
     CREATURE_SPELL_CATEGORY_COOLDOWN_KEY | (category & !CREATURE_SPELL_CATEGORY_COOLDOWN_KEY)
 }
 
-fn db_creature_spell_failure_from_target_check(check: DbCreatureSpellTargetCheck) -> u8 {
+pub(in crate::world) fn db_creature_spell_failure_from_target_check(
+    check: DbCreatureSpellTargetCheck,
+) -> u8 {
     match check {
         DbCreatureSpellTargetCheck::Clear => SPELL_FAILED_INTERRUPTED,
         DbCreatureSpellTargetCheck::CasterNotAlive => SPELL_FAILED_CASTER_DEAD,
-        DbCreatureSpellTargetCheck::NavigationBlocked(DbCreatureNavigationResult::LineOfSightBlocked) => {
-            SPELL_FAILED_LINE_OF_SIGHT
-        }
+        DbCreatureSpellTargetCheck::NavigationBlocked(
+            DbCreatureNavigationResult::LineOfSightBlocked,
+        ) => SPELL_FAILED_LINE_OF_SIGHT,
         DbCreatureSpellTargetCheck::MissingCaster
         | DbCreatureSpellTargetCheck::MissingTarget
         | DbCreatureSpellTargetCheck::TargetNotAlive
@@ -1527,7 +1592,7 @@ fn db_creature_spell_failure_from_target_check(check: DbCreatureSpellTargetCheck
     }
 }
 
-fn db_creature_insert_spell_cooldown(
+pub(in crate::world) fn db_creature_insert_spell_cooldown(
     creature: &mut DbCreatureRuntime,
     key: u32,
     cooldown_until: Instant,
@@ -1543,7 +1608,7 @@ fn db_creature_insert_spell_cooldown(
         .or_insert(cooldown_until);
 }
 
-fn refresh_db_creature_spell_list_availability(
+pub(in crate::world) fn refresh_db_creature_spell_list_availability(
     creature: &mut DbCreatureRuntime,
     spell_list: &[wow_db::CreatureSpellListQuery],
 ) {
@@ -1571,11 +1636,14 @@ fn refresh_db_creature_spell_list_availability(
     }
 }
 
-fn db_creature_spell_available_for_lifetime(availability: u32, roll: u32) -> bool {
+pub(in crate::world) fn db_creature_spell_available_for_lifetime(
+    availability: u32,
+    roll: u32,
+) -> bool {
     availability >= 100 || roll <= availability
 }
 
-fn db_creature_spell_ai_target(
+pub(in crate::world) fn db_creature_spell_ai_target(
     map: &MapRuntime,
     attacker: ObjectGuid,
     spell: &wow_db::CreatureSpellListQuery,
@@ -1612,7 +1680,7 @@ fn db_creature_spell_ai_target(
     }
 }
 
-fn choose_db_creature_spell(
+pub(in crate::world) fn choose_db_creature_spell(
     eligible: &[(wow_db::CreatureSpellListQuery, ObjectGuid)],
 ) -> Option<(wow_db::CreatureSpellListQuery, ObjectGuid)> {
     let probability_sum = eligible
@@ -1632,7 +1700,7 @@ fn choose_db_creature_spell(
     eligible.first().cloned()
 }
 
-fn db_creature_spell_attack_target(
+pub(in crate::world) fn db_creature_spell_attack_target(
     map: &MapRuntime,
     attacker: ObjectGuid,
     victim: ObjectGuid,
@@ -1657,15 +1725,17 @@ fn db_creature_spell_attack_target(
         CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO => candidates.last().copied(),
         CREATURE_ATTACKING_TARGET_NEAREST => {
             candidates.sort_by(|left, right| {
-                db_creature_spell_target_distance_squared(map, attacker, *left)
-                    .total_cmp(&db_creature_spell_target_distance_squared(map, attacker, *right))
+                db_creature_spell_target_distance_squared(map, attacker, *left).total_cmp(
+                    &db_creature_spell_target_distance_squared(map, attacker, *right),
+                )
             });
             candidates.first().copied()
         }
         CREATURE_ATTACKING_TARGET_FARTHEST => {
             candidates.sort_by(|left, right| {
-                db_creature_spell_target_distance_squared(map, attacker, *right)
-                    .total_cmp(&db_creature_spell_target_distance_squared(map, attacker, *left))
+                db_creature_spell_target_distance_squared(map, attacker, *right).total_cmp(
+                    &db_creature_spell_target_distance_squared(map, attacker, *left),
+                )
             });
             candidates.first().copied()
         }
@@ -1677,7 +1747,7 @@ fn db_creature_spell_attack_target(
     }
 }
 
-fn db_creature_spell_support_target(
+pub(in crate::world) fn db_creature_spell_support_target(
     map: &MapRuntime,
     attacker: ObjectGuid,
     spell: &wow_db::CreatureSpellListQuery,
@@ -1720,7 +1790,7 @@ fn db_creature_spell_support_target(
     candidates.first().map(|(guid, _)| *guid)
 }
 
-fn db_creature_spell_conditions_met(
+pub(in crate::world) fn db_creature_spell_conditions_met(
     map: &MapRuntime,
     attacker: ObjectGuid,
     target: ObjectGuid,
@@ -1744,7 +1814,7 @@ fn db_creature_spell_conditions_met(
     }
 }
 
-fn db_creature_combat_condition_met(
+pub(in crate::world) fn db_creature_combat_condition_met(
     map: &MapRuntime,
     attacker: ObjectGuid,
     target: ObjectGuid,
@@ -1832,7 +1902,7 @@ fn db_creature_combat_condition_met(
     true
 }
 
-fn db_creature_combat_condition_counts_met(
+pub(in crate::world) fn db_creature_combat_condition_counts_met(
     map: &MapRuntime,
     attacker: ObjectGuid,
     conditions: &DbCreatureSpellConditionCache,
@@ -1848,7 +1918,13 @@ fn db_creature_combat_condition_counts_met(
     for unit in units {
         for (index, count) in eligible.iter_mut().enumerate() {
             if clause.ids[index] != 0
-                && db_creature_unit_condition_met(map, unit, attacker, clause.ids[index], conditions)
+                && db_creature_unit_condition_met(
+                    map,
+                    unit,
+                    attacker,
+                    clause.ids[index],
+                    conditions,
+                )
             {
                 *count += 1;
             }
@@ -1860,21 +1936,33 @@ fn db_creature_combat_condition_counts_met(
         }
         CONDITION_LOGIC_AND => {
             db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
-                && db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+                && db_creature_condition_compare(
+                    clause.ops[1] as u32,
+                    eligible[1],
+                    clause.counts[1],
+                )
         }
         CONDITION_LOGIC_OR => {
             db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
-                || db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+                || db_creature_condition_compare(
+                    clause.ops[1] as u32,
+                    eligible[1],
+                    clause.counts[1],
+                )
         }
         CONDITION_LOGIC_XOR => {
             db_creature_condition_compare(clause.ops[0] as u32, eligible[0], clause.counts[0])
-                != db_creature_condition_compare(clause.ops[1] as u32, eligible[1], clause.counts[1])
+                != db_creature_condition_compare(
+                    clause.ops[1] as u32,
+                    eligible[1],
+                    clause.counts[1],
+                )
         }
         _ => false,
     }
 }
 
-fn db_creature_unit_condition_met(
+pub(in crate::world) fn db_creature_unit_condition_met(
     map: &MapRuntime,
     source: ObjectGuid,
     target: ObjectGuid,
@@ -1905,7 +1993,7 @@ fn db_creature_unit_condition_met(
     (condition.flags & UNIT_CONDITION_FLAG_OR) == 0
 }
 
-fn db_creature_unit_condition_value(
+pub(in crate::world) fn db_creature_unit_condition_value(
     map: &MapRuntime,
     source: ObjectGuid,
     target: ObjectGuid,
@@ -1913,18 +2001,22 @@ fn db_creature_unit_condition_value(
 ) -> Option<i32> {
     match variable {
         UNIT_CONDITION_NONE => Some(1),
-        UNIT_CONDITION_RACE => db_creature_condition_player(map, source).map(|player| player.race as i32),
+        UNIT_CONDITION_RACE => {
+            db_creature_condition_player(map, source).map(|player| player.race as i32)
+        }
         UNIT_CONDITION_CLASS => {
             db_creature_condition_player(map, source).map(|player| player.class as i32)
         }
         UNIT_CONDITION_LEVEL => db_creature_condition_level(map, source).map(i32::from),
         UNIT_CONDITION_IS_SELF => Some(i32::from(source == target)),
-        UNIT_CONDITION_IS_TARGET | UNIT_CONDITION_IS_ATTACKING_ME => {
-            Some(i32::from(db_creature_condition_unit_target(map, source) == Some(target)))
-        }
+        UNIT_CONDITION_IS_TARGET | UNIT_CONDITION_IS_ATTACKING_ME => Some(i32::from(
+            db_creature_condition_unit_target(map, source) == Some(target),
+        )),
         UNIT_CONDITION_HEALTH_PERCENT => db_creature_condition_health(map, source)
             .map(|(health, max_health)| (health.saturating_mul(100) / max_health.max(1)) as i32),
-        UNIT_CONDITION_HEALTH => db_creature_condition_health(map, source).map(|(health, _)| health as i32),
+        UNIT_CONDITION_HEALTH => {
+            db_creature_condition_health(map, source).map(|(health, _)| health as i32)
+        }
         UNIT_CONDITION_MANA_PERCENT => db_creature_condition_player(map, source)
             .map(|player| (player.power1.saturating_mul(100) / player.max_power1.max(1)) as i32),
         UNIT_CONDITION_RAGE_PERCENT => db_creature_condition_player(map, source)
@@ -1950,9 +2042,9 @@ fn db_creature_unit_condition_value(
         UNIT_CONDITION_RANGE => {
             db_creature_condition_distance(map, source, target).map(|distance| distance as i32)
         }
-        UNIT_CONDITION_IN_MELEE_RANGE => {
-            Some(i32::from(db_creature_condition_in_melee_range(map, source, target)))
-        }
+        UNIT_CONDITION_IN_MELEE_RANGE => Some(i32::from(db_creature_condition_in_melee_range(
+            map, source, target,
+        ))),
         UNIT_CONDITION_CREATURE_TYPE => db_creature_condition_creature(map, source)
             .map(|creature| creature.spawn.template.creature_type as i32),
         UNIT_CONDITION_CREATURE_ID => db_creature_condition_creature(map, source)
@@ -1977,13 +2069,21 @@ fn db_creature_unit_condition_value(
             )))
         }
         UNIT_CONDITION_IS_PLAYER => Some(i32::from(source.is_player())),
-        UNIT_CONDITION_IS_ENEMY => Some(i32::from(db_creature_condition_is_enemy(map, source, target))),
-        UNIT_CONDITION_IS_DYING => db_creature_condition_health(map, source).map(|(health, _)| i32::from(health == 0)),
+        UNIT_CONDITION_IS_ENEMY => Some(i32::from(db_creature_condition_is_enemy(
+            map, source, target,
+        ))),
+        UNIT_CONDITION_IS_DYING => {
+            db_creature_condition_health(map, source).map(|(health, _)| i32::from(health == 0))
+        }
         _ => None,
     }
 }
 
-fn db_creature_condition_compare(operation: u32, condition_value: i32, value: i32) -> bool {
+pub(in crate::world) fn db_creature_condition_compare(
+    operation: u32,
+    condition_value: i32,
+    value: i32,
+) -> bool {
     match operation {
         1 => condition_value == value,
         2 => condition_value != value,
@@ -1995,13 +2095,16 @@ fn db_creature_condition_compare(operation: u32, condition_value: i32, value: i3
     }
 }
 
-fn db_creature_condition_player(map: &MapRuntime, guid: ObjectGuid) -> Option<&PlayerRuntime> {
+pub(in crate::world) fn db_creature_condition_player(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<&PlayerRuntime> {
     guid.is_player()
         .then(|| map.players.get(&guid.counter()))
         .flatten()
 }
 
-fn db_creature_condition_creature(
+pub(in crate::world) fn db_creature_condition_creature(
     map: &MapRuntime,
     guid: ObjectGuid,
 ) -> Option<&DbCreatureRuntime> {
@@ -2010,7 +2113,10 @@ fn db_creature_condition_creature(
         .flatten()
 }
 
-fn db_creature_condition_level(map: &MapRuntime, guid: ObjectGuid) -> Option<u8> {
+pub(in crate::world) fn db_creature_condition_level(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<u8> {
     if let Some(player) = db_creature_condition_player(map, guid) {
         Some(player.level)
     } else {
@@ -2018,7 +2124,10 @@ fn db_creature_condition_level(map: &MapRuntime, guid: ObjectGuid) -> Option<u8>
     }
 }
 
-fn db_creature_condition_health(map: &MapRuntime, guid: ObjectGuid) -> Option<(u32, u32)> {
+pub(in crate::world) fn db_creature_condition_health(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<(u32, u32)> {
     if let Some(player) = db_creature_condition_player(map, guid) {
         Some((player.health, player.max_health))
     } else {
@@ -2027,7 +2136,10 @@ fn db_creature_condition_health(map: &MapRuntime, guid: ObjectGuid) -> Option<(u
     }
 }
 
-fn db_creature_condition_unit_target(map: &MapRuntime, guid: ObjectGuid) -> Option<ObjectGuid> {
+pub(in crate::world) fn db_creature_condition_unit_target(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> Option<ObjectGuid> {
     if let Some(player) = db_creature_condition_player(map, guid) {
         player.unit_target.or(player.active_combat_target)
     } else {
@@ -2037,7 +2149,10 @@ fn db_creature_condition_unit_target(map: &MapRuntime, guid: ObjectGuid) -> Opti
     }
 }
 
-fn db_creature_condition_in_combat(map: &MapRuntime, guid: ObjectGuid) -> bool {
+pub(in crate::world) fn db_creature_condition_in_combat(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> bool {
     if guid.is_player() {
         map.players
             .get(&guid.counter())
@@ -2047,7 +2162,10 @@ fn db_creature_condition_in_combat(map: &MapRuntime, guid: ObjectGuid) -> bool {
     }
 }
 
-fn db_creature_condition_friendlies(map: &MapRuntime, source: ObjectGuid) -> Vec<ObjectGuid> {
+pub(in crate::world) fn db_creature_condition_friendlies(
+    map: &MapRuntime,
+    source: ObjectGuid,
+) -> Vec<ObjectGuid> {
     let Some(creature) = db_creature_condition_creature(map, source) else {
         return Vec::new();
     };
@@ -2066,7 +2184,10 @@ fn db_creature_condition_friendlies(map: &MapRuntime, source: ObjectGuid) -> Vec
         .collect()
 }
 
-fn db_creature_condition_enemies(map: &MapRuntime, source: ObjectGuid) -> Vec<ObjectGuid> {
+pub(in crate::world) fn db_creature_condition_enemies(
+    map: &MapRuntime,
+    source: ObjectGuid,
+) -> Vec<ObjectGuid> {
     if source.is_player() {
         return map
             .active_creature_combats
@@ -2087,7 +2208,7 @@ fn db_creature_condition_enemies(map: &MapRuntime, source: ObjectGuid) -> Vec<Ob
         .unwrap_or_default()
 }
 
-fn db_creature_condition_distance(
+pub(in crate::world) fn db_creature_condition_distance(
     map: &MapRuntime,
     source: ObjectGuid,
     target: ObjectGuid,
@@ -2100,7 +2221,7 @@ fn db_creature_condition_distance(
     Some((dx * dx + dy * dy + dz * dz).sqrt())
 }
 
-fn db_creature_condition_in_melee_range(
+pub(in crate::world) fn db_creature_condition_in_melee_range(
     map: &MapRuntime,
     source: ObjectGuid,
     target: ObjectGuid,
@@ -2113,7 +2234,7 @@ fn db_creature_condition_in_melee_range(
     distance <= reach
 }
 
-fn db_creature_condition_position(
+pub(in crate::world) fn db_creature_condition_position(
     map: &MapRuntime,
     guid: ObjectGuid,
 ) -> Option<WorldPosition> {
@@ -2124,7 +2245,10 @@ fn db_creature_condition_position(
     }
 }
 
-fn db_creature_condition_combat_reach(map: &MapRuntime, guid: ObjectGuid) -> f32 {
+pub(in crate::world) fn db_creature_condition_combat_reach(
+    map: &MapRuntime,
+    guid: ObjectGuid,
+) -> f32 {
     if guid.is_player() {
         PLAYER_COMBAT_REACH_YARDS
     } else {
@@ -2134,7 +2258,7 @@ fn db_creature_condition_combat_reach(map: &MapRuntime, guid: ObjectGuid) -> f32
     }
 }
 
-fn db_creature_condition_is_enemy(
+pub(in crate::world) fn db_creature_condition_is_enemy(
     map: &MapRuntime,
     source: ObjectGuid,
     target: ObjectGuid,
@@ -2151,7 +2275,7 @@ fn db_creature_condition_is_enemy(
     source_creature.spawn.template.faction != target_creature.spawn.template.faction
 }
 
-fn db_creature_spell_target_distance_squared(
+pub(in crate::world) fn db_creature_spell_target_distance_squared(
     map: &MapRuntime,
     attacker: ObjectGuid,
     target: ObjectGuid,
@@ -2168,7 +2292,7 @@ fn db_creature_spell_target_distance_squared(
     dx * dx + dy * dy + dz * dz
 }
 
-fn random_millis_between(min: u32, max: u32) -> u32 {
+pub(in crate::world) fn random_millis_between(min: u32, max: u32) -> u32 {
     let max = max.max(min);
     if min == max {
         min
@@ -2177,12 +2301,16 @@ fn random_millis_between(min: u32, max: u32) -> u32 {
     }
 }
 
-fn packets_direct_to_character(
+pub(in crate::world) fn packets_direct_to_character(
     map: &MapRuntime,
     character_guid: u32,
     creature_position: WorldPosition,
 ) -> bool {
-    map.players
-        .get(&character_guid)
-        .is_some_and(|player| is_position_inside_radius(player.position, creature_position, CREATURE_SPAWN_RADIUS_YARDS))
+    map.players.get(&character_guid).is_some_and(|player| {
+        is_position_inside_radius(
+            player.position,
+            creature_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+        )
+    })
 }

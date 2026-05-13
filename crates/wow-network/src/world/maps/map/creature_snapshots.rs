@@ -1,8 +1,10 @@
+use super::*;
+
 // Shared DB-creature snapshot and lazy grid visibility helpers.
 
 impl MapRuntime {
     #[allow(dead_code)]
-    fn share_db_creature_snapshots(
+    pub(in crate::world) fn share_db_creature_snapshots(
         &mut self,
         creatures: Vec<DbCreatureRuntime>,
     ) -> Vec<DbCreatureRuntime> {
@@ -28,7 +30,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn spawn_db_creature_and_broadcast(
+    pub(in crate::world) fn spawn_db_creature_and_broadcast(
         &mut self,
         creature: DbCreatureRuntime,
         exclude_character_guid: Option<u32>,
@@ -37,20 +39,24 @@ impl MapRuntime {
         let position = creature.current_position;
         self.share_db_creature_snapshots(vec![creature]);
         self.refresh_grid_state(grid_coord_for_position(position));
-        self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
-            .into_iter()
-            .filter_map(|player_guid| {
-                self.players.get(&player_guid).and_then(|player| {
-                    player.packet_to_client(OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: create_body.clone(),
-                    })
+        self.nearby_player_guids(
+            position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            exclude_character_guid,
+        )
+        .into_iter()
+        .filter_map(|player_guid| {
+            self.players.get(&player_guid).and_then(|player| {
+                player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: create_body.clone(),
                 })
             })
-            .collect()
+        })
+        .collect()
     }
 
-    fn delete_db_creature_runtime(
+    pub(in crate::world) fn delete_db_creature_runtime(
         &mut self,
         creature_guid: Option<ObjectGuid>,
         db_guid: Option<u32>,
@@ -59,11 +65,9 @@ impl MapRuntime {
         let raw_guid = if let Some(creature_guid) = creature_guid {
             creature_guid.raw()
         } else if let Some(db_guid) = db_guid {
-            let Some(raw_guid) = self
-                .creatures
-                .iter()
-                .find_map(|(raw_guid, creature)| (creature.spawn.guid == db_guid).then_some(*raw_guid))
-            else {
+            let Some(raw_guid) = self.creatures.iter().find_map(|(raw_guid, creature)| {
+                (creature.spawn.guid == db_guid).then_some(*raw_guid)
+            }) else {
                 return Ok(None);
             };
             raw_guid
@@ -114,7 +118,11 @@ impl MapRuntime {
             body: build_destroy_guid_body(guid),
         };
         let observer_packets = self
-            .nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
+            .nearby_player_guids(
+                position,
+                CREATURE_SPAWN_RADIUS_YARDS,
+                exclude_character_guid,
+            )
             .into_iter()
             .filter_map(|player_guid| {
                 self.players
@@ -129,7 +137,7 @@ impl MapRuntime {
         }))
     }
 
-    fn unloaded_creature_grids_for_area(
+    pub(in crate::world) fn unloaded_creature_grids_for_area(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -145,13 +153,17 @@ impl MapRuntime {
         grids
     }
 
-    fn loaded_creature_grids(&self) -> Vec<GridCoord> {
-        let mut grids = self.loaded_creature_grids.iter().copied().collect::<Vec<_>>();
+    pub(in crate::world) fn loaded_creature_grids(&self) -> Vec<GridCoord> {
+        let mut grids = self
+            .loaded_creature_grids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
         grids.sort_by_key(|grid| (grid.x, grid.y));
         grids
     }
 
-    fn insert_loaded_creature_grid(
+    pub(in crate::world) fn insert_loaded_creature_grid(
         &mut self,
         grid_coord: GridCoord,
         creatures: Vec<DbCreatureRuntime>,
@@ -181,7 +193,7 @@ impl MapRuntime {
         loaded
     }
 
-    fn refresh_static_event_creature_grid(
+    pub(in crate::world) fn refresh_static_event_creature_grid(
         &mut self,
         grid_coord: GridCoord,
         active_creatures: Vec<DbCreatureRuntime>,
@@ -225,8 +237,10 @@ impl MapRuntime {
             let position = creature.current_position;
             self.share_db_creature_snapshots(vec![creature.clone()]);
             self.refresh_grid_state(grid_coord_for_position(position));
-            let body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
-            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None) {
+            let body =
+                build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+            {
                 let Some(player) = self.players.get(&player_guid) else {
                     continue;
                 };
@@ -239,8 +253,8 @@ impl MapRuntime {
                 };
                 if player.visible_objects.insert(guid) {
                     if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
-                            opcode: SMSG_UPDATE_OBJECT,
-                            body: body.clone(),
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: body.clone(),
                     }) {
                         packets.push(packet);
                     }
@@ -250,7 +264,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn nearby_db_creature_snapshots(
+    pub(in crate::world) fn nearby_db_creature_snapshots(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -291,18 +305,24 @@ impl MapRuntime {
         creatures
     }
 
-    fn db_creature_snapshots(&self, creature_guids: &[u64]) -> Vec<DbCreatureRuntime> {
+    pub(in crate::world) fn db_creature_snapshots(
+        &self,
+        creature_guids: &[u64],
+    ) -> Vec<DbCreatureRuntime> {
         creature_guids
             .iter()
             .filter_map(|guid| self.creatures.get(guid).cloned())
             .collect()
     }
 
-    fn db_creature_snapshot(&self, creature_guid: ObjectGuid) -> Option<DbCreatureRuntime> {
+    pub(in crate::world) fn db_creature_snapshot(
+        &self,
+        creature_guid: ObjectGuid,
+    ) -> Option<DbCreatureRuntime> {
         self.creatures.get(&creature_guid.raw()).cloned()
     }
 
-    fn stage_player_db_creature_visibility(
+    pub(in crate::world) fn stage_player_db_creature_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -333,8 +353,7 @@ impl MapRuntime {
             }
         }
         for combat in self.active_creature_combats.values() {
-            if combat.victim == player_guid && previously_visible.contains(&combat.attacker.raw())
-            {
+            if combat.victim == player_guid && previously_visible.contains(&combat.attacker.raw()) {
                 retained_combat_guids.insert(combat.attacker.raw());
             }
         }
@@ -389,7 +408,7 @@ impl MapRuntime {
         }
     }
 
-    fn db_creature_visible_for_player_death_state(
+    pub(in crate::world) fn db_creature_visible_for_player_death_state(
         creature: &DbCreatureRuntime,
         player_is_ghost: bool,
     ) -> bool {
@@ -402,10 +421,14 @@ impl MapRuntime {
     }
 
     #[allow(dead_code)]
-    fn update_db_creature_snapshot(&mut self, creature: DbCreatureRuntime) {
+    pub(in crate::world) fn update_db_creature_snapshot(&mut self, creature: DbCreatureRuntime) {
         let guid = creature.guid().raw();
         let new_grid = grid_coord_for_position(creature.current_position);
-        if let Some(previous_position) = self.creatures.get(&guid).map(|creature| creature.current_position) {
+        if let Some(previous_position) = self
+            .creatures
+            .get(&guid)
+            .map(|creature| creature.current_position)
+        {
             self.refresh_db_creature_spatial_index(
                 guid,
                 previous_position,
@@ -422,15 +445,12 @@ impl MapRuntime {
                 .creatures
                 .insert(guid);
         }
-        self.grids
-            .entry(new_grid)
-            .or_default()
-            .last_touched = Instant::now();
+        self.grids.entry(new_grid).or_default().last_touched = Instant::now();
         self.creatures.insert(guid, creature);
         self.refresh_grid_state(new_grid);
     }
 
-    fn update_db_creature_snapshot_and_broadcast(
+    pub(in crate::world) fn update_db_creature_snapshot_and_broadcast(
         &mut self,
         creature: DbCreatureRuntime,
         exclude_character_guid: Option<u32>,
@@ -452,7 +472,7 @@ impl MapRuntime {
         .collect()
     }
 
-    fn refresh_grid_state(&mut self, grid_coord: GridCoord) {
+    pub(in crate::world) fn refresh_grid_state(&mut self, grid_coord: GridCoord) {
         let Some(grid) = self.grids.get(&grid_coord) else {
             return;
         };
@@ -463,8 +483,7 @@ impl MapRuntime {
                         .get(guid)
                         .is_some_and(PlayerRuntime::is_client_controlled)
                 })
-            })
-        {
+            }) {
             GridState::Active
         } else if let Some(blocker) = self.grid_unload_blocker(grid_coord) {
             GridState::UnloadBlocked(blocker)
@@ -481,7 +500,10 @@ impl MapRuntime {
         }
     }
 
-    fn grid_unload_blocker(&self, grid_coord: GridCoord) -> Option<GridUnloadBlocker> {
+    pub(in crate::world) fn grid_unload_blocker(
+        &self,
+        grid_coord: GridCoord,
+    ) -> Option<GridUnloadBlocker> {
         let grid = self.grids.get(&grid_coord)?;
         let creature_guids = grid
             .cells
@@ -541,14 +563,13 @@ impl MapRuntime {
         None
     }
 
-    fn unload_expired_idle_grids(&mut self, now: Instant) -> Vec<GridCoord> {
+    pub(in crate::world) fn unload_expired_idle_grids(&mut self, now: Instant) -> Vec<GridCoord> {
         let mut grids = self
             .grids
             .iter()
             .filter_map(|(grid_coord, grid)| {
                 (matches!(grid.state, GridState::Idle)
-                    && now
-                        >= grid.last_touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS)
+                    && now >= grid.last_touched + Duration::from_millis(GRID_UNLOAD_DELAY_MILLIS)
                     && !self.is_grid_near_player_interest(*grid_coord))
                 .then_some(*grid_coord)
             })
@@ -586,7 +607,7 @@ impl MapRuntime {
         unloaded
     }
 
-    fn is_grid_near_player_interest(&self, grid_coord: GridCoord) -> bool {
+    pub(in crate::world) fn is_grid_near_player_interest(&self, grid_coord: GridCoord) -> bool {
         self.players.values().any(|player| {
             if !player.is_client_controlled() {
                 return false;

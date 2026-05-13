@@ -1,80 +1,59 @@
+use super::*;
+use wow_proto::{ServerWorldPacket, SmsgLevelupInfoResponse, SmsgLogXpGainResponse};
+
 // CMaNGOS reference: src/game/Entities/Player.cpp progression packet builders.
 
-fn build_log_xp_gain_body(source: Option<ObjectGuid>, given_xp: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(21);
-
-    body.extend_from_slice(&source.map_or(0, |guid| guid.raw()).to_le_bytes());
-
-    body.extend_from_slice(&given_xp.to_le_bytes());
-
-    body.push(u8::from(source.is_none()));
-
-    if source.is_some() {
-        body.extend_from_slice(&given_xp.to_le_bytes());
-
-        body.extend_from_slice(&1.0f32.to_le_bytes());
-    }
-
-    body
+pub(in crate::world) fn build_log_xp_gain_body(
+    source: Option<ObjectGuid>,
+    given_xp: u32,
+) -> Vec<u8> {
+    SmsgLogXpGainResponse { source, given_xp }.body()
 }
 
-fn build_levelup_info_body(
+pub(in crate::world) fn build_levelup_info_body(
     new_level: u8,
 
     previous_stats: &PlayerWorldStats,
 
     new_stats: &PlayerWorldStats,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(48);
-
-    body.extend_from_slice(&(new_level as u32).to_le_bytes());
-
-    body.extend_from_slice(
-        &(new_stats.base_health as i32 - previous_stats.base_health as i32).to_le_bytes(),
-    );
-
-    body.extend_from_slice(
-        &(new_stats.base_mana as i32 - previous_stats.base_mana as i32).to_le_bytes(),
-    );
-
-    for _ in 0..4 {
-        body.extend_from_slice(&0u32.to_le_bytes());
+    SmsgLevelupInfoResponse {
+        new_level,
+        health_delta: new_stats.base_health as i32 - previous_stats.base_health as i32,
+        mana_delta: new_stats.base_mana as i32 - previous_stats.base_mana as i32,
+        power_deltas: [0; 4],
+        stat_deltas: (0..MAX_STATS)
+            .map(|index| new_stats.stats[index] as i32 - previous_stats.stats[index] as i32)
+            .collect(),
     }
-
-    for index in 0..MAX_STATS {
-        body.extend_from_slice(
-            &(new_stats.stats[index] as i32 - previous_stats.stats[index] as i32).to_le_bytes(),
-        );
-    }
-
-    body
+    .body()
 }
 
 #[derive(Debug, Clone, Copy)]
 
-struct PlayerProgressionUpdate<'a> {
-    character_guid: u32,
+pub(in crate::world) struct PlayerProgressionUpdate<'a> {
+    pub(in crate::world) character_guid: u32,
 
-    level: u8,
+    pub(in crate::world) level: u8,
 
-    xp: u32,
+    pub(in crate::world) xp: u32,
 
-    health: u32,
+    pub(in crate::world) health: u32,
 
-    power1: u32,
+    pub(in crate::world) power1: u32,
 
-    power2: u32,
+    pub(in crate::world) power2: u32,
 
-    power3: u32,
+    pub(in crate::world) power3: u32,
 
-    power4: u32,
+    pub(in crate::world) power4: u32,
 
-    power5: u32,
+    pub(in crate::world) power5: u32,
 
-    world_stats: &'a PlayerWorldStats,
+    pub(in crate::world) world_stats: &'a PlayerWorldStats,
 }
 
-fn build_player_progression_update_body(
+pub(in crate::world) fn build_player_progression_update_body(
     update: PlayerProgressionUpdate<'_>,
 ) -> anyhow::Result<Vec<u8>> {
     let PlayerProgressionUpdate {

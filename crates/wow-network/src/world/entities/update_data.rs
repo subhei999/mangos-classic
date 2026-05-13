@@ -1,5 +1,8 @@
+use super::*;
+use wow_proto::{ServerWorldPacket, SmsgUpdateObjectResponse};
+
 // CMaNGOS reference: src/game/Entities/UpdateData.* and object update builders.
-async fn send_self_spawn_update(
+pub(in crate::world) async fn send_self_spawn_update(
     stream: &mut WorldPacketSink,
     update: SelfSpawnUpdate<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -26,22 +29,22 @@ async fn send_self_spawn_update(
     Ok(())
 }
 
-struct SelfSpawnUpdate<'a> {
-    character: &'a CharacterEnumEntry,
-    inventory: &'a [CharacterInventoryItem],
-    inventory_container_slots: &'a HashMap<u32, u32>,
-    base_world_stats: &'a PlayerWorldStats,
-    world_stats: &'a PlayerWorldStats,
-    skills: &'a [CharacterSkill],
-    quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
-    equipped_templates: &'a [EquippedItemTemplate],
-    active_auras: &'a [ActiveAura],
-    nearby_creatures: &'a [DbCreatureRuntime],
-    nearby_gameobjects: &'a [DbGameObjectRuntime],
-    nearby_player_corpses: &'a [PlayerCorpseRuntime],
+pub(in crate::world) struct SelfSpawnUpdate<'a> {
+    pub(in crate::world) character: &'a CharacterEnumEntry,
+    pub(in crate::world) inventory: &'a [CharacterInventoryItem],
+    pub(in crate::world) inventory_container_slots: &'a HashMap<u32, u32>,
+    pub(in crate::world) base_world_stats: &'a PlayerWorldStats,
+    pub(in crate::world) world_stats: &'a PlayerWorldStats,
+    pub(in crate::world) skills: &'a [CharacterSkill],
+    pub(in crate::world) quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
+    pub(in crate::world) equipped_templates: &'a [EquippedItemTemplate],
+    pub(in crate::world) active_auras: &'a [ActiveAura],
+    pub(in crate::world) nearby_creatures: &'a [DbCreatureRuntime],
+    pub(in crate::world) nearby_gameobjects: &'a [DbGameObjectRuntime],
+    pub(in crate::world) nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
-async fn load_equipped_item_templates(
+pub(in crate::world) async fn load_equipped_item_templates(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Vec<EquippedItemTemplate>> {
@@ -50,7 +53,8 @@ async fn load_equipped_item_templates(
         if item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot >= EQUIPMENT_SLOT_END {
             continue;
         }
-        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, item.item_template).await?
         else {
             continue;
         };
@@ -62,7 +66,9 @@ async fn load_equipped_item_templates(
     Ok(templates)
 }
 
-fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(in crate::world) fn build_self_spawn_update_bodies(
+    update: &SelfSpawnUpdate<'_>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut blocks = build_self_spawn_update_blocks(update)?;
     let leading_block_count = 1 + if legacy_fixture_npcs_enabled() { 2 } else { 0 };
     let creature_start = leading_block_count;
@@ -82,7 +88,9 @@ fn build_self_spawn_update_bodies(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     Ok(bodies)
 }
 
-fn chunk_update_blocks_by_body_size(blocks: &[Vec<u8>]) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(in crate::world) fn chunk_update_blocks_by_body_size(
+    blocks: &[Vec<u8>],
+) -> anyhow::Result<Vec<Vec<u8>>> {
     const UPDATE_OBJECT_BODY_PREFIX_BYTES: usize = 5;
     const MAX_SERVER_PACKET_BODY_BYTES: usize = 0x2800 - 2;
 
@@ -99,9 +107,7 @@ fn chunk_update_blocks_by_body_size(blocks: &[Vec<u8>]) -> anyhow::Result<Vec<Ve
             );
         }
 
-        if !current_blocks.is_empty()
-            && current_len + block_len > MAX_SERVER_PACKET_BODY_BYTES
-        {
+        if !current_blocks.is_empty() && current_len + block_len > MAX_SERVER_PACKET_BODY_BYTES {
             bodies.push(build_update_object_body(&current_blocks));
             current_blocks.clear();
             current_len = UPDATE_OBJECT_BODY_PREFIX_BYTES;
@@ -118,7 +124,9 @@ fn chunk_update_blocks_by_body_size(blocks: &[Vec<u8>]) -> anyhow::Result<Vec<Ve
     Ok(bodies)
 }
 
-fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(in crate::world) fn build_self_spawn_update_blocks(
+    update: &SelfSpawnUpdate<'_>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
     let character = update.character;
     let guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let mut block = Vec::new();
@@ -184,7 +192,10 @@ fn build_self_spawn_update_blocks(update: &SelfSpawnUpdate<'_>) -> anyhow::Resul
     Ok(blocks)
 }
 
-fn write_update_values(body: &mut Vec<u8>, values: &[Option<u32>]) -> anyhow::Result<()> {
+pub(in crate::world) fn write_update_values(
+    body: &mut Vec<u8>,
+    values: &[Option<u32>],
+) -> anyhow::Result<()> {
     let block_count = values.len().div_ceil(32);
     body.push(block_count as u8);
     let mask_start = body.len();
@@ -205,7 +216,11 @@ fn write_update_values(body: &mut Vec<u8>, values: &[Option<u32>]) -> anyhow::Re
     Ok(())
 }
 
-fn set_update_value(values: &mut [Option<u32>], index: usize, value: u32) -> anyhow::Result<()> {
+pub(in crate::world) fn set_update_value(
+    values: &mut [Option<u32>],
+    index: usize,
+    value: u32,
+) -> anyhow::Result<()> {
     if index >= values.len() {
         anyhow::bail!("update field index {index} exceeds player field count");
     }
@@ -213,19 +228,13 @@ fn set_update_value(values: &mut [Option<u32>], index: usize, value: u32) -> any
     Ok(())
 }
 
-fn make_pair32(low: u16, high: u16) -> u32 {
+pub(in crate::world) fn make_pair32(low: u16, high: u16) -> u32 {
     low as u32 | ((high as u32) << 16)
 }
 
-
-fn build_update_object_body(blocks: &[Vec<u8>]) -> Vec<u8> {
-    let body_len = 5 + blocks.iter().map(Vec::len).sum::<usize>();
-    let mut body = Vec::with_capacity(body_len);
-    body.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-    body.push(0);
-    for block in blocks {
-        body.extend_from_slice(block);
+pub(in crate::world) fn build_update_object_body(blocks: &[Vec<u8>]) -> Vec<u8> {
+    SmsgUpdateObjectResponse {
+        blocks: blocks.to_vec(),
     }
-    body
+    .body()
 }
-

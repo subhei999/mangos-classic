@@ -1,7 +1,9 @@
+use super::*;
+
 // Shared DB-gameobject snapshot and lazy grid visibility helpers.
 
 impl MapRuntime {
-    fn unloaded_gameobject_grids_for_area(
+    pub(in crate::world) fn unloaded_gameobject_grids_for_area(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -17,7 +19,7 @@ impl MapRuntime {
         grids
     }
 
-    fn loaded_gameobject_grids(&self) -> Vec<GridCoord> {
+    pub(in crate::world) fn loaded_gameobject_grids(&self) -> Vec<GridCoord> {
         let mut grids = self
             .loaded_gameobject_grids
             .iter()
@@ -27,7 +29,7 @@ impl MapRuntime {
         grids
     }
 
-    fn insert_loaded_gameobject_grid(
+    pub(in crate::world) fn insert_loaded_gameobject_grid(
         &mut self,
         grid_coord: GridCoord,
         gameobjects: Vec<DbGameObjectRuntime>,
@@ -56,7 +58,7 @@ impl MapRuntime {
         loaded
     }
 
-    fn refresh_static_event_gameobject_grid(
+    pub(in crate::world) fn refresh_static_event_gameobject_grid(
         &mut self,
         grid_coord: GridCoord,
         active_gameobjects: Vec<DbGameObjectRuntime>,
@@ -103,7 +105,8 @@ impl MapRuntime {
                 grid_coord_for_position(position),
                 vec![gameobject.clone()],
             );
-            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None) {
+            for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+            {
                 let Some(player) = self.players.get_mut(&player_guid) else {
                     continue;
                 };
@@ -115,8 +118,8 @@ impl MapRuntime {
                     &player.quest_statuses,
                 )?;
                 if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_update_object_body(&[create_block]),
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_update_object_body(&[create_block]),
                 }) {
                     packets.push(packet);
                 }
@@ -125,7 +128,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn delete_db_gameobject_runtime(
+    pub(in crate::world) fn delete_db_gameobject_runtime(
         &mut self,
         gameobject_guid: ObjectGuid,
         exclude_character_guid: Option<u32>,
@@ -158,18 +161,22 @@ impl MapRuntime {
             body: build_destroy_guid_body(gameobject_guid),
         };
         Some(
-            self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
-                .into_iter()
-                .filter_map(|player_guid| {
-                    self.players
-                        .get(&player_guid)
-                        .and_then(|player| player.packet_to_client(packet.clone()))
-                })
-                .collect(),
+            self.nearby_player_guids(
+                position,
+                CREATURE_SPAWN_RADIUS_YARDS,
+                exclude_character_guid,
+            )
+            .into_iter()
+            .filter_map(|player_guid| {
+                self.players
+                    .get(&player_guid)
+                    .and_then(|player| player.packet_to_client(packet.clone()))
+            })
+            .collect(),
         )
     }
 
-    fn nearby_db_gameobject_snapshots(
+    pub(in crate::world) fn nearby_db_gameobject_snapshots(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -191,37 +198,38 @@ impl MapRuntime {
             })
             .collect::<Vec<_>>();
         gameobjects.sort_by(|left, right| {
-            distance_squared_2d(
-                left.position().x,
-                left.position().y,
-                position.x,
-                position.y,
-            )
-            .partial_cmp(&distance_squared_2d(
-                right.position().x,
-                right.position().y,
-                position.x,
-                position.y,
-            ))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.guid().raw().cmp(&right.guid().raw()))
+            distance_squared_2d(left.position().x, left.position().y, position.x, position.y)
+                .partial_cmp(&distance_squared_2d(
+                    right.position().x,
+                    right.position().y,
+                    position.x,
+                    position.y,
+                ))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.guid().raw().cmp(&right.guid().raw()))
         });
         gameobjects.truncate(limit as usize);
         gameobjects
     }
 
-    fn db_gameobject_snapshot(&self, gameobject_guid: ObjectGuid) -> Option<DbGameObjectRuntime> {
+    pub(in crate::world) fn db_gameobject_snapshot(
+        &self,
+        gameobject_guid: ObjectGuid,
+    ) -> Option<DbGameObjectRuntime> {
         self.gameobjects.get(&gameobject_guid.raw()).cloned()
     }
 
-    fn db_gameobject_snapshots(&self, gameobject_guids: &[u64]) -> Vec<DbGameObjectRuntime> {
+    pub(in crate::world) fn db_gameobject_snapshots(
+        &self,
+        gameobject_guids: &[u64],
+    ) -> Vec<DbGameObjectRuntime> {
         gameobject_guids
             .iter()
             .filter_map(|guid| self.gameobjects.get(guid).cloned())
             .collect()
     }
 
-    fn stage_player_db_gameobject_visibility(
+    pub(in crate::world) fn stage_player_db_gameobject_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -290,7 +298,7 @@ impl MapRuntime {
         }
     }
 
-    fn consume_db_gameobject(
+    pub(in crate::world) fn consume_db_gameobject(
         &mut self,
         gameobject_guid: ObjectGuid,
         now: Instant,
@@ -305,7 +313,11 @@ impl MapRuntime {
             body: gameobject_guid.raw().to_le_bytes().to_vec(),
         };
         let packets = self
-            .nearby_player_guids(snapshot.position(), CREATURE_SPAWN_RADIUS_YARDS, exclude_character_guid)
+            .nearby_player_guids(
+                snapshot.position(),
+                CREATURE_SPAWN_RADIUS_YARDS,
+                exclude_character_guid,
+            )
             .into_iter()
             .filter_map(|player_guid| {
                 self.players

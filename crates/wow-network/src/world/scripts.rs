@@ -1,15 +1,17 @@
+use super::*;
+
 // CMaNGOS reference: src/game/DBScripts/ScriptMgr.* and
 // src/game/Globals/ObjectMgr.cpp DoDisplayText.
 
 #[derive(Debug, Default)]
-struct DbScriptRegistry {
-    movement_scripts: HashMap<u32, Vec<wow_db::DbScriptCommandQuery>>,
-    script_texts: HashMap<i32, wow_db::ScriptTextQuery>,
-    broadcast_texts: HashMap<i32, wow_db::BroadcastTextQuery>,
+pub(in crate::world) struct DbScriptRegistry {
+    pub(in crate::world) movement_scripts: HashMap<u32, Vec<wow_db::DbScriptCommandQuery>>,
+    pub(in crate::world) script_texts: HashMap<i32, wow_db::ScriptTextQuery>,
+    pub(in crate::world) broadcast_texts: HashMap<i32, wow_db::BroadcastTextQuery>,
 }
 
 impl DbScriptRegistry {
-    async fn load(world_db_pool: &MySqlPool) -> anyhow::Result<Self> {
+    pub(in crate::world) async fn load(world_db_pool: &MySqlPool) -> anyhow::Result<Self> {
         let movement_scripts = wow_db::get_dbscripts_on_creature_movement(world_db_pool)
             .await?
             .into_iter()
@@ -35,11 +37,14 @@ impl DbScriptRegistry {
         })
     }
 
-    fn movement_script(&self, id: u32) -> Option<&[wow_db::DbScriptCommandQuery]> {
+    pub(in crate::world) fn movement_script(
+        &self,
+        id: u32,
+    ) -> Option<&[wow_db::DbScriptCommandQuery]> {
         self.movement_scripts.get(&id).map(Vec::as_slice)
     }
 
-    fn display_text(&self, entry: i32) -> Option<DbScriptDisplayText<'_>> {
+    pub(in crate::world) fn display_text(&self, entry: i32) -> Option<DbScriptDisplayText<'_>> {
         if let Some(text) = self.broadcast_texts.get(&entry) {
             let content = text
                 .text
@@ -65,36 +70,36 @@ impl DbScriptRegistry {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DbScriptDisplayText<'a> {
-    content: &'a str,
-    chat_type: u32,
-    language: u32,
-    emote: u32,
+pub(in crate::world) struct DbScriptDisplayText<'a> {
+    pub(in crate::world) content: &'a str,
+    pub(in crate::world) chat_type: u32,
+    pub(in crate::world) language: u32,
+    pub(in crate::world) emote: u32,
 }
 
 #[derive(Debug, Clone)]
-struct PendingDbScriptAction {
-    due_at: Instant,
-    source: ObjectGuid,
-    command: wow_db::DbScriptCommandQuery,
+pub(in crate::world) struct PendingDbScriptAction {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) source: ObjectGuid,
+    pub(in crate::world) command: wow_db::DbScriptCommandQuery,
 }
 
-const SCRIPT_COMMAND_TALK: u32 = 0;
-const SCRIPT_COMMAND_EMOTE: u32 = 1;
-const SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL: u32 = 23;
-const SCRIPT_FLAG_COMMAND_ADDITIONAL: u32 = 0x008;
-const CHAT_TYPE_SAY: u32 = 0;
-const CHAT_TYPE_YELL: u32 = 1;
-const CHAT_TYPE_TEXT_EMOTE: u32 = 2;
-const CHAT_TYPE_BOSS_EMOTE: u32 = 3;
-const CHAT_TYPE_ZONE_YELL: u32 = 6;
-const CHAT_TYPE_ZONE_EMOTE: u32 = 7;
-const CHAT_MSG_MONSTER_SAY: u32 = 0x0B;
-const CHAT_MSG_MONSTER_YELL: u32 = 0x0C;
-const CHAT_MSG_MONSTER_EMOTE: u32 = 0x0D;
-const CHAT_MSG_RAID_BOSS_EMOTE: u32 = 0x5A;
+pub(in crate::world) const SCRIPT_COMMAND_TALK: u32 = 0;
+pub(in crate::world) const SCRIPT_COMMAND_EMOTE: u32 = 1;
+pub(in crate::world) const SCRIPT_COMMAND_MORPH_TO_ENTRY_OR_MODEL: u32 = 23;
+pub(in crate::world) const SCRIPT_FLAG_COMMAND_ADDITIONAL: u32 = 0x008;
+pub(in crate::world) const CHAT_TYPE_SAY: u32 = 0;
+pub(in crate::world) const CHAT_TYPE_YELL: u32 = 1;
+pub(in crate::world) const CHAT_TYPE_TEXT_EMOTE: u32 = 2;
+pub(in crate::world) const CHAT_TYPE_BOSS_EMOTE: u32 = 3;
+pub(in crate::world) const CHAT_TYPE_ZONE_YELL: u32 = 6;
+pub(in crate::world) const CHAT_TYPE_ZONE_EMOTE: u32 = 7;
+pub(in crate::world) const CHAT_MSG_MONSTER_SAY: u32 = 0x0B;
+pub(in crate::world) const CHAT_MSG_MONSTER_YELL: u32 = 0x0C;
+pub(in crate::world) const CHAT_MSG_MONSTER_EMOTE: u32 = 0x0D;
+pub(in crate::world) const CHAT_MSG_RAID_BOSS_EMOTE: u32 = 0x5A;
 
-fn db_script_chat_opcode_and_radius(chat_type: u32) -> Option<(u32, f32)> {
+pub(in crate::world) fn db_script_chat_opcode_and_radius(chat_type: u32) -> Option<(u32, f32)> {
     match chat_type {
         CHAT_TYPE_SAY => Some((CHAT_MSG_MONSTER_SAY, CHAT_SAY_RADIUS_YARDS)),
         CHAT_TYPE_YELL => Some((CHAT_MSG_MONSTER_YELL, CHAT_YELL_RADIUS_YARDS)),
@@ -106,7 +111,7 @@ fn db_script_chat_opcode_and_radius(chat_type: u32) -> Option<(u32, f32)> {
     }
 }
 
-fn db_script_random_nonzero_i32(values: [i32; 4]) -> Option<i32> {
+pub(in crate::world) fn db_script_random_nonzero_i32(values: [i32; 4]) -> Option<i32> {
     let values = values
         .into_iter()
         .filter(|value| *value != 0)
@@ -118,7 +123,7 @@ fn db_script_random_nonzero_i32(values: [i32; 4]) -> Option<i32> {
     }
 }
 
-fn db_script_random_nonzero_u32(values: [u32; 5]) -> Option<u32> {
+pub(in crate::world) fn db_script_random_nonzero_u32(values: [u32; 5]) -> Option<u32> {
     let values = values
         .into_iter()
         .filter(|value| *value != 0)
@@ -130,7 +135,7 @@ fn db_script_random_nonzero_u32(values: [u32; 5]) -> Option<u32> {
     }
 }
 
-fn build_monster_message_chat_body(
+pub(in crate::world) fn build_monster_message_chat_body(
     chat_msg: u32,
     language: u32,
     sender: ObjectGuid,

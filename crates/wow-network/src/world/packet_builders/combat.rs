@@ -1,25 +1,34 @@
+use super::*;
+use wow_proto::{
+    ServerWorldPacket, SmsgAttackStartResponse, SmsgAttackStopResponse,
+    SmsgAttackerStateUpdateResponse, SmsgEnvironmentalDamageLogResponse, SmsgSpellDelayedResponse,
+    SmsgSpellEnergizeLogResponse, SmsgSpellFailedOtherResponse, SmsgSpellFailureResponse,
+    SmsgSpellHealLogResponse, SmsgSpellLogMissResponse, SmsgSpellNonMeleeDamageLogResponse,
+};
+
 // CMaNGOS reference: src/game/Entities/Unit.cpp combat packet builders.
 
-fn build_attack_start_body(attacker: ObjectGuid, victim: ObjectGuid) -> Vec<u8> {
-    let mut body = Vec::with_capacity(16);
-    body.extend_from_slice(&attacker.raw().to_le_bytes());
-    body.extend_from_slice(&victim.raw().to_le_bytes());
-    body
+pub(in crate::world) fn build_attack_start_body(
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+) -> Vec<u8> {
+    SmsgAttackStartResponse { attacker, victim }.body()
 }
 
-fn build_attack_stop_body(
+pub(in crate::world) fn build_attack_stop_body(
     attacker: ObjectGuid,
     victim: ObjectGuid,
     attacker_dead: bool,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(20);
-    PackedGuid::write(&mut body, attacker)?;
-    PackedGuid::write(&mut body, victim)?;
-    body.extend_from_slice(&(attacker_dead as u32).to_le_bytes());
-    Ok(body)
+    Ok(SmsgAttackStopResponse {
+        attacker,
+        victim,
+        attacker_dead,
+    }
+    .body())
 }
 
-fn build_attacker_state_update_body(
+pub(in crate::world) fn build_attacker_state_update_body(
     attacker: ObjectGuid,
     victim: ObjectGuid,
     damage: u32,
@@ -32,7 +41,7 @@ fn build_attacker_state_update_body(
     )
 }
 
-fn build_attacker_state_update_body_with_spell_id(
+pub(in crate::world) fn build_attacker_state_update_body_with_spell_id(
     attacker: ObjectGuid,
     victim: ObjectGuid,
     damage: u32,
@@ -46,150 +55,161 @@ fn build_attacker_state_update_body_with_spell_id(
     )
 }
 
-fn build_attacker_state_update_body_for_outcome(
+pub(in crate::world) fn build_attacker_state_update_body_for_outcome(
     attacker: ObjectGuid,
     victim: ObjectGuid,
     outcome: MeleeDamageOutcome,
     spell_id: u32,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(42);
-    body.extend_from_slice(&outcome.hit_info.to_le_bytes());
-    PackedGuid::write(&mut body, attacker)?;
-    PackedGuid::write(&mut body, victim)?;
-    body.extend_from_slice(&outcome.total_damage.to_le_bytes());
-    body.push(1);
-    body.extend_from_slice(&0u32.to_le_bytes()); // normal school
-    body.extend_from_slice(&(outcome.school_damage as f32).to_le_bytes());
-    body.extend_from_slice(&outcome.school_damage.to_le_bytes());
-    body.extend_from_slice(&outcome.absorbed.to_le_bytes());
-    body.extend_from_slice(&outcome.resisted.to_le_bytes());
-    body.extend_from_slice(&outcome.victim_state.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes()); // unknown
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&outcome.blocked.to_le_bytes());
-    Ok(body)
+    Ok(SmsgAttackerStateUpdateResponse {
+        hit_info: outcome.hit_info,
+        attacker,
+        victim,
+        total_damage: outcome.total_damage,
+        school: 0,
+        school_damage: outcome.school_damage,
+        absorbed: outcome.absorbed,
+        resisted: outcome.resisted,
+        victim_state: outcome.victim_state,
+        spell_id,
+        blocked: outcome.blocked,
+    }
+    .body())
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SpellNonMeleeDamageLogPacket {
-    attacker: ObjectGuid,
-    target: ObjectGuid,
-    spell_id: u32,
-    damage: u32,
-    school: u8,
-    absorb: u32,
-    resist: i32,
-    periodic: bool,
-    blocked: u32,
-    hit_info: u32,
+pub(in crate::world) struct SpellNonMeleeDamageLogPacket {
+    pub(in crate::world) attacker: ObjectGuid,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) school: u8,
+    pub(in crate::world) absorb: u32,
+    pub(in crate::world) resist: i32,
+    pub(in crate::world) periodic: bool,
+    pub(in crate::world) blocked: u32,
+    pub(in crate::world) hit_info: u32,
 }
 
-fn build_spell_non_melee_damage_log_body(
+pub(in crate::world) fn build_spell_non_melee_damage_log_body(
     log: SpellNonMeleeDamageLogPacket,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(44);
-    PackedGuid::write(&mut body, log.target)?;
-    PackedGuid::write(&mut body, log.attacker)?;
-    body.extend_from_slice(&log.spell_id.to_le_bytes());
-    body.extend_from_slice(&log.damage.to_le_bytes());
-    body.push(log.school);
-    body.extend_from_slice(&log.absorb.to_le_bytes());
-    body.extend_from_slice(&log.resist.to_le_bytes());
-    body.push(log.periodic as u8);
-    body.push(0); // unused
-    body.extend_from_slice(&log.blocked.to_le_bytes());
-    body.extend_from_slice(&log.hit_info.to_le_bytes());
-    body.push(0); // debug switch disabled
-    Ok(body)
+    Ok(SmsgSpellNonMeleeDamageLogResponse {
+        attacker: log.attacker,
+        target: log.target,
+        spell_id: log.spell_id,
+        damage: log.damage,
+        school: log.school,
+        absorb: log.absorb,
+        resist: log.resist,
+        periodic: log.periodic,
+        blocked: log.blocked,
+        hit_info: log.hit_info,
+    }
+    .body())
 }
 
-fn build_environmental_damage_log_body(
+pub(in crate::world) fn build_environmental_damage_log_body(
     player: ObjectGuid,
     damage_type: u8,
     damage: u32,
     absorbed: u32,
     resisted: u32,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(18);
-    PackedGuid::write(&mut body, player)?;
-    body.push(damage_type);
-    body.extend_from_slice(&damage.to_le_bytes());
-    body.extend_from_slice(&absorbed.to_le_bytes());
-    body.extend_from_slice(&resisted.to_le_bytes());
-    Ok(body)
+    Ok(SmsgEnvironmentalDamageLogResponse {
+        player,
+        damage_type,
+        damage,
+        absorbed,
+        resisted,
+    }
+    .body())
 }
 
-fn build_spell_log_miss_body(
+pub(in crate::world) fn build_spell_log_miss_body(
     caster: ObjectGuid,
     target: ObjectGuid,
     spell_id: u32,
     miss_info: u8,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(26);
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&caster.raw().to_le_bytes());
-    body.push(0); // can be 0 or 1 in CMaNGOS
-    body.extend_from_slice(&1u32.to_le_bytes());
-    body.extend_from_slice(&target.raw().to_le_bytes());
-    body.push(miss_info);
-    Ok(body)
+    Ok(SmsgSpellLogMissResponse {
+        caster,
+        target,
+        spell_id,
+        miss_info,
+    }
+    .body())
 }
 
-fn build_spell_heal_log_body(
+pub(in crate::world) fn build_spell_heal_log_body(
     caster: ObjectGuid,
     target: ObjectGuid,
     spell_id: u32,
     heal: u32,
     critical: bool,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(26);
-    PackedGuid::write(&mut body, target)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&heal.to_le_bytes());
-    body.push(critical as u8);
-    Ok(body)
+    Ok(SmsgSpellHealLogResponse {
+        caster,
+        target,
+        spell_id,
+        heal,
+        critical,
+    }
+    .body())
 }
 
-fn build_spell_energize_log_body(
+pub(in crate::world) fn build_spell_energize_log_body(
     caster: ObjectGuid,
     target: ObjectGuid,
     spell_id: u32,
     power_type: u32,
     amount: u32,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(28);
-    PackedGuid::write(&mut body, target)?;
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.extend_from_slice(&power_type.to_le_bytes());
-    body.extend_from_slice(&amount.to_le_bytes());
-    Ok(body)
+    Ok(SmsgSpellEnergizeLogResponse {
+        caster,
+        target,
+        spell_id,
+        power_type,
+        amount,
+    }
+    .body())
 }
 
-fn build_spell_failure_body(caster: ObjectGuid, spell_id: u32, result: u8) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(13);
-    PackedGuid::write(&mut body, caster)?;
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body.push(result);
-    Ok(body)
+pub(in crate::world) fn build_spell_failure_body(
+    caster: ObjectGuid,
+    spell_id: u32,
+    result: u8,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(SmsgSpellFailureResponse {
+        caster,
+        spell_id,
+        result,
+    }
+    .body())
 }
 
-fn build_spell_failed_other_body(caster: ObjectGuid, spell_id: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&caster.raw().to_le_bytes());
-    body.extend_from_slice(&spell_id.to_le_bytes());
-    body
+pub(in crate::world) fn build_spell_failed_other_body(
+    caster: ObjectGuid,
+    spell_id: u32,
+) -> Vec<u8> {
+    SmsgSpellFailedOtherResponse { caster, spell_id }.body()
 }
 
-fn build_spell_delayed_body(caster: ObjectGuid, delay_millis: u32) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::with_capacity(12);
-    body.extend_from_slice(&caster.raw().to_le_bytes());
-    body.extend_from_slice(&delay_millis.to_le_bytes());
-    Ok(body)
+pub(in crate::world) fn build_spell_delayed_body(
+    caster: ObjectGuid,
+    delay_millis: u32,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(SmsgSpellDelayedResponse {
+        caster,
+        delay_millis,
+    }
+    .body())
 }
 
-fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_rage_update_body(
+    player: ObjectGuid,
+    rage: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
@@ -204,12 +224,19 @@ fn build_player_rage_update_body(player: ObjectGuid, rage: u32) -> anyhow::Resul
     Ok(body)
 }
 
-fn build_player_energy_update_body(player: ObjectGuid, energy: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_energy_update_body(
+    player: ObjectGuid,
+    energy: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
     let mut values = vec![None; PLAYER_END_FIELDS];
-    set_update_value(&mut values, UNIT_FIELD_POWER4, energy.min(POWER_ENERGY_DEFAULT))?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_POWER4,
+        energy.min(POWER_ENERGY_DEFAULT),
+    )?;
     write_update_values(&mut block, &values)?;
 
     let mut body = Vec::with_capacity(5 + block.len());
@@ -219,7 +246,7 @@ fn build_player_energy_update_body(player: ObjectGuid, energy: u32) -> anyhow::R
     Ok(body)
 }
 
-fn build_player_combo_points_update_body(
+pub(in crate::world) fn build_player_combo_points_update_body(
     player: ObjectGuid,
     combo_target: ObjectGuid,
     combo_points: u8,
@@ -251,7 +278,7 @@ fn build_player_combo_points_update_body(
     Ok(body)
 }
 
-fn build_db_creature_state_update_body(
+pub(in crate::world) fn build_db_creature_state_update_body(
     guid: ObjectGuid,
     health: u32,
     dynamic_flags: u32,
@@ -267,7 +294,7 @@ fn build_db_creature_state_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_db_creature_death_update_body(
+pub(in crate::world) fn build_db_creature_death_update_body(
     guid: ObjectGuid,
     dynamic_flags: u32,
     unit_flags: u32,
@@ -288,7 +315,10 @@ fn build_db_creature_death_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_unit_flags_update_body(guid: ObjectGuid, flags: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_unit_flags_update_body(
+    guid: ObjectGuid,
+    flags: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, guid)?;
@@ -299,7 +329,10 @@ fn build_unit_flags_update_body(guid: ObjectGuid, flags: u32) -> anyhow::Result<
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_mana_update_body(
+    player: ObjectGuid,
+    mana: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
@@ -314,7 +347,10 @@ fn build_player_mana_update_body(player: ObjectGuid, mana: u32) -> anyhow::Resul
     Ok(body)
 }
 
-fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_health_update_body(
+    player: ObjectGuid,
+    health: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player)?;
@@ -330,11 +366,17 @@ fn build_player_health_update_body(player: ObjectGuid, health: u32) -> anyhow::R
 }
 
 #[cfg(test)]
-fn retaliation_damage_for_db_creature(session: &mut WorldSessionState, target: ObjectGuid) -> u32 {
-    let Some(creature) = session.db_creatures.get(&target.raw()) else {
+pub(in crate::world) fn retaliation_damage_for_db_creature(
+    session: &mut WorldSessionState,
+    target: ObjectGuid,
+) -> u32 {
+    let Some(creature) = session.visibility.db_creatures.get(&target.raw()) else {
         return 0;
     };
     let retaliation_damage = creature.hit_damage().max(1);
-    session.player_health = session.player_health.saturating_sub(retaliation_damage);
+    session.character.player_health = session
+        .character
+        .player_health
+        .saturating_sub(retaliation_damage);
     retaliation_damage
 }

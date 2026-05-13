@@ -1,25 +1,28 @@
+use super::*;
+use std::ffi::CStr;
+
 #[derive(Debug, Clone)]
-struct WorldGeometry {
-    world_data_files: Arc<WorldDataFiles>,
+pub(in crate::world) struct WorldGeometry {
+    pub(in crate::world) world_data_files: Arc<WorldDataFiles>,
 }
 
-const CMANGOS_PLAYER_COLLISION_HEIGHT: f32 = 2.03128;
-const LIQUID_MAP_IN_WATER: u32 = 0x04;
-const LIQUID_MAP_UNDER_WATER: u32 = 0x08;
-const LIQUID_MAP_WATER_WALK: u32 = 0x02;
-const MAP_LIQUID_TYPE_MAGMA: u32 = 0x01;
-const MAP_LIQUID_TYPE_OCEAN: u32 = 0x02;
-const MAP_LIQUID_TYPE_SLIME: u32 = 0x04;
-const MAP_LIQUID_TYPE_WATER: u32 = 0x08;
-const MAP_LIQUID_TYPE_DEEP_WATER: u32 = 0x10;
+pub(in crate::world) const CMANGOS_PLAYER_COLLISION_HEIGHT: f32 = 2.03128;
+pub(in crate::world) const LIQUID_MAP_IN_WATER: u32 = 0x04;
+pub(in crate::world) const LIQUID_MAP_UNDER_WATER: u32 = 0x08;
+pub(in crate::world) const LIQUID_MAP_WATER_WALK: u32 = 0x02;
+pub(in crate::world) const MAP_LIQUID_TYPE_MAGMA: u32 = 0x01;
+pub(in crate::world) const MAP_LIQUID_TYPE_OCEAN: u32 = 0x02;
+pub(in crate::world) const MAP_LIQUID_TYPE_SLIME: u32 = 0x04;
+pub(in crate::world) const MAP_LIQUID_TYPE_WATER: u32 = 0x08;
+pub(in crate::world) const MAP_LIQUID_TYPE_DEEP_WATER: u32 = 0x10;
 
-const ENVIRONMENT_FLAG_IN_WATER: u32 = 0x01;
-const ENVIRONMENT_FLAG_IN_MAGMA: u32 = 0x02;
-const ENVIRONMENT_FLAG_IN_SLIME: u32 = 0x04;
-const ENVIRONMENT_FLAG_HIGH_SEA: u32 = 0x08;
-const ENVIRONMENT_FLAG_UNDERWATER: u32 = 0x10;
-const ENVIRONMENT_FLAG_HIGH_LIQUID: u32 = 0x20;
-const ENVIRONMENT_FLAG_LIQUID: u32 = 0x40;
+pub(in crate::world) const ENVIRONMENT_FLAG_IN_WATER: u32 = 0x01;
+pub(in crate::world) const ENVIRONMENT_FLAG_IN_MAGMA: u32 = 0x02;
+pub(in crate::world) const ENVIRONMENT_FLAG_IN_SLIME: u32 = 0x04;
+pub(in crate::world) const ENVIRONMENT_FLAG_HIGH_SEA: u32 = 0x08;
+pub(in crate::world) const ENVIRONMENT_FLAG_UNDERWATER: u32 = 0x10;
+pub(in crate::world) const ENVIRONMENT_FLAG_HIGH_LIQUID: u32 = 0x20;
+pub(in crate::world) const ENVIRONMENT_FLAG_LIQUID: u32 = 0x40;
 
 impl Default for WorldGeometry {
     fn default() -> Self {
@@ -30,15 +33,19 @@ impl Default for WorldGeometry {
 }
 
 impl WorldGeometry {
-    fn new(world_data_files: Arc<WorldDataFiles>) -> Self {
+    pub(in crate::world) fn new(world_data_files: Arc<WorldDataFiles>) -> Self {
         Self { world_data_files }
     }
 
-    fn height_static(&self, position: WorldPosition) -> Option<f32> {
-        self.sample_height(position, CMANGOS_DEFAULT_HEIGHT_SEARCH, native_map_height_static)
+    pub(in crate::world) fn height_static(&self, position: WorldPosition) -> Option<f32> {
+        self.sample_height(
+            position,
+            CMANGOS_DEFAULT_HEIGHT_SEARCH,
+            native_map_height_static,
+        )
     }
 
-    fn height_in_range(&self, position: WorldPosition) -> Option<f32> {
+    pub(in crate::world) fn height_in_range(&self, position: WorldPosition) -> Option<f32> {
         self.sample_height(
             position,
             CMANGOS_HEIGHT_IN_RANGE_SEARCH,
@@ -46,7 +53,10 @@ impl WorldGeometry {
         )
     }
 
-    fn ground_position(&self, position: WorldPosition) -> Option<WorldPosition> {
+    pub(in crate::world) fn ground_position(
+        &self,
+        position: WorldPosition,
+    ) -> Option<WorldPosition> {
         if !self.world_data_files.maps_available && !self.world_data_files.vmaps_available {
             return Some(position);
         }
@@ -62,14 +72,15 @@ impl WorldGeometry {
         ))
     }
 
-    fn environment_flags(&self, position: WorldPosition) -> u32 {
+    pub(in crate::world) fn environment_flags(&self, position: WorldPosition) -> u32 {
         let Some(data_dir) = self.world_data_files.data_dir_for_native.as_ref() else {
             return 0;
         };
         let Some(tile) = mmap_tile_for_position(position) else {
             return 0;
         };
-        let result = native_map_liquid_status(data_dir, position, tile, CMANGOS_PLAYER_COLLISION_HEIGHT);
+        let result =
+            native_map_liquid_status(data_dir, position, tile, CMANGOS_PLAYER_COLLISION_HEIGHT);
         if result.status != NativeTerrainLiquidResultStatus::Found {
             return 0;
         }
@@ -112,7 +123,7 @@ impl WorldGeometry {
         flags
     }
 
-    fn sample_height(
+    pub(in crate::world) fn sample_height(
         &self,
         position: WorldPosition,
         max_search_dist: f32,

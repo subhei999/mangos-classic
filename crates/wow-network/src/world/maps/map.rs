@@ -1,62 +1,64 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
-struct BotId(u64);
+pub(in crate::world) struct BotId(pub(in crate::world) u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum PlayerController {
+pub(in crate::world) enum PlayerController {
     Client { session_id: SessionId },
     Bot { bot_id: BotId },
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct PlayerbotRuntimeState {
-    bot_id: BotId,
-    home_position: WorldPosition,
-    next_think_at: Instant,
-    next_combat_think_at: Instant,
-    active_leg: Option<PlayerbotMovementLeg>,
-    route: Vec<WorldPosition>,
-    travel_destination: Option<WorldPosition>,
-    engage_target: Option<ObjectGuid>,
-    movement_start_retries_remaining: u8,
-    roam_step: u8,
+pub(in crate::world) struct PlayerbotRuntimeState {
+    pub(in crate::world) bot_id: BotId,
+    pub(in crate::world) home_position: WorldPosition,
+    pub(in crate::world) next_think_at: Instant,
+    pub(in crate::world) next_combat_think_at: Instant,
+    pub(in crate::world) active_leg: Option<PlayerbotMovementLeg>,
+    pub(in crate::world) route: Vec<WorldPosition>,
+    pub(in crate::world) travel_destination: Option<WorldPosition>,
+    pub(in crate::world) engage_target: Option<ObjectGuid>,
+    pub(in crate::world) movement_start_retries_remaining: u8,
+    pub(in crate::world) roam_step: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-struct PlayerbotMovementLeg {
-    start_position: WorldPosition,
-    destination: WorldPosition,
-    start_time: Instant,
-    arrival_time: Instant,
-    speed_yards_per_second: f32,
+pub(in crate::world) struct PlayerbotMovementLeg {
+    pub(in crate::world) start_position: WorldPosition,
+    pub(in crate::world) destination: WorldPosition,
+    pub(in crate::world) start_time: Instant,
+    pub(in crate::world) arrival_time: Instant,
+    pub(in crate::world) speed_yards_per_second: f32,
 }
 
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
-struct PlayerbotQueuedIntents {
-    movement: Option<PlayerbotMovementIntent>,
-    combat: Option<PlayerbotCombatIntent>,
+pub(in crate::world) struct PlayerbotQueuedIntents {
+    pub(in crate::world) movement: Option<PlayerbotMovementIntent>,
+    pub(in crate::world) combat: Option<PlayerbotCombatIntent>,
 }
 
 impl PlayerbotQueuedIntents {
-    fn is_empty(&self) -> bool {
+    pub(in crate::world) fn is_empty(&self) -> bool {
         self.movement.is_none() && self.combat.is_none()
     }
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-enum PlayerbotMovementIntent {
+pub(in crate::world) enum PlayerbotMovementIntent {
     Defer,
     Route { route: Option<Vec<WorldPosition>> },
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-enum PlayerbotCombatIntent {
+pub(in crate::world) enum PlayerbotCombatIntent {
     Target {
         target: ObjectGuid,
         route: Option<Vec<WorldPosition>>,
@@ -66,257 +68,259 @@ enum PlayerbotCombatIntent {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct PlayerbotPlanInput {
-    map_id: u32,
-    instance_id: u32,
-    bot_guid: u32,
-    position: WorldPosition,
-    home_position: WorldPosition,
-    travel_destination: Option<WorldPosition>,
-    roam_step: u8,
-    player_race: u8,
-    movement_due_at: Option<Instant>,
-    combat_due_at: Option<Instant>,
-    engage_target: Option<ObjectGuid>,
-    engage_target_creature: Option<DbCreatureRuntime>,
-    nearby_creatures: Vec<DbCreatureRuntime>,
-    geometry: Arc<WorldGeometry>,
+pub(in crate::world) struct PlayerbotPlanInput {
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) instance_id: u32,
+    pub(in crate::world) bot_guid: u32,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) home_position: WorldPosition,
+    pub(in crate::world) travel_destination: Option<WorldPosition>,
+    pub(in crate::world) roam_step: u8,
+    pub(in crate::world) player_race: u8,
+    pub(in crate::world) movement_due_at: Option<Instant>,
+    pub(in crate::world) combat_due_at: Option<Instant>,
+    pub(in crate::world) engage_target: Option<ObjectGuid>,
+    pub(in crate::world) engage_target_creature: Option<DbCreatureRuntime>,
+    pub(in crate::world) nearby_creatures: Vec<DbCreatureRuntime>,
+    pub(in crate::world) geometry: Arc<WorldGeometry>,
 }
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
-struct PlayerbotPlanningTick {
-    planned_bots: u32,
-    route_budget_exhausted: bool,
-    combat_budget_exhausted: bool,
+pub(in crate::world) struct PlayerbotPlanningTick {
+    pub(in crate::world) planned_bots: u32,
+    pub(in crate::world) route_budget_exhausted: bool,
+    pub(in crate::world) combat_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct PlayerRuntime {
-    guid: u32,
-    account_id: Option<u32>,
-    controller: PlayerController,
-    bot_runtime: Option<PlayerbotRuntimeState>,
-    selected_target: Option<ObjectGuid>,
-    unit_target: Option<ObjectGuid>,
-    active_combat_target: Option<ObjectGuid>,
-    active_combat_next_swing_at: Option<Instant>,
-    looting: bool,
-    position: WorldPosition,
-    movement_flags: u32,
-    client_time: u32,
-    server_time: u32,
-    fall_time: u32,
-    last_fall_z: Option<f32>,
-    last_fall_time: u32,
-    environment: PlayerEnvironmentRuntime,
-    jump: JumpInfo,
-    cell: CellCoord,
-    visible_objects: HashSet<ObjectGuid>,
-    last_creature_visibility_position: Option<WorldPosition>,
-    last_gameobject_visibility_position: Option<WorldPosition>,
-    last_player_corpse_visibility_position: Option<WorldPosition>,
-    visual: PlayerVisualState,
-    visible_equipment: [u32; ENUM_EQUIPMENT_SLOTS],
-    flags: u32,
-    death_state: PlayerDeathState,
-    level: u8,
-    race: u8,
-    class: u8,
-    spirit: u32,
-    gender: u8,
-    base_world_stats: PlayerWorldStats,
-    effective_world_stats: PlayerWorldStats,
-    health: u32,
-    max_health: u32,
-    xp: u32,
-    power1: u32,
-    max_power1: u32,
-    last_mana_use_at: Option<Instant>,
-    power2: u32,
-    power4: u32,
-    max_power4: u32,
-    player_bytes: u32,
-    player_bytes2: u32,
-    combo_target: Option<ObjectGuid>,
-    combo_points: u8,
-    stand_state: u8,
-    active_spells: HashSet<u32>,
-    inventory: Vec<CharacterInventoryItem>,
-    quest_statuses: HashMap<u32, CharacterQuestStatus>,
-    active_auras: Vec<ActiveAura>,
-    spell_global_cooldowns_until: HashMap<u32, Instant>,
-    spell_cooldowns_until: HashMap<u32, Instant>,
-    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
-    base_combat_stats: PlayerCombatStats,
-    combat_stats: PlayerCombatStats,
+pub(in crate::world) struct PlayerRuntime {
+    pub(in crate::world) guid: u32,
+    pub(in crate::world) account_id: Option<u32>,
+    pub(in crate::world) controller: PlayerController,
+    pub(in crate::world) bot_runtime: Option<PlayerbotRuntimeState>,
+    pub(in crate::world) selected_target: Option<ObjectGuid>,
+    pub(in crate::world) unit_target: Option<ObjectGuid>,
+    pub(in crate::world) active_combat_target: Option<ObjectGuid>,
+    pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
+    pub(in crate::world) looting: bool,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) movement_flags: u32,
+    pub(in crate::world) client_time: u32,
+    pub(in crate::world) server_time: u32,
+    pub(in crate::world) fall_time: u32,
+    pub(in crate::world) last_fall_z: Option<f32>,
+    pub(in crate::world) last_fall_time: u32,
+    pub(in crate::world) environment: PlayerEnvironmentRuntime,
+    pub(in crate::world) jump: JumpInfo,
+    pub(in crate::world) cell: CellCoord,
+    pub(in crate::world) visible_objects: HashSet<ObjectGuid>,
+    pub(in crate::world) last_creature_visibility_position: Option<WorldPosition>,
+    pub(in crate::world) last_gameobject_visibility_position: Option<WorldPosition>,
+    pub(in crate::world) last_player_corpse_visibility_position: Option<WorldPosition>,
+    pub(in crate::world) visual: PlayerVisualState,
+    pub(in crate::world) visible_equipment: [u32; ENUM_EQUIPMENT_SLOTS],
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) death_state: PlayerDeathState,
+    pub(in crate::world) level: u8,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) spirit: u32,
+    pub(in crate::world) gender: u8,
+    pub(in crate::world) base_world_stats: PlayerWorldStats,
+    pub(in crate::world) effective_world_stats: PlayerWorldStats,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) max_health: u32,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) max_power1: u32,
+    pub(in crate::world) last_mana_use_at: Option<Instant>,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) power4: u32,
+    pub(in crate::world) max_power4: u32,
+    pub(in crate::world) player_bytes: u32,
+    pub(in crate::world) player_bytes2: u32,
+    pub(in crate::world) combo_target: Option<ObjectGuid>,
+    pub(in crate::world) combo_points: u8,
+    pub(in crate::world) stand_state: u8,
+    pub(in crate::world) active_spells: HashSet<u32>,
+    pub(in crate::world) inventory: Vec<CharacterInventoryItem>,
+    pub(in crate::world) quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    pub(in crate::world) active_auras: Vec<ActiveAura>,
+    pub(in crate::world) spell_global_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
+    pub(in crate::world) base_combat_stats: PlayerCombatStats,
+    pub(in crate::world) combat_stats: PlayerCombatStats,
 }
 
 impl PlayerRuntime {
-    fn is_client_controlled(&self) -> bool {
+    pub(in crate::world) fn is_client_controlled(&self) -> bool {
         matches!(self.controller, PlayerController::Client { .. })
     }
 
-    fn client_session_id(&self) -> Option<SessionId> {
+    pub(in crate::world) fn client_session_id(&self) -> Option<SessionId> {
         match self.controller {
             PlayerController::Client { session_id } => Some(session_id),
             PlayerController::Bot { .. } => None,
         }
     }
 
-    fn packet_to_client(
+    pub(in crate::world) fn packet_to_client(
         &self,
         packet: OutboundWorldPacket,
     ) -> Option<(SessionId, OutboundWorldPacket)> {
-        self.client_session_id().map(|session_id| (session_id, packet))
+        self.client_session_id()
+            .map(|session_id| (session_id, packet))
     }
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct PlayerRuntimeSnapshot {
-    position: WorldPosition,
-    movement_flags: u32,
-    client_time: u32,
-    fall_time: u32,
-    jump: JumpInfo,
-    flags: u32,
-    death_state: PlayerDeathState,
-    stand_state: u8,
-    level: u8,
-    race: u8,
-    class: u8,
-    xp: u32,
-    health: u32,
-    max_health: u32,
-    power1: u32,
-    max_power1: u32,
-    last_mana_use_at: Option<Instant>,
-    power2: u32,
-    power4: u32,
-    max_power4: u32,
-    combo_target: Option<ObjectGuid>,
-    combo_points: u8,
-    active_spells: HashSet<u32>,
-    inventory: Vec<CharacterInventoryItem>,
-    quest_statuses: HashMap<u32, CharacterQuestStatus>,
-    active_auras: Vec<ActiveAura>,
-    spell_global_cooldowns_until: HashMap<u32, Instant>,
-    spell_cooldowns_until: HashMap<u32, Instant>,
-    queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
-    base_combat_stats: PlayerCombatStats,
-    combat_stats: PlayerCombatStats,
-    active_combat_target: Option<ObjectGuid>,
-    active_combat_next_swing_at: Option<Instant>,
+pub(in crate::world) struct PlayerRuntimeSnapshot {
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) movement_flags: u32,
+    pub(in crate::world) client_time: u32,
+    pub(in crate::world) fall_time: u32,
+    pub(in crate::world) jump: JumpInfo,
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) death_state: PlayerDeathState,
+    pub(in crate::world) stand_state: u8,
+    pub(in crate::world) level: u8,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) max_health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) max_power1: u32,
+    pub(in crate::world) last_mana_use_at: Option<Instant>,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) power4: u32,
+    pub(in crate::world) max_power4: u32,
+    pub(in crate::world) combo_target: Option<ObjectGuid>,
+    pub(in crate::world) combo_points: u8,
+    pub(in crate::world) active_spells: HashSet<u32>,
+    pub(in crate::world) inventory: Vec<CharacterInventoryItem>,
+    pub(in crate::world) quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    pub(in crate::world) active_auras: Vec<ActiveAura>,
+    pub(in crate::world) spell_global_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
+    pub(in crate::world) base_combat_stats: PlayerCombatStats,
+    pub(in crate::world) combat_stats: PlayerCombatStats,
+    pub(in crate::world) active_combat_target: Option<ObjectGuid>,
+    pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerDeathPresentationRuntime {
-    waiting_since: Instant,
+pub(in crate::world) struct PlayerDeathPresentationRuntime {
+    pub(in crate::world) waiting_since: Instant,
 }
 
 #[derive(Debug)]
-struct PlayerRewardRuntimeUpdate {
-    level: u8,
-    xp: u32,
-    health: u32,
-    max_health: u32,
-    power1: u32,
-    max_power1: u32,
-    power2: u32,
-    quest_statuses: HashMap<u32, CharacterQuestStatus>,
+pub(in crate::world) struct PlayerRewardRuntimeUpdate {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) max_health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) max_power1: u32,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) quest_statuses: HashMap<u32, CharacterQuestStatus>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerLevelProgressionRuntimeUpdate {
-    level: u8,
-    xp: u32,
-    health: u32,
-    power1: u32,
-    power2: u32,
-    power4: u32,
-    world_stats: PlayerWorldStats,
-    combat_stats: PlayerCombatStats,
+pub(in crate::world) struct PlayerLevelProgressionRuntimeUpdate {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) power4: u32,
+    pub(in crate::world) world_stats: PlayerWorldStats,
+    pub(in crate::world) combat_stats: PlayerCombatStats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PlayerComboPointsEvent {
-    combo_target: ObjectGuid,
-    combo_points: u8,
-    player_bytes: u32,
+pub(in crate::world) struct PlayerComboPointsEvent {
+    pub(in crate::world) combo_target: ObjectGuid,
+    pub(in crate::world) combo_points: u8,
+    pub(in crate::world) player_bytes: u32,
 }
 
 #[derive(Debug)]
-struct PlayerHealEvent {
-    healed_character_guid: u32,
-    amount_healed: u32,
-    health: u32,
-    direct_session_id: SessionId,
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct PlayerHealEvent {
+    pub(in crate::world) healed_character_guid: u32,
+    pub(in crate::world) amount_healed: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) direct_session_id: SessionId,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct MapRuntime {
-    map_id: u32,
-    instance_id: u32,
-    geometry: Arc<WorldGeometry>,
-    db_scripts: Arc<DbScriptRegistry>,
-    grids: HashMap<GridCoord, GridRuntime>,
-    loaded_creature_grids: HashSet<GridCoord>,
-    loaded_gameobject_grids: HashSet<GridCoord>,
-    loaded_player_corpse_grids: HashSet<GridCoord>,
-    players: HashMap<u32, PlayerRuntime>,
-    creatures: HashMap<u64, DbCreatureRuntime>,
-    creature_looting_by_character: HashMap<u32, u64>,
-    gameobjects: HashMap<u64, DbGameObjectRuntime>,
-    gameobject_loots: HashMap<u64, DbGameObjectLootState>,
-    gameobject_looting_by_character: HashMap<u32, u64>,
-    active_creature_combats: HashMap<u64, CreatureCombatState>,
-    active_creature_spell_casts: HashMap<u64, ActiveDbCreatureSpellCast>,
-    creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
-    creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
-    corpses: HashMap<u64, PlayerCorpseRuntime>,
-    playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
-    next_idle_motion_tick_at: Option<Instant>,
-    next_idle_motion_start_check_at: Option<Instant>,
-    pending_db_scripts: Vec<PendingDbScriptAction>,
-    next_player_regen_tick_at: Option<Instant>,
-    active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
-    pending_spell_events: Vec<PendingSpellEvent>,
-    next_spell_event_id: u64,
-    pending_player_death_presentations: HashMap<u32, PlayerDeathPresentationRuntime>,
+pub(in crate::world) struct MapRuntime {
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) instance_id: u32,
+    pub(in crate::world) geometry: Arc<WorldGeometry>,
+    pub(in crate::world) db_scripts: Arc<DbScriptRegistry>,
+    pub(in crate::world) grids: HashMap<GridCoord, GridRuntime>,
+    pub(in crate::world) loaded_creature_grids: HashSet<GridCoord>,
+    pub(in crate::world) loaded_gameobject_grids: HashSet<GridCoord>,
+    pub(in crate::world) loaded_player_corpse_grids: HashSet<GridCoord>,
+    pub(in crate::world) players: HashMap<u32, PlayerRuntime>,
+    pub(in crate::world) creatures: HashMap<u64, DbCreatureRuntime>,
+    pub(in crate::world) creature_looting_by_character: HashMap<u32, u64>,
+    pub(in crate::world) gameobjects: HashMap<u64, DbGameObjectRuntime>,
+    pub(in crate::world) gameobject_loots: HashMap<u64, DbGameObjectLootState>,
+    pub(in crate::world) gameobject_looting_by_character: HashMap<u32, u64>,
+    pub(in crate::world) active_creature_combats: HashMap<u64, CreatureCombatState>,
+    pub(in crate::world) active_creature_spell_casts: HashMap<u64, ActiveDbCreatureSpellCast>,
+    pub(in crate::world) creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
+    pub(in crate::world) creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
+    pub(in crate::world) corpses: HashMap<u64, PlayerCorpseRuntime>,
+    pub(in crate::world) playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
+    pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
+    pub(in crate::world) next_idle_motion_start_check_at: Option<Instant>,
+    pub(in crate::world) pending_db_scripts: Vec<PendingDbScriptAction>,
+    pub(in crate::world) next_player_regen_tick_at: Option<Instant>,
+    pub(in crate::world) active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
+    pub(in crate::world) pending_spell_events: Vec<PendingSpellEvent>,
+    pub(in crate::world) next_spell_event_id: u64,
+    pub(in crate::world) pending_player_death_presentations:
+        HashMap<u32, PlayerDeathPresentationRuntime>,
 }
 
 #[derive(Debug, Clone)]
-struct ActivePlayerSpellCast {
-    spell_id: u32,
-    source: ActivePlayerSpellCastSource,
-    profile: SpellCastProfile,
-    targets: PendingSpellCastTargets,
-    due_at: Instant,
-    cast_time_millis: u32,
-    interrupt_flags: u32,
-    damage_pushback_count: u8,
+pub(in crate::world) struct ActivePlayerSpellCast {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) source: ActivePlayerSpellCastSource,
+    pub(in crate::world) profile: SpellCastProfile,
+    pub(in crate::world) targets: PendingSpellCastTargets,
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) cast_time_millis: u32,
+    pub(in crate::world) interrupt_flags: u32,
+    pub(in crate::world) damage_pushback_count: u8,
 }
 
 #[derive(Debug, Clone)]
-struct ActiveDbCreatureSpellCast {
-    caster: ObjectGuid,
-    target: ObjectGuid,
-    spell_id: u32,
-    effect: ActiveDbCreatureSpellEffect,
-    aura: Option<ActiveAura>,
-    range: Option<SpellRangeEntry>,
-    mana_cost: u32,
-    cast_time_millis: u32,
-    due_at: Instant,
+pub(in crate::world) struct ActiveDbCreatureSpellCast {
+    pub(in crate::world) caster: ObjectGuid,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) effect: ActiveDbCreatureSpellEffect,
+    pub(in crate::world) aura: Option<ActiveAura>,
+    pub(in crate::world) range: Option<SpellRangeEntry>,
+    pub(in crate::world) mana_cost: u32,
+    pub(in crate::world) cast_time_millis: u32,
+    pub(in crate::world) due_at: Instant,
 }
 
 #[derive(Debug, Clone)]
-enum ActiveDbCreatureSpellEffect {
+pub(in crate::world) enum ActiveDbCreatureSpellEffect {
     Damage {
         amount: u32,
         school: u8,
@@ -330,7 +334,7 @@ enum ActiveDbCreatureSpellEffect {
 }
 
 #[derive(Debug, Clone)]
-enum ActivePlayerSpellCastSource {
+pub(in crate::world) enum ActivePlayerSpellCastSource {
     Player,
     Item {
         item_guid: ObjectGuid,
@@ -340,30 +344,30 @@ enum ActivePlayerSpellCastSource {
 }
 
 #[derive(Debug, Clone)]
-struct PendingSpellEvent {
-    event_id: u64,
-    caster_character_guid: u32,
-    spell_id: u32,
-    targets: PendingSpellCastTargets,
-    unit_target_generation: Option<(ObjectGuid, u64)>,
-    due_at: Instant,
+pub(in crate::world) struct PendingSpellEvent {
+    pub(in crate::world) event_id: u64,
+    pub(in crate::world) caster_character_guid: u32,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) targets: PendingSpellCastTargets,
+    pub(in crate::world) unit_target_generation: Option<(ObjectGuid, u64)>,
+    pub(in crate::world) due_at: Instant,
 }
 
 #[derive(Debug, Clone)]
-struct PendingSpellCastTargets {
-    target_mask: u16,
-    unit_target: Option<ObjectGuid>,
-    gameobject_target: Option<ObjectGuid>,
+pub(in crate::world) struct PendingSpellCastTargets {
+    pub(in crate::world) target_mask: u16,
+    pub(in crate::world) unit_target: Option<ObjectGuid>,
+    pub(in crate::world) gameobject_target: Option<ObjectGuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerEnvironmentRuntime {
-    flags: u32,
-    last_tick_at: Option<Instant>,
-    last_damage_at: Option<Instant>,
-    fatigue: MirrorTimerRuntime,
-    breath: MirrorTimerRuntime,
-    environmental: MirrorTimerRuntime,
+pub(in crate::world) struct PlayerEnvironmentRuntime {
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) last_tick_at: Option<Instant>,
+    pub(in crate::world) last_damage_at: Option<Instant>,
+    pub(in crate::world) fatigue: MirrorTimerRuntime,
+    pub(in crate::world) breath: MirrorTimerRuntime,
+    pub(in crate::world) environmental: MirrorTimerRuntime,
 }
 
 impl Default for PlayerEnvironmentRuntime {
@@ -383,17 +387,17 @@ impl Default for PlayerEnvironmentRuntime {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MirrorTimerRuntime {
-    timer_type: u32,
-    active: bool,
-    elapsed_millis: u32,
-    pulse_millis: u32,
-    duration_millis: u32,
-    scale: i32,
+pub(in crate::world) struct MirrorTimerRuntime {
+    pub(in crate::world) timer_type: u32,
+    pub(in crate::world) active: bool,
+    pub(in crate::world) elapsed_millis: u32,
+    pub(in crate::world) pulse_millis: u32,
+    pub(in crate::world) duration_millis: u32,
+    pub(in crate::world) scale: i32,
 }
 
 impl MirrorTimerRuntime {
-    const fn new(timer_type: u32, duration_millis: u32) -> Self {
+    pub(in crate::world) const fn new(timer_type: u32, duration_millis: u32) -> Self {
         Self {
             timer_type,
             active: false,
@@ -407,39 +411,39 @@ impl MirrorTimerRuntime {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct DbCreaturePlayerDamageEvent {
-    damage: u32,
-    victim_health: u32,
-    combat: CreatureCombatState,
-    direct_packets: Vec<OutboundWorldPacket>,
-    aura_packet: Option<OutboundWorldPacket>,
-    health_update_body: Vec<u8>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreaturePlayerDamageEvent {
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) victim_health: u32,
+    pub(in crate::world) combat: CreatureCombatState,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) aura_packet: Option<OutboundWorldPacket>,
+    pub(in crate::world) health_update_body: Vec<u8>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct DbCreaturePlayerSpellDamageEvent {
-    damage: u32,
-    victim_health: u32,
-    outcome: SpellDamageOutcome,
-    spell_non_melee_log_body: Option<Vec<u8>>,
-    spell_miss_log_body: Option<Vec<u8>>,
-    direct_packets: Vec<OutboundWorldPacket>,
-    aura_packet: Option<OutboundWorldPacket>,
-    health_update_body: Vec<u8>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreaturePlayerSpellDamageEvent {
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) victim_health: u32,
+    pub(in crate::world) outcome: SpellDamageOutcome,
+    pub(in crate::world) spell_non_melee_log_body: Option<Vec<u8>>,
+    pub(in crate::world) spell_miss_log_body: Option<Vec<u8>>,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) aura_packet: Option<OutboundWorldPacket>,
+    pub(in crate::world) health_update_body: Vec<u8>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct DbCreatureCompletedSpellCastEvent {
-    spell_go_body: Vec<u8>,
-    effect: DbCreatureCompletedSpellEffect,
-    aura_event: Option<PlayerAuraUpdateEvent>,
+pub(in crate::world) struct DbCreatureCompletedSpellCastEvent {
+    pub(in crate::world) spell_go_body: Vec<u8>,
+    pub(in crate::world) effect: DbCreatureCompletedSpellEffect,
+    pub(in crate::world) aura_event: Option<PlayerAuraUpdateEvent>,
 }
 
 #[derive(Debug)]
-enum DbCreatureCompletedSpellEffect {
+pub(in crate::world) enum DbCreatureCompletedSpellEffect {
     PlayerDamage(DbCreaturePlayerSpellDamageEvent),
     CreatureHeal(DbCreatureSpellHealEvent),
     Interrupted(DbCreatureInterruptedSpellCastEvent),
@@ -447,156 +451,156 @@ enum DbCreatureCompletedSpellEffect {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct DbCreatureInterruptedSpellCastEvent {
-    failure: u8,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureInterruptedSpellCastEvent {
+    pub(in crate::world) failure: u8,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct DbCreatureSpellHealEvent {
-    target: ObjectGuid,
-    amount: u32,
-    target_health: u32,
-    spell_heal_log_body: Vec<u8>,
-    health_update_body: Vec<u8>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureSpellHealEvent {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) amount: u32,
+    pub(in crate::world) target_health: u32,
+    pub(in crate::world) spell_heal_log_body: Vec<u8>,
+    pub(in crate::world) health_update_body: Vec<u8>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CreatureCombatLeashState {
-    refresh_position: WorldPosition,
-    combat_start_position: WorldPosition,
-    expires_at: Instant,
-    template_leash_yards: f32,
+pub(in crate::world) struct CreatureCombatLeashState {
+    pub(in crate::world) refresh_position: WorldPosition,
+    pub(in crate::world) combat_start_position: WorldPosition,
+    pub(in crate::world) expires_at: Instant,
+    pub(in crate::world) template_leash_yards: f32,
 }
 
 #[derive(Debug)]
-struct DbCreatureDamageEvent {
+pub(in crate::world) struct DbCreatureDamageEvent {
     #[allow(dead_code)]
-    damage: u32,
-    attacker_rage_damage: u32,
-    creature: DbCreatureRuntime,
-    attacker_state_body: Option<Vec<u8>>,
-    spell_non_melee_log_body: Option<Vec<u8>>,
-    spell_miss_log_body: Option<Vec<u8>>,
-    update_body: Vec<u8>,
-    death_finalization: Option<DbCreatureDeathFinalizationEvent>,
-    target_switch: Option<DbCreatureThreatTargetSwitchEvent>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) attacker_rage_damage: u32,
+    pub(in crate::world) creature: DbCreatureRuntime,
+    pub(in crate::world) attacker_state_body: Option<Vec<u8>>,
+    pub(in crate::world) spell_non_melee_log_body: Option<Vec<u8>>,
+    pub(in crate::world) spell_miss_log_body: Option<Vec<u8>>,
+    pub(in crate::world) update_body: Vec<u8>,
+    pub(in crate::world) death_finalization: Option<DbCreatureDeathFinalizationEvent>,
+    pub(in crate::world) target_switch: Option<DbCreatureThreatTargetSwitchEvent>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct DbCreatureAuraUpdateEvent {
-    update_body: Vec<u8>,
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureAuraUpdateEvent {
+    pub(in crate::world) update_body: Vec<u8>,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Clone)]
-struct DbCreatureDamageRequest {
-    creature_guid: ObjectGuid,
-    killer: ObjectGuid,
-    damage: u32,
-    melee_outcome: Option<MeleeDamageOutcome>,
-    spell_damage_outcome: Option<SpellDamageOutcome>,
-    spell_id: Option<u32>,
-    spell_school: u8,
-    suppress_attacker_state: bool,
-    now: Instant,
-    now_epoch_secs: u64,
-    exclude_character_guid: Option<u32>,
-    corpse_loot: Option<DbCreatureCorpseLootInit>,
+pub(in crate::world) struct DbCreatureDamageRequest {
+    pub(in crate::world) creature_guid: ObjectGuid,
+    pub(in crate::world) killer: ObjectGuid,
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) melee_outcome: Option<MeleeDamageOutcome>,
+    pub(in crate::world) spell_damage_outcome: Option<SpellDamageOutcome>,
+    pub(in crate::world) spell_id: Option<u32>,
+    pub(in crate::world) spell_school: u8,
+    pub(in crate::world) suppress_attacker_state: bool,
+    pub(in crate::world) now: Instant,
+    pub(in crate::world) now_epoch_secs: u64,
+    pub(in crate::world) exclude_character_guid: Option<u32>,
+    pub(in crate::world) corpse_loot: Option<DbCreatureCorpseLootInit>,
 }
 
 #[derive(Debug)]
-struct DbCreatureDeleteEvent {
-    creature: DbCreatureRuntime,
-    direct_packet: OutboundWorldPacket,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureDeleteEvent {
+    pub(in crate::world) creature: DbCreatureRuntime,
+    pub(in crate::world) direct_packet: OutboundWorldPacket,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Clone)]
-struct DbCreatureCorpseLootInit {
-    owner: CreatureLootOwner,
-    allowed_players: Vec<u32>,
-    current_looter: Option<u32>,
-    loot_method: Option<CreatureLootMethod>,
-    loot_items: Vec<DbCreatureLootRuntime>,
+pub(in crate::world) struct DbCreatureCorpseLootInit {
+    pub(in crate::world) owner: CreatureLootOwner,
+    pub(in crate::world) allowed_players: Vec<u32>,
+    pub(in crate::world) current_looter: Option<u32>,
+    pub(in crate::world) loot_method: Option<CreatureLootMethod>,
+    pub(in crate::world) loot_items: Vec<DbCreatureLootRuntime>,
 }
 
 #[derive(Debug)]
-struct DbCreatureDeathFinalizationEvent {
-    killed: ObjectGuid,
-    respawn_epoch_secs: Option<u64>,
-    motion_stop_packet: Option<OutboundWorldPacket>,
-    attack_stop_packet: OutboundWorldPacket,
-    combat_flag_packet: OutboundWorldPacket,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureDeathFinalizationEvent {
+    pub(in crate::world) killed: ObjectGuid,
+    pub(in crate::world) respawn_epoch_secs: Option<u64>,
+    pub(in crate::world) motion_stop_packet: Option<OutboundWorldPacket>,
+    pub(in crate::world) attack_stop_packet: OutboundWorldPacket,
+    pub(in crate::world) combat_flag_packet: OutboundWorldPacket,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct DbCreatureThreatTargetSwitchEvent {
-    attacker: ObjectGuid,
-    old_victim: ObjectGuid,
-    new_victim: ObjectGuid,
-    combat: CreatureCombatState,
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureThreatTargetSwitchEvent {
+    pub(in crate::world) attacker: ObjectGuid,
+    pub(in crate::world) old_victim: ObjectGuid,
+    pub(in crate::world) new_victim: ObjectGuid,
+    pub(in crate::world) combat: CreatureCombatState,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct DbCreatureLifecycleEvent {
+pub(in crate::world) struct DbCreatureLifecycleEvent {
     #[allow(dead_code)]
-    creature: DbCreatureRuntime,
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
-    clear_respawn_guid: Option<u32>,
+    pub(in crate::world) creature: DbCreatureRuntime,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) clear_respawn_guid: Option<u32>,
 }
 
 #[derive(Debug)]
-struct DbCreatureLootReleaseEvent {
-    creature: DbCreatureRuntime,
-    direct_packet: OutboundWorldPacket,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct DbCreatureLootReleaseEvent {
+    pub(in crate::world) creature: DbCreatureRuntime,
+    pub(in crate::world) direct_packet: OutboundWorldPacket,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct PlayerAuraUpdateEvent {
-    direct_packets: Vec<OutboundWorldPacket>,
-    observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+pub(in crate::world) struct PlayerAuraUpdateEvent {
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 #[derive(Debug, Default)]
-struct MapDbCreatureVisibilityStage {
-    nearby_creatures: Vec<DbCreatureRuntime>,
-    create_guids: Vec<ObjectGuid>,
-    destroy_guids: Vec<ObjectGuid>,
+pub(in crate::world) struct MapDbCreatureVisibilityStage {
+    pub(in crate::world) nearby_creatures: Vec<DbCreatureRuntime>,
+    pub(in crate::world) create_guids: Vec<ObjectGuid>,
+    pub(in crate::world) destroy_guids: Vec<ObjectGuid>,
 }
 
 #[derive(Debug, Default)]
-struct MapDbGameObjectVisibilityStage {
-    nearby_gameobjects: Vec<DbGameObjectRuntime>,
-    create_guids: Vec<ObjectGuid>,
-    destroy_guids: Vec<ObjectGuid>,
+pub(in crate::world) struct MapDbGameObjectVisibilityStage {
+    pub(in crate::world) nearby_gameobjects: Vec<DbGameObjectRuntime>,
+    pub(in crate::world) create_guids: Vec<ObjectGuid>,
+    pub(in crate::world) destroy_guids: Vec<ObjectGuid>,
 }
 
 #[derive(Debug, Default)]
-struct MapPlayerCorpseVisibilityStage {
-    nearby_corpses: Vec<PlayerCorpseRuntime>,
-    create_guids: Vec<ObjectGuid>,
-    destroy_guids: Vec<ObjectGuid>,
+pub(in crate::world) struct MapPlayerCorpseVisibilityStage {
+    pub(in crate::world) nearby_corpses: Vec<PlayerCorpseRuntime>,
+    pub(in crate::world) create_guids: Vec<ObjectGuid>,
+    pub(in crate::world) destroy_guids: Vec<ObjectGuid>,
 }
 
 #[derive(Debug, Default)]
-struct DbGameObjectLootState {
-    open_characters: HashSet<u32>,
-    loot_items: Vec<DbCreatureLootRuntime>,
+pub(in crate::world) struct DbGameObjectLootState {
+    pub(in crate::world) open_characters: HashSet<u32>,
+    pub(in crate::world) loot_items: Vec<DbCreatureLootRuntime>,
 }
 
 impl MapRuntime {
     #[cfg(test)]
-    fn new(map_id: u32, instance_id: u32) -> Self {
+    pub(in crate::world) fn new(map_id: u32, instance_id: u32) -> Self {
         Self::with_geometry(
             map_id,
             instance_id,
@@ -605,7 +609,7 @@ impl MapRuntime {
         )
     }
 
-    fn with_geometry(
+    pub(in crate::world) fn with_geometry(
         map_id: u32,
         instance_id: u32,
         geometry: Arc<WorldGeometry>,
@@ -643,7 +647,9 @@ impl MapRuntime {
         }
     }
 
-    fn observability_snapshot(&self) -> crate::observability::MapRuntimeSnapshot {
+    pub(in crate::world) fn observability_snapshot(
+        &self,
+    ) -> crate::observability::MapRuntimeSnapshot {
         crate::observability::MapRuntimeSnapshot {
             map_id: self.map_id,
             instance_id: self.instance_id,
@@ -665,16 +671,37 @@ impl MapRuntime {
     }
 }
 
-include!("map/players.rs");
-include!("map/player_corpses.rs");
-include!("map/creature_snapshots.rs");
-include!("map/gameobject_snapshots.rs");
-include!("map/damage.rs");
-include!("map/creature_damage.rs");
-include!("map/creature_lifecycle.rs");
-include!("map/creature_loot.rs");
-include!("map/gameobject_loot.rs");
-include!("map/creature_combat.rs");
-include!("map/creature_motion.rs");
-include!("map/playerbots.rs");
-include!("map/spatial.rs");
+#[path = "map/creature_combat.rs"]
+mod creature_combat;
+#[path = "map/creature_damage.rs"]
+mod creature_damage;
+#[path = "map/creature_lifecycle.rs"]
+mod creature_lifecycle;
+#[path = "map/creature_loot.rs"]
+mod creature_loot;
+#[path = "map/creature_motion.rs"]
+mod creature_motion;
+#[path = "map/creature_snapshots.rs"]
+mod creature_snapshots;
+#[path = "map/damage.rs"]
+mod damage;
+#[path = "map/gameobject_loot.rs"]
+mod gameobject_loot;
+#[path = "map/gameobject_snapshots.rs"]
+mod gameobject_snapshots;
+#[path = "map/player_corpses.rs"]
+mod player_corpses;
+#[path = "map/playerbots.rs"]
+mod playerbots;
+#[path = "map/players.rs"]
+mod players;
+#[path = "map/spatial.rs"]
+mod spatial;
+
+pub(in crate::world) use self::creature_combat::*;
+pub(in crate::world) use self::creature_damage::*;
+pub(in crate::world) use self::creature_loot::*;
+pub(in crate::world) use self::creature_motion::*;
+pub(in crate::world) use self::damage::*;
+pub(in crate::world) use self::playerbots::*;
+pub(in crate::world) use self::players::*;

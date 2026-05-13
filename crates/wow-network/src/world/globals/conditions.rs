@@ -1,3 +1,5 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Globals/Conditions.{h,cpp}
 // Shared DB/script condition evaluation used by quests, gossip, vendors,
 // trainers, loot, and scripts. This file intentionally mirrors the CMaNGOS
@@ -7,48 +9,49 @@
 use std::future::Future;
 use std::pin::Pin;
 
-const CONDITION_NOT: i16 = -3;
-const CONDITION_OR: i16 = -2;
-const CONDITION_AND: i16 = -1;
-const CONDITION_NONE: i16 = 0;
-const CONDITION_ITEM: i16 = 2;
-const CONDITION_ITEM_EQUIPPED: i16 = 3;
-const CONDITION_TEAM: i16 = 6;
-const CONDITION_SKILL: i16 = 7;
-const CONDITION_QUEST_REWARDED: i16 = 8;
-const CONDITION_QUEST_TAKEN: i16 = 9;
-const CONDITION_ACTIVE_GAME_EVENT: i16 = 12;
-const CONDITION_RACE_CLASS: i16 = 14;
-const CONDITION_LEVEL: i16 = 15;
-const CONDITION_SPELL: i16 = 17;
-const CONDITION_QUEST_AVAILABLE: i16 = 19;
-const CONDITION_QUEST_NONE: i16 = 22;
-const CONDITION_ACTIVE_HOLIDAY: i16 = 26;
-const CONDITION_SKILL_BELOW: i16 = 29;
-const CONDITION_GENDER: i16 = 35;
-const CONDITION_DEAD_OR_AWAY: i16 = 36;
+pub(in crate::world) const CONDITION_NOT: i16 = -3;
+pub(in crate::world) const CONDITION_OR: i16 = -2;
+pub(in crate::world) const CONDITION_AND: i16 = -1;
+pub(in crate::world) const CONDITION_NONE: i16 = 0;
+pub(in crate::world) const CONDITION_ITEM: i16 = 2;
+pub(in crate::world) const CONDITION_ITEM_EQUIPPED: i16 = 3;
+pub(in crate::world) const CONDITION_TEAM: i16 = 6;
+pub(in crate::world) const CONDITION_SKILL: i16 = 7;
+pub(in crate::world) const CONDITION_QUEST_REWARDED: i16 = 8;
+pub(in crate::world) const CONDITION_QUEST_TAKEN: i16 = 9;
+pub(in crate::world) const CONDITION_ACTIVE_GAME_EVENT: i16 = 12;
+pub(in crate::world) const CONDITION_RACE_CLASS: i16 = 14;
+pub(in crate::world) const CONDITION_LEVEL: i16 = 15;
+pub(in crate::world) const CONDITION_SPELL: i16 = 17;
+pub(in crate::world) const CONDITION_QUEST_AVAILABLE: i16 = 19;
+pub(in crate::world) const CONDITION_QUEST_NONE: i16 = 22;
+pub(in crate::world) const CONDITION_ACTIVE_HOLIDAY: i16 = 26;
+pub(in crate::world) const CONDITION_SKILL_BELOW: i16 = 29;
+pub(in crate::world) const CONDITION_GENDER: i16 = 35;
+pub(in crate::world) const CONDITION_DEAD_OR_AWAY: i16 = 36;
 
-const CONDITION_FLAG_REVERSE_RESULT: u8 = 0x1;
-const CONDITION_FLAG_SWAP_TARGETS: u8 = 0x2;
-const HORDE_FACTION: u32 = 67;
-const CONDITION_RECURSION_LIMIT: u8 = 32;
+pub(in crate::world) const CONDITION_FLAG_REVERSE_RESULT: u8 = 0x1;
+pub(in crate::world) const CONDITION_FLAG_SWAP_TARGETS: u8 = 0x2;
+pub(in crate::world) const HORDE_FACTION: u32 = 67;
+pub(in crate::world) const CONDITION_RECURSION_LIMIT: u8 = 32;
 
-type ConditionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>>;
+pub(in crate::world) type ConditionFuture<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>>;
 
 #[derive(Debug, Clone, Copy)]
-enum ConditionSource {
+pub(in crate::world) enum ConditionSource {
     Quest,
 }
 
 #[derive(Clone, Copy)]
-struct ConditionEvaluationContext<'a> {
-    world_db_pool: &'a MySqlPool,
-    session: &'a WorldSessionState,
-    source: ConditionSource,
+pub(in crate::world) struct ConditionEvaluationContext<'a> {
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) session: &'a WorldSessionState,
+    pub(in crate::world) source: ConditionSource,
 }
 
 impl ObjectMgr {
-    fn is_condition_satisfied<'a>(
+    pub(in crate::world) fn is_condition_satisfied<'a>(
         &'a self,
         condition_id: u32,
         context: ConditionEvaluationContext<'a>,
@@ -56,7 +59,7 @@ impl ObjectMgr {
         self.is_condition_satisfied_with_depth(condition_id, context, 0)
     }
 
-    fn is_condition_satisfied_with_depth<'a>(
+    pub(in crate::world) fn is_condition_satisfied_with_depth<'a>(
         &'a self,
         condition_id: u32,
         context: ConditionEvaluationContext<'a>,
@@ -69,8 +72,7 @@ impl ObjectMgr {
             if depth >= CONDITION_RECURSION_LIMIT {
                 warn!(
                     condition_id,
-                    depth,
-                    "Condition recursion limit reached; failing closed"
+                    depth, "Condition recursion limit reached; failing closed"
                 );
                 return Ok(false);
             }
@@ -86,7 +88,7 @@ impl ObjectMgr {
         })
     }
 
-    async fn condition_meets(
+    pub(in crate::world) async fn condition_meets(
         &self,
         condition: &wow_db::ConditionQuery,
         context: ConditionEvaluationContext<'_>,
@@ -102,24 +104,24 @@ impl ObjectMgr {
         Ok(result)
     }
 
-    async fn condition_evaluate(
+    pub(in crate::world) async fn condition_evaluate(
         &self,
         condition: &wow_db::ConditionQuery,
         context: ConditionEvaluationContext<'_>,
         depth: u8,
         swaps_targets: bool,
     ) -> anyhow::Result<bool> {
-        let player_available = context.session.active_character.is_some() && !swaps_targets;
+        let player_available =
+            context.session.character.active_character.is_some() && !swaps_targets;
         match condition.condition_type {
-            CONDITION_NOT => {
-                self.is_condition_satisfied_with_depth(
+            CONDITION_NOT => self
+                .is_condition_satisfied_with_depth(
                     condition.value1,
                     context,
                     depth.saturating_add(1),
                 )
                 .await
-                .map(|result| !result)
-            }
+                .map(|result| !result),
             CONDITION_OR => {
                 if condition.value3 != 0
                     && self
@@ -210,7 +212,7 @@ impl ObjectMgr {
                 Ok(session_has_equipped_item(context.session, condition.value1))
             }
             CONDITION_TEAM => {
-                let Some(character) = context.session.active_character.as_ref() else {
+                let Some(character) = context.session.character.active_character.as_ref() else {
                     return Ok(false);
                 };
                 Ok(player_team_for_race(character.race) == Some(condition.value1))
@@ -228,6 +230,7 @@ impl ObjectMgr {
                 }
                 Ok(context
                     .session
+                    .quests
                     .quest_statuses
                     .get(&condition.value1)
                     .is_some_and(|status| status.rewarded != 0))
@@ -242,21 +245,22 @@ impl ObjectMgr {
                     condition.value2,
                 ))
             }
-            CONDITION_ACTIVE_GAME_EVENT => {
-                Ok(self.active_game_event_state().await.is_active(condition.value1 as u16))
-            }
+            CONDITION_ACTIVE_GAME_EVENT => Ok(self
+                .active_game_event_state()
+                .await
+                .is_active(condition.value1 as u16)),
             CONDITION_RACE_CLASS => {
-                let Some(character) = context.session.active_character.as_ref() else {
+                let Some(character) = context.session.character.active_character.as_ref() else {
                     return Ok(false);
                 };
-                let race_ok =
-                    condition.value1 == 0 || (quest_race_or_class_mask(character.race) & condition.value1) != 0;
-                let class_ok =
-                    condition.value2 == 0 || (quest_race_or_class_mask(character.class) & condition.value2) != 0;
+                let race_ok = condition.value1 == 0
+                    || (quest_race_or_class_mask(character.race) & condition.value1) != 0;
+                let class_ok = condition.value2 == 0
+                    || (quest_race_or_class_mask(character.class) & condition.value2) != 0;
                 Ok(race_ok && class_ok)
             }
             CONDITION_LEVEL => {
-                let Some(character) = context.session.active_character.as_ref() else {
+                let Some(character) = context.session.character.active_character.as_ref() else {
                     return Ok(false);
                 };
                 Ok(match condition.value2 {
@@ -271,8 +275,16 @@ impl ObjectMgr {
                     return Ok(false);
                 }
                 Ok(match condition.value2 {
-                    0 => context.session.active_spells.contains(&condition.value1),
-                    1 => !context.session.active_spells.contains(&condition.value1),
+                    0 => context
+                        .session
+                        .character
+                        .active_spells
+                        .contains(&condition.value1),
+                    1 => !context
+                        .session
+                        .character
+                        .active_spells
+                        .contains(&condition.value1),
                     _ => false,
                 })
             }
@@ -301,6 +313,7 @@ impl ObjectMgr {
                 }
                 Ok(context
                     .session
+                    .quests
                     .quest_statuses
                     .get(&condition.value1)
                     .is_none_or(|status| !quest_status_is_current(status) && status.rewarded == 0))
@@ -319,14 +332,16 @@ impl ObjectMgr {
                 Ok(skill.is_some_and(|value| value < condition.value2))
             }
             CONDITION_GENDER => {
-                let Some(character) = context.session.active_character.as_ref() else {
+                let Some(character) = context.session.character.active_character.as_ref() else {
                     return Ok(false);
                 };
                 Ok(u32::from(character_gender(context.session, character)) == condition.value1)
             }
-            CONDITION_DEAD_OR_AWAY => {
-                Ok(condition_dead_or_away(context.session, condition.value1, condition.value2))
-            }
+            CONDITION_DEAD_OR_AWAY => Ok(condition_dead_or_away(
+                context.session,
+                condition.value1,
+                condition.value2,
+            )),
             unsupported => {
                 debug!(
                     condition_entry = condition.condition_entry,
@@ -340,32 +355,40 @@ impl ObjectMgr {
     }
 }
 
-fn session_item_count(session: &WorldSessionState, item: u32) -> u32 {
+pub(in crate::world) fn session_item_count(session: &WorldSessionState, item: u32) -> u32 {
     session
         .inventory
+        .items
         .iter()
         .filter(|inventory_item| inventory_item.item_template == item)
         .map(|inventory_item| inventory_item.count)
         .sum()
 }
 
-fn session_has_equipped_item(session: &WorldSessionState, item: u32) -> bool {
-    session
-        .inventory
-        .iter()
-        .any(|inventory_item| inventory_item.item_template == item && inventory_item.bag == 0 && inventory_item.slot < 19)
+pub(in crate::world) fn session_has_equipped_item(session: &WorldSessionState, item: u32) -> bool {
+    session.inventory.items.iter().any(|inventory_item| {
+        inventory_item.item_template == item && inventory_item.bag == 0 && inventory_item.slot < 19
+    })
 }
 
-fn session_skill_value(session: &WorldSessionState, skill: u32) -> Option<u32> {
+pub(in crate::world) fn session_skill_value(
+    session: &WorldSessionState,
+    skill: u32,
+) -> Option<u32> {
     session
+        .character
         .character_skills
         .iter()
         .find(|character_skill| u32::from(character_skill.skill) == skill)
         .map(|character_skill| u32::from(character_skill.value))
 }
 
-fn session_is_current_quest(session: &WorldSessionState, quest: u32, quest_taken_mode: u32) -> bool {
-    let Some(status) = session.quest_statuses.get(&quest) else {
+pub(in crate::world) fn session_is_current_quest(
+    session: &WorldSessionState,
+    quest: u32,
+    quest_taken_mode: u32,
+) -> bool {
+    let Some(status) = session.quests.quest_statuses.get(&quest) else {
         return false;
     };
     if !quest_status_is_current(status) {
@@ -379,7 +402,7 @@ fn session_is_current_quest(session: &WorldSessionState, quest: u32, quest_taken
     }
 }
 
-fn player_team_for_race(race: u8) -> Option<u32> {
+pub(in crate::world) fn player_team_for_race(race: u8) -> Option<u32> {
     match race {
         1 | 3 | 4 | 7 => Some(ALLIANCE_FACTION),
         2 | 5 | 6 | 8 => Some(HORDE_FACTION),
@@ -387,16 +410,31 @@ fn player_team_for_race(race: u8) -> Option<u32> {
     }
 }
 
-fn character_gender(session: &WorldSessionState, character: &ActiveCharacter) -> u8 {
+pub(in crate::world) fn character_gender(
+    session: &WorldSessionState,
+    character: &ActiveCharacter,
+) -> u8 {
     let _ = character;
-    session.player_visual.as_ref().map_or(0, |visual| visual.gender)
+    session
+        .character
+        .player_visual
+        .as_ref()
+        .map_or(0, |visual| visual.gender)
 }
 
-fn condition_dead_or_away(session: &WorldSessionState, value1: u32, _range: u32) -> bool {
+pub(in crate::world) fn condition_dead_or_away(
+    session: &WorldSessionState,
+    value1: u32,
+    _range: u32,
+) -> bool {
     let player_is_alive = session
+        .character
         .active_character
         .as_ref()
-        .is_some_and(|_| session.player_health != 0 && session.player_death_state == PlayerDeathState::Alive);
+        .is_some_and(|_| {
+            session.character.player_health != 0
+                && session.death.player_death_state == PlayerDeathState::Alive
+        });
     match value1 {
         0 | 1 => !player_is_alive,
         2 => false,

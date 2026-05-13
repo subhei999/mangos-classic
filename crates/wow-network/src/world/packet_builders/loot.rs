@@ -1,3 +1,9 @@
+use super::*;
+use wow_proto::{
+    LootItemResponse, ServerWorldPacket, SmsgLootErrorResponse, SmsgLootMasterListResponse,
+    SmsgLootReleaseResponse, SmsgLootResponse,
+};
+
 // CMaNGOS reference: src/game/Handlers/LootHandler.cpp loot packet builders.
 
 impl From<CreatureLootQuery> for DbCreatureLootRuntime {
@@ -20,23 +26,23 @@ impl From<CreatureLootQuery> for DbCreatureLootRuntime {
     }
 }
 
-struct LootAutostoreContext<'a> {
-    stream: &'a mut WorldPacketSink,
+pub(in crate::world) struct LootAutostoreContext<'a> {
+    pub(in crate::world) stream: &'a mut WorldPacketSink,
 
-    character_db_pool: &'a MySqlPool,
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
 
-    object_mgr: &'a ObjectMgr,
+    pub(in crate::world) object_mgr: &'a ObjectMgr,
 
-    world_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
 
-    session: &'a mut WorldSessionState,
+    pub(in crate::world) session: &'a mut WorldSessionState,
 
-    header_crypto: &'a mut HeaderCrypto,
+    pub(in crate::world) header_crypto: &'a mut HeaderCrypto,
 
-    character_guid: u32,
+    pub(in crate::world) character_guid: u32,
 }
 
-async fn autostore_loot_item(
+pub(in crate::world) async fn autostore_loot_item(
     context: LootAutostoreContext<'_>,
 
     _creature_guid: u64,
@@ -64,23 +70,17 @@ async fn autostore_loot_item(
     let Some(template) = wow_db::get_item_template_query(world_db_pool, loot.item).await? else {
         return Ok(false);
     };
-    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory).await?;
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
     let Some(store_plan) = plan_store_item(
-        &session.inventory,
+        &session.inventory.items,
         &template,
         loot.count,
         &equipped_bags,
         None,
         None,
     ) else {
-        send_inventory_change_failure(
-            stream,
-            EQUIP_ERR_INVENTORY_FULL,
-            None,
-            None,
-            header_crypto,
-        )
-        .await?;
+        send_inventory_change_failure(stream, EQUIP_ERR_INVENTORY_FULL, None, None, header_crypto)
+            .await?;
 
         return Ok(false);
     };
@@ -90,7 +90,7 @@ async fn autostore_loot_item(
 
     let random_properties = generate_item_instance_random_properties(
         world_db_pool,
-        &session.db_creature_navigation.world_data_files,
+        &session.movement.db_creature_navigation.world_data_files,
         loot.item,
     )
     .await?;
@@ -98,6 +98,7 @@ async fn autostore_loot_item(
         if let Some(item_guid) = slot.existing_item {
             let existing_count = session
                 .inventory
+                .items
                 .iter()
                 .find(|item| item.item == item_guid)
                 .map(|item| item.count)
@@ -126,11 +127,16 @@ async fn autostore_loot_item(
         }
     }
 
-    session.inventory =
+    session.inventory.items =
         wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
-            if let Some(item) = session.inventory.iter().find(|item| item.item == item_guid) {
+            if let Some(item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.item == item_guid)
+            {
                 update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
                 pushed_item = Some(item.clone());
             }
@@ -138,10 +144,12 @@ async fn autostore_loot_item(
         }
         if let Some(new_item) = session
             .inventory
+            .items
             .iter()
             .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
         {
-            let contained_guid = item_contained_guid(owner_guid, &session.inventory, new_item);
+            let contained_guid =
+                item_contained_guid(owner_guid, &session.inventory.items, new_item);
             update_blocks.push(build_item_create_update_block(
                 owner_guid,
                 contained_guid,
@@ -150,7 +158,7 @@ async fn autostore_loot_item(
             )?);
             update_blocks.extend(build_inventory_position_update_blocks(
                 character_guid,
-                &session.inventory,
+                &session.inventory.items,
                 slot.bag,
                 slot.slot,
             )?);
@@ -195,7 +203,7 @@ async fn autostore_loot_item(
     Ok(true)
 }
 
-fn build_db_creature_loot_response_body_for_player(
+pub(in crate::world) fn build_db_creature_loot_response_body_for_player(
     target: ObjectGuid,
     creature: &DbCreatureRuntime,
     loot_method: Option<(u8, u8, u32)>,
@@ -203,52 +211,38 @@ fn build_db_creature_loot_response_body_for_player(
 ) -> Vec<u8> {
     let item_count = creature.loot_items.len().min(u8::MAX as usize) as u8;
 
-    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
+    let money = if creature.loot_money_available {
+        creature.loot_money()
+    } else {
+        0
+    };
 
-    body.extend_from_slice(&target.raw().to_le_bytes());
-
-    body.push(CLIENT_LOOT_CORPSE);
-
-    body.extend_from_slice(
-        &(if creature.loot_money_available {
-            creature.loot_money()
-        } else {
-            0
-        })
-        .to_le_bytes(),
-    );
-
-    let count_pos = body.len();
-    body.push(0);
-
-    let mut shown = 0u8;
-    for loot in creature.loot_items.iter().take(item_count as usize) {
-        let Some(slot_type) =
-            db_creature_loot_slot_type_for_player(creature, loot_method, character_guid, loot)
-        else {
-            continue;
-        };
-        body.push(loot.slot);
-
-        body.extend_from_slice(&loot.item.to_le_bytes());
-
-        body.extend_from_slice(&loot.count.to_le_bytes());
-
-        body.extend_from_slice(&loot.display_id.to_le_bytes());
-
-        body.extend_from_slice(&0u32.to_le_bytes());
-
-        body.extend_from_slice(&0u32.to_le_bytes());
-
-        body.push(slot_type);
-        shown = shown.saturating_add(1);
+    SmsgLootResponse {
+        target,
+        loot_type: CLIENT_LOOT_CORPSE,
+        money,
+        items: creature
+            .loot_items
+            .iter()
+            .take(item_count as usize)
+            .filter_map(|loot| {
+                db_creature_loot_slot_type_for_player(creature, loot_method, character_guid, loot)
+                    .map(|slot_type| LootItemResponse {
+                        slot: loot.slot,
+                        item: loot.item,
+                        count: loot.count,
+                        display_id: loot.display_id,
+                        random_suffix: 0,
+                        random_property: 0,
+                        slot_type,
+                    })
+            })
+            .collect(),
     }
-    body[count_pos] = shown;
-
-    body
+    .body()
 }
 
-fn db_creature_loot_slot_type_for_player(
+pub(in crate::world) fn db_creature_loot_slot_type_for_player(
     creature: &DbCreatureRuntime,
     loot_method: Option<(u8, u8, u32)>,
     character_guid: u32,
@@ -273,9 +267,7 @@ fn db_creature_loot_slot_type_for_player(
                     Some(LOOT_SLOT_VIEW)
                 }
             } else if creature.loot_current_looter == Some(character_guid)
-                || creature
-                    .loot_current_looter_pass_slots
-                    .contains(&loot.slot)
+                || creature.loot_current_looter_pass_slots.contains(&loot.slot)
                 || creature.loot_roll_released_slots.contains(&loot.slot)
             {
                 Some(LOOT_SLOT_NORMAL)
@@ -286,9 +278,7 @@ fn db_creature_loot_slot_type_for_player(
         2 => {
             if under_threshold {
                 (creature.loot_current_looter == Some(character_guid)
-                    || creature
-                        .loot_current_looter_pass_slots
-                        .contains(&loot.slot)
+                    || creature.loot_current_looter_pass_slots.contains(&loot.slot)
                     || creature.loot_roll_released_slots.contains(&loot.slot))
                 .then_some(LOOT_SLOT_NORMAL)
             } else if character_guid == master_looter {
@@ -301,58 +291,55 @@ fn db_creature_loot_slot_type_for_player(
     }
 }
 
-fn build_gameobject_loot_response_body(
+pub(in crate::world) fn build_gameobject_loot_response_body(
     target: ObjectGuid,
     loot_items: &[DbCreatureLootRuntime],
 ) -> Vec<u8> {
     let item_count = loot_items.len().min(u8::MAX as usize) as u8;
-    let mut body = Vec::with_capacity(14 + item_count as usize * 22);
-
-    body.extend_from_slice(&target.raw().to_le_bytes());
-    body.push(CLIENT_LOOT_CORPSE);
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.push(item_count);
-
-    for loot in loot_items.iter().take(item_count as usize) {
-        body.push(loot.slot);
-        body.extend_from_slice(&loot.item.to_le_bytes());
-        body.extend_from_slice(&loot.count.to_le_bytes());
-        body.extend_from_slice(&loot.display_id.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.push(LOOT_SLOT_NORMAL);
+    SmsgLootResponse {
+        target,
+        loot_type: CLIENT_LOOT_CORPSE,
+        money: 0,
+        items: loot_items
+            .iter()
+            .take(item_count as usize)
+            .map(|loot| LootItemResponse {
+                slot: loot.slot,
+                item: loot.item,
+                count: loot.count,
+                display_id: loot.display_id,
+                random_suffix: 0,
+                random_property: 0,
+                slot_type: LOOT_SLOT_NORMAL,
+            })
+            .collect(),
     }
-
-    body
+    .body()
 }
 
-fn build_loot_master_list_body(members: &[u32]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(1 + members.len().min(u8::MAX as usize) * 8);
-    body.push(members.len().min(u8::MAX as usize) as u8);
-    for member in members.iter().take(u8::MAX as usize) {
-        body.extend_from_slice(
-            &ObjectGuid::new(HighGuid::Player, 0, *member)
-                .raw()
-                .to_le_bytes(),
-        );
+pub(in crate::world) fn build_loot_master_list_body(members: &[u32]) -> Vec<u8> {
+    SmsgLootMasterListResponse {
+        members: members
+            .iter()
+            .take(u8::MAX as usize)
+            .map(|member| ObjectGuid::new(HighGuid::Player, 0, *member))
+            .collect(),
     }
-    body
+    .body()
 }
 
-fn build_loot_error_response_body(target: ObjectGuid, error: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(10);
-    body.extend_from_slice(&target.raw().to_le_bytes());
-    body.push(0);
-    body.push(error);
-    body
+pub(in crate::world) fn build_loot_error_response_body(target: ObjectGuid, error: u8) -> Vec<u8> {
+    SmsgLootErrorResponse {
+        target,
+        loot_type: 0,
+        error,
+    }
+    .body()
 }
 
-fn build_loot_release_response_body(target: ObjectGuid, released: bool) -> Vec<u8> {
-    let mut body = Vec::with_capacity(9);
-
-    body.extend_from_slice(&target.raw().to_le_bytes());
-
-    body.push(released as u8);
-
-    body
+pub(in crate::world) fn build_loot_release_response_body(
+    target: ObjectGuid,
+    released: bool,
+) -> Vec<u8> {
+    SmsgLootReleaseResponse { target, released }.body()
 }

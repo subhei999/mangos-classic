@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpellEffectDispatch {
+pub(in crate::world) enum SpellEffectDispatch {
     Empty,
     SchoolDamage,
     WeaponDamage,
@@ -18,7 +20,7 @@ enum SpellEffectDispatch {
 }
 
 impl SpellEffectDispatch {
-    fn from_effect_id(effect_id: u32) -> Self {
+    pub(in crate::world) fn from_effect_id(effect_id: u32) -> Self {
         match effect_id {
             0 => Self::Empty,
             2 => Self::SchoolDamage,
@@ -29,9 +31,7 @@ impl SpellEffectDispatch {
             SPELL_EFFECT_APPLY_AURA => Self::ApplyAura,
             SPELL_EFFECT_HEAL => Self::Heal,
             SPELL_EFFECT_ENERGIZE => Self::Energize,
-            SPELL_EFFECT_TELEPORT_UNITS | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => {
-                Self::Teleport
-            }
+            SPELL_EFFECT_TELEPORT_UNITS | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => Self::Teleport,
             SPELL_EFFECT_CHARGE => Self::Charge,
             33 | 59 => Self::OpenLock,
             36 => Self::LearnSpell,
@@ -44,7 +44,7 @@ impl SpellEffectDispatch {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_spell_effects(
+pub(in crate::world) async fn apply_player_spell_effects(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -98,14 +98,12 @@ async fn apply_player_spell_effects(
                 if spell_profile.kind != SpellCastKind::Charge
                     && spell_profile.kind != SpellCastKind::NextMeleeSwing =>
             {
-                if let Some(damage_effect) =
-                    player_direct_damage_effect(
-                        spell_template,
-                        spell_profile,
-                        effect,
-                        combo_points_for_effects,
-                    )
-                {
+                if let Some(damage_effect) = player_direct_damage_effect(
+                    spell_template,
+                    spell_profile,
+                    effect,
+                    combo_points_for_effects,
+                ) {
                     landed_damage |= apply_player_direct_damage_effect(
                         stream,
                         deps,
@@ -208,30 +206,40 @@ async fn apply_player_spell_effects(
     }
 
     let power_update = match spell_profile.power {
-        SpellPowerCost::Rage { .. } => build_player_rage_update_body(caster, session.player_rage)?,
-        SpellPowerCost::Mana { .. } => build_player_mana_update_body(caster, session.player_mana)?,
+        SpellPowerCost::Rage { .. } => {
+            build_player_rage_update_body(caster, session.character.player_rage)?
+        }
+        SpellPowerCost::Mana { .. } => {
+            build_player_mana_update_body(caster, session.character.player_mana)?
+        }
         SpellPowerCost::Energy { .. } => {
-            build_player_energy_update_body(caster, session.player_energy)?
+            build_player_energy_update_body(caster, session.character.player_energy)?
         }
     };
-    send_packet(stream, SMSG_UPDATE_OBJECT, &power_update, Some(header_crypto)).await
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &power_update,
+        Some(header_crypto),
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerDirectDamageEffect {
-    spell_id: u32,
-    damage: u32,
-    weapon_damage_percent: u32,
-    school: u8,
-    dmg_class: u32,
-    attributes_ex2: u32,
-    attributes_ex3: u32,
-    requires_melee: bool,
-    uses_weapon_outcome: bool,
-    suppress_attacker_state: bool,
+pub(in crate::world) struct PlayerDirectDamageEffect {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) damage: u32,
+    pub(in crate::world) weapon_damage_percent: u32,
+    pub(in crate::world) school: u8,
+    pub(in crate::world) dmg_class: u32,
+    pub(in crate::world) attributes_ex2: u32,
+    pub(in crate::world) attributes_ex3: u32,
+    pub(in crate::world) requires_melee: bool,
+    pub(in crate::world) uses_weapon_outcome: bool,
+    pub(in crate::world) suppress_attacker_state: bool,
 }
 
-fn player_direct_damage_effect(
+pub(in crate::world) fn player_direct_damage_effect(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     effect: SpellInfoEffect,
@@ -256,7 +264,9 @@ fn player_direct_damage_effect(
     })
 }
 
-fn player_weapon_damage_effect(spell_profile: &SpellCastProfile) -> PlayerDirectDamageEffect {
+pub(in crate::world) fn player_weapon_damage_effect(
+    spell_profile: &SpellCastProfile,
+) -> PlayerDirectDamageEffect {
     PlayerDirectDamageEffect {
         spell_id: spell_profile.spell_id,
         damage: spell_profile.bonus_damage,
@@ -271,7 +281,7 @@ fn player_weapon_damage_effect(spell_profile: &SpellCastProfile) -> PlayerDirect
     }
 }
 
-async fn spell_combo_points_for_effects(
+pub(in crate::world) async fn spell_combo_points_for_effects(
     shared_world: SharedWorldDeps<'_>,
     caster: ObjectGuid,
     character_guid: u32,
@@ -294,7 +304,10 @@ async fn spell_combo_points_for_effects(
         .unwrap_or(0)
 }
 
-fn spell_effect_roll_value(effect: SpellInfoEffect, combo_points: u8) -> Option<u32> {
+pub(in crate::world) fn spell_effect_roll_value(
+    effect: SpellInfoEffect,
+    combo_points: u8,
+) -> Option<u32> {
     let base_dice = effect.base_dice as i32;
     let mut value = effect.base_points;
     match effect.die_sides {
@@ -316,7 +329,7 @@ fn spell_effect_roll_value(effect: SpellInfoEffect, combo_points: u8) -> Option<
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_charge_effect(
+pub(in crate::world) async fn apply_player_charge_effect(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
@@ -354,7 +367,7 @@ async fn apply_player_charge_effect(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_direct_damage_effect(
+pub(in crate::world) async fn apply_player_direct_damage_effect(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -380,7 +393,7 @@ async fn apply_player_direct_damage_effect(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_direct_heal_effect(
+pub(in crate::world) async fn apply_player_direct_heal_effect(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -426,26 +439,37 @@ async fn apply_player_direct_heal_effect(
     )
     .await?;
     if event.healed_character_guid == caster.counter() {
-        session.player_health = event.health;
+        session.character.player_health = event.health;
         for packet in event.direct_packets {
-            send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
         }
     } else {
-        deps.shared_world.sessions.dispatch(
-            event
-                .direct_packets
-                .into_iter()
-                .map(|packet| (event.direct_session_id, packet))
-                .collect(),
-        )
-        .await;
+        deps.shared_world
+            .sessions
+            .dispatch(
+                event
+                    .direct_packets
+                    .into_iter()
+                    .map(|packet| (event.direct_session_id, packet))
+                    .collect(),
+            )
+            .await;
     }
-    deps.shared_world.sessions.dispatch(event.observer_packets).await;
+    deps.shared_world
+        .sessions
+        .dispatch(event.observer_packets)
+        .await;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_player_spell_log_to_target_set(
+pub(in crate::world) async fn send_player_spell_log_to_target_set(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     caster_character_guid: u32,
@@ -455,7 +479,13 @@ async fn send_player_spell_log_to_target_set(
     packet: OutboundWorldPacket,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
+    send_packet(
+        stream,
+        packet.opcode,
+        &packet.body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
 
     let caster_session_id = shared_world
         .sessions
@@ -463,7 +493,9 @@ async fn send_player_spell_log_to_target_set(
         .await;
     let mut dispatch = Vec::new();
     let mut seen = HashSet::new();
-    if Some(target_session_id) != caster_session_id || target_character_guid != caster_character_guid {
+    if Some(target_session_id) != caster_session_id
+        || target_character_guid != caster_character_guid
+    {
         seen.insert(target_session_id);
         dispatch.push((target_session_id, packet.clone()));
     }
@@ -477,12 +509,12 @@ async fn send_player_spell_log_to_target_set(
     Ok(())
 }
 
-fn character_guid_from_caster(caster: ObjectGuid) -> u32 {
+pub(in crate::world) fn character_guid_from_caster(caster: ObjectGuid) -> u32 {
     caster.counter()
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_db_creature_spell_damage(
+pub(in crate::world) async fn apply_db_creature_spell_damage(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -526,17 +558,19 @@ async fn apply_db_creature_spell_damage(
                     character_guid
                 )
             })?;
-        let weapon_skill_id = main_hand_weapon_skill_id(deps.world_db_pool, &session.inventory).await?;
+        let weapon_skill_id =
+            main_hand_weapon_skill_id(deps.world_db_pool, &session.inventory.items).await?;
         let attacker_skill = weapon_skill_id
             .map(|skill_id| {
                 current_skill_value_with_active_auras(
-                    &session.character_skills,
-                    &session.active_auras,
+                    &session.character.character_skills,
+                    &session.auras.active_auras,
                     skill_id,
                 )
             })
             .unwrap_or(0);
         let character_level = session
+            .character
             .active_character
             .as_ref()
             .map(|character| character.level)
@@ -565,7 +599,7 @@ async fn apply_db_creature_spell_damage(
                     character_guid
                 )
             })?;
-        let character = session.active_character.as_ref();
+        let character = session.character.active_character.as_ref();
         Some(roll_spell_damage_outcome(spell_damage_outcome_input(
             damage_effect.damage,
             damage_effect.school,
@@ -676,7 +710,10 @@ async fn apply_db_creature_spell_damage(
             map_id,
             player: caster,
         };
-        deps.shared_world.sessions.dispatch(event.observer_packets).await;
+        deps.shared_world
+            .sessions
+            .dispatch(event.observer_packets)
+            .await;
         if is_dead {
             send_db_creature_motion_stop(stream, broadcast, session, target, header_crypto).await?;
             finalize_db_creature_death(
@@ -701,13 +738,8 @@ async fn apply_db_creature_spell_damage(
                 header_crypto,
             )
             .await?;
-            begin_shared_db_creature_combat(
-                deps.shared_world,
-                session,
-                target,
-                Instant::now(),
-            )
-            .await;
+            begin_shared_db_creature_combat(deps.shared_world, session, target, Instant::now())
+                .await;
         }
         return Ok(requested_damage > 0);
     }
@@ -715,7 +747,7 @@ async fn apply_db_creature_spell_damage(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_combo_points_effect(
+pub(in crate::world) async fn apply_player_combo_points_effect(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     caster: ObjectGuid,
@@ -747,7 +779,7 @@ async fn apply_player_combo_points_effect(
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
 }
 
-async fn clear_player_combo_points_after_finisher(
+pub(in crate::world) async fn clear_player_combo_points_after_finisher(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     caster: ObjectGuid,
@@ -772,7 +804,7 @@ async fn clear_player_combo_points_after_finisher(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_player_spell_aura(
+pub(in crate::world) async fn apply_player_spell_aura(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -791,7 +823,9 @@ async fn apply_player_spell_aura(
         caster,
         character_level,
         now,
-        deps.shared_world.maps.spell_duration(spell_template.duration_index),
+        deps.shared_world
+            .maps
+            .spell_duration(spell_template.duration_index),
     );
     match spell_profile.aura_target {
         SpellAuraTarget::Caster => {
@@ -803,22 +837,36 @@ async fn apply_player_spell_aura(
                 .await?
             {
                 for packet in event.direct_packets {
-                    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
-                        .await?;
+                    send_packet(
+                        stream,
+                        packet.opcode,
+                        &packet.body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
                 }
-                deps.shared_world.sessions.dispatch(event.observer_packets).await;
+                deps.shared_world
+                    .sessions
+                    .dispatch(event.observer_packets)
+                    .await;
             } else {
                 send_packet(
                     stream,
                     SMSG_UPDATE_OBJECT,
-                    &build_player_aura_update_body(caster, &session.active_auras)?,
+                    &build_player_aura_update_body(caster, &session.auras.active_auras)?,
                     Some(&mut *header_crypto),
                 )
                 .await?;
-                for packet in build_player_aura_duration_update_packets(&session.active_auras, now)
+                for packet in
+                    build_player_aura_duration_update_packets(&session.auras.active_auras, now)
                 {
-                    send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto))
-                        .await?;
+                    send_packet(
+                        stream,
+                        packet.opcode,
+                        &packet.body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
                 }
             }
         }
@@ -847,7 +895,10 @@ async fn apply_player_spell_aura(
                             )
                             .await?;
                         }
-                        deps.shared_world.sessions.dispatch(event.observer_packets).await;
+                        deps.shared_world
+                            .sessions
+                            .dispatch(event.observer_packets)
+                            .await;
                     }
                     begin_db_creature_retaliation_if_needed(
                         stream,
@@ -866,7 +917,7 @@ async fn apply_player_spell_aura(
     Ok(())
 }
 
-fn spell_direct_heal(spell_info: &SpellInfo<'_>) -> u32 {
+pub(in crate::world) fn spell_direct_heal(spell_info: &SpellInfo<'_>) -> u32 {
     spell_info
         .effects
         .into_iter()
@@ -875,7 +926,7 @@ fn spell_direct_heal(spell_info: &SpellInfo<'_>) -> u32 {
         .sum()
 }
 
-fn spell_direct_energize(spell_info: &SpellInfo<'_>) -> u32 {
+pub(in crate::world) fn spell_direct_energize(spell_info: &SpellInfo<'_>) -> u32 {
     spell_info
         .effects
         .into_iter()
@@ -885,7 +936,7 @@ fn spell_direct_energize(spell_info: &SpellInfo<'_>) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_item_use_spell_effects(
+pub(in crate::world) async fn apply_item_use_spell_effects(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -895,7 +946,7 @@ async fn apply_item_use_spell_effects(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
@@ -933,7 +984,8 @@ async fn apply_item_use_spell_effects(
         character.level,
     )
     .await?;
-    let effective_world_stats = player_world_stats_with_active_auras(world_stats, &session.active_auras);
+    let effective_world_stats =
+        player_world_stats_with_active_auras(world_stats, &session.auras.active_auras);
     let max_health = effective_world_stats.max_health().max(1);
     let max_mana = effective_world_stats.max_mana();
 
@@ -945,9 +997,13 @@ async fn apply_item_use_spell_effects(
             SpellEffectDispatch::Heal if !direct_heal_applied => {
                 let heal = spell_direct_heal(&spell_info);
                 if heal != 0 {
-                    let old_health = session.player_health;
-                    session.player_health = session.player_health.saturating_add(heal).min(max_health);
-                    let amount_healed = session.player_health.saturating_sub(old_health);
+                    let old_health = session.character.player_health;
+                    session.character.player_health = session
+                        .character
+                        .player_health
+                        .saturating_add(heal)
+                        .min(max_health);
+                    let amount_healed = session.character.player_health.saturating_sub(old_health);
                     if amount_healed > 0 {
                         let log = build_spell_heal_log_body(
                             caster,
@@ -956,24 +1012,26 @@ async fn apply_item_use_spell_effects(
                             amount_healed,
                             false,
                         )?;
-                        send_packet(
-                            stream,
-                            SMSG_SPELLHEALLOG,
-                            &log,
-                            Some(&mut *header_crypto),
-                        )
-                        .await?;
+                        send_packet(stream, SMSG_SPELLHEALLOG, &log, Some(&mut *header_crypto))
+                            .await?;
                     }
-                    update_bodies.push(build_player_health_update_body(caster, session.player_health)?);
+                    update_bodies.push(build_player_health_update_body(
+                        caster,
+                        session.character.player_health,
+                    )?);
                 }
                 direct_heal_applied = true;
             }
             SpellEffectDispatch::Energize if !direct_energize_applied => {
                 let energize = spell_direct_energize(&spell_info);
                 if energize != 0 && max_mana != 0 {
-                    let old_mana = session.player_mana;
-                    session.player_mana = session.player_mana.saturating_add(energize).min(max_mana);
-                    let amount_energized = session.player_mana.saturating_sub(old_mana);
+                    let old_mana = session.character.player_mana;
+                    session.character.player_mana = session
+                        .character
+                        .player_mana
+                        .saturating_add(energize)
+                        .min(max_mana);
+                    let amount_energized = session.character.player_mana.saturating_sub(old_mana);
                     if amount_energized > 0 {
                         let log = build_spell_energize_log_body(
                             caster,
@@ -990,7 +1048,10 @@ async fn apply_item_use_spell_effects(
                         )
                         .await?;
                     }
-                    update_bodies.push(build_player_mana_update_body(caster, session.player_mana)?);
+                    update_bodies.push(build_player_mana_update_body(
+                        caster,
+                        session.character.player_mana,
+                    )?);
                 }
                 direct_energize_applied = true;
             }
@@ -1029,7 +1090,7 @@ async fn apply_item_use_spell_effects(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_item_aura_effect(
+pub(in crate::world) async fn apply_item_aura_effect(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -1048,15 +1109,17 @@ async fn apply_item_aura_effect(
         caster,
         character_level,
         now,
-        deps.shared_world.maps.spell_duration(spell_template.duration_index),
+        deps.shared_world
+            .maps
+            .spell_duration(spell_template.duration_index),
     );
     let makes_player_sit = aura.periodic_regen.is_some();
     apply_player_aura(session, aura.clone());
     if makes_player_sit {
-        session.player_stand_state = PLAYER_STAND_STATE_SIT;
+        session.character.player_stand_state = PLAYER_STAND_STATE_SIT;
         update_bodies.push(build_player_stand_state_update_body(
             character_snapshot,
-            session.player_stand_state,
+            session.character.player_stand_state,
         )?);
     }
     if let Some(event) = deps
@@ -1066,13 +1129,31 @@ async fn apply_item_aura_effect(
         .await?
     {
         for packet in event.direct_packets {
-            send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
         }
-        deps.shared_world.sessions.dispatch(event.observer_packets).await;
+        deps.shared_world
+            .sessions
+            .dispatch(event.observer_packets)
+            .await;
     } else {
-        update_bodies.push(build_player_aura_update_body(caster, &session.active_auras)?);
-        for packet in build_player_aura_duration_update_packets(&session.active_auras, now) {
-            send_packet(stream, packet.opcode, &packet.body, Some(&mut *header_crypto)).await?;
+        update_bodies.push(build_player_aura_update_body(
+            caster,
+            &session.auras.active_auras,
+        )?);
+        for packet in build_player_aura_duration_update_packets(&session.auras.active_auras, now) {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
         }
     }
     if makes_player_sit {
@@ -1087,7 +1168,7 @@ async fn apply_item_aura_effect(
                     opcode: SMSG_UPDATE_OBJECT,
                     body: build_player_stand_state_update_body(
                         character_snapshot,
-                        session.player_stand_state,
+                        session.character.player_stand_state,
                     )?,
                 },
             )
@@ -1097,7 +1178,7 @@ async fn apply_item_aura_effect(
     Ok(())
 }
 
-async fn apply_item_teleport_spell_effect(
+pub(in crate::world) async fn apply_item_teleport_spell_effect(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
@@ -1105,11 +1186,16 @@ async fn apply_item_teleport_spell_effect(
     old_map_id: u32,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(homebind) = wow_db::get_character_homebind(deps.character_db_pool, character_guid).await? else {
-        warn!(character_guid, "Ignoring teleport item spell without character_homebind row");
+    let Some(homebind) =
+        wow_db::get_character_homebind(deps.character_db_pool, character_guid).await?
+    else {
+        warn!(
+            character_guid,
+            "Ignoring teleport item spell without character_homebind row"
+        );
         return Ok(());
     };
-    let Some(character) = session.active_character.as_mut() else {
+    let Some(character) = session.character.active_character.as_mut() else {
         return Ok(());
     };
 
@@ -1139,7 +1225,7 @@ async fn apply_item_teleport_spell_effect(
     send_packet(
         stream,
         MSG_MOVE_TELEPORT_ACK,
-        &build_near_teleport_ack_body(session.active_character.as_ref().unwrap(), 0)?,
+        &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )
     .await?;

@@ -1,7 +1,9 @@
+use super::*;
+
 // Shared DB-creature damage authority and observer packet production.
 
 impl MapRuntime {
-    fn apply_db_creature_aura(
+    pub(in crate::world) fn apply_db_creature_aura(
         &mut self,
         creature_guid: ObjectGuid,
         caster_character_guid: u32,
@@ -70,7 +72,7 @@ impl MapRuntime {
         }))
     }
 
-    fn adjust_db_creature_attack_timer_for_base_time_change(
+    pub(in crate::world) fn adjust_db_creature_attack_timer_for_base_time_change(
         &mut self,
         creature_guid: ObjectGuid,
         old_duration: Duration,
@@ -99,7 +101,7 @@ impl MapRuntime {
         };
     }
 
-    fn advance_db_creature_auras(
+    pub(in crate::world) fn advance_db_creature_auras(
         &mut self,
         now: Instant,
         now_epoch_secs: u64,
@@ -164,7 +166,8 @@ impl MapRuntime {
                     WorldDamageKind::PeriodicAura,
                     now,
                     now_epoch_secs,
-                )? else {
+                )?
+                else {
                     continue;
                 };
                 if applied.remaining_health > 0 {
@@ -261,7 +264,10 @@ impl MapRuntime {
         }
         for (creature_guid, victim, threat) in threat_updates {
             self.add_db_creature_threat(creature_guid, victim, threat);
-            if self.active_creature_combats.contains_key(&creature_guid.raw()) {
+            if self
+                .active_creature_combats
+                .contains_key(&creature_guid.raw())
+            {
                 self.refresh_db_creature_combat_leash(creature_guid, now);
             }
         }
@@ -276,7 +282,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn apply_db_creature_damage(
+    pub(in crate::world) fn apply_db_creature_damage(
         &mut self,
         request: DbCreatureDamageRequest,
     ) -> anyhow::Result<Option<DbCreatureDamageEvent>> {
@@ -290,7 +296,11 @@ impl MapRuntime {
         let requested_damage = request
             .melee_outcome
             .map(|outcome| outcome.total_damage)
-            .or_else(|| request.spell_damage_outcome.map(|outcome| outcome.final_damage))
+            .or_else(|| {
+                request
+                    .spell_damage_outcome
+                    .map(|outcome| outcome.final_damage)
+            })
             .unwrap_or_else(|| request.damage.max(1));
         let attacker_rage_damage = if request.melee_outcome.is_some() {
             requested_damage
@@ -327,7 +337,8 @@ impl MapRuntime {
             },
             request.now,
             request.now_epoch_secs,
-        )? else {
+        )?
+        else {
             return Ok(None);
         };
         let damage = applied.applied_damage;
@@ -339,12 +350,9 @@ impl MapRuntime {
             if let Some(corpse_loot) = request.corpse_loot {
                 creature.loot_owner.get_or_insert(corpse_loot.owner);
                 creature.loot_allowed_players = corpse_loot.allowed_players.into_iter().collect();
-                creature.loot_current_looter = corpse_loot.current_looter.or_else(|| {
-                    request
-                        .killer
-                        .is_player()
-                        .then(|| request.killer.counter())
-                });
+                creature.loot_current_looter = corpse_loot
+                    .current_looter
+                    .or_else(|| request.killer.is_player().then(|| request.killer.counter()));
                 creature.loot_method = corpse_loot.loot_method;
                 creature.loot_items = loot_items_with_stable_slots(corpse_loot.loot_items);
                 creature.loot_items_generated = true;
@@ -357,10 +365,14 @@ impl MapRuntime {
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.active_creature_combats.remove(&creature_guid.raw());
-            self.active_creature_spell_casts.remove(&creature_guid.raw());
+            self.active_creature_spell_casts
+                .remove(&creature_guid.raw());
             self.creature_combat_leash.remove(&creature_guid.raw());
             self.creature_threats.remove(&creature_guid.raw());
-        } else if self.active_creature_combats.contains_key(&creature_guid.raw()) {
+        } else if self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw())
+        {
             self.refresh_db_creature_combat_leash(creature_guid, request.now);
         }
         let player_melee_cleanup_packets = if is_dead {
@@ -376,10 +388,7 @@ impl MapRuntime {
             build_db_creature_death_update_body(
                 creature_guid,
                 creature.dynamic_flags_for_player(
-                    request
-                        .killer
-                        .is_player()
-                        .then(|| request.killer.counter()),
+                    request.killer.is_player().then(|| request.killer.counter()),
                 ),
                 db_creature_unit_flags(&creature, false),
             )?
@@ -459,7 +468,12 @@ impl MapRuntime {
                             } else {
                                 0
                             };
-                            (outcome.absorbed, outcome.resisted, outcome.blocked, hit_info)
+                            (
+                                outcome.absorbed,
+                                outcome.resisted,
+                                outcome.blocked,
+                                hit_info,
+                            )
                         })
                     })
                     .unwrap_or((0, 0, 0, 0));
@@ -483,7 +497,11 @@ impl MapRuntime {
                 request
                     .spell_damage_outcome
                     .and_then(|outcome| outcome.miss_info)
-                    .or_else(|| request.melee_outcome.and_then(|outcome| outcome.spell_miss_info())),
+                    .or_else(|| {
+                        request
+                            .melee_outcome
+                            .and_then(|outcome| outcome.spell_miss_info())
+                    }),
             )
             .map(|(spell_id, miss_info)| {
                 build_spell_log_miss_body(request.killer, creature_guid, spell_id, miss_info)
@@ -560,10 +578,7 @@ impl MapRuntime {
                     motion_stop_packet
                         .iter()
                         .cloned()
-                        .chain([
-                            combat_flag_packet.clone(),
-                            attack_stop_packet.clone(),
-                        ])
+                        .chain([combat_flag_packet.clone(), attack_stop_packet.clone()])
                         .map(move |packet| (session_id, packet))
                 })
                 .collect();
@@ -602,25 +617,25 @@ impl MapRuntime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct PeriodicDamageTick {
-    school: u32,
-    requested_damage: u32,
-    dealt_damage: u32,
-    absorb: u32,
-    resist: i32,
-    threat: f32,
+pub(in crate::world) struct PeriodicDamageTick {
+    pub(in crate::world) school: u32,
+    pub(in crate::world) requested_damage: u32,
+    pub(in crate::world) dealt_damage: u32,
+    pub(in crate::world) absorb: u32,
+    pub(in crate::world) resist: i32,
+    pub(in crate::world) threat: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PeriodicAuraLog {
-    creature_guid: ObjectGuid,
-    caster: ObjectGuid,
-    spell_id: u32,
-    aura_name: u32,
-    tick: PeriodicDamageTick,
+pub(in crate::world) struct PeriodicAuraLog {
+    pub(in crate::world) creature_guid: ObjectGuid,
+    pub(in crate::world) caster: ObjectGuid,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) aura_name: u32,
+    pub(in crate::world) tick: PeriodicDamageTick,
 }
 
-fn calculate_periodic_damage_tick(
+pub(in crate::world) fn calculate_periodic_damage_tick(
     periodic: &PeriodicDamageAura,
     caster: SpellCombatUnitSnapshot,
     target: SpellCombatUnitSnapshot,
@@ -640,7 +655,7 @@ fn calculate_periodic_damage_tick(
     )
 }
 
-fn calculate_periodic_damage_tick_with_rolls(
+pub(in crate::world) fn calculate_periodic_damage_tick_with_rolls(
     periodic: &PeriodicDamageAura,
     caster: SpellCombatUnitSnapshot,
     target: SpellCombatUnitSnapshot,
@@ -675,7 +690,7 @@ fn calculate_periodic_damage_tick_with_rolls(
     }
 }
 
-fn periodic_spell_caster_snapshot(
+pub(in crate::world) fn periodic_spell_caster_snapshot(
     players: &HashMap<u32, PlayerRuntime>,
     caster: ObjectGuid,
 ) -> Option<SpellCombatUnitSnapshot> {
@@ -690,13 +705,14 @@ fn periodic_spell_caster_snapshot(
     ))
 }
 
-fn db_creature_aura_runtime_packets(
+pub(in crate::world) fn db_creature_aura_runtime_packets(
     creature_guid: ObjectGuid,
     creature: &mut DbCreatureRuntime,
     old_speeds: UnitMoveSpeeds,
     now: Instant,
 ) -> anyhow::Result<Vec<OutboundWorldPacket>> {
-    let mut packets = db_creature_speed_change_packets(creature_guid, old_speeds, creature.move_speeds)?;
+    let mut packets =
+        db_creature_speed_change_packets(creature_guid, old_speeds, creature.move_speeds)?;
     if db_creature_motion_speed_changed(&creature.motion, old_speeds, creature.move_speeds) {
         if let Some(packet) = retime_db_creature_motion_for_speed_change(creature, now)? {
             packets.push(packet);
@@ -705,7 +721,7 @@ fn db_creature_aura_runtime_packets(
     Ok(packets)
 }
 
-fn db_creature_speed_change_packets(
+pub(in crate::world) fn db_creature_speed_change_packets(
     creature_guid: ObjectGuid,
     old_speeds: UnitMoveSpeeds,
     new_speeds: UnitMoveSpeeds,
@@ -749,7 +765,7 @@ fn db_creature_speed_change_packets(
     Ok(packets)
 }
 
-fn push_speed_change_packet(
+pub(in crate::world) fn push_speed_change_packet(
     packets: &mut Vec<OutboundWorldPacket>,
     creature_guid: ObjectGuid,
     opcode: u16,
@@ -766,7 +782,7 @@ fn push_speed_change_packet(
     Ok(())
 }
 
-fn db_creature_motion_speed_changed(
+pub(in crate::world) fn db_creature_motion_speed_changed(
     motion: &CreatureMotionState,
     old_speeds: UnitMoveSpeeds,
     new_speeds: UnitMoveSpeeds,
@@ -782,7 +798,9 @@ fn db_creature_motion_speed_changed(
     }
 }
 
-fn build_periodic_aura_log_body(log: PeriodicAuraLog) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_periodic_aura_log_body(
+    log: PeriodicAuraLog,
+) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(40);
     PackedGuid::write(&mut body, log.creature_guid)?;
     PackedGuid::write(&mut body, log.caster)?;
@@ -796,7 +814,7 @@ fn build_periodic_aura_log_body(log: PeriodicAuraLog) -> anyhow::Result<Vec<u8>>
     Ok(body)
 }
 
-fn build_db_creature_aura_state_update_body(
+pub(in crate::world) fn build_db_creature_aura_state_update_body(
     creature: ObjectGuid,
     active_auras: &[ActiveAura],
     health: u32,

@@ -1,9 +1,11 @@
+use super::*;
+
 use std::ffi::CStr;
 
-const MAX_NATIVE_MMAP_PATH_POINTS: usize = 74;
+pub(in crate::world) const MAX_NATIVE_MMAP_PATH_POINTS: usize = 74;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeMmapPathStatus {
+pub(in crate::world) enum NativeMmapPathStatus {
     Normal,
     Incomplete,
     NoPath,
@@ -13,21 +15,21 @@ enum NativeMmapPathStatus {
 }
 
 #[derive(Debug, Clone)]
-struct NativeMmapPath {
-    status: NativeMmapPathStatus,
-    points: Vec<WorldPosition>,
+pub(in crate::world) struct NativeMmapPath {
+    pub(in crate::world) status: NativeMmapPathStatus,
+    pub(in crate::world) points: Vec<WorldPosition>,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct NativeMmapPathPoint {
-    x: f32,
-    y: f32,
-    z: f32,
+pub(in crate::world) struct NativeMmapPathPoint {
+    pub(in crate::world) x: f32,
+    pub(in crate::world) y: f32,
+    pub(in crate::world) z: f32,
 }
 
 extern "C" {
-    fn wow_mmap_find_path(
+    pub(in crate::world) fn wow_mmap_find_path(
         data_dir: *const std::os::raw::c_char,
         map_id: u32,
         start_tile_x: u32,
@@ -48,7 +50,7 @@ extern "C" {
 }
 
 #[cfg(test)]
-fn native_mmap_find_path_points(
+pub(in crate::world) fn native_mmap_find_path_points(
     data_dir: &CStr,
     start: WorldPosition,
     target: WorldPosition,
@@ -70,7 +72,7 @@ fn native_mmap_find_path_points(
     .then_some(path.points)
 }
 
-fn native_mmap_find_path(
+pub(in crate::world) fn native_mmap_find_path(
     data_dir: &CStr,
     start: WorldPosition,
     target: WorldPosition,
@@ -168,17 +170,17 @@ fn native_mmap_find_path(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NativeMmapPathFilter {
-    include_flags: u16,
-    exclude_flags: u16,
+pub(in crate::world) struct NativeMmapPathFilter {
+    pub(in crate::world) include_flags: u16,
+    pub(in crate::world) exclude_flags: u16,
 }
 
 impl NativeMmapPathFilter {
-    const NAV_GROUND: u16 = 0x01;
-    const NAV_WATER: u16 = 0x04;
-    const NAV_MAGMA_SLIME: u16 = 0x08;
+    pub(in crate::world) const NAV_GROUND: u16 = 0x01;
+    pub(in crate::world) const NAV_WATER: u16 = 0x04;
+    pub(in crate::world) const NAV_MAGMA_SLIME: u16 = 0x08;
 
-    fn ground() -> Self {
+    pub(in crate::world) fn ground() -> Self {
         Self {
             include_flags: Self::NAV_GROUND,
             exclude_flags: 0,
@@ -186,7 +188,7 @@ impl NativeMmapPathFilter {
     }
 }
 
-fn native_mmap_status_from_error(error: i32) -> NativeMmapPathStatus {
+pub(in crate::world) fn native_mmap_status_from_error(error: i32) -> NativeMmapPathStatus {
     match error {
         -20 | -21 | -22 | -23 | -3 | -4 | -5 | -6 => NativeMmapPathStatus::Unavailable,
         -1 | -7 | -8 => NativeMmapPathStatus::InvalidInput,
@@ -194,14 +196,14 @@ fn native_mmap_status_from_error(error: i32) -> NativeMmapPathStatus {
     }
 }
 
-fn native_mmap_world_position_is_finite(position: WorldPosition) -> bool {
+pub(in crate::world) fn native_mmap_world_position_is_finite(position: WorldPosition) -> bool {
     position.x.is_finite()
         && position.y.is_finite()
         && position.z.is_finite()
         && position.orientation.is_finite()
 }
 
-fn native_mmap_tile_is_valid(tile: (u32, u32)) -> bool {
+pub(in crate::world) fn native_mmap_tile_is_valid(tile: (u32, u32)) -> bool {
     const MAX_NUMBER_OF_GRIDS: u32 = 64;
     tile.0 < MAX_NUMBER_OF_GRIDS && tile.1 < MAX_NUMBER_OF_GRIDS
 }

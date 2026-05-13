@@ -1,9 +1,11 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
-const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
-const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
+pub(in crate::world) const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
+pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
 
 impl MapRuntime {
-    fn advance_player_environment_tick(
+    pub(in crate::world) fn advance_player_environment_tick(
         &mut self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -12,7 +14,7 @@ impl MapRuntime {
         })
     }
 
-    fn advance_player_environment_tick_with_flags(
+    pub(in crate::world) fn advance_player_environment_tick_with_flags(
         &mut self,
         now: Instant,
         mut flags_for: impl FnMut(&WorldGeometry, WorldPosition) -> u32,
@@ -30,13 +32,19 @@ impl MapRuntime {
             let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
             let old_flags = player.environment.flags;
             let new_flags = flags_for(&geometry, player.position);
-            direct_packets.extend(update_player_environment_flags(player, old_flags, new_flags)?);
+            direct_packets.extend(update_player_environment_flags(
+                player, old_flags, new_flags,
+            )?);
             let player_session_id = player.client_session_id();
 
             let diff_millis = player
                 .environment
                 .last_tick_at
-                .map(|last| now.saturating_duration_since(last).as_millis().min(u128::from(u32::MAX)) as u32)
+                .map(|last| {
+                    now.saturating_duration_since(last)
+                        .as_millis()
+                        .min(u128::from(u32::MAX)) as u32
+                })
                 .unwrap_or(0);
             player.environment.last_tick_at = Some(now);
 
@@ -135,7 +143,8 @@ impl MapRuntime {
                     amount,
                     WorldDamageKind::Environmental,
                     now,
-                )? else {
+                )?
+                else {
                     continue;
                 };
                 damage_events.push((
@@ -203,12 +212,11 @@ impl MapRuntime {
                 if death_presentation_deferred {
                     self.pending_player_death_presentations.insert(
                         character_guid,
-                        PlayerDeathPresentationRuntime {
-                            waiting_since: now,
-                        },
+                        PlayerDeathPresentationRuntime { waiting_since: now },
                     );
                 } else {
-                    self.pending_player_death_presentations.remove(&character_guid);
+                    self.pending_player_death_presentations
+                        .remove(&character_guid);
                 }
                 let cleanup = self.finalize_player_death_cleanup(player, now)?;
                 direct_death_packets.extend(cleanup.direct_packets);
@@ -225,33 +233,35 @@ impl MapRuntime {
                 packets.push((direct_session_id, health_packet.clone()));
             }
             packets.extend(observer_death_packets);
-            packets.extend(self.nearby_player_guids(
-                position,
-                PLAYER_VISIBILITY_RADIUS_YARDS,
-                Some(character_guid),
-            )
-            .into_iter()
-            .flat_map(|observer_guid| {
-                self.players.get(&observer_guid).map(|observer| {
-                    [
-                        observer.packet_to_client(damage_log.clone()),
-                        aura_packet
-                            .clone()
-                            .and_then(|packet| observer.packet_to_client(packet)),
-                        observer.packet_to_client(health_packet.clone()),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
+            packets.extend(
+                self.nearby_player_guids(
+                    position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+                .into_iter()
+                .flat_map(|observer_guid| {
+                    self.players.get(&observer_guid).map(|observer| {
+                        [
+                            observer.packet_to_client(damage_log.clone()),
+                            aura_packet
+                                .clone()
+                                .and_then(|packet| observer.packet_to_client(packet)),
+                            observer.packet_to_client(health_packet.clone()),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                    })
                 })
-            })
-            .flatten());
+                .flatten(),
+            );
         }
 
         Ok(packets)
     }
 
-    fn advance_player_regen_tick(
+    pub(in crate::world) fn advance_player_regen_tick(
         &mut self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -275,15 +285,16 @@ impl MapRuntime {
         for player in self.players.values_mut() {
             let character_guid = player.guid;
             let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-            let in_combat = player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
+            let in_combat =
+                player.active_combat_target.is_some() || in_combat_victims.contains(&player_guid);
             let is_dead_or_ghost = player.health == 0 || (player.flags & PLAYER_FLAGS_GHOST) != 0;
             if is_dead_or_ghost {
                 continue;
             }
-            let suppress_health_regen = player
-                .environment
-                .last_damage_at
-                .is_some_and(|damage_at| now.saturating_duration_since(damage_at) <= PLAYER_REGEN_TICK);
+            let suppress_health_regen =
+                player.environment.last_damage_at.is_some_and(|damage_at| {
+                    now.saturating_duration_since(damage_at) <= PLAYER_REGEN_TICK
+                });
 
             let mut health_changed = false;
             let mut mana_changed = false;
@@ -312,7 +323,10 @@ impl MapRuntime {
             }
 
             let mut periodic_health_applied = 0u32;
-            if consumable_health_gain > 0 && !suppress_health_regen && player.health < player.max_health {
+            if consumable_health_gain > 0
+                && !suppress_health_regen
+                && player.health < player.max_health
+            {
                 let old_health = player.health;
                 let new_health = player
                     .health
@@ -324,7 +338,10 @@ impl MapRuntime {
             }
 
             let mut periodic_mana_applied = 0u32;
-            if consumable_mana_gain > 0 && player.max_power1 > 0 && player.power1 < player.max_power1 {
+            if consumable_mana_gain > 0
+                && player.max_power1 > 0
+                && player.power1 < player.max_power1
+            {
                 let old_mana = player.power1;
                 let new_mana = player
                     .power1
@@ -336,7 +353,8 @@ impl MapRuntime {
             }
 
             if !in_combat && !suppress_health_regen && player.health < player.max_health {
-                let regen = health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+                let regen =
+                    health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
                 let gained = (regen * 2.0).floor() as u32;
                 if gained > 0 {
                     let new_health = player.health.saturating_add(gained).min(player.max_health);
@@ -345,9 +363,10 @@ impl MapRuntime {
                 }
             }
 
-            let mana_regen_blocked_by_recent_cast = player
-                .last_mana_use_at
-                .is_some_and(|last_mana_use_at| now.saturating_duration_since(last_mana_use_at) < PLAYER_MANA_REGEN_INTERRUPT);
+            let mana_regen_blocked_by_recent_cast =
+                player.last_mana_use_at.is_some_and(|last_mana_use_at| {
+                    now.saturating_duration_since(last_mana_use_at) < PLAYER_MANA_REGEN_INTERRUPT
+                });
             if !mana_regen_blocked_by_recent_cast
                 && player.max_power1 > 0
                 && player.power1 < player.max_power1
@@ -481,23 +500,25 @@ impl MapRuntime {
             if let Some(direct_session_id) = direct_session_id {
                 packets.push((direct_session_id, packet.clone()));
             }
-            packets.extend(self.nearby_player_guids(
-                position,
-                PLAYER_VISIBILITY_RADIUS_YARDS,
-                Some(character_guid),
-            )
-            .into_iter()
-            .filter_map(|observer_guid| {
-                self.players
-                    .get(&observer_guid)
-                    .and_then(|observer| observer.packet_to_client(packet.clone()))
-            }));
+            packets.extend(
+                self.nearby_player_guids(
+                    position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+                .into_iter()
+                .filter_map(|observer_guid| {
+                    self.players
+                        .get(&observer_guid)
+                        .and_then(|observer| observer.packet_to_client(packet.clone()))
+                }),
+            );
         }
 
         Ok(packets)
     }
 
-    fn add_player(
+    pub(in crate::world) fn add_player(
         &mut self,
         player: PlayerRuntime,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -588,7 +609,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn update_player_position(
+    pub(in crate::world) fn update_player_position(
         &mut self,
         character_guid: u32,
         opcode: u16,
@@ -664,14 +685,14 @@ impl MapRuntime {
             };
             other.visible_objects.remove(&player_object);
             if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
-                    opcode: SMSG_DESTROY_OBJECT,
-                    body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
+                opcode: SMSG_DESTROY_OBJECT,
+                body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
             }) {
                 packets.push(packet);
             }
             if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
-                    opcode: SMSG_DESTROY_OBJECT,
-                    body: build_destroy_guid_body(player_object),
+                opcode: SMSG_DESTROY_OBJECT,
+                body: build_destroy_guid_body(player_object),
             }) {
                 packets.push(packet);
             }
@@ -700,8 +721,8 @@ impl MapRuntime {
             other.visible_objects.insert(player_object);
             entering_for_mover.push(other_guid);
             if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
-                    opcode: SMSG_UPDATE_OBJECT,
-                    body: build_update_object_body(std::slice::from_ref(&moving_player_create)),
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_update_object_body(std::slice::from_ref(&moving_player_create)),
             }) {
                 packets.push(packet);
             }
@@ -821,7 +842,8 @@ impl MapRuntime {
                     },
                 );
             } else {
-                self.pending_player_death_presentations.remove(&character_guid);
+                self.pending_player_death_presentations
+                    .remove(&character_guid);
             }
             let cleanup = self.finalize_player_death_cleanup(player_object, Instant::now())?;
             applied.direct_packets.extend(cleanup.direct_packets);
@@ -840,7 +862,13 @@ impl MapRuntime {
                 ));
             let damage_log = OutboundWorldPacket {
                 opcode: SMSG_ENVIRONMENTALDAMAGELOG,
-                body: build_environmental_damage_log_body(player_object, DAMAGE_FALL, damage, 0, 0)?,
+                body: build_environmental_damage_log_body(
+                    player_object,
+                    DAMAGE_FALL,
+                    damage,
+                    0,
+                    0,
+                )?,
             };
             let health_update_body = if let Some(applied) = fall_applied.as_ref() {
                 applied.health_packet.body.clone()
@@ -905,13 +933,17 @@ impl MapRuntime {
                 }
             }
         }
-        packets.extend(self.present_player_death_if_ready(character_guid, Instant::now(), false)?);
+        packets.extend(self.present_player_death_if_ready(
+            character_guid,
+            Instant::now(),
+            false,
+        )?);
         self.invalidate_idle_motion_start_schedule();
 
         Ok(packets)
     }
 
-    fn update_player_visible_equipment(
+    pub(in crate::world) fn update_player_visible_equipment(
         &mut self,
         character_guid: u32,
         visible_equipment: [u32; ENUM_EQUIPMENT_SLOTS],
@@ -945,7 +977,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn update_player_health(
+    pub(in crate::world) fn update_player_health(
         &mut self,
         character_guid: u32,
         health: u32,
@@ -978,7 +1010,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn apply_player_heal(
+    pub(in crate::world) fn apply_player_heal(
         &mut self,
         target_character_guid: u32,
         amount: u32,
@@ -1031,7 +1063,7 @@ impl MapRuntime {
         }))
     }
 
-    fn add_player_combo_points(
+    pub(in crate::world) fn add_player_combo_points(
         &mut self,
         character_guid: u32,
         target: ObjectGuid,
@@ -1054,7 +1086,7 @@ impl MapRuntime {
         })
     }
 
-    fn clear_player_combo_points(
+    pub(in crate::world) fn clear_player_combo_points(
         &mut self,
         character_guid: u32,
     ) -> Option<PlayerComboPointsEvent> {
@@ -1069,45 +1101,51 @@ impl MapRuntime {
         })
     }
 
-    fn sync_player_gameplay_state(&mut self, character_guid: u32, session: &WorldSessionState) {
+    pub(in crate::world) fn sync_player_gameplay_state(
+        &mut self,
+        character_guid: u32,
+        session: &WorldSessionState,
+    ) {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
         };
-        player.max_health = player.max_health.max(session.player_health.max(1));
-        player.max_power1 = player.max_power1.max(session.player_mana);
+        player.max_health = player
+            .max_health
+            .max(session.character.player_health.max(1));
+        player.max_power1 = player.max_power1.max(session.character.player_mana);
         let map_death_is_newer = player.health == 0
             && player.death_state != PlayerDeathState::Alive
-            && session.player_death_state == PlayerDeathState::Alive;
+            && session.death.player_death_state == PlayerDeathState::Alive;
         if !map_death_is_newer {
-            player.death_state = session.player_death_state;
-            player.health = if session.player_death_state == PlayerDeathState::Alive {
-                session.player_health.min(player.max_health)
+            player.death_state = session.death.player_death_state;
+            player.health = if session.death.player_death_state == PlayerDeathState::Alive {
+                session.character.player_health.min(player.max_health)
             } else {
-                session.player_health
+                session.character.player_health
             };
         }
-        player.power1 = session.player_mana.min(player.max_power1);
-        player.power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
-        player.power4 = session.player_energy.min(player.max_power4);
+        player.power1 = session.character.player_mana.min(player.max_power1);
+        player.power2 = session.character.player_rage.min(POWER_RAGE_DEFAULT);
+        player.power4 = session.character.player_energy.min(player.max_power4);
         if !map_death_is_newer {
             player.stand_state =
                 if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
                     PLAYER_STAND_STATE_DEAD
                 } else {
-                    session.player_stand_state
+                    session.character.player_stand_state
                 };
         }
-        player.active_spells = session.active_spells.clone();
-        player.inventory = session.inventory.clone();
-        player.quest_statuses = session.quest_statuses.clone();
+        player.active_spells = session.character.active_spells.clone();
+        player.inventory = session.inventory.items.clone();
+        player.quest_statuses = session.quests.quest_statuses.clone();
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
-        if let Some(character) = session.active_character.as_ref() {
+        if let Some(character) = session.character.active_character.as_ref() {
             player.level = character.level;
             player.xp = character.xp;
             if !map_death_is_newer {
-                player.flags = session.player_flags;
+                player.flags = session.character.player_flags;
                 player.position = character.position;
                 player.movement_flags = character.movement_flags;
                 player.client_time = character.client_time;
@@ -1121,17 +1159,19 @@ impl MapRuntime {
                 }
             }
             let equipment_cache = session
+                .character
                 .player_visual
                 .as_ref()
                 .and_then(|visual| visual.equipment_cache.as_deref());
-            player.visible_equipment = visible_equipment_for_inventory(
-                equipment_cache,
-                &session.inventory,
-            );
+            player.visible_equipment =
+                visible_equipment_for_inventory(equipment_cache, &session.inventory.items);
         }
     }
 
-    fn player_runtime_snapshot(&self, character_guid: u32) -> Option<PlayerRuntimeSnapshot> {
+    pub(in crate::world) fn player_runtime_snapshot(
+        &self,
+        character_guid: u32,
+    ) -> Option<PlayerRuntimeSnapshot> {
         let player = self.players.get(&character_guid)?;
         Some(PlayerRuntimeSnapshot {
             position: player.position,
@@ -1170,7 +1210,10 @@ impl MapRuntime {
         })
     }
 
-    fn player_visible_db_creature_guids(&self, character_guid: u32) -> Vec<u64> {
+    pub(in crate::world) fn player_visible_db_creature_guids(
+        &self,
+        character_guid: u32,
+    ) -> Vec<u64> {
         let Some(player) = self.players.get(&character_guid) else {
             return Vec::new();
         };
@@ -1184,7 +1227,7 @@ impl MapRuntime {
         guids
     }
 
-    fn update_player_reward_state(
+    pub(in crate::world) fn update_player_reward_state(
         &mut self,
         character_guid: u32,
         reward: PlayerRewardRuntimeUpdate,
@@ -1203,7 +1246,7 @@ impl MapRuntime {
         player.quest_statuses = reward.quest_statuses;
     }
 
-    fn update_player_level_progression_state(
+    pub(in crate::world) fn update_player_level_progression_state(
         &mut self,
         character_guid: u32,
         progression: PlayerLevelProgressionRuntimeUpdate,
@@ -1228,7 +1271,7 @@ impl MapRuntime {
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
     }
 
-    fn update_player_inventory(
+    pub(in crate::world) fn update_player_inventory(
         &mut self,
         character_guid: u32,
         inventory: Vec<CharacterInventoryItem>,
@@ -1239,7 +1282,10 @@ impl MapRuntime {
         player.inventory = inventory;
     }
 
-    fn player_visible_db_gameobject_guids(&self, character_guid: u32) -> Vec<u64> {
+    pub(in crate::world) fn player_visible_db_gameobject_guids(
+        &self,
+        character_guid: u32,
+    ) -> Vec<u64> {
         let Some(player) = self.players.get(&character_guid) else {
             return Vec::new();
         };
@@ -1253,7 +1299,7 @@ impl MapRuntime {
         guids
     }
 
-    fn should_rescan_player_creature_visibility(
+    pub(in crate::world) fn should_rescan_player_creature_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -1268,7 +1314,7 @@ impl MapRuntime {
         false
     }
 
-    fn should_rescan_player_gameobject_visibility(
+    pub(in crate::world) fn should_rescan_player_gameobject_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -1283,7 +1329,7 @@ impl MapRuntime {
         false
     }
 
-    fn should_rescan_player_corpse_visibility(
+    pub(in crate::world) fn should_rescan_player_corpse_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -1298,7 +1344,7 @@ impl MapRuntime {
         false
     }
 
-    fn reset_player_visibility_scan_positions(&mut self, character_guid: u32) {
+    pub(in crate::world) fn reset_player_visibility_scan_positions(&mut self, character_guid: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.last_creature_visibility_position = None;
             player.last_gameobject_visibility_position = None;
@@ -1306,7 +1352,7 @@ impl MapRuntime {
         }
     }
 
-    fn update_player_combat_stats(
+    pub(in crate::world) fn update_player_combat_stats(
         &mut self,
         character_guid: u32,
         combat_stats: PlayerCombatStats,
@@ -1338,13 +1384,16 @@ impl MapRuntime {
             .collect())
     }
 
-    fn player_combat_stats(&self, character_guid: u32) -> Option<PlayerCombatStats> {
+    pub(in crate::world) fn player_combat_stats(
+        &self,
+        character_guid: u32,
+    ) -> Option<PlayerCombatStats> {
         self.players
             .get(&character_guid)
             .map(|player| player.combat_stats)
     }
 
-    fn remove_player_auras_with_interrupt_flag(
+    pub(in crate::world) fn remove_player_auras_with_interrupt_flag(
         &mut self,
         character_guid: u32,
         interrupt_flag: u32,
@@ -1352,7 +1401,8 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return false;
         };
-        let changed = remove_active_auras_with_interrupt_flag(&mut player.active_auras, interrupt_flag);
+        let changed =
+            remove_active_auras_with_interrupt_flag(&mut player.active_auras, interrupt_flag);
         if changed {
             refresh_player_runtime_stats_from_auras(player);
             player.combat_stats =
@@ -1361,7 +1411,7 @@ impl MapRuntime {
         changed
     }
 
-    fn apply_player_aura(
+    pub(in crate::world) fn apply_player_aura(
         &mut self,
         character_guid: u32,
         aura: ActiveAura,
@@ -1377,7 +1427,7 @@ impl MapRuntime {
             .map(Some)
     }
 
-    fn advance_player_aura_expirations(
+    pub(in crate::world) fn advance_player_aura_expirations(
         &mut self,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
@@ -1413,7 +1463,8 @@ impl MapRuntime {
                 continue;
             }
             let before = player.active_auras.len();
-            let target_snapshot = player_spell_snapshot(player.level, player.class, &player.combat_stats);
+            let target_snapshot =
+                player_spell_snapshot(player.level, player.class, &player.combat_stats);
             for aura in &mut player.active_auras {
                 let Some(periodic) = aura.periodic_damage.as_mut() else {
                     continue;
@@ -1454,7 +1505,8 @@ impl MapRuntime {
                     tick.dealt_damage,
                     WorldDamageKind::PeriodicAura,
                     now,
-                )? else {
+                )?
+                else {
                     continue;
                 };
                 health_changed = true;
@@ -1561,7 +1613,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn build_player_aura_update_event(
+    pub(in crate::world) fn build_player_aura_update_event(
         &self,
         character_guid: u32,
         now: Instant,
@@ -1620,7 +1672,7 @@ impl MapRuntime {
         })
     }
 
-    fn set_player_auto_attack(
+    pub(in crate::world) fn set_player_auto_attack(
         &mut self,
         character_guid: u32,
         target: Option<ObjectGuid>,
@@ -1639,7 +1691,11 @@ impl MapRuntime {
         }
     }
 
-    fn player_auto_attack_due(&self, character_guid: u32, now: Instant) -> Option<ObjectGuid> {
+    pub(in crate::world) fn player_auto_attack_due(
+        &self,
+        character_guid: u32,
+        now: Instant,
+    ) -> Option<ObjectGuid> {
         if self.active_player_spell_casts.contains_key(&character_guid) {
             return None;
         }
@@ -1651,25 +1707,39 @@ impl MapRuntime {
             .then_some(target)
     }
 
-    fn player_auto_attack_target(&self, character_guid: u32) -> Option<ObjectGuid> {
+    pub(in crate::world) fn player_auto_attack_target(
+        &self,
+        character_guid: u32,
+    ) -> Option<ObjectGuid> {
         self.players
             .get(&character_guid)
             .and_then(|player| player.active_combat_target)
     }
 
-    fn set_player_next_swing_at(&mut self, character_guid: u32, next_swing_at: Option<Instant>) {
+    pub(in crate::world) fn set_player_next_swing_at(
+        &mut self,
+        character_guid: u32,
+        next_swing_at: Option<Instant>,
+    ) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.active_combat_next_swing_at = next_swing_at;
         }
     }
 
-    fn player_selected_target(&self, character_guid: u32) -> Option<ObjectGuid> {
+    pub(in crate::world) fn player_selected_target(
+        &self,
+        character_guid: u32,
+    ) -> Option<ObjectGuid> {
         self.players
             .get(&character_guid)
             .and_then(|player| player.selected_target)
     }
 
-    fn set_player_position(&mut self, character_guid: u32, position: WorldPosition) {
+    pub(in crate::world) fn set_player_position(
+        &mut self,
+        character_guid: u32,
+        position: WorldPosition,
+    ) {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
         };
@@ -1677,13 +1747,13 @@ impl MapRuntime {
         player.cell = cell_coord_for_position(position);
     }
 
-    fn set_player_power2(&mut self, character_guid: u32, power2: u32) {
+    pub(in crate::world) fn set_player_power2(&mut self, character_guid: u32, power2: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.power2 = power2.min(POWER_RAGE_DEFAULT);
         }
     }
 
-    fn player_spell_cast_failure(
+    pub(in crate::world) fn player_spell_cast_failure(
         &self,
         character_guid: u32,
         spell_profile: &SpellCastProfile,
@@ -1729,7 +1799,7 @@ impl MapRuntime {
         None
     }
 
-    fn apply_player_spell_cooldowns(
+    pub(in crate::world) fn apply_player_spell_cooldowns(
         &mut self,
         character_guid: u32,
         spell_profile: &SpellCastProfile,
@@ -1753,7 +1823,7 @@ impl MapRuntime {
         }
     }
 
-    fn spend_player_spell_power(
+    pub(in crate::world) fn spend_player_spell_power(
         &mut self,
         character_guid: u32,
         spell_profile: &SpellCastProfile,
@@ -1764,15 +1834,9 @@ impl MapRuntime {
             return Ok(());
         };
         match spell_profile.power {
-            SpellPowerCost::Rage { cost } if player.power2 < cost => {
-                Err(SPELL_FAILED_NO_POWER)
-            }
-            SpellPowerCost::Mana { cost } if player.power1 < cost => {
-                Err(SPELL_FAILED_NO_POWER)
-            }
-            SpellPowerCost::Energy { cost } if player.power4 < cost => {
-                Err(SPELL_FAILED_NO_POWER)
-            }
+            SpellPowerCost::Rage { cost } if player.power2 < cost => Err(SPELL_FAILED_NO_POWER),
+            SpellPowerCost::Mana { cost } if player.power1 < cost => Err(SPELL_FAILED_NO_POWER),
+            SpellPowerCost::Energy { cost } if player.power4 < cost => Err(SPELL_FAILED_NO_POWER),
             SpellPowerCost::Rage { cost } => {
                 player.power2 = player.power2.saturating_sub(cost);
                 Ok(())
@@ -1791,7 +1855,7 @@ impl MapRuntime {
         }
     }
 
-    fn clear_player_spell_recovery(
+    pub(in crate::world) fn clear_player_spell_recovery(
         &mut self,
         character_guid: u32,
         spell_profile: &SpellCastProfile,
@@ -1809,13 +1873,17 @@ impl MapRuntime {
         }
     }
 
-    fn queue_player_next_melee_spell(&mut self, character_guid: u32, queued: QueuedNextMeleeSpell) {
+    pub(in crate::world) fn queue_player_next_melee_spell(
+        &mut self,
+        character_guid: u32,
+        queued: QueuedNextMeleeSpell,
+    ) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.queued_next_melee_spell = Some(queued);
         }
     }
 
-    fn queued_player_next_melee_spell(
+    pub(in crate::world) fn queued_player_next_melee_spell(
         &self,
         character_guid: u32,
         target: ObjectGuid,
@@ -1826,13 +1894,13 @@ impl MapRuntime {
             .filter(|queued| queued.target == target)
     }
 
-    fn clear_player_next_melee_spell(&mut self, character_guid: u32) {
+    pub(in crate::world) fn clear_player_next_melee_spell(&mut self, character_guid: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.queued_next_melee_spell = None;
         }
     }
 
-    fn clear_player_melee_state_for_dead_target(
+    pub(in crate::world) fn clear_player_melee_state_for_dead_target(
         &mut self,
         target: ObjectGuid,
         exclude_character_guid: Option<u32>,
@@ -1910,7 +1978,7 @@ impl MapRuntime {
         Ok(packets)
     }
 
-    fn spend_queued_player_next_melee_spell_power(
+    pub(in crate::world) fn spend_queued_player_next_melee_spell_power(
         &mut self,
         character_guid: u32,
         queued: QueuedNextMeleeSpell,
@@ -1928,7 +1996,7 @@ impl MapRuntime {
         Ok(())
     }
 
-    fn update_player_selection(
+    pub(in crate::world) fn update_player_selection(
         &mut self,
         character_guid: u32,
         selected_target: Option<ObjectGuid>,
@@ -1959,7 +2027,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn update_player_target(
+    pub(in crate::world) fn update_player_target(
         &mut self,
         character_guid: u32,
         unit_target: Option<ObjectGuid>,
@@ -1989,7 +2057,10 @@ impl MapRuntime {
             .collect())
     }
 
-    fn remove_player(&mut self, character_guid: u32) -> Vec<(SessionId, OutboundWorldPacket)> {
+    pub(in crate::world) fn remove_player(
+        &mut self,
+        character_guid: u32,
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };
@@ -2029,7 +2100,7 @@ impl MapRuntime {
         .collect()
     }
 
-    fn broadcast_nearby_player_packet(
+    pub(in crate::world) fn broadcast_nearby_player_packet(
         &self,
         sender_guid: u32,
         radius: f32,
@@ -2048,7 +2119,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn set_player_looting_state(
+    pub(in crate::world) fn set_player_looting_state(
         &mut self,
         character_guid: u32,
         looting: bool,
@@ -2081,7 +2152,7 @@ impl MapRuntime {
             .collect())
     }
 
-    fn set_player_stand_state(
+    pub(in crate::world) fn set_player_stand_state(
         &mut self,
         character_guid: u32,
         stand_state: u8,
@@ -2115,7 +2186,7 @@ impl MapRuntime {
     }
 
     #[cfg(test)]
-    fn update_player_db_creature_visibility(
+    pub(in crate::world) fn update_player_db_creature_visibility(
         &mut self,
         character_guid: u32,
         create_guids: &[ObjectGuid],
@@ -2133,33 +2204,33 @@ impl MapRuntime {
     }
 }
 
-const DAMAGE_FALL: u8 = 2;
-const DAMAGE_EXHAUSTED: u8 = 0;
-const DAMAGE_DROWNING: u8 = 1;
-const DAMAGE_LAVA: u8 = 3;
-const FALL_DAMAGE_MINIMUM_HEIGHT: f32 = 14.57;
-const FALL_DAMAGE_DISTANCE_MULTIPLIER: f32 = 0.018;
-const FALL_DAMAGE_BASE_PERCENT: f32 = 0.2426;
-const ENVIRONMENT_MASK_LIQUID_HAZARD: u32 =
+pub(in crate::world) const DAMAGE_FALL: u8 = 2;
+pub(in crate::world) const DAMAGE_EXHAUSTED: u8 = 0;
+pub(in crate::world) const DAMAGE_DROWNING: u8 = 1;
+pub(in crate::world) const DAMAGE_LAVA: u8 = 3;
+pub(in crate::world) const FALL_DAMAGE_MINIMUM_HEIGHT: f32 = 14.57;
+pub(in crate::world) const FALL_DAMAGE_DISTANCE_MULTIPLIER: f32 = 0.018;
+pub(in crate::world) const FALL_DAMAGE_BASE_PERCENT: f32 = 0.2426;
+pub(in crate::world) const ENVIRONMENT_MASK_LIQUID_HAZARD: u32 =
     ENVIRONMENT_FLAG_IN_MAGMA | ENVIRONMENT_FLAG_IN_SLIME;
-const MIRROR_TIMER_FATIGUE: u32 = 0;
-const MIRROR_TIMER_BREATH: u32 = 1;
-const MIRROR_TIMER_ENVIRONMENTAL: u32 = 3;
-const MIRROR_TIMER_FATIGUE_MAX_MILLIS: u32 = 60_000;
-const MIRROR_TIMER_BREATH_MAX_MILLIS: u32 = 60_000;
-const MIRROR_TIMER_ENVIRONMENTAL_MAX_MILLIS: u32 = 1_000;
-const MIRROR_TIMER_EXPIRED_PULSE_MILLIS: u32 = 2_000;
-const ENVIRONMENTAL_DAMAGE_MIN: u32 = 605;
-const ENVIRONMENTAL_DAMAGE_MAX: u32 = 610;
+pub(in crate::world) const MIRROR_TIMER_FATIGUE: u32 = 0;
+pub(in crate::world) const MIRROR_TIMER_BREATH: u32 = 1;
+pub(in crate::world) const MIRROR_TIMER_ENVIRONMENTAL: u32 = 3;
+pub(in crate::world) const MIRROR_TIMER_FATIGUE_MAX_MILLIS: u32 = 60_000;
+pub(in crate::world) const MIRROR_TIMER_BREATH_MAX_MILLIS: u32 = 60_000;
+pub(in crate::world) const MIRROR_TIMER_ENVIRONMENTAL_MAX_MILLIS: u32 = 1_000;
+pub(in crate::world) const MIRROR_TIMER_EXPIRED_PULSE_MILLIS: u32 = 2_000;
+pub(in crate::world) const ENVIRONMENTAL_DAMAGE_MIN: u32 = 605;
+pub(in crate::world) const ENVIRONMENTAL_DAMAGE_MAX: u32 = 610;
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerFallUpdate {
-    last_fall_z: Option<f32>,
-    last_fall_time: u32,
-    damage: Option<u32>,
+pub(in crate::world) struct PlayerFallUpdate {
+    pub(in crate::world) last_fall_z: Option<f32>,
+    pub(in crate::world) last_fall_time: u32,
+    pub(in crate::world) damage: Option<u32>,
 }
 
-fn player_fall_update(
+pub(in crate::world) fn player_fall_update(
     player: &PlayerRuntime,
     opcode: u16,
     movement: &MovementInfo,
@@ -2209,7 +2280,7 @@ fn player_fall_update(
     }
 }
 
-fn tracked_player_fall_time(opcode: u16, movement: &MovementInfo) -> u32 {
+pub(in crate::world) fn tracked_player_fall_time(opcode: u16, movement: &MovementInfo) -> u32 {
     if opcode == MSG_MOVE_FALL_LAND as u16 || movement.flags & MOVEFLAG_JUMPING == 0 {
         0
     } else {
@@ -2217,7 +2288,11 @@ fn tracked_player_fall_time(opcode: u16, movement: &MovementInfo) -> u32 {
     }
 }
 
-fn calculate_fall_damage(fall_start_z: f32, landing_z: f32, max_health: u32) -> Option<u32> {
+pub(in crate::world) fn calculate_fall_damage(
+    fall_start_z: f32,
+    landing_z: f32,
+    max_health: u32,
+) -> Option<u32> {
     let fall_height = fall_start_z - landing_z;
     if fall_height <= FALL_DAMAGE_MINIMUM_HEIGHT {
         return None;
@@ -2230,7 +2305,7 @@ fn calculate_fall_damage(fall_start_z: f32, landing_z: f32, max_health: u32) -> 
     Some(damage.max(1).min(max_health.max(1)))
 }
 
-fn environmental_breath_or_fatigue_damage(max_health: u32, level: u8) -> u32 {
+pub(in crate::world) fn environmental_breath_or_fatigue_damage(max_health: u32, level: u8) -> u32 {
     let variance = if level <= 1 {
         0
     } else {
@@ -2239,11 +2314,11 @@ fn environmental_breath_or_fatigue_damage(max_health: u32, level: u8) -> u32 {
     (max_health.max(1) / 5).saturating_add(variance).max(1)
 }
 
-fn environmental_lava_damage() -> u32 {
+pub(in crate::world) fn environmental_lava_damage() -> u32 {
     rand::thread_rng().gen_range(ENVIRONMENTAL_DAMAGE_MIN..=ENVIRONMENTAL_DAMAGE_MAX)
 }
 
-fn update_player_environment_flags(
+pub(in crate::world) fn update_player_environment_flags(
     player: &mut PlayerRuntime,
     old_flags: u32,
     new_flags: u32,
@@ -2267,30 +2342,27 @@ fn update_player_environment_flags(
         };
     }
     if (old_flags ^ new_flags) & ENVIRONMENT_MASK_LIQUID_HAZARD != 0 {
-        player.environment.environmental.scale =
-            if new_flags & ENVIRONMENT_MASK_LIQUID_HAZARD != 0 {
-                -1
-            } else {
-                10
-            };
+        player.environment.environmental.scale = if new_flags & ENVIRONMENT_MASK_LIQUID_HAZARD != 0
+        {
+            -1
+        } else {
+            10
+        };
     }
 
     let mut packets = Vec::new();
-    for timer in [
-        player.environment.fatigue,
-        player.environment.breath,
-    ] {
+    for timer in [player.environment.fatigue, player.environment.breath] {
         if timer.active {
             if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
-                    opcode: SMSG_START_MIRROR_TIMER,
-                    body: build_mirror_timer_start_body(
-                        timer.timer_type,
-                        timer.duration_millis.saturating_sub(timer.elapsed_millis),
-                        timer.duration_millis,
-                        timer.scale,
-                        false,
-                        0,
-                    ),
+                opcode: SMSG_START_MIRROR_TIMER,
+                body: build_mirror_timer_start_body(
+                    timer.timer_type,
+                    timer.duration_millis.saturating_sub(timer.elapsed_millis),
+                    timer.duration_millis,
+                    timer.scale,
+                    false,
+                    0,
+                ),
             }) {
                 packets.push(packet);
             }
@@ -2299,7 +2371,10 @@ fn update_player_environment_flags(
     Ok(packets)
 }
 
-fn player_environment_timer_active(player: &PlayerRuntime, timer_type: u32) -> bool {
+pub(in crate::world) fn player_environment_timer_active(
+    player: &PlayerRuntime,
+    timer_type: u32,
+) -> bool {
     match timer_type {
         MIRROR_TIMER_FATIGUE => player.environment.flags & ENVIRONMENT_FLAG_HIGH_SEA != 0,
         MIRROR_TIMER_BREATH => player.environment.flags & ENVIRONMENT_FLAG_UNDERWATER != 0,
@@ -2310,7 +2385,10 @@ fn player_environment_timer_active(player: &PlayerRuntime, timer_type: u32) -> b
     }
 }
 
-fn player_environment_timer_deactivated(player: &PlayerRuntime, timer_type: u32) -> bool {
+pub(in crate::world) fn player_environment_timer_deactivated(
+    player: &PlayerRuntime,
+    timer_type: u32,
+) -> bool {
     if player.flags & PLAYER_FLAGS_GHOST != 0 {
         return true;
     }
@@ -2325,7 +2403,7 @@ fn player_environment_timer_deactivated(player: &PlayerRuntime, timer_type: u32)
     }
 }
 
-fn advance_environment_timer(
+pub(in crate::world) fn advance_environment_timer(
     timer: &mut MirrorTimerRuntime,
     diff_millis: u32,
     should_activate: bool,
@@ -2374,15 +2452,15 @@ fn advance_environment_timer(
                     direct_packets.push((
                         session_id,
                         OutboundWorldPacket {
-                        opcode: SMSG_START_MIRROR_TIMER,
-                        body: build_mirror_timer_start_body(
-                            timer.timer_type,
-                            timer.duration_millis.saturating_sub(timer.elapsed_millis),
-                            timer.duration_millis,
-                            timer.scale,
-                            false,
-                            0,
-                        ),
+                            opcode: SMSG_START_MIRROR_TIMER,
+                            body: build_mirror_timer_start_body(
+                                timer.timer_type,
+                                timer.duration_millis.saturating_sub(timer.elapsed_millis),
+                                timer.duration_millis,
+                                timer.scale,
+                                false,
+                                0,
+                            ),
                         },
                     ));
                 }
@@ -2392,7 +2470,7 @@ fn advance_environment_timer(
     Ok(false)
 }
 
-fn start_mirror_timer(
+pub(in crate::world) fn start_mirror_timer(
     timer: &mut MirrorTimerRuntime,
     direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
     session_id: Option<SessionId>,
@@ -2408,22 +2486,22 @@ fn start_mirror_timer(
             direct_packets.push((
                 session_id,
                 OutboundWorldPacket {
-                opcode: SMSG_START_MIRROR_TIMER,
-                body: build_mirror_timer_start_body(
-                    timer.timer_type,
-                    timer.duration_millis,
-                    timer.duration_millis,
-                    timer.scale,
-                    false,
-                    0,
-                ),
+                    opcode: SMSG_START_MIRROR_TIMER,
+                    body: build_mirror_timer_start_body(
+                        timer.timer_type,
+                        timer.duration_millis,
+                        timer.duration_millis,
+                        timer.scale,
+                        false,
+                        0,
+                    ),
                 },
             ));
         }
     }
 }
 
-fn stop_mirror_timer(
+pub(in crate::world) fn stop_mirror_timer(
     timer: &mut MirrorTimerRuntime,
     direct_packets: &mut Vec<(SessionId, OutboundWorldPacket)>,
     session_id: Option<SessionId>,
@@ -2439,15 +2517,15 @@ fn stop_mirror_timer(
             direct_packets.push((
                 session_id,
                 OutboundWorldPacket {
-                opcode: SMSG_STOP_MIRROR_TIMER,
-                body: timer.timer_type.to_le_bytes().to_vec(),
+                    opcode: SMSG_STOP_MIRROR_TIMER,
+                    body: timer.timer_type.to_le_bytes().to_vec(),
                 },
             ));
         }
     }
 }
 
-fn build_mirror_timer_start_body(
+pub(in crate::world) fn build_mirror_timer_start_body(
     timer_type: u32,
     remaining_millis: u32,
     duration_millis: u32,
@@ -2465,7 +2543,7 @@ fn build_mirror_timer_start_body(
     body
 }
 
-fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
+pub(in crate::world) fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
     let spirit = spirit as f32;
     match class {
         1 => spirit * 1.26 - 22.6, // Warrior
@@ -2481,7 +2559,7 @@ fn health_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
     }
 }
 
-fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
+pub(in crate::world) fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
     let spirit = spirit as f32;
     let per_two_seconds = match class {
         2 => spirit / 5.0 + 15.0,  // Paladin
@@ -2496,7 +2574,7 @@ fn mana_regen_per_second_for_spirit(class: u8, spirit: u32) -> f32 {
     per_two_seconds / 2.0
 }
 
-fn refresh_player_runtime_stats_from_auras(player: &mut PlayerRuntime) {
+pub(in crate::world) fn refresh_player_runtime_stats_from_auras(player: &mut PlayerRuntime) {
     let was_dead = player.health == 0;
     player.effective_world_stats =
         player_world_stats_with_active_auras(player.base_world_stats, &player.active_auras);
@@ -2511,7 +2589,10 @@ fn refresh_player_runtime_stats_from_auras(player: &mut PlayerRuntime) {
     player.power1 = player.power1.min(player.max_power1);
 }
 
-fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: WorldPosition) -> bool {
+pub(in crate::world) fn should_rescan_visibility_from(
+    previous: Option<WorldPosition>,
+    position: WorldPosition,
+) -> bool {
     let Some(previous) = previous else {
         return true;
     };
@@ -2522,7 +2603,9 @@ fn should_rescan_visibility_from(previous: Option<WorldPosition>, position: Worl
         >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
 }
 
-fn moving_bot_start_packet(player: &PlayerRuntime) -> anyhow::Result<Option<OutboundWorldPacket>> {
+pub(in crate::world) fn moving_bot_start_packet(
+    player: &PlayerRuntime,
+) -> anyhow::Result<Option<OutboundWorldPacket>> {
     let Some(bot) = player.bot_runtime.as_ref() else {
         return Ok(None);
     };

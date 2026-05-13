@@ -1,6 +1,8 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Maps/Map.cpp object visibility streaming.
 
-async fn stream_newly_visible_db_creatures(
+pub(in crate::world) async fn stream_newly_visible_db_creatures(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
@@ -8,7 +10,7 @@ async fn stream_newly_visible_db_creatures(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let guid = character.guid;
@@ -45,8 +47,7 @@ async fn stream_newly_visible_db_creatures(
             nearby_creature_runtimes,
         )
         .await;
-    let visibility_updates =
-        mirror_db_creature_visibility_stage(session, visibility_stage)?;
+    let visibility_updates = mirror_db_creature_visibility_stage(session, visibility_stage)?;
     if visibility_updates.create_bodies.is_empty() && visibility_updates.destroy_guids.is_empty() {
         return Ok(());
     }
@@ -80,14 +81,14 @@ async fn stream_newly_visible_db_creatures(
     Ok(())
 }
 
-async fn stream_nearby_player_corpses(
+pub(in crate::world) async fn stream_nearby_player_corpses(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let character_guid = character.guid;
@@ -151,11 +152,11 @@ async fn stream_nearby_player_corpses(
 
 #[cfg(test)]
 #[allow(dead_code)]
-fn should_rescan_player_corpse_visibility(
+pub(in crate::world) fn should_rescan_player_corpse_visibility(
     session: &WorldSessionState,
     position: WorldPosition,
 ) -> bool {
-    let Some(previous) = session.last_player_corpse_visibility_position else {
+    let Some(previous) = session.visibility.last_player_corpse_visibility_position else {
         return true;
     };
     if previous.map_id != position.map_id {
@@ -166,11 +167,11 @@ fn should_rescan_player_corpse_visibility(
 }
 
 #[cfg(test)]
-fn should_rescan_db_creature_visibility(
+pub(in crate::world) fn should_rescan_db_creature_visibility(
     session: &WorldSessionState,
     position: WorldPosition,
 ) -> bool {
-    let Some(previous) = session.last_creature_visibility_position else {
+    let Some(previous) = session.visibility.last_creature_visibility_position else {
         return true;
     };
     if previous.map_id != position.map_id {
@@ -183,18 +184,18 @@ fn should_rescan_db_creature_visibility(
 }
 
 #[derive(Debug, Default)]
-struct DbCreatureVisibilityUpdates {
-    create_bodies: Vec<Vec<u8>>,
-    destroy_guids: Vec<ObjectGuid>,
-    create_count: usize,
-    tracked_creature_count: usize,
-    alive_count: usize,
-    corpse_count: usize,
-    dead_count: usize,
+pub(in crate::world) struct DbCreatureVisibilityUpdates {
+    pub(in crate::world) create_bodies: Vec<Vec<u8>>,
+    pub(in crate::world) destroy_guids: Vec<ObjectGuid>,
+    pub(in crate::world) create_count: usize,
+    pub(in crate::world) tracked_creature_count: usize,
+    pub(in crate::world) alive_count: usize,
+    pub(in crate::world) corpse_count: usize,
+    pub(in crate::world) dead_count: usize,
 }
 
 #[cfg(test)]
-fn stage_db_creature_visibility_updates(
+pub(in crate::world) fn stage_db_creature_visibility_updates(
     session: &mut WorldSessionState,
     position: WorldPosition,
     nearby_creatures: Vec<DbCreatureRuntime>,
@@ -204,17 +205,22 @@ fn stage_db_creature_visibility_updates(
         .map(|creature| creature.guid().raw())
         .collect::<HashSet<_>>();
     let mut retained_combat_guids = HashSet::new();
-    if let Some(target) = session.active_combat_target {
-        if session.db_creatures.contains_key(&target.raw()) {
+    if let Some(target) = session.combat.active_combat_target {
+        if session.visibility.db_creatures.contains_key(&target.raw()) {
             retained_combat_guids.insert(target.raw());
         }
     }
-    for combat in session.active_creature_combats.values() {
-        if session.db_creatures.contains_key(&combat.attacker.raw()) {
+    for combat in session.combat.active_creature_combats.values() {
+        if session
+            .visibility
+            .db_creatures
+            .contains_key(&combat.attacker.raw())
+        {
             retained_combat_guids.insert(combat.attacker.raw());
         }
     }
     let mut destroy_guids = session
+        .visibility
         .db_creatures
         .iter()
         .filter(|(guid, creature)| {
@@ -227,32 +233,39 @@ fn stage_db_creature_visibility_updates(
         .collect::<Vec<_>>();
     for guid in &destroy_guids {
         if session
+            .visibility
             .db_creatures
             .get(guid)
             .is_some_and(|creature| creature.life_state == DbCreatureLifeState::Alive)
         {
-            session.db_creatures.remove(guid);
-        } else if let Some(creature) = session.db_creatures.get_mut(guid) {
+            session.visibility.db_creatures.remove(guid);
+        } else if let Some(creature) = session.visibility.db_creatures.get_mut(guid) {
             creature.client_visible = false;
         }
     }
     if session
+        .combat
         .active_combat_target
         .is_some_and(|target| destroy_guids.contains(&target.raw()))
     {
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+        session.combat.active_combat_target = None;
+        session.combat.active_combat_next_swing_at = None;
     }
     session
+        .combat
         .active_creature_combats
         .retain(|guid, _| !destroy_guids.contains(guid));
 
-    let character_guid = session.active_character.as_ref().map(|character| character.guid);
+    let character_guid = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.guid);
     let mut create_blocks = Vec::new();
     let mut create_guids = Vec::new();
     for runtime in nearby_creatures {
         let creature_raw_guid = runtime.guid().raw();
-        if let Some(creature) = session.db_creatures.get_mut(&creature_raw_guid) {
+        if let Some(creature) = session.visibility.db_creatures.get_mut(&creature_raw_guid) {
             if creature.life_state != DbCreatureLifeState::Alive
                 && runtime.life_state == DbCreatureLifeState::Alive
             {
@@ -293,22 +306,28 @@ fn stage_db_creature_visibility_updates(
                 character_guid,
             )?);
         }
-        session.db_creatures.insert(creature_raw_guid, runtime);
+        session
+            .visibility
+            .db_creatures
+            .insert(creature_raw_guid, runtime);
     }
 
     let create_count = create_blocks.len();
-    let tracked_creature_count = session.db_creatures.len();
+    let tracked_creature_count = session.visibility.db_creatures.len();
     let alive_count = session
+        .visibility
         .db_creatures
         .values()
         .filter(|creature| creature.life_state == DbCreatureLifeState::Alive)
         .count();
     let corpse_count = session
+        .visibility
         .db_creatures
         .values()
         .filter(|creature| creature.life_state == DbCreatureLifeState::Corpse)
         .count();
     let dead_count = session
+        .visibility
         .db_creatures
         .values()
         .filter(|creature| creature.life_state == DbCreatureLifeState::Dead)
@@ -330,21 +349,21 @@ fn stage_db_creature_visibility_updates(
     })
 }
 
-fn is_db_creature_inside_unload_radius(
+pub(in crate::world) fn is_db_creature_inside_unload_radius(
     creature: &DbCreatureRuntime,
     position: WorldPosition,
 ) -> bool {
     is_db_creature_inside_radius(creature, position, CREATURE_VISIBILITY_UNLOAD_RADIUS_YARDS)
 }
 
-fn is_db_creature_inside_visibility_radius(
+pub(in crate::world) fn is_db_creature_inside_visibility_radius(
     creature: &DbCreatureRuntime,
     position: WorldPosition,
 ) -> bool {
     is_db_creature_inside_radius(creature, position, CREATURE_SPAWN_RADIUS_YARDS)
 }
 
-fn is_db_creature_inside_radius(
+pub(in crate::world) fn is_db_creature_inside_radius(
     creature: &DbCreatureRuntime,
     position: WorldPosition,
     radius: f32,
@@ -352,7 +371,7 @@ fn is_db_creature_inside_radius(
     is_position_inside_radius(creature.current_position, position, radius)
 }
 
-fn is_position_inside_radius(
+pub(in crate::world) fn is_position_inside_radius(
     object_position: WorldPosition,
     position: WorldPosition,
     radius: f32,
@@ -365,22 +384,35 @@ fn is_position_inside_radius(
     dx * dx + dy * dy <= radius * radius
 }
 
-fn distance_squared_2d(left_x: f32, left_y: f32, right_x: f32, right_y: f32) -> f32 {
+pub(in crate::world) fn distance_squared_2d(
+    left_x: f32,
+    left_y: f32,
+    right_x: f32,
+    right_y: f32,
+) -> f32 {
     let dx = left_x - right_x;
     let dy = left_y - right_y;
     dx * dx + dy * dy
 }
 
-fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {
+pub(in crate::world) fn build_destroy_guid_body(guid: ObjectGuid) -> Vec<u8> {
     guid.raw().to_le_bytes().to_vec()
 }
 
-fn mirror_db_creature_visibility_stage(
+pub(in crate::world) fn mirror_db_creature_visibility_stage(
     session: &mut WorldSessionState,
     stage: MapDbCreatureVisibilityStage,
 ) -> anyhow::Result<DbCreatureVisibilityUpdates> {
-    let create_guids = stage.create_guids.iter().map(|guid| guid.raw()).collect::<HashSet<_>>();
-    let character_guid = session.active_character.as_ref().map(|character| character.guid);
+    let create_guids = stage
+        .create_guids
+        .iter()
+        .map(|guid| guid.raw())
+        .collect::<HashSet<_>>();
+    let character_guid = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.guid);
 
     let mut create_blocks = Vec::new();
     for runtime in &stage.nearby_creatures {

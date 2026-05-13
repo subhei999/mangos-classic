@@ -1,197 +1,133 @@
+use super::*;
+use wow_proto::{
+    QuestCompleteRewardItem, QuestDetailsEmote, QuestListResponseItem, QuestObjectiveRequirement,
+    QuestOfferRewardEmote, QuestPoint, QuestRewardItem, ServerWorldPacket, SmsgQuestQueryResponse,
+    SmsgQuestUpdateAddKillResponse, SmsgQuestgiverOfferRewardResponse,
+    SmsgQuestgiverQuestCompleteResponse, SmsgQuestgiverQuestDetailsResponse,
+    SmsgQuestgiverQuestListResponse, SmsgQuestgiverRequestItemsResponse,
+    SmsgQuestgiverStatusResponse,
+};
+
 // CMaNGOS reference: src/game/Handlers/QuestHandler.cpp quest packet builders.
 
-fn build_questgiver_status_body(guid: ObjectGuid, status: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(12);
-
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-
-    body.extend_from_slice(&status.to_le_bytes());
-
-    body
+pub(in crate::world) fn build_questgiver_status_body(guid: ObjectGuid, status: u32) -> Vec<u8> {
+    SmsgQuestgiverStatusResponse { guid, status }.body()
 }
 
 #[derive(Debug, Clone)]
-struct QuestListItem {
-    quest: QuestTemplateQuery,
-    dialog_status: u32,
+pub(in crate::world) struct QuestListItem {
+    pub(in crate::world) quest: QuestTemplateQuery,
+    pub(in crate::world) dialog_status: u32,
 }
 
 #[derive(Debug, Clone, Default)]
-struct QuestRewardItemDisplays {
-    choice: [u32; 6],
-    reward: [u32; 4],
-    required: [u32; 4],
+pub(in crate::world) struct QuestRewardItemDisplays {
+    pub(in crate::world) choice: [u32; 6],
+    pub(in crate::world) reward: [u32; 4],
+    pub(in crate::world) required: [u32; 4],
 }
 
-fn build_questgiver_quest_list_body(guid: ObjectGuid, quests: &[QuestListItem]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(64 + quests.len() * 24);
-
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-
-    push_cstring(&mut body, "Greetings.");
-
-    body.extend_from_slice(&0u32.to_le_bytes()); // player emote delay
-
-    body.extend_from_slice(&0u32.to_le_bytes()); // NPC emote
-
-    body.push(quests.len().min(u8::MAX as usize) as u8);
-
-    for item in quests.iter().take(u8::MAX as usize) {
-        let quest = &item.quest;
-
-        body.extend_from_slice(&quest.entry.to_le_bytes());
-
-        body.extend_from_slice(&item.dialog_status.to_le_bytes());
-
-        body.extend_from_slice(&quest.quest_level.to_le_bytes());
-
-        push_cstring(&mut body, &quest.title);
+pub(in crate::world) fn build_questgiver_quest_list_body(
+    guid: ObjectGuid,
+    quests: &[QuestListItem],
+) -> Vec<u8> {
+    SmsgQuestgiverQuestListResponse {
+        guid,
+        greeting: "Greetings.".to_string(),
+        player_emote_delay: 0,
+        npc_emote: 0,
+        quests: quests
+            .iter()
+            .map(|item| QuestListResponseItem {
+                quest_id: item.quest.entry,
+                dialog_status: item.dialog_status,
+                quest_level: item.quest.quest_level,
+                title: item.quest.title.clone(),
+            })
+            .collect(),
     }
-
-    body
+    .body()
 }
 
-fn build_quest_details_body(
+pub(in crate::world) fn build_quest_details_body(
     guid: ObjectGuid,
     quest: &QuestTemplateQuery,
     displays: &QuestRewardItemDisplays,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(256);
-
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    push_cstring(&mut body, &quest.title);
-
-    push_cstring(&mut body, &quest.details);
-
-    push_cstring(&mut body, &quest.objectives);
-
-    body.extend_from_slice(&1u32.to_le_bytes()); // activate accept
-
-    write_quest_reward_items(
-        &mut body,
-        &quest.rew_choice_item_id,
-        &quest.rew_choice_item_count,
-        &displays.choice,
-    );
-
-    write_quest_reward_items(
-        &mut body,
-        &quest.rew_item_id,
-        &quest.rew_item_count,
-        &displays.reward,
-    );
-
-    body.extend_from_slice(&(quest.rew_or_req_money.max(0) as u32).to_le_bytes());
-
-    body.extend_from_slice(&quest.rew_spell.to_le_bytes());
-
-    let emote_count = quest
-        .details_emote
-        .iter()
-        .take_while(|emote| **emote != 0)
-        .count();
-
-    body.extend_from_slice(&(emote_count as u32).to_le_bytes());
-
-    for index in 0..emote_count {
-        body.extend_from_slice(&quest.details_emote[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.details_emote_delay[index].to_le_bytes());
+    SmsgQuestgiverQuestDetailsResponse {
+        guid,
+        quest_id: quest.entry,
+        title: quest.title.clone(),
+        details: quest.details.clone(),
+        objectives: quest.objectives.clone(),
+        activate_accept: 1,
+        choice_items: quest_reward_items(
+            &quest.rew_choice_item_id,
+            &quest.rew_choice_item_count,
+            &displays.choice,
+        ),
+        reward_items: quest_reward_items(
+            &quest.rew_item_id,
+            &quest.rew_item_count,
+            &displays.reward,
+        ),
+        reward_money: quest.rew_or_req_money.max(0) as u32,
+        reward_spell: quest.rew_spell,
+        emotes: quest
+            .details_emote
+            .iter()
+            .zip(quest.details_emote_delay.iter())
+            .take_while(|(emote, _)| **emote != 0)
+            .map(|(emote, delay)| QuestDetailsEmote {
+                emote: *emote,
+                delay: *delay,
+            })
+            .collect(),
     }
-
-    body
+    .body()
 }
 
-fn build_quest_query_response_body(quest: &QuestTemplateQuery) -> Vec<u8> {
-    let mut body = Vec::with_capacity(512);
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    body.extend_from_slice(&quest.method.to_le_bytes());
-
-    body.extend_from_slice(&quest.quest_level.to_le_bytes());
-
-    body.extend_from_slice(&(quest.zone_or_sort as i32 as u32).to_le_bytes());
-
-    body.extend_from_slice(&quest.quest_type.to_le_bytes());
-
-    body.extend_from_slice(&quest.rep_objective_faction.to_le_bytes());
-
-    body.extend_from_slice(&(quest.rep_objective_value as u32).to_le_bytes());
-
-    body.extend_from_slice(&0u32.to_le_bytes());
-
-    body.extend_from_slice(&0u32.to_le_bytes());
-
-    body.extend_from_slice(&quest.next_quest_in_chain.to_le_bytes());
-
-    body.extend_from_slice(&(quest.rew_or_req_money.max(0) as u32).to_le_bytes());
-
-    body.extend_from_slice(&quest.rew_money_max_level.to_le_bytes());
-
-    body.extend_from_slice(&quest.rew_spell.to_le_bytes());
-
-    body.extend_from_slice(&quest.src_item_id.to_le_bytes());
-
-    body.extend_from_slice(&quest.quest_flags.to_le_bytes());
-
-    for index in 0..4 {
-        body.extend_from_slice(&quest.rew_item_id[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.rew_item_count[index].to_le_bytes());
+pub(in crate::world) fn build_quest_query_response_body(quest: &QuestTemplateQuery) -> Vec<u8> {
+    SmsgQuestQueryResponse {
+        quest_id: quest.entry,
+        method: quest.method,
+        quest_level: quest.quest_level,
+        zone_or_sort: quest.zone_or_sort as i32 as u32,
+        quest_type: quest.quest_type,
+        rep_objective_faction: quest.rep_objective_faction,
+        rep_objective_value: quest.rep_objective_value as u32,
+        next_quest_in_chain: quest.next_quest_in_chain,
+        reward_money: quest.rew_or_req_money.max(0) as u32,
+        reward_money_max_level: quest.rew_money_max_level,
+        reward_spell: quest.rew_spell,
+        source_item_id: quest.src_item_id,
+        quest_flags: quest.quest_flags,
+        reward_items: quest.rew_item_id,
+        reward_item_counts: quest.rew_item_count,
+        choice_items: quest.rew_choice_item_id,
+        choice_item_counts: quest.rew_choice_item_count,
+        point: QuestPoint {
+            map_id: quest.point_map_id,
+            x: quest.point_x,
+            y: quest.point_y,
+            opt: quest.point_opt,
+        },
+        title: quest.title.clone(),
+        objectives: quest.objectives.clone(),
+        details: quest.details.clone(),
+        end_text: quest.end_text.clone(),
+        requirements: std::array::from_fn(|index| QuestObjectiveRequirement {
+            wire_entry: quest_requirement_wire_entry(quest.req_creature_or_go_id[index]),
+            required_count: quest.req_creature_or_go_count[index],
+            item_id: quest.req_item_id[index],
+            item_count: quest.req_item_count[index],
+        }),
+        objective_text: quest.objective_text.clone(),
     }
-
-    for index in 0..6 {
-        body.extend_from_slice(&quest.rew_choice_item_id[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.rew_choice_item_count[index].to_le_bytes());
-    }
-
-    body.extend_from_slice(&quest.point_map_id.to_le_bytes());
-
-    body.extend_from_slice(&quest.point_x.to_le_bytes());
-
-    body.extend_from_slice(&quest.point_y.to_le_bytes());
-
-    body.extend_from_slice(&quest.point_opt.to_le_bytes());
-
-    push_cstring(&mut body, &quest.title);
-
-    push_cstring(&mut body, &quest.objectives);
-
-    push_cstring(&mut body, &quest.details);
-
-    push_cstring(&mut body, &quest.end_text);
-
-    for index in 0..4 {
-        let entry = quest.req_creature_or_go_id[index];
-
-        let wire_entry = if entry < 0 {
-            ((-entry) as u32) | 0x8000_0000
-        } else {
-            entry as u32
-        };
-
-        body.extend_from_slice(&wire_entry.to_le_bytes());
-
-        body.extend_from_slice(&quest.req_creature_or_go_count[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.req_item_id[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.req_item_count[index].to_le_bytes());
-    }
-
-    for text in &quest.objective_text {
-        push_cstring(&mut body, text);
-    }
-
-    body
+    .body()
 }
 
-fn build_quest_request_items_body(
+pub(in crate::world) fn build_quest_request_items_body(
     guid: ObjectGuid,
 
     quest: &QuestTemplateQuery,
@@ -200,138 +136,101 @@ fn build_quest_request_items_body(
 
     complete: bool,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(128);
-
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    push_cstring(&mut body, &quest.title);
-
-    push_cstring(&mut body, &quest.request_items_text);
-
     let (delay, emote) = if complete {
         (quest.complete_emote_delay, quest.complete_emote)
     } else {
         (quest.incomplete_emote_delay, quest.incomplete_emote)
     };
 
-    body.extend_from_slice(&delay.to_le_bytes());
-
-    body.extend_from_slice(&emote.to_le_bytes());
-
-    body.extend_from_slice(&0u32.to_le_bytes()); // close on cancel
-
-    body.extend_from_slice(&(quest.rew_or_req_money.min(0).unsigned_abs()).to_le_bytes());
-
-    write_quest_reward_items(
-        &mut body,
-        &quest.req_item_id,
-        &quest.req_item_count,
-        &displays.required,
-    );
-
-    body.extend_from_slice(&2u32.to_le_bytes());
-
-    body.extend_from_slice(&(if complete { 3u32 } else { 0u32 }).to_le_bytes());
-
-    body.extend_from_slice(&4u32.to_le_bytes());
-
-    body.extend_from_slice(&8u32.to_le_bytes());
-
-    body
+    SmsgQuestgiverRequestItemsResponse {
+        guid,
+        quest_id: quest.entry,
+        title: quest.title.clone(),
+        request_items_text: quest.request_items_text.clone(),
+        emote_delay: delay,
+        emote,
+        close_on_cancel: 0,
+        required_money: quest.rew_or_req_money.min(0).unsigned_abs(),
+        required_items: quest_reward_items(
+            &quest.req_item_id,
+            &quest.req_item_count,
+            &displays.required,
+        ),
+        required_reward_button: 2,
+        complete_reward_button: if complete { 3 } else { 0 },
+        incomplete_reward_button: 4,
+        completion_style: 8,
+    }
+    .body()
 }
 
-fn build_quest_offer_reward_body(
+pub(in crate::world) fn build_quest_offer_reward_body(
     guid: ObjectGuid,
     quest: &QuestTemplateQuery,
     displays: &QuestRewardItemDisplays,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(192);
-
-    body.extend_from_slice(&guid.raw().to_le_bytes());
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    push_cstring(&mut body, &quest.title);
-
-    push_cstring(&mut body, &quest.offer_reward_text);
-
-    body.extend_from_slice(&1u32.to_le_bytes()); // enable next
-
-    let emote_count = quest
-        .offer_reward_emote
-        .iter()
-        .take_while(|emote| **emote != 0)
-        .count();
-
-    body.extend_from_slice(&(emote_count as u32).to_le_bytes());
-
-    for index in 0..emote_count {
-        body.extend_from_slice(&quest.offer_reward_emote_delay[index].to_le_bytes());
-
-        body.extend_from_slice(&quest.offer_reward_emote[index].to_le_bytes());
+    SmsgQuestgiverOfferRewardResponse {
+        guid,
+        quest_id: quest.entry,
+        title: quest.title.clone(),
+        offer_reward_text: quest.offer_reward_text.clone(),
+        enable_next: 1,
+        emotes: quest
+            .offer_reward_emote
+            .iter()
+            .zip(quest.offer_reward_emote_delay.iter())
+            .take_while(|(emote, _)| **emote != 0)
+            .map(|(emote, delay)| QuestOfferRewardEmote {
+                delay: *delay,
+                emote: *emote,
+            })
+            .collect(),
+        choice_items: quest_reward_items(
+            &quest.rew_choice_item_id,
+            &quest.rew_choice_item_count,
+            &displays.choice,
+        ),
+        reward_items: quest_reward_items(
+            &quest.rew_item_id,
+            &quest.rew_item_count,
+            &displays.reward,
+        ),
+        reward_money: quest.rew_or_req_money.max(0) as u32,
+        reward_spell: quest.rew_spell,
+        reward_spell_cast: quest.rew_spell_cast,
     }
-
-    write_quest_reward_items(
-        &mut body,
-        &quest.rew_choice_item_id,
-        &quest.rew_choice_item_count,
-        &displays.choice,
-    );
-
-    write_quest_reward_items(
-        &mut body,
-        &quest.rew_item_id,
-        &quest.rew_item_count,
-        &displays.reward,
-    );
-
-    body.extend_from_slice(&(quest.rew_or_req_money.max(0) as u32).to_le_bytes());
-
-    body.extend_from_slice(&quest.rew_spell.to_le_bytes());
-
-    body.extend_from_slice(&quest.rew_spell_cast.to_le_bytes());
-
-    body
+    .body()
 }
 
-fn build_questgiver_quest_complete_body_with_xp(
+pub(in crate::world) fn build_questgiver_quest_complete_body_with_xp(
     quest: &QuestTemplateQuery,
 
     reward_xp: u32,
 
     reward_money: u32,
 ) -> Vec<u8> {
-    let reward_items: Vec<_> = quest
+    let reward_items = quest
         .rew_item_id
         .iter()
         .zip(quest.rew_item_count.iter())
         .filter(|(id, _count)| **id != 0)
+        .map(|(item_id, count)| QuestCompleteRewardItem {
+            item_id: *item_id,
+            count: *count,
+        })
         .collect();
 
-    let mut body = Vec::with_capacity(20 + reward_items.len() * 8);
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-
-    body.extend_from_slice(&3u32.to_le_bytes());
-
-    body.extend_from_slice(&reward_xp.to_le_bytes());
-
-    body.extend_from_slice(&reward_money.to_le_bytes());
-
-    body.extend_from_slice(&(reward_items.len() as u32).to_le_bytes());
-
-    for (id, count) in reward_items {
-        body.extend_from_slice(&id.to_le_bytes());
-
-        body.extend_from_slice(&(*count).to_le_bytes());
+    SmsgQuestgiverQuestCompleteResponse {
+        quest_id: quest.entry,
+        completion_type: 3,
+        reward_xp,
+        reward_money,
+        reward_items,
     }
-
-    body
+    .body()
 }
 
-fn build_quest_update_add_kill_body(
+pub(in crate::world) fn build_quest_update_add_kill_body(
     quest: &QuestTemplateQuery,
 
     killed_guid: ObjectGuid,
@@ -340,27 +239,18 @@ fn build_quest_update_add_kill_body(
 
     count: u32,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(24);
     let objective_entry = quest.req_creature_or_go_id[objective_index];
-    let wire_objective = if objective_entry < 0 {
-        objective_entry.unsigned_abs() | 0x8000_0000
-    } else {
-        objective_entry as u32
-    };
-
-    body.extend_from_slice(&quest.entry.to_le_bytes());
-    body.extend_from_slice(&wire_objective.to_le_bytes());
-
-    body.extend_from_slice(&count.to_le_bytes());
-
-    body.extend_from_slice(&quest.req_creature_or_go_count[objective_index].to_le_bytes());
-
-    body.extend_from_slice(&killed_guid.raw().to_le_bytes());
-
-    body
+    SmsgQuestUpdateAddKillResponse {
+        quest_id: quest.entry,
+        objective: quest_requirement_wire_entry(objective_entry),
+        count,
+        required_count: quest.req_creature_or_go_count[objective_index],
+        killed_guid,
+    }
+    .body()
 }
 
-fn build_player_quest_log_update_body(
+pub(in crate::world) fn build_player_quest_log_update_body(
     character_guid: u32,
 
     slot: usize,
@@ -394,7 +284,10 @@ fn build_player_quest_log_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_player_quest_log_clear_body(character_guid: u32, slot: usize) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_quest_log_clear_body(
+    character_guid: u32,
+    slot: usize,
+) -> anyhow::Result<Vec<u8>> {
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
     let mut block = Vec::new();
@@ -417,7 +310,7 @@ fn build_player_quest_log_clear_body(character_guid: u32, slot: usize) -> anyhow
 }
 
 #[cfg(test)]
-fn build_player_quest_log_refresh_body(
+pub(in crate::world) fn build_player_quest_log_refresh_body(
     character_guid: u32,
     statuses: &HashMap<u32, CharacterQuestStatus>,
     slots: &[u32; MAX_QUEST_LOG_SIZE],
@@ -457,7 +350,7 @@ fn build_player_quest_log_refresh_body(
     Ok(build_update_object_body(&[block]))
 }
 
-fn quest_log_count_state(status: &CharacterQuestStatus) -> u32 {
+pub(in crate::world) fn quest_log_count_state(status: &CharacterQuestStatus) -> u32 {
     let count = (status.mobcount1 & 0x3F)
         | ((status.mobcount2 & 0x3F) << 6)
         | ((status.mobcount3 & 0x3F) << 12)
@@ -472,26 +365,27 @@ fn quest_log_count_state(status: &CharacterQuestStatus) -> u32 {
     count | complete
 }
 
-fn write_quest_reward_items<const N: usize>(
-    body: &mut Vec<u8>,
+pub(in crate::world) fn quest_reward_items<const N: usize>(
     ids: &[u32; N],
     counts: &[u32; N],
     displays: &[u32; N],
-) {
-    let non_zero: Vec<_> = ids
-        .iter()
+) -> Vec<QuestRewardItem> {
+    ids.iter()
         .zip(counts.iter())
         .zip(displays.iter())
         .filter(|((id, count), _display)| **id != 0 && **count != 0)
-        .collect();
+        .map(|((item_id, count), display_id)| QuestRewardItem {
+            item_id: *item_id,
+            count: *count,
+            display_id: *display_id,
+        })
+        .collect()
+}
 
-    body.extend_from_slice(&(non_zero.len() as u32).to_le_bytes());
-
-    for ((id, count), display) in non_zero {
-        body.extend_from_slice(&id.to_le_bytes());
-
-        body.extend_from_slice(&(*count).to_le_bytes());
-
-        body.extend_from_slice(&display.to_le_bytes());
+pub(in crate::world) fn quest_requirement_wire_entry(entry: i32) -> u32 {
+    if entry < 0 {
+        entry.unsigned_abs() | 0x8000_0000
+    } else {
+        entry as u32
     }
 }

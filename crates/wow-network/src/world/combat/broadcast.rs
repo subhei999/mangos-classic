@@ -1,11 +1,13 @@
-﻿#[derive(Clone, Copy)]
-struct CreatureCombatBroadcast<'a> {
-    shared_world: SharedWorldDeps<'a>,
-    map_id: u32,
-    player: ObjectGuid,
+use super::*;
+
+#[derive(Clone, Copy)]
+pub(in crate::world) struct CreatureCombatBroadcast<'a> {
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) player: ObjectGuid,
 }
 
-async fn broadcast_db_creature_packet(
+pub(in crate::world) async fn broadcast_db_creature_packet(
     broadcast: CreatureCombatBroadcast<'_>,
     _session: &WorldSessionState,
     creature_guid: ObjectGuid,
@@ -33,7 +35,7 @@ async fn broadcast_db_creature_packet(
     broadcast.shared_world.sessions.dispatch(packets).await;
 }
 
-async fn broadcast_db_creature_snapshot_packet(
+pub(in crate::world) async fn broadcast_db_creature_snapshot_packet(
     broadcast: CreatureCombatBroadcast<'_>,
     creature: DbCreatureRuntime,
     opcode: u16,

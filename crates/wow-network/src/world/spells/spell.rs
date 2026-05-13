@@ -1,6 +1,8 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum SpellCastSource {
+pub(in crate::world) enum SpellCastSource {
     Player,
     Item { item_guid: ObjectGuid },
     GameObject { gameobject_guid: ObjectGuid },
@@ -9,7 +11,7 @@ enum SpellCastSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum SpellLifecycleState {
+pub(in crate::world) enum SpellLifecycleState {
     Created,
     Preparing,
     Casting,
@@ -19,15 +21,19 @@ enum SpellLifecycleState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PreparedSpellCast {
-    spell_id: u32,
-    source: SpellCastSource,
-    state: SpellLifecycleState,
-    profile: SpellCastProfile,
+pub(in crate::world) struct PreparedSpellCast {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) source: SpellCastSource,
+    pub(in crate::world) state: SpellLifecycleState,
+    pub(in crate::world) profile: SpellCastProfile,
 }
 
 impl PreparedSpellCast {
-    fn new(spell_id: u32, source: SpellCastSource, profile: SpellCastProfile) -> Self {
+    pub(in crate::world) fn new(
+        spell_id: u32,
+        source: SpellCastSource,
+        profile: SpellCastProfile,
+    ) -> Self {
         Self {
             spell_id,
             source,
@@ -36,19 +42,19 @@ impl PreparedSpellCast {
         }
     }
 
-    fn prepare(&mut self) {
+    pub(in crate::world) fn prepare(&mut self) {
         self.state = SpellLifecycleState::Preparing;
     }
 
-    fn start_casting(&mut self) {
+    pub(in crate::world) fn start_casting(&mut self) {
         self.state = SpellLifecycleState::Casting;
     }
 
-    fn finish(&mut self) {
+    pub(in crate::world) fn finish(&mut self) {
         self.state = SpellLifecycleState::Finished;
     }
 
-    fn spell_start_body(
+    pub(in crate::world) fn spell_start_body(
         &mut self,
         caster: ObjectGuid,
         cast_time_ms: u32,
@@ -59,7 +65,7 @@ impl PreparedSpellCast {
         build_spell_start_body_with_source(source, caster, self.spell_id, cast_time_ms, targets)
     }
 
-    fn spell_go_body(
+    pub(in crate::world) fn spell_go_body(
         &mut self,
         caster: ObjectGuid,
         targets: &SpellCastTargets,
@@ -75,7 +81,7 @@ impl PreparedSpellCast {
         )
     }
 
-    fn packet_source(&self, caster: ObjectGuid) -> ObjectGuid {
+    pub(in crate::world) fn packet_source(&self, caster: ObjectGuid) -> ObjectGuid {
         match self.source {
             SpellCastSource::Player | SpellCastSource::Triggered => caster,
             SpellCastSource::Item { item_guid } => item_guid,
@@ -83,7 +89,7 @@ impl PreparedSpellCast {
         }
     }
 
-    fn go_cast_flags(&self) -> u16 {
+    pub(in crate::world) fn go_cast_flags(&self) -> u16 {
         match self.source {
             SpellCastSource::Item { .. } => CAST_FLAG_SPELL_GO | CAST_FLAG_ITEM_CASTER,
             _ => CAST_FLAG_SPELL_GO,

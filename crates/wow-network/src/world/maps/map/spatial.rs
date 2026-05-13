@@ -1,7 +1,9 @@
+use super::*;
+
 // CMaNGOS-shaped nearby player and cell visitor helpers.
 
 impl MapRuntime {
-    fn nearby_player_guids(
+    pub(in crate::world) fn nearby_player_guids(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -24,7 +26,7 @@ impl MapRuntime {
         players
     }
 
-    fn nearby_client_player_guids(
+    pub(in crate::world) fn nearby_client_player_guids(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -47,7 +49,7 @@ impl MapRuntime {
         players
     }
 
-    fn visit_nearby_cells(
+    pub(in crate::world) fn visit_nearby_cells(
         &self,
         position: WorldPosition,
         radius: f32,

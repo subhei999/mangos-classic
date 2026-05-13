@@ -1,14 +1,16 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Reputation/ReputationMgr.{h,cpp}
 // Faction.dbc reference bridge: faction ID -> reputationListID. Replace this
 // table with the DBC loader once broader reputation/faction work lands.
 
-const FACTION_FLAG_VISIBLE: i32 = 0x01;
-const SMSG_SET_FACTION_VISIBLE: u16 = 0x0123;
-const SMSG_SET_FACTION_STANDING: u16 = 0x0124;
-const REPUTATION_GAIN_RATE: f32 = 1.0;
-const REPUTATION_LOWLEVEL_QUEST_RATE: f32 = 0.2;
+pub(in crate::world) const FACTION_FLAG_VISIBLE: i32 = 0x01;
+pub(in crate::world) const SMSG_SET_FACTION_VISIBLE: u16 = 0x0123;
+pub(in crate::world) const SMSG_SET_FACTION_STANDING: u16 = 0x0124;
+pub(in crate::world) const REPUTATION_GAIN_RATE: f32 = 1.0;
+pub(in crate::world) const REPUTATION_LOWLEVEL_QUEST_RATE: f32 = 0.2;
 
-fn reputation_list_slot_for_faction(faction: u32) -> Option<usize> {
+pub(in crate::world) fn reputation_list_slot_for_faction(faction: u32) -> Option<usize> {
     match faction {
         59 => Some(4),   // Thorium Brotherhood
         76 => Some(14),  // Orgrimmar
@@ -30,7 +32,7 @@ fn reputation_list_slot_for_faction(faction: u32) -> Option<usize> {
     }
 }
 
-fn reputation_faction_name(faction: u32) -> Option<&'static str> {
+pub(in crate::world) fn reputation_faction_name(faction: u32) -> Option<&'static str> {
     match faction {
         59 => Some("Thorium Brotherhood"),
         76 => Some("Orgrimmar"),
@@ -53,19 +55,20 @@ fn reputation_faction_name(faction: u32) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-fn quest_reputation_rewards(
+pub(in crate::world) fn quest_reputation_rewards(
     player_level: u8,
     quest: &QuestTemplateQuery,
 ) -> Vec<(u32, i32)> {
     quest_reputation_rewards_with_bonus(player_level, quest, 0)
 }
 
-fn quest_reputation_rewards_with_bonus(
+pub(in crate::world) fn quest_reputation_rewards_with_bonus(
     player_level: u8,
     quest: &QuestTemplateQuery,
     gain_bonus_percent: i32,
 ) -> Vec<(u32, i32)> {
-    quest.rew_rep_faction
+    quest
+        .rew_rep_faction
         .iter()
         .zip(quest.rew_rep_value.iter())
         .filter_map(|(faction, value)| {
@@ -81,7 +84,7 @@ fn quest_reputation_rewards_with_bonus(
         .collect()
 }
 
-fn apply_reputation_gain_bonus(reward: i32, gain_bonus_percent: i32) -> i32 {
+pub(in crate::world) fn apply_reputation_gain_bonus(reward: i32, gain_bonus_percent: i32) -> i32 {
     if reward == 0 || gain_bonus_percent == 0 {
         return reward;
     }
@@ -92,7 +95,11 @@ fn apply_reputation_gain_bonus(reward: i32, gain_bonus_percent: i32) -> i32 {
     ((i64::from(reward) * multiplier) / 100).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
-fn calculate_quest_reputation_gain(player_level: u8, quest: &QuestTemplateQuery, rep: i32) -> i32 {
+pub(in crate::world) fn calculate_quest_reputation_gain(
+    player_level: u8,
+    quest: &QuestTemplateQuery,
+    rep: i32,
+) -> i32 {
     let quest_level = if quest.quest_level > 0 {
         quest.quest_level
     } else {
@@ -104,8 +111,8 @@ fn calculate_quest_reputation_gain(player_level: u8, quest: &QuestTemplateQuery,
     if quest_level > 0 {
         let threshold = quest_level + 5;
         if player_level > threshold {
-            percent *= REPUTATION_LOWLEVEL_QUEST_RATE
-                .max(1.0 - (0.2 * (player_level - threshold) as f32));
+            percent *=
+                REPUTATION_LOWLEVEL_QUEST_RATE.max(1.0 - (0.2 * (player_level - threshold) as f32));
         }
     }
 
@@ -115,12 +122,14 @@ fn calculate_quest_reputation_gain(player_level: u8, quest: &QuestTemplateQuery,
     (REPUTATION_GAIN_RATE * rep as f32 * percent / 100.0) as i32
 }
 
-fn build_set_faction_visible_body(faction: u32) -> Option<Vec<u8>> {
+pub(in crate::world) fn build_set_faction_visible_body(faction: u32) -> Option<Vec<u8>> {
     let slot = reputation_list_slot_for_faction(faction)?;
     Some((slot as u32).to_le_bytes().to_vec())
 }
 
-fn build_set_faction_standing_body(reputations: &[CharacterReputation]) -> Vec<u8> {
+pub(in crate::world) fn build_set_faction_standing_body(
+    reputations: &[CharacterReputation],
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(4 + reputations.len() * 8);
     let mapped: Vec<_> = reputations
         .iter()
@@ -137,7 +146,9 @@ fn build_set_faction_standing_body(reputations: &[CharacterReputation]) -> Vec<u
     body
 }
 
-fn reputation_gain_system_message(change: &CharacterReputationChange) -> Option<String> {
+pub(in crate::world) fn reputation_gain_system_message(
+    change: &CharacterReputationChange,
+) -> Option<String> {
     let name = reputation_faction_name(change.reputation.faction)?;
     match change.delta.cmp(&0) {
         std::cmp::Ordering::Greater => Some(format!(

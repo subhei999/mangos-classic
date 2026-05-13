@@ -1,26 +1,44 @@
+use super::*;
+
 // CMaNGOS reference: src/game/WorldSocket.cpp and WorldSession opcode dispatch.
 
-async fn handle_client(
+pub(in crate::world) const WORLD_LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
+pub(in crate::world) const WORLD_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub(in crate::world) const WORLD_SESSION_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(in crate::world) async fn handle_client(
     mut stream: TcpStream,
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
     world_db_pool: MySqlPool,
     runtime_state: WorldRuntimeState,
 ) -> anyhow::Result<()> {
-    send_packet_direct(
-        &mut stream,
-        SMSG_AUTH_CHALLENGE,
-        &SERVER_SEED.to_le_bytes(),
-        None,
+    timeout(
+        WORLD_SESSION_WRITE_TIMEOUT,
+        send_packet_direct(
+            &mut stream,
+            SMSG_AUTH_CHALLENGE,
+            &SERVER_SEED.to_le_bytes(),
+            None,
+        ),
     )
-    .await?;
+    .await??;
 
-    let (opcode, payload) = read_client_packet(&mut stream, None).await?;
+    let (opcode, payload) =
+        match timeout(WORLD_LOGIN_TIMEOUT, read_client_packet(&mut stream, None)).await {
+            Ok(result) => result?,
+            Err(_) => {
+                crate::observability::record_world_session_disconnect(
+                    WorldSessionDisconnectReason::LoginTimeout.metric_label(),
+                );
+                anyhow::bail!("world auth session timed out waiting for CMSG_AUTH_SESSION");
+            }
+        };
     if opcode != CMSG_AUTH_SESSION {
         anyhow::bail!("expected CMSG_AUTH_SESSION, got 0x{opcode:04X}");
     }
 
-    let auth = AuthSessionPacket::read(&payload)?;
+    let auth = packets::parse_world_auth_session_packet(&payload)?;
     info!(
         account = %auth.account,
         build = auth.client_build,
@@ -58,7 +76,8 @@ async fn handle_client(
     let session_id = SessionId::next();
     let (read_stream, write_stream) = stream.into_split();
     let mut read_stream = read_stream;
-    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    let (outbound_tx, outbound_rx) = mpsc::channel(WORLD_OUTBOUND_QUEUE_CAPACITY);
+    let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
     let mut stream = WorldPacketSink::new(outbound_tx.clone());
     runtime_state
         .sessions
@@ -68,7 +87,8 @@ async fn handle_client(
                 account_id: account.id,
                 character_guid: None,
                 character_name: None,
-                outbound: outbound_tx.clone(),
+                outbound: WorldPacketSender::Bounded(outbound_tx.clone()),
+                disconnect: Some(disconnect_tx.clone()),
             },
         )
         .await;
@@ -77,40 +97,64 @@ async fn handle_client(
         write_stream,
         outbound_rx,
         HeaderCrypto::new(&session_key),
+        disconnect_tx.clone(),
     ));
 
     let mut read_header_crypto = HeaderCrypto::new(&session_key);
     let mut header_crypto = HeaderCrypto::new(&session_key);
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
     let mut session = WorldSessionState {
-        account_security: account.gmlevel,
-        gm_mode: false,
-        db_creature_navigation: DbCreatureNavigationGuardrail {
-            world_data_files: runtime_state.world_data_files.clone(),
-            ..DbCreatureNavigationGuardrail::default()
+        account: AccountSessionState {
+            account_security: account.gmlevel,
+            gm_mode: false,
+            ..AccountSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                world_data_files: runtime_state.world_data_files.clone(),
+                ..DbCreatureNavigationGuardrail::default()
+            },
+            ..MovementSessionState::default()
         },
         ..WorldSessionState::default()
     };
     load_global_account_data_into_session(&character_db_pool, account.id, &mut session).await?;
     let world_tick_interval = runtime_state.world_tick_interval;
     let mut next_world_tick_at = Instant::now() + world_tick_interval;
+    let mut last_client_packet_at = Instant::now();
 
     let session_result: anyhow::Result<()> = async {
         loop {
+            let now = Instant::now();
+            let idle_elapsed = now.saturating_duration_since(last_client_packet_at);
+            if idle_elapsed >= WORLD_SESSION_IDLE_TIMEOUT {
+                crate::observability::record_world_session_disconnect(
+                    WorldSessionDisconnectReason::IdleTimeout.metric_label(),
+                );
+                anyhow::bail!("world session idle timeout after {:?}", idle_elapsed);
+            }
             let loop_timeout = session_loop_timeout_duration(
                 runtime_state.maps.as_ref(),
                 &session,
                 next_world_tick_at,
-                Instant::now(),
-            )
-            .await;
-            match timeout(
-                loop_timeout,
-                read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
+                now,
             )
             .await
-            {
+            .min(WORLD_SESSION_IDLE_TIMEOUT - idle_elapsed);
+            tokio::select! {
+                disconnect_reason = disconnect_rx.recv() => {
+                    let reason = disconnect_reason.unwrap_or(WorldSessionDisconnectReason::WriteError);
+                    crate::observability::record_world_session_disconnect(reason.metric_label());
+                    anyhow::bail!("world session disconnect requested: {:?}", reason);
+                }
+                read_result = timeout(
+                    loop_timeout,
+                    read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
+                ) => match read_result {
                 Ok(Ok((opcode, body))) => {
+                    let parsed_packet = packets::parse_world_client_packet(opcode, &body)?;
+                    let opcode = parsed_packet.opcode();
+                    last_client_packet_at = Instant::now();
                     let map_player_died =
                         refresh_active_player_session_cache(&runtime_state.maps, &mut session)
                             .await;
@@ -176,12 +220,13 @@ async fn handle_client(
                                 &character_db_pool,
                                 &world_db_pool,
                                 account.id,
-                                &body,
+                                parsed_packet.char_create()?,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         CMSG_CHAR_ENUM => {
+                            let _ = parsed_packet.char_enum()?;
                             let characters =
                                 wow_db::get_character_enum_entries(&character_db_pool, account.id)
                                     .await?;
@@ -199,7 +244,7 @@ async fn handle_client(
                                 &login_db_pool,
                                 &character_db_pool,
                                 account.id,
-                                &body,
+                                parsed_packet.char_delete()?,
                                 &mut header_crypto,
                                 &runtime_state,
                             )
@@ -218,21 +263,26 @@ async fn handle_client(
                                     session_id,
                                 },
                                 account.id,
-                                &body,
+                                parsed_packet.player_login()?,
                                 &mut header_crypto,
                                 &mut session,
                             )
                             .await?;
                         }
                         CMSG_PING => {
-                            handle_ping(&mut stream, &body, Some(&mut header_crypto)).await?;
+                            handle_ping(
+                                &mut stream,
+                                parsed_packet.ping()?,
+                                Some(&mut header_crypto),
+                            )
+                            .await?;
                         }
                         CMSG_NAME_QUERY => {
                             handle_name_query(
                                 &mut stream,
                                 &character_db_pool,
                                 &runtime_state.playerbots,
-                                &body,
+                                parsed_packet.name_query()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -241,7 +291,7 @@ async fn handle_client(
                             handle_item_query_single(
                                 &mut stream,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.item_query_single()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -250,7 +300,7 @@ async fn handle_client(
                             handle_item_name_query(
                                 &mut stream,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.item_name_query()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -259,7 +309,7 @@ async fn handle_client(
                             handle_gameobject_query(
                                 &mut stream,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.gameobject_query()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -268,7 +318,7 @@ async fn handle_client(
                             handle_creature_query(
                                 &mut stream,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.creature_query()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -278,7 +328,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.quest_query()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -294,7 +344,7 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                     parties: &runtime_state.parties,
                                 },
-                                &body,
+                                parsed_packet.message_chat()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -305,7 +355,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_invite()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -342,7 +392,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_uninvite()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -353,7 +403,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_uninvite_guid()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -363,7 +413,7 @@ async fn handle_client(
                             handle_group_set_leader(
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_set_leader()?,
                                 &session,
                             )
                             .await?;
@@ -382,7 +432,7 @@ async fn handle_client(
                             handle_group_change_subgroup(
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_change_subgroup()?,
                                 &session,
                             )
                             .await?;
@@ -391,7 +441,7 @@ async fn handle_client(
                             handle_group_assistant_leader(
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.group_assistant_leader()?,
                                 &session,
                             )
                             .await?;
@@ -400,7 +450,7 @@ async fn handle_client(
                             handle_request_party_member_stats(
                                 &mut stream,
                                 &runtime_state.maps,
-                                &body,
+                                parsed_packet.request_party_member_stats()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -410,7 +460,7 @@ async fn handle_client(
                             handle_loot_method(
                                 &runtime_state.parties,
                                 &runtime_state.sessions,
-                                &body,
+                                parsed_packet.loot_method()?,
                                 &session,
                             )
                             .await?;
@@ -428,7 +478,7 @@ async fn handle_client(
                                     },
                                     parties: runtime_state.parties.as_ref(),
                                 },
-                                &body,
+                                parsed_packet.loot_roll()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -447,7 +497,7 @@ async fn handle_client(
                                     },
                                     parties: runtime_state.parties.as_ref(),
                                 },
-                                &body,
+                                parsed_packet.loot_master_give()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -464,7 +514,12 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_JOIN_CHANNEL => {
-                            handle_join_channel(&mut stream, &body, &mut header_crypto).await?;
+                            handle_join_channel(
+                                &mut stream,
+                                parsed_packet.join_channel()?,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_QUERY_TIME => {
                             handle_query_time(&mut stream, &mut header_crypto).await?;
@@ -472,7 +527,7 @@ async fn handle_client(
                         CMSG_REQUEST_ACCOUNT_DATA => {
                             handle_request_account_data(
                                 &mut stream,
-                                &body,
+                                parsed_packet.request_account_data()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -482,13 +537,18 @@ async fn handle_client(
                             handle_update_account_data(
                                 &character_db_pool,
                                 account.id,
-                                &body,
+                                parsed_packet.update_account_data()?,
                                 &mut session,
                             )
                             .await?;
                         }
                         CMSG_TUTORIAL_FLAG => {
-                            handle_tutorial_flag(&character_db_pool, account.id, &body).await?;
+                            handle_tutorial_flag(
+                                &character_db_pool,
+                                account.id,
+                                parsed_packet.tutorial_flag()?,
+                            )
+                            .await?;
                         }
                         CMSG_TUTORIAL_CLEAR => {
                             handle_tutorial_clear(&character_db_pool, account.id).await?;
@@ -504,7 +564,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.stand_state_change()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -517,7 +577,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.text_emote()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -537,7 +597,7 @@ async fn handle_client(
                                     },
                                     parties: runtime_state.parties.as_ref(),
                                 },
-                                &body,
+                                parsed_packet.cast_spell()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -557,7 +617,7 @@ async fn handle_client(
                                     },
                                     parties: runtime_state.parties.as_ref(),
                                 },
-                                &body,
+                                parsed_packet.use_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -578,15 +638,19 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                opcode,
-                                &body,
+                                parsed_packet.inventory_move()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         CMSG_SET_ACTION_BUTTON => {
-                            handle_set_action_button(&character_db_pool, &body, &session).await?;
+                            handle_set_action_button(
+                                &character_db_pool,
+                                parsed_packet.set_action_button()?,
+                                &session,
+                            )
+                            .await?;
                         }
                         CMSG_SET_SELECTION => {
                             handle_set_selection(
@@ -595,7 +659,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.set_selection()?,
                                 &mut session,
                             )
                             .await?;
@@ -607,7 +671,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.set_target_obsolete()?,
                                 &session,
                             )
                             .await?;
@@ -625,7 +689,7 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                &body,
+                                parsed_packet.destroy_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -635,7 +699,7 @@ async fn handle_client(
                             handle_split_item(
                                 &mut stream,
                                 &character_db_pool,
-                                &body,
+                                parsed_packet.split_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -664,7 +728,7 @@ async fn handle_client(
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
                                 &runtime_state.maps,
-                                &body,
+                                parsed_packet.gossip_hello()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -680,7 +744,7 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
                                 },
-                                &body,
+                                parsed_packet.gossip_select_option()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -696,7 +760,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.gameobject_use()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -707,7 +771,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.questgiver_status_query()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -718,7 +782,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.questgiver_hello()?,
                                 &session,
                                 &mut header_crypto,
                             )
@@ -729,7 +793,7 @@ async fn handle_client(
                                 &mut stream,
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.questgiver_quest()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -747,7 +811,7 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                &body,
+                                parsed_packet.questgiver_quest()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -759,7 +823,7 @@ async fn handle_client(
                                 &character_db_pool,
                                 &runtime_state.object_mgr,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.questgiver_quest()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -778,7 +842,7 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                &body,
+                                parsed_packet.quest_reward()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -788,20 +852,25 @@ async fn handle_client(
                             handle_questlog_remove_quest(
                                 &mut stream,
                                 &character_db_pool,
-                                &body,
+                                parsed_packet.questlog_remove_quest()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         CMSG_NPC_TEXT_QUERY => {
-                            handle_npc_text_query(&mut stream, &body, &mut header_crypto).await?;
+                            handle_npc_text_query(
+                                &mut stream,
+                                parsed_packet.npc_text_query()?,
+                                &mut header_crypto,
+                            )
+                            .await?;
                         }
                         CMSG_LIST_INVENTORY => {
                             handle_list_inventory(
                                 &mut stream,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.list_inventory()?,
                                 &mut header_crypto,
                             )
                             .await?;
@@ -819,7 +888,7 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                &body,
+                                parsed_packet.sell_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -838,7 +907,7 @@ async fn handle_client(
                                         sessions: &runtime_state.sessions,
                                     },
                                 },
-                                &body,
+                                parsed_packet.buyback_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -849,7 +918,7 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.buy_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -860,7 +929,7 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.trainer_list()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -871,7 +940,7 @@ async fn handle_client(
                                 &mut stream,
                                 &character_db_pool,
                                 &world_db_pool,
-                                &body,
+                                parsed_packet.trainer_buy_spell()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -886,13 +955,14 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                 },
                                 &runtime_state.parties,
-                                &body,
+                                parsed_packet.attack_swing()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         CMSG_ATTACKSTOP => {
+                            let _ = parsed_packet.attack_stop()?;
                             handle_attack_stop(
                                 &mut stream,
                                 SharedWorldDeps {
@@ -906,6 +976,7 @@ async fn handle_client(
                             .await?;
                         }
                         CMSG_REPOP_REQUEST => {
+                            let _ = parsed_packet.repop()?;
                             handle_repop_request(
                                 &mut stream,
                                 PlayerDeathDeps {
@@ -930,7 +1001,7 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
                                 },
-                                &body,
+                                parsed_packet.reclaim_corpse()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -946,13 +1017,14 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                     account_id: account.id,
                                 },
-                                &body,
+                                parsed_packet.spirit_healer_activate()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         MSG_CORPSE_QUERY => {
+                            let _ = parsed_packet.corpse_query()?;
                             handle_corpse_query(&mut stream, &session, &mut header_crypto).await?;
                         }
                         CMSG_LOOT => {
@@ -965,7 +1037,7 @@ async fn handle_client(
                                     sessions: &runtime_state.sessions,
                                 },
                                 &runtime_state.parties,
-                                &body,
+                                parsed_packet.loot()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -984,13 +1056,14 @@ async fn handle_client(
                                     },
                                     parties: &runtime_state.parties,
                                 },
-                                &body,
+                                parsed_packet.autostore_loot_item()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
                             .await?;
                         }
                         CMSG_LOOT_MONEY => {
+                            let _ = parsed_packet.loot_money()?;
                             handle_loot_money(
                                 &mut stream,
                                 &character_db_pool,
@@ -1012,7 +1085,7 @@ async fn handle_client(
                                     maps: &runtime_state.maps,
                                     sessions: &runtime_state.sessions,
                                 },
-                                &body,
+                                parsed_packet.loot_release()?,
                                 &mut session,
                                 &mut header_crypto,
                             )
@@ -1022,7 +1095,7 @@ async fn handle_client(
                             handle_gmticket_getticket(&mut stream, &mut header_crypto).await?;
                         }
                         CMSG_SET_ACTIVE_MOVER => {
-                            handle_set_active_mover(&body, &session)?;
+                            handle_set_active_mover(parsed_packet.set_active_mover()?, &session)?;
                         }
                         MSG_QUERY_NEXT_MAIL_TIME => {
                             handle_query_next_mail_time(
@@ -1258,6 +1331,7 @@ async fn handle_client(
                         world_tick_interval,
                     );
                 }
+                }
             }
         }
     }
@@ -1283,14 +1357,13 @@ async fn handle_client(
 
     if session_result.is_err() {
         refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
-        if let Err(cleanup_error) =
-            persist_session_character_state(
-                &character_db_pool,
-                account.id,
-                &runtime_state.maps,
-                &session,
-            )
-            .await
+        if let Err(cleanup_error) = persist_session_character_state(
+            &character_db_pool,
+            account.id,
+            &runtime_state.maps,
+            &session,
+        )
+        .await
         {
             warn!(
                 "Failed to persist active character state after world session error: {}",
@@ -1310,37 +1383,58 @@ async fn handle_client(
     session_result
 }
 
-async fn world_session_writer(
+pub(in crate::world) async fn world_session_writer(
     session_id: SessionId,
     mut write_stream: OwnedWriteHalf,
-    mut outbound_rx: mpsc::UnboundedReceiver<OutboundWorldPacket>,
+    mut outbound_rx: mpsc::Receiver<OutboundWorldPacket>,
     mut header_crypto: HeaderCrypto,
+    disconnect_tx: mpsc::Sender<WorldSessionDisconnectReason>,
 ) {
     while let Some(packet) = outbound_rx.recv().await {
-        if let Err(error) = send_packet_direct(
-            &mut write_stream,
-            packet.opcode,
-            &packet.body,
-            Some(&mut header_crypto),
+        match timeout(
+            WORLD_SESSION_WRITE_TIMEOUT,
+            send_packet_direct(
+                &mut write_stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut header_crypto),
+            ),
         )
         .await
         {
-            warn!(
-                ?session_id,
-                opcode = format_args!("0x{:04X}", packet.opcode),
-                "World session writer stopped after socket write failed: {}",
-                error
-            );
-            break;
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteError);
+                warn!(
+                    ?session_id,
+                    opcode = format_args!("0x{:04X}", packet.opcode),
+                    "World session writer stopped after socket write failed: {}",
+                    error
+                );
+                break;
+            }
+            Err(_) => {
+                let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteTimeout);
+                warn!(
+                    ?session_id,
+                    opcode = format_args!("0x{:04X}", packet.opcode),
+                    timeout_ms = WORLD_SESSION_WRITE_TIMEOUT.as_millis(),
+                    "World session writer stopped after socket write timed out"
+                );
+                break;
+            }
         }
     }
 }
 
-fn world_tick_timeout_duration(next_world_tick_at: Instant, now: Instant) -> Duration {
+pub(in crate::world) fn world_tick_timeout_duration(
+    next_world_tick_at: Instant,
+    now: Instant,
+) -> Duration {
     next_world_tick_at.saturating_duration_since(now)
 }
 
-async fn session_loop_timeout_duration(
+pub(in crate::world) async fn session_loop_timeout_duration(
     maps: &MapRuntimeManager,
     session: &WorldSessionState,
     next_world_tick_at: Instant,
@@ -1349,11 +1443,15 @@ async fn session_loop_timeout_duration(
     let world_tick_timeout = world_tick_timeout_duration(next_world_tick_at, now);
     next_pending_player_spell_cast_due_at(maps, session)
         .await
-        .map(|due_at| due_at.saturating_duration_since(now).min(world_tick_timeout))
+        .map(|due_at| {
+            due_at
+                .saturating_duration_since(now)
+                .min(world_tick_timeout)
+        })
         .unwrap_or(world_tick_timeout)
 }
 
-fn advance_world_tick_deadline(
+pub(in crate::world) fn advance_world_tick_deadline(
     next_world_tick_at: &mut Instant,
     now: Instant,
     world_tick_interval: Duration,
@@ -1364,11 +1462,11 @@ fn advance_world_tick_deadline(
     }
 }
 
-async fn refresh_active_player_session_cache(
+pub(in crate::world) async fn refresh_active_player_session_cache(
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
 ) -> bool {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return false;
     };
     let map_id = character.position.map_id;
@@ -1377,22 +1475,23 @@ async fn refresh_active_player_session_cache(
         return false;
     };
 
-    let map_player_died = session.player_death_state == PlayerDeathState::Alive
+    let map_player_died = session.death.player_death_state == PlayerDeathState::Alive
         && snapshot.death_state != PlayerDeathState::Alive
         && snapshot.health == 0;
-    session.player_health = snapshot.health;
-    session.player_death_state = snapshot.death_state;
-    session.player_death_presentation_pending = snapshot.death_state == PlayerDeathState::JustDied;
-    session.player_stand_state = snapshot.stand_state;
-    session.player_mana = snapshot.power1;
-    session.player_rage = snapshot.power2;
-    session.player_energy = snapshot.power4;
-    session.active_spells = snapshot.active_spells;
-    session.inventory = snapshot.inventory;
-    session.quest_statuses = snapshot.quest_statuses;
-    session.active_auras = snapshot.active_auras;
-    session.player_flags = snapshot.flags;
-    if let Some(character) = session.active_character.as_mut() {
+    session.character.player_health = snapshot.health;
+    session.death.player_death_state = snapshot.death_state;
+    session.death.player_death_presentation_pending =
+        snapshot.death_state == PlayerDeathState::JustDied;
+    session.character.player_stand_state = snapshot.stand_state;
+    session.character.player_mana = snapshot.power1;
+    session.character.player_rage = snapshot.power2;
+    session.character.player_energy = snapshot.power4;
+    session.character.active_spells = snapshot.active_spells;
+    session.inventory.items = snapshot.inventory;
+    session.quests.quest_statuses = snapshot.quest_statuses;
+    session.auras.active_auras = snapshot.active_auras;
+    session.character.player_flags = snapshot.flags;
+    if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;
         character.movement_flags = snapshot.movement_flags;
         character.client_time = snapshot.client_time;
@@ -1404,7 +1503,7 @@ async fn refresh_active_player_session_cache(
     map_player_died
 }
 
-async fn finalize_map_owned_player_death_if_needed(
+pub(in crate::world) async fn finalize_map_owned_player_death_if_needed(
     _stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     account_id: u32,
@@ -1413,19 +1512,20 @@ async fn finalize_map_owned_player_death_if_needed(
     _header_crypto: &mut HeaderCrypto,
     map_player_died: bool,
 ) -> anyhow::Result<bool> {
-    if !map_player_died || session.player_health != 0 {
+    if !map_player_died || session.character.player_health != 0 {
         return Ok(false);
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(false);
     };
     let map_id = character.position.map_id;
     let character_guid = character.guid;
-    session.player_death_presentation_pending = session.player_death_state == PlayerDeathState::JustDied;
-    session.player_corpse = None;
-    session.player_health = 0;
-    session.active_auras.clear();
-    session.player_in_combat = false;
+    session.death.player_death_presentation_pending =
+        session.death.player_death_state == PlayerDeathState::JustDied;
+    session.death.player_corpse = None;
+    session.character.player_health = 0;
+    session.auras.active_auras.clear();
+    session.combat.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);
     shared_world
@@ -1433,14 +1533,14 @@ async fn finalize_map_owned_player_death_if_needed(
         .set_player_auto_attack(map_id, character_guid, None, None)
         .await;
     persist_player_death_state(character_db_pool, account_id, session).await?;
-    Ok(session.player_death_state == PlayerDeathState::Corpse)
+    Ok(session.death.player_death_state == PlayerDeathState::Corpse)
 }
 
-async fn sync_active_player_gameplay_state(
+pub(in crate::world) async fn sync_active_player_gameplay_state(
     maps: &Arc<MapRuntimeManager>,
     session: &WorldSessionState,
 ) {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return;
     };
     maps.sync_player_gameplay_state(character.position.map_id, character.guid, session)

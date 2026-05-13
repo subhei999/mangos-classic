@@ -1,27 +1,34 @@
+use super::*;
+
 #[derive(Debug, Clone, PartialEq)]
-struct Corpse {
-    guid: ObjectGuid,
-    owner: ObjectGuid,
-    position: WorldPosition,
-    corpse_type: u8,
-    race: u8,
-    class: u8,
-    gender: u8,
-    player_bytes: u32,
-    player_bytes2: u32,
-    equipment_cache: Option<String>,
-    guildid: Option<u32>,
-    player_flags: u32,
+pub(in crate::world) struct Corpse {
+    pub(in crate::world) guid: ObjectGuid,
+    pub(in crate::world) owner: ObjectGuid,
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) corpse_type: u8,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) gender: u8,
+    pub(in crate::world) player_bytes: u32,
+    pub(in crate::world) player_bytes2: u32,
+    pub(in crate::world) equipment_cache: Option<String>,
+    pub(in crate::world) guildid: Option<u32>,
+    pub(in crate::world) player_flags: u32,
 }
 
 // CMaNGOS reference: src/game/Entities/Corpse.* player corpse update builders.
-fn build_player_corpse_create_blocks(
+pub(in crate::world) fn build_player_corpse_create_blocks(
     corpses: &[PlayerCorpseRuntime],
 ) -> anyhow::Result<Vec<Vec<u8>>> {
-    corpses.iter().map(build_player_corpse_create_block).collect()
+    corpses
+        .iter()
+        .map(build_player_corpse_create_block)
+        .collect()
 }
 
-fn build_player_corpse_create_block(corpse: &PlayerCorpseRuntime) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_corpse_create_block(
+    corpse: &PlayerCorpseRuntime,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
     PackedGuid::write(&mut block, corpse.guid)?;
@@ -67,7 +74,9 @@ fn build_player_corpse_create_block(corpse: &PlayerCorpseRuntime) -> anyhow::Res
     Ok(block)
 }
 
-fn build_player_corpse_bones_update_body(corpse: &PlayerCorpseRuntime) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_corpse_bones_update_body(
+    corpse: &PlayerCorpseRuntime,
+) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, corpse.guid)?;
@@ -77,7 +86,7 @@ fn build_player_corpse_bones_update_body(corpse: &PlayerCorpseRuntime) -> anyhow
     Ok(build_update_object_body(&[block]))
 }
 
-fn set_corpse_item_update_values(
+pub(in crate::world) fn set_corpse_item_update_values(
     values: &mut [Option<u32>],
     corpse: &PlayerCorpseRuntime,
 ) -> anyhow::Result<()> {
@@ -100,7 +109,7 @@ fn set_corpse_item_update_values(
     Ok(())
 }
 
-fn display_id_for_corpse(corpse: &PlayerCorpseRuntime) -> u32 {
+pub(in crate::world) fn display_id_for_corpse(corpse: &PlayerCorpseRuntime) -> u32 {
     match (corpse.race, corpse.gender) {
         (1, 0) => 49,
         (1, 1) => 50,
@@ -122,12 +131,12 @@ fn display_id_for_corpse(corpse: &PlayerCorpseRuntime) -> u32 {
     }
 }
 
-fn corpse_bytes_1(corpse: &PlayerCorpseRuntime) -> u32 {
+pub(in crate::world) fn corpse_bytes_1(corpse: &PlayerCorpseRuntime) -> u32 {
     let skin = (corpse.player_bytes & 0xFF) as u8;
     ((corpse.race as u32) << 8) | ((corpse.gender as u32) << 16) | ((skin as u32) << 24)
 }
 
-fn corpse_bytes_2(corpse: &PlayerCorpseRuntime) -> u32 {
+pub(in crate::world) fn corpse_bytes_2(corpse: &PlayerCorpseRuntime) -> u32 {
     let face = (corpse.player_bytes >> 8) & 0xFF;
     let hairstyle = (corpse.player_bytes >> 16) & 0xFF;
     let haircolor = (corpse.player_bytes >> 24) & 0xFF;
@@ -135,7 +144,7 @@ fn corpse_bytes_2(corpse: &PlayerCorpseRuntime) -> u32 {
     facialhair | (face << 8) | (hairstyle << 16) | (haircolor << 24)
 }
 
-fn corpse_flags(corpse: &PlayerCorpseRuntime) -> u32 {
+pub(in crate::world) fn corpse_flags(corpse: &PlayerCorpseRuntime) -> u32 {
     if corpse.corpse_type == PLAYER_CORPSE_TYPE_BONES {
         return CORPSE_FLAG_BONES;
     }
@@ -149,4 +158,3 @@ fn corpse_flags(corpse: &PlayerCorpseRuntime) -> u32 {
     }
     flags
 }
-

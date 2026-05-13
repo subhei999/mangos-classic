@@ -1,102 +1,110 @@
+use super::*;
+use wow_proto::{
+    GroupListMemberResponse, LootRollItemResponse, PartyMemberStatsResponse, ServerWorldPacket,
+    SmsgEmptyGroupListResponse, SmsgGroupInviteResponse, SmsgGroupListResponse,
+    SmsgGroupSetLeaderResponse, SmsgLootAllPassedResponse, SmsgLootRollResponse,
+    SmsgLootRollWonResponse, SmsgLootStartRollResponse, SmsgPartyCommandResultResponse,
+};
+
 // CMaNGOS reference: src/game/Groups/GroupHandler.cpp and Group.cpp.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PartyId(u64);
+pub(in crate::world) struct PartyId(pub(in crate::world) u64);
 
 impl PartyId {
-    fn next() -> Self {
+    pub(in crate::world) fn next() -> Self {
         static NEXT_PARTY_ID: AtomicU64 = AtomicU64::new(1);
         Self(NEXT_PARTY_ID.fetch_add(1, Ordering::Relaxed))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PartyMember {
-    guid: u32,
-    name: String,
+pub(in crate::world) struct PartyMember {
+    pub(in crate::world) guid: u32,
+    pub(in crate::world) name: String,
 }
 
 #[derive(Debug, Clone)]
-struct Party {
-    id: PartyId,
-    leader: u32,
-    members: Vec<PartyMember>,
-    raid: bool,
-    subgroups: HashMap<u32, u8>,
-    assistants: HashSet<u32>,
-    loot_method: u8,
-    master_looter: u32,
-    loot_threshold: u8,
-    next_looter: u32,
+pub(in crate::world) struct Party {
+    pub(in crate::world) id: PartyId,
+    pub(in crate::world) leader: u32,
+    pub(in crate::world) members: Vec<PartyMember>,
+    pub(in crate::world) raid: bool,
+    pub(in crate::world) subgroups: HashMap<u32, u8>,
+    pub(in crate::world) assistants: HashSet<u32>,
+    pub(in crate::world) loot_method: u8,
+    pub(in crate::world) master_looter: u32,
+    pub(in crate::world) loot_threshold: u8,
+    pub(in crate::world) next_looter: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingPartyInvite {
-    party_id: PartyId,
-    inviter: PartyMember,
-    invitee: PartyMember,
+pub(in crate::world) struct PendingPartyInvite {
+    pub(in crate::world) party_id: PartyId,
+    pub(in crate::world) inviter: PartyMember,
+    pub(in crate::world) invitee: PartyMember,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-struct PartyMembership {
-    party_id: PartyId,
-    leader: u32,
-    raid: bool,
+pub(in crate::world) struct PartyMembership {
+    pub(in crate::world) party_id: PartyId,
+    pub(in crate::world) leader: u32,
+    pub(in crate::world) raid: bool,
 }
 
 #[derive(Debug, Default)]
-struct PartyManager {
-    parties: Mutex<HashMap<PartyId, Party>>,
-    membership: Mutex<HashMap<u32, PartyId>>,
-    invites_by_invitee: Mutex<HashMap<u32, PendingPartyInvite>>,
-    loot_rolls: Mutex<HashMap<(u64, u8), LootRollState>>,
+pub(in crate::world) struct PartyManager {
+    pub(in crate::world) parties: Mutex<HashMap<PartyId, Party>>,
+    pub(in crate::world) membership: Mutex<HashMap<u32, PartyId>>,
+    pub(in crate::world) invites_by_invitee: Mutex<HashMap<u32, PendingPartyInvite>>,
+    pub(in crate::world) loot_rolls: Mutex<HashMap<(u64, u8), LootRollState>>,
 }
 
 #[derive(Debug, Clone)]
-struct LootRollState {
-    party_id: PartyId,
-    map_id: u32,
-    loot_guid: ObjectGuid,
-    loot_slot: u8,
-    loot: DbCreatureLootRuntime,
-    voters: Vec<u32>,
-    votes: HashMap<u32, LootRollChoice>,
-    ends_at: Instant,
+pub(in crate::world) struct LootRollState {
+    pub(in crate::world) party_id: PartyId,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) loot_guid: ObjectGuid,
+    pub(in crate::world) loot_slot: u8,
+    pub(in crate::world) loot: DbCreatureLootRuntime,
+    pub(in crate::world) voters: Vec<u32>,
+    pub(in crate::world) votes: HashMap<u32, LootRollChoice>,
+    pub(in crate::world) ends_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LootRollChoice {
-    vote: LootRollVote,
-    number: u8,
+pub(in crate::world) struct LootRollChoice {
+    pub(in crate::world) vote: LootRollVote,
+    pub(in crate::world) number: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LootRollVote {
+pub(in crate::world) enum LootRollVote {
     Pass = 0,
     Need = 1,
     Greed = 2,
 }
 
 #[derive(Debug)]
-struct LootRollStart {
-    packets: Vec<(u32, OutboundWorldPacket)>,
+pub(in crate::world) struct LootRollStart {
+    pub(in crate::world) packets: Vec<(u32, OutboundWorldPacket)>,
 }
 
 #[derive(Debug)]
-struct LootRollVoteOutcome {
-    map_id: u32,
-    loot_guid: ObjectGuid,
-    loot_slot: u8,
-    winner: Option<u32>,
-    loot: Option<DbCreatureLootRuntime>,
-    packets: Vec<(u32, OutboundWorldPacket)>,
+pub(in crate::world) struct LootRollVoteOutcome {
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) loot_guid: ObjectGuid,
+    pub(in crate::world) loot_slot: u8,
+    pub(in crate::world) winner: Option<u32>,
+    pub(in crate::world) loot: Option<DbCreatureLootRuntime>,
+    pub(in crate::world) packets: Vec<(u32, OutboundWorldPacket)>,
 }
 
-const GROUP_LOOT_ROLL_TIMEOUT: Duration = Duration::from_millis(60_000);
+pub(in crate::world) const GROUP_LOOT_ROLL_TIMEOUT: Duration = Duration::from_millis(60_000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PartyResult {
+pub(in crate::world) enum PartyResult {
     Ok,
     BadPlayerName,
     TargetNotInGroup,
@@ -107,7 +115,7 @@ enum PartyResult {
 }
 
 impl PartyResult {
-    fn code(self) -> u32 {
+    pub(in crate::world) fn code(self) -> u32 {
         match self {
             PartyResult::Ok => 0,
             PartyResult::BadPlayerName => 1,
@@ -121,21 +129,24 @@ impl PartyResult {
 }
 
 #[derive(Debug)]
-struct PartyInviteOutcome {
-    result: PartyResult,
-    invitee_session: Option<SessionId>,
-    invite_packet: Option<OutboundWorldPacket>,
+pub(in crate::world) struct PartyInviteOutcome {
+    pub(in crate::world) result: PartyResult,
+    pub(in crate::world) invitee_session: Option<SessionId>,
+    pub(in crate::world) invite_packet: Option<OutboundWorldPacket>,
 }
 
 #[derive(Debug)]
-struct PartyMutationOutcome {
-    result: PartyResult,
-    packets: Vec<(u32, OutboundWorldPacket)>,
+pub(in crate::world) struct PartyMutationOutcome {
+    pub(in crate::world) result: PartyResult,
+    pub(in crate::world) packets: Vec<(u32, OutboundWorldPacket)>,
 }
 
 impl PartyManager {
     #[allow(dead_code)]
-    async fn membership(&self, character_guid: u32) -> Option<PartyMembership> {
+    pub(in crate::world) async fn membership(
+        &self,
+        character_guid: u32,
+    ) -> Option<PartyMembership> {
         let party_id = self.membership.lock().await.get(&character_guid).copied()?;
         let parties = self.parties.lock().await;
         let party = parties.get(&party_id)?;
@@ -147,7 +158,7 @@ impl PartyManager {
     }
 
     #[allow(dead_code)]
-    async fn same_party(&self, left: u32, right: u32) -> bool {
+    pub(in crate::world) async fn same_party(&self, left: u32, right: u32) -> bool {
         if left == right {
             return true;
         }
@@ -159,7 +170,7 @@ impl PartyManager {
         })
     }
 
-    async fn party_members(&self, character_guid: u32) -> Vec<PartyMember> {
+    pub(in crate::world) async fn party_members(&self, character_guid: u32) -> Vec<PartyMember> {
         let Some(party_id) = self.membership.lock().await.get(&character_guid).copied() else {
             return Vec::new();
         };
@@ -171,7 +182,10 @@ impl PartyManager {
             .unwrap_or_default()
     }
 
-    async fn group_list_packet_for(&self, character_guid: u32) -> Option<OutboundWorldPacket> {
+    pub(in crate::world) async fn group_list_packet_for(
+        &self,
+        character_guid: u32,
+    ) -> Option<OutboundWorldPacket> {
         let party_id = self.membership.lock().await.get(&character_guid).copied()?;
         let parties = self.parties.lock().await;
         let party = parties.get(&party_id)?;
@@ -181,7 +195,7 @@ impl PartyManager {
         })
     }
 
-    async fn loot_owner_for(&self, character_guid: u32) -> CreatureLootOwner {
+    pub(in crate::world) async fn loot_owner_for(&self, character_guid: u32) -> CreatureLootOwner {
         self.membership
             .lock()
             .await
@@ -190,25 +204,36 @@ impl PartyManager {
             .unwrap_or(CreatureLootOwner::Player(character_guid))
     }
 
-    async fn loot_method_for(&self, character_guid: u32) -> Option<(u8, u8, u32)> {
+    pub(in crate::world) async fn loot_method_for(
+        &self,
+        character_guid: u32,
+    ) -> Option<(u8, u8, u32)> {
         let party_id = self.membership.lock().await.get(&character_guid).copied()?;
         let parties = self.parties.lock().await;
         let party = parties.get(&party_id)?;
         Some((party.loot_method, party.loot_threshold, party.master_looter))
     }
 
-    async fn assign_current_looter(&self, character_guid: u32) -> Option<u32> {
+    pub(in crate::world) async fn assign_current_looter(&self, character_guid: u32) -> Option<u32> {
         let party_id = self.membership.lock().await.get(&character_guid).copied()?;
         let mut parties = self.parties.lock().await;
         let party = parties.get_mut(&party_id)?;
         if party.members.is_empty() {
             return None;
         }
-        if !party.members.iter().any(|member| member.guid == party.next_looter) {
+        if !party
+            .members
+            .iter()
+            .any(|member| member.guid == party.next_looter)
+        {
             party.next_looter = party.members[0].guid;
         }
         let current = party.next_looter;
-        if let Some(index) = party.members.iter().position(|member| member.guid == current) {
+        if let Some(index) = party
+            .members
+            .iter()
+            .position(|member| member.guid == current)
+        {
             let next_index = (index + 1) % party.members.len();
             party.next_looter = party.members[next_index].guid;
         }
@@ -216,7 +241,10 @@ impl PartyManager {
     }
 
     #[allow(dead_code)]
-    async fn master_loot_members_for(&self, character_guid: u32) -> Option<Vec<u32>> {
+    pub(in crate::world) async fn master_loot_members_for(
+        &self,
+        character_guid: u32,
+    ) -> Option<Vec<u32>> {
         let party_id = self.membership.lock().await.get(&character_guid).copied()?;
         let parties = self.parties.lock().await;
         let party = parties.get(&party_id)?;
@@ -226,7 +254,7 @@ impl PartyManager {
         Some(party.members.iter().map(|member| member.guid).collect())
     }
 
-    async fn start_loot_roll(
+    pub(in crate::world) async fn start_loot_roll(
         &self,
         character_guid: u32,
         map_id: u32,
@@ -239,7 +267,11 @@ impl PartyManager {
         if party.loot_method != 3 {
             return None;
         }
-        let voters = party.members.iter().map(|member| member.guid).collect::<Vec<_>>();
+        let voters = party
+            .members
+            .iter()
+            .map(|member| member.guid)
+            .collect::<Vec<_>>();
         if voters.len() <= 1 {
             return None;
         }
@@ -272,7 +304,7 @@ impl PartyManager {
         })
     }
 
-    async fn record_loot_roll_vote(
+    pub(in crate::world) async fn record_loot_roll_vote(
         &self,
         character_guid: u32,
         loot_guid: ObjectGuid,
@@ -329,7 +361,10 @@ impl PartyManager {
         Some(finish_loot_roll(finished, packets))
     }
 
-    async fn expire_loot_rolls(&self, now: Instant) -> Vec<LootRollVoteOutcome> {
+    pub(in crate::world) async fn expire_loot_rolls(
+        &self,
+        now: Instant,
+    ) -> Vec<LootRollVoteOutcome> {
         let mut rolls = self.loot_rolls.lock().await;
         let expired_keys = rolls
             .iter()
@@ -378,7 +413,7 @@ impl PartyManager {
         outcomes
     }
 
-    async fn invite(
+    pub(in crate::world) async fn invite(
         &self,
         inviter: PartyMember,
         invitee: PartyMember,
@@ -392,7 +427,11 @@ impl PartyManager {
             };
         }
         if self.membership.lock().await.contains_key(&invitee.guid)
-            || self.invites_by_invitee.lock().await.contains_key(&invitee.guid)
+            || self
+                .invites_by_invitee
+                .lock()
+                .await
+                .contains_key(&invitee.guid)
         {
             return PartyInviteOutcome {
                 result: PartyResult::AlreadyInGroup,
@@ -401,33 +440,34 @@ impl PartyManager {
             };
         }
 
-        let party_id = if let Some(existing) = self.membership.lock().await.get(&inviter.guid).copied() {
-            let parties = self.parties.lock().await;
-            let Some(party) = parties.get(&existing) else {
-                return PartyInviteOutcome {
-                    result: PartyResult::NotInGroup,
-                    invitee_session: None,
-                    invite_packet: None,
+        let party_id =
+            if let Some(existing) = self.membership.lock().await.get(&inviter.guid).copied() {
+                let parties = self.parties.lock().await;
+                let Some(party) = parties.get(&existing) else {
+                    return PartyInviteOutcome {
+                        result: PartyResult::NotInGroup,
+                        invitee_session: None,
+                        invite_packet: None,
+                    };
                 };
+                if party.leader != inviter.guid {
+                    return PartyInviteOutcome {
+                        result: PartyResult::NotLeader,
+                        invitee_session: None,
+                        invite_packet: None,
+                    };
+                }
+                if party.members.len() >= party_capacity(party.raid) {
+                    return PartyInviteOutcome {
+                        result: PartyResult::GroupFull,
+                        invitee_session: None,
+                        invite_packet: None,
+                    };
+                }
+                existing
+            } else {
+                PartyId::next()
             };
-            if party.leader != inviter.guid {
-                return PartyInviteOutcome {
-                    result: PartyResult::NotLeader,
-                    invitee_session: None,
-                    invite_packet: None,
-                };
-            }
-            if party.members.len() >= party_capacity(party.raid) {
-                return PartyInviteOutcome {
-                    result: PartyResult::GroupFull,
-                    invitee_session: None,
-                    invite_packet: None,
-                };
-            }
-            existing
-        } else {
-            PartyId::next()
-        };
 
         self.invites_by_invitee.lock().await.insert(
             invitee.guid,
@@ -447,7 +487,7 @@ impl PartyManager {
         }
     }
 
-    async fn accept(&self, invitee_guid: u32) -> PartyMutationOutcome {
+    pub(in crate::world) async fn accept(&self, invitee_guid: u32) -> PartyMutationOutcome {
         let Some(invite) = self.invites_by_invitee.lock().await.remove(&invitee_guid) else {
             return PartyMutationOutcome {
                 result: PartyResult::NotInGroup,
@@ -480,8 +520,14 @@ impl PartyManager {
                 packets: Vec::new(),
             };
         }
-        if !party.members.iter().any(|member| member.guid == invite.invitee.guid) {
-            party.subgroups.insert(invite.invitee.guid, first_free_subgroup(&party.subgroups));
+        if !party
+            .members
+            .iter()
+            .any(|member| member.guid == invite.invitee.guid)
+        {
+            party
+                .subgroups
+                .insert(invite.invitee.guid, first_free_subgroup(&party.subgroups));
             party.members.push(invite.invitee);
         }
         for member in &party.members {
@@ -494,7 +540,10 @@ impl PartyManager {
         }
     }
 
-    async fn decline(&self, invitee_guid: u32) -> Option<(u32, OutboundWorldPacket)> {
+    pub(in crate::world) async fn decline(
+        &self,
+        invitee_guid: u32,
+    ) -> Option<(u32, OutboundWorldPacket)> {
         let invite = self.invites_by_invitee.lock().await.remove(&invitee_guid)?;
         Some((
             invite.inviter.guid,
@@ -505,7 +554,7 @@ impl PartyManager {
         ))
     }
 
-    async fn leave(&self, character_guid: u32) -> PartyMutationOutcome {
+    pub(in crate::world) async fn leave(&self, character_guid: u32) -> PartyMutationOutcome {
         let Some(party_id) = self.membership.lock().await.get(&character_guid).copied() else {
             return PartyMutationOutcome {
                 result: PartyResult::NotInGroup,
@@ -515,7 +564,11 @@ impl PartyManager {
         self.remove_member(party_id, character_guid, true).await
     }
 
-    async fn kick(&self, leader_guid: u32, kicked_guid: u32) -> PartyMutationOutcome {
+    pub(in crate::world) async fn kick(
+        &self,
+        leader_guid: u32,
+        kicked_guid: u32,
+    ) -> PartyMutationOutcome {
         let Some(party_id) = self.membership.lock().await.get(&leader_guid).copied() else {
             return PartyMutationOutcome {
                 result: PartyResult::NotInGroup,
@@ -535,7 +588,12 @@ impl PartyManager {
                 packets: Vec::new(),
             };
         }
-        if !party.members.iter().any(|member| member.guid == kicked_guid) || kicked_guid == leader_guid {
+        if !party
+            .members
+            .iter()
+            .any(|member| member.guid == kicked_guid)
+            || kicked_guid == leader_guid
+        {
             return PartyMutationOutcome {
                 result: PartyResult::TargetNotInGroup,
                 packets: Vec::new(),
@@ -545,7 +603,11 @@ impl PartyManager {
         self.remove_member(party_id, kicked_guid, false).await
     }
 
-    async fn set_leader(&self, leader_guid: u32, new_leader_guid: u32) -> PartyMutationOutcome {
+    pub(in crate::world) async fn set_leader(
+        &self,
+        leader_guid: u32,
+        new_leader_guid: u32,
+    ) -> PartyMutationOutcome {
         let Some(party_id) = self.membership.lock().await.get(&leader_guid).copied() else {
             return PartyMutationOutcome {
                 result: PartyResult::NotInGroup,
@@ -565,7 +627,11 @@ impl PartyManager {
                 packets: Vec::new(),
             };
         }
-        if !party.members.iter().any(|member| member.guid == new_leader_guid) {
+        if !party
+            .members
+            .iter()
+            .any(|member| member.guid == new_leader_guid)
+        {
             return PartyMutationOutcome {
                 result: PartyResult::TargetNotInGroup,
                 packets: Vec::new(),
@@ -591,7 +657,7 @@ impl PartyManager {
         }
     }
 
-    async fn convert_to_raid(&self, leader_guid: u32) -> PartyMutationOutcome {
+    pub(in crate::world) async fn convert_to_raid(&self, leader_guid: u32) -> PartyMutationOutcome {
         let Some(party_id) = self.membership.lock().await.get(&leader_guid).copied() else {
             return PartyMutationOutcome {
                 result: PartyResult::NotInGroup,
@@ -625,7 +691,7 @@ impl PartyManager {
         }
     }
 
-    async fn change_subgroup(
+    pub(in crate::world) async fn change_subgroup(
         &self,
         actor_guid: u32,
         member_name: &str,
@@ -686,7 +752,7 @@ impl PartyManager {
         }
     }
 
-    async fn set_assistant(
+    pub(in crate::world) async fn set_assistant(
         &self,
         leader_guid: u32,
         assistant_guid: u32,
@@ -711,7 +777,12 @@ impl PartyManager {
                 packets: Vec::new(),
             };
         }
-        if !party.raid || !party.members.iter().any(|member| member.guid == assistant_guid) {
+        if !party.raid
+            || !party
+                .members
+                .iter()
+                .any(|member| member.guid == assistant_guid)
+        {
             return PartyMutationOutcome {
                 result: PartyResult::TargetNotInGroup,
                 packets: Vec::new(),
@@ -729,7 +800,7 @@ impl PartyManager {
         }
     }
 
-    async fn set_loot_method(
+    pub(in crate::world) async fn set_loot_method(
         &self,
         leader_guid: u32,
         loot_method: u8,
@@ -782,7 +853,7 @@ impl PartyManager {
         }
     }
 
-    async fn remove_member(
+    pub(in crate::world) async fn remove_member(
         &self,
         party_id: PartyId,
         character_guid: u32,
@@ -796,7 +867,11 @@ impl PartyManager {
                 packets: Vec::new(),
             };
         };
-        if !party.members.iter().any(|member| member.guid == character_guid) {
+        if !party
+            .members
+            .iter()
+            .any(|member| member.guid == character_guid)
+        {
             parties.insert(party_id, party);
             return PartyMutationOutcome {
                 result: PartyResult::TargetNotInGroup,
@@ -874,7 +949,7 @@ impl PartyManager {
     }
 }
 
-fn party_notification_packets(
+pub(in crate::world) fn party_notification_packets(
     party: &Party,
     opcode: u16,
     body: Vec<u8>,
@@ -894,7 +969,7 @@ fn party_notification_packets(
         .collect()
 }
 
-fn party_update_packets(party: &Party) -> Vec<(u32, OutboundWorldPacket)> {
+pub(in crate::world) fn party_update_packets(party: &Party) -> Vec<(u32, OutboundWorldPacket)> {
     party
         .members
         .iter()
@@ -910,80 +985,99 @@ fn party_update_packets(party: &Party) -> Vec<(u32, OutboundWorldPacket)> {
         .collect()
 }
 
-fn build_group_invite_body(name: &str) -> Vec<u8> {
-    let mut body = Vec::new();
-    write_c_string(&mut body, name);
-    body
+pub(in crate::world) fn build_group_invite_body(name: &str) -> Vec<u8> {
+    SmsgGroupInviteResponse {
+        name: name.to_string(),
+    }
+    .body()
 }
 
-fn build_group_set_leader_body(name: &str) -> Vec<u8> {
-    let mut body = Vec::new();
-    write_c_string(&mut body, name);
-    body
+pub(in crate::world) fn build_group_set_leader_body(name: &str) -> Vec<u8> {
+    SmsgGroupSetLeaderResponse {
+        name: name.to_string(),
+    }
+    .body()
 }
 
-fn build_party_command_result_body(operation: u32, member: &str, result: PartyResult) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend_from_slice(&operation.to_le_bytes());
-    write_c_string(&mut body, member);
-    body.extend_from_slice(&result.code().to_le_bytes());
-    body
+pub(in crate::world) fn build_party_command_result_body(
+    operation: u32,
+    member: &str,
+    result: PartyResult,
+) -> Vec<u8> {
+    SmsgPartyCommandResultResponse {
+        operation,
+        member: member.to_string(),
+        result: result.code(),
+    }
+    .body()
 }
 
-fn build_empty_group_list_body() -> Vec<u8> {
-    vec![0; 24]
+pub(in crate::world) fn build_empty_group_list_body() -> Vec<u8> {
+    SmsgEmptyGroupListResponse.body()
 }
 
-fn build_group_list_body(party: &Party, receiver_guid: u32) -> Vec<u8> {
+pub(in crate::world) fn build_group_list_body(party: &Party, receiver_guid: u32) -> Vec<u8> {
     let receiver = party
         .members
         .iter()
         .position(|member| member.guid == receiver_guid)
         .unwrap_or(0);
-    let mut body = Vec::new();
-    body.push(if party.raid { 1 } else { 0 });
-    body.push(member_group_flags(party, receiver_guid).unwrap_or(receiver as u8));
-    body.extend_from_slice(&((party.members.len().saturating_sub(1)) as u32).to_le_bytes());
-    for member in party.members.iter().filter(|member| member.guid != receiver_guid) {
-        write_c_string(&mut body, &member.name);
-        body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, 0, member.guid).raw().to_le_bytes());
-        body.push(1);
-        body.push(member_group_flags(party, member.guid).unwrap_or(0));
+    SmsgGroupListResponse {
+        raid: party.raid,
+        receiver_group_flags: member_group_flags(party, receiver_guid).unwrap_or(receiver as u8),
+        members: party
+            .members
+            .iter()
+            .filter(|member| member.guid != receiver_guid)
+            .map(|member| GroupListMemberResponse {
+                name: member.name.clone(),
+                guid: ObjectGuid::new(HighGuid::Player, 0, member.guid),
+                online: 1,
+                group_flags: member_group_flags(party, member.guid).unwrap_or(0),
+            })
+            .collect(),
+        leader: ObjectGuid::new(HighGuid::Player, 0, party.leader),
+        loot_method: (party.members.len() > 1).then_some(party.loot_method),
+        master_looter: ObjectGuid::new(HighGuid::Player, 0, party.master_looter),
+        loot_threshold: party.loot_threshold,
     }
-    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, 0, party.leader).raw().to_le_bytes());
-    if party.members.len() > 1 {
-        body.push(party.loot_method);
-        body.extend_from_slice(
-            &ObjectGuid::new(HighGuid::Player, 0, party.master_looter)
-                .raw()
-                .to_le_bytes(),
-        );
-        body.push(party.loot_threshold);
-        body.push(0);
-    }
-    body
+    .body()
 }
 
-fn member_group_flags(party: &Party, character_guid: u32) -> Option<u8> {
+pub(in crate::world) fn member_group_flags(party: &Party, character_guid: u32) -> Option<u8> {
     let subgroup = *party.subgroups.get(&character_guid)?;
-    Some(subgroup | if party.assistants.contains(&character_guid) { 0x80 } else { 0 })
+    Some(
+        subgroup
+            | if party.assistants.contains(&character_guid) {
+                0x80
+            } else {
+                0
+            },
+    )
 }
 
-fn party_capacity(raid: bool) -> usize {
-    if raid { 40 } else { 5 }
+pub(in crate::world) fn party_capacity(raid: bool) -> usize {
+    if raid {
+        40
+    } else {
+        5
+    }
 }
 
-fn first_free_subgroup(subgroups: &HashMap<u32, u8>) -> u8 {
+pub(in crate::world) fn first_free_subgroup(subgroups: &HashMap<u32, u8>) -> u8 {
     (0..8)
         .find(|subgroup| subgroup_count(subgroups, *subgroup) < 5)
         .unwrap_or(0)
 }
 
-fn subgroup_count(subgroups: &HashMap<u32, u8>, subgroup: u8) -> usize {
-    subgroups.values().filter(|&&value| value == subgroup).count()
+pub(in crate::world) fn subgroup_count(subgroups: &HashMap<u32, u8>, subgroup: u8) -> usize {
+    subgroups
+        .values()
+        .filter(|&&value| value == subgroup)
+        .count()
 }
 
-async fn dispatch_party_member_packets(
+pub(in crate::world) async fn dispatch_party_member_packets(
     sessions: &SessionRegistry,
     packets: Vec<(u32, OutboundWorldPacket)>,
 ) {
@@ -994,17 +1088,16 @@ async fn dispatch_party_member_packets(
     }
 }
 
-async fn handle_group_invite(
+pub(in crate::world) async fn handle_group_invite(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupInviteRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let mut cursor = 0;
-    let member_name = read_c_string(body, &mut cursor)?;
-    let Some(character) = session.active_character.as_ref() else {
+    let member_name = request.member_name;
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let Some((invitee_guid, invitee_name, invitee_session)) =
@@ -1044,14 +1137,14 @@ async fn handle_group_invite(
     .await
 }
 
-async fn handle_group_accept(
+pub(in crate::world) async fn handle_group_accept(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties.accept(character.guid).await;
@@ -1068,12 +1161,12 @@ async fn handle_group_accept(
     Ok(())
 }
 
-async fn handle_group_decline(
+pub(in crate::world) async fn handle_group_decline(
     parties: &PartyManager,
     sessions: &SessionRegistry,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     if let Some((leader_guid, packet)) = parties.decline(character.guid).await {
@@ -1084,14 +1177,14 @@ async fn handle_group_decline(
     Ok(())
 }
 
-async fn handle_group_disband(
+pub(in crate::world) async fn handle_group_disband(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties.leave(character.guid).await;
@@ -1105,17 +1198,16 @@ async fn handle_group_disband(
     .await
 }
 
-async fn handle_group_uninvite(
+pub(in crate::world) async fn handle_group_uninvite(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupUninviteRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let mut cursor = 0;
-    let member_name = read_c_string(body, &mut cursor)?;
-    let Some(character) = session.active_character.as_ref() else {
+    let member_name = request.member_name;
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let kicked_guid = parties
@@ -1142,17 +1234,16 @@ async fn handle_group_uninvite(
     .await
 }
 
-async fn handle_group_uninvite_guid(
+pub(in crate::world) async fn handle_group_uninvite_guid(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupUninviteGuidRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    ensure_available(body, 8)?;
-    let kicked = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let Some(character) = session.active_character.as_ref() else {
+    let kicked = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties.kick(character.guid, kicked.counter()).await;
@@ -1166,30 +1257,31 @@ async fn handle_group_uninvite_guid(
     .await
 }
 
-async fn handle_group_set_leader(
+pub(in crate::world) async fn handle_group_set_leader(
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupSetLeaderRequest,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    ensure_available(body, 8)?;
-    let new_leader = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let Some(character) = session.active_character.as_ref() else {
+    let new_leader = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
-    let outcome = parties.set_leader(character.guid, new_leader.counter()).await;
+    let outcome = parties
+        .set_leader(character.guid, new_leader.counter())
+        .await;
     dispatch_party_member_packets(sessions, outcome.packets).await;
     Ok(())
 }
 
-async fn handle_group_raid_convert(
+pub(in crate::world) async fn handle_group_raid_convert(
     stream: &mut WorldPacketSink,
     parties: &PartyManager,
     sessions: &SessionRegistry,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties.convert_to_raid(character.guid).await;
@@ -1206,80 +1298,70 @@ async fn handle_group_raid_convert(
     Ok(())
 }
 
-async fn handle_group_change_subgroup(
+pub(in crate::world) async fn handle_group_change_subgroup(
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupChangeSubGroupRequest,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    let mut cursor = 0;
-    let member_name = read_c_string(body, &mut cursor)?;
-    ensure_available(&body[cursor..], 1)?;
-    let subgroup = body[cursor];
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties
-        .change_subgroup(character.guid, &member_name, subgroup)
+        .change_subgroup(character.guid, &request.member_name, request.subgroup)
         .await;
     dispatch_party_member_packets(sessions, outcome.packets).await;
     Ok(())
 }
 
-async fn handle_group_assistant_leader(
+pub(in crate::world) async fn handle_group_assistant_leader(
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::GroupAssistantLeaderRequest,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    ensure_available(body, 9)?;
-    let assistant = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let enabled = body[8] != 0;
-    let Some(character) = session.active_character.as_ref() else {
+    let assistant = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties
-        .set_assistant(character.guid, assistant.counter(), enabled)
+        .set_assistant(character.guid, assistant.counter(), request.enabled)
         .await;
     dispatch_party_member_packets(sessions, outcome.packets).await;
     Ok(())
 }
 
-async fn handle_loot_method(
+pub(in crate::world) async fn handle_loot_method(
     parties: &PartyManager,
     sessions: &SessionRegistry,
-    body: &[u8],
+    request: wow_proto::LootMethodRequest,
     session: &WorldSessionState,
 ) -> anyhow::Result<()> {
-    ensure_available(body, 16)?;
-    let loot_method = u32::from_le_bytes(body[0..4].try_into()?);
-    let master_looter = ObjectGuid::from_raw(u64::from_le_bytes(body[4..12].try_into()?));
-    let loot_threshold = u32::from_le_bytes(body[12..16].try_into()?);
-    let Some(character) = session.active_character.as_ref() else {
+    let master_looter = ObjectGuid::from_raw(request.master_looter_raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let outcome = parties
         .set_loot_method(
             character.guid,
-            loot_method as u8,
+            request.loot_method as u8,
             master_looter.counter(),
-            loot_threshold as u8,
+            request.loot_threshold as u8,
         )
         .await;
     dispatch_party_member_packets(sessions, outcome.packets).await;
     Ok(())
 }
 
-async fn handle_request_party_member_stats(
+pub(in crate::world) async fn handle_request_party_member_stats(
     stream: &mut WorldPacketSink,
     maps: &Arc<MapRuntimeManager>,
-    body: &[u8],
+    request: wow_proto::RequestPartyMemberStatsRequest,
     session: &WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    ensure_available(body, 8)?;
-    let requested = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let Some(character) = session.active_character.as_ref() else {
+    let requested = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let snapshot = maps
@@ -1295,10 +1377,10 @@ async fn handle_request_party_member_stats(
     .await
 }
 
-async fn handle_loot_roll(
+pub(in crate::world) async fn handle_loot_roll(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
-    body: &[u8],
+    request: wow_proto::LootRollRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1307,13 +1389,12 @@ async fn handle_loot_roll(
         parties,
         ..
     } = deps;
-    ensure_available(body, 13)?;
-    let loot_guid = ObjectGuid::from_raw(u64::from_le_bytes(body[0..8].try_into()?));
-    let loot_slot = u32::from_le_bytes(body[8..12].try_into()?) as u8;
-    let Some(vote) = loot_roll_vote_from_client(body[12]) else {
+    let loot_guid = ObjectGuid::from_raw(request.loot_raw_guid);
+    let loot_slot = request.loot_slot;
+    let Some(vote) = loot_roll_vote_from_client(request.vote) else {
         return Ok(());
     };
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     if let Some(outcome) = parties
@@ -1326,7 +1407,7 @@ async fn handle_loot_roll(
     Ok(())
 }
 
-async fn handle_loot_roll_timeouts(
+pub(in crate::world) async fn handle_loot_roll_timeouts(
     stream: &mut WorldPacketSink,
     deps: LootMutationDeps<'_>,
     session: &mut WorldSessionState,
@@ -1340,45 +1421,60 @@ async fn handle_loot_roll_timeouts(
     Ok(())
 }
 
-const MEMBER_STATUS_OFFLINE: u8 = 0;
-const MEMBER_STATUS_ONLINE: u8 = 1;
-const GROUP_UPDATE_FLAG_STATUS: u32 = 0x00000001;
-const GROUP_UPDATE_FULL_NO_PET: u32 = 0x000007FF;
+pub(in crate::world) const MEMBER_STATUS_OFFLINE: u8 = 0;
+pub(in crate::world) const MEMBER_STATUS_ONLINE: u8 = 1;
+pub(in crate::world) const GROUP_UPDATE_FLAG_STATUS: u32 = 0x00000001;
+pub(in crate::world) const GROUP_UPDATE_FULL_NO_PET: u32 = 0x000007FF;
 
-fn build_party_member_stats_full_body(
+pub(in crate::world) fn build_party_member_stats_full_body(
     requested: ObjectGuid,
     snapshot: Option<&PlayerRuntimeSnapshot>,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    PackedGuid::write(&mut body, requested)?;
     let Some(snapshot) = snapshot else {
-        body.extend_from_slice(&GROUP_UPDATE_FLAG_STATUS.to_le_bytes());
-        body.push(MEMBER_STATUS_OFFLINE);
-        return Ok(body);
+        return Ok(PartyMemberStatsResponse {
+            requested,
+            update_flags: GROUP_UPDATE_FLAG_STATUS,
+            status: MEMBER_STATUS_OFFLINE,
+            health: None,
+            max_health: None,
+            power_type: None,
+            power: None,
+            max_power: None,
+            level: None,
+            map: None,
+            x: None,
+            y: None,
+            aura_mask: None,
+            pet_guid: None,
+        }
+        .body());
     };
-    body.extend_from_slice(&GROUP_UPDATE_FULL_NO_PET.to_le_bytes());
-    body.push(MEMBER_STATUS_ONLINE);
-    body.extend_from_slice(&(snapshot.health.min(u16::MAX as u32) as u16).to_le_bytes());
-    body.extend_from_slice(&(snapshot.max_health.min(u16::MAX as u32) as u16).to_le_bytes());
     let power_type = group_power_type(snapshot.class);
-    body.push(power_type);
     let (power, max_power) = match power_type {
         1 => (snapshot.power2, POWER_RAGE_DEFAULT),
         3 => (POWER_ENERGY_DEFAULT, POWER_ENERGY_DEFAULT),
         _ => (snapshot.power1, snapshot.max_power1),
     };
-    body.extend_from_slice(&(power.min(u16::MAX as u32) as u16).to_le_bytes());
-    body.extend_from_slice(&(max_power.min(u16::MAX as u32) as u16).to_le_bytes());
-    body.extend_from_slice(&(snapshot.level as u16).to_le_bytes());
-    body.extend_from_slice(&(snapshot.position.map_id.min(u16::MAX as u32) as u16).to_le_bytes());
-    body.extend_from_slice(&(snapshot.position.x.max(0.0).min(u16::MAX as f32) as u16).to_le_bytes());
-    body.extend_from_slice(&(snapshot.position.y.max(0.0).min(u16::MAX as f32) as u16).to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&0u16.to_le_bytes());
-    Ok(body)
+    Ok(PartyMemberStatsResponse {
+        requested,
+        update_flags: GROUP_UPDATE_FULL_NO_PET,
+        status: MEMBER_STATUS_ONLINE,
+        health: Some(snapshot.health.min(u16::MAX as u32) as u16),
+        max_health: Some(snapshot.max_health.min(u16::MAX as u32) as u16),
+        power_type: Some(power_type),
+        power: Some(power.min(u16::MAX as u32) as u16),
+        max_power: Some(max_power.min(u16::MAX as u32) as u16),
+        level: Some(snapshot.level as u16),
+        map: Some(snapshot.position.map_id.min(u16::MAX as u32) as u16),
+        x: Some(snapshot.position.x.max(0.0).min(u16::MAX as f32) as u16),
+        y: Some(snapshot.position.y.max(0.0).min(u16::MAX as f32) as u16),
+        aura_mask: Some(0),
+        pet_guid: Some(0),
+    }
+    .body())
 }
 
-fn group_power_type(class: u8) -> u8 {
+pub(in crate::world) fn group_power_type(class: u8) -> u8 {
     match class {
         1 => POWER_RAGE,
         4 => POWER_ENERGY,
@@ -1386,23 +1482,20 @@ fn group_power_type(class: u8) -> u8 {
     }
 }
 
-fn build_loot_start_roll_body(
+pub(in crate::world) fn build_loot_start_roll_body(
     loot_guid: ObjectGuid,
     loot_slot: u8,
     loot: &DbCreatureLootRuntime,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(29);
-    body.extend_from_slice(&loot_guid.raw().to_le_bytes());
-    body.extend_from_slice(&(loot_slot as u32).to_le_bytes());
-    body.extend_from_slice(&loot.item.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&60_000u32.to_le_bytes());
-    body.push(0x0F);
-    body
+    SmsgLootStartRollResponse {
+        item: loot_roll_item_response(loot_guid, loot_slot, loot),
+        roll_time_millis: 60_000,
+        vote_mask: 0x0F,
+    }
+    .body()
 }
 
-fn build_loot_roll_body(
+pub(in crate::world) fn build_loot_roll_body(
     loot_guid: ObjectGuid,
     loot_slot: u8,
     character_guid: u32,
@@ -1410,20 +1503,17 @@ fn build_loot_roll_body(
     roll_number: u8,
     roll_type: u8,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(34);
-    body.extend_from_slice(&loot_guid.raw().to_le_bytes());
-    body.extend_from_slice(&(loot_slot as u32).to_le_bytes());
-    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, 0, character_guid).raw().to_le_bytes());
-    body.extend_from_slice(&loot.item.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.push(roll_number);
-    body.push(roll_type);
-    body.push(0);
-    body
+    SmsgLootRollResponse {
+        item: loot_roll_item_response(loot_guid, loot_slot, loot),
+        roller: ObjectGuid::new(HighGuid::Player, 0, character_guid),
+        roll_number,
+        roll_type,
+        auto_pass: 0,
+    }
+    .body()
 }
 
-fn build_loot_roll_won_body(
+pub(in crate::world) fn build_loot_roll_won_body(
     loot_guid: ObjectGuid,
     loot_slot: u8,
     loot: &DbCreatureLootRuntime,
@@ -1431,33 +1521,41 @@ fn build_loot_roll_won_body(
     roll_number: u8,
     vote: LootRollVote,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(34);
-    body.extend_from_slice(&loot_guid.raw().to_le_bytes());
-    body.extend_from_slice(&(loot_slot as u32).to_le_bytes());
-    body.extend_from_slice(&loot.item.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&ObjectGuid::new(HighGuid::Player, 0, winner_guid).raw().to_le_bytes());
-    body.push(roll_number);
-    body.push(vote as u8);
-    body
+    SmsgLootRollWonResponse {
+        item: loot_roll_item_response(loot_guid, loot_slot, loot),
+        winner: ObjectGuid::new(HighGuid::Player, 0, winner_guid),
+        roll_number,
+        vote: vote as u8,
+    }
+    .body()
 }
 
-fn build_loot_all_passed_body(
+pub(in crate::world) fn build_loot_all_passed_body(
     loot_guid: ObjectGuid,
     loot_slot: u8,
     loot: &DbCreatureLootRuntime,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(24);
-    body.extend_from_slice(&loot_guid.raw().to_le_bytes());
-    body.extend_from_slice(&(loot_slot as u32).to_le_bytes());
-    body.extend_from_slice(&loot.item.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes());
-    body
+    SmsgLootAllPassedResponse {
+        item: loot_roll_item_response(loot_guid, loot_slot, loot),
+    }
+    .body()
 }
 
-fn finish_loot_roll(
+pub(in crate::world) fn loot_roll_item_response(
+    loot_guid: ObjectGuid,
+    loot_slot: u8,
+    loot: &DbCreatureLootRuntime,
+) -> LootRollItemResponse {
+    LootRollItemResponse {
+        loot_guid,
+        loot_slot,
+        item: loot.item,
+        random_suffix: 0,
+        random_property: 0,
+    }
+}
+
+pub(in crate::world) fn finish_loot_roll(
     finished: LootRollState,
     mut packets: Vec<(u32, OutboundWorldPacket)>,
 ) -> LootRollVoteOutcome {
@@ -1515,7 +1613,7 @@ fn finish_loot_roll(
     }
 }
 
-fn final_loot_roll_packets(
+pub(in crate::world) fn final_loot_roll_packets(
     finished: &LootRollState,
     winner_vote: LootRollVote,
 ) -> Vec<(u32, OutboundWorldPacket)> {
@@ -1547,7 +1645,9 @@ fn final_loot_roll_packets(
     packets
 }
 
-fn select_loot_roll_winner(roll: &LootRollState) -> Option<(u32, LootRollVote, u8)> {
+pub(in crate::world) fn select_loot_roll_winner(
+    roll: &LootRollState,
+) -> Option<(u32, LootRollVote, u8)> {
     [LootRollVote::Need, LootRollVote::Greed]
         .into_iter()
         .filter_map(|vote| {
@@ -1560,14 +1660,14 @@ fn select_loot_roll_winner(roll: &LootRollState) -> Option<(u32, LootRollVote, u
         .next()
 }
 
-fn roll_number_for_vote(vote: LootRollVote) -> u8 {
+pub(in crate::world) fn roll_number_for_vote(vote: LootRollVote) -> u8 {
     match vote {
         LootRollVote::Pass => 128,
         LootRollVote::Need | LootRollVote::Greed => rand::thread_rng().gen_range(1..=100),
     }
 }
 
-fn displayed_roll_number_for_vote(vote: LootRollVote) -> u8 {
+pub(in crate::world) fn displayed_roll_number_for_vote(vote: LootRollVote) -> u8 {
     match vote {
         LootRollVote::Pass => 128,
         LootRollVote::Need => 0,
@@ -1575,7 +1675,7 @@ fn displayed_roll_number_for_vote(vote: LootRollVote) -> u8 {
     }
 }
 
-fn displayed_roll_type_for_vote(vote: LootRollVote) -> u8 {
+pub(in crate::world) fn displayed_roll_type_for_vote(vote: LootRollVote) -> u8 {
     match vote {
         LootRollVote::Pass => 128,
         LootRollVote::Need => 0,
@@ -1583,7 +1683,7 @@ fn displayed_roll_type_for_vote(vote: LootRollVote) -> u8 {
     }
 }
 
-fn loot_roll_vote_from_client(value: u8) -> Option<LootRollVote> {
+pub(in crate::world) fn loot_roll_vote_from_client(value: u8) -> Option<LootRollVote> {
     match value {
         0 => Some(LootRollVote::Pass),
         1 => Some(LootRollVote::Need),

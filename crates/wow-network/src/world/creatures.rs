@@ -1,14 +1,16 @@
-async fn handle_creature_query(
+use super::*;
+
+pub(in crate::world) async fn handle_creature_query(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
-    body: &[u8],
+    query: wow_proto::CreatureQueryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let query = CreatureQuery::read(body)?;
     let db_template = wow_db::get_creature_template_query(world_db_pool, query.entry).await?;
+    let guid = ObjectGuid::from_raw(query.raw_guid);
     info!(
         entry = query.entry,
-        guid = format_args!("0x{:016X}", query.guid.raw()),
+        guid = format_args!("0x{:016X}", guid.raw()),
         found = db_template.is_some() || query.entry == RUST_GUIDE_ENTRY,
         "Answering creature template query"
     );
@@ -22,23 +24,10 @@ async fn handle_creature_query(
     .await
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CreatureQuery {
+pub(in crate::world) fn build_creature_query_response(
     entry: u32,
-    guid: ObjectGuid,
-}
-
-impl CreatureQuery {
-    fn read(body: &[u8]) -> anyhow::Result<Self> {
-        let mut cursor = 0;
-        let entry = read_u32(body, &mut cursor)?;
-        ensure_available(body, cursor + 8)?;
-        let guid = ObjectGuid::from_raw(u64::from_le_bytes(body[cursor..cursor + 8].try_into()?));
-        Ok(Self { entry, guid })
-    }
-}
-
-fn build_creature_query_response(entry: u32, db_template: Option<&CreatureTemplateQuery>) -> Vec<u8> {
+    db_template: Option<&CreatureTemplateQuery>,
+) -> Vec<u8> {
     let Some(template) = creature_query_template(entry, db_template) else {
         return (entry | 0x8000_0000).to_le_bytes().to_vec();
     };
@@ -61,25 +50,25 @@ fn build_creature_query_response(entry: u32, db_template: Option<&CreatureTempla
     body
 }
 
-struct FixtureCreatureTemplate {
-    name: &'static str,
-    subname: &'static str,
-    display_id: u32,
+pub(in crate::world) struct FixtureCreatureTemplate {
+    pub(in crate::world) name: &'static str,
+    pub(in crate::world) subname: &'static str,
+    pub(in crate::world) display_id: u32,
 }
 
-struct CreatureQueryTemplate<'a> {
-    name: &'a str,
-    subname: &'a str,
-    creature_type_flags: u32,
-    creature_type: u32,
-    family: i32,
-    rank: u32,
-    pet_spell_data_id: u32,
-    display_id: u32,
-    civilian: u8,
+pub(in crate::world) struct CreatureQueryTemplate<'a> {
+    pub(in crate::world) name: &'a str,
+    pub(in crate::world) subname: &'a str,
+    pub(in crate::world) creature_type_flags: u32,
+    pub(in crate::world) creature_type: u32,
+    pub(in crate::world) family: i32,
+    pub(in crate::world) rank: u32,
+    pub(in crate::world) pet_spell_data_id: u32,
+    pub(in crate::world) display_id: u32,
+    pub(in crate::world) civilian: u8,
 }
 
-fn creature_query_template<'a>(
+pub(in crate::world) fn creature_query_template<'a>(
     entry: u32,
     db_template: Option<&'a CreatureTemplateQuery>,
 ) -> Option<CreatureQueryTemplate<'a>> {
@@ -111,7 +100,7 @@ fn creature_query_template<'a>(
     })
 }
 
-fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
+pub(in crate::world) fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
     match entry {
         RUST_GUIDE_ENTRY => Some(FixtureCreatureTemplate {
             name: RUST_GUIDE_NAME,
@@ -121,4 +110,3 @@ fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
         _ => None,
     }
 }
-

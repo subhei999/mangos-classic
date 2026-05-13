@@ -1,68 +1,78 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Globals/ObjectMgr.{h,cpp}
 // Shared DB-derived object/template data. This mirrors the CMaNGOS shape where
 // immutable world data is loaded through ObjectMgr instead of being re-queried
 // from every WorldSession opcode path.
 
 #[derive(Debug, Default)]
-struct ObjectMgr {
-    quest_templates:
+pub(in crate::world) struct ObjectMgr {
+    pub(in crate::world) quest_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::QuestTemplateQuery>>>,
-    creature_start_quest_ids: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
-    creature_complete_quest_ids: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
-    gameobject_start_quest_ids: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
-    gameobject_complete_quest_ids: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
-    quest_prev_quests: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<i32>>>,
-    quest_prev_chain_quests: tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
-    exclusive_group_quests: tokio::sync::Mutex<std::collections::HashMap<i32, Vec<u32>>>,
-    condition_entries:
+    pub(in crate::world) creature_start_quest_ids:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) creature_complete_quest_ids:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) gameobject_start_quest_ids:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) gameobject_complete_quest_ids:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) quest_prev_quests:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<i32>>>,
+    pub(in crate::world) quest_prev_chain_quests:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) exclusive_group_quests:
+        tokio::sync::Mutex<std::collections::HashMap<i32, Vec<u32>>>,
+    pub(in crate::world) condition_entries:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::ConditionQuery>>>,
-    unit_conditions:
+    pub(in crate::world) unit_conditions:
         tokio::sync::Mutex<std::collections::HashMap<i32, Option<wow_db::UnitConditionQuery>>>,
-    combat_conditions:
+    pub(in crate::world) combat_conditions:
         tokio::sync::Mutex<std::collections::HashMap<i32, Option<wow_db::CombatConditionQuery>>>,
-    game_event_schedules: tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
-    creature_loot_templates:
+    pub(in crate::world) game_event_schedules:
+        tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
+    pub(in crate::world) creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
-    reference_loot_templates:
+    pub(in crate::world) reference_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
-    gameobject_loot_templates:
+    pub(in crate::world) gameobject_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
-    spell_templates:
+    pub(in crate::world) spell_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellTemplateQuery>>>,
-    creature_spell_lists:
+    pub(in crate::world) creature_spell_lists:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureSpellListQuery>>>,
-    stats: ObjectMgrCacheStats,
+    pub(in crate::world) stats: ObjectMgrCacheStats,
 }
 
 #[derive(Debug, Default)]
-struct ObjectMgrCacheStats {
-    quest_template_db_loads: std::sync::atomic::AtomicU64,
-    quest_relation_db_loads: std::sync::atomic::AtomicU64,
-    quest_chain_db_loads: std::sync::atomic::AtomicU64,
-    condition_db_loads: std::sync::atomic::AtomicU64,
-    unit_condition_db_loads: std::sync::atomic::AtomicU64,
-    combat_condition_db_loads: std::sync::atomic::AtomicU64,
-    loot_template_db_loads: std::sync::atomic::AtomicU64,
-    spell_template_db_loads: std::sync::atomic::AtomicU64,
-    creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
+pub(in crate::world) struct ObjectMgrCacheStats {
+    pub(in crate::world) quest_template_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) quest_relation_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) quest_chain_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) condition_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) unit_condition_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) combat_condition_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) loot_template_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) spell_template_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ObjectMgrCacheSnapshot {
-    quest_template_db_loads: u64,
-    quest_relation_db_loads: u64,
-    quest_chain_db_loads: u64,
-    condition_db_loads: u64,
-    unit_condition_db_loads: u64,
-    combat_condition_db_loads: u64,
-    loot_template_db_loads: u64,
-    spell_template_db_loads: u64,
-    creature_spell_list_db_loads: u64,
+pub(in crate::world) struct ObjectMgrCacheSnapshot {
+    pub(in crate::world) quest_template_db_loads: u64,
+    pub(in crate::world) quest_relation_db_loads: u64,
+    pub(in crate::world) quest_chain_db_loads: u64,
+    pub(in crate::world) condition_db_loads: u64,
+    pub(in crate::world) unit_condition_db_loads: u64,
+    pub(in crate::world) combat_condition_db_loads: u64,
+    pub(in crate::world) loot_template_db_loads: u64,
+    pub(in crate::world) spell_template_db_loads: u64,
+    pub(in crate::world) creature_spell_list_db_loads: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum QuestRelationKind {
+pub(in crate::world) enum QuestRelationKind {
     CreatureStart,
     CreatureComplete,
     GameObjectStart,
@@ -70,7 +80,10 @@ enum QuestRelationKind {
 }
 
 impl ObjectMgr {
-    async fn load_conditions(&self, world_db_pool: &MySqlPool) -> anyhow::Result<()> {
+    pub(in crate::world) async fn load_conditions(
+        &self,
+        world_db_pool: &MySqlPool,
+    ) -> anyhow::Result<()> {
         let conditions = wow_db::get_conditions(world_db_pool).await?;
         let unit_conditions = wow_db::get_unit_conditions(world_db_pool).await?;
         let combat_conditions = wow_db::get_combat_conditions(world_db_pool).await?;
@@ -101,29 +114,30 @@ impl ObjectMgr {
         Ok(())
     }
 
-    async fn set_game_event_schedules(&self, schedules: Vec<wow_db::GameEventScheduleQuery>) {
+    pub(in crate::world) async fn set_game_event_schedules(
+        &self,
+        schedules: Vec<wow_db::GameEventScheduleQuery>,
+    ) {
         *self.game_event_schedules.lock().await = schedules;
     }
 
-    async fn active_game_event_state(&self) -> GameEventState {
+    pub(in crate::world) async fn active_game_event_state(&self) -> GameEventState {
         let schedules = self.game_event_schedules.lock().await.clone();
         GameEventState::from_schedules_at(&schedules, current_unix_epoch_secs() as i64)
     }
 
-    async fn active_holidays(&self) -> HashSet<u32> {
+    pub(in crate::world) async fn active_holidays(&self) -> HashSet<u32> {
         let schedules = self.game_event_schedules.lock().await.clone();
         let active_events =
             GameEventState::from_schedules_at(&schedules, current_unix_epoch_secs() as i64);
         schedules
             .iter()
-            .filter(|schedule| {
-                schedule.holiday != 0 && active_events.is_active(schedule.entry)
-            })
+            .filter(|schedule| schedule.holiday != 0 && active_events.is_active(schedule.entry))
             .map(|schedule| schedule.holiday)
             .collect()
     }
 
-    async fn condition_entry(
+    pub(in crate::world) async fn condition_entry(
         &self,
         world_db_pool: &MySqlPool,
         condition_entry: u32,
@@ -146,7 +160,7 @@ impl ObjectMgr {
         Ok(condition)
     }
 
-    async fn unit_condition(
+    pub(in crate::world) async fn unit_condition(
         &self,
         world_db_pool: &MySqlPool,
         id: i32,
@@ -169,7 +183,7 @@ impl ObjectMgr {
         Ok(condition)
     }
 
-    async fn combat_condition(
+    pub(in crate::world) async fn combat_condition(
         &self,
         world_db_pool: &MySqlPool,
         id: i32,
@@ -192,7 +206,7 @@ impl ObjectMgr {
         Ok(condition)
     }
 
-    async fn quest_template(
+    pub(in crate::world) async fn quest_template(
         &self,
         world_db_pool: &MySqlPool,
         quest: u32,
@@ -210,7 +224,7 @@ impl ObjectMgr {
         Ok(template)
     }
 
-    async fn creature_start_quests(
+    pub(in crate::world) async fn creature_start_quests(
         &self,
         world_db_pool: &MySqlPool,
         creature_entry: u32,
@@ -225,7 +239,7 @@ impl ObjectMgr {
         self.quest_templates_for_ids(world_db_pool, quest_ids).await
     }
 
-    async fn creature_complete_quests(
+    pub(in crate::world) async fn creature_complete_quests(
         &self,
         world_db_pool: &MySqlPool,
         creature_entry: u32,
@@ -240,7 +254,7 @@ impl ObjectMgr {
         self.quest_templates_for_ids(world_db_pool, quest_ids).await
     }
 
-    async fn gameobject_start_quests(
+    pub(in crate::world) async fn gameobject_start_quests(
         &self,
         world_db_pool: &MySqlPool,
         gameobject_entry: u32,
@@ -255,7 +269,7 @@ impl ObjectMgr {
         self.quest_templates_for_ids(world_db_pool, quest_ids).await
     }
 
-    async fn gameobject_complete_quests(
+    pub(in crate::world) async fn gameobject_complete_quests(
         &self,
         world_db_pool: &MySqlPool,
         gameobject_entry: u32,
@@ -270,7 +284,7 @@ impl ObjectMgr {
         self.quest_templates_for_ids(world_db_pool, quest_ids).await
     }
 
-    async fn creature_starts_quest(
+    pub(in crate::world) async fn creature_starts_quest(
         &self,
         world_db_pool: &MySqlPool,
         creature_entry: u32,
@@ -286,7 +300,7 @@ impl ObjectMgr {
             .contains(&quest))
     }
 
-    async fn creature_completes_quest(
+    pub(in crate::world) async fn creature_completes_quest(
         &self,
         world_db_pool: &MySqlPool,
         creature_entry: u32,
@@ -302,7 +316,7 @@ impl ObjectMgr {
             .contains(&quest))
     }
 
-    async fn gameobject_starts_quest(
+    pub(in crate::world) async fn gameobject_starts_quest(
         &self,
         world_db_pool: &MySqlPool,
         gameobject_entry: u32,
@@ -318,7 +332,7 @@ impl ObjectMgr {
             .contains(&quest))
     }
 
-    async fn gameobject_completes_quest(
+    pub(in crate::world) async fn gameobject_completes_quest(
         &self,
         world_db_pool: &MySqlPool,
         gameobject_entry: u32,
@@ -334,7 +348,7 @@ impl ObjectMgr {
             .contains(&quest))
     }
 
-    async fn quest_prev_quests(
+    pub(in crate::world) async fn quest_prev_quests(
         &self,
         world_db_pool: &MySqlPool,
         quest: u32,
@@ -352,7 +366,7 @@ impl ObjectMgr {
         Ok(quests)
     }
 
-    async fn quest_prev_chain_quests(
+    pub(in crate::world) async fn quest_prev_chain_quests(
         &self,
         world_db_pool: &MySqlPool,
         quest: u32,
@@ -370,7 +384,7 @@ impl ObjectMgr {
         Ok(quests)
     }
 
-    async fn exclusive_group_quests(
+    pub(in crate::world) async fn exclusive_group_quests(
         &self,
         world_db_pool: &MySqlPool,
         exclusive_group: i32,
@@ -388,7 +402,7 @@ impl ObjectMgr {
         Ok(quests)
     }
 
-    async fn creature_loot_items(
+    pub(in crate::world) async fn creature_loot_items(
         &self,
         world_db_pool: &MySqlPool,
         creature_entry: u32,
@@ -406,7 +420,7 @@ impl ObjectMgr {
         Ok(rows)
     }
 
-    async fn gameobject_loot_items(
+    pub(in crate::world) async fn gameobject_loot_items(
         &self,
         world_db_pool: &MySqlPool,
         loot_entry: u32,
@@ -424,7 +438,7 @@ impl ObjectMgr {
         Ok(rows)
     }
 
-    async fn reference_loot_items(
+    pub(in crate::world) async fn reference_loot_items(
         &self,
         world_db_pool: &MySqlPool,
         reference_entry: u32,
@@ -442,7 +456,7 @@ impl ObjectMgr {
         Ok(rows)
     }
 
-    async fn spell_template(
+    pub(in crate::world) async fn spell_template(
         &self,
         world_db_pool: &MySqlPool,
         spell: u32,
@@ -460,7 +474,7 @@ impl ObjectMgr {
         Ok(template)
     }
 
-    async fn creature_spell_list(
+    pub(in crate::world) async fn creature_spell_list(
         &self,
         world_db_pool: &MySqlPool,
         list_id: u32,
@@ -483,7 +497,7 @@ impl ObjectMgr {
         Ok(list)
     }
 
-    async fn quest_relation_ids(
+    pub(in crate::world) async fn quest_relation_ids(
         &self,
         world_db_pool: &MySqlPool,
         kind: QuestRelationKind,
@@ -525,7 +539,7 @@ impl ObjectMgr {
         Ok(quests)
     }
 
-    async fn quest_templates_for_ids(
+    pub(in crate::world) async fn quest_templates_for_ids(
         &self,
         world_db_pool: &MySqlPool,
         quest_ids: Vec<u32>,
@@ -540,7 +554,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_quest_template_for_test(
+    pub(in crate::world) async fn prime_quest_template_for_test(
         &self,
         quest: u32,
         template: Option<wow_db::QuestTemplateQuery>,
@@ -549,7 +563,11 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_creature_start_quest_ids_for_test(&self, creature_entry: u32, quests: Vec<u32>) {
+    pub(in crate::world) async fn prime_creature_start_quest_ids_for_test(
+        &self,
+        creature_entry: u32,
+        quests: Vec<u32>,
+    ) {
         self.creature_start_quest_ids
             .lock()
             .await
@@ -557,7 +575,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_creature_complete_quest_ids_for_test(
+    pub(in crate::world) async fn prime_creature_complete_quest_ids_for_test(
         &self,
         creature_entry: u32,
         quests: Vec<u32>,
@@ -569,7 +587,11 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_quest_prev_quests_for_test(&self, quest: u32, prev_quests: Vec<i32>) {
+    pub(in crate::world) async fn prime_quest_prev_quests_for_test(
+        &self,
+        quest: u32,
+        prev_quests: Vec<i32>,
+    ) {
         self.quest_prev_quests
             .lock()
             .await
@@ -577,7 +599,11 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_quest_prev_chain_quests_for_test(&self, quest: u32, prev_chain_quests: Vec<u32>) {
+    pub(in crate::world) async fn prime_quest_prev_chain_quests_for_test(
+        &self,
+        quest: u32,
+        prev_chain_quests: Vec<u32>,
+    ) {
         self.quest_prev_chain_quests
             .lock()
             .await
@@ -585,7 +611,11 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_exclusive_group_quests_for_test(&self, exclusive_group: i32, quests: Vec<u32>) {
+    pub(in crate::world) async fn prime_exclusive_group_quests_for_test(
+        &self,
+        exclusive_group: i32,
+        quests: Vec<u32>,
+    ) {
         self.exclusive_group_quests
             .lock()
             .await
@@ -593,7 +623,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_condition_for_test(
+    pub(in crate::world) async fn prime_condition_for_test(
         &self,
         condition_entry: u32,
         condition: Option<wow_db::ConditionQuery>,
@@ -605,7 +635,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_game_event_schedules_for_test(
+    pub(in crate::world) async fn prime_game_event_schedules_for_test(
         &self,
         schedules: Vec<wow_db::GameEventScheduleQuery>,
     ) {
@@ -613,7 +643,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_creature_loot_template_for_test(
+    pub(in crate::world) async fn prime_creature_loot_template_for_test(
         &self,
         creature_entry: u32,
         rows: Vec<wow_db::CreatureLootQuery>,
@@ -625,7 +655,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    async fn prime_spell_template_for_test(
+    pub(in crate::world) async fn prime_spell_template_for_test(
         &self,
         spell: u32,
         template: Option<wow_db::SpellTemplateQuery>,
@@ -634,7 +664,7 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
-    fn cache_stats_snapshot(&self) -> ObjectMgrCacheSnapshot {
+    pub(in crate::world) fn cache_stats_snapshot(&self) -> ObjectMgrCacheSnapshot {
         ObjectMgrCacheSnapshot {
             quest_template_db_loads: self
                 .stats

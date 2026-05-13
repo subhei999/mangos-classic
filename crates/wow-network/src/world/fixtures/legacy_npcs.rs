@@ -1,7 +1,9 @@
+use super::*;
+
 // Harness-only legacy Checkpoint 1 fixture NPC support gated by
 // WORLD_ENABLE_LEGACY_FIXTURE_NPCS. Not production world data.
 
-fn legacy_fixture_npcs_enabled() -> bool {
+pub(in crate::world) fn legacy_fixture_npcs_enabled() -> bool {
     std::env::var("WORLD_ENABLE_LEGACY_FIXTURE_NPCS")
         .ok()
         .is_some_and(|value| {
@@ -12,7 +14,9 @@ fn legacy_fixture_npcs_enabled() -> bool {
         })
 }
 
-fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_rust_guide_create_block(
+    character: &CharacterEnumEntry,
+) -> anyhow::Result<Vec<u8>> {
     let guid = rust_guide_guid();
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
@@ -39,7 +43,10 @@ fn build_rust_guide_create_block(character: &CharacterEnumEntry) -> anyhow::Resu
     Ok(block)
 }
 
-fn write_rust_guide_update_values(body: &mut Vec<u8>, guid: ObjectGuid) -> anyhow::Result<()> {
+pub(in crate::world) fn write_rust_guide_update_values(
+    body: &mut Vec<u8>,
+    guid: ObjectGuid,
+) -> anyhow::Result<()> {
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;
@@ -86,7 +93,6 @@ fn write_rust_guide_update_values(body: &mut Vec<u8>, guid: ObjectGuid) -> anyho
     write_update_values(body, &values)
 }
 
-fn rust_guide_guid() -> ObjectGuid {
+pub(in crate::world) fn rust_guide_guid() -> ObjectGuid {
     ObjectGuid::new(HighGuid::Unit, RUST_GUIDE_ENTRY, RUST_GUIDE_COUNTER)
 }
-

@@ -1,41 +1,43 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy)]
-struct SpellInfo<'a> {
-    template: &'a wow_db::SpellTemplateQuery,
-    effects: [SpellInfoEffect; 3],
+pub(in crate::world) struct SpellInfo<'a> {
+    pub(in crate::world) template: &'a wow_db::SpellTemplateQuery,
+    pub(in crate::world) effects: [SpellInfoEffect; 3],
 }
 
-const SPELL_ATTR_EX_NO_AUTOCAST_AI: u32 = 0x0002_0000;
+pub(in crate::world) const SPELL_ATTR_EX_NO_AUTOCAST_AI: u32 = 0x0002_0000;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-struct SpellInfoEffect {
-    effect_id: u32,
-    aura_name: u32,
-    base_points: i32,
-    die_sides: i32,
-    base_dice: u32,
-    points_per_combo_point: f32,
-    amplitude: u32,
-    implicit_target_a: u32,
-    misc_value: i32,
-    trigger_spell: u32,
-    dispatch: SpellEffectDispatch,
+pub(in crate::world) struct SpellInfoEffect {
+    pub(in crate::world) effect_id: u32,
+    pub(in crate::world) aura_name: u32,
+    pub(in crate::world) base_points: i32,
+    pub(in crate::world) die_sides: i32,
+    pub(in crate::world) base_dice: u32,
+    pub(in crate::world) points_per_combo_point: f32,
+    pub(in crate::world) amplitude: u32,
+    pub(in crate::world) implicit_target_a: u32,
+    pub(in crate::world) misc_value: i32,
+    pub(in crate::world) trigger_spell: u32,
+    pub(in crate::world) dispatch: SpellEffectDispatch,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SpellInfoEffectSlot {
-    effect_id: u32,
-    aura_name: u32,
-    base_points: i32,
-    roll: (i32, u32, f32),
-    amplitude: u32,
-    implicit_target_a: u32,
-    misc_value: i32,
-    trigger_spell: u32,
+pub(in crate::world) struct SpellInfoEffectSlot {
+    pub(in crate::world) effect_id: u32,
+    pub(in crate::world) aura_name: u32,
+    pub(in crate::world) base_points: i32,
+    pub(in crate::world) roll: (i32, u32, f32),
+    pub(in crate::world) amplitude: u32,
+    pub(in crate::world) implicit_target_a: u32,
+    pub(in crate::world) misc_value: i32,
+    pub(in crate::world) trigger_spell: u32,
 }
 
 impl<'a> SpellInfo<'a> {
-    fn from_template(template: &'a wow_db::SpellTemplateQuery) -> Self {
+    pub(in crate::world) fn from_template(template: &'a wow_db::SpellTemplateQuery) -> Self {
         let effects = [
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
                 effect_id: template.effect1,
@@ -83,18 +85,26 @@ impl<'a> SpellInfo<'a> {
         Self { template, effects }
     }
 
-    fn prepare_player_cast(&self) -> Option<PreparedSpellCast> {
-        self.player_cast_profile()
-            .map(|profile| PreparedSpellCast::new(self.template.id, SpellCastSource::Player, profile))
-    }
-
-    fn prepare_item_cast(&self, item_guid: ObjectGuid) -> Option<PreparedSpellCast> {
-        self.item_cast_profile().map(|profile| {
-            PreparedSpellCast::new(self.template.id, SpellCastSource::Item { item_guid }, profile)
+    pub(in crate::world) fn prepare_player_cast(&self) -> Option<PreparedSpellCast> {
+        self.player_cast_profile().map(|profile| {
+            PreparedSpellCast::new(self.template.id, SpellCastSource::Player, profile)
         })
     }
 
-    fn player_cast_profile(&self) -> Option<SpellCastProfile> {
+    pub(in crate::world) fn prepare_item_cast(
+        &self,
+        item_guid: ObjectGuid,
+    ) -> Option<PreparedSpellCast> {
+        self.item_cast_profile().map(|profile| {
+            PreparedSpellCast::new(
+                self.template.id,
+                SpellCastSource::Item { item_guid },
+                profile,
+            )
+        })
+    }
+
+    pub(in crate::world) fn player_cast_profile(&self) -> Option<SpellCastProfile> {
         let kind = if self.has_on_next_swing_attribute() {
             SpellCastKind::NextMeleeSwing
         } else if self.has_effect(SpellEffectDispatch::Charge) {
@@ -111,7 +121,7 @@ impl<'a> SpellInfo<'a> {
         Some(self.build_cast_profile(kind))
     }
 
-    fn item_cast_profile(&self) -> Option<SpellCastProfile> {
+    pub(in crate::world) fn item_cast_profile(&self) -> Option<SpellCastProfile> {
         if self.has_effect(SpellEffectDispatch::Charge) || self.has_on_next_swing_attribute() {
             return None;
         }
@@ -133,17 +143,14 @@ impl<'a> SpellInfo<'a> {
         Some(profile)
     }
 
-    fn build_cast_profile(&self, kind: SpellCastKind) -> SpellCastProfile {
+    pub(in crate::world) fn build_cast_profile(&self, kind: SpellCastKind) -> SpellCastProfile {
         SpellCastProfile {
             spell_id: self.template.id,
             kind,
             aura_target: self.aura_target(),
             bonus_damage: self.bonus_damage(),
             weapon_damage_percent: self.weapon_damage_percent(),
-            damage: if matches!(
-                kind,
-                SpellCastKind::NextMeleeSwing | SpellCastKind::Charge
-            ) {
+            damage: if matches!(kind, SpellCastKind::NextMeleeSwing | SpellCastKind::Charge) {
                 0
             } else {
                 self.direct_damage()
@@ -162,18 +169,18 @@ impl<'a> SpellInfo<'a> {
         }
     }
 
-    fn has_effect(&self, dispatch: SpellEffectDispatch) -> bool {
+    pub(in crate::world) fn has_effect(&self, dispatch: SpellEffectDispatch) -> bool {
         self.effects
             .iter()
             .any(|effect| effect.dispatch == dispatch)
     }
 
-    fn has_on_next_swing_attribute(&self) -> bool {
+    pub(in crate::world) fn has_on_next_swing_attribute(&self) -> bool {
         (self.template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING))
             != 0
     }
 
-    fn has_item_direct_effect(&self) -> bool {
+    pub(in crate::world) fn has_item_direct_effect(&self) -> bool {
         self.effects.iter().any(|effect| {
             matches!(
                 effect.dispatch,
@@ -182,7 +189,7 @@ impl<'a> SpellInfo<'a> {
         })
     }
 
-    fn has_direct_damage_effect(&self) -> bool {
+    pub(in crate::world) fn has_direct_damage_effect(&self) -> bool {
         self.effects.iter().any(|effect| {
             matches!(
                 effect.dispatch,
@@ -193,14 +200,14 @@ impl<'a> SpellInfo<'a> {
         })
     }
 
-    fn has_direct_heal_effect(&self) -> bool {
+    pub(in crate::world) fn has_direct_heal_effect(&self) -> bool {
         self.effects.iter().any(|effect| {
             effect.dispatch == SpellEffectDispatch::Heal
                 && spell_effect_simple_value(effect.base_points).is_some()
         })
     }
 
-    fn direct_heal(&self) -> u32 {
+    pub(in crate::world) fn direct_heal(&self) -> u32 {
         self.effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::Heal)
@@ -208,7 +215,7 @@ impl<'a> SpellInfo<'a> {
             .sum()
     }
 
-    fn aura_target(&self) -> SpellAuraTarget {
+    pub(in crate::world) fn aura_target(&self) -> SpellAuraTarget {
         if let Some(effect) = self
             .effects
             .iter()
@@ -231,7 +238,7 @@ impl<'a> SpellInfo<'a> {
             .unwrap_or(SpellAuraTarget::Caster)
     }
 
-    fn unit_target_kind(&self, kind: SpellCastKind) -> SpellTargetKind {
+    pub(in crate::world) fn unit_target_kind(&self, kind: SpellCastKind) -> SpellTargetKind {
         match kind {
             SpellCastKind::Charge | SpellCastKind::NextMeleeSwing => SpellTargetKind::HostileUnit,
             SpellCastKind::DirectHeal => {
@@ -271,7 +278,7 @@ impl<'a> SpellInfo<'a> {
         }
     }
 
-    fn bonus_damage(&self) -> u32 {
+    pub(in crate::world) fn bonus_damage(&self) -> u32 {
         let fixed_bonus: u32 = self
             .effects
             .iter()
@@ -281,7 +288,7 @@ impl<'a> SpellInfo<'a> {
         fixed_bonus.saturating_mul(self.weapon_damage_percent()) / 100
     }
 
-    fn weapon_damage_percent(&self) -> u32 {
+    pub(in crate::world) fn weapon_damage_percent(&self) -> u32 {
         self.effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::WeaponPercentDamage)
@@ -291,16 +298,14 @@ impl<'a> SpellInfo<'a> {
             })
     }
 
-    fn direct_damage(&self) -> u32 {
+    pub(in crate::world) fn direct_damage(&self) -> u32 {
         if self.has_on_next_swing_attribute() || self.has_effect(SpellEffectDispatch::Charge) {
             return 0;
         }
         let school_damage: u32 = self
             .effects
             .iter()
-            .filter(|effect| {
-                matches!(effect.dispatch, SpellEffectDispatch::SchoolDamage)
-            })
+            .filter(|effect| matches!(effect.dispatch, SpellEffectDispatch::SchoolDamage))
             .filter_map(|effect| spell_effect_simple_value(effect.base_points))
             .sum();
         let weapon_damage = if self.has_effect(SpellEffectDispatch::WeaponDamage) {
@@ -311,16 +316,16 @@ impl<'a> SpellInfo<'a> {
         school_damage.saturating_add(weapon_damage)
     }
 
-    fn requires_behind_target(&self) -> bool {
+    pub(in crate::world) fn requires_behind_target(&self) -> bool {
         (self.template.attributes_serverside & SPELL_ATTR_SS_FACING_BACK) != 0
     }
 
-    fn needs_combo_points(&self) -> bool {
+    pub(in crate::world) fn needs_combo_points(&self) -> bool {
         (self.template.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE) != 0
             || (self.template.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DURATION) != 0
     }
 
-    fn power(&self) -> SpellPowerCost {
+    pub(in crate::world) fn power(&self) -> SpellPowerCost {
         match self.template.power_type {
             POWER_TYPE_RAGE => SpellPowerCost::Rage {
                 cost: self.template.mana_cost,
@@ -339,7 +344,7 @@ impl<'a> SpellInfo<'a> {
 }
 
 impl SpellInfoEffect {
-    fn from_template_slot(slot: SpellInfoEffectSlot) -> Self {
+    pub(in crate::world) fn from_template_slot(slot: SpellInfoEffectSlot) -> Self {
         Self {
             effect_id: slot.effect_id,
             aura_name: slot.aura_name,

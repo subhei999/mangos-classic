@@ -1,9 +1,21 @@
-include!("packet_builders/common.rs");
-include!("packet_builders/quest.rs");
-include!("packet_builders/combat.rs");
-include!("packet_builders/loot.rs");
-include!("packet_builders/death.rs");
-include!("packet_builders/movement.rs");
-include!("packet_builders/progression.rs");
-include!("packet_builders/gossip.rs");
-include!("packet_builders/item_query.rs");
+use super::*;
+
+mod combat;
+mod common;
+mod death;
+mod gossip;
+mod item_query;
+mod loot;
+mod movement;
+mod progression;
+mod quest;
+
+pub(in crate::world) use self::combat::*;
+pub(in crate::world) use self::common::*;
+pub(in crate::world) use self::death::*;
+pub(in crate::world) use self::gossip::*;
+pub(in crate::world) use self::item_query::*;
+pub(in crate::world) use self::loot::*;
+pub(in crate::world) use self::movement::*;
+pub(in crate::world) use self::progression::*;
+pub(in crate::world) use self::quest::*;

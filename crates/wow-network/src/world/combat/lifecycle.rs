@@ -1,10 +1,12 @@
+use super::*;
+
 #[cfg(test)]
-fn apply_db_creature_damage(
+pub(in crate::world) fn apply_db_creature_damage(
     session: &mut WorldSessionState,
     target: ObjectGuid,
     requested_damage: u32,
 ) -> Option<u32> {
-    let creature = session.db_creatures.get_mut(&target.raw())?;
+    let creature = session.visibility.db_creatures.get_mut(&target.raw())?;
     if !creature.is_alive() || creature.is_evading_home() {
         return None;
     }
@@ -13,14 +15,14 @@ fn apply_db_creature_damage(
     creature.health = creature.health.saturating_sub(damage);
     if creature.health == 0 {
         creature.begin_corpse(Instant::now(), current_unix_epoch_secs());
-        session.active_combat_target = None;
-        session.active_combat_next_swing_at = None;
+        session.combat.active_combat_target = None;
+        session.combat.active_combat_next_swing_at = None;
         clear_db_creature_combat_if_attacker(session, target);
     }
     Some(damage)
 }
 
-async fn handle_combat_tick(
+pub(in crate::world) async fn handle_combat_tick(
     stream: &mut WorldPacketSink,
     deps: CombatTickDeps<'_>,
     session: &mut WorldSessionState,
@@ -37,11 +39,12 @@ async fn handle_combat_tick(
     )
     .await?;
     advance_db_creature_return_home_motions(deps.shared_world, session, now).await;
-    if session.player_death_state != PlayerDeathState::Alive {
+    if session.death.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
-    if let Some(character) = session.active_character.as_ref() {
-        if let Some(target) = deps.shared_world
+    if let Some(character) = session.character.active_character.as_ref() {
+        if let Some(target) = deps
+            .shared_world
             .maps
             .player_auto_attack_due(character.position.map_id, character.guid, now)
             .await
@@ -78,23 +81,23 @@ async fn handle_combat_tick(
 }
 
 #[derive(Clone, Copy)]
-struct CombatTickDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    shared_world: SharedWorldDeps<'a>,
-    parties: &'a PartyManager,
-    session_id: SessionId,
+pub(in crate::world) struct CombatTickDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) parties: &'a PartyManager,
+    pub(in crate::world) session_id: SessionId,
 }
 
 #[derive(Clone, Copy)]
-struct CombatRewardDeps<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    shared_world: SharedWorldDeps<'a>,
-    parties: &'a PartyManager,
+pub(in crate::world) struct CombatRewardDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) parties: &'a PartyManager,
 }
 
-async fn send_queued_next_melee_spell_cast_failure(
+pub(in crate::world) async fn send_queued_next_melee_spell_cast_failure(
     stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
     caster: ObjectGuid,
@@ -124,7 +127,7 @@ async fn send_queued_next_melee_spell_cast_failure(
     .await
 }
 
-async fn send_queued_next_melee_spell_cast_success(
+pub(in crate::world) async fn send_queued_next_melee_spell_cast_success(
     stream: &mut WorldPacketSink,
     header_crypto: &mut HeaderCrypto,
     queued: QueuedNextMeleeSpell,
@@ -138,7 +141,7 @@ async fn send_queued_next_melee_spell_cast_success(
     .await
 }
 
-async fn advance_db_creature_lifecycle(
+pub(in crate::world) async fn advance_db_creature_lifecycle(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     shared_world: SharedWorldDeps<'_>,
@@ -146,7 +149,7 @@ async fn advance_db_creature_lifecycle(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
@@ -195,14 +198,19 @@ async fn advance_db_creature_lifecycle(
 }
 
 #[cfg(test)]
-async fn sync_session_db_creatures_from_map(
+pub(in crate::world) async fn sync_session_db_creatures_from_map(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
 ) {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return;
     };
-    let guids = session.db_creatures.keys().copied().collect::<Vec<_>>();
+    let guids = session
+        .visibility
+        .db_creatures
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
     if guids.is_empty() {
         return;
     }
@@ -213,6 +221,7 @@ async fn sync_session_db_creatures_from_map(
     for shared in snapshots {
         let guid = shared.guid().raw();
         let client_visible = session
+            .visibility
             .db_creatures
             .get(&guid)
             .map(|creature| creature.client_visible)
@@ -223,16 +232,12 @@ async fn sync_session_db_creatures_from_map(
     }
 }
 
-async fn advance_db_creature_return_home_motions(
+pub(in crate::world) async fn advance_db_creature_return_home_motions(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
     now: Instant,
 ) {
-    let Some(character) = session
-        .active_character
-        .as_ref()
-        .cloned()
-    else {
+    let Some(character) = session.character.active_character.as_ref().cloned() else {
         return;
     };
     let map_id = character.position.map_id;
@@ -242,7 +247,7 @@ async fn advance_db_creature_return_home_motions(
         .await;
     #[cfg(test)]
     let visible_guids = if visible_guids.is_empty() {
-        session.db_creatures.keys().copied().collect()
+        session.visibility.db_creatures.keys().copied().collect()
     } else {
         visible_guids
     };
@@ -270,7 +275,7 @@ async fn advance_db_creature_return_home_motions(
     }
 }
 
-async fn advance_db_creature_motion_and_share(
+pub(in crate::world) async fn advance_db_creature_motion_and_share(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     _session: &mut WorldSessionState,
@@ -291,14 +296,17 @@ async fn advance_db_creature_motion_and_share(
 
 #[cfg(test)]
 #[allow(dead_code)]
-fn should_advance_db_creature_idle_motion(
+pub(in crate::world) fn should_advance_db_creature_idle_motion(
     session: &WorldSessionState,
     guid: u64,
     creature: &DbCreatureRuntime,
 ) -> bool {
     creature.is_alive()
-        && !session.active_creature_combats.contains_key(&guid)
-        && session.active_combat_target.is_none_or(|target| target.raw() != guid)
+        && !session.combat.active_creature_combats.contains_key(&guid)
+        && session
+            .combat
+            .active_combat_target
+            .is_none_or(|target| target.raw() != guid)
         && matches!(
             creature.motion,
             CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_)
@@ -306,11 +314,12 @@ fn should_advance_db_creature_idle_motion(
 }
 
 #[cfg(test)]
-fn db_creature_idle_motion_start_guids(
+pub(in crate::world) fn db_creature_idle_motion_start_guids(
     session: &WorldSessionState,
     now: Instant,
 ) -> Vec<u64> {
     let mut guids = session
+        .visibility
         .db_creatures
         .iter()
         .filter_map(|(guid, creature)| {
@@ -323,21 +332,24 @@ fn db_creature_idle_motion_start_guids(
 }
 
 #[cfg(test)]
-fn should_start_db_creature_idle_motion(
+pub(in crate::world) fn should_start_db_creature_idle_motion(
     session: &WorldSessionState,
     guid: u64,
     creature: &DbCreatureRuntime,
     now: Instant,
 ) -> bool {
     creature.is_alive()
-        && !session.active_creature_combats.contains_key(&guid)
-        && session.active_combat_target.is_none_or(|target| target.raw() != guid)
+        && !session.combat.active_creature_combats.contains_key(&guid)
+        && session
+            .combat
+            .active_combat_target
+            .is_none_or(|target| target.raw() != guid)
         && matches!(creature.motion, CreatureMotionState::Idle)
         && (creature.next_random_move_at.is_some_and(|at| now >= at)
             || creature.next_waypoint_move_at.is_some_and(|at| now >= at))
 }
 
-async fn send_db_creature_swing(
+pub(in crate::world) async fn send_db_creature_swing(
     stream: &mut WorldPacketSink,
     deps: CombatRewardDeps<'_>,
     session: &mut WorldSessionState,
@@ -348,21 +360,21 @@ async fn send_db_creature_swing(
     let world_db_pool = deps.world_db_pool;
     let shared_world = deps.shared_world;
     let parties = deps.parties;
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     let map_id = character.position.map_id;
     advance_db_creature_motion_and_share(shared_world, map_id, session, target, Instant::now())
         .await;
 
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let character_snapshot = character.clone();
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     match db_creature_player_melee_check_from_map(shared_world, session, target).await {
         PlayerMeleeCheck::Clear => {
-            session.last_player_melee_swing_error = None;
+            session.combat.last_player_melee_swing_error = None;
         }
         PlayerMeleeCheck::MissingTarget | PlayerMeleeCheck::TargetNotAlive => {
             send_player_melee_swing_error_if_changed(
@@ -391,11 +403,7 @@ async fn send_db_creature_swing(
             mirror_session_player_next_swing_at(session, next_swing_at);
             shared_world
                 .maps
-                .set_player_next_swing_at(
-                    map_id,
-                    character_snapshot.guid,
-                    next_swing_at,
-                )
+                .set_player_next_swing_at(map_id, character_snapshot.guid, next_swing_at)
                 .await;
             return Ok(());
         }
@@ -411,11 +419,7 @@ async fn send_db_creature_swing(
             mirror_session_player_next_swing_at(session, next_swing_at);
             shared_world
                 .maps
-                .set_player_next_swing_at(
-                    map_id,
-                    character_snapshot.guid,
-                    next_swing_at,
-                )
+                .set_player_next_swing_at(map_id, character_snapshot.guid, next_swing_at)
                 .await;
             return Ok(());
         }
@@ -431,11 +435,7 @@ async fn send_db_creature_swing(
             mirror_session_player_next_swing_at(session, next_swing_at);
             shared_world
                 .maps
-                .set_player_next_swing_at(
-                    map_id,
-                    character_snapshot.guid,
-                    next_swing_at,
-                )
+                .set_player_next_swing_at(map_id, character_snapshot.guid, next_swing_at)
                 .await;
             return Ok(());
         }
@@ -450,11 +450,7 @@ async fn send_db_creature_swing(
                 character_snapshot.guid
             )
         })?;
-    let Some(target_creature) = shared_world
-        .maps
-        .db_creature_snapshot(map_id, target)
-        .await
-    else {
+    let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
         mirror_session_player_auto_attack(session, None, None);
         shared_world
             .maps
@@ -462,12 +458,13 @@ async fn send_db_creature_swing(
             .await;
         return Ok(());
     };
-    let weapon_skill_id = main_hand_weapon_skill_id(world_db_pool, &session.inventory).await?;
+    let weapon_skill_id =
+        main_hand_weapon_skill_id(world_db_pool, &session.inventory.items).await?;
     let attacker_skill = weapon_skill_id
         .map(|skill_id| {
             current_skill_value_with_active_auras(
-                &session.character_skills,
-                &session.active_auras,
+                &session.character.character_skills,
+                &session.auras.active_auras,
                 skill_id,
             )
         })
@@ -561,11 +558,7 @@ async fn send_db_creature_swing(
     if let Some(queued) = queued_spell {
         if let Err(failure) = shared_world
             .maps
-            .spend_queued_player_next_melee_spell_power(
-                map_id,
-                character_snapshot.guid,
-                queued,
-            )
+            .spend_queued_player_next_melee_spell_power(map_id, character_snapshot.guid, queued)
             .await
         {
             send_queued_next_melee_spell_cast_failure(
@@ -583,9 +576,9 @@ async fn send_db_creature_swing(
                 .player_runtime_snapshot(map_id, character_snapshot.guid)
                 .await
             {
-                session.player_mana = snapshot.power1;
-                session.player_rage = snapshot.power2;
-                session.player_energy = snapshot.power4;
+                session.character.player_mana = snapshot.power1;
+                session.character.player_rage = snapshot.power2;
+                session.character.player_energy = snapshot.power4;
             }
         }
     }
@@ -596,7 +589,7 @@ async fn send_db_creature_swing(
             skill_id,
             combat_stats.intellect,
             true,
-            &mut session.character_skills,
+            &mut session.character.character_skills,
         );
         if let Some(updated) = advanced_skill {
             wow_db::upsert_character_skill(
@@ -634,10 +627,18 @@ async fn send_db_creature_swing(
             melee_outcome.outcome,
         )
     };
-    session.player_rage = session.player_rage.saturating_add(rage_gain).min(POWER_RAGE_DEFAULT);
+    session.character.player_rage = session
+        .character
+        .player_rage
+        .saturating_add(rage_gain)
+        .min(POWER_RAGE_DEFAULT);
     shared_world
         .maps
-        .set_player_power2(map_id, character_snapshot.guid, session.player_rage)
+        .set_player_power2(
+            map_id,
+            character_snapshot.guid,
+            session.character.player_rage,
+        )
         .await;
     if !is_dead {
         begin_db_creature_retaliation_if_needed(
@@ -729,7 +730,7 @@ async fn send_db_creature_swing(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &build_player_rage_update_body(attacker, session.player_rage)?,
+        &build_player_rage_update_body(attacker, session.character.player_rage)?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -740,7 +741,7 @@ async fn send_db_creature_swing(
             &build_player_skill_update_body(
                 character_snapshot.guid,
                 updated,
-                &session.active_auras,
+                &session.auras.active_auras,
             )?,
             Some(&mut *header_crypto),
         )
@@ -767,14 +768,14 @@ async fn send_db_creature_swing(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SkillProgressionUpdate {
-    slot: usize,
-    skill: u16,
-    value: u16,
-    max: u16,
+pub(in crate::world) struct SkillProgressionUpdate {
+    pub(in crate::world) slot: usize,
+    pub(in crate::world) skill: u16,
+    pub(in crate::world) value: u16,
+    pub(in crate::world) max: u16,
 }
 
-fn try_advance_combat_skill_value(
+pub(in crate::world) fn try_advance_combat_skill_value(
     character_level: u8,
     skill_id: u16,
     intellect: u32,
@@ -794,7 +795,7 @@ fn try_advance_combat_skill_value(
     )
 }
 
-fn try_advance_combat_skill_value_with_rolls(
+pub(in crate::world) fn try_advance_combat_skill_value_with_rolls(
     character_level: u8,
     skill_id: u16,
     intellect: u32,
@@ -856,7 +857,7 @@ fn try_advance_combat_skill_value_with_rolls(
     })
 }
 
-fn advance_level_capped_combat_skill_maxes(
+pub(in crate::world) fn advance_level_capped_combat_skill_maxes(
     character_level: u8,
     character_skills: &mut [CharacterSkill],
 ) -> Vec<SkillProgressionUpdate> {
@@ -879,7 +880,7 @@ fn advance_level_capped_combat_skill_maxes(
         .collect()
 }
 
-fn set_level_capped_combat_skill_maxes(
+pub(in crate::world) fn set_level_capped_combat_skill_maxes(
     character_level: u8,
     character_skills: &mut [CharacterSkill],
 ) -> Vec<SkillProgressionUpdate> {
@@ -905,7 +906,7 @@ fn set_level_capped_combat_skill_maxes(
         .collect()
 }
 
-fn is_level_capped_combat_skill(skill_id: u16) -> bool {
+pub(in crate::world) fn is_level_capped_combat_skill(skill_id: u16) -> bool {
     matches!(
         skill_id,
         SKILL_DEFENSE
@@ -930,7 +931,7 @@ fn is_level_capped_combat_skill(skill_id: u16) -> bool {
     )
 }
 
-async fn main_hand_weapon_skill_id(
+pub(in crate::world) async fn main_hand_weapon_skill_id(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Option<u16>> {
@@ -940,14 +941,17 @@ async fn main_hand_weapon_skill_id(
     let Some(main_hand) = main_hand else {
         return Ok(Some(SKILL_UNARMED));
     };
-    let Some(template) = wow_db::get_item_template_query(world_db_pool, main_hand.item_template).await?
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, main_hand.item_template).await?
     else {
         return Ok(None);
     };
     Ok(item_weapon_skill_from_template(&template))
 }
 
-fn item_weapon_skill_from_template(template: &ItemTemplateQuery) -> Option<u16> {
+pub(in crate::world) fn item_weapon_skill_from_template(
+    template: &ItemTemplateQuery,
+) -> Option<u16> {
     if template.class != ITEM_CLASS_WEAPON {
         return None;
     }
@@ -973,7 +977,7 @@ fn item_weapon_skill_from_template(template: &ItemTemplateQuery) -> Option<u16> 
     }
 }
 
-fn build_player_skill_update_body(
+pub(in crate::world) fn build_player_skill_update_body(
     character_guid: u32,
     updated: SkillProgressionUpdate,
     active_auras: &[ActiveAura],
@@ -981,7 +985,7 @@ fn build_player_skill_update_body(
     build_player_skill_updates_body(character_guid, &[updated], active_auras)
 }
 
-fn build_player_skill_updates_body(
+pub(in crate::world) fn build_player_skill_updates_body(
     character_guid: u32,
     updates: &[SkillProgressionUpdate],
     active_auras: &[ActiveAura],
@@ -1010,7 +1014,7 @@ fn build_player_skill_updates_body(
     Ok(build_update_object_body(&[block]))
 }
 
-async fn begin_db_creature_retaliation_if_needed(
+pub(in crate::world) async fn begin_db_creature_retaliation_if_needed(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
@@ -1034,15 +1038,18 @@ async fn begin_db_creature_retaliation_if_needed(
     Ok(())
 }
 
-fn player_melee_retry_at(now: Instant) -> Instant {
+pub(in crate::world) fn player_melee_retry_at(now: Instant) -> Instant {
     now + Duration::from_millis(PLAYER_MELEE_RETRY_MILLIS)
 }
 
-fn player_main_hand_next_swing_at(now: Instant, combat_stats: &PlayerCombatStats) -> Instant {
+pub(in crate::world) fn player_main_hand_next_swing_at(
+    now: Instant,
+    combat_stats: &PlayerCombatStats,
+) -> Instant {
     now + Duration::from_millis(combat_stats.main_attack_time_ms.max(1) as u64)
 }
 
-fn rage_gain_from_main_hand_white_damage(
+pub(in crate::world) fn rage_gain_from_main_hand_white_damage(
     damage: u32,
     level: u8,
     attack_time_ms: u32,
@@ -1069,7 +1076,7 @@ fn rage_gain_from_main_hand_white_damage(
     (rage.min(cap).max(0.0) * 10.0) as u32
 }
 
-fn rage_gain_from_damage_taken(damage: u32, level: u8) -> u32 {
+pub(in crate::world) fn rage_gain_from_damage_taken(damage: u32, level: u8) -> u32 {
     if damage == 0 {
         return 0;
     }
@@ -1081,26 +1088,26 @@ fn rage_gain_from_damage_taken(damage: u32, level: u8) -> u32 {
     (rage.max(0.0) * 10.0) as u32
 }
 
-fn rage_conversion_for_level(level: u8) -> f64 {
+pub(in crate::world) fn rage_conversion_for_level(level: u8) -> f64 {
     let level = level as f64;
     0.0091107836_f64 * level * level + 3.225598133_f64 * level + 4.2652911_f64
 }
 
-async fn send_player_melee_swing_error_if_changed(
+pub(in crate::world) async fn send_player_melee_swing_error_if_changed(
     stream: &mut WorldPacketSink,
     session: &mut WorldSessionState,
     error: PlayerMeleeSwingError,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.last_player_melee_swing_error == Some(error) {
+    if session.combat.last_player_melee_swing_error == Some(error) {
         return Ok(());
     }
-    session.last_player_melee_swing_error = Some(error);
+    session.combat.last_player_melee_swing_error = Some(error);
     let packet = error.packet();
     send_packet(stream, packet.opcode, &packet.body, Some(header_crypto)).await
 }
 
-async fn finalize_db_creature_death(
+pub(in crate::world) async fn finalize_db_creature_death(
     stream: &mut WorldPacketSink,
     deps: CombatRewardDeps<'_>,
     session: &mut WorldSessionState,
@@ -1126,6 +1133,7 @@ async fn finalize_db_creature_death(
         .await?;
     }
     if let Some((map_id, character_guid)) = session
+        .character
         .active_character
         .as_ref()
         .map(|character| (character.position.map_id, character.guid))
@@ -1142,7 +1150,7 @@ async fn finalize_db_creature_death(
             .await;
     }
     clear_db_creature_combat_if_attacker(session, killed);
-    if let Some(character) = session.active_character.as_ref() {
+    if let Some(character) = session.character.active_character.as_ref() {
         if let Some(creature) = shared_world
             .maps
             .db_creature_snapshot(character.position.map_id, killed)
@@ -1186,16 +1194,17 @@ async fn finalize_db_creature_death(
             }
         }
     }
-    let player_still_has_attackers = if let Some(character) = session.active_character.as_ref() {
-        let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-        !shared_world
-            .maps
-            .active_db_creature_combats_for_victim(character.position.map_id, player)
-            .await
-            .is_empty()
-    } else {
-        false
-    };
+    let player_still_has_attackers =
+        if let Some(character) = session.character.active_character.as_ref() {
+            let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+            !shared_world
+                .maps
+                .active_db_creature_combats_for_victim(character.position.map_id, player)
+                .await
+                .is_empty()
+        } else {
+            false
+        };
     if !player_still_has_attackers {
         send_player_combat_flag_if_changed(stream, session, false, header_crypto).await?;
     }
@@ -1228,7 +1237,7 @@ async fn finalize_db_creature_death(
     .await
 }
 
-async fn grant_db_creature_xp(
+pub(in crate::world) async fn grant_db_creature_xp(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
@@ -1237,7 +1246,7 @@ async fn grant_db_creature_xp(
     creature_template: &CreatureTemplateQuery,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = &session.active_character else {
+    let Some(character) = &session.character.active_character else {
         return Ok(());
     };
     let xp = creature_xp_reward(character.level, creature_template);
@@ -1253,16 +1262,16 @@ async fn grant_db_creature_xp(
     .await
 }
 
-const GROUP_XP_DISTANCE_YARDS: f32 = 74.0;
+pub(in crate::world) const GROUP_XP_DISTANCE_YARDS: f32 = 74.0;
 
 #[derive(Debug)]
-struct PartyRewardMember {
-    member: PartyMember,
-    snapshot: PlayerRuntimeSnapshot,
-    xp: u32,
+pub(in crate::world) struct PartyRewardMember {
+    pub(in crate::world) member: PartyMember,
+    pub(in crate::world) snapshot: PlayerRuntimeSnapshot,
+    pub(in crate::world) xp: u32,
 }
 
-async fn reward_party_for_db_creature_kill(
+pub(in crate::world) async fn reward_party_for_db_creature_kill(
     stream: &mut WorldPacketSink,
     deps: CombatRewardDeps<'_>,
     session: &mut WorldSessionState,
@@ -1274,7 +1283,7 @@ async fn reward_party_for_db_creature_kill(
     let world_db_pool = deps.world_db_pool;
     let shared_world = deps.shared_world;
     let parties = deps.parties;
-    let Some(killer) = session.active_character.as_ref() else {
+    let Some(killer) = session.character.active_character.as_ref() else {
         return Ok(false);
     };
     let killer_guid = killer.guid;
@@ -1333,7 +1342,7 @@ async fn reward_party_for_db_creature_kill(
                 header_crypto,
             )
             .await?;
-            if let Some(character) = session.active_character.as_ref() {
+            if let Some(character) = session.character.active_character.as_ref() {
                 deps.shared_world
                     .maps
                     .sync_player_gameplay_state(character.position.map_id, character.guid, session)
@@ -1353,21 +1362,20 @@ async fn reward_party_for_db_creature_kill(
             &mut quest_statuses,
         )
         .await?;
-        let xp_award =
-            award_character_xp_to_member(
-                character_db_pool,
-                world_db_pool,
-                reward.member.guid,
-                &reward.snapshot,
-                Some(killed),
-                reward.xp,
-            )
-            .await?;
+        let xp_award = award_character_xp_to_member(
+            character_db_pool,
+            world_db_pool,
+            reward.member.guid,
+            &reward.snapshot,
+            Some(killed),
+            reward.xp,
+        )
+        .await?;
         let mut packets = quest_packets;
         packets.extend(xp_award.packets);
         shared_world
             .maps
-                .update_player_reward_state(
+            .update_player_reward_state(
                 map_id,
                 reward.member.guid,
                 PlayerRewardRuntimeUpdate {
@@ -1395,7 +1403,10 @@ async fn reward_party_for_db_creature_kill(
     Ok(true)
 }
 
-fn assign_group_xp(members: &mut [PartyRewardMember], creature_template: &CreatureTemplateQuery) {
+pub(in crate::world) fn assign_group_xp(
+    members: &mut [PartyRewardMember],
+    creature_template: &CreatureTemplateQuery,
+) {
     let alive: Vec<usize> = members
         .iter()
         .enumerate()
@@ -1415,14 +1426,12 @@ fn assign_group_xp(members: &mut [PartyRewardMember], creature_template: &Creatu
     for index in alive {
         let level = members[index].snapshot.level;
         let base = creature_xp_reward(level, creature_template);
-        let share = base as f32
-            * group_xp_rate(count)
-            * (level as f32 / sum_levels as f32);
+        let share = base as f32 * group_xp_rate(count) * (level as f32 / sum_levels as f32);
         members[index].xp = nearbyint_to_u32(share);
     }
 }
 
-fn group_xp_rate(count: u32) -> f32 {
+pub(in crate::world) fn group_xp_rate(count: u32) -> f32 {
     match count {
         0..=2 => 1.0,
         3 => 1.166,
@@ -1432,7 +1441,7 @@ fn group_xp_rate(count: u32) -> f32 {
     }
 }
 
-async fn grant_db_creature_kill_credit_to_member(
+pub(in crate::world) async fn grant_db_creature_kill_credit_to_member(
     character_db_pool: &MySqlPool,
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
@@ -1473,18 +1482,19 @@ async fn grant_db_creature_kill_credit_to_member(
             continue;
         }
         let new_count = (current + 1).min(required);
-        let mut next_status = quest_statuses
-            .get(&quest_id)
-            .cloned()
-            .unwrap_or(CharacterQuestStatus {
-                quest: quest_id,
-                status: QUEST_STATUS_INCOMPLETE,
-                rewarded: 0,
-                mobcount1: 0,
-                mobcount2: 0,
-                mobcount3: 0,
-                mobcount4: 0,
-            });
+        let mut next_status =
+            quest_statuses
+                .get(&quest_id)
+                .cloned()
+                .unwrap_or(CharacterQuestStatus {
+                    quest: quest_id,
+                    status: QUEST_STATUS_INCOMPLETE,
+                    rewarded: 0,
+                    mobcount1: 0,
+                    mobcount2: 0,
+                    mobcount3: 0,
+                    mobcount4: 0,
+                });
         match index {
             0 => next_status.mobcount1 = new_count,
             1 => next_status.mobcount2 = new_count,
@@ -1524,7 +1534,7 @@ async fn grant_db_creature_kill_credit_to_member(
     Ok(packets)
 }
 
-async fn award_character_xp_to_member(
+pub(in crate::world) async fn award_character_xp_to_member(
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     character_guid: u32,
@@ -1535,16 +1545,17 @@ async fn award_character_xp_to_member(
     if xp == 0 || snapshot.level >= DEFAULT_MAX_PLAYER_LEVEL {
         return Ok(MemberXpAward::unchanged(snapshot));
     }
-    let previous_stats =
-        wow_db::get_player_world_stats(world_db_pool, snapshot.race, snapshot.class, snapshot.level)
-            .await?;
+    let previous_stats = wow_db::get_player_world_stats(
+        world_db_pool,
+        snapshot.race,
+        snapshot.class,
+        snapshot.level,
+    )
+    .await?;
     let mut new_level = snapshot.level;
     let mut new_xp = snapshot.xp.saturating_add(xp);
     let mut next_level_xp = previous_stats.next_level_xp;
-    while next_level_xp > 0
-        && new_xp >= next_level_xp
-        && new_level < DEFAULT_MAX_PLAYER_LEVEL
-    {
+    while next_level_xp > 0 && new_xp >= next_level_xp && new_level < DEFAULT_MAX_PLAYER_LEVEL {
         new_xp -= next_level_xp;
         new_level += 1;
         next_level_xp = wow_db::get_player_next_level_xp(world_db_pool, new_level).await?;
@@ -1625,19 +1636,19 @@ async fn award_character_xp_to_member(
 }
 
 #[derive(Debug)]
-struct MemberXpAward {
-    level: u8,
-    xp: u32,
-    health: u32,
-    max_health: u32,
-    power1: u32,
-    max_power1: u32,
-    power2: u32,
-    packets: Vec<OutboundWorldPacket>,
+pub(in crate::world) struct MemberXpAward {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) max_health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) max_power1: u32,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) packets: Vec<OutboundWorldPacket>,
 }
 
 impl MemberXpAward {
-    fn unchanged(snapshot: &PlayerRuntimeSnapshot) -> Self {
+    pub(in crate::world) fn unchanged(snapshot: &PlayerRuntimeSnapshot) -> Self {
         Self {
             level: snapshot.level,
             xp: snapshot.xp,
@@ -1651,7 +1662,7 @@ impl MemberXpAward {
     }
 }
 
-async fn award_character_xp(
+pub(in crate::world) async fn award_character_xp(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
@@ -1663,7 +1674,7 @@ async fn award_character_xp(
     if xp == 0 {
         return Ok(());
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
     if character.level >= DEFAULT_MAX_PLAYER_LEVEL {
@@ -1675,14 +1686,12 @@ async fn award_character_xp(
     let class = character.class;
     let old_level = character.level;
     let old_xp = character.xp;
-    let previous_stats = wow_db::get_player_world_stats(world_db_pool, race, class, old_level).await?;
+    let previous_stats =
+        wow_db::get_player_world_stats(world_db_pool, race, class, old_level).await?;
     let mut new_level = old_level;
     let mut new_xp = old_xp.saturating_add(xp);
     let mut next_level_xp = previous_stats.next_level_xp;
-    while next_level_xp > 0
-        && new_xp >= next_level_xp
-        && new_level < DEFAULT_MAX_PLAYER_LEVEL
-    {
+    while next_level_xp > 0 && new_xp >= next_level_xp && new_level < DEFAULT_MAX_PLAYER_LEVEL {
         new_xp -= next_level_xp;
         new_level += 1;
         next_level_xp = wow_db::get_player_next_level_xp(world_db_pool, new_level).await?;
@@ -1694,16 +1703,16 @@ async fn award_character_xp(
     let health = if leveled {
         max_health
     } else {
-        session.player_health.max(1).min(max_health)
+        session.character.player_health.max(1).min(max_health)
     };
     let power1 = if max_mana == 0 {
         0
     } else if leveled {
         max_mana
     } else {
-        session.player_mana.min(max_mana)
+        session.character.player_mana.min(max_mana)
     };
-    let power2 = session.player_rage.min(POWER_RAGE_DEFAULT);
+    let power2 = session.character.player_rage.min(POWER_RAGE_DEFAULT);
     let power3 = 0;
     let power4 = create_power_for_class_power(class, POWER_ENERGY);
     let power5 = 0;
@@ -1723,15 +1732,15 @@ async fn award_character_xp(
         },
     )
     .await?;
-    if let Some(character) = session.active_character.as_mut() {
+    if let Some(character) = session.character.active_character.as_mut() {
         character.level = new_level;
         character.xp = new_xp;
     }
-    session.player_health = health;
-    session.player_mana = power1;
-    session.player_rage = power2;
+    session.character.player_health = health;
+    session.character.player_mana = power1;
+    session.character.player_rage = power2;
     let skill_cap_updates = if leveled {
-        advance_level_capped_combat_skill_maxes(new_level, &mut session.character_skills)
+        advance_level_capped_combat_skill_maxes(new_level, &mut session.character.character_skills)
     } else {
         Vec::new()
     };
@@ -1784,7 +1793,11 @@ async fn award_character_xp(
         send_packet(
             stream,
             SMSG_UPDATE_OBJECT,
-            &build_player_skill_updates_body(guid, &skill_cap_updates, &session.active_auras)?,
+            &build_player_skill_updates_body(
+                guid,
+                &skill_cap_updates,
+                &session.auras.active_auras,
+            )?,
             Some(header_crypto),
         )
         .await?;
@@ -1793,7 +1806,10 @@ async fn award_character_xp(
     Ok(())
 }
 
-fn creature_xp_reward(player_level: u8, template: &CreatureTemplateQuery) -> u32 {
+pub(in crate::world) fn creature_xp_reward(
+    player_level: u8,
+    template: &CreatureTemplateQuery,
+) -> u32 {
     if template.civilian != 0 || template.creature_type == CREATURE_TYPE_CRITTER {
         return 0;
     }
@@ -1809,7 +1825,7 @@ fn creature_xp_reward(player_level: u8, template: &CreatureTemplateQuery) -> u32
     nearbyint_to_u32(xp_gain)
 }
 
-fn base_creature_xp_gain(player_level: u32, mob_level: u32) -> f32 {
+pub(in crate::world) fn base_creature_xp_gain(player_level: u32, mob_level: u32) -> f32 {
     let base_xp = player_level * 5 + 45;
     if mob_level >= player_level {
         let level_diff = (mob_level - player_level).min(4);
@@ -1822,7 +1838,7 @@ fn base_creature_xp_gain(player_level: u32, mob_level: u32) -> f32 {
     0.0
 }
 
-fn gray_level(player_level: u32) -> u32 {
+pub(in crate::world) fn gray_level(player_level: u32) -> u32 {
     if player_level <= 5 {
         0
     } else if player_level <= 39 {
@@ -1834,7 +1850,7 @@ fn gray_level(player_level: u32) -> u32 {
     }
 }
 
-fn zero_difference(unit_level: u32) -> u32 {
+pub(in crate::world) fn zero_difference(unit_level: u32) -> u32 {
     match unit_level {
         0..=7 => 5,
         8..=9 => 6,
@@ -1851,7 +1867,7 @@ fn zero_difference(unit_level: u32) -> u32 {
     }
 }
 
-fn quest_xp_reward(player_level: u8, quest: &QuestTemplateQuery) -> u32 {
+pub(in crate::world) fn quest_xp_reward(player_level: u8, quest: &QuestTemplateQuery) -> u32 {
     if quest.rew_money_max_level == 0 {
         return 0;
     }
@@ -1883,15 +1899,14 @@ fn quest_xp_reward(player_level: u8, quest: &QuestTemplateQuery) -> u32 {
     quest_xp_ceil(full_xp * factor)
 }
 
-fn quest_xp_ceil(value: f32) -> u32 {
+pub(in crate::world) fn quest_xp_ceil(value: f32) -> u32 {
     value.ceil().max(0.0) as u32
 }
 
-fn nearbyint_to_u32(value: f32) -> u32 {
+pub(in crate::world) fn nearbyint_to_u32(value: f32) -> u32 {
     if value <= 0.0 {
         0
     } else {
         value.round_ties_even() as u32
     }
 }
-

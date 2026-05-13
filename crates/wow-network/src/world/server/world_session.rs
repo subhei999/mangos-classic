@@ -1,39 +1,43 @@
+use super::*;
+use wow_proto::{
+    FactionStandingResponse, ServerWorldPacket, SmsgAccountDataTimesResponse,
+    SmsgActionButtonsResponse, SmsgBindpointUpdateResponse, SmsgInitWorldStatesResponse,
+    SmsgInitialSpellsResponse, SmsgInitializeFactionsResponse, SmsgLoginSetTimeSpeedResponse,
+    SmsgLoginVerifyWorldResponse, SmsgSetProficiencyResponse, SmsgSetRestStartResponse,
+    SmsgTriggerCinematicResponse, SmsgTutorialFlagsResponse,
+};
+
 // CMaNGOS reference: src/game/Server/WorldSession.cpp login/bootstrap packet path.
-struct EnterWorldBootstrap<'a> {
-    character_db_pool: &'a MySqlPool,
-    world_db_pool: &'a MySqlPool,
-    character: &'a CharacterEnumEntry,
-    inventory: &'a [CharacterInventoryItem],
-    inventory_container_slots: &'a HashMap<u32, u32>,
-    base_world_stats: &'a PlayerWorldStats,
-    world_stats: &'a PlayerWorldStats,
-    equipped_templates: &'a [EquippedItemTemplate],
-    spells: &'a [CharacterSpell],
-    skills: &'a [CharacterSkill],
-    reputations: &'a [CharacterReputation],
-    quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
-    active_auras: &'a [ActiveAura],
-    account_data: &'a HashMap<u32, AccountDataCache>,
-    tutorial_flags: &'a [u32; 8],
-    cinematic_sequence: Option<u32>,
-    nearby_creatures: &'a [DbCreatureRuntime],
-    nearby_gameobjects: &'a [DbGameObjectRuntime],
-    nearby_player_corpses: &'a [PlayerCorpseRuntime],
+pub(in crate::world) struct EnterWorldBootstrap<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) character: &'a CharacterEnumEntry,
+    pub(in crate::world) inventory: &'a [CharacterInventoryItem],
+    pub(in crate::world) inventory_container_slots: &'a HashMap<u32, u32>,
+    pub(in crate::world) base_world_stats: &'a PlayerWorldStats,
+    pub(in crate::world) world_stats: &'a PlayerWorldStats,
+    pub(in crate::world) equipped_templates: &'a [EquippedItemTemplate],
+    pub(in crate::world) spells: &'a [CharacterSpell],
+    pub(in crate::world) skills: &'a [CharacterSkill],
+    pub(in crate::world) reputations: &'a [CharacterReputation],
+    pub(in crate::world) quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
+    pub(in crate::world) active_auras: &'a [ActiveAura],
+    pub(in crate::world) account_data: &'a HashMap<u32, AccountDataCache>,
+    pub(in crate::world) tutorial_flags: &'a [u32; 8],
+    pub(in crate::world) cinematic_sequence: Option<u32>,
+    pub(in crate::world) nearby_creatures: &'a [DbCreatureRuntime],
+    pub(in crate::world) nearby_gameobjects: &'a [DbGameObjectRuntime],
+    pub(in crate::world) nearby_player_corpses: &'a [PlayerCorpseRuntime],
 }
 
-async fn send_enter_world_bootstrap(
+pub(in crate::world) async fn send_enter_world_bootstrap(
     stream: &mut WorldPacketSink,
     bootstrap: EnterWorldBootstrap<'_>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let mut header_crypto = header_crypto;
     send_login_verify_world(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
-    send_account_data_times(
-        stream,
-        bootstrap.account_data,
-        header_crypto.as_deref_mut(),
-    )
-    .await?;
+    send_account_data_times(stream, bootstrap.account_data, header_crypto.as_deref_mut()).await?;
     send_set_rest_start(stream, header_crypto.as_deref_mut()).await?;
     send_bindpoint_update(stream, bootstrap.character, header_crypto.as_deref_mut()).await?;
     send_known_proficiencies(
@@ -82,18 +86,24 @@ async fn send_enter_world_bootstrap(
     Ok(())
 }
 
-async fn send_set_rest_start(
+pub(in crate::world) async fn send_set_rest_start(
     stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    send_packet(stream, SMSG_SET_REST_START, &build_set_rest_start_body(), header_crypto).await
+    send_packet(
+        stream,
+        SMSG_SET_REST_START,
+        &build_set_rest_start_body(),
+        header_crypto,
+    )
+    .await
 }
 
-fn build_set_rest_start_body() -> Vec<u8> {
-    0u32.to_le_bytes().to_vec()
+pub(in crate::world) fn build_set_rest_start_body() -> Vec<u8> {
+    SmsgSetRestStartResponse { rest_start: 0 }.body()
 }
 
-async fn send_login_verify_world(
+pub(in crate::world) async fn send_login_verify_world(
     stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -102,7 +112,7 @@ async fn send_login_verify_world(
     send_packet(stream, SMSG_LOGIN_VERIFY_WORLD, &body, header_crypto).await
 }
 
-async fn send_account_data_times(
+pub(in crate::world) async fn send_account_data_times(
     stream: &mut WorldPacketSink,
     account_data: &HashMap<u32, AccountDataCache>,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -111,7 +121,7 @@ async fn send_account_data_times(
     send_packet(stream, SMSG_ACCOUNT_DATA_TIMES, &body, header_crypto).await
 }
 
-async fn send_bindpoint_update(
+pub(in crate::world) async fn send_bindpoint_update(
     stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -120,41 +130,51 @@ async fn send_bindpoint_update(
     send_packet(stream, SMSG_BINDPOINTUPDATE, &body, header_crypto).await
 }
 
-fn build_login_verify_world_body(character: &CharacterEnumEntry) -> Vec<u8> {
-    let mut body = Vec::with_capacity(20);
-    body.extend_from_slice(&character.map.to_le_bytes());
-    body.extend_from_slice(&character.position_x.to_le_bytes());
-    body.extend_from_slice(&character.position_y.to_le_bytes());
-    body.extend_from_slice(&character.position_z.to_le_bytes());
-    body.extend_from_slice(&character.orientation.to_le_bytes());
-    body
+pub(in crate::world) fn build_login_verify_world_body(character: &CharacterEnumEntry) -> Vec<u8> {
+    SmsgLoginVerifyWorldResponse {
+        map: character.map,
+        x: character.position_x,
+        y: character.position_y,
+        z: character.position_z,
+        orientation: character.orientation,
+    }
+    .body()
 }
 
-fn build_bindpoint_update_body(character: &CharacterEnumEntry) -> Vec<u8> {
-    let mut body = Vec::with_capacity(20);
-    body.extend_from_slice(&character.position_x.to_le_bytes());
-    body.extend_from_slice(&character.position_y.to_le_bytes());
-    body.extend_from_slice(&character.position_z.to_le_bytes());
-    body.extend_from_slice(&character.map.to_le_bytes());
-    body.extend_from_slice(&character.zone.to_le_bytes());
-    body
+pub(in crate::world) fn build_bindpoint_update_body(character: &CharacterEnumEntry) -> Vec<u8> {
+    SmsgBindpointUpdateResponse {
+        x: character.position_x,
+        y: character.position_y,
+        z: character.position_z,
+        map: character.map,
+        zone: character.zone,
+    }
+    .body()
 }
 
-fn build_account_data_times_body(account_data: &HashMap<u32, AccountDataCache>) -> Vec<u8> {
-    let mut body = Vec::with_capacity(ACCOUNT_DATA_TYPES * MD5_DIGEST_LEN);
+pub(in crate::world) fn build_account_data_times_body(
+    account_data: &HashMap<u32, AccountDataCache>,
+) -> Vec<u8> {
+    let mut digests = Vec::with_capacity(ACCOUNT_DATA_TYPES);
     for data_type in 0..ACCOUNT_DATA_TYPES as u32 {
-        if let Some(entry) = account_data.get(&data_type).filter(|entry| !entry.data.is_empty()) {
+        if let Some(entry) = account_data
+            .get(&data_type)
+            .filter(|entry| !entry.data.is_empty())
+        {
             let mut digest = Md5::new();
             digest.update(&entry.data);
-            body.extend_from_slice(&digest.finalize());
+            let finalized = digest.finalize();
+            let mut bytes = [0u8; MD5_DIGEST_LEN];
+            bytes.copy_from_slice(&finalized);
+            digests.push(bytes);
         } else {
-            body.extend_from_slice(&[0; MD5_DIGEST_LEN]);
+            digests.push([0; MD5_DIGEST_LEN]);
         }
     }
-    body
+    SmsgAccountDataTimesResponse { digests }.body()
 }
 
-async fn send_tutorial_flags(
+pub(in crate::world) async fn send_tutorial_flags(
     stream: &mut WorldPacketSink,
     tutorial_flags: &[u32; 8],
     header_crypto: Option<&mut HeaderCrypto>,
@@ -163,29 +183,19 @@ async fn send_tutorial_flags(
     send_packet(stream, SMSG_TUTORIAL_FLAGS, &body, header_crypto).await
 }
 
-fn build_tutorial_flags_body(tutorial_flags: &[u32; 8]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(tutorial_flags.len() * 4);
-    for flag in tutorial_flags {
-        body.extend_from_slice(&flag.to_le_bytes());
+pub(in crate::world) fn build_tutorial_flags_body(tutorial_flags: &[u32; 8]) -> Vec<u8> {
+    SmsgTutorialFlagsResponse {
+        flags: *tutorial_flags,
     }
-    body
+    .body()
 }
 
-async fn handle_tutorial_flag(
+pub(in crate::world) async fn handle_tutorial_flag(
     character_db_pool: &MySqlPool,
     account_id: u32,
-    body: &[u8],
+    request: wow_proto::TutorialFlagRequest,
 ) -> anyhow::Result<()> {
-    if body.len() < 4 {
-        warn!(
-            account_id,
-            bytes = body.len(),
-            "Ignoring malformed tutorial flag"
-        );
-        return Ok(());
-    }
-
-    let flag = u32::from_le_bytes(body[0..4].try_into()?);
+    let flag = request.flag;
     let mut tutorials = wow_db::get_tutorial_flags(character_db_pool, account_id).await?;
     if !apply_tutorial_flag(&mut tutorials, flag) {
         warn!(account_id, flag, "Ignoring out-of-range tutorial flag");
@@ -196,7 +206,7 @@ async fn handle_tutorial_flag(
     Ok(())
 }
 
-fn apply_tutorial_flag(tutorials: &mut [u32; 8], flag: u32) -> bool {
+pub(in crate::world) fn apply_tutorial_flag(tutorials: &mut [u32; 8], flag: u32) -> bool {
     let index = (flag / 32) as usize;
     if index >= tutorials.len() {
         return false;
@@ -206,7 +216,7 @@ fn apply_tutorial_flag(tutorials: &mut [u32; 8], flag: u32) -> bool {
     true
 }
 
-async fn handle_tutorial_clear(
+pub(in crate::world) async fn handle_tutorial_clear(
     character_db_pool: &MySqlPool,
     account_id: u32,
 ) -> anyhow::Result<()> {
@@ -214,7 +224,7 @@ async fn handle_tutorial_clear(
     Ok(())
 }
 
-async fn handle_tutorial_reset(
+pub(in crate::world) async fn handle_tutorial_reset(
     character_db_pool: &MySqlPool,
     account_id: u32,
 ) -> anyhow::Result<()> {
@@ -222,7 +232,7 @@ async fn handle_tutorial_reset(
     Ok(())
 }
 
-async fn send_initial_spells(
+pub(in crate::world) async fn send_initial_spells(
     stream: &mut WorldPacketSink,
     spells: &[CharacterSpell],
     header_crypto: Option<&mut HeaderCrypto>,
@@ -231,7 +241,7 @@ async fn send_initial_spells(
     send_packet(stream, SMSG_INITIAL_SPELLS, &body, header_crypto).await
 }
 
-async fn send_known_proficiencies(
+pub(in crate::world) async fn send_known_proficiencies(
     stream: &mut WorldPacketSink,
     world_db_pool: &MySqlPool,
     spells: &[CharacterSpell],
@@ -259,7 +269,7 @@ async fn send_known_proficiencies(
     Ok(())
 }
 
-fn reborrow_header_crypto<'a>(
+pub(in crate::world) fn reborrow_header_crypto<'a>(
     header_crypto: &'a mut Option<&mut HeaderCrypto>,
 ) -> Option<&'a mut HeaderCrypto> {
     match header_crypto {
@@ -268,7 +278,7 @@ fn reborrow_header_crypto<'a>(
     }
 }
 
-async fn known_proficiency_masks(
+pub(in crate::world) async fn known_proficiency_masks(
     world_db_pool: &MySqlPool,
     spells: &[CharacterSpell],
 ) -> anyhow::Result<(u32, u32)> {
@@ -290,7 +300,7 @@ async fn known_proficiency_masks(
     Ok((weapon_mask, armor_mask))
 }
 
-fn add_template_proficiency_masks(
+pub(in crate::world) fn add_template_proficiency_masks(
     template: &wow_db::SpellTemplateQuery,
     weapon_mask: &mut u32,
     armor_mask: &mut u32,
@@ -306,38 +316,34 @@ fn add_template_proficiency_masks(
     }
 }
 
-fn spell_template_has_proficiency_effect(template: &wow_db::SpellTemplateQuery) -> bool {
+pub(in crate::world) fn spell_template_has_proficiency_effect(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
     const SPELL_EFFECT_PROFICIENCY: u32 = 60;
     [template.effect1, template.effect2, template.effect3].contains(&SPELL_EFFECT_PROFICIENCY)
 }
 
-fn build_set_proficiency_body(item_class: u32, item_subclass_mask: u32) -> Vec<u8> {
-    let mut body = Vec::with_capacity(5);
-    body.push(item_class as u8);
-    body.extend_from_slice(&item_subclass_mask.to_le_bytes());
-    body
-}
-
-fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {
-    let active_spells = spells
-        .iter()
-        .filter(|spell| spell.active != 0 && spell.disabled == 0)
-        .count();
-    let mut body = Vec::with_capacity(5 + active_spells * 4);
-    body.push(0); // unknown flags byte
-    body.extend_from_slice(&(active_spells as u16).to_le_bytes());
-    for spell in spells
-        .iter()
-        .filter(|spell| spell.active != 0 && spell.disabled == 0)
-    {
-        body.extend_from_slice(&(spell.spell as u16).to_le_bytes());
-        body.extend_from_slice(&0u16.to_le_bytes()); // CMaNGOS writes zero, not an action slot.
+pub(in crate::world) fn build_set_proficiency_body(
+    item_class: u32,
+    item_subclass_mask: u32,
+) -> Vec<u8> {
+    SmsgSetProficiencyResponse {
+        item_class: item_class as u8,
+        item_subclass_mask,
     }
-    body.extend_from_slice(&0u16.to_le_bytes()); // cooldown count
-    body
+    .body()
 }
 
-async fn send_action_buttons(
+pub(in crate::world) fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {
+    let spells = spells
+        .iter()
+        .filter(|spell| spell.active != 0 && spell.disabled == 0)
+        .map(|spell| spell.spell)
+        .collect();
+    SmsgInitialSpellsResponse { spells }.body()
+}
+
+pub(in crate::world) async fn send_action_buttons(
     stream: &mut WorldPacketSink,
     actions: &[CharacterAction],
     header_crypto: Option<&mut HeaderCrypto>,
@@ -346,7 +352,7 @@ async fn send_action_buttons(
     send_packet(stream, SMSG_ACTION_BUTTONS, &body, header_crypto).await
 }
 
-fn build_action_buttons_body(actions: &[CharacterAction]) -> Vec<u8> {
+pub(in crate::world) fn build_action_buttons_body(actions: &[CharacterAction]) -> Vec<u8> {
     let mut buttons = vec![0u32; MAX_ACTION_BUTTONS];
     for action in actions {
         if (action.button as usize) < MAX_ACTION_BUTTONS {
@@ -354,18 +360,14 @@ fn build_action_buttons_body(actions: &[CharacterAction]) -> Vec<u8> {
         }
     }
 
-    let mut body = Vec::with_capacity(MAX_ACTION_BUTTONS * 4);
-    for button in buttons {
-        body.extend_from_slice(&button.to_le_bytes());
-    }
-    body
+    SmsgActionButtonsResponse { buttons }.body()
 }
 
-fn pack_action_button(action: u32, action_type: u8) -> u32 {
+pub(in crate::world) fn pack_action_button(action: u32, action_type: u8) -> u32 {
     action | ((action_type as u32) << 24)
 }
 
-async fn send_initial_reputations(
+pub(in crate::world) async fn send_initial_reputations(
     stream: &mut WorldPacketSink,
     reputations: &[CharacterReputation],
     header_crypto: Option<&mut HeaderCrypto>,
@@ -374,7 +376,9 @@ async fn send_initial_reputations(
     send_packet(stream, SMSG_INITIALIZE_FACTIONS, &body, header_crypto).await
 }
 
-fn build_initial_reputations_body(reputations: &[CharacterReputation]) -> Vec<u8> {
+pub(in crate::world) fn build_initial_reputations_body(
+    reputations: &[CharacterReputation],
+) -> Vec<u8> {
     let mut slots = vec![(0u8, 0i32); REPUTATION_LIST_SLOTS];
     for reputation in reputations {
         let Some(slot) = reputation_list_slot_for_faction(reputation.faction) else {
@@ -385,16 +389,16 @@ fn build_initial_reputations_body(reputations: &[CharacterReputation]) -> Vec<u8
         }
     }
 
-    let mut body = Vec::with_capacity(4 + REPUTATION_LIST_SLOTS * 5);
-    body.extend_from_slice(&(REPUTATION_LIST_SLOTS as u32).to_le_bytes());
-    for (flags, standing) in slots {
-        body.push(flags);
-        body.extend_from_slice(&standing.to_le_bytes());
+    SmsgInitializeFactionsResponse {
+        slots: slots
+            .into_iter()
+            .map(|(flags, standing)| FactionStandingResponse { flags, standing })
+            .collect(),
     }
-    body
+    .body()
 }
 
-async fn send_trigger_cinematic(
+pub(in crate::world) async fn send_trigger_cinematic(
     stream: &mut WorldPacketSink,
     sequence: u32,
     header_crypto: Option<&mut HeaderCrypto>,
@@ -403,11 +407,11 @@ async fn send_trigger_cinematic(
     send_packet(stream, SMSG_TRIGGER_CINEMATIC, &body, header_crypto).await
 }
 
-fn build_trigger_cinematic_body(sequence: u32) -> Vec<u8> {
-    sequence.to_le_bytes().to_vec()
+pub(in crate::world) fn build_trigger_cinematic_body(sequence: u32) -> Vec<u8> {
+    SmsgTriggerCinematicResponse { sequence }.body()
 }
 
-fn cinematic_sequence_for_race(race: u8) -> Option<u32> {
+pub(in crate::world) fn cinematic_sequence_for_race(race: u8) -> Option<u32> {
     match race {
         1 => Some(81),  // Human
         2 => Some(21),  // Orc
@@ -421,26 +425,29 @@ fn cinematic_sequence_for_race(race: u8) -> Option<u32> {
     }
 }
 
-async fn send_login_set_time_speed(
+pub(in crate::world) async fn send_login_set_time_speed(
     stream: &mut WorldPacketSink,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(8);
-    body.extend_from_slice(&0u32.to_le_bytes()); // packed server time placeholder
-    body.extend_from_slice(&0.01666667f32.to_le_bytes());
+    let body = SmsgLoginSetTimeSpeedResponse {
+        packed_server_time: 0,
+        game_speed: 0.01666667,
+    }
+    .body();
     send_packet(stream, SMSG_LOGIN_SETTIMESPEED, &body, header_crypto).await
 }
 
-async fn send_init_world_states(
+pub(in crate::world) async fn send_init_world_states(
     stream: &mut WorldPacketSink,
     character: &CharacterEnumEntry,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let mut body = Vec::with_capacity(16);
-    body.extend_from_slice(&character.map.to_le_bytes());
-    body.extend_from_slice(&character.zone.to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes()); // area id, unknown for this skeleton
-    body.extend_from_slice(&0u32.to_le_bytes()); // world state count
+    let body = SmsgInitWorldStatesResponse {
+        map: character.map,
+        zone: character.zone,
+        area: 0,
+        states: Vec::new(),
+    }
+    .body();
     send_packet(stream, SMSG_INIT_WORLD_STATES, &body, header_crypto).await
 }
-

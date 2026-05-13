@@ -1,7 +1,9 @@
+use super::*;
+
 // Shared player-corpse snapshot and lazy grid visibility helpers.
 
 impl MapRuntime {
-    fn unloaded_player_corpse_grids_for_area(
+    pub(in crate::world) fn unloaded_player_corpse_grids_for_area(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -17,7 +19,7 @@ impl MapRuntime {
         grids
     }
 
-    fn insert_loaded_player_corpse_grid(
+    pub(in crate::world) fn insert_loaded_player_corpse_grid(
         &mut self,
         grid_coord: GridCoord,
         corpses: Vec<PlayerCorpseRuntime>,
@@ -39,7 +41,7 @@ impl MapRuntime {
         loaded
     }
 
-    fn upsert_player_corpse(&mut self, corpse: PlayerCorpseRuntime) {
+    pub(in crate::world) fn upsert_player_corpse(&mut self, corpse: PlayerCorpseRuntime) {
         let guid = corpse.guid.raw();
         let new_grid = grid_coord_for_position(corpse.position);
         if let Some(previous_position) = self.corpses.get(&guid).map(|corpse| corpse.position) {
@@ -55,15 +57,12 @@ impl MapRuntime {
                 .corpses
                 .insert(guid);
         }
-        self.grids
-            .entry(new_grid)
-            .or_default()
-            .last_touched = Instant::now();
+        self.grids.entry(new_grid).or_default().last_touched = Instant::now();
         self.corpses.insert(guid, corpse);
         self.refresh_grid_state(new_grid);
     }
 
-    fn nearby_player_corpse_snapshots(
+    pub(in crate::world) fn nearby_player_corpse_snapshots(
         &self,
         position: WorldPosition,
         radius: f32,
@@ -97,7 +96,7 @@ impl MapRuntime {
         corpses
     }
 
-    fn stage_player_corpse_visibility(
+    pub(in crate::world) fn stage_player_corpse_visibility(
         &mut self,
         character_guid: u32,
         position: WorldPosition,
@@ -160,7 +159,7 @@ impl MapRuntime {
         }
     }
 
-    fn refresh_player_corpse_spatial_index(
+    pub(in crate::world) fn refresh_player_corpse_spatial_index(
         &mut self,
         guid: u64,
         previous_position: WorldPosition,

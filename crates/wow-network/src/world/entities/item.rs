@@ -1,24 +1,28 @@
+use super::*;
+
 // CMaNGOS reference: src/game/Entities/Item.{h,cpp}
 // Owner for item instance state, visible equipment, inventory slot, stack,
 // durability, item dynamic flags, and item/container update fields.
 
-const ITEM_FIELD_ENCHANTMENT: usize = 0x016;
-const ITEM_FIELD_RANDOM_PROPERTIES_ID: usize = 0x02C;
-const MAX_ENCHANTMENT_SLOT: usize = 7;
-const MAX_ENCHANTMENT_OFFSET: usize = 3;
-const ITEM_ENCHANTMENT_FIELD_COUNT: usize = MAX_ENCHANTMENT_SLOT * MAX_ENCHANTMENT_OFFSET;
-const PROP_ENCHANTMENT_SLOT_0: usize = 3;
+pub(in crate::world) const ITEM_FIELD_ENCHANTMENT: usize = 0x016;
+pub(in crate::world) const ITEM_FIELD_RANDOM_PROPERTIES_ID: usize = 0x02C;
+pub(in crate::world) const MAX_ENCHANTMENT_SLOT: usize = 7;
+pub(in crate::world) const MAX_ENCHANTMENT_OFFSET: usize = 3;
+pub(in crate::world) const ITEM_ENCHANTMENT_FIELD_COUNT: usize =
+    MAX_ENCHANTMENT_SLOT * MAX_ENCHANTMENT_OFFSET;
+pub(in crate::world) const PROP_ENCHANTMENT_SLOT_0: usize = 3;
 
-fn set_visible_item_update_values(
+pub(in crate::world) fn set_visible_item_update_values(
     values: &mut [Option<u32>],
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<()> {
-    let equipment = visible_equipment_for_inventory(character.equipment_cache.as_deref(), inventory);
+    let equipment =
+        visible_equipment_for_inventory(character.equipment_cache.as_deref(), inventory);
     set_visible_item_update_values_from_equipment(values, &equipment)
 }
 
-fn visible_equipment_for_inventory(
+pub(in crate::world) fn visible_equipment_for_inventory(
     equipment_cache: Option<&str>,
     inventory: &[CharacterInventoryItem],
 ) -> [u32; ENUM_EQUIPMENT_SLOTS] {
@@ -31,7 +35,7 @@ fn visible_equipment_for_inventory(
     equipment
 }
 
-fn set_visible_item_update_values_from_equipment(
+pub(in crate::world) fn set_visible_item_update_values_from_equipment(
     values: &mut [Option<u32>],
     equipment: &[u32; ENUM_EQUIPMENT_SLOTS],
 ) -> anyhow::Result<()> {
@@ -51,7 +55,7 @@ fn set_visible_item_update_values_from_equipment(
     Ok(())
 }
 
-fn build_player_visible_equipment_update_block(
+pub(in crate::world) fn build_player_visible_equipment_update_block(
     character_guid: u32,
     visible_equipment: &[u32; ENUM_EQUIPMENT_SLOTS],
     slots: &[u8],
@@ -67,17 +71,13 @@ fn build_player_visible_equipment_update_block(
             continue;
         }
         let visible_base = 0x104 + *slot as usize * 12;
-        set_update_value(
-            &mut values,
-            visible_base,
-            visible_equipment[*slot as usize],
-        )?;
+        set_update_value(&mut values, visible_base, visible_equipment[*slot as usize])?;
     }
     write_update_values(&mut block, &values)?;
     Ok(block)
 }
 
-fn set_inventory_slot_update_values(
+pub(in crate::world) fn set_inventory_slot_update_values(
     values: &mut [Option<u32>],
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<()> {
@@ -97,7 +97,7 @@ fn set_inventory_slot_update_values(
     Ok(())
 }
 
-fn build_inventory_slots_update_body(
+pub(in crate::world) fn build_inventory_slots_update_body(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
     slots: &[u8],
@@ -111,7 +111,7 @@ fn build_inventory_slots_update_body(
     Ok(body)
 }
 
-fn build_inventory_slots_update_block(
+pub(in crate::world) fn build_inventory_slots_update_block(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
     slots: &[u8],
@@ -149,7 +149,7 @@ fn build_inventory_slots_update_block(
     Ok(block)
 }
 
-fn build_item_push_result_body(
+pub(in crate::world) fn build_item_push_result_body(
     character_guid: u32,
     item: &CharacterInventoryItem,
     count: u32,
@@ -183,11 +183,16 @@ fn build_item_push_result_body(
     body
 }
 
-fn build_item_stack_count_update_body(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_item_stack_count_update_body(
+    item_guid: u32,
+    count: u32,
+) -> anyhow::Result<Vec<u8>> {
     build_item_stack_counts_update_body(&[(item_guid, count)])
 }
 
-fn build_item_stack_counts_update_body(items: &[(u32, u32)]) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_item_stack_counts_update_body(
+    items: &[(u32, u32)],
+) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::new();
     body.extend_from_slice(&(items.len() as u32).to_le_bytes());
     body.push(0);
@@ -199,7 +204,10 @@ fn build_item_stack_counts_update_body(items: &[(u32, u32)]) -> anyhow::Result<V
     Ok(body)
 }
 
-fn build_item_stack_count_update_block(item_guid: u32, count: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_item_stack_count_update_block(
+    item_guid: u32,
+    count: u32,
+) -> anyhow::Result<Vec<u8>> {
     let item_guid = ObjectGuid::new(HighGuid::Item, 0, item_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -212,7 +220,10 @@ fn build_item_stack_count_update_block(item_guid: u32, count: u32) -> anyhow::Re
     Ok(block)
 }
 
-fn build_player_money_update_body(character_guid: u32, money: u32) -> anyhow::Result<Vec<u8>> {
+pub(in crate::world) fn build_player_money_update_body(
+    character_guid: u32,
+    money: u32,
+) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -223,13 +234,13 @@ fn build_player_money_update_body(character_guid: u32, money: u32) -> anyhow::Re
     Ok(build_update_object_body(&[block]))
 }
 
-fn build_destroy_object_body(item_guid: u32) -> Vec<u8> {
+pub(in crate::world) fn build_destroy_object_body(item_guid: u32) -> Vec<u8> {
     ObjectGuid::new(HighGuid::Item, 0, item_guid)
         .raw()
         .to_le_bytes()
         .to_vec()
 }
-fn inventory_slot_update_field(slot: u8) -> Option<usize> {
+pub(in crate::world) fn inventory_slot_update_field(slot: u8) -> Option<usize> {
     match slot {
         0..INVENTORY_SLOT_ITEM_START => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),
         INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END => {
@@ -239,7 +250,7 @@ fn inventory_slot_update_field(slot: u8) -> Option<usize> {
     }
 }
 
-fn build_inventory_item_create_blocks(
+pub(in crate::world) fn build_inventory_item_create_blocks(
     character: &CharacterEnumEntry,
     inventory: &[CharacterInventoryItem],
     container_slots_by_item: &HashMap<u32, u32>,
@@ -266,7 +277,9 @@ fn build_inventory_item_create_blocks(
                 .iter()
                 .filter(|contained| contained.bag == item.slot as u32)
             {
-                if let Some(block) = build_container_slot_update_block(inventory, item.slot, contained.slot)? {
+                if let Some(block) =
+                    build_container_slot_update_block(inventory, item.slot, contained.slot)?
+                {
                     blocks.push(block);
                 }
             }
@@ -276,7 +289,7 @@ fn build_inventory_item_create_blocks(
     Ok(blocks)
 }
 
-fn login_inventory_position_is_visible(
+pub(in crate::world) fn login_inventory_position_is_visible(
     item: &CharacterInventoryItem,
     inventory: &[CharacterInventoryItem],
 ) -> bool {
@@ -288,12 +301,12 @@ fn login_inventory_position_is_visible(
     };
     is_bag_slot(bag_slot)
         && item.slot < MAX_BAG_SIZE
-        && inventory
-            .iter()
-            .any(|container| container.bag == INVENTORY_SLOT_BAG_0 as u32 && container.slot == bag_slot)
+        && inventory.iter().any(|container| {
+            container.bag == INVENTORY_SLOT_BAG_0 as u32 && container.slot == bag_slot
+        })
 }
 
-async fn load_inventory_container_slots(
+pub(in crate::world) async fn load_inventory_container_slots(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<HashMap<u32, u32>> {
@@ -302,7 +315,8 @@ async fn load_inventory_container_slots(
         if slots.contains_key(&item.item) {
             continue;
         }
-        let Some(template) = wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, item.item_template).await?
         else {
             continue;
         };
@@ -313,7 +327,7 @@ async fn load_inventory_container_slots(
     Ok(slots)
 }
 
-fn build_item_create_update_block(
+pub(in crate::world) fn build_item_create_update_block(
     owner_guid: ObjectGuid,
     contained_guid: ObjectGuid,
     item: &CharacterInventoryItem,
@@ -332,7 +346,14 @@ fn build_item_create_update_block(
     block.push(UPDATEFLAG_ALL);
     block.extend_from_slice(&1u32.to_le_bytes());
 
-    let mut values = vec![None; if is_container { CONTAINER_END_FIELDS } else { ITEM_END_FIELDS }];
+    let mut values = vec![
+        None;
+        if is_container {
+            CONTAINER_END_FIELDS
+        } else {
+            ITEM_END_FIELDS
+        }
+    ];
     set_update_value(&mut values, 0x000, item_guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (item_guid.raw() >> 32) as u32)?;
     set_update_value(
@@ -380,19 +401,24 @@ fn build_item_create_update_block(
     Ok(block)
 }
 
-async fn generate_item_instance_random_properties(
+pub(in crate::world) async fn generate_item_instance_random_properties(
     world_db_pool: &MySqlPool,
     world_data_files: &WorldDataFiles,
     item_template: u32,
 ) -> anyhow::Result<Option<wow_db::ItemInstanceRandomProperties>> {
-    let Some(template) = wow_db::get_item_template_query(world_db_pool, item_template).await? else {
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, item_template).await?
+    else {
         return Ok(None);
     };
-    generate_item_instance_random_properties_for_template(world_db_pool, world_data_files, &template)
-        .await
+    generate_item_instance_random_properties_for_template(
+        world_db_pool,
+        world_data_files,
+        &template,
+    )
+    .await
 }
 
-async fn repair_missing_inventory_random_properties(
+pub(in crate::world) async fn repair_missing_inventory_random_properties(
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
     world_data_files: &WorldDataFiles,
@@ -403,9 +429,12 @@ async fn repair_missing_inventory_random_properties(
         if item.random_property_id != 0 {
             continue;
         }
-        let Some(random_properties) =
-            generate_item_instance_random_properties(world_db_pool, world_data_files, item.item_template)
-                .await?
+        let Some(random_properties) = generate_item_instance_random_properties(
+            world_db_pool,
+            world_data_files,
+            item.item_template,
+        )
+        .await?
         else {
             continue;
         };
@@ -424,7 +453,7 @@ async fn repair_missing_inventory_random_properties(
     Ok(())
 }
 
-async fn generate_item_instance_random_properties_for_template(
+pub(in crate::world) async fn generate_item_instance_random_properties_for_template(
     world_db_pool: &MySqlPool,
     world_data_files: &WorldDataFiles,
     template: &ItemTemplateQuery,
@@ -432,7 +461,8 @@ async fn generate_item_instance_random_properties_for_template(
     if template.random_property == 0 {
         return Ok(None);
     }
-    let rolls = wow_db::get_item_random_property_rolls(world_db_pool, template.random_property).await?;
+    let rolls =
+        wow_db::get_item_random_property_rolls(world_db_pool, template.random_property).await?;
     let Some(random_property_id) = roll_item_random_property_id(&rolls) else {
         warn!(
             item = template.entry,
@@ -460,7 +490,9 @@ async fn generate_item_instance_random_properties_for_template(
     }))
 }
 
-fn roll_item_random_property_id(rolls: &[wow_db::ItemRandomPropertyRoll]) -> Option<u32> {
+pub(in crate::world) fn roll_item_random_property_id(
+    rolls: &[wow_db::ItemRandomPropertyRoll],
+) -> Option<u32> {
     if rolls.is_empty() {
         return None;
     }
@@ -476,7 +508,7 @@ fn roll_item_random_property_id(rolls: &[wow_db::ItemRandomPropertyRoll]) -> Opt
     })
 }
 
-fn roll_item_random_property_id_for_roll(
+pub(in crate::world) fn roll_item_random_property_id_for_roll(
     rolls: &[wow_db::ItemRandomPropertyRoll],
     roll: f32,
 ) -> Option<u32> {
@@ -490,7 +522,9 @@ fn roll_item_random_property_id_for_roll(
     None
 }
 
-fn item_enchantments_for_random_property(random_property: ItemRandomPropertyEntry) -> String {
+pub(in crate::world) fn item_enchantments_for_random_property(
+    random_property: ItemRandomPropertyEntry,
+) -> String {
     let mut enchantments = [0u32; ITEM_ENCHANTMENT_FIELD_COUNT];
     for (index, enchant_id) in random_property.enchant_ids.into_iter().enumerate() {
         enchantments[(PROP_ENCHANTMENT_SLOT_0 + index) * MAX_ENCHANTMENT_OFFSET] = enchant_id;
@@ -502,7 +536,9 @@ fn item_enchantments_for_random_property(random_property: ItemRandomPropertyEntr
         .join(" ")
 }
 
-fn parse_item_enchantment_fields(enchantments: &str) -> [u32; ITEM_ENCHANTMENT_FIELD_COUNT] {
+pub(in crate::world) fn parse_item_enchantment_fields(
+    enchantments: &str,
+) -> [u32; ITEM_ENCHANTMENT_FIELD_COUNT] {
     let mut fields = [0u32; ITEM_ENCHANTMENT_FIELD_COUNT];
     for (index, value) in enchantments
         .split_whitespace()
@@ -514,7 +550,7 @@ fn parse_item_enchantment_fields(enchantments: &str) -> [u32; ITEM_ENCHANTMENT_F
     fields
 }
 
-fn build_item_contained_update_block(
+pub(in crate::world) fn build_item_contained_update_block(
     owner_guid: ObjectGuid,
     inventory: &[CharacterInventoryItem],
     item: &CharacterInventoryItem,
@@ -532,7 +568,7 @@ fn build_item_contained_update_block(
     Ok(block)
 }
 
-fn build_container_slot_update_block(
+pub(in crate::world) fn build_container_slot_update_block(
     inventory: &[CharacterInventoryItem],
     bag_slot: u8,
     container_slot: u8,
@@ -561,7 +597,7 @@ fn build_container_slot_update_block(
     Ok(Some(block))
 }
 
-fn item_contained_guid(
+pub(in crate::world) fn item_contained_guid(
     owner_guid: ObjectGuid,
     inventory: &[CharacterInventoryItem],
     item: &CharacterInventoryItem,
@@ -579,12 +615,12 @@ fn item_contained_guid(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StarterItemVisual {
-    display_id: u32,
-    inventory_type: u8,
+pub(in crate::world) struct StarterItemVisual {
+    pub(in crate::world) display_id: u32,
+    pub(in crate::world) inventory_type: u8,
 }
 
-fn parse_equipment_cache(cache: Option<&str>) -> [u32; ENUM_EQUIPMENT_SLOTS] {
+pub(in crate::world) fn parse_equipment_cache(cache: Option<&str>) -> [u32; ENUM_EQUIPMENT_SLOTS] {
     let mut equipment = [0u32; ENUM_EQUIPMENT_SLOTS];
     let Some(cache) = cache else {
         return equipment;
@@ -606,7 +642,7 @@ fn parse_equipment_cache(cache: Option<&str>) -> [u32; ENUM_EQUIPMENT_SLOTS] {
     equipment
 }
 
-fn starter_item_visual(item_id: u32) -> Option<StarterItemVisual> {
+pub(in crate::world) fn starter_item_visual(item_id: u32) -> Option<StarterItemVisual> {
     match item_id {
         25 => Some(StarterItemVisual {
             display_id: 1542,
@@ -631,4 +667,3 @@ fn starter_item_visual(item_id: u32) -> Option<StarterItemVisual> {
         _ => None,
     }
 }
-

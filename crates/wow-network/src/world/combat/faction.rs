@@ -1,4 +1,6 @@
-fn can_creature_attack_player_on_sight(
+use super::*;
+
+pub(in crate::world) fn can_creature_attack_player_on_sight(
     faction_templates: &FactionTemplateStore,
     creature_faction: u32,
     player_race: u8,
@@ -10,7 +12,7 @@ fn can_creature_attack_player_on_sight(
     )
 }
 
-fn can_faction_attack_on_sight(
+pub(in crate::world) fn can_faction_attack_on_sight(
     faction_templates: &FactionTemplateStore,
     creature_faction: u32,
     player_faction: u32,
@@ -19,7 +21,7 @@ fn can_faction_attack_on_sight(
         == FactionReaction::Hostile
 }
 
-fn faction_reaction_to(
+pub(in crate::world) fn faction_reaction_to(
     faction_templates: &FactionTemplateStore,
     this_faction: u32,
     other_faction: u32,
@@ -33,7 +35,7 @@ fn faction_reaction_to(
     faction_template_reaction(this_template, other_template)
 }
 
-fn faction_template_reaction(
+pub(in crate::world) fn faction_template_reaction(
     this_template: FactionTemplateEntry,
     other_template: FactionTemplateEntry,
 ) -> FactionReaction {

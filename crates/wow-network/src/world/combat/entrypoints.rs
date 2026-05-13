@@ -1,25 +1,31 @@
-﻿async fn handle_attack_swing(
+use super::*;
+
+pub(in crate::world) async fn handle_attack_swing(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
     parties: &PartyManager,
-    body: &[u8],
+    request: wow_proto::AttackSwingRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let target = read_packet_guid(body, "CMSG_ATTACKSWING")?;
-    let Some(character_guid) = session.active_character.as_ref().map(|character| character.guid)
+    let target = ObjectGuid::from_raw(request.raw_guid);
+    let Some(character_guid) = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.guid)
     else {
         warn!("Ignoring attack swing before character login");
         return Ok(());
     };
-    if session.player_death_state != PlayerDeathState::Alive {
+    if session.death.player_death_state != PlayerDeathState::Alive {
         debug!("Ignoring attack swing from dead player");
         return Ok(());
     }
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return Ok(());
     };
-    if session.player_health == 0
+    if session.character.player_health == 0
         && shared_world
             .maps
             .player_runtime_snapshot(character.position.map_id, character.guid)
@@ -43,7 +49,7 @@
     }
 
     let now = Instant::now();
-    if let Some(character) = session.active_character.as_ref() {
+    if let Some(character) = session.character.active_character.as_ref() {
         let loot_owner = parties.loot_owner_for(character.guid).await;
         shared_world
             .maps
@@ -54,7 +60,8 @@
             session,
             target,
             now,
-            player_auto_attack_swing_delay(shared_world, character.position.map_id, character.guid).await,
+            player_auto_attack_swing_delay(shared_world, character.position.map_id, character.guid)
+                .await,
         )
         .await;
         shared_world
@@ -79,7 +86,7 @@
     Ok(())
 }
 
-async fn player_auto_attack_swing_delay(
+pub(in crate::world) async fn player_auto_attack_swing_delay(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
     character_guid: u32,
@@ -93,14 +100,14 @@ async fn player_auto_attack_swing_delay(
     Duration::from_millis(main_hand_ms.max(1) as u64)
 }
 
-async fn scheduled_player_auto_attack_next_swing(
+pub(in crate::world) async fn scheduled_player_auto_attack_next_swing(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     target: ObjectGuid,
     now: Instant,
     swing_delay: Duration,
 ) -> Instant {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return now + swing_delay;
     };
     if let Some(snapshot) = shared_world
@@ -121,13 +128,13 @@ async fn scheduled_player_auto_attack_next_swing(
     now
 }
 
-async fn broadcast_player_attack_start(
+pub(in crate::world) async fn broadcast_player_attack_start(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
     attacker: ObjectGuid,
     target: ObjectGuid,
 ) {
-    let Some(character) = session.active_character.as_ref() else {
+    let Some(character) = session.character.active_character.as_ref() else {
         return;
     };
     let packets = shared_world
@@ -144,4 +151,3 @@ async fn broadcast_player_attack_start(
         .await;
     shared_world.sessions.dispatch(packets).await;
 }
-

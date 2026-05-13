@@ -1,12 +1,14 @@
+use super::*;
+
 // Shared DB-creature loot claim/release authority.
 
 impl MapRuntime {
-    fn db_creature_needs_loot_item(&self, creature_guid: u64) -> Option<bool> {
+    pub(in crate::world) fn db_creature_needs_loot_item(&self, creature_guid: u64) -> Option<bool> {
         let creature = self.creatures.get(&creature_guid)?;
         creature.lootable.then_some(!creature.loot_items_generated)
     }
 
-    fn open_db_creature_loot(
+    pub(in crate::world) fn open_db_creature_loot(
         &mut self,
         creature_guid: u64,
         character_guid: u32,
@@ -41,13 +43,16 @@ impl MapRuntime {
         Some(creature)
     }
 
-    fn db_creature_loot_guid_for_character(&self, character_guid: u32) -> Option<u64> {
+    pub(in crate::world) fn db_creature_loot_guid_for_character(
+        &self,
+        character_guid: u32,
+    ) -> Option<u64> {
         self.creature_looting_by_character
             .get(&character_guid)
             .copied()
     }
 
-    fn db_creature_looting_characters(&self, creature_guid: u64) -> Vec<u32> {
+    pub(in crate::world) fn db_creature_looting_characters(&self, creature_guid: u64) -> Vec<u32> {
         self.creature_looting_by_character
             .iter()
             .filter_map(|(character_guid, looting_guid)| {
@@ -56,7 +61,7 @@ impl MapRuntime {
             .collect()
     }
 
-    fn take_db_creature_loot_money(
+    pub(in crate::world) fn take_db_creature_loot_money(
         &mut self,
         character_guid: u32,
     ) -> Option<(u32, DbCreatureRuntime)> {
@@ -72,7 +77,7 @@ impl MapRuntime {
         Some((money, creature))
     }
 
-    fn take_db_creature_loot_item(
+    pub(in crate::world) fn take_db_creature_loot_item(
         &mut self,
         character_guid: u32,
         loot_slot: u8,
@@ -94,7 +99,7 @@ impl MapRuntime {
         Some((creature_guid, loot_slot, loot, creature_snapshot))
     }
 
-    fn take_db_creature_loot_item_by_guid(
+    pub(in crate::world) fn take_db_creature_loot_item_by_guid(
         &mut self,
         creature_guid: u64,
         loot_slot: u8,
@@ -115,7 +120,7 @@ impl MapRuntime {
         Some((loot_slot, loot, creature))
     }
 
-    fn restore_db_creature_loot_item(
+    pub(in crate::world) fn restore_db_creature_loot_item(
         &mut self,
         creature_guid: u64,
         loot_slot: u8,
@@ -131,13 +136,17 @@ impl MapRuntime {
         Some(creature)
     }
 
-    fn release_db_creature_loot_roll_item(
+    pub(in crate::world) fn release_db_creature_loot_roll_item(
         &mut self,
         creature_guid: u64,
         loot_slot: u8,
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid)?;
-        if !creature.loot_items.iter().any(|loot| loot.slot == loot_slot) {
+        if !creature
+            .loot_items
+            .iter()
+            .any(|loot| loot.slot == loot_slot)
+        {
             return None;
         }
         creature.loot_roll_released_slots.insert(loot_slot);
@@ -146,13 +155,17 @@ impl MapRuntime {
         Some(creature)
     }
 
-    fn release_db_creature_current_looter_pass_item(
+    pub(in crate::world) fn release_db_creature_current_looter_pass_item(
         &mut self,
         creature_guid: u64,
         loot_slot: u8,
     ) -> Option<DbCreatureRuntime> {
         let creature = self.creatures.get_mut(&creature_guid)?;
-        if !creature.loot_items.iter().any(|loot| loot.slot == loot_slot) {
+        if !creature
+            .loot_items
+            .iter()
+            .any(|loot| loot.slot == loot_slot)
+        {
             return None;
         }
         creature.loot_current_looter_pass_slots.insert(loot_slot);
@@ -161,7 +174,7 @@ impl MapRuntime {
         Some(creature)
     }
 
-    fn release_db_creature_loot(
+    pub(in crate::world) fn release_db_creature_loot(
         &mut self,
         creature_guid: u64,
         now: Instant,
@@ -170,7 +183,8 @@ impl MapRuntime {
         let Some(creature) = self.creatures.get_mut(&creature_guid) else {
             return Ok(None);
         };
-        if exclude_character_guid.is_some() && creature.loot_current_looter == exclude_character_guid
+        if exclude_character_guid.is_some()
+            && creature.loot_current_looter == exclude_character_guid
         {
             let releasable_slots: Vec<u8> = creature
                 .loot_items
@@ -212,8 +226,8 @@ impl MapRuntime {
                 )
                 .ok()?;
                 player.packet_to_client(OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body,
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body,
                 })
             })
             .collect();
@@ -224,7 +238,7 @@ impl MapRuntime {
         }))
     }
 
-    fn set_db_creature_loot_owner(
+    pub(in crate::world) fn set_db_creature_loot_owner(
         &mut self,
         creature_guid: ObjectGuid,
         owner: CreatureLootOwner,
@@ -236,7 +250,7 @@ impl MapRuntime {
         Some(creature.clone())
     }
 
-    fn force_db_creature_loot_owner(
+    pub(in crate::world) fn force_db_creature_loot_owner(
         &mut self,
         creature_guid: ObjectGuid,
         owner: CreatureLootOwner,
@@ -247,7 +261,7 @@ impl MapRuntime {
     }
 }
 
-fn db_creature_loot_release_marks_current_looter_pass(
+pub(in crate::world) fn db_creature_loot_release_marks_current_looter_pass(
     creature: &DbCreatureRuntime,
     loot: &DbCreatureLootRuntime,
 ) -> bool {
@@ -261,7 +275,7 @@ fn db_creature_loot_release_marks_current_looter_pass(
     matches!(loot_method.method, 1..=4) && under_threshold
 }
 
-fn creature_loot_owner_allows(
+pub(in crate::world) fn creature_loot_owner_allows(
     current_owner: Option<CreatureLootOwner>,
     access_owner: CreatureLootOwner,
     character_guid: u32,
@@ -273,7 +287,7 @@ fn creature_loot_owner_allows(
     }
 }
 
-fn loot_items_with_stable_slots(
+pub(in crate::world) fn loot_items_with_stable_slots(
     loot_items: Vec<DbCreatureLootRuntime>,
 ) -> Vec<DbCreatureLootRuntime> {
     const CMANGOS_MAX_NR_LOOT_ITEMS: usize = 16;

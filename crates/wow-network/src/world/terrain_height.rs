@@ -1,8 +1,11 @@
-const CMANGOS_DEFAULT_HEIGHT_SEARCH: f32 = 10.0;
-const CMANGOS_HEIGHT_IN_RANGE_SEARCH: f32 = 4.0;
+use super::*;
+use std::ffi::CStr;
+
+pub(in crate::world) const CMANGOS_DEFAULT_HEIGHT_SEARCH: f32 = 10.0;
+pub(in crate::world) const CMANGOS_HEIGHT_IN_RANGE_SEARCH: f32 = 4.0;
 
 extern "C" {
-    fn wow_map_height_static(
+    pub(in crate::world) fn wow_map_height_static(
         data_dir: *const std::os::raw::c_char,
         map_id: u32,
         tile_x: u32,
@@ -14,7 +17,7 @@ extern "C" {
         out_height: *mut f32,
     ) -> i32;
 
-    fn wow_map_height_in_range(
+    pub(in crate::world) fn wow_map_height_in_range(
         data_dir: *const std::os::raw::c_char,
         map_id: u32,
         tile_x: u32,
@@ -26,7 +29,7 @@ extern "C" {
         out_height: *mut f32,
     ) -> i32;
 
-    fn wow_map_liquid_status(
+    pub(in crate::world) fn wow_map_liquid_status(
         data_dir: *const std::os::raw::c_char,
         map_id: u32,
         tile_x: u32,
@@ -44,7 +47,7 @@ extern "C" {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeTerrainHeightStatus {
+pub(in crate::world) enum NativeTerrainHeightStatus {
     Found,
     NotFound,
     InvalidInput,
@@ -52,13 +55,13 @@ enum NativeTerrainHeightStatus {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeTerrainHeight {
-    status: NativeTerrainHeightStatus,
-    height: Option<f32>,
+pub(in crate::world) struct NativeTerrainHeight {
+    pub(in crate::world) status: NativeTerrainHeightStatus,
+    pub(in crate::world) height: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeTerrainLiquidResultStatus {
+pub(in crate::world) enum NativeTerrainLiquidResultStatus {
     Found,
     NotFound,
     InvalidInput,
@@ -66,21 +69,21 @@ enum NativeTerrainLiquidResultStatus {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeTerrainLiquid {
-    status: NativeTerrainLiquidResultStatus,
-    liquid: Option<NativeTerrainLiquidData>,
+pub(in crate::world) struct NativeTerrainLiquid {
+    pub(in crate::world) status: NativeTerrainLiquidResultStatus,
+    pub(in crate::world) liquid: Option<NativeTerrainLiquidData>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeTerrainLiquidData {
-    status_flags: u32,
-    type_flags: u32,
-    entry: u32,
-    level: f32,
-    depth_level: f32,
+pub(in crate::world) struct NativeTerrainLiquidData {
+    pub(in crate::world) status_flags: u32,
+    pub(in crate::world) type_flags: u32,
+    pub(in crate::world) entry: u32,
+    pub(in crate::world) level: f32,
+    pub(in crate::world) depth_level: f32,
 }
 
-fn native_map_height_static(
+pub(in crate::world) fn native_map_height_static(
     data_dir: &CStr,
     position: WorldPosition,
     tile: (u32, u32),
@@ -116,7 +119,7 @@ fn native_map_height_static(
     native_terrain_height_from_status(result, height)
 }
 
-fn native_map_height_in_range(
+pub(in crate::world) fn native_map_height_in_range(
     data_dir: &CStr,
     position: WorldPosition,
     tile: (u32, u32),
@@ -152,7 +155,7 @@ fn native_map_height_in_range(
     native_terrain_height_from_status(result, height)
 }
 
-fn native_map_liquid_status(
+pub(in crate::world) fn native_map_liquid_status(
     data_dir: &CStr,
     position: WorldPosition,
     tile: (u32, u32),
@@ -196,7 +199,10 @@ fn native_map_liquid_status(
     native_terrain_liquid_from_status(result, status_flags, type_flags, entry, level, depth_level)
 }
 
-fn native_terrain_height_from_status(result: i32, height: f32) -> NativeTerrainHeight {
+pub(in crate::world) fn native_terrain_height_from_status(
+    result: i32,
+    height: f32,
+) -> NativeTerrainHeight {
     match result {
         1 if height.is_finite() => NativeTerrainHeight {
             status: NativeTerrainHeightStatus::Found,
@@ -217,7 +223,7 @@ fn native_terrain_height_from_status(result: i32, height: f32) -> NativeTerrainH
     }
 }
 
-fn native_terrain_liquid_from_status(
+pub(in crate::world) fn native_terrain_liquid_from_status(
     result: i32,
     status_flags: i32,
     type_flags: u32,

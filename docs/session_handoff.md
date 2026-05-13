@@ -16,42 +16,25 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   metadata/effects, DBC world-data loading, skill-cap sync, map-owned
   auto-attack/combat-state ownership, level-up stat sync, native mmap pathing,
   creature random motion, and focused `wow-network` tests.
-- Current user-directed priority: fix player combat-state parity where
-  out-of-range right-click auto-attack intent must not set `UNIT_FLAG_IN_COMBAT`
-  and killing/evading/leashing creatures must clear map-owned combat so HP
-  regen and warrior rage degeneration resume. Keep gameplay values backed by
-  CMaNGOS/DBC/DB data; do not add spell-ID special cases for these families.
+- Current user-directed priority: Checkpoint 2 real-client playtest triage for
+  Northshire. The first implementation slice fixed the Garrick-style quest
+  reward inventory transaction, chest gameobject use opening loot, and combat
+  logout denial. Continue with gameobject quest gating/cancel authority,
+  creature corpse/respawn parity, logout timer/DC linger, and relog persistence.
 - Playerbots remain disabled by default for normal multiplayer/Northshire
   testing: `config/worldserver.local.toml` has `[playerbots] enabled = false`
   and `[playerbots.random] enabled = false`.
 
 ## Current Goal And Recommended Next Task
 
-- Goal: preserve CMaNGOS-style separation between player attack intent and
-  actual combat participation while continuing to close user-observed missing
-  spell behavior.
-- Recommended next task: stop any running local `target\debug` auth/world
-  server processes if a full binary rebuild is needed, then real-client smoke
-  the combat-state fix:
-  right-clicking an out-of-range hostile should show attack intent/retry
-  behavior without putting the player in combat; creature aggro or landed
-  retaliation should still set the in-combat flag; killing the creature should
-  clear combat and allow HP regen/rage decay on the next regen tick. Also
-  real-client smoke the
-  expanded spell slice. Verify
-  Conjure Food/Water quantities scale from real spell rank/skill data, create
-  the DBC/DB item into inventory, merge stacks before empty slots, fail cleanly
-  when bags are full, and do not spend resources/cooldowns on preflight failure.
-  Verify Frost Nova resolves nearby hostile targets from DBC radius/implicit
-  target data, roots players/creatures, stops rooted creature movement/chase,
-  and unroots on expiration. Verify ranked buffs such as Arcane Intellect
-  refresh on same spell, higher rank replaces lower across casters, lower rank
-  after higher bounces, `spell_group` unique categories replace correctly, and
-  stats do not double-apply.
-- After this proof, continue the broader spell backlog: full SpellStacker
-  aura-effect stackability matrix, dispels, summons, pets, channeled AoE,
-  totems, shapeshifts, stealth, fear/stun/confuse, advanced proc rules, and the
-  custom script-hook system once the generic engine needs it.
+- Goal: make the Northshire Checkpoint 2 playtest loop stable enough for the
+  user to grade in the real client without disconnects, stuck quest screens,
+  broken quest-object interactions, or persistence surprises.
+- Recommended next task: implement map-owned gameobject interaction authority:
+  CMaNGOS-style eligibility for quest GOs, pending interaction cancel on
+  movement/combat/logout/distance failure, and no delayed completion after the
+  client cancel bar. Then fix unlooted creature corpse decay/respawn and
+  continue logout timer/DC linger plus cooldown/buff persistence.
 
 ## Recent Implemented Work
 
@@ -175,6 +158,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `SMSG_LOGIN_SETTIMESPEED` bootstrap packet now sends current local server time
   packed with the same `secsToTimeBitFields` layout CMaNGOS uses, plus the
   Classic game speed `0.01666667`, instead of the old zero placeholder.
+- Fixed the first Checkpoint 2 playtest triage slice. Quest reward turn-in now
+  preflights required-item consumption plus all reward grants through the
+  bag-aware store planner, so Garrick-style full-backpack/open-equipped-bag
+  cases can grant into container slots without consuming the quest item first.
+  Reward item creation now sends the correct player/container slot updates.
+- Gameobject chest use now opens shared DB gameobject loot through the existing
+  loot authority instead of doing nothing when the GO has a chest loot id.
+- Logout requests while the session is in combat now return the CMaNGOS failure
+  response (`failure_reason = 1`, non-instant) instead of immediately completing
+  logout.
 
 ## Tests Run
 
@@ -304,6 +297,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `$env:CARGO_TARGET_DIR='target\codex-server-time-final'; .\scripts\test-rust.cmd`
   passed fully, including fmt, clippy, workspace unit/doc tests, `wow-network`
   668 tests, `wow-proto` 23 tests, and final authserver/auth-flow builds.
+- Checkpoint 2 playtest triage first slice:
+  `$env:CARGO_TARGET_DIR='target\codex-cp2-quest-dev'; cargo test -p wow-network --lib quest_reward_storage -- --nocapture`
+  passed with 3 quest reward storage planning tests.
+  `$env:CARGO_TARGET_DIR='target\codex-cp2-quest-dev'; cargo test -p wow-network --lib logout_response_uses_cmangos_combat_failure_shape -- --nocapture`
+  passed.
+  `$env:CARGO_TARGET_DIR='target\codex-cp2-quest-dev'; cargo test -p wow-network --lib login_set_time_speed -- --nocapture`
+  passed with 3 login time tests after the baseline commit.
 - Spell-effect-value/conjure scaling slice:
   baseline `$env:CARGO_TARGET_DIR='target\codex-effectvalue-baseline'; .\scripts\test-rust.cmd`
   passed fully before changes, including `wow-network` 647 tests.

@@ -2,6 +2,8 @@ use super::*;
 use wow_proto::{ServerWorldPacket, SmsgLogoutCompleteResponse, SmsgLogoutResponse};
 
 // CMaNGOS reference: src/game/Handlers/CharacterHandler.cpp logout flow.
+pub(in crate::world) const LOGOUT_FAILURE_NONE: u32 = 0;
+pub(in crate::world) const LOGOUT_FAILURE_CANT_LOGOUT_NOW: u32 = 1;
 
 pub(in crate::world) async fn handle_logout_request(
     stream: &mut WorldPacketSink,
@@ -9,6 +11,16 @@ pub(in crate::world) async fn handle_logout_request(
     header_crypto: &mut HeaderCrypto,
     session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
+    if logout_is_blocked_by_combat(session) {
+        let body = SmsgLogoutResponse {
+            failure_reason: LOGOUT_FAILURE_CANT_LOGOUT_NOW,
+            instant_logout: false,
+        }
+        .body();
+        send_packet(stream, SMSG_LOGOUT_RESPONSE, &body, Some(header_crypto)).await?;
+        return Ok(());
+    }
+
     if let Some(character) = &session.character.active_character {
         info!(
             guid = character.guid,
@@ -24,7 +36,7 @@ pub(in crate::world) async fn handle_logout_request(
     }
 
     let body = SmsgLogoutResponse {
-        failure_reason: 0,
+        failure_reason: LOGOUT_FAILURE_NONE,
         instant_logout: true,
     }
     .body();
@@ -53,6 +65,10 @@ pub(in crate::world) async fn handle_logout_request(
     )
     .await;
     Ok(())
+}
+
+pub(in crate::world) fn logout_is_blocked_by_combat(session: &WorldSessionState) -> bool {
+    session.combat.player_in_combat
 }
 
 pub(in crate::world) struct LogoutDeps<'a> {

@@ -686,13 +686,13 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
     }
 
     let required_item_slots = quest_required_item_inventory_slots(&quest, &session.inventory.items);
-    let reward_slots_needed = reward_grants.len();
-    let empty_slots = empty_backpack_slots(&session.inventory.items);
-    let slots_freed_by_turnin = required_item_slots
-        .iter()
-        .filter(|consume| consume.removes_stack)
-        .count();
-    if empty_slots.len() + slots_freed_by_turnin < reward_slots_needed {
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
+    let Some(reward_storage_plans) = plan_quest_reward_storage(
+        &session.inventory.items,
+        &reward_grants,
+        &equipped_bags,
+        &required_item_slots,
+    ) else {
         send_inventory_change_failure(
             stream,
             EQUIP_ERR_COULDNT_SPLIT_ITEMS,
@@ -702,7 +702,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         )
         .await?;
         return Ok(());
-    }
+    };
     consume_quest_required_items(
         stream,
         character_db_pool,
@@ -717,6 +717,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         world_db_pool,
         character_guid,
         &reward_grants,
+        &reward_storage_plans,
         session,
     )
     .await?;
@@ -1532,12 +1533,13 @@ pub(in crate::world) struct QuestRewardItem {
     pub(in crate::world) count: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(in crate::world) struct QuestRewardGrant {
     pub(in crate::world) item: u32,
     pub(in crate::world) count: u32,
     pub(in crate::world) max_durability: u32,
     pub(in crate::world) container_slots: Option<u32>,
+    pub(in crate::world) template: ItemTemplateQuery,
 }
 
 pub(in crate::world) fn selected_quest_reward_items(
@@ -1585,9 +1587,79 @@ pub(in crate::world) async fn load_quest_reward_grants(
             count: item.count,
             max_durability: template.max_durability,
             container_slots: (template.container_slots > 0).then_some(template.container_slots),
+            template,
         });
     }
     Ok(grants)
+}
+
+pub(in crate::world) fn plan_quest_reward_storage(
+    inventory: &[CharacterInventoryItem],
+    rewards: &[QuestRewardGrant],
+    equipped_bags: &[EquippedBagInfo],
+    required_consumes: &[QuestRequiredItemConsume],
+) -> Option<Vec<Vec<StoreSlot>>> {
+    let mut planned_inventory = inventory.to_vec();
+    apply_required_item_consumes_to_planned_inventory(&mut planned_inventory, required_consumes);
+
+    let mut reward_plans = Vec::with_capacity(rewards.len());
+    for reward in rewards {
+        let store_plan = plan_store_item(
+            &planned_inventory,
+            &reward.template,
+            reward.count,
+            equipped_bags,
+            None,
+            None,
+        )?;
+        apply_store_plan_to_planned_inventory(&mut planned_inventory, reward, &store_plan);
+        reward_plans.push(store_plan);
+    }
+    Some(reward_plans)
+}
+
+pub(in crate::world) fn apply_required_item_consumes_to_planned_inventory(
+    inventory: &mut Vec<CharacterInventoryItem>,
+    required_consumes: &[QuestRequiredItemConsume],
+) {
+    for consume in required_consumes {
+        let Some(index) = inventory
+            .iter()
+            .position(|item| item.bag == consume.bag && item.slot == consume.slot)
+        else {
+            continue;
+        };
+        if consume.removes_stack || inventory[index].count <= consume.count {
+            inventory.remove(index);
+        } else {
+            inventory[index].count -= consume.count;
+        }
+    }
+}
+
+pub(in crate::world) fn apply_store_plan_to_planned_inventory(
+    inventory: &mut Vec<CharacterInventoryItem>,
+    reward: &QuestRewardGrant,
+    store_plan: &[StoreSlot],
+) {
+    for slot in store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = inventory.iter_mut().find(|item| item.item == item_guid) {
+                item.count = item.count.saturating_add(slot.count);
+            }
+            continue;
+        }
+        inventory.push(CharacterInventoryItem {
+            bag: slot.bag as u32,
+            slot: slot.slot,
+            item: 0,
+            item_template: 0,
+            count: slot.count,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: reward.max_durability,
+        });
+    }
 }
 
 pub(in crate::world) async fn grant_quest_reward_items(
@@ -1595,46 +1667,89 @@ pub(in crate::world) async fn grant_quest_reward_items(
     world_db_pool: &MySqlPool,
     character_guid: u32,
     rewards: &[QuestRewardGrant],
+    reward_storage_plans: &[Vec<StoreSlot>],
     session: &mut WorldSessionState,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
+    if rewards.len() != reward_storage_plans.len() {
+        anyhow::bail!("Quest reward storage plan count did not match reward count");
+    }
     let mut update_blocks = Vec::new();
-    for reward in rewards {
-        let Some(slot) = first_empty_backpack_slot(&session.inventory.items) else {
-            anyhow::bail!("Quest reward inventory space check passed but no slot was available");
-        };
+    for (reward, store_plan) in rewards.iter().zip(reward_storage_plans) {
         let random_properties = generate_item_instance_random_properties(
             world_db_pool,
             &session.movement.db_creature_navigation.world_data_files,
             reward.item,
         )
         .await?;
-        let item = wow_db::add_character_inventory_item_with_random_properties(
-            character_db_pool,
-            wow_db::AddCharacterInventoryItemRequest {
-                guid: character_guid,
-                bag: INVENTORY_SLOT_BAG_0 as u32,
-                slot,
-                item_template: reward.item,
-                count: reward.count,
-                durability: reward.max_durability,
-                random_properties: random_properties.as_ref(),
-            },
-        )
-        .await?;
+        for slot in store_plan {
+            if let Some(item_guid) = slot.existing_item {
+                let existing_count = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == item_guid)
+                    .map(|item| item.count)
+                    .unwrap_or(0);
+                wow_db::update_character_inventory_item_count(
+                    character_db_pool,
+                    character_guid,
+                    item_guid,
+                    existing_count.saturating_add(slot.count),
+                )
+                .await?;
+            } else {
+                wow_db::add_character_inventory_item_with_random_properties(
+                    character_db_pool,
+                    wow_db::AddCharacterInventoryItemRequest {
+                        guid: character_guid,
+                        bag: slot.bag as u32,
+                        slot: slot.slot,
+                        item_template: reward.item,
+                        count: slot.count,
+                        durability: reward.max_durability,
+                        random_properties: random_properties.as_ref(),
+                    },
+                )
+                .await?;
+            }
+        }
         session.inventory.items =
             wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
         let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        update_blocks.push(build_item_create_update_block(
-            owner_guid,
-            owner_guid,
-            &item,
-            reward.container_slots,
-        )?);
-        update_blocks.push(build_inventory_slots_update_block(
-            character_guid,
-            &session.inventory.items,
-            &[slot],
-        )?);
+        for slot in store_plan {
+            if let Some(item_guid) = slot.existing_item {
+                if let Some(item) = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == item_guid)
+                {
+                    update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                }
+                continue;
+            }
+            if let Some(new_item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+            {
+                let contained_guid =
+                    item_contained_guid(owner_guid, &session.inventory.items, new_item);
+                update_blocks.push(build_item_create_update_block(
+                    owner_guid,
+                    contained_guid,
+                    new_item,
+                    reward.container_slots,
+                )?);
+                update_blocks.extend(build_inventory_position_update_blocks(
+                    character_guid,
+                    &session.inventory.items,
+                    slot.bag,
+                    slot.slot,
+                )?);
+            }
+        }
     }
     Ok(update_blocks)
 }

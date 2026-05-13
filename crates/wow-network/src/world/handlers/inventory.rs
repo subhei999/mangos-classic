@@ -1507,16 +1507,6 @@ pub(in crate::world) fn build_container_position_update_blocks(
     Ok(blocks)
 }
 
-pub(in crate::world) fn first_empty_backpack_slot(
-    inventory: &[CharacterInventoryItem],
-) -> Option<u8> {
-    (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).find(|slot| {
-        inventory
-            .iter()
-            .all(|item| item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != *slot)
-    })
-}
-
 pub(in crate::world) fn build_rust_guide_vendor_inventory() -> Vec<u8> {
     build_vendor_inventory_body(
         rust_guide_guid(),

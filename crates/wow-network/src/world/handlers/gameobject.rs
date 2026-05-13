@@ -66,6 +66,18 @@ pub(in crate::world) async fn handle_gameobject_use(
         }
     }
 
+    if gameobject_chest_has_loot_id(&runtime.spawn.template) {
+        return open_gameobject_loot_from_use(
+            stream,
+            deps,
+            &runtime,
+            character.guid,
+            session,
+            header_crypto,
+        )
+        .await;
+    }
+
     let handled_questgiver = handle_gameobject_questgiver_use(
         stream,
         deps.object_mgr,
@@ -112,6 +124,54 @@ pub(in crate::world) async fn handle_gameobject_use(
     }
 
     Ok(())
+}
+
+pub(in crate::world) async fn open_gameobject_loot_from_use(
+    stream: &mut WorldPacketSink,
+    deps: GameObjectUseDeps<'_>,
+    runtime: &DbGameObjectRuntime,
+    character_guid: u32,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let loot_items = select_db_gameobject_loot_item_for_character(
+        deps.object_mgr,
+        deps.world_db_pool,
+        session,
+        &runtime.spawn.template,
+    )
+    .await?;
+    let guid = runtime.guid();
+    let Some((_gameobject, loot_items)) = deps
+        .maps
+        .open_db_gameobject_loot(runtime.spawn.map, guid.raw(), character_guid, loot_items)
+        .await
+    else {
+        warn!(
+            target = format_args!("0x{:016X}", guid.raw()),
+            "Ignoring gameobject use loot open for unavailable gameobject"
+        );
+        return Ok(());
+    };
+    send_player_looting_state_update(
+        stream,
+        SharedWorldDeps {
+            object_mgr: deps.object_mgr,
+            maps: deps.maps,
+            sessions: deps.sessions,
+        },
+        session,
+        true,
+        &mut *header_crypto,
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_LOOT_RESPONSE,
+        &build_gameobject_loot_response_body(guid, &loot_items),
+        Some(header_crypto),
+    )
+    .await
 }
 
 #[derive(Clone, Copy)]

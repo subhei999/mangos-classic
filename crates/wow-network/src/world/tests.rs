@@ -27024,6 +27024,19 @@ fn login_set_time_speed_current_packet_no_longer_sends_zero_time() {
 }
 
 #[test]
+fn logout_response_uses_cmangos_combat_failure_shape() {
+    use wow_proto::ServerWorldPacket;
+
+    let body = wow_proto::SmsgLogoutResponse {
+        failure_reason: LOGOUT_FAILURE_CANT_LOGOUT_NOW,
+        instant_logout: false,
+    }
+    .body();
+
+    assert_eq!(body, [1, 0, 0, 0, 0]);
+}
+
+#[test]
 fn tutorial_flags_packet_serializes_account_state() {
     let body = build_tutorial_flags_body(&[1, 0x8000_0000, 0x0102_0304, 0, 0, 0, 0, 0xFFFF_FFFF]);
 
@@ -27723,6 +27736,194 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
             existing_item: None,
         }]
     );
+}
+
+#[test]
+fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag() {
+    let reward_template = test_item_template(117, 0, 0, 0.0, 0.0, 0);
+    let reward = QuestRewardGrant {
+        item: reward_template.entry,
+        count: 1,
+        max_durability: 0,
+        container_slots: None,
+        template: reward_template,
+    };
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    });
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_START as u32,
+        slot: 0,
+        item: 88,
+        item_template: 182,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+    let required = [QuestRequiredItemConsume {
+        bag: INVENTORY_SLOT_BAG_START as u32,
+        slot: 0,
+        count: 1,
+        removes_stack: true,
+    }];
+
+    let plans = plan_quest_reward_storage(&inventory, &[reward], &bags, &required).unwrap();
+
+    assert_eq!(
+        plans,
+        vec![vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_START,
+            slot: 0,
+            count: 1,
+            existing_item: None,
+        }]]
+    );
+}
+
+#[test]
+fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_rewards() {
+    let first_template = test_item_template(117, 0, 0, 0.0, 0.0, 0);
+    let second_template = test_item_template(118, 0, 0, 0.0, 0.0, 0);
+    let rewards = [
+        QuestRewardGrant {
+            item: first_template.entry,
+            count: 1,
+            max_durability: 0,
+            container_slots: None,
+            template: first_template,
+        },
+        QuestRewardGrant {
+            item: second_template.entry,
+            count: 1,
+            max_durability: 0,
+            container_slots: None,
+            template: second_template,
+        },
+    ];
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: if slot == INVENTORY_SLOT_ITEM_START {
+                182
+            } else {
+                6948
+            },
+            count: 1,
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+    let required = [QuestRequiredItemConsume {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        count: 1,
+        removes_stack: true,
+    }];
+
+    let plans = plan_quest_reward_storage(&inventory, &rewards, &bags, &required).unwrap();
+
+    assert_eq!(
+        plans,
+        vec![
+            vec![StoreSlot {
+                bag: INVENTORY_SLOT_BAG_0,
+                slot: INVENTORY_SLOT_ITEM_START,
+                count: 1,
+                existing_item: None,
+            }],
+            vec![StoreSlot {
+                bag: INVENTORY_SLOT_BAG_START,
+                slot: 0,
+                count: 1,
+                existing_item: None,
+            }],
+        ]
+    );
+}
+
+#[test]
+fn quest_reward_storage_fails_without_consuming_partial_required_stack_space() {
+    let reward_template = test_item_template(117, 0, 0, 0.0, 0.0, 0);
+    let reward = QuestRewardGrant {
+        item: reward_template.entry,
+        count: 1,
+        max_durability: 0,
+        container_slots: None,
+        template: reward_template,
+    };
+    let inventory = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: if slot == INVENTORY_SLOT_ITEM_START {
+                182
+            } else {
+                6948
+            },
+            count: if slot == INVENTORY_SLOT_ITEM_START {
+                2
+            } else {
+                1
+            },
+            random_property_id: 0,
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect::<Vec<_>>();
+    let required = [QuestRequiredItemConsume {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        count: 1,
+        removes_stack: false,
+    }];
+
+    assert!(plan_quest_reward_storage(&inventory, &[reward], &[], &required).is_none());
 }
 
 #[test]

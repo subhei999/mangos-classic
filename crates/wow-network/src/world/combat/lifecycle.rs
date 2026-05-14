@@ -745,6 +745,18 @@ pub(in crate::world) async fn send_db_creature_swing(
             header_crypto,
         )
         .await?;
+        try_process_db_creature_event_ai_hp_actions(
+            stream,
+            shared_world,
+            world_db_pool,
+            session,
+            map_id,
+            target,
+            attacker,
+            Instant::now(),
+            header_crypto,
+        )
+        .await?;
     }
 
     if let Some(queued) = queued_spell {
@@ -810,6 +822,15 @@ pub(in crate::world) async fn send_db_creature_swing(
         Some(&mut *header_crypto),
     )
     .await?;
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     shared_world.sessions.dispatch(event.observer_packets).await;
     if !is_dead {
         send_db_creature_threat_target_switch(
@@ -817,6 +838,18 @@ pub(in crate::world) async fn send_db_creature_swing(
             shared_world,
             session,
             target_switch,
+            header_crypto,
+        )
+        .await?;
+        try_process_db_creature_event_ai_hp_actions(
+            stream,
+            shared_world,
+            world_db_pool,
+            session,
+            map_id,
+            target,
+            attacker,
+            Instant::now(),
             header_crypto,
         )
         .await?;
@@ -1205,6 +1238,15 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
         Some(&mut *header_crypto),
     )
     .await?;
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     shared_world.sessions.dispatch(event.observer_packets).await;
     if !is_dead {
         begin_db_creature_retaliation_if_needed(
@@ -1696,6 +1738,62 @@ pub(in crate::world) async fn begin_db_creature_retaliation_if_needed(
         )
         .await?;
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn try_process_db_creature_event_ai_hp_actions(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
+    session: &mut WorldSessionState,
+    map_id: u32,
+    creature: ObjectGuid,
+    victim: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(snapshot) = shared_world
+        .maps
+        .db_creature_snapshot(map_id, creature)
+        .await
+    else {
+        return Ok(());
+    };
+    let scripts = shared_world
+        .object_mgr
+        .creature_ai_scripts(world_db_pool, snapshot.spawn.entry)
+        .await?;
+    if scripts.is_empty() {
+        return Ok(());
+    }
+    let exclude_character_guid = session.character.active_character.as_ref().map(|c| c.guid);
+    let Some(event) = shared_world
+        .maps
+        .process_db_creature_event_ai_hp_actions(
+            map_id,
+            &session.movement.db_creature_navigation,
+            creature,
+            victim,
+            &scripts,
+            now,
+            exclude_character_guid,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    mirror_session_db_creature(session, creature.raw(), event.creature);
+    for packet in &event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    shared_world.sessions.dispatch(event.observer_packets).await;
     Ok(())
 }
 

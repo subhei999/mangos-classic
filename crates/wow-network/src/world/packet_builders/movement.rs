@@ -112,15 +112,33 @@ pub(in crate::world) fn build_monster_move_facing_target_path_body(
 
     target: ObjectGuid,
 ) -> anyhow::Result<Vec<u8>> {
-    build_monster_move_path_body_inner(
+    build_monster_move_facing_target_path_body_with_run(
         guid,
         start,
         path,
         spline_id,
         duration_ms,
-        Some(target),
+        target,
         true,
     )
+}
+
+pub(in crate::world) fn build_monster_move_facing_target_path_body_with_run(
+    guid: ObjectGuid,
+
+    start: WorldPosition,
+
+    path: &[WorldPosition],
+
+    spline_id: u32,
+
+    duration_ms: u32,
+
+    target: ObjectGuid,
+
+    run: bool,
+) -> anyhow::Result<Vec<u8>> {
+    build_monster_move_path_body_inner(guid, start, path, spline_id, duration_ms, Some(target), run)
 }
 
 pub(in crate::world) fn build_monster_move_path_body_inner(

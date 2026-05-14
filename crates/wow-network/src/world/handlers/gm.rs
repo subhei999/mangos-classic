@@ -540,6 +540,15 @@ pub(in crate::world) async fn kill_selected_db_creature(
         Some(&mut *header_crypto),
     )
     .await?;
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     deps.sessions.dispatch(event.observer_packets).await;
     if let Some(death_finalization) = event.death_finalization {
         deps.sessions

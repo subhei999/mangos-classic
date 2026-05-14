@@ -364,6 +364,7 @@ impl MapRuntime {
         } else {
             0
         };
+        let old_wounded_speed_multiplier = creature.wounded_combat_speed_multiplier();
         let motion_stop_packet = {
             let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
                 return Ok(None);
@@ -418,7 +419,22 @@ impl MapRuntime {
                 }
             }
         }
-        let creature = creature.clone();
+        let wounded_motion_packet = if is_dead {
+            None
+        } else {
+            let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+                return Ok(None);
+            };
+            let new_wounded_speed_multiplier = creature.wounded_combat_speed_multiplier();
+            if (old_wounded_speed_multiplier - new_wounded_speed_multiplier).abs() > f32::EPSILON {
+                retime_db_creature_motion_for_speed_change(creature, request.now)?
+            } else {
+                None
+            }
+        };
+        let Some(creature) = self.creatures.get(&creature_guid.raw()).cloned() else {
+            return Ok(None);
+        };
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.clear_db_creature_combat(creature_guid);
@@ -612,6 +628,14 @@ impl MapRuntime {
                 packets
             })
             .collect();
+        if let Some(packet) = &wounded_motion_packet {
+            observer_packets.extend(
+                nearby_observers
+                    .iter()
+                    .copied()
+                    .map(|(_, session_id)| (session_id, packet.clone())),
+            );
+        }
         observer_packets.extend(player_melee_cleanup_packets);
         let death_finalization = if is_dead {
             let combat_flag_packet = OutboundWorldPacket {
@@ -662,6 +686,7 @@ impl MapRuntime {
             spell_non_melee_log_body,
             spell_miss_log_body,
             update_body,
+            direct_packets: wounded_motion_packet.into_iter().collect(),
             death_finalization,
             target_switch,
             observer_packets,
@@ -844,7 +869,14 @@ pub(in crate::world) fn db_creature_motion_speed_changed(
         CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_) => {
             (old_speeds.walk - new_speeds.walk).abs() > f32::EPSILON
         }
-        CreatureMotionState::Chase(_) | CreatureMotionState::ReturnHome(_) => {
+        CreatureMotionState::Chase(chase) => {
+            if chase.run {
+                (old_speeds.run - new_speeds.run).abs() > f32::EPSILON
+            } else {
+                (old_speeds.walk - new_speeds.walk).abs() > f32::EPSILON
+            }
+        }
+        CreatureMotionState::Flee(_) | CreatureMotionState::ReturnHome(_) => {
             (old_speeds.run - new_speeds.run).abs() > f32::EPSILON
         }
         CreatureMotionState::Idle => false,

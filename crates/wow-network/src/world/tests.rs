@@ -571,6 +571,7 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         npc_flags: UNIT_NPC_FLAG_GOSSIP,
         unit_flags: 0x20,
         dynamic_flags: 0,
+        static_flags2: 0,
         unit_class: 1,
         rank: 1,
         health_multiplier: 1.0,
@@ -682,6 +683,71 @@ fn test_creature_spell_list_row(
         target_param2: 0,
         target_param3: 0,
         target_unit_condition: -1,
+    }
+}
+
+fn test_creature_ai_flee_script(
+    id: i32,
+    creature_id: i32,
+    max_hp_percent: i32,
+) -> wow_db::CreatureAiScriptQuery {
+    wow_db::CreatureAiScriptQuery {
+        id,
+        creature_id,
+        event_type: EVENT_AI_EVENT_HP,
+        event_chance: 100,
+        event_flags: 0,
+        event_param1: max_hp_percent,
+        event_param2: 0,
+        event_param3: 0,
+        event_param4: 0,
+        event_param5: 0,
+        event_param6: 0,
+        action1_type: EVENT_AI_ACTION_FLEE_FOR_ASSIST,
+        action1_param1: 0,
+        action1_param2: 0,
+        action1_param3: 0,
+        action2_type: 0,
+        action2_param1: 0,
+        action2_param2: 0,
+        action2_param3: 0,
+        action3_type: 0,
+        action3_param1: 0,
+        action3_param2: 0,
+        action3_param3: 0,
+    }
+}
+
+fn test_creature_ai_set_walk_script(
+    id: i32,
+    creature_id: i32,
+    max_hp_percent: i32,
+    walk_setting: i32,
+) -> wow_db::CreatureAiScriptQuery {
+    wow_db::CreatureAiScriptQuery {
+        id,
+        creature_id,
+        event_type: EVENT_AI_EVENT_HP,
+        event_chance: 100,
+        event_flags: 0,
+        event_param1: max_hp_percent,
+        event_param2: 0,
+        event_param3: 0,
+        event_param4: 0,
+        event_param5: 0,
+        event_param6: 0,
+        action1_type: EVENT_AI_ACTION_SET_WALK,
+        action1_param1: walk_setting,
+        action1_param2: 0,
+        action1_param3: 0,
+        action2_type: 0,
+        action2_param1: 0,
+        action2_param2: 0,
+        action2_param3: 0,
+        action3_type: 0,
+        action3_param1: 0,
+        action3_param2: 0,
+        action3_param3: 0,
     }
 }
 
@@ -11844,6 +11910,7 @@ fn map_runtime_db_creature_chase_melee_does_not_refresh_leash_timer() {
         started_at: now,
         duration: Duration::from_secs(1),
         recheck_at: now + Duration::from_secs(1),
+        run: true,
     });
     map.creatures.insert(attacker.raw(), creature);
     map.begin_db_creature_combat(attacker, victim, now)
@@ -13908,6 +13975,7 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             started_at: now,
             duration: Duration::from_secs(1),
             recheck_at: now + Duration::from_secs(1),
+            run: true,
         });
     }
     let death = map
@@ -14075,6 +14143,250 @@ fn map_runtime_db_creature_motion_transitions_are_authoritative() {
     assert_eq!(stopped.1.spline_id, 1);
     assert!(matches!(stopped.0.motion, CreatureMotionState::Idle));
     assert!(map.stop_db_creature_motion(creature_guid).is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_hp_flee_for_assist_starts_data_driven_flee() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(97);
+    spawn.guid = 1901;
+    spawn.position_x = 10.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.min_level_health = 100;
+    spawn.template.max_level_health = 100;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.health = 10;
+    map.share_db_creature_snapshots(vec![creature]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+
+    let event = map
+        .process_db_creature_event_ai_hp_actions(
+            &DbCreatureNavigationGuardrail::default(),
+            creature_guid,
+            player,
+            &[test_creature_ai_flee_script(77, 97, 15)],
+            now,
+            Some(1),
+        )
+        .unwrap()
+        .expect("HP EventAI flee action should start CMaNGOS flee motion");
+    assert!(event.observer_packets.is_empty());
+    assert_eq!(event.direct_packets[0].opcode, SMSG_UPDATE_OBJECT);
+    assert_eq!(event.direct_packets[1].opcode, SMSG_MONSTER_MOVE);
+    let packed_guid_mask = event.direct_packets[0].body[6];
+    let values_start = 4 + 1 + 1 + 1 + packed_guid_mask.count_ones() as usize;
+    let values = decode_update_values(&event.direct_packets[0].body[values_start..]);
+    let flags = values[UNIT_FIELD_FLAGS].expect("creature flags update");
+    assert_eq!(flags & UNIT_FLAG_IN_COMBAT, UNIT_FLAG_IN_COMBAT);
+    assert_eq!(flags & UNIT_FLAG_FLEEING, UNIT_FLAG_FLEEING);
+    assert_eq!(
+        event.direct_packets[1].body[PackedGuid::packed_size(creature_guid) + 12 + 4],
+        MONSTER_MOVE_TYPE_NORMAL
+    );
+    let snapshot = map
+        .db_creature_snapshot(creature_guid)
+        .expect("creature should remain loaded");
+    let CreatureMotionState::Flee(flee) = &snapshot.motion else {
+        panic!("flee script should install flee motion");
+    };
+    assert_eq!(flee.source, player);
+    assert!(flee.destination.x > snapshot.home_position.x);
+    assert!(snapshot.triggered_event_ai_scripts.contains(&77));
+}
+
+#[test]
+fn map_runtime_event_ai_hp_flee_for_assist_respects_threshold_and_one_shot_flag() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(97);
+    spawn.guid = 1902;
+    spawn.position_x = 10.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.min_level_health = 100;
+    spawn.template.max_level_health = 100;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.health = 50;
+    map.share_db_creature_snapshots(vec![creature]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let navigation = DbCreatureNavigationGuardrail::default();
+    let scripts = [test_creature_ai_flee_script(78, 97, 15)];
+
+    assert!(map
+        .process_db_creature_event_ai_hp_actions(
+            &navigation,
+            creature_guid,
+            player,
+            &scripts,
+            now,
+            Some(1),
+        )
+        .unwrap()
+        .is_none());
+
+    map.creatures.get_mut(&creature_guid.raw()).unwrap().health = 10;
+    assert!(map
+        .process_db_creature_event_ai_hp_actions(
+            &navigation,
+            creature_guid,
+            player,
+            &scripts,
+            now,
+            Some(1),
+        )
+        .unwrap()
+        .is_some());
+    map.advance_db_creature_motion(
+        creature_guid,
+        now + CMANGOS_CREATURE_FAMILY_FLEE_DELAY + Duration::from_millis(1),
+    );
+    assert!(matches!(
+        map.db_creature_snapshot(creature_guid).unwrap().motion,
+        CreatureMotionState::Idle
+    ));
+    assert!(map
+        .process_db_creature_event_ai_hp_actions(
+            &navigation,
+            creature_guid,
+            player,
+            &scripts,
+            now + CMANGOS_CREATURE_FAMILY_FLEE_DELAY + Duration::from_millis(2),
+            Some(1),
+        )
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_hp_set_walk_chase_retimes_active_chase() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(97);
+    spawn.guid = 1903;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.min_level_health = 100;
+    spawn.template.max_level_health = 100;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.health = 10;
+    map.share_db_creature_snapshots(vec![creature]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let navigation = DbCreatureNavigationGuardrail::default();
+    map.start_db_creature_chase_motion(&navigation, creature_guid, player, player_position, now)
+        .expect("initial chase should run");
+
+    let event = map
+        .process_db_creature_event_ai_hp_actions(
+            &navigation,
+            creature_guid,
+            player,
+            &[test_creature_ai_set_walk_script(
+                79,
+                97,
+                15,
+                EVENT_AI_WALK_SETTING_WALK_CHASE,
+            )],
+            now + Duration::from_millis(250),
+            Some(1),
+        )
+        .unwrap()
+        .expect("HP EventAI set-walk action should retime the chase spline");
+    assert_eq!(event.direct_packets.len(), 1);
+    assert_eq!(event.direct_packets[0].opcode, SMSG_MONSTER_MOVE);
+    let mut cursor = PackedGuid::packed_size(creature_guid) + 12 + 4;
+    assert_eq!(
+        event.direct_packets[0].body[cursor],
+        MONSTER_MOVE_TYPE_FACING_TARGET
+    );
+    cursor += 1 + 8;
+    assert_eq!(
+        u32::from_le_bytes(
+            event.direct_packets[0].body[cursor..cursor + 4]
+                .try_into()
+                .unwrap()
+        ),
+        0
+    );
+    let snapshot = map
+        .db_creature_snapshot(creature_guid)
+        .expect("creature should remain loaded");
+    assert!(!snapshot.chase_run);
+    let CreatureMotionState::Chase(chase) = snapshot.motion else {
+        panic!("set walk should keep the creature chasing");
+    };
+    assert!(!chase.run);
+    assert!(snapshot.triggered_event_ai_scripts.contains(&79));
+}
+
+#[test]
+fn map_runtime_event_ai_hp_set_walk_chase_affects_next_chase_motion() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(97);
+    spawn.guid = 1904;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.min_level_health = 100;
+    spawn.template.max_level_health = 100;
+    spawn.template.speed_walk = 1.0;
+    spawn.template.speed_run = 1.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.health = 10;
+    map.share_db_creature_snapshots(vec![creature]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let navigation = DbCreatureNavigationGuardrail::default();
+
+    let event = map
+        .process_db_creature_event_ai_hp_actions(
+            &navigation,
+            creature_guid,
+            player,
+            &[test_creature_ai_set_walk_script(
+                80,
+                97,
+                15,
+                EVENT_AI_WALK_SETTING_WALK_CHASE,
+            )],
+            now,
+            Some(1),
+        )
+        .unwrap()
+        .expect("HP EventAI set-walk action should execute even before chase starts");
+    assert!(event.direct_packets.is_empty());
+    let (_, motion) = map
+        .start_db_creature_chase_motion(&navigation, creature_guid, player, player_position, now)
+        .expect("chase should start after EventAI walk setting");
+    assert!(!motion.run);
+    let expected = db_creature_walk_path_motion_duration(
+        motion.start,
+        &motion.path,
+        DB_CREATURE_WALK_SPEED_YARDS_PER_SEC,
+    );
+    assert_eq!(motion.duration, expected);
 }
 
 #[test]
@@ -20550,6 +20862,156 @@ fn db_creature_chase_motion_duration_applies_temporary_run_speed_slow() {
 }
 
 #[test]
+fn db_creature_chase_motion_duration_applies_cmangos_wounded_slowdown() {
+    let mut spawn = test_creature_spawn(299);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.health = ((runtime.max_health() as f32) * 0.20).round() as u32;
+    let expected_speed = runtime.targeted_motion_speed(true);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_chase_motion(&mut session, creature_guid, player, now)
+        .expect("wounded creature should start chase motion");
+    let distance = path_distance_2d(motion.start, &motion.path);
+    let expected_millis = ((distance / expected_speed) * 1000.0).ceil().max(1.0) as u64;
+    assert_eq!(motion.duration, Duration::from_millis(expected_millis));
+    assert!(expected_speed < DB_CREATURE_RUN_SPEED_YARDS_PER_SEC);
+}
+
+#[test]
+fn db_creature_wounded_slowdown_honors_static_flag_opt_out() {
+    let mut spawn = test_creature_spawn(299);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.template.static_flags2 = CREATURE_STATIC_FLAGS2_NO_WOUNDED_SLOWDOWN;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.health = ((runtime.max_health() as f32) * 0.20).round() as u32;
+    assert_eq!(runtime.wounded_combat_speed_multiplier(), 1.0);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .visibility
+        .db_creatures
+        .insert(creature_guid.raw(), runtime);
+
+    let motion = start_db_creature_chase_motion(&mut session, creature_guid, player, now)
+        .expect("flagged creature should start chase motion");
+    let distance = path_distance_2d(motion.start, &motion.path);
+    let expected_millis = ((distance / DB_CREATURE_RUN_SPEED_YARDS_PER_SEC) * 1000.0)
+        .ceil()
+        .max(1.0) as u64;
+    assert_eq!(motion.duration, Duration::from_millis(expected_millis));
+}
+
+#[test]
+fn db_creature_damage_crossing_wounded_threshold_retimes_active_chase() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let player_position = WorldPosition::new(0, 20.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(299);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.health = ((runtime.max_health() as f32) * 0.40).round() as u32;
+    map.creatures.insert(creature_guid.raw(), runtime);
+    let (_, original_motion) = map
+        .start_db_creature_chase_motion(
+            &DbCreatureNavigationGuardrail::default(),
+            creature_guid,
+            player_guid,
+            player_position,
+            now,
+        )
+        .expect("healthy creature should start normal chase");
+    let max_health = map
+        .creatures
+        .get(&creature_guid.raw())
+        .unwrap()
+        .max_health();
+    let damage = ((max_health as f32) * 0.20).ceil() as u32 + 1;
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid,
+            killer: player_guid,
+            damage,
+            melee_outcome: Some(MeleeDamageOutcome::normal_hit(damage)),
+            spell_damage_outcome: None,
+            spell_id: None,
+            spell_school: 0,
+            suppress_attacker_state: false,
+            now: now + Duration::from_millis(100),
+            now_epoch_secs: 1,
+            exclude_character_guid: Some(7),
+            corpse_loot: None,
+        })
+        .unwrap()
+        .expect("damage should apply");
+
+    assert_eq!(event.direct_packets.len(), 1);
+    assert_eq!(event.direct_packets[0].opcode, SMSG_MONSTER_MOVE);
+    let CreatureMotionState::Chase(chase) =
+        &map.creatures.get(&creature_guid.raw()).unwrap().motion
+    else {
+        panic!("creature should remain in chase motion");
+    };
+    assert!(chase.duration > original_motion.duration);
+}
+
+#[test]
 fn db_creature_slow_aura_retimes_active_chase_and_adjusts_swing_timer() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();
@@ -21201,6 +21663,7 @@ fn map_runtime_refuses_in_place_facing_while_creature_is_moving() {
         started_at: now,
         duration: Duration::from_secs(1),
         recheck_at: now + Duration::from_secs(1),
+        run: true,
     });
     let mut map = MapRuntime::new(0, 0);
     map.share_db_creature_snapshots(vec![runtime]);

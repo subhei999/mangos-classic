@@ -19,6 +19,16 @@ pub(in crate::world) const CREATURE_ATTACKING_TARGET_TOP_AGGRO: i32 = 1;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO: i32 = 2;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_NEAREST: i32 = 3;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_FARTHEST: i32 = 4;
+pub(in crate::world) const EVENT_AI_EVENT_HP: u8 = 2;
+pub(in crate::world) const EVENT_AI_ACTION_FLEE_FOR_ASSIST: u8 = 25;
+pub(in crate::world) const EVENT_AI_ACTION_SET_WALK: u8 = 58;
+pub(in crate::world) const EVENT_AI_FLAG_REPEATABLE: u32 = 0x01;
+pub(in crate::world) const EVENT_AI_WALK_SETTING_RUN_DEFAULT: i32 = 0;
+pub(in crate::world) const EVENT_AI_WALK_SETTING_WALK_DEFAULT: i32 = 1;
+pub(in crate::world) const EVENT_AI_WALK_SETTING_RUN_CHASE: i32 = 2;
+pub(in crate::world) const EVENT_AI_WALK_SETTING_WALK_CHASE: i32 = 3;
+pub(in crate::world) const CMANGOS_CREATURE_FAMILY_FLEE_DELAY: Duration =
+    Duration::from_millis(10_000);
 pub(in crate::world) const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
 pub(in crate::world) const CONDITION_LOGIC_NONE: i32 = 0;
 pub(in crate::world) const CONDITION_LOGIC_AND: i32 = 1;
@@ -414,6 +424,208 @@ impl MapRuntime {
             return None;
         };
         Some(ActiveDbCreatureCombatSnapshot { combat, creature })
+    }
+
+    pub(in crate::world) fn process_db_creature_event_ai_hp_actions(
+        &mut self,
+        navigation: &DbCreatureNavigationGuardrail,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureEventAiActionsEvent>> {
+        let Some(source_position) = victim
+            .is_player()
+            .then(|| {
+                self.players
+                    .get(&victim.counter())
+                    .map(|player| player.position)
+            })
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let Some(creature) = self.creatures.get(&attacker.raw()).cloned() else {
+            return Ok(None);
+        };
+        if !creature.is_alive() || creature.is_fleeing() {
+            return Ok(None);
+        }
+        let Some(combat) = self.active_creature_combats.get(&attacker.raw()) else {
+            return Ok(None);
+        };
+        if combat.victim != victim {
+            return Ok(None);
+        }
+
+        let mut direct_packets = Vec::new();
+        let mut observer_packets = Vec::new();
+        let mut triggered_script_ids = Vec::new();
+        let triggerable_scripts = scripts
+            .iter()
+            .filter(|script| db_creature_event_ai_hp_script_can_trigger(&creature, script))
+            .cloned()
+            .collect::<Vec<_>>();
+        for script in &triggerable_scripts {
+            let mut script_executed = false;
+            for action in db_creature_event_ai_actions(script) {
+                match action.action_type {
+                    EVENT_AI_ACTION_FLEE_FOR_ASSIST => {
+                        if self
+                            .creatures
+                            .get(&attacker.raw())
+                            .is_some_and(|c| c.is_fleeing())
+                        {
+                            continue;
+                        }
+                        let Some((creature, motion)) = self.start_db_creature_flee_motion(
+                            navigation,
+                            attacker,
+                            victim,
+                            source_position,
+                            now,
+                            CMANGOS_CREATURE_FAMILY_FLEE_DELAY,
+                        ) else {
+                            continue;
+                        };
+                        let unit_flags_body = build_unit_flags_update_body(
+                            attacker,
+                            db_creature_unit_flags(&creature, true),
+                        )?;
+                        let motion_body = build_monster_move_run_path_body(
+                            attacker,
+                            motion.start,
+                            &motion.path,
+                            motion.spline_id,
+                            motion.duration.as_millis().max(1) as u32,
+                        )?;
+                        direct_packets.push(OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: unit_flags_body.clone(),
+                        });
+                        direct_packets.push(OutboundWorldPacket {
+                            opcode: SMSG_MONSTER_MOVE,
+                            body: motion_body.clone(),
+                        });
+                        observer_packets.extend(self.db_creature_event_ai_observer_packets(
+                            creature.current_position,
+                            exclude_character_guid,
+                            [
+                                OutboundWorldPacket {
+                                    opcode: SMSG_UPDATE_OBJECT,
+                                    body: unit_flags_body,
+                                },
+                                OutboundWorldPacket {
+                                    opcode: SMSG_MONSTER_MOVE,
+                                    body: motion_body,
+                                },
+                            ],
+                        ));
+                        script_executed = true;
+                    }
+                    EVENT_AI_ACTION_SET_WALK => {
+                        if let Some(packet) =
+                            self.apply_db_creature_event_ai_set_walk(attacker, action.param1, now)?
+                        {
+                            let creature_position = self
+                                .creatures
+                                .get(&attacker.raw())
+                                .map(|creature| creature.current_position)
+                                .unwrap_or(source_position);
+                            direct_packets.push(packet.clone());
+                            observer_packets.extend(self.db_creature_event_ai_observer_packets(
+                                creature_position,
+                                exclude_character_guid,
+                                [packet],
+                            ));
+                        }
+                        script_executed = true;
+                    }
+                    _ => {}
+                }
+            }
+            if script_executed && script.event_flags & EVENT_AI_FLAG_REPEATABLE == 0 {
+                triggered_script_ids.push(script.id);
+            }
+        }
+
+        if direct_packets.is_empty()
+            && observer_packets.is_empty()
+            && triggered_script_ids.is_empty()
+        {
+            return Ok(None);
+        }
+        let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+            return Ok(None);
+        };
+        creature
+            .triggered_event_ai_scripts
+            .extend(triggered_script_ids);
+        Ok(Some(DbCreatureEventAiActionsEvent {
+            creature: creature.clone(),
+            direct_packets,
+            observer_packets,
+        }))
+    }
+
+    fn db_creature_event_ai_observer_packets<const N: usize>(
+        &self,
+        position: WorldPosition,
+        exclude_character_guid: Option<u32>,
+        packets: [OutboundWorldPacket; N],
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(
+            position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            exclude_character_guid,
+        ) {
+            let Some(player) = self.players.get(&player_guid) else {
+                continue;
+            };
+            for packet in &packets {
+                if let Some(packet) = player.packet_to_client(packet.clone()) {
+                    observer_packets.push(packet);
+                }
+            }
+        }
+        observer_packets
+    }
+
+    fn apply_db_creature_event_ai_set_walk(
+        &mut self,
+        creature_guid: ObjectGuid,
+        walk_setting: i32,
+        now: Instant,
+    ) -> anyhow::Result<Option<OutboundWorldPacket>> {
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(None);
+        };
+        match walk_setting {
+            EVENT_AI_WALK_SETTING_RUN_DEFAULT => {
+                creature.default_movement_run = true;
+                return Ok(None);
+            }
+            EVENT_AI_WALK_SETTING_WALK_DEFAULT => {
+                creature.default_movement_run = false;
+                return Ok(None);
+            }
+            EVENT_AI_WALK_SETTING_RUN_CHASE | EVENT_AI_WALK_SETTING_WALK_CHASE => {}
+            _ => return Ok(None),
+        }
+
+        let new_run = walk_setting == EVENT_AI_WALK_SETTING_RUN_CHASE;
+        if creature.chase_run == new_run
+            && !matches!(&creature.motion, CreatureMotionState::Chase(chase) if chase.run != new_run)
+        {
+            return Ok(None);
+        }
+        creature.chase_run = new_run;
+        if let CreatureMotionState::Chase(chase) = &mut creature.motion {
+            chase.run = new_run;
+        }
+        retime_db_creature_motion_for_speed_change(creature, now)
     }
 
     pub(in crate::world) fn ready_db_creature_spell_cast(
@@ -1664,6 +1876,67 @@ pub(in crate::world) fn db_creature_insert_spell_cooldown(
             }
         })
         .or_insert(cooldown_until);
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct DbCreatureEventAiAction {
+    pub(in crate::world) action_type: u8,
+    pub(in crate::world) param1: i32,
+}
+
+pub(in crate::world) fn db_creature_event_ai_actions(
+    script: &wow_db::CreatureAiScriptQuery,
+) -> [DbCreatureEventAiAction; 3] {
+    [
+        DbCreatureEventAiAction {
+            action_type: script.action1_type,
+            param1: script.action1_param1,
+        },
+        DbCreatureEventAiAction {
+            action_type: script.action2_type,
+            param1: script.action2_param1,
+        },
+        DbCreatureEventAiAction {
+            action_type: script.action3_type,
+            param1: script.action3_param1,
+        },
+    ]
+}
+
+pub(in crate::world) fn db_creature_event_ai_hp_script_can_trigger(
+    creature: &DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    if script.event_type != EVENT_AI_EVENT_HP {
+        return false;
+    }
+    if !db_creature_event_ai_actions(script).iter().any(|action| {
+        matches!(
+            action.action_type,
+            EVENT_AI_ACTION_FLEE_FOR_ASSIST | EVENT_AI_ACTION_SET_WALK
+        )
+    }) {
+        return false;
+    }
+    if script.event_flags & EVENT_AI_FLAG_REPEATABLE == 0
+        && creature.triggered_event_ai_scripts.contains(&script.id)
+    {
+        return false;
+    }
+    let max_health = creature.max_health().max(1);
+    let health_percent = (creature.health.min(max_health) * 100) / max_health;
+    let max_percent = script.event_param1.clamp(0, 100) as u32;
+    let min_percent = script.event_param2.clamp(0, 100) as u32;
+    if health_percent > max_percent || health_percent < min_percent {
+        return false;
+    }
+    if script.event_chance >= 100 {
+        return true;
+    }
+    if script.event_chance == 0 {
+        return false;
+    }
+    rand::thread_rng().gen_range(0..100) < script.event_chance
 }
 
 pub(in crate::world) fn refresh_db_creature_spell_list_availability(

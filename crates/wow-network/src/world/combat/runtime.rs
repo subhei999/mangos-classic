@@ -3,6 +3,9 @@ use super::*;
 // CMaNGOS default `CreatureRespawnAggroDelay` from mangosd.conf.dist.in.
 pub(in crate::world) const CMANGOS_CREATURE_RESPAWN_AGGRO_DELAY: Duration =
     Duration::from_millis(5_000);
+pub(in crate::world) const CREATURE_STATIC_FLAGS2_NO_WOUNDED_SLOWDOWN: u32 = 0x0000_0040;
+pub(in crate::world) const CMANGOS_WOUNDED_SLOWDOWN_HEALTH_PERCENT: f32 = 30.0;
+pub(in crate::world) const CMANGOS_WOUNDED_SLOWDOWN_PER_PERCENT: f32 = 1.67;
 
 impl DbCreatureRuntime {
     pub(in crate::world) fn new(spawn: CreatureSpawnQuery) -> Self {
@@ -26,6 +29,8 @@ impl DbCreatureRuntime {
             already_called_assistance: false,
             next_spline_id: 0,
             move_speeds,
+            default_movement_run: false,
+            chase_run: true,
             health,
             power1,
             life_state: DbCreatureLifeState::Alive,
@@ -52,6 +57,7 @@ impl DbCreatureRuntime {
             spell_cooldowns_until: HashMap::new(),
             spell_list_availability_id: None,
             unavailable_spell_list_positions: HashSet::new(),
+            triggered_event_ai_scripts: HashSet::new(),
             native_display,
             display_id_override: None,
             pending_movement_scripts: Vec::new(),
@@ -68,6 +74,10 @@ impl DbCreatureRuntime {
 
     pub(in crate::world) fn is_evading_home(&self) -> bool {
         matches!(self.motion, CreatureMotionState::ReturnHome(_))
+    }
+
+    pub(in crate::world) fn is_fleeing(&self) -> bool {
+        matches!(self.motion, CreatureMotionState::Flee(_))
     }
 
     pub(in crate::world) fn default_movement_type(&self) -> u8 {
@@ -112,6 +122,7 @@ impl DbCreatureRuntime {
                 creature.spell_cooldowns_until.clear();
                 creature.spell_list_availability_id = None;
                 creature.unavailable_spell_list_positions.clear();
+                creature.triggered_event_ai_scripts.clear();
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_waypoint_move_at = None;
@@ -199,6 +210,46 @@ impl DbCreatureRuntime {
 
     pub(in crate::world) fn run_speed(&self) -> f32 {
         self.move_speeds.run
+    }
+
+    pub(in crate::world) fn health_percent(&self) -> f32 {
+        let max_health = self.max_health();
+        if max_health == 0 {
+            return 0.0;
+        }
+        ((self.health as f32 / max_health as f32) * 100.0).clamp(0.0, 100.0)
+    }
+
+    pub(in crate::world) fn is_wounded_slowed_in_combat(&self) -> bool {
+        self.spawn.template.static_flags2 & CREATURE_STATIC_FLAGS2_NO_WOUNDED_SLOWDOWN == 0
+            && self.health_percent() < CMANGOS_WOUNDED_SLOWDOWN_HEALTH_PERCENT
+    }
+
+    pub(in crate::world) fn wounded_combat_speed_multiplier(&self) -> f32 {
+        if !self.is_wounded_slowed_in_combat() {
+            return 1.0;
+        }
+        let missing_from_threshold =
+            CMANGOS_WOUNDED_SLOWDOWN_HEALTH_PERCENT - self.health_percent().min(30.0);
+        (1.0 - (missing_from_threshold * CMANGOS_WOUNDED_SLOWDOWN_PER_PERCENT) / 100.0)
+            .clamp(0.1, 1.0)
+    }
+
+    pub(in crate::world) fn random_motion_speed(&self, run: bool) -> f32 {
+        let base = if run {
+            self.run_speed()
+        } else {
+            self.walk_speed()
+        };
+        base * self.wounded_combat_speed_multiplier()
+    }
+
+    pub(in crate::world) fn targeted_motion_speed(&self, run: bool) -> f32 {
+        if run {
+            self.run_speed() * self.wounded_combat_speed_multiplier()
+        } else {
+            self.walk_speed()
+        }
     }
 
     pub(in crate::world) fn refresh_move_speeds(&mut self) -> UnitMoveSpeeds {
@@ -319,6 +370,7 @@ impl DbCreatureRuntime {
         self.spell_cooldowns_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
+        self.triggered_event_ai_scripts.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at =
             Some(now + db_creature_corpse_decay_duration(&self.spawn.template, respawn_delay));
@@ -375,6 +427,7 @@ impl DbCreatureRuntime {
         self.spell_cooldowns_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
+        self.triggered_event_ai_scripts.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
@@ -420,6 +473,7 @@ impl DbCreatureRuntime {
         self.spell_cooldowns_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
+        self.triggered_event_ai_scripts.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.respawn_at = None;

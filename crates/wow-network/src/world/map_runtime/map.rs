@@ -573,6 +573,7 @@ pub(in crate::world) struct DbCreatureDamageEvent {
     pub(in crate::world) spell_non_melee_log_body: Option<Vec<u8>>,
     pub(in crate::world) spell_miss_log_body: Option<Vec<u8>>,
     pub(in crate::world) update_body: Vec<u8>,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
     pub(in crate::world) death_finalization: Option<DbCreatureDeathFinalizationEvent>,
     pub(in crate::world) target_switch: Option<DbCreatureThreatTargetSwitchEvent>,
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
@@ -633,6 +634,13 @@ pub(in crate::world) struct DbCreatureThreatTargetSwitchEvent {
     pub(in crate::world) old_victim: ObjectGuid,
     pub(in crate::world) new_victim: ObjectGuid,
     pub(in crate::world) combat: CreatureCombatState,
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug)]
+pub(in crate::world) struct DbCreatureEventAiActionsEvent {
+    pub(in crate::world) creature: DbCreatureRuntime,
     pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }

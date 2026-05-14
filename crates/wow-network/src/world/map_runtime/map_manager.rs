@@ -2955,6 +2955,32 @@ impl MapRuntimeManager {
         motion
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn process_db_creature_event_ai_hp_actions(
+        &self,
+        map_id: u32,
+        navigation: &DbCreatureNavigationGuardrail,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureEventAiActionsEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.process_db_creature_event_ai_hp_actions(
+            navigation,
+            attacker,
+            victim,
+            scripts,
+            now,
+            exclude_character_guid,
+        );
+        event
+    }
+
     pub(in crate::world) async fn start_db_creature_return_home_motion(
         &self,
         map_id: u32,

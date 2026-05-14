@@ -219,6 +219,11 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
         return Ok(());
     }
     let now = Instant::now();
+    let was_fleeing = shared_world
+        .maps
+        .db_creature_snapshot(map_id, attacker)
+        .await
+        .is_some_and(|creature| creature.is_fleeing());
     advance_db_creature_motion_and_share(shared_world, map_id, session, attacker, now).await;
     let Some(active) = shared_world
         .maps
@@ -230,6 +235,23 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
     };
     let combat = active.combat;
     mirror_session_db_creature(session, attacker.raw(), active.creature.clone());
+    if was_fleeing && !active.creature.is_fleeing() {
+        let body =
+            build_unit_flags_update_body(attacker, db_creature_unit_flags(&active.creature, true))?;
+        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+        broadcast_db_creature_snapshot_packet(
+            broadcast,
+            active.creature.clone(),
+            SMSG_UPDATE_OBJECT,
+            body,
+        )
+        .await;
+    }
+    if active.creature.is_fleeing() {
+        defer_ready_db_creature_swing_retry(shared_world, map_id, session, attacker, player, now)
+            .await;
+        return Ok(());
+    }
     if db_creature_should_evade_from_map(shared_world, map_id, attacker, now).await {
         send_db_creature_evade_and_return_home(
             stream,
@@ -1319,5 +1341,11 @@ pub(in crate::world) fn db_creature_unit_flags(
     creature: &DbCreatureRuntime,
     in_combat: bool,
 ) -> u32 {
-    creature.spawn.template.unit_flags | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+    creature.spawn.template.unit_flags
+        | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+        | (if creature.is_fleeing() {
+            UNIT_FLAG_FLEEING
+        } else {
+            0
+        })
 }

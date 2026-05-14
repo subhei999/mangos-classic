@@ -57,6 +57,7 @@ pub struct CreatureTemplateQuery {
     pub npc_flags: u32,
     pub unit_flags: u32,
     pub dynamic_flags: u32,
+    pub static_flags2: u32,
     pub unit_class: u8,
     pub rank: u32,
     pub health_multiplier: f32,
@@ -269,6 +270,33 @@ pub struct CreatureSpellListQuery {
     pub target_param2: i32,
     pub target_param3: i32,
     pub target_unit_condition: i32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreatureAiScriptQuery {
+    pub id: i32,
+    pub creature_id: i32,
+    pub event_type: u8,
+    pub event_chance: u32,
+    pub event_flags: u32,
+    pub event_param1: i32,
+    pub event_param2: i32,
+    pub event_param3: i32,
+    pub event_param4: i32,
+    pub event_param5: i32,
+    pub event_param6: i32,
+    pub action1_type: u8,
+    pub action1_param1: i32,
+    pub action1_param2: i32,
+    pub action1_param3: i32,
+    pub action2_type: u8,
+    pub action2_param1: i32,
+    pub action2_param2: i32,
+    pub action2_param3: i32,
+    pub action3_type: u8,
+    pub action3_param1: i32,
+    pub action3_param2: i32,
+    pub action3_param3: i32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
@@ -529,6 +557,7 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.NpcFlags AS template_npc_flags, \
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
+                creature_template.StaticFlags2 AS template_static_flags2, \
                 creature_template.UnitClass AS template_unit_class, \
                 creature_template.Rank AS template_rank, \
                 creature_template.HealthMultiplier AS template_health_multiplier, \
@@ -845,6 +874,7 @@ pub async fn get_creature_template_query(
                 creature_template.InhabitType AS inhabit_type, \
                 creature_template.NpcFlags AS npc_flags, \
                 creature_template.UnitFlags AS unit_flags, creature_template.DynamicFlags AS dynamic_flags, \
+                creature_template.StaticFlags2 AS static_flags2, \
                 creature_template.UnitClass AS unit_class, creature_template.Rank AS rank, \
                 creature_template.HealthMultiplier AS health_multiplier, creature_template.PowerMultiplier AS power_multiplier, \
                 creature_template.DamageMultiplier AS damage_multiplier, creature_template.DamageVariance AS damage_variance, \
@@ -1111,6 +1141,27 @@ pub async fn get_creature_spell_list(
     }
 
     get_legacy_creature_template_spell_list(pool, list_id).await
+}
+
+pub async fn get_creature_ai_scripts_for_entry(
+    pool: &MySqlPool,
+    entry: u32,
+) -> Result<Vec<CreatureAiScriptQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("creature_ai_scripts_load");
+    sqlx::query_as::<_, CreatureAiScriptQuery>(
+        "SELECT id, creature_id, event_type, event_chance, event_flags, \
+                event_param1, event_param2, event_param3, event_param4, event_param5, event_param6, \
+                action1_type, action1_param1, action1_param2, action1_param3, \
+                action2_type, action2_param1, action2_param2, action2_param3, \
+                action3_type, action3_param1, action3_param2, action3_param3 \
+         FROM creature_ai_scripts \
+         WHERE creature_id = ? \
+         ORDER BY id",
+    )
+    .bind(entry as i32)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::from)
 }
 
 async fn get_legacy_creature_template_spell_list(
@@ -2212,6 +2263,7 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.NpcFlags AS template_npc_flags, \
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
+                creature_template.StaticFlags2 AS template_static_flags2, \
                 creature_template.UnitClass AS template_unit_class, \
                 creature_template.Rank AS template_rank, \
                 creature_template.HealthMultiplier AS template_health_multiplier, \
@@ -3088,6 +3140,7 @@ mod world_data_tests {
                 npc_flags: 0,
                 unit_flags: 0,
                 dynamic_flags: 0,
+                static_flags2: 0,
                 unit_class: 1,
                 rank: 0,
                 health_multiplier: 1.0,
@@ -3779,6 +3832,7 @@ struct CreatureSpawnRow {
     template_npc_flags: u32,
     template_unit_flags: u32,
     template_dynamic_flags: u32,
+    template_static_flags2: u32,
     template_unit_class: u8,
     template_rank: u32,
     template_health_multiplier: f32,
@@ -3897,6 +3951,7 @@ impl CreatureSpawnRow {
                 npc_flags: self.template_npc_flags,
                 unit_flags: self.template_unit_flags,
                 dynamic_flags: self.template_dynamic_flags,
+                static_flags2: self.template_static_flags2,
                 unit_class: self.template_unit_class,
                 rank: self.template_rank,
                 health_multiplier: self.template_health_multiplier,

@@ -71,12 +71,14 @@ impl MapRuntime {
                 };
                 let move_packet = OutboundWorldPacket {
                     opcode: SMSG_MONSTER_MOVE,
-                    body: build_monster_move_walk_path_body(
+                    body: build_monster_move_path_body_inner(
                         creature_guid,
                         motion.start,
                         &motion.path,
                         motion.spline_id,
                         motion.duration.as_millis().max(1) as u32,
+                        None,
+                        motion.run,
                     )?,
                 };
                 let create_packet = OutboundWorldPacket {
@@ -514,6 +516,39 @@ impl MapRuntime {
         Some((snapshot, motion))
     }
 
+    pub(in crate::world) fn start_db_creature_flee_motion(
+        &mut self,
+        navigation: &DbCreatureNavigationGuardrail,
+        creature_guid: ObjectGuid,
+        source: ObjectGuid,
+        source_position: WorldPosition,
+        now: Instant,
+        duration: Duration,
+    ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
+        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
+        let geometry = self.geometry.clone();
+        let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        if !creature.is_alive() {
+            return None;
+        }
+        let motion = start_db_creature_flee_motion_runtime(
+            navigation,
+            Some(&geometry),
+            creature,
+            source,
+            source_position,
+            now,
+            duration,
+        )?;
+        let snapshot = creature.clone();
+        self.refresh_db_creature_spatial_index(
+            creature_guid.raw(),
+            old_position,
+            snapshot.current_position,
+        );
+        Some((snapshot, motion))
+    }
+
     pub(in crate::world) fn start_db_creature_return_home_motion(
         &mut self,
         navigation: &DbCreatureNavigationGuardrail,
@@ -595,6 +630,7 @@ impl MapRuntime {
         creature.loot_roll_released_slots.clear();
         creature.loot_current_looter_pass_slots.clear();
         creature.loot_owner = None;
+        creature.triggered_event_ai_scripts.clear();
         self.clear_db_creature_combat(creature_guid);
         self.creatures.get(&creature_guid.raw()).cloned()
     }

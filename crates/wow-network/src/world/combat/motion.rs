@@ -6,6 +6,7 @@ pub(in crate::world) struct StartedCreatureMotion {
     pub(in crate::world) path: Vec<WorldPosition>,
     pub(in crate::world) spline_id: u32,
     pub(in crate::world) duration: Duration,
+    pub(in crate::world) run: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +103,23 @@ pub(in crate::world) fn advance_db_creature_motion_runtime(
                 return;
             };
             creature.current_position = position;
+        }
+        CreatureMotionState::Flee(flee) => {
+            let position = advance_timed_path_motion(
+                flee.start,
+                &flee.path,
+                flee.started_at,
+                flee.duration,
+                now,
+            );
+            if let Some(position) = position {
+                creature.current_position = position;
+                return;
+            }
+            creature.current_position = flee.destination;
+            if now >= flee.flee_until {
+                creature.motion = CreatureMotionState::Idle;
+            }
         }
         CreatureMotionState::ReturnHome(return_home) => {
             let Some(position) = advance_timed_path_motion(
@@ -241,7 +259,8 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
             Some(now + Duration::from_millis(DB_CREATURE_RANDOM_DELAY_MIN_MILLIS));
         return None;
     }
-    let duration = db_creature_walk_path_motion_duration(start, &path, creature.walk_speed());
+    let run = creature.default_movement_run;
+    let duration = db_creature_random_motion_duration(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
@@ -257,6 +276,7 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
         path,
         spline_id,
         duration,
+        run,
     })
 }
 
@@ -336,7 +356,8 @@ pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
         creature.next_waypoint_move_at = Some(now + Duration::from_millis(wait_time as u64));
         return None;
     }
-    let duration = db_creature_walk_path_motion_duration(start, &path, creature.walk_speed());
+    let run = creature.default_movement_run;
+    let duration = db_creature_motion_duration_for_run(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
@@ -353,6 +374,7 @@ pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
         path,
         spline_id,
         duration,
+        run,
     })
 }
 
@@ -499,7 +521,8 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     if move_distance <= f32::EPSILON {
         return None;
     }
-    let duration = db_creature_path_motion_duration(start, &path, creature.run_speed());
+    let run = creature.chase_run;
+    let duration = db_creature_targeted_motion_duration(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
     creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
@@ -510,12 +533,14 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
         started_at: now,
         duration,
         recheck_at: now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS),
+        run,
     });
     Some(StartedCreatureMotion {
         start,
         path,
         spline_id,
         duration,
+        run,
     })
 }
 
@@ -603,6 +628,83 @@ pub(in crate::world) fn start_db_creature_return_home_motion_runtime(
         path,
         spline_id,
         duration,
+        run: true,
+    })
+}
+
+pub(in crate::world) fn start_db_creature_flee_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
+    creature: &mut DbCreatureRuntime,
+    source: ObjectGuid,
+    source_position: WorldPosition,
+    now: Instant,
+    duration: Duration,
+) -> Option<StartedCreatureMotion> {
+    if active_aura_has_root(&creature.active_auras) {
+        return None;
+    }
+    if matches!(creature.motion, CreatureMotionState::Flee(_)) {
+        return None;
+    }
+    let start = creature.current_position;
+    if start.map_id != source_position.map_id
+        || !world_position_is_finite(start)
+        || !world_position_is_finite(source_position)
+    {
+        return None;
+    }
+    if creature.has_waypoint_movement() && creature.waypoint_resume_position.is_none() {
+        creature.waypoint_resume_position = Some(start);
+    }
+    let dx = start.x - source_position.x;
+    let dy = start.y - source_position.y;
+    let angle = if dx.abs() <= f32::EPSILON && dy.abs() <= f32::EPSILON {
+        let seed = (creature.guid().raw() % 6283) as f32 / 1000.0;
+        normalize_orientation(seed)
+    } else {
+        normalize_orientation(dy.atan2(dx))
+    };
+    let distance = 30.0;
+    let raw_destination = WorldPosition::new(
+        start.map_id,
+        start.x + angle.cos() * distance,
+        start.y + angle.sin() * distance,
+        start.z,
+        angle,
+    );
+    let path_result = db_creature_path_to_destination(
+        navigation,
+        geometry,
+        creature,
+        start,
+        raw_destination,
+        CreaturePathMode::Full,
+    )?;
+    let path = path_result.points;
+    let destination = *path.last()?;
+    let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
+    if move_distance <= f32::EPSILON {
+        return None;
+    }
+    let motion_duration = db_creature_path_motion_duration(start, &path, creature.run_speed());
+    let spline_id = creature.next_spline_id;
+    creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.motion = CreatureMotionState::Flee(CreatureFleeMotion {
+        source,
+        start,
+        destination,
+        path: path.clone(),
+        started_at: now,
+        duration: motion_duration,
+        flee_until: now + duration,
+    });
+    Some(StartedCreatureMotion {
+        start,
+        path,
+        spline_id,
+        duration: motion_duration,
+        run: true,
     })
 }
 
@@ -627,13 +729,14 @@ pub(in crate::world) fn retime_db_creature_motion_for_speed_change(
         return Ok(None);
     };
     let body = match retimed.facing_target {
-        Some(target) => build_monster_move_facing_target_path_body(
+        Some(target) => build_monster_move_facing_target_path_body_with_run(
             guid,
             retimed.start,
             &retimed.path,
             retimed.spline_id,
             retimed.duration.as_millis().max(1) as u32,
             target,
+            retimed.run,
         )?,
         None if retimed.run => build_monster_move_run_path_body(
             guid,
@@ -671,35 +774,43 @@ pub(in crate::world) fn retimed_db_creature_motion(
     now: Instant,
 ) -> Option<RetimedCreatureMotion> {
     let original = creature.motion.clone();
-    let (start, path, started_at, duration, run, facing_target) = match original {
+    let (start, path, started_at, duration, run, facing_target) = match &original {
         CreatureMotionState::Idle => return None,
         CreatureMotionState::Random(motion) => (
             motion.start,
-            motion.path,
+            motion.path.clone(),
             motion.started_at,
             motion.duration,
-            false,
+            creature.default_movement_run,
             None,
         ),
         CreatureMotionState::Waypoint(motion) => (
             motion.start,
-            motion.path,
+            motion.path.clone(),
             motion.started_at,
             motion.duration,
-            false,
+            creature.default_movement_run,
             None,
         ),
         CreatureMotionState::Chase(motion) => (
             motion.start,
-            motion.path,
+            motion.path.clone(),
+            motion.started_at,
+            motion.duration,
+            motion.run,
+            Some(motion.target),
+        ),
+        CreatureMotionState::Flee(motion) => (
+            motion.start,
+            motion.path.clone(),
             motion.started_at,
             motion.duration,
             true,
-            Some(motion.target),
+            None,
         ),
         CreatureMotionState::ReturnHome(motion) => (
             motion.start,
-            motion.path,
+            motion.path.clone(),
             motion.started_at,
             motion.duration,
             true,
@@ -712,14 +823,14 @@ pub(in crate::world) fn retimed_db_creature_motion(
         advance_db_creature_motion_runtime(creature, now);
         return None;
     }
-    let new_duration = if run {
-        db_creature_path_motion_duration(current_position, &remaining_path, creature.run_speed())
-    } else {
-        db_creature_walk_path_motion_duration(
-            current_position,
-            &remaining_path,
-            creature.walk_speed(),
-        )
+    let new_duration = match original {
+        CreatureMotionState::Random(_) => {
+            db_creature_random_motion_duration(creature, current_position, &remaining_path, run)
+        }
+        CreatureMotionState::Chase(_) => {
+            db_creature_targeted_motion_duration(creature, current_position, &remaining_path, run)
+        }
+        _ => db_creature_motion_duration_for_run(creature, current_position, &remaining_path, run),
     };
     let destination = *remaining_path.last()?;
     let spline_id = creature.next_spline_id;
@@ -754,6 +865,18 @@ pub(in crate::world) fn retimed_db_creature_motion(
                 started_at: now,
                 duration: new_duration,
                 recheck_at: now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS),
+                run,
+            });
+        }
+        CreatureMotionState::Flee(motion) => {
+            creature.motion = CreatureMotionState::Flee(CreatureFleeMotion {
+                source: motion.source,
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+                flee_until: motion.flee_until,
             });
         }
         CreatureMotionState::ReturnHome(_) => {
@@ -1625,6 +1748,37 @@ pub(in crate::world) fn db_creature_walk_path_motion_duration(
             .ceil()
             .max(1.0) as u64,
     )
+}
+
+pub(in crate::world) fn db_creature_motion_duration_for_run(
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    run: bool,
+) -> Duration {
+    if run {
+        db_creature_path_motion_duration(start, path, creature.run_speed())
+    } else {
+        db_creature_walk_path_motion_duration(start, path, creature.walk_speed())
+    }
+}
+
+pub(in crate::world) fn db_creature_random_motion_duration(
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    run: bool,
+) -> Duration {
+    db_creature_path_motion_duration(start, path, creature.random_motion_speed(run))
+}
+
+pub(in crate::world) fn db_creature_targeted_motion_duration(
+    creature: &DbCreatureRuntime,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    run: bool,
+) -> Duration {
+    db_creature_path_motion_duration(start, path, creature.targeted_motion_speed(run))
 }
 
 pub(in crate::world) fn db_creature_random_destination(

@@ -47,6 +47,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::SpellGroupMembershipQuery>>>,
     pub(in crate::world) creature_spell_lists:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureSpellListQuery>>>,
+    pub(in crate::world) creature_ai_scripts:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureAiScriptQuery>>>,
     pub(in crate::world) exploration_base_xp:
         tokio::sync::Mutex<std::collections::HashMap<u8, u32>>,
     pub(in crate::world) stats: ObjectMgrCacheStats,
@@ -65,6 +67,7 @@ pub(in crate::world) struct ObjectMgrCacheStats {
     pub(in crate::world) spell_chain_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_group_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) creature_ai_script_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) exploration_base_xp_db_loads: std::sync::atomic::AtomicU64,
 }
 
@@ -82,6 +85,7 @@ pub(in crate::world) struct ObjectMgrCacheSnapshot {
     pub(in crate::world) spell_chain_db_loads: u64,
     pub(in crate::world) spell_group_db_loads: u64,
     pub(in crate::world) creature_spell_list_db_loads: u64,
+    pub(in crate::world) creature_ai_script_db_loads: u64,
     pub(in crate::world) exploration_base_xp_db_loads: u64,
 }
 
@@ -603,6 +607,29 @@ impl ObjectMgr {
         Ok(list)
     }
 
+    pub(in crate::world) async fn creature_ai_scripts(
+        &self,
+        world_db_pool: &MySqlPool,
+        entry: u32,
+    ) -> anyhow::Result<Vec<wow_db::CreatureAiScriptQuery>> {
+        {
+            let cache = self.creature_ai_scripts.lock().await;
+            if let Some(scripts) = cache.get(&entry) {
+                return Ok(scripts.clone());
+            }
+        }
+
+        let scripts = wow_db::get_creature_ai_scripts_for_entry(world_db_pool, entry).await?;
+        self.stats
+            .creature_ai_script_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.creature_ai_scripts
+            .lock()
+            .await
+            .insert(entry, scripts.clone());
+        Ok(scripts)
+    }
+
     pub(in crate::world) async fn quest_relation_ids(
         &self,
         world_db_pool: &MySqlPool,
@@ -836,6 +863,10 @@ impl ObjectMgr {
             creature_spell_list_db_loads: self
                 .stats
                 .creature_spell_list_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            creature_ai_script_db_loads: self
+                .stats
+                .creature_ai_script_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
             exploration_base_xp_db_loads: self
                 .stats

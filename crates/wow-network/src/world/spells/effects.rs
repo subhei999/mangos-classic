@@ -1004,6 +1004,15 @@ pub(in crate::world) async fn apply_db_creature_spell_damage(
             Some(&mut *header_crypto),
         )
         .await?;
+        for packet in event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
         let broadcast = CreatureCombatBroadcast {
             shared_world: deps.shared_world,
             map_id,
@@ -1039,6 +1048,18 @@ pub(in crate::world) async fn apply_db_creature_spell_damage(
             .await?;
             begin_shared_db_creature_combat(deps.shared_world, session, target, Instant::now())
                 .await;
+            try_process_db_creature_event_ai_hp_actions(
+                stream,
+                deps.shared_world,
+                deps.world_db_pool,
+                session,
+                map_id,
+                target,
+                caster,
+                Instant::now(),
+                header_crypto,
+            )
+            .await?;
         }
         return Ok(requested_damage > 0);
     }

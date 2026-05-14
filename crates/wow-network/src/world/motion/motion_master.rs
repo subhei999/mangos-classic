@@ -7,6 +7,7 @@ pub(in crate::world) enum CreatureMotionState {
     Random(CreatureRandomMotion),
     Waypoint(CreatureWaypointMotion),
     Chase(CreatureChaseMotion),
+    Flee(CreatureFleeMotion),
     ReturnHome(CreatureReturnHomeMotion),
 }
 
@@ -38,6 +39,18 @@ pub(in crate::world) struct CreatureChaseMotion {
     pub(in crate::world) started_at: Instant,
     pub(in crate::world) duration: Duration,
     pub(in crate::world) recheck_at: Instant,
+    pub(in crate::world) run: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct CreatureFleeMotion {
+    pub(in crate::world) source: ObjectGuid,
+    pub(in crate::world) start: WorldPosition,
+    pub(in crate::world) destination: WorldPosition,
+    pub(in crate::world) path: Vec<WorldPosition>,
+    pub(in crate::world) started_at: Instant,
+    pub(in crate::world) duration: Duration,
+    pub(in crate::world) flee_until: Instant,
 }
 
 #[derive(Debug, Clone)]

@@ -229,13 +229,14 @@ pub(in crate::world) async fn send_db_creature_chase_if_needed(
         return Ok(());
     };
     mirror_session_db_creature(session, attacker.raw(), creature.clone());
-    let body = build_monster_move_facing_target_path_body(
+    let body = build_monster_move_facing_target_path_body_with_run(
         attacker,
         motion.start,
         &motion.path,
         motion.spline_id,
         motion.duration.as_millis().max(1) as u32,
         broadcast.player,
+        motion.run,
     )?;
     send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
     broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;

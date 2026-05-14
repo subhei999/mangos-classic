@@ -387,6 +387,7 @@ pub(in crate::world) const UNIT_FLAG_PLAYER_CONTROLLED: u32 = 0x0000_0008;
 pub(in crate::world) const UNIT_FLAG_LOOTING: u32 = 0x0000_0400;
 pub(in crate::world) const UNIT_FLAG_STUNNED: u32 = 0x0004_0000;
 pub(in crate::world) const UNIT_FLAG_IN_COMBAT: u32 = 0x0008_0000;
+pub(in crate::world) const UNIT_FLAG_FLEEING: u32 = 0x0080_0000;
 pub(in crate::world) const UNIT_FIELD_TARGET: usize = 0x010;
 pub(in crate::world) const UNIT_FIELD_HEALTH: usize = 0x016;
 pub(in crate::world) const UNIT_FIELD_POWER1: usize = 0x017;

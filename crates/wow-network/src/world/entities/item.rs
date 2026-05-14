@@ -5,6 +5,7 @@ use super::*;
 // durability, item dynamic flags, and item/container update fields.
 
 pub(in crate::world) const ITEM_FIELD_ENCHANTMENT: usize = 0x016;
+pub(in crate::world) const ITEM_FIELD_SPELL_CHARGES: usize = 0x010;
 pub(in crate::world) const ITEM_FIELD_RANDOM_PROPERTIES_ID: usize = 0x02C;
 pub(in crate::world) const MAX_ENCHANTMENT_SLOT: usize = 7;
 pub(in crate::world) const MAX_ENCHANTMENT_OFFSET: usize = 3;
@@ -372,6 +373,18 @@ pub(in crate::world) fn build_item_create_update_block(
     set_update_value(&mut values, 0x008, contained_guid.raw() as u32)?;
     set_update_value(&mut values, 0x009, (contained_guid.raw() >> 32) as u32)?;
     set_update_value(&mut values, 0x00E, item.count)?;
+    for (offset, charge_value) in parse_item_spell_charges(&item.charges)
+        .into_iter()
+        .enumerate()
+    {
+        if charge_value != 0 {
+            set_update_value(
+                &mut values,
+                ITEM_FIELD_SPELL_CHARGES + offset,
+                charge_value as u32,
+            )?;
+        }
+    }
     for (offset, enchantment_value) in parse_item_enchantment_fields(&item.enchantments)
         .into_iter()
         .enumerate()
@@ -399,6 +412,25 @@ pub(in crate::world) fn build_item_create_update_block(
     write_update_values(&mut block, &values)?;
 
     Ok(block)
+}
+
+pub(in crate::world) fn parse_item_spell_charges(charges: &str) -> [i32; 5] {
+    let mut fields = [0; 5];
+    for (index, value) in charges.split_whitespace().take(5).enumerate() {
+        if let Ok(value) = value.parse::<i32>() {
+            fields[index] = value;
+        }
+    }
+    fields
+}
+
+pub(in crate::world) fn item_template_spell_charges_string(template: &ItemTemplateQuery) -> String {
+    template
+        .spells
+        .iter()
+        .map(|spell| spell.spell_charges.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(in crate::world) async fn generate_item_instance_random_properties(
@@ -448,6 +480,39 @@ pub(in crate::world) async fn repair_missing_inventory_random_properties(
         {
             item.random_property_id = random_properties.random_property_id;
             item.enchantments = random_properties.enchantments;
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::world) async fn repair_missing_inventory_charges(
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    owner_guid: u32,
+    inventory: &mut [CharacterInventoryItem],
+) -> anyhow::Result<()> {
+    for item in inventory.iter_mut() {
+        if parse_item_spell_charges(&item.charges) != [0; 5] {
+            continue;
+        }
+        let Some(template) =
+            wow_db::get_item_template_query(world_db_pool, item.item_template).await?
+        else {
+            continue;
+        };
+        if template.spells.iter().all(|spell| spell.spell_charges == 0) {
+            continue;
+        }
+        let charges = item_template_spell_charges_string(&template);
+        if wow_db::update_character_inventory_item_charges(
+            character_db_pool,
+            owner_guid,
+            item.item,
+            &charges,
+        )
+        .await?
+        {
+            item.charges = charges;
         }
     }
     Ok(())

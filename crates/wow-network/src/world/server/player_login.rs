@@ -204,12 +204,26 @@ pub(in crate::world) async fn handle_player_login(
     } else {
         create_power_for_class_power(character.class, POWER_ENERGY)
     };
+    load_character_spell_cooldowns_into_session(
+        deps.character_db_pool,
+        character.guid,
+        Instant::now(),
+        session,
+    )
+    .await?;
     session.inventory.items =
         wow_db::get_character_inventory_items(deps.character_db_pool, character.guid).await?;
     repair_missing_inventory_random_properties(
         deps.character_db_pool,
         deps.world_db_pool,
         &session.movement.db_creature_navigation.world_data_files,
+        character.guid,
+        &mut session.inventory.items,
+    )
+    .await?;
+    repair_missing_inventory_charges(
+        deps.character_db_pool,
+        deps.world_db_pool,
         character.guid,
         &mut session.inventory.items,
     )
@@ -260,6 +274,15 @@ pub(in crate::world) async fn handle_player_login(
         deps.world_db_pool,
         deps.maps,
         &spells,
+        character.guid,
+        character.level,
+        session,
+    )
+    .await?;
+    load_saved_character_auras_into_session(
+        deps.character_db_pool,
+        deps.world_db_pool,
+        deps.maps,
         character.guid,
         character.level,
         session,
@@ -348,6 +371,10 @@ pub(in crate::world) async fn handle_player_login(
             reputations: &session.character.character_reputations,
             quest_statuses: &session.quests.quest_statuses,
             active_auras: &session.auras.active_auras,
+            spell_cooldowns_until: &session.character.spell_cooldowns_until,
+            spell_cooldown_categories: &session.character.spell_cooldown_categories,
+            spell_cooldown_item_ids: &session.character.spell_cooldown_item_ids,
+            spell_global_cooldowns_until: &session.character.spell_global_cooldowns_until,
             account_data: &session.account.account_data,
             tutorial_flags: &tutorial_flags,
             cinematic_sequence,
@@ -358,6 +385,17 @@ pub(in crate::world) async fn handle_player_login(
         Some(header_crypto),
     )
     .await?;
+    for packet in
+        build_player_aura_duration_update_packets(&session.auras.active_auras, Instant::now())
+    {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     deps.sessions
         .set_active_character(
             deps.session_id,
@@ -447,22 +485,121 @@ pub(in crate::world) async fn handle_player_login(
         active_spells: session.character.active_spells.clone(),
         inventory: session.inventory.items.clone(),
         quest_statuses: session.quests.quest_statuses.clone(),
+        explored_zones: parse_explored_zones(character.explored_zones.as_deref()),
         active_auras: session.auras.active_auras.clone(),
-        spell_global_cooldowns_until: HashMap::new(),
-        spell_cooldowns_until: HashMap::new(),
+        spell_global_cooldowns_until: session.character.spell_global_cooldowns_until.clone(),
+        spell_cooldowns_until: session.character.spell_cooldowns_until.clone(),
+        spell_cooldown_categories: session.character.spell_cooldown_categories.clone(),
+        spell_cooldown_item_ids: session.character.spell_cooldown_item_ids.clone(),
         queued_next_melee_spell: None,
         base_combat_stats,
         combat_stats,
     };
     let packets = deps.maps.add_player(player_runtime).await?;
     deps.sessions.dispatch(packets).await;
+    send_visible_quest_gameobject_dynamic_updates(
+        stream,
+        deps.object_mgr,
+        deps.world_db_pool,
+        deps.maps,
+        session,
+        header_crypto,
+    )
+    .await?;
 
+    Ok(())
+}
+
+pub(in crate::world) async fn load_character_spell_cooldowns_into_session(
+    character_db_pool: &MySqlPool,
+    character_guid: u32,
+    now: Instant,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    session.character.spell_cooldowns_until.clear();
+    session.character.spell_global_cooldowns_until.clear();
+    session.character.spell_cooldown_categories.clear();
+    session.character.spell_cooldown_item_ids.clear();
+    let now_epoch_secs = current_unix_time_secs();
+    for cooldown in wow_db::get_character_spell_cooldowns(character_db_pool, character_guid).await?
+    {
+        if cooldown.spell_expire_time > now_epoch_secs {
+            session.character.spell_cooldowns_until.insert(
+                cooldown.spell_id,
+                now + Duration::from_secs(cooldown.spell_expire_time - now_epoch_secs),
+            );
+            if cooldown.item_id > 0 {
+                session
+                    .character
+                    .spell_cooldown_item_ids
+                    .insert(cooldown.spell_id, cooldown.item_id);
+            }
+        }
+        if cooldown.category != 0 && cooldown.category_expire_time > now_epoch_secs {
+            session
+                .character
+                .spell_cooldown_categories
+                .insert(cooldown.spell_id, cooldown.category);
+            session.character.spell_global_cooldowns_until.insert(
+                cooldown.category,
+                now + Duration::from_secs(cooldown.category_expire_time - now_epoch_secs),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::world) async fn load_saved_character_auras_into_session(
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
+    character_guid: u32,
+    character_level: u8,
+    session: &mut WorldSessionState,
+) -> anyhow::Result<()> {
+    let saved_auras = wow_db::get_character_auras(character_db_pool, character_guid).await?;
+    let now = Instant::now();
+    for saved in saved_auras {
+        let Some(template) = wow_db::get_spell_template_query(world_db_pool, saved.spell).await?
+        else {
+            continue;
+        };
+        let caster = if saved.caster_guid == 0 {
+            ObjectGuid::new(HighGuid::Player, 0, character_guid)
+        } else {
+            ObjectGuid::from_raw(saved.caster_guid)
+        };
+        let value_context = player_spell_effect_value_context(
+            maps,
+            &template,
+            &session.character.character_skills,
+            0,
+        );
+        let mut aura = build_active_aura(
+            &template,
+            caster,
+            character_level,
+            value_context,
+            now,
+            maps.spell_duration(template.duration_index),
+        );
+        if saved.remaintime > 0 {
+            aura.duration_millis = (saved.maxduration > 0).then_some(saved.maxduration as u32);
+            aura.expires_at = Some(now + Duration::from_millis(saved.remaintime as u64));
+        } else if saved.maxduration > 0 {
+            continue;
+        }
+        if aura.visible {
+            apply_player_aura(session, aura);
+        }
+    }
     Ok(())
 }
 
 pub(in crate::world) struct PlayerLoginDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) object_mgr: &'a ObjectMgr,
     pub(in crate::world) online_characters: &'a OnlineCharacters,
     pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
     pub(in crate::world) sessions: &'a Arc<SessionRegistry>,

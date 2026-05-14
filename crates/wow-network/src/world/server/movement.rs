@@ -1,6 +1,4 @@
 use super::*;
-use wow_proto::{ServerWorldPacket, SmsgLogoutCancelAckResponse};
-
 // CMaNGOS reference: src/game/Handlers/MovementHandler.cpp movement flow.
 
 pub(in crate::world) fn current_movement_server_time_millis() -> u32 {
@@ -84,19 +82,6 @@ pub(in crate::world) async fn persist_active_character_position(
     Ok(())
 }
 
-pub(in crate::world) async fn handle_logout_cancel(
-    stream: &mut WorldPacketSink,
-    header_crypto: &mut HeaderCrypto,
-) -> anyhow::Result<()> {
-    send_packet(
-        stream,
-        SMSG_LOGOUT_CANCEL_ACK,
-        &SmsgLogoutCancelAckResponse.body(),
-        Some(header_crypto),
-    )
-    .await
-}
-
 pub(in crate::world) async fn handle_movement(
     stream: &mut WorldPacketSink,
     deps: MovementDeps<'_>,
@@ -106,6 +91,9 @@ pub(in crate::world) async fn handle_movement(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let movement = MovementInfo::read(body)?;
+    if session.logout.requested_at.is_some() {
+        return Ok(());
+    }
     let map_death_state = if let Some(character) = session.character.active_character.as_ref() {
         deps.maps
             .player_runtime_snapshot(character.position.map_id, character.guid)
@@ -131,6 +119,14 @@ pub(in crate::world) async fn handle_movement(
             deps.sessions,
             session,
             SPELL_FAILED_INTERRUPTED,
+            header_crypto,
+        )
+        .await?;
+        clear_player_state_emote_on_movement(
+            stream,
+            deps.maps,
+            deps.sessions,
+            session,
             header_crypto,
         )
         .await?;
@@ -207,6 +203,7 @@ pub(in crate::world) async fn handle_movement(
             .await?;
             stream_newly_visible_db_gameobjects(
                 stream,
+                deps.object_mgr,
                 deps.world_db_pool,
                 deps.maps,
                 session,
@@ -248,6 +245,9 @@ pub(in crate::world) async fn handle_movement(
             "Received movement packet before character login"
         );
     }
+    if !corpse_movement {
+        handle_player_area_discovery(stream, &deps, session, header_crypto).await?;
+    }
     if map_owned_death_detected {
         if let Some(character) = session.character.active_character.as_ref() {
             refresh_session_from_map_owned_player_death(
@@ -258,6 +258,140 @@ pub(in crate::world) async fn handle_movement(
             .await;
         }
     }
+    Ok(())
+}
+
+async fn handle_player_area_discovery(
+    stream: &mut WorldPacketSink,
+    deps: &MovementDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let map_id = character.position.map_id;
+    let position = character.position;
+    let player_level = character.level;
+    let Some((area_flag, area_entry)) = deps.maps.geometry.area_entry(position) else {
+        return Ok(());
+    };
+    let Some(discovery) = deps
+        .maps
+        .discover_player_area(map_id, character_guid, area_flag)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let explored_zones = format_explored_zones(&discovery.explored_zones);
+    let rows = wow_db::update_character_explored_zones(
+        deps.character_db_pool,
+        character_guid,
+        &explored_zones,
+    )
+    .await?;
+    if rows == 0 {
+        warn!(
+            guid = character_guid,
+            area_flag = discovery.area_flag,
+            "No character row updated while persisting explored zones"
+        );
+    }
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &discovery.update_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    if area_entry.area_level == 0 {
+        return Ok(());
+    }
+    let xp = exploration_xp_for_area_level(
+        deps.object_mgr,
+        deps.world_db_pool,
+        player_level,
+        area_entry.area_level,
+    )
+    .await?;
+    award_character_xp(
+        stream,
+        deps.character_db_pool,
+        deps.world_db_pool,
+        deps.maps,
+        session,
+        None,
+        xp,
+        header_crypto,
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_EXPLORATION_EXPERIENCE,
+        &build_exploration_experience_body(area_entry.id, xp),
+        Some(header_crypto),
+    )
+    .await?;
+
+    Ok(())
+}
+
+pub(in crate::world) async fn exploration_xp_for_area_level(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    player_level: u8,
+    area_level: u8,
+) -> anyhow::Result<u32> {
+    if area_level == 0 || player_level >= DEFAULT_MAX_PLAYER_LEVEL {
+        return Ok(0);
+    }
+    let diff = i32::from(player_level) - i32::from(area_level);
+    let (base_level, percent) = if diff < -5 {
+        (player_level.saturating_add(5), 100u32)
+    } else if diff > 5 {
+        let percent = 100i32.saturating_sub(diff.saturating_sub(5).saturating_mul(5));
+        (area_level, percent.clamp(0, 100) as u32)
+    } else {
+        (area_level, 100u32)
+    };
+    let base_xp = object_mgr
+        .exploration_base_xp(world_db_pool, base_level)
+        .await?;
+    Ok(base_xp.saturating_mul(percent) / 100)
+}
+
+pub(in crate::world) async fn clear_player_state_emote_on_movement(
+    stream: &mut WorldPacketSink,
+    maps: &Arc<MapRuntimeManager>,
+    sessions: &Arc<SessionRegistry>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if session.character.player_emote_state == 0 {
+        return Ok(());
+    }
+    let Some(character) = session.character.active_character.clone() else {
+        session.character.player_emote_state = 0;
+        return Ok(());
+    };
+    session.character.player_emote_state = 0;
+    let body = build_emote_state_update_body(&character, 0)?;
+    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+    let packets = maps
+        .broadcast_nearby_player_packet(
+            character.position.map_id,
+            character.guid,
+            CHAT_EMOTE_RADIUS_YARDS,
+            OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body,
+            },
+        )
+        .await;
+    sessions.dispatch(packets).await;
     Ok(())
 }
 

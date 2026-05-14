@@ -1,5 +1,5 @@
 use super::*;
-use wow_proto::SpellCastTargets;
+use wow_proto::{ServerWorldPacket, SpellCastTargets};
 
 pub(in crate::world) async fn handle_cast_spell(
     stream: &mut WorldPacketSink,
@@ -20,22 +20,36 @@ pub(in crate::world) async fn handle_cast_spell(
     let map_id = character.position.map_id;
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
 
-    if packet.spell_id == OPENING_SPELL_ID {
-        let request = OpeningSpellRequest {
-            caster,
-            map_id,
-            character_guid,
-            targets: packet.targets,
-        };
-        return handle_opening_spell(
-            stream,
-            deps.world_db_pool,
-            deps.shared_world,
-            session,
-            header_crypto,
-            request,
-        )
-        .await;
+    if let Some(spell_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, packet.spell_id)
+        .await?
+    {
+        let spell_info = SpellInfo::from_template(&spell_template);
+        let targets_gameobject = packet
+            .targets
+            .gameobject_target
+            .or(packet.targets.unit_target)
+            .is_some_and(|target| target.is_game_object());
+        if targets_gameobject && spell_info.has_effect(SpellEffectDispatch::OpenLock) {
+            let request = OpeningSpellRequest {
+                spell_id: packet.spell_id,
+                caster,
+                map_id,
+                character_guid,
+                targets: packet.targets,
+            };
+            return handle_opening_spell(
+                stream,
+                deps.world_db_pool,
+                deps.shared_world,
+                session,
+                header_crypto,
+                request,
+            )
+            .await;
+        }
     }
 
     if !session.character.active_spells.contains(&packet.spell_id) {
@@ -453,9 +467,12 @@ pub(in crate::world) async fn handle_use_item(
         deps.shared_world.maps,
         map_id,
         character_guid,
+        source_item.item_template,
         &item_spell_profile,
         now,
         refreshable_consumable_regen,
+        spell_template.category,
+        spell_template.category_recovery_time as u64,
     )
     .await;
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
@@ -707,6 +724,18 @@ pub(in crate::world) async fn complete_pending_player_spell_cast(
                     active_cast.spell_id,
                     active_cast.targets.into_spell_targets(),
                     now,
+                    header_crypto,
+                )
+                .await
+            }
+            ActivePlayerSpellCastSource::OpeningGameObject => {
+                complete_opening_spell_cast(
+                    stream,
+                    deps.world_db_pool,
+                    deps.shared_world,
+                    session,
+                    active_cast.spell_id,
+                    active_cast.targets.into_spell_targets(),
                     header_crypto,
                 )
                 .await
@@ -1263,6 +1292,39 @@ pub(in crate::world) async fn cancel_pending_player_spell_cast(
     Ok(true)
 }
 
+pub(in crate::world) async fn cancel_pending_opening_spell_cast(
+    stream: &mut WorldPacketSink,
+    maps: &MapRuntimeManager,
+    sessions: &SessionRegistry,
+    session: &mut WorldSessionState,
+    failure: u8,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(active_cast) = maps
+        .cancel_active_player_opening_spell_cast(map_id, character_guid)
+        .await
+    else {
+        return Ok(false);
+    };
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    send_spell_cast_failure(stream, caster, active_cast.spell_id, failure, header_crypto).await?;
+    broadcast_spell_interrupt_to_observers(
+        maps,
+        sessions,
+        session,
+        caster,
+        active_cast.spell_id,
+        failure,
+    )
+    .await?;
+    Ok(true)
+}
+
 pub(in crate::world) async fn broadcast_spell_interrupt_to_observers(
     maps: &MapRuntimeManager,
     sessions: &SessionRegistry,
@@ -1343,6 +1405,7 @@ pub(in crate::world) struct SpellCastDeps<'a> {
 }
 
 pub(in crate::world) struct OpeningSpellRequest {
+    pub(in crate::world) spell_id: u32,
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) map_id: u32,
     pub(in crate::world) character_guid: u32,
@@ -1390,34 +1453,29 @@ pub(in crate::world) async fn handle_opening_spell(
         warn!("Ignoring Opening spell for gameobject without chest loot");
         return Ok(());
     }
+    if gameobject_chest_loot_is_exclusively_quest_drops(
+        shared_world.object_mgr,
+        world_db_pool,
+        &gameobject.spawn.template,
+    )
+    .await?
+        && select_db_gameobject_loot_item_for_character(
+            shared_world.object_mgr,
+            world_db_pool,
+            session,
+            &gameobject.spawn.template,
+        )
+        .await?
+        .is_empty()
+    {
+        return Ok(());
+    }
     targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
     targets.gameobject_target = Some(gameobject_guid);
 
-    let loot_items = select_db_gameobject_loot_item_for_character(
-        shared_world.object_mgr,
-        world_db_pool,
-        session,
-        &gameobject.spawn.template,
-    )
-    .await?;
-    let Some((gameobject, loot_items)) = shared_world
-        .maps
-        .open_db_gameobject_loot(
-            request.map_id,
-            gameobject_guid.raw(),
-            request.character_guid,
-            loot_items,
-        )
-        .await
-    else {
-        warn!("Ignoring Opening spell for unavailable gameobject loot");
-        return Ok(());
-    };
-    let _ = gameobject;
-
     let spell_start_body = build_spell_start_body(
         request.caster,
-        OPENING_SPELL_ID,
+        request.spell_id,
         OPENING_SPELL_CAST_TIME_MS,
         &targets,
     )?;
@@ -1442,16 +1500,82 @@ pub(in crate::world) async fn handle_opening_spell(
         .await;
     shared_world.sessions.dispatch(observer_start).await;
 
-    tokio::time::sleep(Duration::from_millis(OPENING_SPELL_CAST_TIME_MS as u64)).await;
+    shared_world
+        .maps
+        .set_active_player_spell_cast(
+            request.map_id,
+            request.character_guid,
+            ActivePlayerSpellCast {
+                spell_id: request.spell_id,
+                source: ActivePlayerSpellCastSource::OpeningGameObject,
+                profile: opening_spell_cast_profile(request.spell_id),
+                targets: PendingSpellCastTargets::from_spell_targets(&targets),
+                due_at: Instant::now() + Duration::from_millis(OPENING_SPELL_CAST_TIME_MS as u64),
+                cast_time_millis: OPENING_SPELL_CAST_TIME_MS,
+                interrupt_flags: 0,
+                damage_pushback_count: 0,
+            },
+        )
+        .await;
+
+    Ok(())
+}
+
+pub(in crate::world) async fn complete_opening_spell_cast(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    spell_id: u32,
+    mut targets: SpellCastTargets,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let map_id = character.position.map_id;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let Some(gameobject_guid) = targets
+        .gameobject_target
+        .or(targets.unit_target)
+        .filter(|guid| guid.is_game_object())
+    else {
+        warn!("Ignoring completed Opening spell without gameobject target");
+        return Ok(());
+    };
+    let Some(gameobject) = shared_world
+        .maps
+        .db_gameobject_snapshot(map_id, gameobject_guid)
+        .await
+    else {
+        warn!(
+            target = format_args!("0x{:016X}", gameobject_guid.raw()),
+            "Ignoring completed Opening spell for unknown gameobject"
+        );
+        return Ok(());
+    };
+    if gameobject.spawn.map != map_id
+        || !is_position_inside_radius(gameobject.position(), character.position, 8.0)
+    {
+        warn!("Ignoring completed Opening spell outside gameobject interaction range");
+        return Ok(());
+    }
+    if !gameobject_chest_has_loot_id(&gameobject.spawn.template) {
+        warn!("Ignoring completed Opening spell for gameobject without chest loot");
+        return Ok(());
+    }
+    targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
+    targets.gameobject_target = Some(gameobject_guid);
 
     send_packet(
         stream,
         SMSG_CAST_RESULT,
-        &build_cast_result_ok_body(OPENING_SPELL_ID),
+        &build_cast_result_ok_body(spell_id),
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = build_spell_go_body(request.caster, OPENING_SPELL_ID, &targets)?;
+    let spell_go_body = build_spell_go_body(caster, spell_id, &targets)?;
     send_packet(
         stream,
         SMSG_SPELL_GO,
@@ -1462,8 +1586,8 @@ pub(in crate::world) async fn handle_opening_spell(
     let observer_go = shared_world
         .maps
         .broadcast_nearby_player_packet(
-            request.map_id,
-            request.character_guid,
+            map_id,
+            character_guid,
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
                 opcode: SMSG_SPELL_GO,
@@ -1473,8 +1597,55 @@ pub(in crate::world) async fn handle_opening_spell(
         .await;
     shared_world.sessions.dispatch(observer_go).await;
 
+    let loot_items = select_db_gameobject_loot_item_for_character(
+        shared_world.object_mgr,
+        world_db_pool,
+        session,
+        &gameobject.spawn.template,
+    )
+    .await?;
+    if loot_items.is_empty()
+        && gameobject_chest_loot_is_exclusively_quest_drops(
+            shared_world.object_mgr,
+            world_db_pool,
+            &gameobject.spawn.template,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+    let Some((gameobject, loot_items)) = shared_world
+        .maps
+        .open_db_gameobject_loot(map_id, gameobject_guid.raw(), character_guid, loot_items)
+        .await
+    else {
+        warn!("Ignoring completed Opening spell for unavailable gameobject loot");
+        return Ok(());
+    };
+    let _ = gameobject;
+
+    send_player_looting_state_update(stream, shared_world, session, true, &mut *header_crypto)
+        .await?;
     let response = build_gameobject_loot_response_body(gameobject_guid, &loot_items);
     send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await
+}
+
+pub(in crate::world) fn opening_spell_cast_profile(spell_id: u32) -> SpellCastProfile {
+    SpellCastProfile {
+        spell_id,
+        kind: SpellCastKind::OpeningGameObject,
+        aura_target: SpellAuraTarget::Caster,
+        bonus_damage: 0,
+        weapon_damage_percent: 0,
+        damage: 0,
+        power: SpellPowerCost::Mana { cost: 0 },
+        requires_melee: false,
+        requires_behind: false,
+        needs_combo_points: false,
+        global_cooldown_category: 0,
+        global_cooldown_millis: 0,
+        cooldown_millis: 0,
+    }
 }
 
 pub(in crate::world) async fn spell_melee_cast_failure(
@@ -2109,6 +2280,7 @@ pub(in crate::world) enum SpellCastKind {
     DirectHeal,
     AuraApplication,
     CreateItem,
+    OpeningGameObject,
     AutoRepeatRanged,
     Charge,
     NextMeleeSwing,
@@ -3418,6 +3590,40 @@ pub(in crate::world) async fn handle_item_name_query(
         stream,
         SMSG_ITEM_NAME_QUERY_RESPONSE,
         &response,
+        Some(header_crypto),
+    )
+    .await
+}
+
+pub(in crate::world) async fn handle_page_text_query(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    request: wow_proto::PageTextQueryRequest,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let page_text = wow_db::get_page_text_query(world_db_pool, request.page_text_id).await?;
+    let response = if let Some(page_text) = page_text {
+        wow_proto::SmsgPageTextQueryResponse {
+            page_text_id: page_text.id,
+            text: page_text.text,
+            next_page_text_id: page_text.next_page_text_id,
+        }
+    } else {
+        warn!(
+            page_text_id = request.page_text_id,
+            item = format_args!("0x{:016X}", request.item_raw_guid),
+            "Answering missing page text query with empty page"
+        );
+        wow_proto::SmsgPageTextQueryResponse {
+            page_text_id: request.page_text_id,
+            text: String::new(),
+            next_page_text_id: 0,
+        }
+    };
+    send_packet(
+        stream,
+        SMSG_PAGE_TEXT_QUERY_RESPONSE,
+        &response.body(),
         Some(header_crypto),
     )
     .await

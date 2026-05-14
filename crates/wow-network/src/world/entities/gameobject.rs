@@ -64,9 +64,9 @@ pub(in crate::world) fn build_db_gameobject_runtime_create_block_for_quest_statu
     )
 }
 
-pub(in crate::world) fn build_db_gameobject_dynamic_flags_update_block(
+pub(in crate::world) fn build_db_gameobject_dynamic_flags_update_block_with_flags(
     gameobject: &DbGameObjectRuntime,
-    quest_statuses: &HashMap<u32, CharacterQuestStatus>,
+    dynamic_flags: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let guid = gameobject.guid();
     let mut block = Vec::new();
@@ -74,11 +74,7 @@ pub(in crate::world) fn build_db_gameobject_dynamic_flags_update_block(
     PackedGuid::write(&mut block, guid)?;
 
     let mut values = vec![None; GAMEOBJECT_END_FIELDS];
-    set_update_value(
-        &mut values,
-        GAMEOBJECT_DYN_FLAGS,
-        gameobject_dynamic_flags_for_quest_statuses(gameobject, quest_statuses),
-    )?;
+    set_update_value(&mut values, GAMEOBJECT_DYN_FLAGS, dynamic_flags)?;
     write_update_values(&mut block, &values)?;
     Ok(block)
 }

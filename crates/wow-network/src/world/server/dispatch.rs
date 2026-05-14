@@ -57,6 +57,7 @@ pub(in crate::world) async fn dispatch_world_packet(
         }
         packets::ParsedWorldClientPacket::InventoryMove(_)
         | packets::ParsedWorldClientPacket::DestroyItem(_)
+        | packets::ParsedWorldClientPacket::ReadItem(_)
         | packets::ParsedWorldClientPacket::SetAmmo(_)
         | packets::ParsedWorldClientPacket::SplitItem(_) => {
             handlers::inventory::dispatch_inventory_packet(ctx, packet).await
@@ -122,7 +123,8 @@ pub(in crate::world) async fn dispatch_world_packet(
             handlers::misc::dispatch_misc_packet(ctx, packet).await
         }
         packets::ParsedWorldClientPacket::ItemQuerySingle(_)
-        | packets::ParsedWorldClientPacket::ItemNameQuery(_) => {
+        | packets::ParsedWorldClientPacket::ItemNameQuery(_)
+        | packets::ParsedWorldClientPacket::PageTextQuery(_) => {
             handlers::misc::dispatch_item_query_packet(ctx, packet).await
         }
         packets::ParsedWorldClientPacket::AuthSession(_) => {

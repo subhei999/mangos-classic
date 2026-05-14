@@ -8,6 +8,7 @@ pub(in crate::world) struct BotId(pub(in crate::world) u64);
 #[allow(dead_code)]
 pub(in crate::world) enum PlayerController {
     Client { session_id: SessionId },
+    Disconnected { remove_at: Instant },
     Bot { bot_id: BotId },
 }
 
@@ -189,12 +190,21 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) active_spells: HashSet<u32>,
     pub(in crate::world) inventory: Vec<CharacterInventoryItem>,
     pub(in crate::world) quest_statuses: HashMap<u32, CharacterQuestStatus>,
+    pub(in crate::world) explored_zones: [u32; PLAYER_EXPLORED_ZONES_SIZE],
     pub(in crate::world) active_auras: Vec<ActiveAura>,
     pub(in crate::world) spell_global_cooldowns_until: HashMap<u32, Instant>,
     pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldown_categories: HashMap<u32, u32>,
+    pub(in crate::world) spell_cooldown_item_ids: HashMap<u32, u32>,
     pub(in crate::world) queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     pub(in crate::world) base_combat_stats: PlayerCombatStats,
     pub(in crate::world) combat_stats: PlayerCombatStats,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct ExpiredDisconnectedPlayer {
+    pub(in crate::world) player: PlayerRuntime,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
 impl PlayerRuntime {
@@ -202,9 +212,17 @@ impl PlayerRuntime {
         matches!(self.controller, PlayerController::Client { .. })
     }
 
+    pub(in crate::world) fn disconnected_remove_at(&self) -> Option<Instant> {
+        match self.controller {
+            PlayerController::Disconnected { remove_at } => Some(remove_at),
+            _ => None,
+        }
+    }
+
     pub(in crate::world) fn client_session_id(&self) -> Option<SessionId> {
         match self.controller {
             PlayerController::Client { session_id } => Some(session_id),
+            PlayerController::Disconnected { .. } => None,
             PlayerController::Bot { .. } => None,
         }
     }
@@ -249,6 +267,8 @@ pub(in crate::world) struct PlayerRuntimeSnapshot {
     pub(in crate::world) active_auras: Vec<ActiveAura>,
     pub(in crate::world) spell_global_cooldowns_until: HashMap<u32, Instant>,
     pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldown_categories: HashMap<u32, u32>,
+    pub(in crate::world) spell_cooldown_item_ids: HashMap<u32, u32>,
     pub(in crate::world) queued_next_melee_spell: Option<QueuedNextMeleeSpell>,
     pub(in crate::world) base_combat_stats: PlayerCombatStats,
     pub(in crate::world) combat_stats: PlayerCombatStats,
@@ -382,6 +402,7 @@ pub(in crate::world) enum ActiveDbCreatureSpellEffect {
 #[derive(Debug, Clone)]
 pub(in crate::world) enum ActivePlayerSpellCastSource {
     Player,
+    OpeningGameObject,
     Item {
         item_guid: ObjectGuid,
         source_item: CharacterInventoryItem,

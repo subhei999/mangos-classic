@@ -1,5 +1,9 @@
 use super::*;
 
+// CMaNGOS default `CreatureRespawnAggroDelay` from mangosd.conf.dist.in.
+pub(in crate::world) const CMANGOS_CREATURE_RESPAWN_AGGRO_DELAY: Duration =
+    Duration::from_millis(5_000);
+
 impl DbCreatureRuntime {
     pub(in crate::world) fn new(spawn: CreatureSpawnQuery) -> Self {
         let health = creature_health(&spawn.template);
@@ -28,6 +32,7 @@ impl DbCreatureRuntime {
             corpse_expires_at: None,
             respawn_at: None,
             respawn_epoch_secs: None,
+            aggro_enabled_at: None,
             life_generation: 0,
             client_visible: true,
             lootable: false,
@@ -89,6 +94,7 @@ impl DbCreatureRuntime {
                 creature.respawn_at =
                     Some(now + Duration::from_secs(respawn_epoch_secs - now_epoch_secs));
                 creature.respawn_epoch_secs = Some(respawn_epoch_secs);
+                creature.aggro_enabled_at = None;
                 creature.client_visible = false;
                 creature.lootable = false;
                 creature.looting = false;
@@ -315,9 +321,10 @@ impl DbCreatureRuntime {
         self.unavailable_spell_list_positions.clear();
         self.refresh_move_speeds();
         self.corpse_expires_at =
-            Some(now + db_creature_corpse_decay_duration(&self.spawn.template));
+            Some(now + db_creature_corpse_decay_duration(&self.spawn.template, respawn_delay));
         self.respawn_at = Some(now + respawn_delay);
         self.respawn_epoch_secs = Some(now_epoch_secs + respawn_delay.as_secs());
+        self.aggro_enabled_at = None;
         self.client_visible = true;
         self.lootable = true;
         self.looting = false;
@@ -372,6 +379,7 @@ impl DbCreatureRuntime {
         self.corpse_expires_at = None;
         self.health = 0;
         self.power1 = 0;
+        self.aggro_enabled_at = None;
         self.client_visible = false;
         self.lootable = false;
         self.looting = false;
@@ -402,7 +410,7 @@ impl DbCreatureRuntime {
             && self.respawn_at.is_none_or(|respawn_at| now >= respawn_at)
     }
 
-    pub(in crate::world) fn respawn(&mut self) {
+    pub(in crate::world) fn respawn(&mut self, now: Instant) {
         self.health = self.max_health();
         self.power1 = creature_mana(&self.spawn.template);
         self.life_state = DbCreatureLifeState::Alive;
@@ -416,6 +424,7 @@ impl DbCreatureRuntime {
         self.corpse_expires_at = None;
         self.respawn_at = None;
         self.respawn_epoch_secs = None;
+        self.aggro_enabled_at = Some(now + CMANGOS_CREATURE_RESPAWN_AGGRO_DELAY);
         self.client_visible = true;
         self.lootable = false;
         self.looting = false;
@@ -443,8 +452,12 @@ impl DbCreatureRuntime {
         &self,
         faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
+        now: Instant,
     ) -> bool {
         self.is_alive()
+            && self
+                .aggro_enabled_at
+                .is_none_or(|enabled_at| now >= enabled_at)
             && !self.is_evading_home()
             && self.spawn.map == character.position.map_id
             && self.spawn.template.civilian == 0
@@ -509,6 +522,7 @@ pub(in crate::world) fn current_unix_epoch_secs() -> u64 {
 
 pub(in crate::world) fn db_creature_corpse_decay_duration(
     template: &CreatureTemplateQuery,
+    respawn_delay: Duration,
 ) -> Duration {
     let seconds = if template.corpse_decay != 0 {
         template.corpse_decay as u64
@@ -521,7 +535,9 @@ pub(in crate::world) fn db_creature_corpse_decay_duration(
             _ => CMANGOS_CORPSE_DECAY_NORMAL_SECS,
         }
     };
-    Duration::from_secs(seconds)
+    let rank_or_template_delay = Duration::from_secs(seconds);
+    let respawn_capped_delay = Duration::from_secs(respawn_delay.as_secs().saturating_mul(9) / 10);
+    rank_or_template_delay.min(respawn_capped_delay)
 }
 
 pub(in crate::world) fn db_creature_respawn_delay(spawn: &CreatureSpawnQuery) -> Duration {

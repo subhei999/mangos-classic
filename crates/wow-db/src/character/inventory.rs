@@ -4,7 +4,7 @@ pub async fn get_character_inventory_items(
 ) -> Result<Vec<CharacterInventoryItem>, DbError> {
     let rows = sqlx::query_as::<_, CharacterInventoryItem>(
         "SELECT ci.bag, ci.slot, ci.item, ci.item_template, ii.count, \
-                ii.randomPropertyId, ii.enchantments, ii.durability \
+                ii.randomPropertyId, ii.charges, ii.enchantments, ii.durability \
          FROM character_inventory ci \
          JOIN item_instance ii ON ci.item = ii.guid \
          WHERE ci.guid = ? ORDER BY ci.bag, ci.slot",
@@ -392,9 +392,25 @@ pub async fn add_character_inventory_item_with_random_properties(
         item_template: request.item_template,
         count: request.count,
         random_property_id,
+        charges: default_item_charges().to_string(),
         enchantments,
         durability: request.durability,
     })
+}
+
+pub async fn update_character_inventory_item_charges(
+    pool: &MySqlPool,
+    owner_guid: u32,
+    item_guid: u32,
+    charges: &str,
+) -> Result<bool, DbError> {
+    let result = sqlx::query("UPDATE item_instance SET charges = ? WHERE guid = ? AND owner_guid = ?")
+        .bind(charges)
+        .bind(item_guid)
+        .bind(owner_guid)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn update_character_inventory_item_count(

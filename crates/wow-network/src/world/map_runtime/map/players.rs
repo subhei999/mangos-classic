@@ -5,6 +5,17 @@ pub(in crate::world) const PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS: u64 = 500;
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
 pub(in crate::world) const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
 pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
+pub(in crate::world) const CMANGOS_DISCONNECTED_PLAYER_LINGER: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(in crate::world) struct PlayerAreaDiscoveryEvent {
+    pub(in crate::world) area_flag: u16,
+    pub(in crate::world) offset: usize,
+    pub(in crate::world) field_value: u32,
+    pub(in crate::world) explored_zones: [u32; PLAYER_EXPLORED_ZONES_SIZE],
+    pub(in crate::world) update_body: Vec<u8>,
+}
 
 impl MapRuntime {
     pub(in crate::world) fn advance_player_environment_tick(
@@ -519,6 +530,11 @@ impl MapRuntime {
         player: PlayerRuntime,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let mut player = player;
+        let mut packets = if self.players.contains_key(&player.guid) {
+            self.remove_player(player.guid)
+        } else {
+            Vec::new()
+        };
         if player.bot_runtime.is_some() {
             if let Some(grounded_position) = self.geometry.ground_position(player.position) {
                 player.position = grounded_position;
@@ -536,7 +552,6 @@ impl MapRuntime {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_update_object_body(&[build_other_player_create_block(&player)?]),
         };
-        let mut packets = Vec::new();
         let mut visible_others = Vec::new();
 
         for other_guid in self.nearby_player_guids(
@@ -603,6 +618,69 @@ impl MapRuntime {
         self.invalidate_idle_motion_start_schedule();
 
         Ok(packets)
+    }
+
+    pub(in crate::world) fn disconnect_player_for_linger(
+        &mut self,
+        character_guid: u32,
+        now: Instant,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return false;
+        };
+        if matches!(player.controller, PlayerController::Disconnected { .. }) {
+            return true;
+        }
+        if !player.is_client_controlled() {
+            return false;
+        }
+
+        let player_grid = grid_coord_for_position(player.position);
+        if let Some(grid) = self.grids.get_mut(&player_grid) {
+            grid.active_player_count = grid.active_player_count.saturating_sub(1);
+            grid.last_touched = now;
+            if let Some(cell) = grid.cells.get_mut(&player.cell) {
+                cell.client_players.remove(&character_guid);
+            }
+        }
+        player.controller = PlayerController::Disconnected {
+            remove_at: now + CMANGOS_DISCONNECTED_PLAYER_LINGER,
+        };
+        player.visible_objects.clear();
+        self.active_player_spell_casts.remove(&character_guid);
+        self.pending_spell_events
+            .retain(|event| event.caster_character_guid != character_guid);
+        self.refresh_grid_state(player_grid);
+        true
+    }
+
+    pub(in crate::world) fn expire_disconnected_players(
+        &mut self,
+        now: Instant,
+    ) -> Vec<ExpiredDisconnectedPlayer> {
+        let mut expired_guids = self
+            .players
+            .iter()
+            .filter_map(|(guid, player)| {
+                player
+                    .disconnected_remove_at()
+                    .is_some_and(|remove_at| now >= remove_at)
+                    .then_some(*guid)
+            })
+            .collect::<Vec<_>>();
+        expired_guids.sort_unstable();
+
+        expired_guids
+            .into_iter()
+            .filter_map(|guid| {
+                let player = self.players.get(&guid)?.clone();
+                let observer_packets = self.remove_player(guid);
+                Some(ExpiredDisconnectedPlayer {
+                    player,
+                    observer_packets,
+                })
+            })
+            .collect()
     }
 
     pub(in crate::world) fn update_player_position(
@@ -939,6 +1017,44 @@ impl MapRuntime {
         Ok(packets)
     }
 
+    pub(in crate::world) fn discover_player_area(
+        &mut self,
+        character_guid: u32,
+        area_flag: u16,
+    ) -> anyhow::Result<Option<PlayerAreaDiscoveryEvent>> {
+        if area_flag == u16::MAX {
+            return Ok(None);
+        }
+        let offset = usize::from(area_flag) / 32;
+        if offset >= PLAYER_EXPLORED_ZONES_SIZE {
+            return Ok(None);
+        }
+        let bit = 1u32 << (u32::from(area_flag) % 32);
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
+        if player.health == 0 || player.flags & PLAYER_FLAGS_GHOST != 0 {
+            return Ok(None);
+        }
+        if player.explored_zones[offset] & bit != 0 {
+            return Ok(None);
+        }
+        player.explored_zones[offset] |= bit;
+        let field_value = player.explored_zones[offset];
+        let explored_zones = player.explored_zones;
+        Ok(Some(PlayerAreaDiscoveryEvent {
+            area_flag,
+            offset,
+            field_value,
+            explored_zones,
+            update_body: build_player_explored_zone_update_body(
+                character_guid,
+                offset,
+                field_value,
+            )?,
+        }))
+    }
+
     pub(in crate::world) fn update_player_visible_equipment(
         &mut self,
         character_guid: u32,
@@ -1194,6 +1310,8 @@ impl MapRuntime {
             active_auras: player.active_auras.clone(),
             spell_global_cooldowns_until: player.spell_global_cooldowns_until.clone(),
             spell_cooldowns_until: player.spell_cooldowns_until.clone(),
+            spell_cooldown_categories: player.spell_cooldown_categories.clone(),
+            spell_cooldown_item_ids: player.spell_cooldown_item_ids.clone(),
             queued_next_melee_spell: player.queued_next_melee_spell,
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
@@ -2021,6 +2139,45 @@ impl MapRuntime {
         now: Instant,
         skip_spell_cooldown: bool,
     ) {
+        self.apply_player_spell_cooldowns_with_item(
+            character_guid,
+            spell_profile,
+            now,
+            skip_spell_cooldown,
+            0,
+        );
+    }
+
+    pub(in crate::world) fn apply_player_spell_cooldowns_with_item(
+        &mut self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        skip_spell_cooldown: bool,
+        item_id: u32,
+    ) {
+        self.apply_player_spell_cooldowns_with_item_category(
+            character_guid,
+            spell_profile,
+            now,
+            skip_spell_cooldown,
+            item_id,
+            0,
+            0,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) fn apply_player_spell_cooldowns_with_item_category(
+        &mut self,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        skip_spell_cooldown: bool,
+        item_id: u32,
+        category: u32,
+        category_cooldown_millis: u64,
+    ) {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return;
         };
@@ -2035,6 +2192,28 @@ impl MapRuntime {
                 spell_profile.spell_id,
                 now + Duration::from_millis(spell_profile.cooldown_millis),
             );
+            if item_id > 0 {
+                player
+                    .spell_cooldown_item_ids
+                    .insert(spell_profile.spell_id, item_id);
+            } else {
+                player
+                    .spell_cooldown_item_ids
+                    .remove(&spell_profile.spell_id);
+            }
+            if category > 0 && category_cooldown_millis > 0 {
+                player
+                    .spell_cooldown_categories
+                    .insert(spell_profile.spell_id, category);
+                player.spell_global_cooldowns_until.insert(
+                    category,
+                    now + Duration::from_millis(category_cooldown_millis),
+                );
+            } else {
+                player
+                    .spell_cooldown_categories
+                    .remove(&spell_profile.spell_id);
+            }
         }
     }
 
@@ -2085,6 +2264,12 @@ impl MapRuntime {
         }
         if spell_profile.cooldown_millis > 0 {
             player.spell_cooldowns_until.remove(&spell_profile.spell_id);
+            player
+                .spell_cooldown_categories
+                .remove(&spell_profile.spell_id);
+            player
+                .spell_cooldown_item_ids
+                .remove(&spell_profile.spell_id);
         }
     }
 
@@ -2274,6 +2459,9 @@ impl MapRuntime {
             return Vec::new();
         };
         let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        self.active_player_spell_casts.remove(&character_guid);
+        self.pending_spell_events
+            .retain(|event| event.caster_character_guid != character_guid);
 
         let player_grid = grid_coord_for_position(player.position);
         if let Some(grid) = self.grids.get_mut(&player_grid) {

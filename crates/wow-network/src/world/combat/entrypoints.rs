@@ -37,8 +37,9 @@ pub(in crate::world) async fn handle_attack_swing(
     }
     if shared_world
         .maps
-        .db_creature_combat_snapshot(character.position.map_id, target)
+        .db_creature_snapshot(character.position.map_id, target)
         .await
+        .filter(|creature| creature.is_alive())
         .is_none()
     {
         warn!(

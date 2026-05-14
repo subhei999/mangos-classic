@@ -104,6 +104,38 @@ pub async fn get_character_account_data(
     Ok(rows)
 }
 
+pub async fn get_character_spell_cooldowns(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterSpellCooldown>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_spell_cooldowns_load");
+    let rows = sqlx::query_as::<_, CharacterSpellCooldown>(
+        "SELECT SpellId, SpellExpireTime, Category, CategoryExpireTime, ItemId \
+         FROM character_spell_cooldown WHERE guid = ?",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn get_character_auras(
+    pool: &MySqlPool,
+    guid: u32,
+) -> Result<Vec<CharacterAura>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_auras_load");
+    let rows = sqlx::query_as::<_, CharacterAura>(
+        "SELECT spell, caster_guid, stackcount, maxduration, remaintime, effIndexMask \
+         FROM character_aura WHERE guid = ?",
+    )
+    .bind(guid)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 pub async fn replace_global_account_data(
     pool: &MySqlPool,
     account_id: u32,

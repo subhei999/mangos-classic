@@ -6,6 +6,7 @@ pub(in crate::world) enum PlayerMeleeCheck {
     NoActiveCharacter,
     MissingTarget,
     TargetNotAlive,
+    TargetEvading,
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
     BadFacing,
@@ -48,8 +49,11 @@ pub(in crate::world) fn db_creature_player_melee_check(
     let Some(creature) = session.visibility.db_creatures.get(&target.raw()) else {
         return PlayerMeleeCheck::MissingTarget;
     };
-    if !creature.is_alive() || creature.is_evading_home() {
+    if !creature.is_alive() {
         return PlayerMeleeCheck::TargetNotAlive;
+    }
+    if creature.is_evading_home() {
+        return PlayerMeleeCheck::TargetEvading;
     }
     let navigation = db_creature_navigation_check(
         &session.movement.db_creature_navigation,

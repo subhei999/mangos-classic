@@ -60,7 +60,7 @@ pub(in crate::world) async fn dispatch_chat_packet(
                     sessions: &ctx.runtime_state.sessions,
                 },
                 packet.text_emote()?,
-                &*ctx.session,
+                &mut *ctx.session,
                 &mut *ctx.header_crypto,
             )
             .await
@@ -159,7 +159,7 @@ pub(in crate::world) async fn handle_message_chat(
         return Ok(());
     }
 
-    let Some(character) = &session.character.active_character else {
+    let Some(character) = session.character.active_character.clone() else {
         warn!(
             chat_type = chat.chat_type,
             "Ignoring chat before character login"
@@ -174,7 +174,7 @@ pub(in crate::world) async fn handle_message_chat(
         return Ok(());
     }
 
-    let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, character);
+    let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, &character);
     send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await?;
 
     if chat.chat_type == CHAT_MSG_PARTY {
@@ -273,7 +273,7 @@ pub(in crate::world) async fn handle_text_emote(
     stream: &mut WorldPacketSink,
     deps: TextEmoteDeps<'_>,
     emote: wow_proto::TextEmoteRequest,
-    session: &WorldSessionState,
+    session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(character) = &session.character.active_character else {
@@ -289,6 +289,7 @@ pub(in crate::world) async fn handle_text_emote(
             .unwrap_or_default();
     if let Some(animation) = animation_emote_for_text_emote(emote.text_emote) {
         if matches!(emote.text_emote, TEXTEMOTE_DANCE | TEXTEMOTE_SLEEP) {
+            session.character.player_emote_state = animation;
             let body = build_emote_state_update_body(character, animation)?;
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
             dispatch_nearby_text_emote_packet(deps, character, SMSG_UPDATE_OBJECT, body).await;

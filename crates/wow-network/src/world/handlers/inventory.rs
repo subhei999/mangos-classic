@@ -57,6 +57,16 @@ pub(in crate::world) async fn dispatch_inventory_packet(
             )
             .await
         }
+        packets::ParsedWorldClientPacket::ReadItem(_) => {
+            handle_read_item(
+                &mut *ctx.stream,
+                ctx.world_db_pool,
+                packet.read_item()?,
+                &*ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
         packets::ParsedWorldClientPacket::SetAmmo(_) => {
             handle_set_ammo(
                 &mut *ctx.stream,
@@ -76,6 +86,46 @@ pub(in crate::world) async fn dispatch_inventory_packet(
             .await
         }
         other => anyhow::bail!("inventory router received opcode 0x{:04X}", other.opcode()),
+    }
+}
+
+pub(in crate::world) async fn handle_read_item(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    request: wow_proto::ReadItemRequest,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let bag = normalize_client_bag(request.bag);
+    let Some(item) = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.bag == bag as u32 && item.slot == request.slot)
+    else {
+        warn!(
+            bag = request.bag,
+            slot = request.slot,
+            "Ignoring read item request for empty inventory slot"
+        );
+        return Ok(());
+    };
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, item.item);
+    let readable = wow_db::get_item_template_query(world_db_pool, item.item_template)
+        .await?
+        .is_some_and(|template| template.page_text != 0);
+    if readable {
+        let response = wow_proto::SmsgReadItemOkResponse { item: item_guid }.body();
+        send_packet(stream, SMSG_READ_ITEM_OK, &response, Some(header_crypto)).await
+    } else {
+        let response = wow_proto::SmsgReadItemFailedResponse { item: item_guid }.body();
+        send_packet(
+            stream,
+            SMSG_READ_ITEM_FAILED,
+            &response,
+            Some(header_crypto),
+        )
+        .await
     }
 }
 
@@ -638,14 +688,17 @@ pub(in crate::world) async fn handle_destroy_item(
             send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
         }
         wow_db::InventoryDestroyResult::Removed { item } => {
-            if request.bag == INVENTORY_SLOT_BAG_0 {
-                let body = build_inventory_slots_update_body(
-                    character_guid,
-                    &session.inventory.items,
-                    &[request.slot],
-                )?;
+            let update_blocks = build_inventory_position_update_blocks(
+                character_guid,
+                &session.inventory.items,
+                request.bag,
+                request.slot,
+            )?;
+            if !update_blocks.is_empty() {
+                let body = build_update_object_body(&update_blocks);
                 send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
-            } else {
+            }
+            if request.bag != INVENTORY_SLOT_BAG_0 {
                 let body = build_destroy_object_body(item);
                 send_packet(
                     stream,

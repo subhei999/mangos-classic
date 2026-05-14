@@ -7,16 +7,29 @@ pub(in crate::world) struct SpellCooldownKey {
     pub(in crate::world) category: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_item_use_spell_cooldowns(
     maps: &MapRuntimeManager,
     map_id: u32,
     character_guid: u32,
+    item_id: u32,
     item_spell: &SpellCastProfile,
     now: Instant,
     skip_spell_cooldown: bool,
+    category: u32,
+    category_cooldown_millis: u64,
 ) {
-    maps.apply_player_spell_cooldowns(map_id, character_guid, item_spell, now, skip_spell_cooldown)
-        .await;
+    maps.apply_player_item_spell_cooldowns(
+        map_id,
+        character_guid,
+        item_spell,
+        now,
+        skip_spell_cooldown,
+        item_id,
+        category,
+        category_cooldown_millis,
+    )
+    .await;
 }
 
 pub(in crate::world) async fn item_use_spell_failure(

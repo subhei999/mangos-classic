@@ -1,5 +1,8 @@
 use super::*;
-use wow_proto::{ServerWorldPacket, SmsgLevelupInfoResponse, SmsgLogXpGainResponse};
+use wow_proto::{
+    ServerWorldPacket, SmsgExplorationExperienceResponse, SmsgLevelupInfoResponse,
+    SmsgLogXpGainResponse,
+};
 
 // CMaNGOS reference: src/game/Entities/Player.cpp progression packet builders.
 
@@ -8,6 +11,10 @@ pub(in crate::world) fn build_log_xp_gain_body(
     given_xp: u32,
 ) -> Vec<u8> {
     SmsgLogXpGainResponse { source, given_xp }.body()
+}
+
+pub(in crate::world) fn build_exploration_experience_body(area: u32, experience: u32) -> Vec<u8> {
+    SmsgExplorationExperienceResponse { area, experience }.body()
 }
 
 pub(in crate::world) fn build_levelup_info_body(

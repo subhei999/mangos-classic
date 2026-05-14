@@ -65,6 +65,21 @@ pub(in crate::world) async fn handle_gameobject_use(
             return Ok(());
         }
     }
+    if gameobject_type_uses_quest_objective_gate(runtime.spawn.template.object_type) {
+        let objective_quests = deps
+            .object_mgr
+            .gameobject_objective_quests(deps.world_db_pool, runtime.spawn.entry)
+            .await?;
+        if !objective_quests.is_empty()
+            && !session_has_incomplete_gameobject_objective(
+                session,
+                &objective_quests,
+                runtime.spawn.entry,
+            )
+        {
+            return Ok(());
+        }
+    }
 
     if gameobject_chest_has_loot_id(&runtime.spawn.template) {
         return open_gameobject_loot_from_use(
@@ -141,6 +156,16 @@ pub(in crate::world) async fn open_gameobject_loot_from_use(
         &runtime.spawn.template,
     )
     .await?;
+    if loot_items.is_empty()
+        && gameobject_chest_loot_is_exclusively_quest_drops(
+            deps.object_mgr,
+            deps.world_db_pool,
+            &runtime.spawn.template,
+        )
+        .await?
+    {
+        return Ok(());
+    }
     let guid = runtime.guid();
     let Some((_gameobject, loot_items)) = deps
         .maps
@@ -185,6 +210,7 @@ pub(in crate::world) struct GameObjectUseDeps<'a> {
 
 pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
     stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
@@ -217,18 +243,22 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
         )
         .await;
     let now = Instant::now();
-    let updates = mirror_db_gameobject_visibility_stage(
-        session,
-        maps.stage_player_db_gameobject_visibility(
+    let stage = maps
+        .stage_player_db_gameobject_visibility(
             position.map_id,
             character_guid,
             position,
             nearby_gameobjects,
             now,
         )
-        .await,
-        now,
-    )?;
+        .await;
+    let create_guids = stage
+        .create_guids
+        .iter()
+        .map(|guid| guid.raw())
+        .collect::<HashSet<_>>();
+    let create_candidates = stage.nearby_gameobjects.clone();
+    let updates = mirror_db_gameobject_visibility_stage(session, stage, now)?;
     for guid in updates.destroy_guids {
         send_packet(
             stream,
@@ -238,13 +268,42 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
         )
         .await?;
     }
-    for body in updates.create_bodies {
-        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+    let mut create_blocks = Vec::new();
+    for runtime in create_candidates {
+        if !create_guids.contains(&runtime.guid().raw()) || runtime.is_consumed(now) {
+            continue;
+        }
+        let dynamic_flags =
+            gameobject_dynamic_flags_for_player(object_mgr, world_db_pool, session, &runtime)
+                .await?;
+        create_blocks.push(build_db_gameobject_runtime_create_block_with_dynamic_flags(
+            &runtime,
+            dynamic_flags,
+        )?);
     }
+    for chunk in create_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_update_object_body(chunk),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    send_visible_quest_gameobject_dynamic_updates(
+        stream,
+        object_mgr,
+        world_db_pool,
+        maps,
+        session,
+        header_crypto,
+    )
+    .await?;
     Ok(())
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub(in crate::world) struct DbGameObjectVisibilityUpdates {
     pub(in crate::world) create_bodies: Vec<Vec<u8>>,
     pub(in crate::world) destroy_guids: Vec<ObjectGuid>,
@@ -416,6 +475,53 @@ pub(in crate::world) fn should_consume_gameobject_on_use(
     )
 }
 
+pub(in crate::world) fn gameobject_type_uses_quest_objective_gate(object_type: u8) -> bool {
+    matches!(
+        object_type,
+        GO_TYPE_CHEST | GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER
+    )
+}
+
+pub(in crate::world) fn quest_gameobject_objective_index(
+    quest: &wow_db::QuestTemplateQuery,
+    gameobject_entry: u32,
+) -> Option<usize> {
+    quest
+        .req_creature_or_go_id
+        .iter()
+        .position(|entry| *entry < 0 && entry.unsigned_abs() == gameobject_entry)
+}
+
+pub(in crate::world) fn session_has_incomplete_gameobject_objective(
+    session: &WorldSessionState,
+    objective_quests: &[wow_db::QuestTemplateQuery],
+    gameobject_entry: u32,
+) -> bool {
+    objective_quests.iter().any(|quest| {
+        let Some(index) = quest_gameobject_objective_index(quest, gameobject_entry) else {
+            return false;
+        };
+        let required = quest.req_creature_or_go_count[index];
+        if required == 0 {
+            return false;
+        }
+        let Some(status) = session.quests.quest_statuses.get(&quest.entry) else {
+            return false;
+        };
+        if status.status != QUEST_STATUS_INCOMPLETE || status.rewarded != 0 {
+            return false;
+        }
+        let current = match index {
+            0 => status.mobcount1,
+            1 => status.mobcount2,
+            2 => status.mobcount3,
+            3 => status.mobcount4,
+            _ => 0,
+        };
+        current < required
+    })
+}
+
 pub(in crate::world) async fn handle_gameobject_questgiver_use(
     stream: &mut WorldPacketSink,
     object_mgr: &ObjectMgr,
@@ -514,11 +620,7 @@ pub(in crate::world) async fn grant_gameobject_use_credit(
         else {
             continue;
         };
-        let Some(index) = quest
-            .req_creature_or_go_id
-            .iter()
-            .position(|entry| *entry < 0 && entry.unsigned_abs() == gameobject_entry)
-        else {
+        let Some(index) = quest_gameobject_objective_index(&quest, gameobject_entry) else {
             continue;
         };
         let required = quest.req_creature_or_go_count[index];

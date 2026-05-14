@@ -33,6 +33,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) corpse_expires_at: Option<Instant>,
     pub(in crate::world) respawn_at: Option<Instant>,
     pub(in crate::world) respawn_epoch_secs: Option<u64>,
+    pub(in crate::world) aggro_enabled_at: Option<Instant>,
     pub(in crate::world) life_generation: u64,
     pub(in crate::world) client_visible: bool,
     pub(in crate::world) lootable: bool,

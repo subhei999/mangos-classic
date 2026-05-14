@@ -81,6 +81,41 @@ pub(in crate::world) async fn handle_gossip_hello(
         }
 
         let quests = questgiver_visible_quests(object_mgr, world_db_pool, guid, session).await?;
+        let vendor_items = wow_db::get_vendor_items(world_db_pool, guid.entry()).await?;
+        let trainer_spells = wow_db::get_trainer_spells(world_db_pool, guid.entry()).await?;
+        let mut options = Vec::new();
+        if !vendor_items.is_empty() {
+            options.push((
+                options.len() as u32,
+                GOSSIP_ICON_VENDOR,
+                DB_VENDOR_GOSSIP_OPTION,
+            ));
+        }
+        if !trainer_spells.is_empty() {
+            options.push((
+                options.len() as u32,
+                GOSSIP_ICON_TRAINER,
+                DB_TRAINER_GOSSIP_OPTION,
+            ));
+        }
+        if !quests.is_empty() && !options.is_empty() {
+            let text_id = db_creature_gossip_text_id(world_db_pool, guid.entry())
+                .await?
+                .unwrap_or(DB_TRAINER_GOSSIP_TEXT_ID);
+            let text = db_npc_text_primary(world_db_pool, text_id)
+                .await?
+                .unwrap_or_else(|| DB_TRAINER_GOSSIP_TEXT.to_string());
+            let text_update = build_npc_text_update(text_id, text.as_str());
+            send_packet(
+                stream,
+                SMSG_NPC_TEXT_UPDATE,
+                &text_update,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            let response = build_gossip_message_with_quests(guid, text_id, &options, &quests);
+            return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
+        }
         if !quests.is_empty() {
             let response = build_questgiver_quest_list_body(guid, &quests);
             return send_packet(
@@ -92,7 +127,6 @@ pub(in crate::world) async fn handle_gossip_hello(
             .await;
         }
 
-        let vendor_items = wow_db::get_vendor_items(world_db_pool, guid.entry()).await?;
         if !vendor_items.is_empty() {
             let text_update =
                 build_npc_text_update(DB_VENDOR_GOSSIP_TEXT_ID, DB_VENDOR_GOSSIP_TEXT);
@@ -111,7 +145,6 @@ pub(in crate::world) async fn handle_gossip_hello(
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }
 
-        let trainer_spells = wow_db::get_trainer_spells(world_db_pool, guid.entry()).await?;
         if !trainer_spells.is_empty() {
             let text_update =
                 build_npc_text_update(DB_TRAINER_GOSSIP_TEXT_ID, DB_TRAINER_GOSSIP_TEXT);
@@ -127,6 +160,22 @@ pub(in crate::world) async fn handle_gossip_hello(
                 DB_TRAINER_GOSSIP_TEXT_ID,
                 &[(0, GOSSIP_ICON_TRAINER, DB_TRAINER_GOSSIP_OPTION)],
             );
+            return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
+        }
+
+        if let Some(text_id) = db_creature_gossip_text_id(world_db_pool, guid.entry()).await? {
+            let text = db_npc_text_primary(world_db_pool, text_id)
+                .await?
+                .unwrap_or_else(|| RUST_GUIDE_GOSSIP_TEXT.to_string());
+            let text_update = build_npc_text_update(text_id, text.as_str());
+            send_packet(
+                stream,
+                SMSG_NPC_TEXT_UPDATE,
+                &text_update,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            let response = build_gossip_message(guid, text_id, &[]);
             return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
         }
     }
@@ -158,14 +207,6 @@ pub(in crate::world) async fn handle_gossip_select_option(
     }
 
     if selection.guid.is_creature() {
-        if !selection.is_supported_browse_option() {
-            warn!(
-                guid = format_args!("0x{:016X}", selection.guid.raw()),
-                option = selection.option,
-                "Ignoring unsupported DB vendor gossip option"
-            );
-            return Ok(());
-        }
         let is_spirit_healer = if session.death.player_death_state == PlayerDeathState::Ghost {
             if let Some(character) = session.character.active_character.as_ref() {
                 deps.maps
@@ -200,15 +241,29 @@ pub(in crate::world) async fn handle_gossip_select_option(
 
         let vendor_items =
             wow_db::get_vendor_items(deps.world_db_pool, selection.guid.entry()).await?;
-        if !vendor_items.is_empty() {
-            let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
-            let response = build_vendor_inventory_body(selection.guid, &list_items);
-            return send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await;
-        }
-
         let trainer_spells =
             wow_db::get_trainer_spells(deps.world_db_pool, selection.guid.entry()).await?;
+        let mut next_option = 0;
+        if !vendor_items.is_empty() {
+            if selection.option != next_option {
+                next_option += 1;
+            } else {
+                let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
+                let response = build_vendor_inventory_body(selection.guid, &list_items);
+                return send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto))
+                    .await;
+            }
+        }
+
         if !trainer_spells.is_empty() {
+            if selection.option != next_option {
+                warn!(
+                    guid = format_args!("0x{:016X}", selection.guid.raw()),
+                    option = selection.option,
+                    "Ignoring unsupported DB gossip service option"
+                );
+                return Ok(());
+            }
             return send_trainer_list(
                 stream,
                 deps.character_db_pool,
@@ -239,6 +294,34 @@ impl GossipSelectOption {
     pub(in crate::world) fn is_supported_browse_option(&self) -> bool {
         self.option == 0
     }
+}
+
+async fn db_creature_gossip_text_id(
+    world_db_pool: &MySqlPool,
+    creature_entry: u32,
+) -> anyhow::Result<Option<u32>> {
+    Ok(
+        wow_db::get_creature_gossip_menu_query(world_db_pool, creature_entry)
+            .await?
+            .map(|menu| menu.text_id),
+    )
+}
+
+async fn db_npc_text_primary(
+    world_db_pool: &MySqlPool,
+    text_id: u32,
+) -> anyhow::Result<Option<String>> {
+    let text = wow_db::get_npc_text_query(world_db_pool, text_id)
+        .await?
+        .map(|row| {
+            if row.text0_0.is_empty() {
+                row.text0_1
+            } else {
+                row.text0_0
+            }
+        })
+        .filter(|text| !text.is_empty());
+    Ok(text)
 }
 
 impl From<wow_proto::GossipSelectOptionRequest> for GossipSelectOption {

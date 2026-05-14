@@ -123,6 +123,53 @@ impl WorldGeometry {
         flags
     }
 
+    pub(in crate::world) fn area_flag(&self, position: WorldPosition) -> Option<u16> {
+        let data_dir = self.world_data_files.data_dir_for_native.as_ref()?;
+        let tile = mmap_tile_for_position(position)?;
+        let result = native_map_area_flag(data_dir, position, tile);
+        match result.status {
+            NativeTerrainAreaFlagStatus::Found => result.area_flag,
+            NativeTerrainAreaFlagStatus::NotFound
+            | NativeTerrainAreaFlagStatus::InvalidInput
+            | NativeTerrainAreaFlagStatus::NativeError => None,
+        }
+    }
+
+    pub(in crate::world) fn area_entry(
+        &self,
+        position: WorldPosition,
+    ) -> Option<(u16, AreaTableEntry)> {
+        if let Some(entry) = self.wmo_area_entry(position) {
+            return Some((entry.explore_flag, entry));
+        }
+        let area_flag = self.area_flag(position)?;
+        let entry = self
+            .world_data_files
+            .area_entry_by_flag_and_map(area_flag, position.map_id)?;
+        Some((area_flag, entry))
+    }
+
+    pub(in crate::world) fn wmo_area_entry(
+        &self,
+        position: WorldPosition,
+    ) -> Option<AreaTableEntry> {
+        let data_dir = self.world_data_files.data_dir_for_native.as_ref()?;
+        let tile = mmap_tile_for_position(position)?;
+        let result = native_map_area_info(data_dir, position, tile);
+        let info = match result.status {
+            NativeTerrainAreaInfoStatus::Found => result.info?,
+            NativeTerrainAreaInfoStatus::NotFound
+            | NativeTerrainAreaInfoStatus::InvalidInput
+            | NativeTerrainAreaInfoStatus::NativeError => return None,
+        };
+        self.world_data_files.area_entry_by_wmo_triple_and_map(
+            info.root_id,
+            info.adt_id,
+            info.group_id,
+            position.map_id,
+        )
+    }
+
     pub(in crate::world) fn sample_height(
         &self,
         position: WorldPosition,

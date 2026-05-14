@@ -23,6 +23,15 @@ pub(in crate::world) async fn dispatch_item_query_packet(
             )
             .await
         }
+        packets::ParsedWorldClientPacket::PageTextQuery(_) => {
+            handle_page_text_query(
+                &mut *ctx.stream,
+                ctx.world_db_pool,
+                packet.page_text_query()?,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
         other => anyhow::bail!("item query router received opcode 0x{:04X}", other.opcode()),
     }
 }
@@ -142,7 +151,14 @@ pub(in crate::world) async fn dispatch_misc_packet(
             .await
         }
         packets::ParsedWorldClientPacket::LogoutCancel(_) => {
-            handle_logout_cancel(&mut *ctx.stream, &mut *ctx.header_crypto).await
+            handle_logout_cancel(
+                &mut *ctx.stream,
+                &ctx.runtime_state.maps,
+                &ctx.runtime_state.sessions,
+                &mut *ctx.header_crypto,
+                &mut *ctx.session,
+            )
+            .await
         }
         packets::ParsedWorldClientPacket::PlayerLogout(_) => {
             info!("Received client-side player logout notification");

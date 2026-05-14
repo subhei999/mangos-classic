@@ -279,11 +279,11 @@ pub(in crate::world) fn write_minimal_player_update_values(
             unit_bytes_1(character)
         },
     )?;
-    set_player_ghost_aura_update_values(
-        &mut values,
-        character.player_flags & PLAYER_FLAGS_GHOST != 0,
-        character.level,
-    )?;
+    if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
+        set_player_ghost_aura_update_values(&mut values, true, character.level)?;
+    } else {
+        set_player_aura_update_values(&mut values, active_auras)?;
+    }
     set_update_value(&mut values, UNIT_FIELD_AURASTATE, 0)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_player_stat_update_values(&mut values, world_stats)?;
@@ -663,6 +663,36 @@ pub(in crate::world) fn parse_explored_zones(
     }
 
     fields
+}
+
+pub(in crate::world) fn format_explored_zones(
+    explored_zones: &[u32; PLAYER_EXPLORED_ZONES_SIZE],
+) -> String {
+    let mut output = String::new();
+    for (index, value) in explored_zones.iter().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        output.push_str(&value.to_string());
+    }
+    output
+}
+
+pub(in crate::world) fn build_player_explored_zone_update_body(
+    character_guid: u32,
+    offset: usize,
+    field_value: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, PLAYER_EXPLORED_ZONES_1 + offset, field_value)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
 }
 
 pub(in crate::world) fn set_player_stat_mod_update_values(

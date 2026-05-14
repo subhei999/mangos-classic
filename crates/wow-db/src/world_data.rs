@@ -7,6 +7,12 @@ use sqlx::{FromRow, MySql, QueryBuilder};
 use crate::character::ItemRandomPropertyRoll;
 use crate::pool::DbError;
 
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExplorationBaseXpQuery {
+    pub level: u8,
+    pub basexp: u32,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CreatureTemplateQuery {
     pub entry: u32,
@@ -188,6 +194,32 @@ pub struct GraveyardQuery {
     pub z: f32,
     pub o: f32,
     pub name: String,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PageTextQuery {
+    #[sqlx(rename = "entry")]
+    pub id: u32,
+    pub text: String,
+    #[sqlx(rename = "next_page")]
+    pub next_page_text_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GossipMenuQuery {
+    pub entry: u32,
+    #[sqlx(rename = "text_id")]
+    pub text_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpcTextQuery {
+    #[sqlx(rename = "ID")]
+    pub id: u32,
+    #[sqlx(rename = "text0_0")]
+    pub text0_0: String,
+    #[sqlx(rename = "text0_1")]
+    pub text0_1: String,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -954,6 +986,48 @@ pub async fn get_spell_template_query(
     .map_err(Into::into)
 }
 
+pub async fn get_page_text_query(
+    pool: &MySqlPool,
+    page_text_id: u32,
+) -> Result<Option<PageTextQuery>, DbError> {
+    let row = sqlx::query_as::<_, PageTextQuery>(
+        "SELECT entry, text, next_page FROM page_text WHERE entry = ?",
+    )
+    .bind(page_text_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn get_creature_gossip_menu_query(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Option<GossipMenuQuery>, DbError> {
+    let row = sqlx::query_as::<_, GossipMenuQuery>(
+        "SELECT gm.entry, gm.text_id \
+         FROM creature_template ct \
+         JOIN gossip_menu gm ON gm.entry = ct.GossipMenuId \
+         WHERE ct.Entry = ? \
+         ORDER BY gm.entry LIMIT 1",
+    )
+    .bind(creature_entry)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn get_npc_text_query(
+    pool: &MySqlPool,
+    text_id: u32,
+) -> Result<Option<NpcTextQuery>, DbError> {
+    let row =
+        sqlx::query_as::<_, NpcTextQuery>("SELECT ID, text0_0, text0_1 FROM npc_text WHERE ID = ?")
+            .bind(text_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row)
+}
+
 pub async fn get_spell_chain_query(
     pool: &MySqlPool,
     spell: u32,
@@ -1159,6 +1233,20 @@ struct CreatureCooldownRow {
     cooldown_max: u32,
 }
 
+pub async fn get_exploration_base_xp_rows(
+    pool: &MySqlPool,
+) -> Result<Vec<ExplorationBaseXpQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("exploration_base_xp_load");
+    let rows = sqlx::query_as::<_, ExplorationBaseXpQuery>(
+        "SELECT CAST(level AS UNSIGNED) AS level, CAST(basexp AS UNSIGNED) AS basexp \
+         FROM exploration_basexp",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 pub async fn get_creature_loot_items(
     pool: &MySqlPool,
     creature_entry: u32,
@@ -1227,15 +1315,19 @@ pub async fn get_gameobject_loot_items(
     let rows = sqlx::query_as::<_, CreatureLootRow>(
         "SELECT gameobject_loot_template.item, \
                 gameobject_loot_template.groupid AS group_id, \
-                CAST(GREATEST(gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS min_count, \
-                CAST(GREATEST(gameobject_loot_template.maxcount, gameobject_loot_template.mincountOrRef, 1) AS UNSIGNED) AS max_count, \
-                item_template.displayid AS display_id, \
+                CAST(CASE WHEN gameobject_loot_template.mincountOrRef < 0 THEN 0 \
+                     ELSE GREATEST(gameobject_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS min_count, \
+                CAST(CASE WHEN gameobject_loot_template.mincountOrRef < 0 THEN GREATEST(gameobject_loot_template.maxcount, 1) \
+                     ELSE GREATEST(gameobject_loot_template.maxcount, gameobject_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS max_count, \
+                CAST(COALESCE(item_template.displayid, 0) AS UNSIGNED) AS display_id, \
                 gameobject_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
          FROM gameobject_loot_template \
-         JOIN item_template ON gameobject_loot_template.item = item_template.entry \
+         LEFT JOIN item_template \
+           ON gameobject_loot_template.item = item_template.entry \
+          AND gameobject_loot_template.mincountOrRef > 0 \
          WHERE gameobject_loot_template.entry = ? \
            AND gameobject_loot_template.condition_id = 0 \
-           AND gameobject_loot_template.mincountOrRef > 0 \
+           AND (gameobject_loot_template.mincountOrRef < 0 OR item_template.entry IS NOT NULL) \
          ORDER BY gameobject_loot_template.groupid, gameobject_loot_template.item",
     )
     .bind(loot_entry)
@@ -1539,6 +1631,28 @@ pub async fn get_gameobject_complete_quests(
         }
     }
     Ok(quests)
+}
+
+pub async fn get_gameobject_objective_quest_ids(
+    pool: &MySqlPool,
+    gameobject_entry: u32,
+) -> Result<Vec<u32>, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("gameobject_objective_quest_ids_load");
+    let objective_entry = -(gameobject_entry as i32);
+    let quest_ids: Vec<u32> = sqlx::query_scalar(
+        "SELECT entry FROM quest_template \
+         WHERE ReqCreatureOrGOId1 = ? OR ReqCreatureOrGOId2 = ? \
+            OR ReqCreatureOrGOId3 = ? OR ReqCreatureOrGOId4 = ? \
+         ORDER BY entry",
+    )
+    .bind(objective_entry)
+    .bind(objective_entry)
+    .bind(objective_entry)
+    .bind(objective_entry)
+    .fetch_all(pool)
+    .await?;
+    Ok(quest_ids)
 }
 
 pub async fn creature_starts_quest(

@@ -218,6 +218,28 @@ impl MapRuntimeManager {
         active_cast
     }
 
+    pub(in crate::world) async fn cancel_active_player_opening_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ActivePlayerSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        if !map
+            .active_player_spell_casts
+            .get(&character_guid)
+            .is_some_and(|active_cast| {
+                matches!(
+                    active_cast.source,
+                    ActivePlayerSpellCastSource::OpeningGameObject
+                )
+            })
+        {
+            return None;
+        }
+        map.active_player_spell_casts.remove(&character_guid)
+    }
+
     pub(in crate::world) async fn delay_active_player_spell_cast_for_damage(
         &self,
         map_id: u32,
@@ -386,6 +408,36 @@ impl MapRuntimeManager {
         packets
     }
 
+    pub(in crate::world) async fn disconnect_player_for_linger(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return false;
+        };
+        let disconnected = map
+            .lock()
+            .await
+            .disconnect_player_for_linger(character_guid, now);
+        disconnected
+    }
+
+    pub(in crate::world) async fn expire_disconnected_players(
+        &self,
+        map_id: u32,
+        now: Instant,
+    ) -> Vec<ExpiredDisconnectedPlayer> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let expired = map.lock().await.expire_disconnected_players(now);
+        expired
+    }
+
     pub(in crate::world) async fn update_player_position(
         &self,
         map_id: u32,
@@ -403,6 +455,23 @@ impl MapRuntimeManager {
                 .await
                 .update_player_position(character_guid, opcode, movement, server_time);
         packets
+    }
+
+    pub(in crate::world) async fn discover_player_area(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        area_flag: u16,
+    ) -> anyhow::Result<Option<PlayerAreaDiscoveryEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map
+            .lock()
+            .await
+            .discover_player_area(character_guid, area_flag)?;
+        Ok(event)
     }
 
     pub(in crate::world) fn allocate_gm_creature_guid(&self) -> u32 {
@@ -616,6 +685,19 @@ impl MapRuntimeManager {
             .lock()
             .await
             .player_visible_db_creature_guids(character_guid);
+        guids
+    }
+
+    pub(in crate::world) async fn loaded_db_creature_lifecycle_guids(
+        &self,
+        map_id: u32,
+        now: Instant,
+    ) -> Vec<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let guids = map.lock().await.loaded_db_creature_lifecycle_guids(now);
         guids
     }
 
@@ -938,6 +1020,35 @@ impl MapRuntimeManager {
             now,
             skip_spell_cooldown,
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn apply_player_item_spell_cooldowns(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_profile: &SpellCastProfile,
+        now: Instant,
+        skip_spell_cooldown: bool,
+        item_id: u32,
+        category: u32,
+        category_cooldown_millis: u64,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .apply_player_spell_cooldowns_with_item_category(
+                character_guid,
+                spell_profile,
+                now,
+                skip_spell_cooldown,
+                item_id,
+                category,
+                category_cooldown_millis,
+            );
     }
 
     pub(in crate::world) async fn clear_player_spell_recovery(
@@ -1920,6 +2031,22 @@ impl MapRuntimeManager {
         restored
     }
 
+    pub(in crate::world) async fn db_gameobject_loot_is_empty(
+        &self,
+        map_id: u32,
+        gameobject_guid: u64,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return true;
+        };
+        let is_empty = map
+            .lock()
+            .await
+            .db_gameobject_loot_is_empty(gameobject_guid);
+        is_empty
+    }
+
     pub(in crate::world) async fn release_db_gameobject_loot(
         &self,
         map_id: u32,
@@ -1966,6 +2093,7 @@ impl MapRuntimeManager {
         snapshot
     }
 
+    #[allow(dead_code)]
     pub(in crate::world) async fn db_creature_combat_snapshot(
         &self,
         map_id: u32,
@@ -2885,10 +3013,11 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Vec::new();
         };
-        let targets = map
-            .lock()
-            .await
-            .select_db_creature_sight_aggro_targets(&self.faction_templates, character);
+        let targets = map.lock().await.select_db_creature_sight_aggro_targets(
+            &self.faction_templates,
+            character,
+            Instant::now(),
+        );
         targets
     }
 

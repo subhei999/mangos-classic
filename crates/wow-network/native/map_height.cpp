@@ -109,6 +109,16 @@ struct NativeLiquidResult
     float depthLevel = INVALID_HEIGHT_VALUE;
 };
 
+struct NativeAreaInfoResult
+{
+    bool found = false;
+    unsigned int flags = 0;
+    int adtId = 0;
+    int rootId = 0;
+    int groupId = 0;
+    float groundZ = INVALID_HEIGHT_VALUE;
+};
+
 const unsigned short HOLE_TABLE_H[4] = {0x1111, 0x2222, 0x4444, 0x8888};
 const unsigned short HOLE_TABLE_V[4] = {0x000F, 0x00F0, 0x0F00, 0xF000};
 
@@ -122,6 +132,8 @@ enum class HeightStorage
 
 struct CachedGridMap
 {
+    unsigned short gridArea = 0xFFFF;
+    std::vector<unsigned short> areaMap;
     unsigned int flags = 0;
     float gridHeight = INVALID_HEIGHT_VALUE;
     float gridIntHeightMultiplier = 0.0f;
@@ -168,6 +180,19 @@ struct CachedGridMap
             default:
                 return gridHeight;
         }
+    }
+
+    unsigned short area(float x, float y) const
+    {
+        if (areaMap.empty())
+            return gridArea;
+
+        x = 16.0f * (32.0f - x / SIZE_OF_GRIDS);
+        y = 16.0f * (32.0f - y / SIZE_OF_GRIDS);
+
+        const int lx = static_cast<int>(x) & 15;
+        const int ly = static_cast<int>(y) & 15;
+        return areaMap[lx * 16 + ly];
     }
 
     float liquidLevelAt(float x, float y) const
@@ -538,6 +563,22 @@ bool loadHeightData(FILE* file, CachedGridMap& map, unsigned int offset)
     return true;
 }
 
+bool loadAreaData(FILE* file, CachedGridMap& map, unsigned int offset)
+{
+    if (std::fseek(file, static_cast<long>(offset), SEEK_SET) != 0)
+        return false;
+
+    GridMapAreaHeader header{};
+    if (!readExact(file, header) || header.fourcc != MAP_AREA_MAGIC)
+        return false;
+
+    map.gridArea = header.gridArea;
+    if (header.flags & MAP_AREA_NO_AREA)
+        return true;
+
+    return readVector(file, map.areaMap, 16 * 16);
+}
+
 bool loadHolesData(FILE* file, CachedGridMap& map, unsigned int offset)
 {
     if (std::fseek(file, static_cast<long>(offset), SEEK_SET) != 0)
@@ -599,6 +640,11 @@ std::unique_ptr<CachedGridMap> loadGridMapFile(const char* dataDir, unsigned int
     }
 
     auto map = std::make_unique<CachedGridMap>();
+    if (header.areaMapOffset && !loadAreaData(file, *map, header.areaMapOffset))
+    {
+        std::fclose(file);
+        return nullptr;
+    }
     if (header.holesOffset && !loadHolesData(file, *map, header.holesOffset))
     {
         std::fclose(file);
@@ -652,6 +698,16 @@ float mapHeight(const char* dataDir, unsigned int mapId, float x, float y)
     if (!map)
         return INVALID_HEIGHT_VALUE;
     return map->height(x, y);
+}
+
+bool terrainAreaFlag(const char* dataDir, unsigned int mapId, unsigned int tileX, unsigned int tileY, float x, float y, unsigned int& areaFlag)
+{
+    std::lock_guard<std::mutex> lock(g_gridMapsMutex);
+    CachedGridMap* map = loadGridMapLocked(dataDir, mapId, tileX, tileY);
+    if (!map)
+        return false;
+    areaFlag = map->area(x, y);
+    return true;
 }
 
 float vmapHeightLoaded(const char* dataDir, unsigned int mapId, unsigned int tileX, unsigned int tileY, float x, float y, float z, float search)
@@ -758,6 +814,39 @@ NativeLiquidResult terrainLiquidStatus(
     if (!map)
         return NativeLiquidResult{};
     return map->liquidStatus(x, y, z, MAP_ALL_LIQUIDS, collisionHeight);
+}
+
+NativeAreaInfoResult terrainAreaInfo(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    float z)
+{
+    NativeAreaInfoResult result{};
+    VMAP::IVMapManager* manager = VMAP::VMapFactory::createOrGetVMapManager();
+    if (!manager)
+        return result;
+
+    const std::string basePath = vmapBasePath(dataDir);
+    const VMAP::VMAPLoadResult loadResult =
+        manager->loadMap(basePath.c_str(), mapId, static_cast<int>(tileX), static_cast<int>(tileY));
+    if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
+        return result;
+
+    float vmapZ = z;
+    if (!manager->getAreaInfo(mapId, x, y, vmapZ, result.flags, result.adtId, result.rootId, result.groupId))
+        return result;
+
+    const float mapHeightValue = mapHeight(dataDir, mapId, x, y);
+    if (z + 2.0f > mapHeightValue && mapHeightValue > vmapZ)
+        return NativeAreaInfoResult{};
+
+    result.found = true;
+    result.groundZ = vmapZ;
+    return result;
 }
 
 float terrainHeightStatic(const char* dataDir, unsigned int mapId, unsigned int tileX, unsigned int tileY, float x, float y, float z, float maxSearchDist)
@@ -937,6 +1026,78 @@ int wow_map_liquid_status(
         *outEntry = liquid.entry;
         *outLevel = liquid.level;
         *outDepthLevel = liquid.depthLevel;
+        return 1;
+    }
+    catch (...)
+    {
+        return -100;
+    }
+}
+
+int wow_map_area_flag(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    unsigned int* outAreaFlag) noexcept
+{
+    try
+    {
+        if (!dataDir || !outAreaFlag)
+            return -1;
+        if (!tileIdIsValid(tileX) || !tileIdIsValid(tileY))
+            return -2;
+        if (!std::isfinite(x) || !std::isfinite(y))
+            return -3;
+
+        std::lock_guard<std::mutex> lock(wow_vmap_bridge_mutex());
+        unsigned int areaFlag = 0xFFFF;
+        if (!terrainAreaFlag(dataDir, mapId, tileX, tileY, x, y, areaFlag))
+            return 0;
+        *outAreaFlag = areaFlag;
+        return 1;
+    }
+    catch (...)
+    {
+        return -100;
+    }
+}
+
+int wow_map_area_info(
+    const char* dataDir,
+    unsigned int mapId,
+    unsigned int tileX,
+    unsigned int tileY,
+    float x,
+    float y,
+    float z,
+    unsigned int* outFlags,
+    int* outAdtId,
+    int* outRootId,
+    int* outGroupId,
+    float* outGroundZ) noexcept
+{
+    try
+    {
+        if (!dataDir || !outFlags || !outAdtId || !outRootId || !outGroupId || !outGroundZ)
+            return -1;
+        if (!tileIdIsValid(tileX) || !tileIdIsValid(tileY))
+            return -2;
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            return -3;
+
+        std::lock_guard<std::mutex> lock(wow_vmap_bridge_mutex());
+        const NativeAreaInfoResult area = terrainAreaInfo(dataDir, mapId, tileX, tileY, x, y, z);
+        if (!area.found)
+            return 0;
+
+        *outFlags = area.flags;
+        *outAdtId = area.adtId;
+        *outRootId = area.rootId;
+        *outGroupId = area.groupId;
+        *outGroundZ = area.groundZ;
         return 1;
     }
     catch (...)

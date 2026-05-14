@@ -70,6 +70,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
         packets::ParsedWorldClientPacket::NpcTextQuery(_) => {
             handle_npc_text_query(
                 &mut *ctx.stream,
+                ctx.world_db_pool,
                 packet.npc_text_query()?,
                 &mut *ctx.header_crypto,
             )

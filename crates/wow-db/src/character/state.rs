@@ -80,6 +80,21 @@ pub async fn update_character_position_and_vitals(
     Ok(result.rows_affected())
 }
 
+pub async fn update_character_explored_zones(
+    pool: &MySqlPool,
+    guid: u32,
+    explored_zones: &str,
+) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_explored_zones_save");
+    let result = sqlx::query("UPDATE characters SET exploredZones = ? WHERE guid = ?")
+        .bind(explored_zones)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
 pub async fn mark_character_first_login_seen(
     pool: &MySqlPool,
     account_id: u32,
@@ -182,6 +197,71 @@ pub async fn get_character_spells(
     .await?;
 
     Ok(rows)
+}
+
+pub async fn replace_character_spell_cooldowns(
+    pool: &MySqlPool,
+    guid: u32,
+    cooldowns: &[CharacterSpellCooldown],
+) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_spell_cooldowns_save");
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM character_spell_cooldown WHERE guid = ?")
+        .bind(guid)
+        .execute(&mut *tx)
+        .await?;
+    for cooldown in cooldowns {
+        sqlx::query(
+            "INSERT INTO character_spell_cooldown \
+             (guid, SpellId, SpellExpireTime, Category, CategoryExpireTime, ItemId) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(guid)
+        .bind(cooldown.spell_id)
+        .bind(cooldown.spell_expire_time)
+        .bind(cooldown.category)
+        .bind(cooldown.category_expire_time)
+        .bind(cooldown.item_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    Ok(())
+}
+
+pub async fn replace_character_auras(
+    pool: &MySqlPool,
+    guid: u32,
+    auras: &[CharacterAura],
+) -> Result<(), DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_auras_save");
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM character_aura WHERE guid = ?")
+        .bind(guid)
+        .execute(&mut *tx)
+        .await?;
+    for aura in auras {
+        sqlx::query(
+            "INSERT INTO character_aura \
+             (guid, caster_guid, item_guid, spell, stackcount, remaincharges, \
+              basepoints0, basepoints1, basepoints2, periodictime0, periodictime1, periodictime2, \
+              maxduration, remaintime, effIndexMask) \
+             VALUES (?, ?, 0, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?, ?, ?)",
+        )
+        .bind(guid)
+        .bind(aura.caster_guid)
+        .bind(aura.spell)
+        .bind(aura.stackcount)
+        .bind(aura.maxduration)
+        .bind(aura.remaintime)
+        .bind(aura.eff_index_mask)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    Ok(())
 }
 
 pub async fn update_character_death_state(

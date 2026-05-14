@@ -200,9 +200,14 @@ impl MapRuntime {
                 check: PlayerMeleeCheck::MissingTarget,
             };
         };
-        if !creature.is_alive() || creature.is_evading_home() {
+        if !creature.is_alive() {
             return DbCreaturePlayerMeleeValidation {
                 check: PlayerMeleeCheck::TargetNotAlive,
+            };
+        }
+        if creature.is_evading_home() {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::TargetEvading,
             };
         }
         let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, creature.combat_reach());
@@ -831,6 +836,9 @@ impl MapRuntime {
             victim,
             next_swing_at: now,
         };
+        if let Some(creature) = self.creatures.get_mut(&attacker.raw()) {
+            creature.aggro_enabled_at = None;
+        }
         self.active_creature_combats.insert(attacker.raw(), combat);
         if victim.is_player() {
             if let Some(player) = self.players.get_mut(&victim.counter()) {

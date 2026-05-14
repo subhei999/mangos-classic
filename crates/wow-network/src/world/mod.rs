@@ -72,6 +72,13 @@ use self::social::*;
 use self::spells::*;
 use self::wire::*;
 
+fn current_unix_time_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub struct WorldServer {
     bind_addr: SocketAddr,
     login_db_pool: MySqlPool,

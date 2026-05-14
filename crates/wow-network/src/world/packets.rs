@@ -10,10 +10,11 @@ use wow_proto::{
     InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, JoinChannelRequest,
     ListInventoryRequest, LogoutCancelRequest, LogoutRequest, LootMasterGiveRequest,
     LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest, LootRollRequest,
-    MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest, PingRequest,
-    PlayerLoginRequest, PlayerLogoutRequest, QueryNextMailTimeRequest, QueryTimeRequest,
-    QuestLogRemoveQuestRequest, QuestQueryRequest, QuestRewardRequest, QuestgiverHelloRequest,
-    QuestgiverQuestRequest, QuestgiverStatusQueryRequest, ReclaimCorpseRequest, RepopRequest,
+    MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest,
+    PageTextQueryRequest, PingRequest, PlayerLoginRequest, PlayerLogoutRequest,
+    QueryNextMailTimeRequest, QueryTimeRequest, QuestLogRemoveQuestRequest, QuestQueryRequest,
+    QuestRewardRequest, QuestgiverHelloRequest, QuestgiverQuestRequest,
+    QuestgiverStatusQueryRequest, ReadItemRequest, ReclaimCorpseRequest, RepopRequest,
     RequestAccountDataRequest, RequestPartyMemberStatsRequest, SellItemRequest,
     SetActionButtonRequest, SetActiveMoverRequest, SetAmmoRequest, SetSelectionRequest,
     SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
@@ -33,6 +34,7 @@ pub(super) enum ParsedWorldClientPacket {
     NameQuery(NameQueryRequest),
     ItemQuerySingle(ItemQuerySingleRequest),
     ItemNameQuery(ItemNameQueryRequest),
+    PageTextQuery(PageTextQueryRequest),
     QuestQuery(QuestQueryRequest),
     GameObjectQuery(GameObjectQueryRequest),
     CreatureQuery(CreatureQueryRequest),
@@ -52,6 +54,7 @@ pub(super) enum ParsedWorldClientPacket {
     TextEmote(TextEmoteRequest),
     CastSpell(CastSpellRequest),
     UseItem(UseItemRequest),
+    ReadItem(ReadItemRequest),
     InventoryMove(InventoryMoveClientRequest),
     DestroyItem(DestroyItemRequest),
     SplitItem(SplitItemRequest),
@@ -139,6 +142,7 @@ impl ParsedWorldClientPacket {
             Self::NameQuery(_) => WorldOpcode::CmsgNameQuery.into(),
             Self::ItemQuerySingle(_) => WorldOpcode::CmsgItemQuerySingle.into(),
             Self::ItemNameQuery(_) => WorldOpcode::CmsgItemNameQuery.into(),
+            Self::PageTextQuery(_) => WorldOpcode::CmsgPageTextQuery.into(),
             Self::QuestQuery(_) => WorldOpcode::CmsgQuestQuery.into(),
             Self::GameObjectQuery(_) => WorldOpcode::CmsgGameObjectQuery.into(),
             Self::CreatureQuery(_) => WorldOpcode::CmsgCreatureQuery.into(),
@@ -158,6 +162,7 @@ impl ParsedWorldClientPacket {
             Self::TextEmote(_) => WorldOpcode::CmsgTextEmote.into(),
             Self::CastSpell(_) => WorldOpcode::CmsgCastSpell.into(),
             Self::UseItem(_) => WorldOpcode::CmsgUseItem.into(),
+            Self::ReadItem(_) => WorldOpcode::CmsgReadItem.into(),
             Self::InventoryMove(request) => match request {
                 InventoryMoveClientRequest::AutoEquip { .. } => {
                     WorldOpcode::CmsgAutoequipItem.into()
@@ -262,6 +267,12 @@ impl ParsedWorldClientPacket {
         "CMSG_ITEM_NAME_QUERY"
     );
     packet_accessor!(
+        page_text_query,
+        PageTextQuery,
+        PageTextQueryRequest,
+        "CMSG_PAGE_TEXT_QUERY"
+    );
+    packet_accessor!(
         quest_query,
         QuestQuery,
         QuestQueryRequest,
@@ -337,6 +348,7 @@ impl ParsedWorldClientPacket {
     packet_accessor!(text_emote, TextEmote, TextEmoteRequest, "CMSG_TEXT_EMOTE");
     packet_accessor!(cast_spell, CastSpell, CastSpellRequest, "CMSG_CAST_SPELL");
     packet_accessor!(use_item, UseItem, UseItemRequest, "CMSG_USE_ITEM");
+    packet_accessor!(read_item, ReadItem, ReadItemRequest, "CMSG_READ_ITEM");
     packet_accessor!(
         inventory_move,
         InventoryMove,
@@ -613,6 +625,12 @@ pub(super) fn parse_world_client_packet(
                 ItemNameQueryRequest::read(&mut body)?,
             ))
         }
+        Ok(WorldOpcode::CmsgPageTextQuery) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::PageTextQuery(
+                PageTextQueryRequest::read(&mut body)?,
+            ))
+        }
         Ok(WorldOpcode::CmsgQuestQuery) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::QuestQuery(
@@ -724,6 +742,12 @@ pub(super) fn parse_world_client_packet(
         Ok(WorldOpcode::CmsgUseItem) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::UseItem(UseItemRequest::read(
+                &mut body,
+            )?))
+        }
+        Ok(WorldOpcode::CmsgReadItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::ReadItem(ReadItemRequest::read(
                 &mut body,
             )?))
         }

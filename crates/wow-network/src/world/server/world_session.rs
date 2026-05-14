@@ -25,6 +25,10 @@ pub(in crate::world) struct EnterWorldBootstrap<'a> {
     pub(in crate::world) reputations: &'a [CharacterReputation],
     pub(in crate::world) quest_statuses: &'a HashMap<u32, CharacterQuestStatus>,
     pub(in crate::world) active_auras: &'a [ActiveAura],
+    pub(in crate::world) spell_cooldowns_until: &'a HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldown_categories: &'a HashMap<u32, u32>,
+    pub(in crate::world) spell_cooldown_item_ids: &'a HashMap<u32, u32>,
+    pub(in crate::world) spell_global_cooldowns_until: &'a HashMap<u32, Instant>,
     pub(in crate::world) account_data: &'a HashMap<u32, AccountDataCache>,
     pub(in crate::world) tutorial_flags: &'a [u32; 8],
     pub(in crate::world) cinematic_sequence: Option<u32>,
@@ -56,7 +60,16 @@ pub(in crate::world) async fn send_enter_world_bootstrap(
         header_crypto.as_deref_mut(),
     )
     .await?;
-    send_initial_spells(stream, bootstrap.spells, header_crypto.as_deref_mut()).await?;
+    send_initial_spells(
+        stream,
+        bootstrap.spells,
+        bootstrap.spell_cooldowns_until,
+        bootstrap.spell_cooldown_categories,
+        bootstrap.spell_cooldown_item_ids,
+        bootstrap.spell_global_cooldowns_until,
+        header_crypto.as_deref_mut(),
+    )
+    .await?;
     let actions =
         wow_db::get_character_actions(bootstrap.character_db_pool, bootstrap.character.guid)
             .await?;
@@ -239,9 +252,19 @@ pub(in crate::world) async fn handle_tutorial_reset(
 pub(in crate::world) async fn send_initial_spells(
     stream: &mut WorldPacketSink,
     spells: &[CharacterSpell],
+    spell_cooldowns_until: &HashMap<u32, Instant>,
+    spell_cooldown_categories: &HashMap<u32, u32>,
+    spell_cooldown_item_ids: &HashMap<u32, u32>,
+    spell_global_cooldowns_until: &HashMap<u32, Instant>,
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
-    let body = build_initial_spells_body(spells);
+    let body = build_initial_spells_body_with_cooldowns(
+        spells,
+        spell_cooldowns_until,
+        spell_cooldown_categories,
+        spell_cooldown_item_ids,
+        spell_global_cooldowns_until,
+    );
     send_packet(stream, SMSG_INITIAL_SPELLS, &body, header_crypto).await
 }
 
@@ -339,12 +362,68 @@ pub(in crate::world) fn build_set_proficiency_body(
 }
 
 pub(in crate::world) fn build_initial_spells_body(spells: &[CharacterSpell]) -> Vec<u8> {
+    build_initial_spells_body_with_cooldowns(
+        spells,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+}
+
+pub(in crate::world) fn build_initial_spells_body_with_cooldowns(
+    spells: &[CharacterSpell],
+    spell_cooldowns_until: &HashMap<u32, Instant>,
+    spell_cooldown_categories: &HashMap<u32, u32>,
+    spell_cooldown_item_ids: &HashMap<u32, u32>,
+    spell_global_cooldowns_until: &HashMap<u32, Instant>,
+) -> Vec<u8> {
     let spells = spells
         .iter()
         .filter(|spell| spell.active != 0 && spell.disabled == 0)
         .map(|spell| spell.spell)
         .collect();
-    SmsgInitialSpellsResponse { spells }.body()
+    let mut body = SmsgInitialSpellsResponse { spells }.body();
+    body.truncate(body.len().saturating_sub(2));
+    let now = Instant::now();
+    let active_cooldowns: Vec<(u32, u32, u32, u32, u32)> = spell_cooldowns_until
+        .iter()
+        .filter_map(|(spell_id, until)| {
+            if *until <= now {
+                return None;
+            }
+            let category = spell_cooldown_categories
+                .get(spell_id)
+                .copied()
+                .unwrap_or_default();
+            let category_duration_ms = spell_global_cooldowns_until
+                .get(&category)
+                .and_then(|until| until.checked_duration_since(now))
+                .map(|duration| duration.as_millis().min(u32::MAX as u128) as u32)
+                .unwrap_or_default();
+            Some((
+                *spell_id,
+                spell_cooldown_item_ids
+                    .get(spell_id)
+                    .copied()
+                    .unwrap_or_default(),
+                category,
+                until.duration_since(now).as_millis().min(u32::MAX as u128) as u32,
+                category_duration_ms,
+            ))
+        })
+        .collect();
+    body.extend_from_slice(&(active_cooldowns.len().min(u16::MAX as usize) as u16).to_le_bytes());
+    for (spell_id, item_id, category, duration_ms, category_duration_ms) in
+        active_cooldowns.into_iter().take(u16::MAX as usize)
+    {
+        body.extend_from_slice(&(spell_id as u16).to_le_bytes());
+        body.extend_from_slice(&(item_id as u16).to_le_bytes());
+        body.extend_from_slice(&(category as u16).to_le_bytes());
+        write_u32(&mut body, duration_ms);
+        write_u32(&mut body, category_duration_ms);
+    }
+    body
 }
 
 pub(in crate::world) async fn send_action_buttons(

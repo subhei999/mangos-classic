@@ -2,6 +2,7 @@ use super::*;
 
 pub(in crate::world) async fn handle_npc_text_query(
     stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
     request: wow_proto::NpcTextQueryRequest,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -17,7 +18,25 @@ pub(in crate::world) async fn handle_npc_text_query(
         DB_TRAINER_GOSSIP_TEXT_ID => DB_TRAINER_GOSSIP_TEXT,
         _ => RUST_GUIDE_GOSSIP_TEXT,
     };
-    let response = build_npc_text_update(text_id, text);
+    let text = if matches!(
+        text_id,
+        DB_VENDOR_GOSSIP_TEXT_ID | DB_TRAINER_GOSSIP_TEXT_ID
+    ) {
+        text.to_string()
+    } else {
+        wow_db::get_npc_text_query(world_db_pool, text_id)
+            .await?
+            .map(|row| {
+                if row.text0_0.is_empty() {
+                    row.text0_1
+                } else {
+                    row.text0_0
+                }
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| text.to_string())
+    };
+    let response = build_npc_text_update(text_id, text.as_str());
     send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
 }
 

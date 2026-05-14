@@ -102,6 +102,9 @@ pub(in crate::world) async fn dispatch_quest_packet(
             handle_questlog_remove_quest(
                 &mut *ctx.stream,
                 ctx.character_db_pool,
+                ctx.runtime_state.object_mgr.as_ref(),
+                ctx.world_db_pool,
+                &ctx.runtime_state.maps,
                 packet.questlog_remove_quest()?,
                 &mut *ctx.session,
                 &mut *ctx.header_crypto,
@@ -846,9 +849,13 @@ pub(in crate::world) async fn send_quest_reputation_updates(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn handle_questlog_remove_quest(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    maps: &Arc<MapRuntimeManager>,
     request: wow_proto::QuestLogRemoveQuestRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -890,7 +897,16 @@ pub(in crate::world) async fn handle_questlog_remove_quest(
             stream,
             SMSG_UPDATE_OBJECT,
             &build_player_quest_log_clear_body(character_guid, slot)?,
-            Some(header_crypto),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_visible_quest_gameobject_dynamic_updates(
+            stream,
+            object_mgr,
+            world_db_pool,
+            maps,
+            session,
+            header_crypto,
         )
         .await?;
     }
@@ -1069,9 +1085,12 @@ pub(in crate::world) async fn send_visible_quest_gameobject_dynamic_updates(
         if !quest_gameobject_needs_dynamic_refresh(object_mgr, world_db_pool, &gameobject).await? {
             continue;
         }
-        update_blocks.push(build_db_gameobject_dynamic_flags_update_block(
+        let dynamic_flags =
+            gameobject_dynamic_flags_for_player(object_mgr, world_db_pool, session, &gameobject)
+                .await?;
+        update_blocks.push(build_db_gameobject_dynamic_flags_update_block_with_flags(
             &gameobject,
-            &session.quests.quest_statuses,
+            dynamic_flags,
         )?);
     }
 
@@ -1088,6 +1107,38 @@ pub(in crate::world) async fn send_visible_quest_gameobject_dynamic_updates(
         .await?;
     }
     Ok(())
+}
+
+pub(in crate::world) async fn gameobject_dynamic_flags_for_player(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    gameobject: &DbGameObjectRuntime,
+) -> anyhow::Result<u32> {
+    let dynamic_flags =
+        gameobject_dynamic_flags_for_quest_statuses(gameobject, &session.quests.quest_statuses);
+    if dynamic_flags == 0 {
+        return Ok(0);
+    }
+    if gameobject_chest_loot_is_exclusively_quest_drops(
+        object_mgr,
+        world_db_pool,
+        &gameobject.spawn.template,
+    )
+    .await?
+    {
+        let loot_items = select_db_gameobject_loot_item_for_character(
+            object_mgr,
+            world_db_pool,
+            session,
+            &gameobject.spawn.template,
+        )
+        .await?;
+        if loot_items.is_empty() {
+            return Ok(0);
+        }
+    }
+    Ok(dynamic_flags)
 }
 
 pub(in crate::world) async fn quest_gameobject_needs_dynamic_refresh(
@@ -1656,6 +1707,7 @@ pub(in crate::world) fn apply_store_plan_to_planned_inventory(
             item_template: 0,
             count: slot.count,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: reward.max_durability,
         });

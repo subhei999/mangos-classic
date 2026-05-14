@@ -1085,6 +1085,30 @@ fn db_trainer_gossip_message_uses_trainer_book_icon() {
 }
 
 #[test]
+fn db_gossip_message_can_merge_service_and_quest_options() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_002);
+    let quest = QuestListItem {
+        quest: test_quest_template(123),
+        dialog_status: DIALOG_STATUS_AVAILABLE,
+    };
+    let body = build_gossip_message_with_quests(
+        guid,
+        DB_TRAINER_GOSSIP_TEXT_ID,
+        &[(0, GOSSIP_ICON_TRAINER, DB_TRAINER_GOSSIP_OPTION)],
+        &[quest],
+    );
+    let quest_count_offset = 39;
+    assert_eq!(
+        &body[quest_count_offset..quest_count_offset + 4],
+        &1u32.to_le_bytes()
+    );
+    assert_eq!(
+        &body[quest_count_offset + 4..quest_count_offset + 8],
+        &123u32.to_le_bytes()
+    );
+}
+
+#[test]
 fn parses_gossip_select_option_packet() {
     let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
     let mut body = Vec::new();
@@ -1457,6 +1481,94 @@ fn test_u32_dbc<const N: usize>(rows: &[[u32; N]]) -> Vec<u8> {
 }
 
 #[test]
+fn area_table_dbc_parser_indexes_explore_flags_by_map() {
+    let bytes = test_u32_dbc(&[
+        [
+            12, 0, 0, 64, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        [
+            13, 1, 0, 64, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        [
+            14, 0, 12, 65, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    ]);
+
+    let store = AreaTableStore::from_entries(parse_area_tables(&bytes));
+
+    assert_eq!(
+        store.entry_by_flag_and_map(64, 0),
+        Some(AreaTableEntry {
+            id: 12,
+            map_id: 0,
+            zone_id: 0,
+            explore_flag: 64,
+            flags: 0,
+            area_level: 5,
+        })
+    );
+    assert_eq!(
+        store.entry_by_flag_and_map(64, 1),
+        Some(AreaTableEntry {
+            id: 13,
+            map_id: 1,
+            zone_id: 0,
+            explore_flag: 64,
+            flags: 0,
+            area_level: 9,
+        })
+    );
+    assert_eq!(store.entry_by_flag_and_map(999, 0), None);
+}
+
+#[test]
+fn wmo_area_table_dbc_parser_maps_vmap_triple_to_area_table_entry() {
+    let area_bytes = test_u32_dbc(&[
+        [
+            12, 0, 0, 64, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        [
+            13, 1, 0, 64, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    ]);
+    let wmo_bytes = test_u32_dbc(&[
+        [
+            40, 100, 2, 7, 0, 0, 0, 0, 0, 0x8000, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        [
+            41, 100, 2, 8, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    ]);
+    let mut files = WorldDataFiles::fallback();
+    files.area_tables = AreaTableStore::from_entries(parse_area_tables(&area_bytes));
+    files.wmo_area_tables = WmoAreaTableStore::from_entries(parse_wmo_area_tables(&wmo_bytes));
+
+    assert_eq!(
+        files.area_entry_by_wmo_triple_and_map(100, 2, 7, 0),
+        Some(AreaTableEntry {
+            id: 12,
+            map_id: 0,
+            zone_id: 0,
+            explore_flag: 64,
+            flags: 0,
+            area_level: 5,
+        })
+    );
+    assert_eq!(
+        files.area_entry_by_wmo_triple_and_map(100, 2, 8, 1),
+        Some(AreaTableEntry {
+            id: 13,
+            map_id: 1,
+            zone_id: 0,
+            explore_flag: 64,
+            flags: 0,
+            area_level: 9,
+        })
+    );
+    assert_eq!(files.area_entry_by_wmo_triple_and_map(100, 2, 7, 1), None);
+}
+
+#[test]
 fn skill_line_ability_dbc_parser_reads_spell_to_skill_rank_fields() {
     let bytes = test_u32_dbc(&[
         [1, 237, 587, 0, 128, 0, 0, 0, 0, 0, 300, 1, 0, 0, 0],
@@ -1810,6 +1922,54 @@ fn db_gameobject_create_block_sets_quest_chest_dynamic_flags_for_condition_chest
         values[GAMEOBJECT_DYN_FLAGS],
         Some(GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE)
     );
+}
+
+#[test]
+fn quest_objective_gameobject_requires_active_incomplete_objective() {
+    assert!(gameobject_type_uses_quest_objective_gate(GO_TYPE_CHEST));
+    assert!(gameobject_type_uses_quest_objective_gate(GO_TYPE_GOOBER));
+
+    let mut quest = test_quest_template(3904);
+    quest.req_creature_or_go_id = [-161557, 0, 0, 0];
+    quest.req_creature_or_go_count = [8, 0, 0, 0];
+    let mut session = WorldSessionState::default();
+
+    assert!(!session_has_incomplete_gameobject_objective(
+        &session,
+        &[quest.clone()],
+        161557
+    ));
+
+    session.quests.quest_statuses.insert(
+        quest.entry,
+        CharacterQuestStatus {
+            quest: quest.entry,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            mobcount1: 7,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    assert!(session_has_incomplete_gameobject_objective(
+        &session,
+        &[quest.clone()],
+        161557
+    ));
+
+    session.quests.quest_statuses.insert(
+        quest.entry,
+        CharacterQuestStatus {
+            mobcount1: 8,
+            ..session.quests.quest_statuses[&quest.entry].clone()
+        },
+    );
+    assert!(!session_has_incomplete_gameobject_objective(
+        &session,
+        &[quest],
+        161557
+    ));
 }
 
 #[test]
@@ -5269,6 +5429,7 @@ fn source_item_delivery_quest_can_complete_from_inventory() {
         item_template: 9542,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -5371,6 +5532,7 @@ fn completed_delivery_quest_requires_items_to_reward() {
         item_template: 9542,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -5426,6 +5588,7 @@ fn quest_source_item_storage_rejects_full_backpack_without_stack_room() {
             item_template: 8000 + index as u32,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -5463,6 +5626,7 @@ fn quest_source_item_storage_uses_existing_stack_when_backpack_is_full() {
             },
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -5503,6 +5667,7 @@ fn quest_source_item_storage_splits_large_grants_across_empty_slots() {
         item_template: 9542,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -5549,6 +5714,7 @@ fn quest_source_item_push_result_matches_cmangos_shape() {
         item_template: 9542,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -5585,6 +5751,7 @@ fn item_push_result_for_stack_merge_uses_unknown_slot_like_cmangos() {
         item_template: 117,
         count: 4,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -5620,6 +5787,7 @@ fn incomplete_item_quest_can_reward_when_inventory_satisfies_objective() {
             item_template: 777,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -5630,6 +5798,7 @@ fn incomplete_item_quest_can_reward_when_inventory_satisfies_objective() {
             item_template: 777,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -6116,6 +6285,8 @@ fn test_mmap_navigation_for_positions(
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers,
             mmap_tiles,
             vmap_trees: HashSet::new(),
@@ -6490,6 +6661,58 @@ fn db_creature_player_melee_check_requires_range_and_facing() {
 }
 
 #[test]
+fn db_creature_player_melee_check_allows_evade_feedback_for_returning_creature() {
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 46;
+    kobold.position_x = 4.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    let target = creature_spawn_guid(&kobold);
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(character),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let mut runtime = DbCreatureRuntime::new(kobold);
+    runtime.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
+        start: runtime.current_position,
+        destination: runtime.home_position,
+        path: vec![runtime.current_position, runtime.home_position],
+        started_at: Instant::now(),
+        duration: Duration::from_secs(1),
+    });
+    session
+        .visibility
+        .db_creatures
+        .insert(runtime.guid().raw(), runtime);
+
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::TargetEvading
+    );
+    assert_eq!(MeleeDamageOutcome::evade().victim_state, VICTIMSTATE_EVADES);
+    assert_eq!(
+        MeleeDamageOutcome::evade().spell_miss_info(),
+        Some(SPELL_MISS_EVADE)
+    );
+}
+
+#[test]
 fn melee_reach_uses_cmangos_combat_reach_and_model_scale() {
     assert_eq!(
         combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, PLAYER_COMBAT_REACH_YARDS),
@@ -6658,6 +6881,8 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
                     skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
+                    area_tables: AreaTableStore::default(),
+                    wmo_area_tables: WmoAreaTableStore::default(),
                     mmap_headers: HashSet::new(),
                     mmap_tiles: HashSet::new(),
                     vmap_trees: HashSet::new(),
@@ -7529,6 +7754,8 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
                     skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
+                    area_tables: AreaTableStore::default(),
+                    wmo_area_tables: WmoAreaTableStore::default(),
                     mmap_headers: HashSet::new(),
                     mmap_tiles: HashSet::new(),
                     vmap_trees: HashSet::new(),
@@ -8138,9 +8365,12 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        explored_zones: [0; PLAYER_EXPLORED_ZONES_SIZE],
         active_auras: Vec::new(),
         spell_global_cooldowns_until: HashMap::new(),
         spell_cooldowns_until: HashMap::new(),
+        spell_cooldown_categories: HashMap::new(),
+        spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
@@ -8326,6 +8556,56 @@ fn map_runtime_db_gameobject_loot_slots_stay_stable_after_top_claim() {
 }
 
 #[test]
+fn map_runtime_db_gameobject_loot_reports_empty_only_after_last_claim() {
+    let mut map = MapRuntime::new(0, 0);
+    let spawn = test_gameobject_spawn(161557, GO_TYPE_CHEST);
+    let guid = gameobject_spawn_guid(&spawn).raw();
+    map.insert_loaded_gameobject_grid(
+        grid_coord_for_position(gameobject_spawn_position(&spawn)),
+        vec![DbGameObjectRuntime::new(spawn)],
+    );
+    map.open_db_gameobject_loot(
+        guid,
+        1,
+        vec![
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 117,
+                count: 1,
+                display_id: 117,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
+            },
+            DbCreatureLootRuntime {
+                slot: 0,
+                item: 118,
+                count: 1,
+                display_id: 118,
+                quality: 0,
+                free_for_all: false,
+                quest_drop: false,
+            },
+        ],
+    )
+    .expect("gameobject loot should open");
+
+    assert!(!map.db_gameobject_loot_is_empty(guid));
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1, 0)
+            .map(|(_, slot, loot)| (slot, loot.item)),
+        Some((0, 117))
+    );
+    assert!(!map.db_gameobject_loot_is_empty(guid));
+    assert_eq!(
+        map.take_db_gameobject_loot_item(1, 1)
+            .map(|(_, slot, loot)| (slot, loot.item)),
+        Some((1, 118))
+    );
+    assert!(map.db_gameobject_loot_is_empty(guid));
+}
+
+#[test]
 fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
     let mut map = MapRuntime::new(0, 0);
     let character = ActiveCharacter {
@@ -8378,7 +8658,8 @@ fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
     );
 
     let faction_templates = FactionTemplateStore::fallback_bridge();
-    let targets = map.select_db_creature_sight_aggro_targets(&faction_templates, &character);
+    let targets =
+        map.select_db_creature_sight_aggro_targets(&faction_templates, &character, Instant::now());
 
     assert_eq!(
         targets
@@ -8524,6 +8805,69 @@ fn map_runtime_grid_states_prepare_idle_and_unload_blockers() {
         map.grids.get(&grid).unwrap().state,
         GridState::UnloadBlocked(GridUnloadBlocker::Combat)
     );
+}
+
+#[test]
+fn map_runtime_disconnect_in_combat_lingers_before_removal() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8951.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(player_position);
+    map.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(8, SessionId(8), observer_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 306;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.insert_loaded_creature_grid(grid, vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    assert!(map
+        .begin_db_creature_combat(creature_guid, victim, now)
+        .is_some());
+
+    assert!(map.disconnect_player_for_linger(7, now));
+
+    let player = map.players.get(&7).expect("body should remain in map");
+    assert_eq!(
+        player.disconnected_remove_at(),
+        Some(now + CMANGOS_DISCONNECTED_PLAYER_LINGER)
+    );
+    assert!(player.client_session_id().is_none());
+    assert!(player.in_combat);
+    assert!(map
+        .active_creature_combats
+        .contains_key(&creature_guid.raw()));
+    assert!(!map
+        .grids
+        .get(&grid)
+        .unwrap()
+        .cells
+        .get(&cell_coord_for_position(player_position))
+        .unwrap()
+        .client_players
+        .contains(&7));
+
+    assert!(map
+        .expire_disconnected_players(
+            now + CMANGOS_DISCONNECTED_PLAYER_LINGER - Duration::from_secs(1)
+        )
+        .is_empty());
+    let expired = map.expire_disconnected_players(now + CMANGOS_DISCONNECTED_PLAYER_LINGER);
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].player.guid, 7);
+    assert!(!map.players.contains_key(&7));
+    assert!(!map
+        .active_creature_combats
+        .contains_key(&creature_guid.raw()));
+    assert!(expired[0]
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(8)
+            && packet.opcode == SMSG_DESTROY_OBJECT));
 }
 
 #[test]
@@ -13490,6 +13834,16 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
     spawn.template.corpse_decay = 1;
     let creature_guid = creature_spawn_guid(&spawn);
     map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.players
+        .get_mut(&1)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
     let now = Instant::now();
     map.begin_db_creature_combat(creature_guid, player_a, now)
         .unwrap();
@@ -14012,6 +14366,16 @@ fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
     spawn.template.corpse_decay = 1;
     let creature_guid = creature_spawn_guid(&spawn);
     map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.players
+        .get_mut(&1)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
     let killed_at = Instant::now();
     map.apply_db_creature_damage(DbCreatureDamageRequest {
         creature_guid,
@@ -14100,6 +14464,27 @@ fn map_runtime_db_creature_lifecycle_expires_and_respawns_once() {
         )
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn map_runtime_creature_lifecycle_due_scan_does_not_require_player_visibility() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 89;
+    spawn.spawn_time_secs_min = 3;
+    spawn.spawn_time_secs_max = 3;
+    spawn.template.corpse_decay = 1;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.begin_corpse(now, 3_000);
+    runtime.corpse_expires_at = Some(now);
+    map.share_db_creature_snapshots(vec![runtime]);
+
+    assert_eq!(
+        map.loaded_db_creature_lifecycle_guids(now),
+        vec![creature_guid.raw()]
+    );
 }
 
 fn insert_map_runtime_player_for_test(map: &mut MapRuntime, guid: u32, position: WorldPosition) {
@@ -14404,9 +14789,12 @@ fn test_player_runtime_with_controller(
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
+        explored_zones: [0; PLAYER_EXPLORED_ZONES_SIZE],
         active_auras: Vec::new(),
         spell_global_cooldowns_until: HashMap::new(),
         spell_cooldowns_until: HashMap::new(),
+        spell_cooldown_categories: HashMap::new(),
+        spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
         base_combat_stats: test_player_combat_stats(),
         combat_stats: test_player_combat_stats(),
@@ -14421,6 +14809,31 @@ fn test_player_combat_stats() -> PlayerCombatStats {
         next_level_xp: 400,
     };
     player_combat_stats_for_values(1, 1, &world_stats, &[])
+}
+
+#[test]
+fn map_owned_area_discovery_sets_explored_zone_bit_once() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+
+    let event = map.discover_player_area(7, 64).unwrap().unwrap();
+
+    assert_eq!(event.area_flag, 64);
+    assert_eq!(event.offset, 2);
+    assert_eq!(event.field_value, 1);
+    assert_eq!(event.explored_zones[2], 1);
+    assert_eq!(map.players.get(&7).unwrap().explored_zones[2], 1);
+    assert_eq!(event.update_body[5], UPDATE_TYPE_VALUES);
+    let (values, trailing) = decode_values_update_block(
+        &event.update_body[5..],
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+    );
+    assert!(trailing.is_empty());
+    assert_eq!(values[PLAYER_EXPLORED_ZONES_1 + 2], Some(1));
+
+    assert!(map.discover_player_area(7, 64).unwrap().is_none());
 }
 
 #[test]
@@ -14560,7 +14973,7 @@ fn creature_dot_death_clears_auras_before_respawn() {
     let generation_after_death = creature.life_generation;
     let creature = map.creatures.get_mut(&creature_guid.raw()).unwrap();
     creature.remove_corpse();
-    creature.respawn();
+    creature.respawn(now);
     assert!(creature.active_auras.is_empty());
     assert!(creature.life_generation > generation_after_death);
 
@@ -14600,7 +15013,7 @@ async fn pending_spell_impact_drops_after_target_respawn_generation_changes() {
         let creature = map.creatures.get_mut(&creature_guid.raw()).unwrap();
         creature.begin_corpse(now, 1_000);
         creature.remove_corpse();
-        creature.respawn();
+        creature.respawn(Instant::now());
     }
 
     assert!(maps.take_due_pending_spell_event(0, 7, now).await.is_none());
@@ -16235,6 +16648,7 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     });
@@ -18996,6 +19410,8 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -19266,6 +19682,8 @@ fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -19329,6 +19747,8 @@ fn db_creature_random_path_does_not_generate_movement_when_mmap_unavailable() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
             mmap_tiles: HashSet::from([(0, 48, 32)]),
             vmap_trees: HashSet::new(),
@@ -19502,10 +19922,44 @@ fn db_creature_runtime_position_is_separate_from_home_spawn() {
     assert_eq!(runtime.home_position.x, home_x);
     assert_eq!(runtime.home_position.y, home_y);
 
-    runtime.respawn();
+    let now = Instant::now();
+    runtime.respawn(now);
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert_eq!(runtime.current_position.y, runtime.home_position.y);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[test]
+fn db_creature_respawn_delays_sight_aggro_like_cmangos() {
+    let mut spawn = test_creature_spawn(38);
+    spawn.template.faction = 17;
+    spawn.template.npc_flags = 0;
+    spawn.template.creature_type = 7;
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    let now = Instant::now();
+    let character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: runtime.current_position,
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let faction_templates = FactionTemplateStore::fallback_bridge();
+
+    runtime.respawn(now);
+
+    assert!(!runtime.can_aggro_player(&faction_templates, &character, now));
+    assert!(runtime.can_aggro_player(
+        &faction_templates,
+        &character,
+        now + CMANGOS_CREATURE_RESPAWN_AGGRO_DELAY
+    ));
 }
 
 #[test]
@@ -19526,10 +19980,10 @@ fn db_creature_death_uses_db_respawn_and_cmangos_corpse_timers() {
     assert_eq!(runtime.respawn_epoch_secs, Some(1_007));
     assert_eq!(
         runtime.corpse_expires_at,
-        Some(now + Duration::from_secs(11))
+        Some(now + Duration::from_secs(6))
     );
-    assert!(!runtime.is_corpse_expired(now + Duration::from_secs(10)));
-    assert!(runtime.is_corpse_expired(now + Duration::from_secs(11)));
+    assert!(!runtime.is_corpse_expired(now + Duration::from_secs(5)));
+    assert!(runtime.is_corpse_expired(now + Duration::from_secs(6)));
 }
 
 #[test]
@@ -19556,7 +20010,7 @@ fn db_creature_loot_release_does_not_respawn_before_corpse_and_spawn_timers() {
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert!(!runtime.is_ready_to_respawn(now + Duration::from_secs(2)));
     assert!(runtime.is_ready_to_respawn(now + Duration::from_secs(3)));
-    runtime.respawn();
+    runtime.respawn(now + Duration::from_secs(3));
 
     assert_eq!(runtime.life_state, DbCreatureLifeState::Alive);
     assert_eq!(runtime.health, runtime.max_health());
@@ -20896,6 +21350,8 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::from([0]),
@@ -21218,6 +21674,7 @@ fn quest_loot_selection_skips_fulfilled_quest_item_requirement() {
         item_template: 777,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -21268,6 +21725,7 @@ fn quest_loot_selection_includes_active_required_source_item() {
         item_template: 888,
         count: 2,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -21318,6 +21776,7 @@ fn quest_loot_selection_uses_source_item_template_limit_when_count_is_zero() {
         item_template: 889,
         count: 4,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -22405,7 +22864,18 @@ async fn consumable_regen_item_use_does_not_install_duration_cooldown() {
         cooldown_millis: 30_000,
     };
 
-    apply_item_use_spell_cooldowns(&maps, map_id, character_guid, &item_spell, now, true).await;
+    apply_item_use_spell_cooldowns(
+        &maps,
+        map_id,
+        character_guid,
+        6948,
+        &item_spell,
+        now,
+        true,
+        0,
+        0,
+    )
+    .await;
 
     let snapshot = maps
         .player_runtime_snapshot(map_id, character_guid)
@@ -23928,6 +24398,8 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        area_tables: AreaTableStore::default(),
+        wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
         mmap_tiles: HashSet::new(),
         vmap_trees: HashSet::new(),
@@ -24514,6 +24986,8 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        area_tables: AreaTableStore::default(),
+        wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
         mmap_tiles: HashSet::new(),
         vmap_trees: HashSet::new(),
@@ -24768,6 +25242,8 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        area_tables: AreaTableStore::default(),
+        wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
         mmap_tiles: HashSet::new(),
         vmap_trees: HashSet::new(),
@@ -24918,6 +25394,8 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        area_tables: AreaTableStore::default(),
+        wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
         mmap_tiles: HashSet::new(),
         vmap_trees: HashSet::new(),
@@ -26537,6 +27015,36 @@ fn initial_spells_include_active_enabled_spells() {
 }
 
 #[test]
+fn initial_spells_include_active_spell_cooldowns() {
+    let mut cooldowns = HashMap::new();
+    cooldowns.insert(8690, Instant::now() + Duration::from_secs(60));
+    let mut cooldown_categories = HashMap::new();
+    cooldown_categories.insert(8690, 89);
+    let mut cooldown_items = HashMap::new();
+    cooldown_items.insert(8690, 6948);
+    let mut category_cooldowns = HashMap::new();
+    category_cooldowns.insert(89, Instant::now() + Duration::from_secs(60));
+
+    let body = build_initial_spells_body_with_cooldowns(
+        &[],
+        &cooldowns,
+        &cooldown_categories,
+        &cooldown_items,
+        &category_cooldowns,
+    );
+
+    assert_eq!(&body[0..3], &[0, 0, 0]);
+    assert_eq!(u16::from_le_bytes([body[3], body[4]]), 1);
+    assert_eq!(u16::from_le_bytes([body[5], body[6]]), 8690);
+    assert_eq!(u16::from_le_bytes([body[7], body[8]]), 6948);
+    assert_eq!(u16::from_le_bytes([body[9], body[10]]), 89);
+    let cooldown_ms = u32::from_le_bytes([body[11], body[12], body[13], body[14]]);
+    assert!((59_000..=60_000).contains(&cooldown_ms));
+    let category_cooldown_ms = u32::from_le_bytes([body[15], body[16], body[17], body[18]]);
+    assert!((59_000..=60_000).contains(&category_cooldown_ms));
+}
+
+#[test]
 fn set_proficiency_packet_matches_cmangos_class_and_mask_shape() {
     let body = build_set_proficiency_body(ITEM_CLASS_WEAPON, (1 << 7) | (1 << 15));
 
@@ -26875,6 +27383,53 @@ fn class_power_defaults_match_cmangos_create_powers() {
 }
 
 #[test]
+fn login_player_create_values_include_visible_saved_buffs() {
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut character = test_character(1, 1);
+    character.health = 37;
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 21],
+        next_level_xp: 400,
+    };
+    let aura = ActiveAura {
+        spell_id: 6673,
+        caster: guid,
+        level: 3,
+        positive: true,
+        visible: true,
+        duration_millis: Some(120_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(90)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    };
+    let mut body = Vec::new();
+
+    write_minimal_player_update_values(
+        &mut body,
+        guid,
+        &character,
+        &[],
+        &world_stats,
+        &world_stats,
+        &[],
+        &std::collections::HashMap::new(),
+        &[],
+        None,
+        &[aura],
+    )
+    .unwrap();
+    let values = decode_update_values(&body);
+
+    assert_eq!(values[UNIT_FIELD_AURA], Some(6673));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(POSITIVE_AURA_FLAGS));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(3));
+}
+
+#[test]
 fn login_player_create_values_preserve_zero_health_corpse_state() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let character = test_character(1, 1);
@@ -27025,15 +27580,83 @@ fn login_set_time_speed_current_packet_no_longer_sends_zero_time() {
 
 #[test]
 fn logout_response_uses_cmangos_combat_failure_shape() {
-    use wow_proto::ServerWorldPacket;
-
-    let body = wow_proto::SmsgLogoutResponse {
-        failure_reason: LOGOUT_FAILURE_CANT_LOGOUT_NOW,
-        instant_logout: false,
-    }
-    .body();
+    let body = build_logout_response_body(LOGOUT_FAILURE_CANT_LOGOUT_NOW, false);
 
     assert_eq!(body, [1, 0, 0, 0, 0]);
+}
+
+#[test]
+fn logout_request_pending_timer_uses_cmangos_twenty_seconds() {
+    let start = Instant::now();
+    let mut session = WorldSessionState::default();
+
+    start_pending_logout(&mut session, start);
+
+    assert_eq!(pending_logout_due_at(&session), Some(start + LOGOUT_DELAY));
+    assert!(!pending_logout_is_due(
+        &session,
+        start + LOGOUT_DELAY - Duration::from_millis(1)
+    ));
+    assert!(pending_logout_is_due(&session, start + LOGOUT_DELAY));
+}
+
+#[test]
+fn logout_cancel_clears_pending_timer() {
+    let mut session = WorldSessionState::default();
+
+    start_pending_logout(&mut session, Instant::now());
+    cancel_pending_logout(&mut session);
+
+    assert_eq!(pending_logout_due_at(&session), None);
+}
+
+#[test]
+fn logout_request_blocks_combat_and_airborne_like_cmangos() {
+    let mut session = WorldSessionState::default();
+    assert!(!logout_is_blocked_by_combat(&session));
+
+    session.combat.player_in_combat = true;
+    assert!(logout_is_blocked_by_combat(&session));
+
+    session.combat.player_in_combat = false;
+    session.character.active_character = Some(Player {
+        guid: 1,
+        name: "Test".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::default(),
+        movement_flags: MOVEFLAG_JUMPING,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    });
+    assert!(logout_is_blocked_by_combat(&session));
+}
+
+#[test]
+fn logout_request_is_instant_only_without_character_or_when_resting() {
+    let mut session = WorldSessionState::default();
+    assert!(logout_request_is_instant(&session));
+
+    session.character.active_character = Some(Player {
+        guid: 1,
+        name: "Test".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::default(),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    });
+    assert!(!logout_request_is_instant(&session));
+
+    session.character.player_flags |= PLAYER_FLAGS_RESTING;
+    assert!(logout_request_is_instant(&session));
 }
 
 #[test]
@@ -27163,6 +27786,7 @@ fn visible_item_updates_prefer_live_equipped_inventory() {
         item_template: 2362,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 18,
     }];
@@ -27183,6 +27807,7 @@ fn writes_inventory_item_guid_update_values() {
         item_template: 25,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 10,
     };
@@ -27207,6 +27832,7 @@ fn main_hand_inventory_and_visible_update_values_are_written() {
         item_template: 25,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 10,
     };
@@ -27603,6 +28229,7 @@ fn autoequip_bag_prefers_first_empty_bag_slot() {
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -27633,6 +28260,7 @@ fn autoequip_bag_has_no_destination_when_all_bag_slots_are_full() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27655,6 +28283,7 @@ fn inventory_store_plan_merges_stack_before_empty_slots() {
         item_template: 4540,
         count: 5,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -27684,6 +28313,7 @@ fn inventory_store_plan_returns_none_when_backpack_is_full_and_no_stack_can_merg
             item_template: 6948,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27704,6 +28334,7 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
             item_template: 6948,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27715,6 +28346,7 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     });
@@ -27756,6 +28388,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
             item_template: 6948,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27767,6 +28400,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     });
@@ -27777,6 +28411,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
         item_template: 182,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     });
@@ -27838,6 +28473,7 @@ fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_reward
             },
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27849,6 +28485,7 @@ fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_reward
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     });
@@ -27912,6 +28549,7 @@ fn quest_reward_storage_fails_without_consuming_partial_required_stack_space() {
                 1
             },
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         })
@@ -27937,6 +28575,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -27947,6 +28586,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item_template: 6948,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -27957,6 +28597,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item_template: 38,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28035,6 +28676,7 @@ fn inventory_slot_update_body_clears_source_and_sets_destination() {
         item_template: 6948,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -28066,6 +28708,7 @@ fn inventory_slot_update_body_updates_visible_equipment_slot() {
         item_template: 38,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -28098,6 +28741,7 @@ fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28108,6 +28752,7 @@ fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28164,6 +28809,7 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28174,6 +28820,7 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28213,6 +28860,35 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
 }
 
 #[test]
+fn equipped_bag_destroy_update_clears_container_slot() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let inventory = [CharacterInventoryItem {
+        bag: 0,
+        slot: 19,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    }];
+
+    let body = build_update_object_body(
+        &build_inventory_position_update_blocks(character_guid, &inventory, 19, 3).unwrap(),
+    );
+
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+    let (container_values, rest) = decode_values_update_block(&body[5..], bag_guid);
+    assert!(rest.is_empty());
+    let container_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
+    assert_eq!(container_values[container_slot_field], Some(0));
+    assert_eq!(container_values[container_slot_field + 1], Some(0));
+}
+
+#[test]
 fn backpack_stack_merge_update_clears_source_slot_and_updates_destination_count() {
     let character_guid = 11;
     let source_guid = ObjectGuid::new(HighGuid::Item, 0, 88);
@@ -28224,6 +28900,7 @@ fn backpack_stack_merge_update_clears_source_slot_and_updates_destination_count(
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 7,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     }];
@@ -28271,6 +28948,7 @@ fn equipped_bag_stack_merge_update_clears_container_slot_and_updates_destination
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28281,6 +28959,7 @@ fn equipped_bag_stack_merge_update_clears_container_slot_and_updates_destination
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 7,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28320,6 +28999,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28330,6 +29010,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 4,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28340,6 +29021,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28447,6 +29129,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
             item_template: 2362,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 18,
         },
@@ -28457,6 +29140,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
             item_template: 6948,
             count: 1,
             random_property_id: 0,
+            charges: String::new(),
             enchantments: String::new(),
             durability: 0,
         },
@@ -28483,6 +29167,7 @@ fn login_create_blocks_make_equipped_bags_openable_containers() {
         item_template: 5571,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -28493,6 +29178,7 @@ fn login_create_blocks_make_equipped_bags_openable_containers() {
         item_template: 117,
         count: 4,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -28534,6 +29220,7 @@ fn item_create_block_includes_random_property_enchantments() {
         item_template: 11980,
         count: 1,
         random_property_id: 1373,
+        charges: String::new(),
         enchantments: enchantments
             .into_iter()
             .map(|value| value.to_string())
@@ -28558,6 +29245,31 @@ fn item_create_block_includes_random_property_enchantments() {
 }
 
 #[test]
+fn item_create_block_includes_instance_spell_charges() {
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 42,
+        item_template: 6948,
+        count: 1,
+        random_property_id: 0,
+        charges: "-1 0 3 0 0".to_string(),
+        enchantments: String::new(),
+        durability: 0,
+    };
+
+    let block = build_item_create_update_block(owner_guid, owner_guid, &item, None).unwrap();
+    let (values, rest) = decode_create_update_block(&block, item_guid, TYPEID_ITEM);
+
+    assert!(rest.is_empty());
+    assert_eq!(values[ITEM_FIELD_SPELL_CHARGES], Some(u32::MAX));
+    assert_eq!(values[ITEM_FIELD_SPELL_CHARGES + 1], None);
+    assert_eq!(values[ITEM_FIELD_SPELL_CHARGES + 2], Some(3));
+}
+
+#[test]
 fn item_create_block_for_looted_bag_is_container_immediately() {
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
@@ -28568,6 +29280,7 @@ fn item_create_block_for_looted_bag_is_container_immediately() {
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
         random_property_id: 0,
+        charges: String::new(),
         enchantments: String::new(),
         durability: 0,
     };
@@ -29889,6 +30602,8 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         active_auras: Vec::new(),
         spell_global_cooldowns_until: HashMap::new(),
         spell_cooldowns_until: HashMap::new(),
+        spell_cooldown_categories: HashMap::new(),
+        spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
         combo_target: None,
         combo_points: 0,
@@ -29946,6 +30661,8 @@ fn party_member_stats_reports_rogue_energy_power() {
         active_auras: Vec::new(),
         spell_global_cooldowns_until: HashMap::new(),
         spell_cooldowns_until: HashMap::new(),
+        spell_cooldown_categories: HashMap::new(),
+        spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
         combo_target: None,
         combo_points: 0,
@@ -30438,6 +31155,60 @@ fn opening_spell_packets_include_gameobject_target_mask() {
 }
 
 #[test]
+fn opening_spell_profile_is_cancelable_pending_cast_without_recovery() {
+    let profile = opening_spell_cast_profile(3365);
+
+    assert_eq!(profile.spell_id, 3365);
+    assert_eq!(profile.kind, SpellCastKind::OpeningGameObject);
+    assert_eq!(profile.power, SpellPowerCost::Mana { cost: 0 });
+    assert_eq!(profile.global_cooldown_millis, 0);
+    assert_eq!(profile.cooldown_millis, 0);
+    assert!(!profile.requires_melee);
+}
+
+#[test]
+fn removing_player_clears_pending_opening_spell_work() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8948.0, -131.0, 83.4, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+    let targets = PendingSpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_GAMEOBJECT,
+        unit_target: None,
+        gameobject_target: Some(ObjectGuid::new(HighGuid::GameObject, 0, 77)),
+    };
+    map.active_player_spell_casts.insert(
+        7,
+        ActivePlayerSpellCast {
+            spell_id: OPENING_SPELL_ID,
+            source: ActivePlayerSpellCastSource::OpeningGameObject,
+            profile: opening_spell_cast_profile(OPENING_SPELL_ID),
+            targets: targets.clone(),
+            due_at: Instant::now() + Duration::from_secs(5),
+            cast_time_millis: OPENING_SPELL_CAST_TIME_MS,
+            interrupt_flags: 0,
+            damage_pushback_count: 0,
+        },
+    );
+    map.pending_spell_events.push(PendingSpellEvent {
+        event_id: 1,
+        caster_character_guid: 7,
+        spell_id: OPENING_SPELL_ID,
+        kind: PendingSpellEventKind::Spell { targets },
+        unit_target_generation: None,
+        due_at: Instant::now() + Duration::from_secs(5),
+    });
+
+    map.remove_player(7);
+
+    assert!(!map.active_player_spell_casts.contains_key(&7));
+    assert!(map
+        .pending_spell_events
+        .iter()
+        .all(|event| event.caster_character_guid != 7));
+}
+
+#[test]
 fn raptor_strike_spell_packets_match_success_shapes() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
     let target = ObjectGuid::new(HighGuid::Unit, 6, 45);
@@ -30644,7 +31415,7 @@ async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
         )
         .await;
 
-    let session = WorldSessionState {
+    let mut session = WorldSessionState {
         character: CharacterSessionState {
             active_character: Some(ActiveCharacter {
                 guid: 1,
@@ -30679,7 +31450,7 @@ async fn text_emote_broadcasts_text_and_animation_to_nearby_observers() {
             sessions: &sessions,
         },
         read_text_emote_request(&body),
-        &session,
+        &mut session,
         &mut header_crypto,
     )
     .await
@@ -30729,7 +31500,7 @@ async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
         )
         .await;
 
-    let session = WorldSessionState {
+    let mut session = WorldSessionState {
         character: CharacterSessionState {
             active_character: Some(ActiveCharacter {
                 guid: 1,
@@ -30764,7 +31535,7 @@ async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
             sessions: &sessions,
         },
         read_text_emote_request(&body),
-        &session,
+        &mut session,
         &mut header_crypto,
     )
     .await
@@ -30781,6 +31552,7 @@ async fn text_emote_broadcasts_state_animation_to_nearby_observers() {
     assert_eq!(observer_state.body, self_state.body);
     assert_eq!(observer_text.opcode, SMSG_TEXT_EMOTE);
     assert_eq!(observer_text.body, self_text.body);
+    assert_eq!(session.character.player_emote_state, EMOTE_STATE_DANCE);
 }
 
 #[test]

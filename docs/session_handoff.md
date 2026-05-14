@@ -19,8 +19,31 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: Checkpoint 2 real-client playtest triage for
   Northshire. The first implementation slice fixed the Garrick-style quest
   reward inventory transaction, chest gameobject use opening loot, and combat
-  logout denial. Continue with gameobject quest gating/cancel authority,
-  creature corpse/respawn parity, logout timer/DC linger, and relog persistence.
+  logout denial. The next slice added the CMaNGOS 20-second non-rest logout
+  timer and cancel path. A later slice moved Opening/gameobject interaction
+  work out of blocking session sleeps and added DB-backed quest-objective GO
+  gating. The corpse/respawn slice caps corpse decay to 90% of DB respawn delay
+  and advances map-loaded creature lifecycle timers instead of only
+  player-visible GUIDs. Another pass added CMaNGOS-style
+  disconnected-in-combat body linger. The latest stacked pass addresses the
+  user's failed smoke checks: quest chests now use the quest-objective GO gate,
+  gameobject chest loot keeps normal non-quest drops and supports reference
+  loot rows, timed logout applies sit/stun-style movement lock and clears it on
+  cancel, item spell cooldowns carry source item ids into
+  `SMSG_INITIAL_SPELLS`, and attacks against returning-home evaders now resolve
+  as evade feedback instead of dead-target stop. The newest local pass fixes
+  relogged buff icons by preserving visible aura fields in the login create
+  block and sending aura durations after login, repairs item-instance spell
+  charges from item templates so charge-based tooltips can render correctly,
+  adds CMaNGOS-style 5 second respawn sight-aggro delay, and sends queued
+  Heroic Strike rage updates before spell-go/combat logs. The newest discovery
+  slice loads `AreaTable.dbc`, reads `.map` area flags through the native map
+  bridge, stores map-owned explored-zone bits, persists `characters.exploredZones`,
+  and sends exploration XP/update packets on movement using CMaNGOS
+  `exploration_basexp` values. The latest follow-up adds the CMaNGOS WMO
+  indoor override path: native VMAP `getAreaInfo` is checked before `.map`
+  fallback, `WMOAreaTable.dbc` maps `(rootId, adtId, groupId)` to `AreaTable`,
+  and terrain-between-player-and-WMO-floor matches the CMaNGOS guard.
 - Playerbots remain disabled by default for normal multiplayer/Northshire
   testing: `config/worldserver.local.toml` has `[playerbots] enabled = false`
   and `[playerbots.random] enabled = false`.
@@ -28,13 +51,34 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 ## Current Goal And Recommended Next Task
 
 - Goal: make the Northshire Checkpoint 2 playtest loop stable enough for the
-  user to grade in the real client without disconnects, stuck quest screens,
-  broken quest-object interactions, or persistence surprises.
-- Recommended next task: implement map-owned gameobject interaction authority:
-  CMaNGOS-style eligibility for quest GOs, pending interaction cancel on
-  movement/combat/logout/distance failure, and no delayed completion after the
-  client cancel bar. Then fix unlooted creature corpse decay/respawn and
-  continue logout timer/DC linger plus cooldown/buff persistence.
+  user to grade in the real client without disconnects, broken quest-object
+  interactions, corpse/respawn stalls, or persistence surprises. The user
+  clarified that the occasional stuck quest-completion screen is a visual
+  desync because the underlying quest turn-in succeeds, so treat it below P0.
+- Recommended next task: restart the worldserver and real-client smoke the
+  latest failed checks again, especially relogged buff icons, Hearthstone
+  cooldown icon state, food/water charge tooltip text, respawn aggro grace, and
+  queued Heroic Strike/rage display. Non-rest logout movement lock, Battered
+  Chest loot, and Milly-style quest-only chest gating should remain in the
+  regression pass. The current GO follow-up moved closer to CMaNGOS by evaluating
+  dynamic flags per player at visibility-create/quest-refresh time and by
+  refreshing visible GO flags after quest abandon. The Battered Chest follow-up
+  identified the remaining lock mismatch: the client casts DB-backed
+  `SPELL_EFFECT_OPEN_LOCK` spell 3365 for lock id 57, while Rust previously
+  special-cased only spell 6478. The Opening flow now accepts gameobject-target
+  open-lock spells from `spell_template` and echoes the actual spell id through
+  start/go packets. The chest multi-loot follow-up fixed another GO bug where
+  successful autostore immediately consumed/destroyed the chest after the first
+  item; GO chests now consume only once the shared chest loot is empty. The
+  latest follow-up adds `CMSG_READ_ITEM` / `CMSG_PAGE_TEXT_QUERY`, generic
+  DB-backed NPC text, merged trainer/vendor plus quest gossip, movement cancel
+  for `/dance`/state emotes, and visible positive buff save/load through
+  CMaNGOS `character_aura`. Exploration discovery/XP now has an outdoor
+  CMaNGOS-shaped data path from WMO/VMAP area info, `.map` area flags,
+  `WMOAreaTable.dbc`, and `AreaTable.dbc`. Secondary-bag deletion, Garrick turn-in, GO
+  cancel/interruption, GO combat ticking, corpse/respawn, right-click
+  out-of-range combat state, post-kill regen/rage decay, and evade feedback
+  passed the user's current real-client smoke.
 
 ## Recent Implemented Work
 
@@ -168,9 +212,116 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Logout requests while the session is in combat now return the CMaNGOS failure
   response (`failure_reason = 1`, non-instant) instead of immediately completing
   logout.
+- Logout requests outside combat now follow the CMaNGOS request flow more
+  closely: no active character or resting players complete instantly, normal
+  non-rest logout sends a non-instant success response and completes after 20
+  seconds, `CMSG_LOGOUT_CANCEL` clears the pending timer and returns
+  `SMSG_LOGOUT_CANCEL_ACK`, and jumping/falling-far logout is denied like
+  combat.
+- Opening/gameobject interactions no longer sleep inside the session handler.
+  The special Opening spell now starts immediately, records a map-owned active
+  player cast, and completes through the normal pending-cast wakeup path after
+  the Classic 5 second Opening cast time. Movement cancel uses the existing
+  active-cast cancellation path; damaging hits cancel pending Opening casts; and
+  player removal/log out clears active/pending spell work from the map owner.
+- Quest-objective gameobjects now use a DB-backed ObjectMgr index over
+  negative `ReqCreatureOrGOId*` quest objectives. Generic/spell-focus/goober
+  objective GOs are denied unless the player has an active incomplete objective
+  for that exact GO entry and has not already reached the required count.
+- Creature corpse/respawn lifecycle now follows the CMaNGOS timing shape more
+  closely. `DbCreatureRuntime::begin_corpse` caps corpse decay to 90% of the
+  chosen DB respawn delay, matching `Creature::Create`, so starter mobs with
+  short DB respawns do not wait for the generic 5-minute corpse default before
+  they can respawn.
+- Creature lifecycle advancement now scans map-loaded creature runtimes with
+  due corpse/respawn timers instead of only the active player's visible
+  creature GUID set. Corpse removal updates map-owned per-player visibility
+  state before sending destroys, and respawn creation re-adds nearby eligible
+  players with per-player create blocks.
+- Combat disconnects now leave the player runtime in the map as a disconnected
+  body for CMaNGOS's 60 second offline disconnect timeout instead of removing
+  the body immediately. The lingering body is no longer client-controlled, keeps
+  active creature combat references, can still take map-owned damage, expires
+  through the map lifecycle, dispatches destroy packets to observers, and
+  persists final position/vitals or death state when the linger expires.
+- Character spell cooldowns now load from and save to CMaNGOS
+  `character_spell_cooldown`. Future spell cooldowns are restored into
+  session/map-owned runtime state on login, included in the initial spells
+  cooldown list sent to the client, saved on logout, and saved when a
+  disconnected-in-combat lingering body expires. This covers the Hearthstone
+  relog-reset symptom without item-specific special casing. Standalone category
+  cooldown persistence is still deferred until runtime cooldown ownership
+  tracks spell, category, and item as one record.
+- Deleting an item from an equipped secondary bag now sends the container-slot
+  `SMSG_UPDATE_OBJECT` clear before destroying the item object, so the client
+  should not keep a gray ghost icon until relog or another inventory update.
+- Latest failed-smoke fix pass: quest chest gameobjects now participate in the
+  DB-backed quest-objective gate, so abandoning the related quest should deny
+  use immediately rather than allowing a progress bar with no loot. Gameobject
+  chest loot selection no longer strips non-quest drops, and DB loading now
+  supports negative `mincountOrRef` reference rows for normal chest loot such
+  as Battered Chest.
+- The 20-second non-rest logout path now applies the CMaNGOS-shaped
+  sit/stunned presentation, ignores movement packets while the logout timer is
+  pending, and clears the sit/stun state on logout cancel.
+- Item-use spell cooldown runtime state now tracks the source item id alongside
+  the spell cooldown. Login `SMSG_INITIAL_SPELLS` now includes that item id, so
+  Hearthstone-style item cooldowns have the metadata the client needs to draw
+  the item cooldown overlay after relog.
+- Attacking a returning-home evading creature now remains an attack attempt and
+  sends melee evade feedback (`SPELL_MISS_EVADE` / `VICTIMSTATE_EVADES`)
+  instead of treating the target as dead and stopping auto-attack intent.
 
 ## Tests Run
 
+- AreaTable/exploration discovery slice:
+  `cargo test -p wow-network area_ -- --nocapture` passed, including the new
+  `area_table_dbc_parser_indexes_explore_flags_by_map` and
+  `map_owned_area_discovery_sets_explored_zone_bit_once` tests.
+  `cargo check -p wow-network --tests` passed.
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  `cargo test --workspace -- --nocapture` passed, including 691 `wow-network`
+  tests and 23 `wow-proto` tests.
+  `.\scripts\test-rust.cmd` passed fmt, clippy, and all workspace tests, then
+  failed only at final `cargo build -p authserver` because running
+  `authserver.exe` / `worldserver.exe` processes held the target binaries open
+  on Windows.
+- WMO indoor area override follow-up:
+  `cargo test -p wow-network area_ -- --nocapture` passed, including
+  `wmo_area_table_dbc_parser_maps_vmap_triple_to_area_table_entry`.
+  `cargo check -p wow-network --tests` passed.
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- Latest failed-smoke fix pass:
+  `cargo fmt --check` passed.
+  `cargo check --tests -p wow-network` passed.
+  `cargo test -p wow-network --lib initial_spells_include_active_spell_cooldowns -- --nocapture`
+  passed.
+  `cargo test -p wow-network --lib quest_objective_gameobject_requires_active_incomplete_objective -- --nocapture`
+  passed.
+  `cargo test -p wow-network --lib db_creature_player_melee_check_allows_evade_feedback_for_returning_creature -- --nocapture`
+  passed.
+  `cargo test -p wow-network --lib logout -- --nocapture` passed with 5
+  focused logout tests.
+  `git diff --check` passed with only CRLF normalization warnings. Full
+  `.\scripts\test-rust.cmd` was not run in this pass because the user is doing
+  the next real-client validation.
+- Corpse/respawn follow-up:
+  `cargo check -p wow-network` passed. No test suite was run for this pass
+  because the user explicitly asked to skip testing and do the real-client
+  testing later.
+- Disconnected body linger follow-up:
+  `cargo check -p wow-network` passed. Full test suite not run in this pass;
+  focused map-runtime coverage was added for combat disconnect linger and
+  expiry.
+- Cooldown/secondary-bag persistence follow-up:
+  `cargo test -p wow-network initial_spells_include_active_spell_cooldowns`
+  passed.
+  `cargo test -p wow-network equipped_bag_destroy_update_clears_container_slot`
+  passed.
+  `cargo check -p wow-network` passed.
+  `git diff --check` passed with only CRLF normalization warnings. Full
+  `.\scripts\test-rust.cmd` was not run because the user asked to keep moving
+  and handle real-client testing later.
 - Baseline before spell changes:
   `$env:CARGO_TARGET_DIR='target\codex-spells-baseline'; .\scripts\test-rust.cmd`
   passed fully.
@@ -304,6 +455,22 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   passed.
   `$env:CARGO_TARGET_DIR='target\codex-cp2-quest-dev'; cargo test -p wow-network --lib login_set_time_speed -- --nocapture`
   passed with 3 login time tests after the baseline commit.
+- Checkpoint 2 logout timer slice:
+  `cargo fmt --check` passed.
+  `$env:CARGO_TARGET_DIR='target\codex-logout-p1'; cargo test -p wow-network --lib logout -- --nocapture`
+  passed with 5 focused logout tests.
+  `$env:CARGO_TARGET_DIR='target\codex-logout-p1-final'; .\scripts\test-rust.cmd`
+  passed fully, including workspace unit/doc tests, `wow-network` 676 tests,
+  `wow-proto` 23 tests, and authserver/auth-flow builds.
+- Checkpoint 2 gameobject authority slice:
+  `cargo fmt --check` passed.
+  `$env:CARGO_TARGET_DIR='target\codex-go-p1'; cargo test -p wow-network --lib gameobject -- --nocapture`
+  passed with 16 focused gameobject tests.
+  `$env:CARGO_TARGET_DIR='target\codex-go-p1'; cargo test -p wow-network --lib opening_spell -- --nocapture`
+  passed with 3 focused Opening tests.
+  `$env:CARGO_TARGET_DIR='target\codex-go-p1-final'; .\scripts\test-rust.cmd`
+  passed fully, including workspace unit/doc tests, `wow-network` 679 tests,
+  `wow-proto` 23 tests, and authserver/auth-flow builds.
 - Spell-effect-value/conjure scaling slice:
   baseline `$env:CARGO_TARGET_DIR='target\codex-effectvalue-baseline'; .\scripts\test-rust.cmd`
   passed fully before changes, including `wow-network` 647 tests.
@@ -319,6 +486,19 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Real-Client Verification Needed
 
+- Latest Checkpoint 2 smoke results from the user:
+  Garrick turn-in passed; GO cancel/interruption passed; enemies attack during
+  GO interaction passed; corpse/respawn passed; right-click out-of-range combat
+  state passed; post-kill HP regen/rage decay passed; item deletion from a
+  secondary bag passed. The latest code pass attempted fixes for the failed
+  smoke items: quest GO use after abandon, Battered Chest loot, timed logout
+  sit/move lock, Hearthstone cooldown UI metadata, and evade attack feedback.
+  These all need a new real-client pass. Buff persistence now reloads
+  server-side and the latest local fix keeps the visible aura slots/durations in
+  the login packet path, so verify the buff icon survives relog. Respawn aggro
+  grace now follows the CMaNGOS 5 second `CanAggro` delay locally and needs
+  client proof. Quest completion visual, trainer gossip, and generic gossip
+  were not tested in the latest pass.
 - Conjure Food/Water live cast: DBC/skill-rank scaled quantity, inventory
   creation, stack merge, item push/update packets, bag-full failure,
   missing-template logging if DB data is absent, and resource/cooldown behavior
@@ -363,6 +543,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   and out of interrupting actions, no stale lower-value snapback occurs after
   client input, normal mana regen resumes after the five-second rule, and
   projectile spell mana visibly drops on cast launch rather than on impact.
+- Gameobject smoke: Milly buckets/objective goobers should not be usable when
+  the player lacks the matching incomplete objective; moving during Opening
+  should cancel without delayed loot/credit; taking creature damage during
+  Opening should cancel; and nearby hostile creatures should continue attacking
+  during the progress bar.
 
 ## Current Follow-Ups
 
@@ -390,6 +575,46 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   unit tests, including the local Northshire mmap path test when data is
   present, but still needs real-client observation of idle creatures wandering
   naturally under server tick load.
+- The logout timer now follows the CMaNGOS 20-second non-rest path in unit
+  coverage, and combat disconnect now leaves a 60-second map-owned body, but
+  real-client logout cancellation/interruption and combat-disconnect linger
+  still need live proof.
+- The Opening/gameobject authority slice is unit-tested for pending-cast shape,
+  cleanup, and quest-objective eligibility, but it still needs real-client
+  proof against Milly buckets, chest/opening progress bars, and combat
+  interruption timing.
+- The corpse/respawn slice was compile-checked only at the user's request to
+  skip testing this pass. It needs a later `.\scripts\test-rust.cmd` run plus
+  real-client proof that unlooted corpses decay and respawn on the expected DB
+  timing.
+- Buff persistence now has a first CMaNGOS-shaped `character_aura` path:
+  visible positive player auras are rebuilt on login, included in the player's
+  self create block, sent with duration packets after bootstrap, and saved on
+  normal logout or expired disconnect linger. This intentionally does not yet
+  persist charges/basepoints/periodic timers or CMaNGOS offline-expiration
+  nuances.
+- Spell cooldown persistence currently saves spell-level cooldowns plus the
+  source item id for item-use cooldowns, which should cover Hearthstone-style
+  relog cooldown UI. It still logs/skips standalone category cooldown
+  persistence until runtime cooldown state keeps the full CMaNGOS
+  spell/category/item tuple together.
+- Item instance charges are now loaded from `item_instance.charges`, repaired on
+  login from real `item_template` spell charges when the instance has no
+  charges, and emitted in item create blocks. Real-client food/water tooltip
+  proof is still needed.
+- Respawn aggro grace now uses map-owned creature runtime state: respawned DB
+  creatures suppress sight aggro until CMaNGOS' default
+  `CreatureRespawnAggroDelay` of 5000 ms elapses, while player-initiated combat
+  clears the grace like CMaNGOS `SetCanAggro(true)`.
+- Queued next-melee rage spending now sends the player `UNIT_FIELD_POWER2`
+  update immediately after the map-owned spend and before queued
+  `SMSG_SPELL_GO`, matching the normal spell-cast power ordering. This still
+  needs real-client proof for the transient rage UI zero.
+- Remaining original playtest gaps that still need source/data-backed slices:
+  exploration discovery and XP require AreaTable/map area-flag ownership;
+  Garrick Padfoot respawn timing should be verified from the active world DB
+  row; rage UI zero flicker may need packet-order tracing in a real client
+  capture if the latest ordering fix is not enough.
 
 ## Key Files
 
@@ -397,12 +622,27 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `crates/wow-network/src/world/globals/object_mgr.rs`
 - `crates/wow-network/src/world/map_runtime/world_data.rs`
 - `crates/wow-network/src/world/map_runtime/map_manager.rs`
-- `crates/wow-network/src/world/map_runtime/map/{players.rs,creature_damage.rs,spatial.rs}`
+- `crates/wow-network/src/world/map_runtime/map/{players.rs,creature_damage.rs,creature_lifecycle.rs,spatial.rs}`
+- `crates/wow-network/src/world/combat/{lifecycle.rs,runtime.rs}`
 - `crates/wow-network/native/mmap_path.cpp`
 - `crates/wow-network/src/world/combat/motion.rs`
 - `crates/wow-network/src/world/handlers/mmap_path.rs`
 - `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/spells/{effects.rs,spell_mgr.rs,targets.rs}`
+- `crates/wow-network/src/world/handlers/gameobject.rs`
+- `crates/wow-network/src/world/globals/object_mgr.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager.rs`
+- `crates/wow-network/src/world/map_runtime/map/players.rs`
+- `crates/wow-db/src/world_data.rs`
 - `crates/wow-network/src/world/session.rs`
+- `crates/wow-network/src/world/server/logout.rs`
+- `crates/wow-network/src/world/server/player_login.rs`
+- `crates/wow-network/src/world/handlers/{gossip.rs,inventory.rs,chat.rs,vendor.rs}`
+- `crates/wow-network/src/world/packet_builders/gossip.rs`
+- `crates/wow-proto/src/world_packets.rs`
+- `crates/wow-network/src/world/server/world_session.rs`
+- `crates/wow-network/src/world/server/session_loop.rs`
+- `crates/wow-network/src/world/handlers/inventory.rs`
+- `crates/wow-db/src/character/{queries.rs,state.rs,types.rs}`
 - `crates/wow-network/src/world/opcodes.rs`
 - `crates/wow-network/src/world/tests.rs`

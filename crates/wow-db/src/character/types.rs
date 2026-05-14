@@ -107,6 +107,31 @@ pub struct CharacterSpell {
     pub disabled: u8,
 }
 
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize)]
+pub struct CharacterSpellCooldown {
+    #[sqlx(rename = "SpellId")]
+    pub spell_id: u32,
+    #[sqlx(rename = "SpellExpireTime")]
+    pub spell_expire_time: u64,
+    #[sqlx(rename = "Category")]
+    pub category: u32,
+    #[sqlx(rename = "CategoryExpireTime")]
+    pub category_expire_time: u64,
+    #[sqlx(rename = "ItemId")]
+    pub item_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CharacterAura {
+    pub spell: u32,
+    pub caster_guid: u64,
+    pub stackcount: u32,
+    pub maxduration: i32,
+    pub remaintime: i32,
+    #[sqlx(rename = "effIndexMask")]
+    pub eff_index_mask: u32,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CharacterAction {
     pub button: u8,
@@ -151,6 +176,7 @@ pub struct CharacterInventoryItem {
     pub count: u32,
     #[sqlx(rename = "randomPropertyId")]
     pub random_property_id: i32,
+    pub charges: String,
     pub enchantments: String,
     pub durability: u32,
 }

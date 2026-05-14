@@ -335,7 +335,9 @@ impl<'a> SpellInfo<'a> {
                     SpellTargetKind::HostileUnit
                 }
             }
-            SpellCastKind::CreateItem | SpellCastKind::Teleport => SpellTargetKind::Caster,
+            SpellCastKind::CreateItem
+            | SpellCastKind::OpeningGameObject
+            | SpellCastKind::Teleport => SpellTargetKind::Caster,
         }
     }
 

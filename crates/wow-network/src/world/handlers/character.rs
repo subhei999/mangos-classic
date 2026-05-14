@@ -46,6 +46,7 @@ pub(in crate::world) async fn dispatch_character_packet(
                 PlayerLoginDeps {
                     character_db_pool: ctx.character_db_pool,
                     world_db_pool: ctx.world_db_pool,
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
                     online_characters: &ctx.runtime_state.online_characters,
                     maps: &ctx.runtime_state.maps,
                     sessions: &ctx.runtime_state.sessions,

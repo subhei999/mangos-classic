@@ -28,6 +28,8 @@ pub enum WorldOpcode {
     CmsgNameQuery = 0x0050,
     SmsgNameQueryResponse = 0x0051,
     CmsgItemQuerySingle = 0x0056,
+    CmsgPageTextQuery = 0x005A,
+    SmsgPageTextQueryResponse = 0x005B,
     CmsgQuestQuery = 0x005C,
     SmsgQuestQueryResponse = 0x005D,
     CmsgGameObjectQuery = 0x005E,
@@ -55,6 +57,9 @@ pub enum WorldOpcode {
     SmsgUpdateObject = 0x00A9,
     SmsgDestroyObject = 0x00AA,
     CmsgUseItem = 0x00AB,
+    CmsgReadItem = 0x00AD,
+    SmsgReadItemOk = 0x00AE,
+    SmsgReadItemFailed = 0x00AF,
     CmsgGameObjUse = 0x00B1,
     MsgMoveTeleportAck = 0x00C7,
     SmsgMonsterMove = 0x00DD,
@@ -151,6 +156,7 @@ pub enum WorldOpcode {
     SmsgPong = 0x01DD,
     SmsgSpellDelayed = 0x01E2,
     SmsgPlaySpellVisual = 0x01F3,
+    SmsgExplorationExperience = 0x01F8,
     SmsgPlaySpellImpact = 0x01F7,
     SmsgEnvironmentalDamageLog = 0x01FC,
     SmsgAccountDataTimes = 0x0209,
@@ -218,6 +224,8 @@ impl TryFrom<u32> for WorldOpcode {
             0x0050 => Ok(Self::CmsgNameQuery),
             0x0051 => Ok(Self::SmsgNameQueryResponse),
             0x0056 => Ok(Self::CmsgItemQuerySingle),
+            0x005A => Ok(Self::CmsgPageTextQuery),
+            0x005B => Ok(Self::SmsgPageTextQueryResponse),
             0x005C => Ok(Self::CmsgQuestQuery),
             0x005D => Ok(Self::SmsgQuestQueryResponse),
             0x005E => Ok(Self::CmsgGameObjectQuery),
@@ -245,6 +253,9 @@ impl TryFrom<u32> for WorldOpcode {
             0x00A9 => Ok(Self::SmsgUpdateObject),
             0x00AA => Ok(Self::SmsgDestroyObject),
             0x00AB => Ok(Self::CmsgUseItem),
+            0x00AD => Ok(Self::CmsgReadItem),
+            0x00AE => Ok(Self::SmsgReadItemOk),
+            0x00AF => Ok(Self::SmsgReadItemFailed),
             0x00B1 => Ok(Self::CmsgGameObjUse),
             0x00C7 => Ok(Self::MsgMoveTeleportAck),
             0x00DD => Ok(Self::SmsgMonsterMove),
@@ -342,6 +353,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x01EE => Ok(Self::SmsgAuthResponse),
             0x01F3 => Ok(Self::SmsgPlaySpellVisual),
             0x01F7 => Ok(Self::SmsgPlaySpellImpact),
+            0x01F8 => Ok(Self::SmsgExplorationExperience),
             0x01FC => Ok(Self::SmsgEnvironmentalDamageLog),
             0x0209 => Ok(Self::SmsgAccountDataTimes),
             0x020A => Ok(Self::CmsgRequestAccountData),
@@ -410,6 +422,7 @@ impl WorldOpcode {
                 | Self::SmsgLogoutComplete
                 | Self::SmsgLogoutCancelAck
                 | Self::SmsgNameQueryResponse
+                | Self::SmsgPageTextQueryResponse
                 | Self::SmsgGroupInvite
                 | Self::SmsgGroupDecline
                 | Self::SmsgGroupUninvite
@@ -421,6 +434,8 @@ impl WorldOpcode {
                 | Self::SmsgChannelNotify
                 | Self::SmsgUpdateObject
                 | Self::SmsgDestroyObject
+                | Self::SmsgReadItemOk
+                | Self::SmsgReadItemFailed
                 | Self::SmsgMonsterMove
                 | Self::SmsgForceMoveRoot
                 | Self::SmsgForceMoveUnroot
@@ -474,6 +489,7 @@ impl WorldOpcode {
                 | Self::SmsgAuthResponse
                 | Self::SmsgPlaySpellVisual
                 | Self::SmsgPlaySpellImpact
+                | Self::SmsgExplorationExperience
                 | Self::SmsgEnvironmentalDamageLog
                 | Self::SmsgAccountDataTimes
                 | Self::SmsgUpdateAccountData
@@ -695,6 +711,48 @@ guid_request!(
     RequestPartyMemberStatsRequest,
     "CMSG_REQUEST_PARTY_MEMBER_STATS"
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadItemRequest {
+    pub bag: u8,
+    pub slot: u8,
+}
+
+impl ReadItemRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 2, "CMSG_READ_ITEM")?;
+        Ok(Self {
+            bag: buf.get_u8(),
+            slot: buf.get_u8(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.bag);
+        buf.put_u8(self.slot);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageTextQueryRequest {
+    pub page_text_id: u32,
+    pub item_raw_guid: u64,
+}
+
+impl PageTextQueryRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 12, "CMSG_PAGE_TEXT_QUERY")?;
+        Ok(Self {
+            page_text_id: buf.get_u32_le(),
+            item_raw_guid: buf.get_u64_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.page_text_id);
+        buf.put_u64_le(self.item_raw_guid);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoveTeleportAckRequest {
@@ -3453,6 +3511,64 @@ impl ServerWorldPacket for SmsgNpcTextUpdateResponse {
                 buf.put_u32_le(0);
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgReadItemOkResponse {
+    pub item: ObjectGuid,
+}
+
+impl ServerWorldPacket for SmsgReadItemOkResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgReadItemOk;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.item.raw());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgReadItemFailedResponse {
+    pub item: ObjectGuid,
+}
+
+impl ServerWorldPacket for SmsgReadItemFailedResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgReadItemFailed;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.item.raw());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgPageTextQueryResponse {
+    pub page_text_id: u32,
+    pub text: String,
+    pub next_page_text_id: u32,
+}
+
+impl ServerWorldPacket for SmsgPageTextQueryResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgPageTextQueryResponse;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.page_text_id);
+        write_c_string(buf, &self.text);
+        buf.put_u32_le(self.next_page_text_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgExplorationExperienceResponse {
+    pub area: u32,
+    pub experience: u32,
+}
+
+impl ServerWorldPacket for SmsgExplorationExperienceResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgExplorationExperience;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.area);
+        buf.put_u32_le(self.experience);
     }
 }
 

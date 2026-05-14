@@ -380,6 +380,15 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
     )
     .await?;
     if event.damage > 0 {
+        let opening_cancelled = cancel_pending_opening_spell_cast(
+            stream,
+            shared_world.maps,
+            shared_world.sessions,
+            session,
+            SPELL_FAILED_INTERRUPTED,
+            header_crypto,
+        )
+        .await?;
         apply_player_taken_melee_proc_auras(
             stream,
             world_db_pool,
@@ -393,18 +402,20 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
             header_crypto,
         )
         .await?;
-        if let Some(delay_millis) = shared_world
-            .maps
-            .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
-            .await
-        {
-            send_packet(
-                stream,
-                SMSG_SPELL_DELAYED,
-                &build_spell_delayed_body(player, delay_millis)?,
-                Some(&mut *header_crypto),
-            )
-            .await?;
+        if !opening_cancelled {
+            if let Some(delay_millis) = shared_world
+                .maps
+                .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
+                .await
+            {
+                send_packet(
+                    stream,
+                    SMSG_SPELL_DELAYED,
+                    &build_spell_delayed_body(player, delay_millis)?,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
         }
     }
     mirror_session_active_creature_combat(session, event.combat);
@@ -1107,6 +1118,7 @@ pub(in crate::world) fn select_db_creature_aggro_targets(
         return Vec::new();
     };
     let faction_templates = FactionTemplateStore::fallback_bridge();
+    let now = Instant::now();
     let mut targets = session
         .visibility
         .db_creatures
@@ -1117,7 +1129,7 @@ pub(in crate::world) fn select_db_creature_aggro_targets(
                 .active_creature_combats
                 .contains_key(&creature.guid().raw())
         })
-        .filter(|creature| creature.can_aggro_player(&faction_templates, character))
+        .filter(|creature| creature.can_aggro_player(&faction_templates, character, now))
         .filter_map(|creature| {
             let distance_sq = creature.distance_to_player_squared(character)?;
             let attack_distance = db_creature_attack_distance(
@@ -1169,6 +1181,7 @@ pub(in crate::world) fn select_db_creature_assist_targets(
     let caller_position = caller.current_position;
     let caller_faction = caller.spawn.template.faction;
     let faction_templates = FactionTemplateStore::fallback_bridge();
+    let now = Instant::now();
     let radius = if caller.spawn.template.call_for_help > 0 {
         caller.spawn.template.call_for_help as f32
     } else {
@@ -1186,7 +1199,7 @@ pub(in crate::world) fn select_db_creature_assist_targets(
                 .contains_key(&creature.guid().raw())
         })
         .filter(|creature| creature.spawn.template.faction == caller_faction)
-        .filter(|creature| creature.can_aggro_player(&faction_templates, character))
+        .filter(|creature| creature.can_aggro_player(&faction_templates, character, now))
         .filter_map(|creature| {
             let distance = distance_2d(
                 caller_position.x,

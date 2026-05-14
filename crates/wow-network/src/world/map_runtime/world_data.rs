@@ -17,6 +17,8 @@ pub(in crate::world) struct WorldDataFiles {
         HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
+    pub(in crate::world) area_tables: AreaTableStore,
+    pub(in crate::world) wmo_area_tables: WmoAreaTableStore,
     pub(in crate::world) mmap_headers: HashSet<u32>,
     pub(in crate::world) mmap_tiles: HashSet<(u32, u32, u32)>,
     pub(in crate::world) vmap_trees: HashSet<u32>,
@@ -40,6 +42,8 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            area_tables: AreaTableStore::default(),
+            wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::new(),
             mmap_tiles: HashSet::new(),
             vmap_trees: HashSet::new(),
@@ -68,6 +72,8 @@ impl WorldDataFiles {
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let item_random_properties =
             load_item_random_properties(&data_dir.join("dbc").join("ItemRandomProperties.dbc"));
+        let area_tables = load_area_tables(&data_dir.join("dbc").join("AreaTable.dbc"));
+        let wmo_area_tables = load_wmo_area_tables(&data_dir.join("dbc").join("WMOAreaTable.dbc"));
         let mut mmap_headers = HashSet::new();
         let mut mmap_tiles = HashSet::new();
         let mut vmap_trees = HashSet::new();
@@ -126,6 +132,8 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill,
             faction_templates,
             item_random_properties,
+            area_tables,
+            wmo_area_tables,
             mmap_headers,
             mmap_tiles,
             vmap_trees,
@@ -147,6 +155,28 @@ impl WorldDataFiles {
 
     pub(in crate::world) fn has_vmap_tile(&self, map_id: u32, tile_x: u32, tile_y: u32) -> bool {
         self.vmap_tiles.contains(&(map_id, tile_x, tile_y))
+    }
+
+    pub(in crate::world) fn area_entry_by_flag_and_map(
+        &self,
+        area_flag: u16,
+        map_id: u32,
+    ) -> Option<AreaTableEntry> {
+        self.area_tables.entry_by_flag_and_map(area_flag, map_id)
+    }
+
+    pub(in crate::world) fn area_entry_by_wmo_triple_and_map(
+        &self,
+        root_id: i32,
+        adt_id: i32,
+        group_id: i32,
+        map_id: u32,
+    ) -> Option<AreaTableEntry> {
+        self.wmo_area_tables
+            .entries_by_triple(root_id, adt_id, group_id)
+            .iter()
+            .filter_map(|entry| self.area_tables.entry(entry.area_id))
+            .rfind(|area| area.map_id == map_id)
     }
 }
 
@@ -176,6 +206,105 @@ pub(in crate::world) struct SpellRangeEntry {
     pub(in crate::world) min_range: f32,
     pub(in crate::world) max_range: f32,
     pub(in crate::world) flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct AreaTableEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) zone_id: u32,
+    pub(in crate::world) explore_flag: u16,
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) area_level: u8,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(in crate::world) struct AreaTableStore {
+    pub(in crate::world) entries: HashMap<u32, AreaTableEntry>,
+    pub(in crate::world) entry_ids_by_explore_flag: HashMap<u16, Vec<u32>>,
+}
+
+impl AreaTableStore {
+    pub(in crate::world) fn from_entries(entries: HashMap<u32, AreaTableEntry>) -> Self {
+        let mut entry_ids_by_explore_flag: HashMap<u16, Vec<u32>> = HashMap::new();
+        for entry in entries.values() {
+            entry_ids_by_explore_flag
+                .entry(entry.explore_flag)
+                .or_default()
+                .push(entry.id);
+        }
+        for ids in entry_ids_by_explore_flag.values_mut() {
+            ids.sort_unstable();
+        }
+        Self {
+            entries,
+            entry_ids_by_explore_flag,
+        }
+    }
+
+    pub(in crate::world) fn entry(&self, id: u32) -> Option<AreaTableEntry> {
+        self.entries.get(&id).copied()
+    }
+
+    pub(in crate::world) fn entry_by_flag_and_map(
+        &self,
+        area_flag: u16,
+        map_id: u32,
+    ) -> Option<AreaTableEntry> {
+        let ids = self.entry_ids_by_explore_flag.get(&area_flag)?;
+        ids.iter()
+            .filter_map(|id| self.entries.get(id).copied())
+            .find(|entry| entry.map_id == map_id)
+            .or_else(|| {
+                ids.iter()
+                    .filter_map(|id| self.entries.get(id).copied())
+                    .next_back()
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct WmoAreaTableEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) root_id: i32,
+    pub(in crate::world) adt_id: i32,
+    pub(in crate::world) group_id: i32,
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) area_id: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(in crate::world) struct WmoAreaTableStore {
+    entries_by_triple: HashMap<(i32, i32, i32), Vec<WmoAreaTableEntry>>,
+}
+
+impl WmoAreaTableStore {
+    pub(in crate::world) fn from_entries(entries: HashMap<u32, WmoAreaTableEntry>) -> Self {
+        let mut entries_by_triple: HashMap<(i32, i32, i32), Vec<WmoAreaTableEntry>> =
+            HashMap::new();
+        for entry in entries.values().copied() {
+            entries_by_triple
+                .entry((entry.root_id, entry.adt_id, entry.group_id))
+                .or_default()
+                .push(entry);
+        }
+        for entries in entries_by_triple.values_mut() {
+            entries.sort_unstable_by_key(|entry| entry.id);
+        }
+        Self { entries_by_triple }
+    }
+
+    pub(in crate::world) fn entries_by_triple(
+        &self,
+        root_id: i32,
+        adt_id: i32,
+        group_id: i32,
+    ) -> &[WmoAreaTableEntry] {
+        self.entries_by_triple
+            .get(&(root_id, adt_id, group_id))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,6 +673,126 @@ pub(in crate::world) fn parse_item_random_properties(
         );
     }
     properties
+}
+
+pub(in crate::world) fn load_area_tables(path: &std::path::Path) -> AreaTableStore {
+    let Ok(bytes) = std::fs::read(path) else {
+        return AreaTableStore::default();
+    };
+    AreaTableStore::from_entries(parse_area_tables(&bytes))
+}
+
+pub(in crate::world) fn parse_area_tables(bytes: &[u8]) -> HashMap<u32, AreaTableEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const AREA_TABLE_MIN_FIELD_COUNT: usize = 25;
+    const AREA_TABLE_ID_FIELD: usize = 0;
+    const AREA_TABLE_MAP_FIELD: usize = 1;
+    const AREA_TABLE_ZONE_FIELD: usize = 2;
+    const AREA_TABLE_EXPLORE_FLAG_FIELD: usize = 3;
+    const AREA_TABLE_FLAGS_FIELD: usize = 4;
+    const AREA_TABLE_LEVEL_FIELD: usize = 10;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < AREA_TABLE_MIN_FIELD_COUNT || record_size < field_count * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut areas = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(AREA_TABLE_ID_FIELD);
+        if id == 0 {
+            continue;
+        }
+        let explore_flag = field(AREA_TABLE_EXPLORE_FLAG_FIELD);
+        if explore_flag > u32::from(u16::MAX) {
+            continue;
+        }
+        areas.insert(
+            id,
+            AreaTableEntry {
+                id,
+                map_id: field(AREA_TABLE_MAP_FIELD),
+                zone_id: field(AREA_TABLE_ZONE_FIELD),
+                explore_flag: explore_flag as u16,
+                flags: field(AREA_TABLE_FLAGS_FIELD),
+                area_level: field(AREA_TABLE_LEVEL_FIELD).min(u32::from(u8::MAX)) as u8,
+            },
+        );
+    }
+    areas
+}
+
+pub(in crate::world) fn load_wmo_area_tables(path: &std::path::Path) -> WmoAreaTableStore {
+    let Ok(bytes) = std::fs::read(path) else {
+        return WmoAreaTableStore::default();
+    };
+    WmoAreaTableStore::from_entries(parse_wmo_area_tables(&bytes))
+}
+
+pub(in crate::world) fn parse_wmo_area_tables(bytes: &[u8]) -> HashMap<u32, WmoAreaTableEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const WMO_AREA_TABLE_MIN_FIELD_COUNT: usize = 21;
+    const WMO_AREA_TABLE_ID_FIELD: usize = 0;
+    const WMO_AREA_TABLE_ROOT_ID_FIELD: usize = 1;
+    const WMO_AREA_TABLE_ADT_ID_FIELD: usize = 2;
+    const WMO_AREA_TABLE_GROUP_ID_FIELD: usize = 3;
+    const WMO_AREA_TABLE_FLAGS_FIELD: usize = 9;
+    const WMO_AREA_TABLE_AREA_ID_FIELD: usize = 10;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < WMO_AREA_TABLE_MIN_FIELD_COUNT || record_size < field_count * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut areas = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let signed_field = |index: usize| {
+            let offset = record_offset + index * 4;
+            i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(WMO_AREA_TABLE_ID_FIELD);
+        if id == 0 {
+            continue;
+        }
+        areas.insert(
+            id,
+            WmoAreaTableEntry {
+                id,
+                root_id: signed_field(WMO_AREA_TABLE_ROOT_ID_FIELD),
+                adt_id: signed_field(WMO_AREA_TABLE_ADT_ID_FIELD),
+                group_id: signed_field(WMO_AREA_TABLE_GROUP_ID_FIELD),
+                flags: field(WMO_AREA_TABLE_FLAGS_FIELD),
+                area_id: field(WMO_AREA_TABLE_AREA_ID_FIELD),
+            },
+        );
+    }
+    areas
 }
 
 pub(in crate::world) fn load_creature_display_info_scales(

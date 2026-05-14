@@ -603,6 +603,7 @@ impl MapRuntime {
         &self,
         faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
+        now: Instant,
     ) -> Vec<DbCreatureRuntime> {
         if character.position.map_id != self.map_id {
             return Vec::new();
@@ -619,7 +620,7 @@ impl MapRuntime {
                     .active_creature_combats
                     .contains_key(&creature.guid().raw())
             })
-            .filter(|creature| creature.can_aggro_player(faction_templates, character))
+            .filter(|creature| creature.can_aggro_player(faction_templates, character, now))
             .filter_map(|creature| {
                 let distance_sq = creature.distance_to_player_squared(character)?;
                 let attack_distance = db_creature_attack_distance(
@@ -671,7 +672,9 @@ impl MapRuntime {
                     .contains_key(&creature.guid().raw())
             })
             .filter(|creature| creature.spawn.template.faction == caller.spawn.template.faction)
-            .filter(|creature| creature.can_aggro_player(faction_templates, character))
+            .filter(|creature| {
+                creature.can_aggro_player(faction_templates, character, Instant::now())
+            })
             .filter_map(|creature| {
                 let distance = distance_2d(
                     caller.current_position.x,

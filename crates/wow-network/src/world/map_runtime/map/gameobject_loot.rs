@@ -56,6 +56,12 @@ impl MapRuntime {
         Some((gameobject_guid, loot_slot, loot))
     }
 
+    pub(in crate::world) fn db_gameobject_loot_is_empty(&self, gameobject_guid: u64) -> bool {
+        self.gameobject_loots
+            .get(&gameobject_guid)
+            .is_none_or(|state| state.loot_items.is_empty())
+    }
+
     pub(in crate::world) fn restore_db_gameobject_loot_item(
         &mut self,
         gameobject_guid: u64,

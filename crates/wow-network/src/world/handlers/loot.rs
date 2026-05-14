@@ -447,11 +447,47 @@ pub(in crate::world) async fn select_db_gameobject_loot_item_for_character(
         &source_item_default_counts,
     )
     .into_iter()
-    .filter(|loot| loot.is_quest_drop())
     .map(DbCreatureLootRuntime::from)
     .collect::<Vec<_>>();
     apply_loot_item_template_metadata(world_db_pool, &mut loot_items).await?;
     Ok(loot_items)
+}
+
+pub(in crate::world) async fn gameobject_chest_loot_is_exclusively_quest_drops(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    template: &wow_db::GameObjectTemplateQuery,
+) -> anyhow::Result<bool> {
+    let Some(loot_id) = gameobject_chest_loot_id(template) else {
+        return Ok(false);
+    };
+    let loot_rows = object_mgr
+        .gameobject_loot_items(world_db_pool, loot_id)
+        .await?;
+    if loot_rows.is_empty() {
+        return Ok(false);
+    }
+    let reference_loot_templates =
+        load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
+    Ok(loot_rows
+        .iter()
+        .all(|row| loot_row_is_quest_only(row, &reference_loot_templates)))
+}
+
+fn loot_row_is_quest_only(
+    row: &CreatureLootQuery,
+    reference_loot_templates: &HashMap<u32, Vec<CreatureLootQuery>>,
+) -> bool {
+    if row.is_quest_drop() {
+        return true;
+    }
+    if !row.is_reference() {
+        return false;
+    }
+    reference_loot_templates.get(&row.item).is_some_and(|rows| {
+        rows.iter()
+            .all(|row| loot_row_is_quest_only(row, reference_loot_templates))
+    })
 }
 
 pub(in crate::world) async fn apply_loot_item_template_metadata(
@@ -1014,7 +1050,11 @@ pub(in crate::world) async fn handle_autostore_loot_item(
                 .maps
                 .restore_db_gameobject_loot_item(character_map_id, gameobject_guid, loot_slot, loot)
                 .await;
-        } else {
+        } else if shared_world
+            .maps
+            .db_gameobject_loot_is_empty(character_map_id, gameobject_guid)
+            .await
+        {
             let guid = ObjectGuid::from_raw(gameobject_guid);
             let consumed = shared_world
                 .maps

@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum MeleeHitOutcome {
+    Evade,
     Miss,
     Dodge,
     Block,
@@ -92,6 +93,19 @@ impl MeleeDamageOutcome {
         }
     }
 
+    pub(in crate::world) fn evade() -> Self {
+        Self {
+            hit_info: HITINFO_NORMALSWING2 | HITINFO_MISS,
+            victim_state: VICTIMSTATE_EVADES,
+            outcome: MeleeHitOutcome::Evade,
+            total_damage: 0,
+            school_damage: 0,
+            absorbed: 0,
+            resisted: 0,
+            blocked: 0,
+        }
+    }
+
     pub(in crate::world) fn with_next_melee_spell_bonus(mut self, bonus_damage: u32) -> Self {
         if self.total_damage > 0 {
             self.total_damage = self.total_damage.saturating_add(bonus_damage);
@@ -119,6 +133,7 @@ impl MeleeDamageOutcome {
             return None;
         }
         match self.outcome {
+            MeleeHitOutcome::Evade => Some(SPELL_MISS_EVADE),
             MeleeHitOutcome::Miss => Some(SPELL_MISS_MISS),
             MeleeHitOutcome::Dodge => Some(SPELL_MISS_DODGE),
             MeleeHitOutcome::Parry => Some(SPELL_MISS_PARRY),
@@ -582,6 +597,7 @@ pub(in crate::world) fn calculate_melee_damage(
     let outcome = roll_melee_outcome(input.chances, outcome_roll);
 
     match outcome {
+        MeleeHitOutcome::Evade => MeleeDamageOutcome::evade(),
         MeleeHitOutcome::Miss => MeleeDamageOutcome {
             hit_info: HITINFO_NORMALSWING2 | HITINFO_MISS,
             victim_state: VICTIMSTATE_UNAFFECTED,

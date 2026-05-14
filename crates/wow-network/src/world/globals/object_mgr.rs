@@ -17,6 +17,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
     pub(in crate::world) gameobject_complete_quest_ids:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
+    pub(in crate::world) gameobject_objective_quest_ids:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<u32>>>,
     pub(in crate::world) quest_prev_quests:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<i32>>>,
     pub(in crate::world) quest_prev_chain_quests:
@@ -45,6 +47,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::SpellGroupMembershipQuery>>>,
     pub(in crate::world) creature_spell_lists:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureSpellListQuery>>>,
+    pub(in crate::world) exploration_base_xp:
+        tokio::sync::Mutex<std::collections::HashMap<u8, u32>>,
     pub(in crate::world) stats: ObjectMgrCacheStats,
 }
 
@@ -61,6 +65,7 @@ pub(in crate::world) struct ObjectMgrCacheStats {
     pub(in crate::world) spell_chain_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_group_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) exploration_base_xp_db_loads: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(test)]
@@ -77,6 +82,7 @@ pub(in crate::world) struct ObjectMgrCacheSnapshot {
     pub(in crate::world) spell_chain_db_loads: u64,
     pub(in crate::world) spell_group_db_loads: u64,
     pub(in crate::world) creature_spell_list_db_loads: u64,
+    pub(in crate::world) exploration_base_xp_db_loads: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -143,6 +149,31 @@ impl ObjectMgr {
             .filter(|schedule| schedule.holiday != 0 && active_events.is_active(schedule.entry))
             .map(|schedule| schedule.holiday)
             .collect()
+    }
+
+    pub(in crate::world) async fn exploration_base_xp(
+        &self,
+        world_db_pool: &MySqlPool,
+        level: u8,
+    ) -> anyhow::Result<u32> {
+        {
+            let cache = self.exploration_base_xp.lock().await;
+            if !cache.is_empty() {
+                return Ok(cache.get(&level).copied().unwrap_or(0));
+            }
+        }
+
+        let rows = wow_db::get_exploration_base_xp_rows(world_db_pool).await?;
+        self.stats
+            .exploration_base_xp_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut cache = self.exploration_base_xp.lock().await;
+        if cache.is_empty() {
+            for row in rows {
+                cache.insert(row.level, row.basexp);
+            }
+        }
+        Ok(cache.get(&level).copied().unwrap_or(0))
     }
 
     pub(in crate::world) async fn condition_entry(
@@ -289,6 +320,32 @@ impl ObjectMgr {
                 gameobject_entry,
             )
             .await?;
+        self.quest_templates_for_ids(world_db_pool, quest_ids).await
+    }
+
+    pub(in crate::world) async fn gameobject_objective_quests(
+        &self,
+        world_db_pool: &MySqlPool,
+        gameobject_entry: u32,
+    ) -> anyhow::Result<Vec<wow_db::QuestTemplateQuery>> {
+        let quest_ids = {
+            let cache = self.gameobject_objective_quest_ids.lock().await;
+            cache.get(&gameobject_entry).cloned()
+        };
+        let quest_ids = if let Some(quest_ids) = quest_ids {
+            quest_ids
+        } else {
+            let quest_ids =
+                wow_db::get_gameobject_objective_quest_ids(world_db_pool, gameobject_entry).await?;
+            self.stats
+                .quest_relation_db_loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.gameobject_objective_quest_ids
+                .lock()
+                .await
+                .insert(gameobject_entry, quest_ids.clone());
+            quest_ids
+        };
         self.quest_templates_for_ids(world_db_pool, quest_ids).await
     }
 
@@ -779,6 +836,10 @@ impl ObjectMgr {
             creature_spell_list_db_loads: self
                 .stats
                 .creature_spell_list_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            exploration_base_xp_db_loads: self
+                .stats
+                .exploration_base_xp_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
         }
     }

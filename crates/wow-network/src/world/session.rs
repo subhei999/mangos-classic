@@ -289,6 +289,7 @@ pub(in crate::world) struct WorldSessionState {
     pub(in crate::world) character: CharacterSessionState,
     pub(in crate::world) movement: MovementSessionState,
     pub(in crate::world) combat: CombatSessionState,
+    pub(in crate::world) logout: LogoutSessionState,
     pub(in crate::world) auras: AuraSessionState,
     pub(in crate::world) inventory: InventorySessionState,
     pub(in crate::world) quests: QuestSessionState,
@@ -318,7 +319,12 @@ pub(in crate::world) struct CharacterSessionState {
     pub(in crate::world) player_energy: u32,
     pub(in crate::world) player_ammo_id: u32,
     pub(in crate::world) player_stand_state: u8,
+    pub(in crate::world) player_emote_state: u32,
     pub(in crate::world) active_spells: HashSet<u32>,
+    pub(in crate::world) spell_global_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_cooldown_categories: HashMap<u32, u32>,
+    pub(in crate::world) spell_cooldown_item_ids: HashMap<u32, u32>,
     pub(in crate::world) character_skills: Vec<CharacterSkill>,
     pub(in crate::world) character_reputations: Vec<CharacterReputation>,
 }
@@ -339,6 +345,11 @@ pub(in crate::world) struct CombatSessionState {
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
     #[cfg(test)]
     pub(in crate::world) active_creature_combats: HashMap<u64, CreatureCombatState>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct LogoutSessionState {
+    pub(in crate::world) requested_at: Option<Instant>,
 }
 
 #[derive(Debug, Default)]

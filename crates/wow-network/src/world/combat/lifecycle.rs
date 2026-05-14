@@ -29,6 +29,7 @@ pub(in crate::world) async fn handle_combat_tick(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
+    expire_disconnected_players(deps.character_db_pool, deps.shared_world, session, now).await?;
     advance_db_creature_lifecycle(
         stream,
         deps.character_db_pool,
@@ -98,6 +99,29 @@ pub(in crate::world) async fn handle_combat_tick(
         header_crypto,
     )
     .await
+}
+
+pub(in crate::world) async fn expire_disconnected_players(
+    character_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    now: Instant,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let expired = shared_world
+        .maps
+        .expire_disconnected_players(character.position.map_id, now)
+        .await;
+    for expired in expired {
+        persist_expired_disconnected_player(character_db_pool, &expired.player).await?;
+        shared_world
+            .sessions
+            .dispatch(expired.observer_packets)
+            .await;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -176,7 +200,7 @@ pub(in crate::world) async fn advance_db_creature_lifecycle(
     let character_guid = character.guid;
     let creature_guids = shared_world
         .maps
-        .player_visible_db_creature_guids(map_id, character_guid)
+        .loaded_db_creature_lifecycle_guids(map_id, now)
         .await;
     if creature_guids.is_empty() {
         return Ok(());
@@ -192,6 +216,8 @@ pub(in crate::world) async fn advance_db_creature_lifecycle(
         )
         .await?;
     for event in events {
+        #[cfg(test)]
+        let had_direct_packets = !event.direct_packets.is_empty();
         for packet in event.direct_packets {
             send_packet(
                 stream,
@@ -202,6 +228,20 @@ pub(in crate::world) async fn advance_db_creature_lifecycle(
             .await?;
         }
         shared_world.sessions.dispatch(event.observer_packets).await;
+        #[cfg(test)]
+        if had_direct_packets {
+            let guid = event.creature.guid().raw();
+            if event.creature.life_state == DbCreatureLifeState::Dead {
+                if let Some(creature) = session.visibility.db_creatures.get_mut(&guid) {
+                    *creature = event.creature.clone();
+                    creature.client_visible = false;
+                }
+            } else {
+                let mut creature = event.creature.clone();
+                creature.client_visible = true;
+                mirror_session_db_creature(session, guid, creature);
+            }
+        }
         if let Some(creature_guid) = event.clear_respawn_guid {
             wow_db::save_creature_respawn_time(
                 character_db_pool,
@@ -392,9 +432,44 @@ pub(in crate::world) async fn send_db_creature_swing(
     };
     let character_snapshot = character.clone();
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let combat_stats = shared_world
+        .maps
+        .player_combat_stats(map_id, character_snapshot.guid)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "map-owned player combat stats missing for character {}",
+                character_snapshot.guid
+            )
+        })?;
     match db_creature_player_melee_check_from_map(shared_world, session, target).await {
         PlayerMeleeCheck::Clear => {
             session.combat.last_player_melee_swing_error = None;
+        }
+        PlayerMeleeCheck::TargetEvading => {
+            session.combat.last_player_melee_swing_error = None;
+            let next_swing_at = Some(player_main_hand_next_swing_at(
+                Instant::now(),
+                &combat_stats,
+            ));
+            mirror_session_player_next_swing_at(session, next_swing_at);
+            shared_world
+                .maps
+                .set_player_next_swing_at(map_id, character_snapshot.guid, next_swing_at)
+                .await;
+            send_packet(
+                stream,
+                SMSG_ATTACKERSTATEUPDATE,
+                &build_attacker_state_update_body_for_outcome(
+                    attacker,
+                    target,
+                    MeleeDamageOutcome::evade(),
+                    0,
+                )?,
+                Some(header_crypto),
+            )
+            .await?;
+            return Ok(());
         }
         PlayerMeleeCheck::MissingTarget | PlayerMeleeCheck::TargetNotAlive => {
             send_player_melee_swing_error_if_changed(
@@ -460,16 +535,6 @@ pub(in crate::world) async fn send_db_creature_swing(
             return Ok(());
         }
     }
-    let combat_stats = shared_world
-        .maps
-        .player_combat_stats(map_id, character_snapshot.guid)
-        .await
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "map-owned player combat stats missing for character {}",
-                character_snapshot.guid
-            )
-        })?;
     let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
         mirror_session_player_auto_attack(session, None, None);
         shared_world
@@ -575,6 +640,7 @@ pub(in crate::world) async fn send_db_creature_swing(
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
+    let mut queued_rage_update_sent = false;
     if let Some(queued) = queued_spell {
         if let Err(failure) = shared_world
             .maps
@@ -600,6 +666,14 @@ pub(in crate::world) async fn send_db_creature_swing(
                 session.character.player_rage = snapshot.power2;
                 session.character.player_energy = snapshot.power4;
             }
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_rage_update_body(attacker, session.character.player_rage)?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            queued_rage_update_sent = true;
         }
     }
     let mut advanced_skill = None;
@@ -747,13 +821,15 @@ pub(in crate::world) async fn send_db_creature_swing(
         )
         .await?;
     }
-    send_packet(
-        stream,
-        SMSG_UPDATE_OBJECT,
-        &build_player_rage_update_body(attacker, session.character.player_rage)?,
-        Some(&mut *header_crypto),
-    )
-    .await?;
+    if !queued_rage_update_sent {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_rage_update_body(attacker, session.character.player_rage)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     if let Some(updated) = advanced_skill {
         send_packet(
             stream,

@@ -133,6 +133,24 @@ pub(in crate::world) async fn handle_client(
                 );
                 anyhow::bail!("world session idle timeout after {:?}", idle_elapsed);
             }
+            if complete_pending_logout_if_due(
+                &mut stream,
+                LogoutDeps {
+                    character_db_pool: &character_db_pool,
+                    online_characters: &runtime_state.online_characters,
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                    account_id: account.id,
+                    session_id,
+                },
+                &mut header_crypto,
+                &mut session,
+                now,
+            )
+            .await?
+            {
+                continue;
+            }
             let loop_timeout = session_loop_timeout_duration(
                 runtime_state.maps.as_ref(),
                 &session,
@@ -251,6 +269,24 @@ pub(in crate::world) async fn handle_client(
                         )
                         .await?;
                     }
+                    if complete_pending_logout_if_due(
+                        &mut stream,
+                        LogoutDeps {
+                            character_db_pool: &character_db_pool,
+                            online_characters: &runtime_state.online_characters,
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                            account_id: account.id,
+                            session_id,
+                        },
+                        &mut header_crypto,
+                        &mut session,
+                        Instant::now(),
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
                     sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
                     if Instant::now() >= next_world_tick_at {
                         handle_combat_tick(
@@ -357,6 +393,24 @@ pub(in crate::world) async fn handle_client(
                         )
                         .await?;
                     }
+                    if complete_pending_logout_if_due(
+                        &mut stream,
+                        LogoutDeps {
+                            character_db_pool: &character_db_pool,
+                            online_characters: &runtime_state.online_characters,
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                            account_id: account.id,
+                            session_id,
+                        },
+                        &mut header_crypto,
+                        &mut session,
+                        Instant::now(),
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
                     handle_combat_tick(
                         &mut stream,
                         CombatTickDeps {
@@ -423,25 +477,28 @@ pub(in crate::world) async fn handle_client(
 
     if session_result.is_err() {
         refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
-        if let Err(cleanup_error) = persist_session_character_state(
-            &character_db_pool,
-            account.id,
-            &runtime_state.maps,
-            &session,
-        )
-        .await
-        {
-            warn!(
-                "Failed to persist active character state after world session error: {}",
-                cleanup_error
-            );
+        if !session.combat.player_in_combat {
+            if let Err(cleanup_error) = persist_session_character_state(
+                &character_db_pool,
+                account.id,
+                &runtime_state.maps,
+                &session,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to persist active character state after world session error: {}",
+                    cleanup_error
+                );
+            }
         }
-        unregister_active_character(
+        unregister_active_character_after_disconnect(
             &runtime_state.online_characters,
             &runtime_state.maps,
             &runtime_state.sessions,
             session_id,
             &mut session,
+            Instant::now(),
         )
         .await;
     }
@@ -507,14 +564,17 @@ pub(in crate::world) async fn session_loop_timeout_duration(
     now: Instant,
 ) -> Duration {
     let world_tick_timeout = world_tick_timeout_duration(next_world_tick_at, now);
-    next_pending_player_spell_cast_due_at(maps, session)
+    let spell_timeout = next_pending_player_spell_cast_due_at(maps, session)
         .await
         .map(|due_at| {
             due_at
                 .saturating_duration_since(now)
                 .min(world_tick_timeout)
         })
-        .unwrap_or(world_tick_timeout)
+        .unwrap_or(world_tick_timeout);
+    pending_logout_due_at(session)
+        .map(|due_at| due_at.saturating_duration_since(now).min(spell_timeout))
+        .unwrap_or(spell_timeout)
 }
 
 pub(in crate::world) fn advance_world_tick_deadline(
@@ -552,7 +612,12 @@ pub(in crate::world) async fn refresh_active_player_session_cache(
     session.character.player_mana = snapshot.power1;
     session.character.player_rage = snapshot.power2;
     session.character.player_energy = snapshot.power4;
+    session.combat.player_in_combat = snapshot.in_combat;
     session.character.active_spells = snapshot.active_spells;
+    session.character.spell_global_cooldowns_until = snapshot.spell_global_cooldowns_until;
+    session.character.spell_cooldowns_until = snapshot.spell_cooldowns_until;
+    session.character.spell_cooldown_categories = snapshot.spell_cooldown_categories;
+    session.character.spell_cooldown_item_ids = snapshot.spell_cooldown_item_ids;
     session.inventory.items = snapshot.inventory;
     session.quests.quest_statuses = snapshot.quest_statuses;
     session.auras.active_auras = snapshot.active_auras;

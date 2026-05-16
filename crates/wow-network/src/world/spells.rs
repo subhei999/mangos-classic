@@ -2338,15 +2338,25 @@ pub(in crate::world) const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
 pub(in crate::world) const SPELL_EFFECT_HEAL: u32 = 10;
 pub(in crate::world) const SPELL_EFFECT_ENERGIZE: u32 = 30;
 pub(in crate::world) const SPELL_EFFECT_CHARGE: u32 = 96;
+pub(in crate::world) const SPELL_EFFECT_DUEL: u32 = 83;
+pub(in crate::world) const SPELL_EFFECT_STUCK: u32 = 84;
+pub(in crate::world) const SPELL_EFFECT_SKIN_PLAYER_CORPSE: u32 = 116;
 pub(in crate::world) const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
+pub(in crate::world) const SPELL_AURA_DUMMY: u32 = 4;
 pub(in crate::world) const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
+pub(in crate::world) const SPELL_AURA_MOD_STUN: u32 = 12;
+pub(in crate::world) const SPELL_AURA_MOD_DAMAGE_DONE: u32 = 13;
+pub(in crate::world) const SPELL_AURA_MOD_STEALTH_DETECT: u32 = 17;
+pub(in crate::world) const SPELL_AURA_MOD_INVISIBILITY_DETECTION: u32 = 19;
 pub(in crate::world) const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
 pub(in crate::world) const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
 pub(in crate::world) const SPELL_AURA_MOD_ROOT: u32 = 26;
 pub(in crate::world) const SPELL_AURA_MOD_STAT: u32 = 29;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
+pub(in crate::world) const SPELL_AURA_MOD_INCREASE_SPEED: u32 = 31;
 pub(in crate::world) const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
 pub(in crate::world) const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
+pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE_PCT: u32 = 101;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL: u32 = 30;
 pub(in crate::world) const SPELL_AURA_MOD_REGEN: u32 = 84;
@@ -2355,6 +2365,10 @@ pub(in crate::world) const SPELL_AURA_MOD_ATTACK_POWER: u32 = 99;
 pub(in crate::world) const SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE: u32 = 137;
 pub(in crate::world) const SPELL_AURA_MOD_MELEE_HASTE: u32 = 138;
 pub(in crate::world) const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
+pub(in crate::world) const SPELL_AURA_TRACK_CREATURES: u32 = 44;
+pub(in crate::world) const SPELL_AURA_TRACK_RESOURCES: u32 = 45;
+pub(in crate::world) const SPELL_AURA_GHOST: u32 = 95;
+pub(in crate::world) const SPELL_AURA_WATER_WALK: u32 = 104;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_STANDING_CANCELS: u32 = 0x0004_0000;
@@ -2371,6 +2385,7 @@ pub(in crate::world) const NEGATIVE_AURA_FLAGS: u32 = 0x08;
 pub(in crate::world) const TARGET_UNIT_CASTER: u32 = 1;
 pub(in crate::world) const TARGET_UNIT_ENEMY: u32 = 6;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC: u32 = 15;
+pub(in crate::world) const TARGET_LOCATION_CASTER_SRC: u32 = 22;
 pub(in crate::world) const TARGET_UNIT_FRIEND: u32 = 21;
 pub(in crate::world) const TARGET_UNIT: u32 = 25;
 pub(in crate::world) const TARGET_UNIT_PARTY: u32 = 35;
@@ -3029,6 +3044,13 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             SPELL_AURA_MOD_ATTACK_POWER => Some(AuraStatModifier::AttackPower {
                 amount: spell_effect_calculated_i32(effect, value_context),
             }),
+            SPELL_AURA_MOD_DAMAGE_DONE => Some(AuraStatModifier::DamageDone {
+                school_mask: u32::try_from(effect.misc_value).ok()?,
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MOD_INCREASE_SPEED => Some(AuraStatModifier::MoveSpeedPercent {
+                percent: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_DECREASE_SPEED => Some(AuraStatModifier::MoveSpeedPercent {
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
@@ -3039,7 +3061,12 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 school_mask: u32::try_from(effect.misc_value).ok()?,
                 amount: spell_effect_calculated_i32(effect, value_context),
             }),
+            SPELL_AURA_MOD_RESISTANCE_PCT => Some(AuraStatModifier::ResistancePercent {
+                school_mask: u32::try_from(effect.misc_value).ok()?,
+                percent: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_ROOT => Some(AuraStatModifier::Root),
+            SPELL_AURA_MOD_STUN => Some(AuraStatModifier::Stun),
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
@@ -3056,6 +3083,27 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             }
             SPELL_AURA_MOD_REPUTATION_GAIN => Some(AuraStatModifier::ReputationGainPercent {
                 percent: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MOD_STEALTH_DETECT => Some(AuraStatModifier::StealthDetect {
+                kind: effect.misc_value,
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MOD_INVISIBILITY_DETECTION => Some(AuraStatModifier::InvisibilityDetect {
+                kind: effect.misc_value,
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_TRACK_CREATURES => Some(AuraStatModifier::TrackCreatures {
+                creature_type: effect.misc_value,
+            }),
+            SPELL_AURA_TRACK_RESOURCES => Some(AuraStatModifier::TrackResources {
+                resource_type: effect.misc_value,
+            }),
+            SPELL_AURA_GHOST => Some(AuraStatModifier::Ghost),
+            SPELL_AURA_WATER_WALK => Some(AuraStatModifier::WaterWalk),
+            SPELL_AURA_DUMMY => Some(AuraStatModifier::Dummy {
+                aura_name: effect.aura_name,
+                misc_value: effect.misc_value,
+                amount: spell_effect_calculated_i32(effect, value_context),
             }),
             _ => None,
         })
@@ -3138,8 +3186,19 @@ pub(in crate::world) fn active_aura_has_root(active_auras: &[ActiveAura]) -> boo
         .any(|modifier| *modifier == AuraStatModifier::Root)
 }
 
+pub(in crate::world) fn active_aura_has_stun(active_auras: &[ActiveAura]) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(|modifier| *modifier == AuraStatModifier::Stun)
+}
+
+pub(in crate::world) fn active_aura_blocks_movement(active_auras: &[ActiveAura]) -> bool {
+    active_aura_has_root(active_auras) || active_aura_has_stun(active_auras)
+}
+
 pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
-    if active_aura_has_root(active_auras) {
+    if active_aura_blocks_movement(active_auras) {
         return 0.0;
     }
 
@@ -3152,8 +3211,18 @@ pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[Ac
         })
         .min()
         .unwrap_or(0);
+    let strongest_increase = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::MoveSpeedPercent { percent } if *percent > 0 => Some(*percent),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
 
-    (100 + strongest_slow).clamp(0, 100) as f32 / 100.0
+    ((100 + strongest_slow).max(0) as f32 / 100.0)
+        * ((100 + strongest_increase).max(1) as f32 / 100.0)
 }
 
 pub(in crate::world) fn active_aura_melee_attack_time_multiplier(
@@ -3173,6 +3242,62 @@ pub(in crate::world) fn active_aura_melee_attack_time_multiplier(
                 (100 + percent.saturating_abs()).max(0) as f32 / 100.0
             };
             multiplier * effect
+        })
+}
+
+pub(in crate::world) fn active_aura_physical_damage_done(active_auras: &[ActiveAura]) -> i32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::DamageDone {
+                school_mask,
+                amount,
+            } if *school_mask == 0 || *school_mask & 1 != 0 => Some(*amount),
+            _ => None,
+        })
+        .sum()
+}
+
+pub(in crate::world) fn active_aura_track_creatures_mask(active_auras: &[ActiveAura]) -> u32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::TrackCreatures { creature_type } if *creature_type > 0 => {
+                u32::try_from(*creature_type - 1)
+                    .ok()
+                    .filter(|bit| *bit < 32)
+                    .map(|bit| 1u32 << bit)
+            }
+            _ => None,
+        })
+        .fold(0, |mask, flag| mask | flag)
+}
+
+pub(in crate::world) fn active_aura_track_resources_mask(active_auras: &[ActiveAura]) -> u32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::TrackResources { resource_type } if *resource_type > 0 => {
+                u32::try_from(*resource_type - 1)
+                    .ok()
+                    .filter(|bit| *bit < 32)
+                    .map(|bit| 1u32 << bit)
+            }
+            _ => None,
+        })
+        .fold(0, |mask, flag| mask | flag)
+}
+
+pub(in crate::world) fn active_aura_unit_vis_flags(active_auras: &[ActiveAura]) -> u32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .fold(0, |flags, modifier| match modifier {
+            AuraStatModifier::Ghost => flags | UNIT_VIS_FLAG_GHOST,
+            _ => flags,
         })
 }
 
@@ -3475,7 +3600,18 @@ pub(in crate::world) fn set_player_aura_update_values(
     values: &mut [Option<u32>],
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<()> {
-    set_unit_aura_update_values(values, active_auras)
+    set_unit_aura_update_values(values, active_auras)?;
+    set_update_value(
+        values,
+        PLAYER_TRACK_CREATURES,
+        active_aura_track_creatures_mask(active_auras),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_TRACK_RESOURCES,
+        active_aura_track_resources_mask(active_auras),
+    )?;
+    Ok(())
 }
 
 pub(in crate::world) fn set_unit_aura_update_values(

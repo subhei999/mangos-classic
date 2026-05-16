@@ -323,6 +323,7 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
         || player.health == 0
         || player.death_state != PlayerDeathState::Alive
         || player.flags & PLAYER_FLAGS_GHOST != 0
+        || player.flags & PLAYER_FLAGS_GM != 0
     {
         return Ok(None);
     }

@@ -50,6 +50,9 @@ impl MapRuntime {
         resolution: &AuraRankConflictResolution,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
+        let in_combat = self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw());
         let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
             return Ok(None);
         };
@@ -58,13 +61,15 @@ impl MapRuntime {
         }
         let old_attack_duration = creature.base_attack_duration();
         let old_speeds = creature.move_speeds;
-        let was_rooted = active_aura_has_root(&creature.active_auras);
+        let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let was_stunned = active_aura_has_stun(&creature.active_auras);
         apply_active_aura_replacing_conflicts(&mut creature.active_auras, aura, resolution);
-        let is_rooted = active_aura_has_root(&creature.active_auras);
+        let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let is_stunned = active_aura_has_stun(&creature.active_auras);
         let previous_speeds = creature.refresh_move_speeds();
         debug_assert_eq!(old_speeds, previous_speeds);
-        let stop_packet = if !was_rooted
-            && is_rooted
+        let stop_packet = if !was_movement_blocked
+            && is_movement_blocked
             && !matches!(creature.motion, CreatureMotionState::Idle)
         {
             let stop = stop_db_creature_motion_runtime(creature);
@@ -81,6 +86,15 @@ impl MapRuntime {
             db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?;
         if let Some(packet) = stop_packet {
             direct_packets.push(packet);
+        }
+        if was_stunned != is_stunned {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_unit_flags_update_body(
+                    creature_guid,
+                    db_creature_unit_flags(creature, in_combat),
+                )?,
+            });
         }
         let position = creature.current_position;
         self.adjust_db_creature_attack_timer_for_base_time_change(
@@ -169,6 +183,7 @@ impl MapRuntime {
         let mut attack_timer_adjustments = Vec::new();
         for raw_guid in creature_guids {
             let creature_guid = ObjectGuid::from_raw(raw_guid);
+            let in_combat = self.active_creature_combats.contains_key(&raw_guid);
             let Some(creature) = self.creatures.get_mut(&raw_guid) else {
                 continue;
             };
@@ -281,6 +296,7 @@ impl MapRuntime {
                         &creature.active_auras,
                         creature.health,
                         creature.dynamic_flags(),
+                        db_creature_unit_flags(creature, in_combat),
                     )?
                 };
                 let position = creature.current_position;
@@ -904,6 +920,7 @@ pub(in crate::world) fn build_db_creature_aura_state_update_body(
     active_auras: &[ActiveAura],
     health: u32,
     dynamic_flags: u32,
+    unit_flags: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
@@ -911,8 +928,14 @@ pub(in crate::world) fn build_db_creature_aura_state_update_body(
 
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_unit_aura_update_values(&mut values, active_auras)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        creature_unit_bytes_1(active_auras),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
+    set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
 
     write_update_values(&mut block, &values)?;
     Ok(build_update_object_body(&[block]))

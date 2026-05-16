@@ -89,7 +89,7 @@ pub(in crate::world) fn write_other_player_update_values(
     set_update_value(
         &mut values,
         UNIT_FIELD_FACTIONTEMPLATE,
-        faction_for_race(player.race),
+        player_faction_template(player.race, player.flags),
     )?;
     set_update_value(
         &mut values,
@@ -520,6 +520,27 @@ pub(in crate::world) fn build_player_target_update_body(
 
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, unit_target)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+pub(in crate::world) fn build_player_gm_mode_update_body(
+    player: ObjectGuid,
+    race: u8,
+    player_flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FACTIONTEMPLATE,
+        player_faction_template(race, player_flags),
+    )?;
+    set_update_value(&mut values, PLAYER_FLAGS_FIELD, player_flags)?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))
@@ -1150,6 +1171,7 @@ pub(in crate::world) fn combat_stats_with_active_auras(
             _ => 0,
         })
         .sum::<i32>();
+    let physical_damage_done = active_aura_physical_damage_done(active_auras) as f32;
 
     for modifier in active_auras
         .iter()
@@ -1164,6 +1186,19 @@ pub(in crate::world) fn combat_stats_with_active_auras(
         };
         apply_resistance_delta(&mut stats, *school_mask, *amount);
     }
+    for modifier in active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+    {
+        let AuraStatModifier::ResistancePercent {
+            school_mask,
+            percent,
+        } = modifier
+        else {
+            continue;
+        };
+        apply_resistance_percent(&mut stats, *school_mask, *percent);
+    }
 
     let melee_attack_time_multiplier = active_aura_melee_attack_time_multiplier(active_auras);
     if (melee_attack_time_multiplier - 1.0).abs() > f32::EPSILON {
@@ -1171,6 +1206,15 @@ pub(in crate::world) fn combat_stats_with_active_auras(
             multiply_attack_time(stats.main_attack_time_ms, melee_attack_time_multiplier);
         stats.off_attack_time_ms =
             multiply_attack_time(stats.off_attack_time_ms, melee_attack_time_multiplier);
+    }
+
+    if physical_damage_done != 0.0 {
+        stats.main_min_damage = (stats.main_min_damage + physical_damage_done).max(0.0);
+        stats.main_max_damage = (stats.main_max_damage + physical_damage_done).max(0.0);
+        stats.off_min_damage = (stats.off_min_damage + physical_damage_done).max(0.0);
+        stats.off_max_damage = (stats.off_max_damage + physical_damage_done).max(0.0);
+        stats.ranged_min_damage = (stats.ranged_min_damage + physical_damage_done).max(0.0);
+        stats.ranged_max_damage = (stats.ranged_max_damage + physical_damage_done).max(0.0);
     }
 
     apply_attack_power_delta(stats, attack_power_delta, 0)
@@ -1199,6 +1243,20 @@ pub(in crate::world) fn apply_resistance_delta(
             stats.resistance_buff_mod_negative[school] =
                 stats.resistance_buff_mod_negative[school].saturating_add(amount);
         }
+    }
+    stats.armor = stats.resistances[0];
+}
+
+pub(in crate::world) fn apply_resistance_percent(
+    stats: &mut PlayerCombatStats,
+    school_mask: u32,
+    percent: i32,
+) {
+    for school in 0..MAX_SPELL_SCHOOL {
+        if school_mask & (1u32 << school) == 0 {
+            continue;
+        }
+        stats.resistances[school] = apply_percent_modifier(stats.resistances[school], percent);
     }
     stats.armor = stats.resistances[0];
 }
@@ -1405,6 +1463,14 @@ pub(in crate::world) fn faction_for_race(race: u8) -> u32 {
         1 | 3 | 4 | 7 => 1,
         2 | 5 | 6 | 8 => 2,
         _ => 1,
+    }
+}
+
+pub(in crate::world) fn player_faction_template(race: u8, player_flags: u32) -> u32 {
+    if player_flags & PLAYER_FLAGS_GM != 0 {
+        RUST_GUIDE_FACTION_TEMPLATE
+    } else {
+        faction_for_race(race)
     }
 }
 

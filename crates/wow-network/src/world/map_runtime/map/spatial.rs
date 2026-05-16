@@ -49,7 +49,7 @@ impl MapRuntime {
         players
     }
 
-    pub(in crate::world) fn nearby_hostile_db_creature_guids_for_player(
+    pub(in crate::world) fn nearby_attackable_db_creature_guids_for_player_spell(
         &self,
         faction_templates: &FactionTemplateStore,
         character_guid: u32,
@@ -59,7 +59,6 @@ impl MapRuntime {
             return Vec::new();
         };
         let position = player.position;
-        let player_faction = faction_for_race(player.race);
         let mut raw_creatures = HashSet::new();
         self.visit_nearby_cells(position, radius, |cell| {
             raw_creatures.extend(cell.creatures.iter().copied());
@@ -75,11 +74,11 @@ impl MapRuntime {
                 creature.is_alive()
                     && !creature.is_evading_home()
                     && is_position_inside_radius(creature.current_position, position, radius)
-                    && faction_reaction_to(
+                    && can_player_attack_creature_with_spell(
                         faction_templates,
                         creature.spawn.template.faction,
-                        player_faction,
-                    ) == FactionReaction::Hostile
+                        player.race,
+                    )
             })
             .map(|(raw_guid, _)| ObjectGuid::from_raw(raw_guid))
             .collect::<Vec<_>>();

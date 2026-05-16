@@ -806,6 +806,15 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    pub(in crate::world) async fn prime_creature_ai_scripts_for_test(
+        &self,
+        entry: u32,
+        scripts: Vec<wow_db::CreatureAiScriptQuery>,
+    ) {
+        self.creature_ai_scripts.lock().await.insert(entry, scripts);
+    }
+
+    #[cfg(test)]
     pub(in crate::world) async fn prime_spell_group_memberships_for_test(
         &self,
         spell: u32,

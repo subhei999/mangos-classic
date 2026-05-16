@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::world) enum GmDotCommand {
     Gm(Option<bool>),
     LevelUp(i32),
@@ -8,7 +8,101 @@ pub(in crate::world) enum GmDotCommand {
     NpcAdd(u32),
     NpcDelete(Option<u32>),
     Die,
+    Go(GmGoDestination),
+    ModifySpeed(f32),
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::world) enum GmGoDestination {
+    Coordinates {
+        x: f32,
+        y: f32,
+        z: Option<f32>,
+        map_id: Option<u32>,
+    },
+    Waypoint(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct GmWaypoint {
+    pub(in crate::world) aliases: &'static [&'static str],
+    pub(in crate::world) position: WorldPosition,
+}
+
+pub(in crate::world) const GM_WAYPOINTS: &[GmWaypoint] = &[
+    GmWaypoint {
+        aliases: &["northshire", "northshireabbey", "abbey"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -8949.95,
+            y: -132.493,
+            z: 83.5312,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["goldshire", "elwynn", "elwynnforest"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -9464.0,
+            y: 62.0,
+            z: 56.0,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["stormwind", "sw"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -8913.23,
+            y: 554.633,
+            z: 93.7944,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["ironforge", "if"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -4981.25,
+            y: -881.542,
+            z: 501.66,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["westfall", "sentinelhill"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -10645.9,
+            y: 1179.06,
+            z: 34.46,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["darkshire", "duskwood"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -10559.7,
+            y: -1189.02,
+            z: 28.07,
+            orientation: 0.0,
+        },
+    },
+    GmWaypoint {
+        aliases: &["bootybay", "bb", "stranglethorn"],
+        position: WorldPosition {
+            map_id: 0,
+            x: -14406.6,
+            y: 419.353,
+            z: 22.39,
+            orientation: 0.0,
+        },
+    },
+];
+
+pub(in crate::world) const PLAYER_BASE_RUN_SPEED_YARDS_PER_SEC: f32 = 7.0;
 
 pub(in crate::world) async fn handle_gm_dot_command(
     stream: &mut WorldPacketSink,
@@ -24,7 +118,16 @@ pub(in crate::world) async fn handle_gm_dot_command(
             return Ok(());
         }
         None => {
-            send_system_message(stream, "Unknown command.", header_crypto).await?;
+            if session.account.gm_mode {
+                send_system_message(stream, "Unknown command.", header_crypto).await?;
+            } else {
+                send_system_message(
+                    stream,
+                    "You must turn GM mode on first with .gm on.",
+                    header_crypto,
+                )
+                .await?;
+            }
             return Ok(());
         }
     };
@@ -35,7 +138,7 @@ pub(in crate::world) async fn handle_gm_dot_command(
                 return Ok(());
             }
             if let Some(value) = value {
-                session.account.gm_mode = value;
+                set_gm_mode(stream, deps, session, value, header_crypto).await?;
             }
             let message = if session.account.gm_mode {
                 "GM mode is ON."
@@ -48,10 +151,16 @@ pub(in crate::world) async fn handle_gm_dot_command(
             if !require_gm_security(stream, session, 2, header_crypto).await? {
                 return Ok(());
             }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
             spawn_gm_creature_from_template(stream, deps, session, entry, header_crypto).await?;
         }
         GmDotCommand::LevelUp(delta) => {
             if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
                 return Ok(());
             }
             change_gm_character_level_relative(stream, deps, session, delta, header_crypto).await?;
@@ -60,10 +169,16 @@ pub(in crate::world) async fn handle_gm_dot_command(
             if !require_gm_security(stream, session, 3, header_crypto).await? {
                 return Ok(());
             }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
             change_gm_character_level_absolute(stream, deps, session, level, header_crypto).await?;
         }
         GmDotCommand::NpcDelete(db_guid) => {
             if !require_gm_security(stream, session, 2, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
                 return Ok(());
             }
             delete_gm_creature_runtime(stream, deps, session, db_guid, header_crypto).await?;
@@ -72,7 +187,28 @@ pub(in crate::world) async fn handle_gm_dot_command(
             if !require_gm_security(stream, session, 3, header_crypto).await? {
                 return Ok(());
             }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
             kill_selected_db_creature(stream, deps, session, header_crypto).await?;
+        }
+        GmDotCommand::Go(destination) => {
+            if !require_gm_security(stream, session, 1, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
+            teleport_gm(stream, deps, session, destination, header_crypto).await?;
+        }
+        GmDotCommand::ModifySpeed(speed_rate) => {
+            if !require_gm_security(stream, session, 1, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
+            modify_gm_run_speed(stream, session, speed_rate, header_crypto).await?;
         }
     }
     Ok(())
@@ -86,6 +222,24 @@ pub(in crate::world) fn parse_gm_dot_command(
     let normalized = without_dot.to_ascii_lowercase();
     if normalized == "die" || normalized.starts_with("die ") {
         return Some(Ok(GmDotCommand::Die));
+    }
+    if normalized.starts_with("go ") {
+        let args = without_dot
+            .find(char::is_whitespace)
+            .map(|index| &without_dot[index..])
+            .unwrap_or_default();
+        return Some(parse_go_destination(args));
+    }
+    if normalized == "go" {
+        return Some(Err(
+            "Syntax: .go #x #y [#z [#mapid]] or .go #waypoint".to_string()
+        ));
+    }
+    if let Some(args) = normalized.strip_prefix("modify speed ") {
+        return Some(match first_f32(args) {
+            Some(speed) => Ok(GmDotCommand::ModifySpeed(speed)),
+            None => Err("Syntax: .modify speed #rate".to_string()),
+        });
     }
     if normalized == "gm" {
         return Some(Ok(GmDotCommand::Gm(None)));
@@ -133,6 +287,54 @@ pub(in crate::world) fn parse_gm_dot_command(
     None
 }
 
+pub(in crate::world) fn parse_go_destination(input: &str) -> Result<GmDotCommand, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Syntax: .go #x #y [#z [#mapid]] or .go #waypoint".to_string());
+    }
+    let normalized_args = trimmed.replace(',', " ");
+    let first = normalized_args
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    if first.parse::<f32>().is_ok() {
+        let numbers = coordinate_numbers(&normalized_args);
+        return match numbers.as_slice() {
+            [x, y] => Ok(GmDotCommand::Go(GmGoDestination::Coordinates {
+                x: *x,
+                y: *y,
+                z: None,
+                map_id: None,
+            })),
+            [x, y, z] => Ok(GmDotCommand::Go(GmGoDestination::Coordinates {
+                x: *x,
+                y: *y,
+                z: Some(*z),
+                map_id: None,
+            })),
+            [x, y, z, map_id, ..] if *map_id >= 0.0 => {
+                Ok(GmDotCommand::Go(GmGoDestination::Coordinates {
+                    x: *x,
+                    y: *y,
+                    z: Some(*z),
+                    map_id: Some(*map_id as u32),
+                }))
+            }
+            _ => Err("Syntax: .go #x #y [#z [#mapid]]".to_string()),
+        };
+    }
+    Ok(GmDotCommand::Go(GmGoDestination::Waypoint(
+        trimmed.to_string(),
+    )))
+}
+
+pub(in crate::world) fn coordinate_numbers(input: &str) -> Vec<f32> {
+    input
+        .split_whitespace()
+        .filter_map(|token| token.parse::<f32>().ok())
+        .collect()
+}
+
 pub(in crate::world) fn first_u32(input: &str) -> Option<u32> {
     let mut current = String::new();
     for ch in input.chars() {
@@ -166,6 +368,28 @@ pub(in crate::world) fn first_i32(input: &str) -> Option<i32> {
         .flatten()
 }
 
+pub(in crate::world) fn first_f32(input: &str) -> Option<f32> {
+    input
+        .split_whitespace()
+        .next()
+        .and_then(|token| token.parse::<f32>().ok())
+}
+
+pub(in crate::world) fn find_gm_waypoint(name: &str) -> Option<GmWaypoint> {
+    let key = normalize_gm_waypoint_name(name);
+    GM_WAYPOINTS
+        .iter()
+        .copied()
+        .find(|waypoint| waypoint.aliases.iter().any(|alias| *alias == key))
+}
+
+pub(in crate::world) fn normalize_gm_waypoint_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
 pub(in crate::world) fn gm_relative_level(old_level: u8, delta: i32) -> u8 {
     (i32::from(old_level) + delta).clamp(1, i32::from(DEFAULT_MAX_PLAYER_LEVEL)) as u8
 }
@@ -186,6 +410,63 @@ pub(in crate::world) async fn require_gm_security(
     )
     .await?;
     Ok(false)
+}
+
+pub(in crate::world) async fn require_gm_mode(
+    stream: &mut WorldPacketSink,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    if session.account.gm_mode {
+        return Ok(true);
+    }
+    send_system_message(
+        stream,
+        "You must turn GM mode on first with .gm on.",
+        header_crypto,
+    )
+    .await?;
+    Ok(false)
+}
+
+pub(in crate::world) async fn set_gm_mode(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    enabled: bool,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    session.account.gm_mode = enabled;
+    if enabled {
+        session.character.player_flags |= PLAYER_FLAGS_GM;
+    } else {
+        session.character.player_flags &= !PLAYER_FLAGS_GM;
+    }
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_gm_mode_update_body(
+            player_guid,
+            character.race,
+            session.character.player_flags,
+        )?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_packets = deps
+        .maps
+        .set_player_gm_flags(
+            character.position.map_id,
+            character.guid,
+            session.character.player_flags,
+        )
+        .await?;
+    deps.sessions.dispatch(observer_packets).await;
+    Ok(())
 }
 
 pub(in crate::world) async fn spawn_gm_creature_from_template(
@@ -523,8 +804,17 @@ pub(in crate::world) async fn kill_selected_db_creature(
         .await?;
         return Ok(());
     };
-    mirror_session_db_creature(session, target.raw(), event.creature.clone());
-    if let Some(body) = event.attacker_state_body.as_ref() {
+    let DbCreatureDamageEvent {
+        creature,
+        attacker_state_body,
+        update_body,
+        direct_packets,
+        death_finalization,
+        observer_packets,
+        ..
+    } = event;
+    mirror_session_db_creature(session, target.raw(), creature);
+    if let Some(body) = attacker_state_body.as_ref() {
         send_packet(
             stream,
             SMSG_ATTACKERSTATEUPDATE,
@@ -536,11 +826,11 @@ pub(in crate::world) async fn kill_selected_db_creature(
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
-        &event.update_body,
+        &update_body,
         Some(&mut *header_crypto),
     )
     .await?;
-    for packet in event.direct_packets {
+    for packet in direct_packets {
         send_packet(
             stream,
             packet.opcode,
@@ -549,36 +839,170 @@ pub(in crate::world) async fn kill_selected_db_creature(
         )
         .await?;
     }
-    deps.sessions.dispatch(event.observer_packets).await;
-    if let Some(death_finalization) = event.death_finalization {
-        deps.sessions
-            .dispatch(death_finalization.observer_packets)
-            .await;
-        if let Some(motion_stop_packet) = death_finalization.motion_stop_packet {
-            send_packet(
-                stream,
-                motion_stop_packet.opcode,
-                &motion_stop_packet.body,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-        }
-        send_packet(
-            stream,
-            death_finalization.combat_flag_packet.opcode,
-            &death_finalization.combat_flag_packet.body,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        send_packet(
-            stream,
-            death_finalization.attack_stop_packet.opcode,
-            &death_finalization.attack_stop_packet.body,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-    }
+    deps.sessions.dispatch(observer_packets).await;
+    finalize_db_creature_death(
+        stream,
+        CombatRewardDeps {
+            character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
+            shared_world: SharedWorldDeps {
+                object_mgr: deps.object_mgr,
+                maps: deps.maps,
+                sessions: deps.sessions,
+            },
+            parties: deps.parties,
+        },
+        session,
+        death_finalization,
+        header_crypto,
+    )
+    .await?;
     send_system_message(stream, "Selected creature killed.", header_crypto).await
+}
+
+pub(in crate::world) async fn teleport_gm(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    destination: GmGoDestination,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(current_character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let old_map_id = current_character.position.map_id;
+    let (mut target, use_ground_z) = match destination {
+        GmGoDestination::Coordinates { x, y, z, map_id } => (
+            WorldPosition {
+                map_id: map_id.unwrap_or(old_map_id),
+                x,
+                y,
+                z: z.unwrap_or(current_character.position.z),
+                orientation: current_character.position.orientation,
+            },
+            z.is_none(),
+        ),
+        GmGoDestination::Waypoint(name) => {
+            let Some(waypoint) = find_gm_waypoint(&name) else {
+                send_system_message(
+                    stream,
+                    &format!("Unknown waypoint '{name}'."),
+                    header_crypto,
+                )
+                .await?;
+                return Ok(());
+            };
+            (waypoint.position, false)
+        }
+    };
+    if use_ground_z {
+        target = deps.maps.geometry.ground_position(target).unwrap_or(target);
+    }
+    if target.map_id != old_map_id {
+        send_system_message(
+            stream,
+            "Cross-map .go is not wired yet; use a waypoint on the current map.",
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let character_guid = current_character.guid;
+    let client_time = current_character.client_time;
+    if let Some(character) = session.character.active_character.as_mut() {
+        character.position = target;
+        character.movement_flags = 0;
+        character.fall_time = 0;
+        character.jump = JumpInfo::default();
+    }
+    let account_id = session.account.account_id;
+    let movement = MovementInfo {
+        flags: 0,
+        client_time,
+        position: target,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let observer_packets = deps
+        .maps
+        .update_player_position(
+            old_map_id,
+            character_guid,
+            MSG_MOVE_HEARTBEAT as u16,
+            &movement,
+            movement.client_time,
+        )
+        .await?;
+    deps.sessions.dispatch(observer_packets).await;
+    deps.maps
+        .reset_player_visibility_scan_positions(old_map_id, character_guid)
+        .await;
+    deps.maps
+        .sync_player_gameplay_state(old_map_id, character_guid, session)
+        .await;
+    wow_db::update_character_position(deps.character_db_pool, account_id, character_guid, target)
+        .await?;
+    send_packet(
+        stream,
+        MSG_MOVE_TELEPORT_ACK,
+        &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    stream_newly_visible_db_creatures(
+        stream,
+        deps.character_db_pool,
+        deps.world_db_pool,
+        deps.maps,
+        session,
+        header_crypto,
+    )
+    .await?;
+    send_system_message(
+        stream,
+        &format!(
+            "Teleported to {:.2} {:.2} {:.2}.",
+            target.x, target.y, target.z
+        ),
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn modify_gm_run_speed(
+    stream: &mut WorldPacketSink,
+    session: &WorldSessionState,
+    speed_rate: f32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    if !(0.1..=50.0).contains(&speed_rate) {
+        send_system_message(
+            stream,
+            "Speed rate must be between 0.1 and 50.",
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let speed = PLAYER_BASE_RUN_SPEED_YARDS_PER_SEC * speed_rate;
+    send_packet(
+        stream,
+        SMSG_FORCE_RUN_SPEED_CHANGE,
+        &build_force_run_speed_change_body(player, 0, speed)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_system_message(
+        stream,
+        &format!("Run speed set to {speed_rate:.2}x."),
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn delete_gm_creature_runtime(

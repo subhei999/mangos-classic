@@ -19,7 +19,15 @@ pub(in crate::world) const CREATURE_ATTACKING_TARGET_TOP_AGGRO: i32 = 1;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_BOTTOM_AGGRO: i32 = 2;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_NEAREST: i32 = 3;
 pub(in crate::world) const CREATURE_ATTACKING_TARGET_FARTHEST: i32 = 4;
+pub(in crate::world) const EVENT_AI_EVENT_TIMER_IN_COMBAT: u8 = 0;
+pub(in crate::world) const EVENT_AI_EVENT_TIMER_OOC: u8 = 1;
 pub(in crate::world) const EVENT_AI_EVENT_HP: u8 = 2;
+pub(in crate::world) const EVENT_AI_EVENT_AGGRO: u8 = 4;
+pub(in crate::world) const EVENT_AI_EVENT_SPAWNED: u8 = 11;
+pub(in crate::world) const EVENT_AI_EVENT_RANGE: u8 = 9;
+pub(in crate::world) const EVENT_AI_EVENT_MISSING_AURA: u8 = 27;
+pub(in crate::world) const EVENT_AI_EVENT_FACING_TARGET: u8 = 33;
+pub(in crate::world) const EVENT_AI_ACTION_CAST: u8 = 11;
 pub(in crate::world) const EVENT_AI_ACTION_FLEE_FOR_ASSIST: u8 = 25;
 pub(in crate::world) const EVENT_AI_ACTION_SET_WALK: u8 = 58;
 pub(in crate::world) const EVENT_AI_FLAG_REPEATABLE: u32 = 0x01;
@@ -27,6 +35,25 @@ pub(in crate::world) const EVENT_AI_WALK_SETTING_RUN_DEFAULT: i32 = 0;
 pub(in crate::world) const EVENT_AI_WALK_SETTING_WALK_DEFAULT: i32 = 1;
 pub(in crate::world) const EVENT_AI_WALK_SETTING_RUN_CHASE: i32 = 2;
 pub(in crate::world) const EVENT_AI_WALK_SETTING_WALK_CHASE: i32 = 3;
+pub(in crate::world) const EVENT_AI_TARGET_SELF: i32 = 0;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE: i32 = 1;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_SECOND_AGGRO: i32 = 2;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_LAST_AGGRO: i32 = 3;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_RANDOM: i32 = 4;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_RANDOM_NOT_TOP: i32 = 5;
+pub(in crate::world) const EVENT_AI_TARGET_ACTION_INVOKER: i32 = 6;
+pub(in crate::world) const EVENT_AI_TARGET_ACTION_INVOKER_OWNER: i32 = 7;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_RANDOM_PLAYER: i32 = 8;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_RANDOM_NOT_TOP_PLAYER: i32 = 9;
+pub(in crate::world) const EVENT_AI_TARGET_PLAYER_INVOKER: i32 = 13;
+pub(in crate::world) const EVENT_AI_TARGET_PLAYER_TAPPED: i32 = 14;
+pub(in crate::world) const EVENT_AI_TARGET_NONE: i32 = 15;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_RANDOM_MANA: i32 = 16;
+pub(in crate::world) const EVENT_AI_TARGET_NEAREST_AOE_TARGET: i32 = 17;
+pub(in crate::world) const EVENT_AI_TARGET_HOSTILE_FARTHEST_AWAY: i32 = 18;
+pub(in crate::world) const EVENT_AI_SPAWNED_ALWAYS: i32 = 0;
+pub(in crate::world) const EVENT_AI_SPAWNED_MAP: i32 = 1;
+pub(in crate::world) const EVENT_AI_SPAWNED_ZONE: i32 = 2;
 pub(in crate::world) const CMANGOS_CREATURE_FAMILY_FLEE_DELAY: Duration =
     Duration::from_millis(10_000);
 pub(in crate::world) const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
@@ -129,6 +156,7 @@ pub(in crate::world) enum DbCreatureSpellTargetCheck {
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
     TooClose,
+    NotBehind,
 }
 
 pub(in crate::world) fn spell_unit_target_range_bounds(
@@ -168,6 +196,15 @@ pub(in crate::world) struct ActiveDbCreatureCombatSnapshot {
 pub(in crate::world) struct ReadyDbCreatureSpellCast {
     pub(in crate::world) spell: wow_db::CreatureSpellListQuery,
     pub(in crate::world) target: ObjectGuid,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct ReadyDbCreatureEventAiSpellCast {
+    pub(in crate::world) script_id: i32,
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) repeat_min: i32,
+    pub(in crate::world) repeat_max: i32,
 }
 
 impl MapRuntime {
@@ -354,6 +391,7 @@ impl MapRuntime {
         target_guid: ObjectGuid,
         navigation: &DbCreatureNavigationGuardrail,
         range: Option<SpellRangeEntry>,
+        requires_behind: bool,
     ) -> DbCreatureSpellTargetValidation {
         let Some(caster) = self.creatures.get(&caster_guid.raw()) else {
             return DbCreatureSpellTargetValidation {
@@ -404,6 +442,13 @@ impl MapRuntime {
                     check: DbCreatureSpellTargetCheck::TooClose,
                 };
             }
+        }
+        if requires_behind
+            && !db_creature_is_facing_targets_back(caster.current_position, target_position)
+        {
+            return DbCreatureSpellTargetValidation {
+                check: DbCreatureSpellTargetCheck::NotBehind,
+            };
         }
         DbCreatureSpellTargetValidation {
             check: DbCreatureSpellTargetCheck::Clear,
@@ -567,6 +612,246 @@ impl MapRuntime {
             direct_packets,
             observer_packets,
         }))
+    }
+
+    pub(in crate::world) fn ready_db_creature_event_ai_spell_cast(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+    ) -> Option<ReadyDbCreatureEventAiSpellCast> {
+        self.ready_db_creature_event_ai_spell_cast_inner(attacker, Some(victim), scripts, now)
+    }
+
+    pub(in crate::world) fn ready_db_creature_event_ai_ooc_spell_cast(
+        &mut self,
+        attacker: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+    ) -> Option<ReadyDbCreatureEventAiSpellCast> {
+        self.ready_db_creature_event_ai_spell_cast_inner(attacker, None, scripts, now)
+    }
+
+    fn ready_db_creature_event_ai_spell_cast_inner(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: Option<ObjectGuid>,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+    ) -> Option<ReadyDbCreatureEventAiSpellCast> {
+        if self
+            .active_creature_spell_casts
+            .contains_key(&attacker.raw())
+        {
+            return None;
+        }
+        match victim {
+            Some(victim) => {
+                let combat = self.active_creature_combats.get(&attacker.raw()).copied()?;
+                if combat.victim != victim {
+                    return None;
+                }
+            }
+            None if self.active_creature_combats.contains_key(&attacker.raw()) => return None,
+            None => {}
+        }
+
+        for script in scripts {
+            let Some(action) = db_creature_event_ai_actions(script)
+                .into_iter()
+                .find(|action| action.action_type == EVENT_AI_ACTION_CAST && action.param1 > 0)
+            else {
+                continue;
+            };
+            let Some(target) =
+                db_creature_event_ai_action_target(self, attacker, victim, action.param2)
+            else {
+                continue;
+            };
+            if !self.db_creature_event_ai_script_ready(attacker, victim, script, now) {
+                continue;
+            }
+            return Some(ReadyDbCreatureEventAiSpellCast {
+                script_id: script.id,
+                spell_id: action.param1 as u32,
+                target,
+                repeat_min: script.event_param3,
+                repeat_max: script.event_param4,
+            });
+        }
+        None
+    }
+
+    pub(in crate::world) fn apply_db_creature_event_ai_spell_cooldown(
+        &mut self,
+        attacker: ObjectGuid,
+        ready: &ReadyDbCreatureEventAiSpellCast,
+        now: Instant,
+    ) {
+        let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+            return;
+        };
+        let repeat_millis = random_millis_between_i32(ready.repeat_min, ready.repeat_max);
+        if repeat_millis > 0 {
+            creature.event_ai_cooldowns_until.insert(
+                ready.script_id,
+                now + Duration::from_millis(repeat_millis as u64),
+            );
+        }
+        creature.triggered_event_ai_scripts.insert(ready.script_id);
+    }
+
+    pub(in crate::world) fn prepare_db_creature_spell_cast_from_template(
+        &self,
+        caster: ObjectGuid,
+        target: ObjectGuid,
+        template: &wow_db::SpellTemplateQuery,
+        duration: Option<SpellDurationEntry>,
+        range: Option<SpellRangeEntry>,
+        cast_time: Option<SpellCastTimeEntry>,
+        now: Instant,
+    ) -> Option<ActiveDbCreatureSpellCast> {
+        let creature = self.creatures.get(&caster.raw())?;
+        if !creature.is_alive() || creature.is_evading_home() {
+            return None;
+        }
+        if (template.attributes_ex & SPELL_ATTR_EX_NO_AUTOCAST_AI) != 0
+            || (template.attributes & SPELL_ATTR_PASSIVE) != 0
+        {
+            return None;
+        }
+        let spell_info = SpellInfo::from_template(template);
+        let caster_level = creature
+            .spawn
+            .template
+            .max_level
+            .max(creature.spawn.template.min_level);
+        let value_context =
+            SpellEffectValueContext::with_spell_rank_level(template, (caster_level / 5) as i32, 0);
+        let aura = (spell_info.has_effect(SpellEffectDispatch::ApplyAura)
+            && (target.is_player() || target.is_creature()))
+        .then(|| build_active_aura(template, caster, caster_level, value_context, now, duration));
+        let effect = if spell_info.has_direct_damage_effect() {
+            let amount = spell_info.direct_damage_with_context(value_context);
+            if amount == 0 {
+                return None;
+            }
+            ActiveDbCreatureSpellEffect::Damage {
+                amount,
+                school: template.school as u8,
+                dmg_class: template.dmg_class,
+                attributes_ex2: template.attributes_ex2,
+                attributes_ex3: template.attributes_ex3,
+            }
+        } else if spell_info.has_direct_heal_effect() {
+            let amount = spell_info.direct_heal();
+            if amount == 0 {
+                return None;
+            }
+            ActiveDbCreatureSpellEffect::Heal { amount }
+        } else if aura.is_some() {
+            ActiveDbCreatureSpellEffect::None
+        } else {
+            return None;
+        };
+        let mana_cost = if template.power_type == POWER_TYPE_MANA {
+            template.mana_cost
+        } else {
+            0
+        };
+        let cast_time_millis = spell_cast_time_millis(cast_time);
+        Some(ActiveDbCreatureSpellCast {
+            caster,
+            target,
+            spell_id: template.id,
+            requires_behind: spell_info.requires_behind_target(),
+            effect,
+            aura,
+            range,
+            mana_cost,
+            cast_time_millis,
+            due_at: now + Duration::from_millis(cast_time_millis as u64),
+        })
+    }
+
+    fn db_creature_event_ai_script_ready(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: Option<ObjectGuid>,
+        script: &wow_db::CreatureAiScriptQuery,
+        now: Instant,
+    ) -> bool {
+        let event_ready = match script.event_type {
+            EVENT_AI_EVENT_AGGRO => {
+                let Some(creature) = self.creatures.get(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+            }
+            EVENT_AI_EVENT_SPAWNED => {
+                let Some(creature) = self.creatures.get(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_spawned_condition(self, creature, script)
+            }
+            EVENT_AI_EVENT_TIMER_IN_COMBAT => {
+                let Some(_victim) = victim else {
+                    return false;
+                };
+                let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_timer_ready(creature, script, now)
+            }
+            EVENT_AI_EVENT_TIMER_OOC => {
+                if victim.is_some() {
+                    return false;
+                }
+                let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_timer_ready(creature, script, now)
+            }
+            EVENT_AI_EVENT_RANGE => {
+                let Some(victim) = victim else {
+                    return false;
+                };
+                let Some(creature) = self.creatures.get(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_repeating_ready(creature, script, now)
+                    && db_creature_event_ai_range_condition(self, attacker, victim, script)
+            }
+            EVENT_AI_EVENT_FACING_TARGET => {
+                let Some(victim) = victim else {
+                    return false;
+                };
+                let Some(creature) = self.creatures.get(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_repeating_ready(creature, script, now)
+                    && db_creature_event_ai_facing_condition(self, attacker, victim, script)
+            }
+            EVENT_AI_EVENT_MISSING_AURA => {
+                let Some(creature) = self.creatures.get(&attacker.raw()) else {
+                    return false;
+                };
+                db_creature_event_ai_common_ready(creature, script)
+                    && db_creature_event_ai_repeating_ready(creature, script, now)
+                    && db_creature_event_ai_missing_aura_condition(creature, script)
+            }
+            _ => false,
+        };
+        if !event_ready {
+            return false;
+        }
+        script.event_chance >= 100 || rand::thread_rng().gen_range(0..100) < script.event_chance
     }
 
     fn db_creature_event_ai_observer_packets<const N: usize>(
@@ -872,18 +1157,18 @@ impl MapRuntime {
         if now < cast.due_at {
             return Ok(None);
         }
-        if self
-            .active_creature_combats
-            .get(&attacker.raw())
-            .is_none_or(|combat| combat.victim != victim)
-        {
-            return Ok(None);
+        match self.active_creature_combats.get(&attacker.raw()) {
+            Some(combat) if combat.victim != victim => return Ok(None),
+            Some(_) => {}
+            None if victim == cast.target || (victim.is_player() && cast.target == attacker) => {}
+            None => return Ok(None),
         }
         let target_validation = self.validate_db_creature_spell_against_target(
             attacker,
             cast.target,
             navigation,
             cast.range,
+            cast.requires_behind,
         );
         if target_validation.check != DbCreatureSpellTargetCheck::Clear {
             self.active_creature_spell_casts.remove(&attacker.raw());
@@ -898,6 +1183,7 @@ impl MapRuntime {
                     )?,
                 ),
                 aura_event: None,
+                creature_aura_event: None,
             }));
         }
         self.active_creature_spell_casts.remove(&attacker.raw());
@@ -908,6 +1194,10 @@ impl MapRuntime {
         };
         let pending_aura = cast.aura.clone();
         let (effect, spell_go_body) = match cast.effect {
+            ActiveDbCreatureSpellEffect::None => (
+                DbCreatureCompletedSpellEffect::AuraOnly,
+                build_spell_go_body(attacker, cast.spell_id, &targets)?,
+            ),
             ActiveDbCreatureSpellEffect::Damage {
                 amount,
                 school,
@@ -958,6 +1248,7 @@ impl MapRuntime {
                 )
             }
         };
+        let mut creature_aura_event = None;
         let aura_event = match (pending_aura, &effect) {
             (Some(aura), DbCreatureCompletedSpellEffect::PlayerDamage(damage))
                 if cast.target.is_player()
@@ -966,12 +1257,20 @@ impl MapRuntime {
             {
                 self.apply_player_aura(cast.target.counter(), aura)?
             }
+            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly) if cast.target.is_player() => {
+                self.apply_player_aura(cast.target.counter(), aura)?
+            }
+            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly) if cast.target.is_creature() => {
+                creature_aura_event = self.apply_db_creature_aura(cast.target, 0, aura, now)?;
+                None
+            }
             _ => None,
         };
         Ok(Some(DbCreatureCompletedSpellCastEvent {
             spell_go_body,
             effect,
             aura_event,
+            creature_aura_event,
         }))
     }
 
@@ -1854,6 +2153,7 @@ pub(in crate::world) fn db_creature_spell_failure_from_target_check(
             DbCreatureNavigationResult::LineOfSightBlocked,
         ) => SPELL_FAILED_LINE_OF_SIGHT,
         DbCreatureSpellTargetCheck::TooClose => SPELL_FAILED_TOO_CLOSE,
+        DbCreatureSpellTargetCheck::NotBehind => SPELL_FAILED_NOT_BEHIND,
         DbCreatureSpellTargetCheck::MissingCaster
         | DbCreatureSpellTargetCheck::MissingTarget
         | DbCreatureSpellTargetCheck::TargetNotAlive
@@ -1879,9 +2179,12 @@ pub(in crate::world) fn db_creature_insert_spell_cooldown(
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub(in crate::world) struct DbCreatureEventAiAction {
     pub(in crate::world) action_type: u8,
     pub(in crate::world) param1: i32,
+    pub(in crate::world) param2: i32,
+    pub(in crate::world) param3: i32,
 }
 
 pub(in crate::world) fn db_creature_event_ai_actions(
@@ -1891,14 +2194,20 @@ pub(in crate::world) fn db_creature_event_ai_actions(
         DbCreatureEventAiAction {
             action_type: script.action1_type,
             param1: script.action1_param1,
+            param2: script.action1_param2,
+            param3: script.action1_param3,
         },
         DbCreatureEventAiAction {
             action_type: script.action2_type,
             param1: script.action2_param1,
+            param2: script.action2_param2,
+            param3: script.action2_param3,
         },
         DbCreatureEventAiAction {
             action_type: script.action3_type,
             param1: script.action3_param1,
+            param2: script.action3_param2,
+            param3: script.action3_param3,
         },
     ]
 }
@@ -1937,6 +2246,271 @@ pub(in crate::world) fn db_creature_event_ai_hp_script_can_trigger(
         return false;
     }
     rand::thread_rng().gen_range(0..100) < script.event_chance
+}
+
+pub(in crate::world) fn db_creature_event_ai_common_ready(
+    creature: &DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    if !creature.is_alive() || creature.is_evading_home() || creature.is_fleeing() {
+        return false;
+    }
+    if script.event_chance == 0 {
+        return false;
+    }
+    db_creature_event_ai_effectively_repeatable(script)
+        || !creature.triggered_event_ai_scripts.contains(&script.id)
+}
+
+pub(in crate::world) fn db_creature_event_ai_timer_ready(
+    creature: &mut DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+    now: Instant,
+) -> bool {
+    match creature.event_ai_cooldowns_until.get(&script.id).copied() {
+        Some(due_at) => now >= due_at,
+        None => {
+            let initial_millis =
+                random_millis_between_i32(script.event_param1, script.event_param2);
+            if initial_millis == 0 {
+                true
+            } else {
+                creature.event_ai_cooldowns_until.insert(
+                    script.id,
+                    now + Duration::from_millis(initial_millis as u64),
+                );
+                false
+            }
+        }
+    }
+}
+
+pub(in crate::world) fn db_creature_event_ai_repeating_ready(
+    creature: &DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+    now: Instant,
+) -> bool {
+    creature
+        .event_ai_cooldowns_until
+        .get(&script.id)
+        .is_none_or(|due_at| now >= *due_at)
+}
+
+pub(in crate::world) fn db_creature_event_ai_range_condition(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    let Some(creature) = map.creatures.get(&attacker.raw()) else {
+        return false;
+    };
+    let Some(target_position) = map.db_creature_spell_target_position(victim) else {
+        return false;
+    };
+    let dx = creature.current_position.x - target_position.x;
+    let dy = creature.current_position.y - target_position.y;
+    let dz = creature.current_position.z - target_position.z;
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    let min = script.event_param1.max(0) as f32;
+    let max = script.event_param2.max(0) as f32;
+    distance >= min && (max == 0.0 || distance <= max)
+}
+
+pub(in crate::world) fn db_creature_event_ai_facing_condition(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    let Some(creature) = map.creatures.get(&attacker.raw()) else {
+        return false;
+    };
+    let Some(player) = victim
+        .is_player()
+        .then(|| map.players.get(&victim.counter()))
+        .flatten()
+    else {
+        return false;
+    };
+    let dx = creature.current_position.x - player.position.x;
+    let dy = creature.current_position.y - player.position.y;
+    let dz = creature.current_position.z - player.position.z;
+    if dx * dx + dy * dy + dz * dz > 25.0 {
+        return false;
+    }
+    let creature_in_player_front = has_in_arc(
+        player.position,
+        creature.current_position,
+        PLAYER_MELEE_ARC_RADIANS,
+    );
+    match script.event_param1 {
+        0 => !creature_in_player_front,
+        1 => creature_in_player_front,
+        _ => false,
+    }
+}
+
+pub(in crate::world) fn db_creature_is_facing_targets_back(
+    caster_position: WorldPosition,
+    target_position: WorldPosition,
+) -> bool {
+    !has_in_arc(target_position, caster_position, PLAYER_MELEE_ARC_RADIANS)
+        && has_in_arc(caster_position, target_position, PLAYER_MELEE_ARC_RADIANS)
+}
+
+pub(in crate::world) fn db_creature_event_ai_missing_aura_condition(
+    creature: &DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    let spell_id = script.event_param1.max(0) as u32;
+    spell_id != 0
+        && !creature
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == spell_id)
+}
+
+pub(in crate::world) fn db_creature_event_ai_spawned_condition(
+    _map: &MapRuntime,
+    creature: &DbCreatureRuntime,
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    match script.event_param1 {
+        EVENT_AI_SPAWNED_ALWAYS => true,
+        EVENT_AI_SPAWNED_MAP => creature.current_position.map_id == script.event_param2 as u32,
+        EVENT_AI_SPAWNED_ZONE => false,
+        _ => false,
+    }
+}
+
+pub(in crate::world) fn db_creature_event_ai_effectively_repeatable(
+    script: &wow_db::CreatureAiScriptQuery,
+) -> bool {
+    if script.event_flags & EVENT_AI_FLAG_REPEATABLE == 0 {
+        return false;
+    }
+    match script.event_type {
+        EVENT_AI_EVENT_FACING_TARGET => script.event_param3 > 0 || script.event_param4 > 0,
+        _ => true,
+    }
+}
+
+pub(in crate::world) fn db_creature_event_ai_action_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    victim: Option<ObjectGuid>,
+    target_mode: i32,
+) -> Option<ObjectGuid> {
+    match target_mode {
+        EVENT_AI_TARGET_SELF => Some(attacker),
+        EVENT_AI_TARGET_HOSTILE
+        | EVENT_AI_TARGET_ACTION_INVOKER
+        | EVENT_AI_TARGET_ACTION_INVOKER_OWNER
+        | EVENT_AI_TARGET_PLAYER_INVOKER
+        | EVENT_AI_TARGET_PLAYER_TAPPED => {
+            victim.filter(|victim| map.db_creature_spell_cast_target_alive(*victim))
+        }
+        EVENT_AI_TARGET_HOSTILE_SECOND_AGGRO => {
+            db_creature_event_ai_threat_target(map, attacker, 1)
+        }
+        EVENT_AI_TARGET_HOSTILE_LAST_AGGRO => {
+            db_creature_event_ai_threat_target(map, attacker, usize::MAX)
+        }
+        EVENT_AI_TARGET_HOSTILE_RANDOM
+        | EVENT_AI_TARGET_HOSTILE_RANDOM_PLAYER
+        | EVENT_AI_TARGET_HOSTILE_RANDOM_MANA => {
+            db_creature_event_ai_random_threat_target(map, attacker, 0)
+        }
+        EVENT_AI_TARGET_HOSTILE_RANDOM_NOT_TOP | EVENT_AI_TARGET_HOSTILE_RANDOM_NOT_TOP_PLAYER => {
+            db_creature_event_ai_random_threat_target(map, attacker, 1)
+        }
+        EVENT_AI_TARGET_NEAREST_AOE_TARGET => {
+            db_creature_event_ai_nearest_threat_target(map, attacker)
+        }
+        EVENT_AI_TARGET_HOSTILE_FARTHEST_AWAY => {
+            db_creature_event_ai_farthest_threat_target(map, attacker)
+        }
+        EVENT_AI_TARGET_NONE => victim
+            .filter(|victim| map.db_creature_spell_cast_target_alive(*victim))
+            .or(Some(attacker)),
+        _ => victim.filter(|victim| map.db_creature_spell_cast_target_alive(*victim)),
+    }
+}
+
+pub(in crate::world) fn db_creature_event_ai_threat_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    index: usize,
+) -> Option<ObjectGuid> {
+    let threats = db_creature_event_ai_living_threats(map, attacker);
+    if threats.is_empty() {
+        return None;
+    }
+    if index == usize::MAX {
+        threats.last().copied()
+    } else {
+        threats.get(index).copied()
+    }
+}
+
+pub(in crate::world) fn db_creature_event_ai_random_threat_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+    skip_top: usize,
+) -> Option<ObjectGuid> {
+    let threats = db_creature_event_ai_living_threats(map, attacker);
+    if threats.len() <= skip_top {
+        return None;
+    }
+    let candidates = &threats[skip_top..];
+    candidates
+        .get(rand::thread_rng().gen_range(0..candidates.len()))
+        .copied()
+}
+
+pub(in crate::world) fn db_creature_event_ai_nearest_threat_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+) -> Option<ObjectGuid> {
+    let mut threats = db_creature_event_ai_living_threats(map, attacker);
+    threats.sort_by(|left, right| {
+        db_creature_spell_target_distance_squared(map, attacker, *left).total_cmp(
+            &db_creature_spell_target_distance_squared(map, attacker, *right),
+        )
+    });
+    threats.first().copied()
+}
+
+pub(in crate::world) fn db_creature_event_ai_farthest_threat_target(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+) -> Option<ObjectGuid> {
+    let mut threats = db_creature_event_ai_living_threats(map, attacker);
+    threats.sort_by(|left, right| {
+        db_creature_spell_target_distance_squared(map, attacker, *right).total_cmp(
+            &db_creature_spell_target_distance_squared(map, attacker, *left),
+        )
+    });
+    threats.first().copied()
+}
+
+pub(in crate::world) fn db_creature_event_ai_living_threats(
+    map: &MapRuntime,
+    attacker: ObjectGuid,
+) -> Vec<ObjectGuid> {
+    map.creature_threats
+        .get(&attacker.raw())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.threat > 0.0)
+        .filter(|entry| map.db_creature_spell_cast_target_alive(entry.victim))
+        .map(|entry| entry.victim)
+        .collect()
+}
+
+pub(in crate::world) fn random_millis_between_i32(min_millis: i32, max_millis: i32) -> u32 {
+    random_millis_between(min_millis.max(0) as u32, max_millis.max(0) as u32)
 }
 
 pub(in crate::world) fn refresh_db_creature_spell_list_availability(

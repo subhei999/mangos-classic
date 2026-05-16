@@ -12,12 +12,21 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Current user-directed priority: Northshire Checkpoint 2 real-client parity.
   The user remains the grader through live playtesting; do not add a
   Northshire grading harness.
-- Latest local work is uncommitted and adds the first CMaNGOS-shaped Creature
-  EventAI slice plus source-backed wounded slowdown: DB-backed
-  `creature_ai_scripts` loading through `ObjectMgr`, map-owned HP EventAI
-  evaluation, `ACTION_T_FLEE_FOR_ASSIST`, `ACTION_T_SET_WALK`, and CMaNGOS
-  generic under-30%-health movement slowdown honoring `StaticFlags2`
-  `NO_WOUNDED_SLOWDOWN`.
+- Latest pushed commit is `0230c2fc9 Implement creature EventAI and wounded
+  slowdown`.
+- Current local work is uncommitted and expands the Northshire spell/CreatureAI
+  slice: warrior Thunder Clap/Charge mechanics, CMaNGOS-shaped spell coverage,
+  EventAI cast dispatch for Northshire combat/OOC/spawn cases, aura-only
+  creature casts, generic learn-spell effect handling, and combat modifier
+  auras used by nearby creature spells. Latest local additions cover the
+  non-pet utility aura chunk: stealth/invisibility detection metadata,
+  creature/resource tracking update fields, dummy utility aura metadata, DB
+  creature ghost visual flags, and water-walk aura state. A GM command slice is
+  also uncommitted: `.gm on` now sets CMaNGOS-like GM player flags/faction and
+  blocks world damage/aggro, non-`.gm` dot commands require active GM mode,
+  `.die` runs the normal creature death finalizer for kill credit/XP, `.go`
+  supports same-map coordinates/common waypoints, and `.modify speed` sends a
+  forced run-speed update.
 - Playerbots remain disabled by default for normal multiplayer/Northshire
   testing: `config/worldserver.local.toml` has `[playerbots] enabled = false`
   and `[playerbots.random] enabled = false`.
@@ -27,13 +36,18 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Goal: make the Northshire Checkpoint 2 playtest loop stable enough for the
   user to grade in the real client without disconnects, broken quest/object
   interactions, corpse/respawn stalls, or obvious CMaNGOS behavior gaps.
-- Recommended next task: real-client smoke wounded movement in Northshire.
-  Young Wolf and other non-opted-out starter mobs should slow below 30% health
-  without fleeing. Mobs with CMaNGOS HP flee rows, such as Riverpaw Runt,
-  Goldtooth, or Riverpaw Scout, should still flee at their scripted threshold.
-- If continuing CreatureAI parity, the next source-backed step is broader
-  EventAI support: more event types/actions from CMaNGOS
-  `src/game/AI/EventAI`, not hardcoded per-creature behavior.
+- Recommended next task: real-client smoke the Northshire combat/EventAI spell
+  slice before adding broader spell systems. Kobold Miner should cast
+  `Pierce Armor`, Defias Cutpurse should be able to cast `Backstab` when behind
+  the player, Garrick should cast `Defensive Stance` on aggro, Kobold Geomancer
+  should cast `Fireball/Frost Armor`, Mother Fang should cast `Web`, and nearby
+  OOC/spawn self-cast scripts should no longer be skipped by the map runtime.
+- If continuing spell parity, keep filling source/DBC-backed effect handlers
+  rather than special-casing individual Northshire spells. Use
+  `docs/northshire_spell_audit.md` plus the coverage helpers to group work by
+  generic mechanic. Do not start pet/summon ownership until the user asks for
+  that slice; duel, stuck, and Remove Insignia remain pending utility
+  subsystems rather than safe one-off spell handlers.
 
 ## Recent Implemented Work
 
@@ -67,6 +81,71 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `NO_WOUNDED_SLOWDOWN`, applies the CMaNGOS linear under-30%-health speed
   multiplier to random and targeted chase movement, and retimes active movement
   when damage crosses the threshold so the real client sees the new spline.
+- Added a generic player spell-effect pass for warrior abilities: trigger
+  effects now execute triggered aura/damage spells, energize effects can grant
+  rage, `TARGET_LOCATION_CASTER_SRC` plus radius is treated as caster-centered
+  hostile AoE for damage/aura effects, and AoE direct damage iterates nearby
+  hostile DB creatures.
+- Added stun aura support for DB creatures: `SPELL_AURA_MOD_STUN` maps to an
+  active aura modifier, sets `UNIT_FLAG_STUNNED`, stops/blocks creature motion,
+  and pauses creature AI swings/casts/chase while stunned.
+- Added a spell coverage registry matching the CMaNGOS Classic surface:
+  `130` spell effect IDs and `192` aura IDs are now classified as implemented,
+  known no-op, pending a subsystem, or unknown. Unsupported player spell-effect
+  logs now include the CMaNGOS coverage name and support status.
+- Added spell coverage audit helpers that report per-spell unsupported effect
+  and aura mechanics. Current focused tests prove all CMaNGOS IDs are
+  classified and the starter warrior spell fixture set has no coverage gaps.
+- Added `docs/northshire_spell_audit.md`, a DB-backed inventory of
+  Northshire-reachable human warrior, trainer, creature, EventAI, quest, item,
+  chest, and triggered spells. The biggest actionable finding is that several
+  Northshire spell failures are blocked by missing CMaNGOS EventAI cast/timer
+  dispatch before individual effect handlers are even reached.
+- Added the first map-owned EventAI spell-cast slice:
+  timer-in-combat, aggro, range, facing-target, and missing-aura events can
+  select `ACTION_T_CAST = 11` spells with CMaNGOS target modes used in
+  Northshire (`self`, hostile current, default). EventAI casts now route through
+  the existing creature spell start/go packet path.
+- Added creature spell completion for aura-only casts, so creature-cast auras
+  such as `Frost Armor`, `Defensive Stance`, `Web`, and `Pierce Armor` can
+  apply instead of being skipped because there was no direct damage or heal
+  effect.
+- Extended the EventAI spell-cast slice with OOC timer and spawned events,
+  broader CMaNGOS target modes backed by the map threat list, and OOC cast
+  ticking from the combat lifecycle for nearby loaded creatures.
+- Implemented generic `SPELL_EFFECT_LEARN_SPELL` for player targets: learned
+  spells are persisted, inserted into the live session spell set, and followed
+  by learned-spell/proficiency/initial-spells updates.
+- Added Northshire-visible modifier aura buckets: resistance percent for armor
+  reduction, physical damage-done, positive speed modifiers, and existing
+  resistance/proc/melee-haste handling now cover the nearby creature spell rows.
+- Fixed two real-client spell/EventAI regressions found during the first smoke:
+  caster-centered hostile AoE spells such as Thunder Clap no longer normalize
+  their cast targets to the player, and `EVENT_T_FACING_TARGET` now honors the
+  CMaNGOS front/back parameter, 5-yard positional check, and no-repeat-without-
+  timers load rule that prevents Backstab rows from firing every AI tick.
+- Follow-up Backstab fix: generic DB creature spell casts now honor
+  `SPELL_ATTR_SS_FACING_BACK` through shared target validation, so Backstab is
+  rejected unless the creature is facing the target's back even when the spell
+  comes from creature spell slots rather than EventAI.
+- Added the non-pet Chunk E utility-aura slice: tracking auras now update
+  `PLAYER_TRACK_CREATURES`/`PLAYER_TRACK_RESOURCES`; stealth and invisibility
+  detection auras preserve their CMaNGOS modifier kind and amount; dummy utility
+  auras are retained as typed active-aura metadata; ghost auras set DB creature
+  unit visibility flags in create/aura/state update blocks; and water-walk
+  auras are represented as active aura state for the movement subsystem.
+- Improved GM commands for real-client playtesting: GM mode now applies the GM
+  player flag and friendly faction template, map-owned player damage ignores GM
+  players, sight aggro skips GM players, all non-`.gm` dot commands require GM
+  mode to be active, `.die` now uses the same death finalization path as normal
+  player kills so quest credit and XP can be awarded, `.go` supports `x y`
+  coordinates plus common same-map waypoints, and `.modify speed #rate` sends
+  the Classic forced run-speed-change packet.
+- Left `SPELL_EFFECT_DUEL`, `SPELL_EFFECT_STUCK`, and
+  `SPELL_EFFECT_SKIN_PLAYER_CORPSE` pending in the coverage registry. CMaNGOS
+  routes them through duel state/gameobjects, graveyard/hearthstone/safe
+  teleport, and player corpse/PvP loot ownership respectively, so they should
+  not be implemented as spell-only shims.
 
 ## Tests Run
 
@@ -77,7 +156,46 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   tests for the generic CMaNGOS wounded slowdown rule and opt-out flag.
 - `cargo test -p wow-network db_creature_damage_crossing_wounded_threshold_retimes_active_chase --lib`
   passed.
+- `cargo test -p wow-network thunder_clap --lib` passed with focused tests for
+  Thunder Clap AoE metadata plus real damage/debuff application to nearby
+  hostiles.
+- `cargo test -p wow-network charge --lib` passed with focused tests covering
+  Charge movement, no fake remote damage, rage grant, triggered Charge Stun,
+  and blocked-navigation failure.
+- `cargo test -p wow-network coverage --lib` passed with four focused tests for
+  complete CMaNGOS effect/aura classification, pending-mechanic audit reporting,
+  and starter warrior spell coverage.
+- `cargo test -p wow-network event_ai --lib` passed with nine focused EventAI
+  tests covering HP flee/set-walk plus combat timer, OOC timer, spawned, aggro,
+  range, missing-aura, and threat-backed target selection.
+- `cargo test -p wow-network event_ai_facing --lib` passed with the focused
+  Backstab/facing-target repeat guard test.
+- `cargo test -p wow-network backstab_validation --lib` passed with the shared
+  creature spell `SPELL_ATTR_SS_FACING_BACK` validation regression.
+- `cargo test -p wow-network db_creature_spell_cast --lib` passed after adding
+  the shared behind-target validation to active creature casts.
+- `cargo test -p wow-network caster_centered_hostile_aoe_spell_packets_do_not_self_target --lib`
+  passed.
+- `cargo test -p wow-network creature_aura_only --lib` passed.
+- `cargo test -p wow-network db_creature_spell_cast --lib` passed.
+- `cargo test -p wow-network thunder_clap --lib` passed.
+- `cargo test -p wow-network charge --lib` passed.
+- `cargo test -p wow-network wounded_slowdown --lib` passed.
+- `cargo test -p wow-network spell_aura --lib` passed.
 - `cargo check -p wow-network` passed after formatting.
+- `cargo test -p wow-network utility_visibility --lib` passed.
+- `cargo test -p wow-network tracking_auras --lib` passed.
+- `cargo test -p wow-network ghost_and_water_walk --lib` passed.
+- `cargo test -p wow-network coverage --lib` passed after the utility-aura
+  classification update.
+- `cargo check -p wow-network` passed after the utility-aura slice.
+- `cargo test -p wow-network gm --lib` passed after the GM command slice.
+- `cargo check -p wow-network` passed after the GM command slice.
+- `.\scripts\test-rust.cmd` was rerun after the GM command slice and still
+  fails in clippy on existing uncommitted spell/EventAI lint issues outside the
+  GM command change: `prepare_db_creature_spell_cast_from_template` has too
+  many arguments, two `spells/effects.rs` blocks need clippy reshaping, and four
+  EventAI tests use clone-to-slice patterns.
 - Restarted the local game stack successfully after the DB type fix:
   authserver on `127.0.0.1:13724`, worldserver on `127.0.0.1:18085`,
   dashboard on `127.0.0.1:9091`.
@@ -103,6 +221,18 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Flee combat behavior:
   while fleeing, the creature should not swing/cast/chase; after the CMaNGOS
   flee delay, it should resume normal combat if still alive/in combat.
+- Warrior spells:
+  Thunder Clap should damage every nearby hostile creature in radius and apply
+  the attack-speed debuff; Charge should visibly stun the target after movement
+  and grant its rage.
+- Spell coverage:
+  when adding new class, creature, item, or quest spells, run the coverage audit
+  against the reachable spell IDs first and implement pending mechanics
+  generically.
+- Northshire spell audit:
+  EventAI `ACTION_T_CAST = 11` is implemented for timer-in-combat, timer-OOC,
+  aggro, range, facing-target, missing-aura, spawned, and common threat-backed
+  target modes. Verify the real DB rows actually fire in client.
 - Existing Checkpoint 2 regression smoke still matters:
   quest GO gating after abandon, Battered Chest loot including multi-item loot,
   Milly bucket cancel/interruption, enemies attacking during GO interaction,
@@ -112,13 +242,19 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Follow-Ups
 
-- This is not a full CMaNGOS EventAI port yet. It establishes the DB-backed,
-  map-owned foundation and implements HP flee plus set-walk actions; generic
-  wounded slowdown is source-backed and does not require `creature_ai_scripts`
-  rows.
-- Broader CreatureAI parity still needs CMaNGOS EventAI event/action coverage,
-  script action dispatch, assist/fear nuances, and any spell-cast EventAI rows
-  that starter-zone creatures rely on.
+- This is still not a full CMaNGOS EventAI port. The Northshire cast surface is
+  covered, but zone-conditioned spawned events, evade/reached-home/kill/death
+  events, richer cast flags, summons/pet ownership, and broader non-cast
+  actions remain future slices.
+- Utility effect handlers still pending before full parity: duel needs the duel
+  flag gameobject plus request/accept/cancel state; stuck needs graveyard,
+  Hearthstone, and safe-teleport ownership; Remove Insignia needs player corpse
+  and PvP loot conversion. Keep these out of the generic spell dispatcher until
+  their owner systems exist.
+- GM `.go` currently uses near-teleport support and is intentionally limited to
+  same-map destinations. Cross-map named teleports should be wired through a
+  proper CMaNGOS-style map transfer path before adding Kalimdor/outland-style
+  waypoints.
 - Flee movement currently uses the CMaNGOS 30-yard run-away shape and the
   project pathing guardrail. If real-client behavior exposes pathing oddities,
   compare against CMaNGOS `FleeingMovementGenerator` / `PanicMovementGenerator`
@@ -138,3 +274,5 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `crates/wow-network/src/world/spells/effects.rs`
 - `crates/wow-network/src/world/opcodes.rs`
 - `crates/wow-network/src/world/tests.rs`
+- `docs/spell_effect_coverage.md`
+- `docs/northshire_spell_audit.md`

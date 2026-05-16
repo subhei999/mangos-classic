@@ -328,7 +328,8 @@ impl<'a> SpellInfo<'a> {
                         SpellEffectDispatch::SchoolDamage
                             | SpellEffectDispatch::WeaponDamage
                             | SpellEffectDispatch::WeaponPercentDamage
-                    ) && effect.implicit_target_a == TARGET_UNIT_CASTER
+                    ) && (effect.implicit_target_a == TARGET_UNIT_CASTER
+                        || effect_targets_caster_centered_hostile_area(*effect))
                 }) {
                     SpellTargetKind::Caster
                 } else {
@@ -456,6 +457,7 @@ pub(in crate::world) fn effect_targets_caster_centered_hostile_area(
 ) -> bool {
     is_caster_centered_hostile_area_target(effect.implicit_target_a)
         || is_caster_centered_hostile_area_target(effect.implicit_target_b)
+        || effect_targets_caster_source_hostile_area(effect)
 }
 
 pub(in crate::world) fn effect_targets_direct_hostile_unit(effect: SpellInfoEffect) -> bool {
@@ -496,4 +498,13 @@ pub(in crate::world) fn is_caster_centered_hostile_area_target(target: u32) -> b
         target,
         TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC | TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE
     )
+}
+
+fn effect_targets_caster_source_hostile_area(effect: SpellInfoEffect) -> bool {
+    effect.radius_index != 0
+        && matches!(effect.implicit_target_a, TARGET_LOCATION_CASTER_SRC)
+        && matches!(
+            effect.dispatch,
+            SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::ApplyAura
+        )
 }

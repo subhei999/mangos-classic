@@ -751,6 +751,41 @@ fn test_creature_ai_set_walk_script(
     }
 }
 
+fn test_creature_ai_cast_script(
+    id: i32,
+    creature_id: i32,
+    event_type: u8,
+    event_params: [i32; 4],
+    spell_id: u32,
+    target: i32,
+) -> wow_db::CreatureAiScriptQuery {
+    wow_db::CreatureAiScriptQuery {
+        id,
+        creature_id,
+        event_type,
+        event_chance: 100,
+        event_flags: EVENT_AI_FLAG_REPEATABLE,
+        event_param1: event_params[0],
+        event_param2: event_params[1],
+        event_param3: event_params[2],
+        event_param4: event_params[3],
+        event_param5: 0,
+        event_param6: 0,
+        action1_type: EVENT_AI_ACTION_CAST,
+        action1_param1: spell_id as i32,
+        action1_param2: target,
+        action1_param3: 0,
+        action2_type: 0,
+        action2_param1: 0,
+        action2_param2: 0,
+        action2_param3: 0,
+        action3_type: 0,
+        action3_param1: 0,
+        action3_param2: 0,
+        action3_param3: 0,
+    }
+}
+
 fn test_unit_condition_row(
     id: i32,
     variable: u32,
@@ -12536,6 +12571,7 @@ fn map_runtime_db_creature_spell_cast_can_heal_creature_target() {
         caster: creature_guid,
         target: creature_guid,
         spell_id: 999_016,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Heal { amount: 15 },
         aura: None,
         range: None,
@@ -12591,6 +12627,7 @@ fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
             caster: creature_guid,
             target: victim,
             spell_id: 999_012,
+            requires_behind: false,
             effect: ActiveDbCreatureSpellEffect::Damage {
                 amount: 6,
                 school: 1,
@@ -12660,6 +12697,7 @@ fn map_runtime_db_creature_spell_target_validation_checks_selected_target_range_
             victim,
             &DbCreatureNavigationGuardrail::default(),
             Some(range),
+            false,
         )
         .check,
         DbCreatureSpellTargetCheck::OutOfRange
@@ -12680,6 +12718,7 @@ fn map_runtime_db_creature_spell_target_validation_checks_selected_target_range_
             victim,
             &blocked_los,
             Some(range),
+            false,
         )
         .check,
         DbCreatureSpellTargetCheck::NavigationBlocked(
@@ -12693,6 +12732,55 @@ fn map_runtime_db_creature_spell_target_validation_checks_selected_target_range_
             victim,
             &DbCreatureNavigationGuardrail::default(),
             Some(range),
+            false,
+        )
+        .check,
+        DbCreatureSpellTargetCheck::Clear
+    );
+}
+
+#[test]
+fn map_runtime_db_creature_backstab_validation_requires_facing_targets_back() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0));
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(94);
+    spawn.guid = 194;
+    spawn.position_x = 7.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.orientation = std::f32::consts::PI;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let melee_range = SpellRangeEntry {
+        min_range: 0.0,
+        max_range: 5.0,
+        flags: 0,
+    };
+
+    assert_eq!(
+        map.validate_db_creature_spell_against_target(
+            creature_guid,
+            victim,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(melee_range),
+            true,
+        )
+        .check,
+        DbCreatureSpellTargetCheck::NotBehind
+    );
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .current_position = WorldPosition::new(0, 3.0, 0.0, 0.0, 0.0);
+    assert_eq!(
+        map.validate_db_creature_spell_against_target(
+            creature_guid,
+            victim,
+            &DbCreatureNavigationGuardrail::default(),
+            Some(melee_range),
+            true,
         )
         .check,
         DbCreatureSpellTargetCheck::Clear
@@ -12772,6 +12860,7 @@ fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,
             school: 1,
@@ -12819,6 +12908,7 @@ fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,
             school: 1,
@@ -12962,6 +13052,7 @@ fn map_runtime_db_creature_spell_start_stops_chase_spends_mana_and_exposes_cast_
             caster: creature_guid,
             target: victim,
             spell_id: 348,
+            requires_behind: false,
             effect: ActiveDbCreatureSpellEffect::Damage {
                 amount: 8,
                 school: 2,
@@ -13049,6 +13140,7 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13133,6 +13225,7 @@ fn map_runtime_db_creature_dot_keeps_ticking_after_caster_runtime_is_missing() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13214,6 +13307,7 @@ fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13327,6 +13421,7 @@ fn map_runtime_creature_dot_death_presents_release_and_clears_combat() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13442,6 +13537,7 @@ fn map_runtime_db_creature_lethal_immolate_does_not_apply_dot() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13511,6 +13607,7 @@ fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
             school: immolate.school as u8,
@@ -13595,6 +13692,7 @@ fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,
             school: 1,
@@ -14390,6 +14488,397 @@ fn map_runtime_event_ai_hp_set_walk_chase_affects_next_chase_motion() {
 }
 
 #[test]
+fn map_runtime_event_ai_timer_in_combat_schedules_cast() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(40);
+    spawn.guid = 1905;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let scripts = [test_creature_ai_cast_script(
+        4002,
+        40,
+        EVENT_AI_EVENT_TIMER_IN_COMBAT,
+        [4_000, 4_000, 38_000, 42_000],
+        6016,
+        EVENT_AI_TARGET_HOSTILE,
+    )];
+
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &scripts, now)
+        .is_none());
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &scripts,
+            now + Duration::from_millis(3_999),
+        )
+        .is_none());
+
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &scripts,
+            now + Duration::from_millis(4_000),
+        )
+        .expect("timer-in-combat EventAI cast should become ready after initial delay");
+    assert_eq!(ready.spell_id, 6016);
+    assert_eq!(ready.target, player);
+    map.apply_db_creature_event_ai_spell_cooldown(creature_guid, &ready, now);
+    assert!(map
+        .creatures
+        .get(&creature_guid.raw())
+        .unwrap()
+        .event_ai_cooldowns_until
+        .contains_key(&4002));
+}
+
+#[test]
+fn map_runtime_event_ai_aggro_cast_targets_self() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(103);
+    spawn.guid = 1906;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let mut script = test_creature_ai_cast_script(
+        10301,
+        103,
+        EVENT_AI_EVENT_AGGRO,
+        [0, 0, 0, 0],
+        7164,
+        EVENT_AI_TARGET_SELF,
+    );
+    script.event_flags = 0;
+
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[script.clone()], now)
+        .expect("aggro EventAI cast should be ready immediately");
+    assert_eq!(ready.target, creature_guid);
+    map.apply_db_creature_event_ai_spell_cooldown(creature_guid, &ready, now);
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[script],
+            now + Duration::from_millis(1),
+        )
+        .is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_range_and_missing_aura_select_casts() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 30.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(476);
+    spawn.guid = 1907;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let fireball = test_creature_ai_cast_script(
+        47604,
+        476,
+        EVENT_AI_EVENT_RANGE,
+        [0, 40, 3_600, 4_800],
+        20793,
+        EVENT_AI_TARGET_HOSTILE,
+    );
+    let frost_armor = test_creature_ai_cast_script(
+        47603,
+        476,
+        EVENT_AI_EVENT_MISSING_AURA,
+        [12544, 1, 5_000, 5_000],
+        12544,
+        EVENT_AI_TARGET_SELF,
+    );
+
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[fireball], now)
+        .expect("range EventAI should cast when target is inside configured distance");
+    assert_eq!(ready.spell_id, 20793);
+    assert_eq!(ready.target, player);
+
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[frost_armor.clone()], now)
+        .expect("missing-aura EventAI should cast when the aura is absent");
+    assert_eq!(ready.spell_id, 12544);
+    assert_eq!(ready.target, creature_guid);
+
+    let template = frost_armor_spell_template();
+    let aura = build_active_aura(
+        &template,
+        creature_guid,
+        6,
+        test_spell_effect_value_context(&template),
+        now,
+        None,
+    );
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .active_auras
+        .push(aura);
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[frost_armor], now)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0));
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(94);
+    spawn.guid = 1911;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+
+    let backstab_without_repeat_timer = test_creature_ai_cast_script(
+        9401,
+        94,
+        EVENT_AI_EVENT_FACING_TARGET,
+        [0, 0, 0, 0],
+        53,
+        EVENT_AI_TARGET_HOSTILE,
+    );
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[backstab_without_repeat_timer.clone()],
+            now,
+        )
+        .expect("creature should be behind the player and inside the CMaNGOS 5yd check");
+    assert_eq!(ready.spell_id, 53);
+    map.apply_db_creature_event_ai_spell_cooldown(creature_guid, &ready, now);
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[backstab_without_repeat_timer],
+            now + Duration::from_millis(1),
+        )
+        .is_none());
+
+    let front_only = test_creature_ai_cast_script(
+        9402,
+        94,
+        EVENT_AI_EVENT_FACING_TARGET,
+        [1, 0, 5_000, 5_000],
+        53,
+        EVENT_AI_TARGET_HOSTILE,
+    );
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[front_only.clone()], now)
+        .is_none());
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .current_position = WorldPosition::new(0, 7.0, 0.0, 0.0, 0.0);
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[front_only], now)
+        .is_some());
+
+    map.creatures
+        .get_mut(&creature_guid.raw())
+        .unwrap()
+        .current_position = WorldPosition::new(0, -1.0, 0.0, 0.0, 0.0);
+    let far_backstab = test_creature_ai_cast_script(
+        9403,
+        94,
+        EVENT_AI_EVENT_FACING_TARGET,
+        [0, 0, 5_000, 5_000],
+        53,
+        EVENT_AI_TARGET_HOSTILE,
+    );
+    assert!(map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[far_backstab], now)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_ooc_timer_and_spawned_select_self_casts() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut spawn = test_creature_spawn(68);
+    spawn.guid = 1909;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+
+    let ooc = test_creature_ai_cast_script(
+        6801,
+        68,
+        EVENT_AI_EVENT_TIMER_OOC,
+        [2_000, 2_000, 5_000, 5_000],
+        18950,
+        EVENT_AI_TARGET_SELF,
+    );
+    assert!(map
+        .ready_db_creature_event_ai_ooc_spell_cast(creature_guid, &[ooc.clone()], now)
+        .is_none());
+    let ready = map
+        .ready_db_creature_event_ai_ooc_spell_cast(
+            creature_guid,
+            &[ooc],
+            now + Duration::from_millis(2_000),
+        )
+        .expect("OOC EventAI timer should become ready after its initial delay");
+    assert_eq!(ready.spell_id, 18950);
+    assert_eq!(ready.target, creature_guid);
+
+    let mut spawned = test_creature_ai_cast_script(
+        6802,
+        68,
+        EVENT_AI_EVENT_SPAWNED,
+        [EVENT_AI_SPAWNED_ALWAYS, 0, 0, 0],
+        9036,
+        EVENT_AI_TARGET_SELF,
+    );
+    spawned.event_flags = 0;
+    let ready = map
+        .ready_db_creature_event_ai_ooc_spell_cast(creature_guid, &[spawned.clone()], now)
+        .expect("spawned EventAI should execute once for always condition");
+    assert_eq!(ready.spell_id, 9036);
+    map.apply_db_creature_event_ai_spell_cooldown(creature_guid, &ready, now);
+    assert!(map
+        .ready_db_creature_event_ai_ooc_spell_cast(creature_guid, &[spawned], now)
+        .is_none());
+}
+
+#[test]
+fn map_runtime_event_ai_target_modes_use_threat_list() {
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 1, WorldPosition::new(0, 3.0, 0.0, 0.0, 0.0));
+    insert_map_runtime_player_for_test(&mut map, 2, WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0));
+    let first = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let second = ObjectGuid::new(HighGuid::Player, 0, 2);
+    let mut spawn = test_creature_spawn(40);
+    spawn.guid = 1910;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, first, now)
+        .unwrap();
+    map.add_db_creature_threat(creature_guid, first, 20.0);
+    map.add_db_creature_threat(creature_guid, second, 5.0);
+
+    let second_aggro = test_creature_ai_cast_script(
+        4010,
+        40,
+        EVENT_AI_EVENT_AGGRO,
+        [0, 0, 0, 0],
+        6016,
+        EVENT_AI_TARGET_HOSTILE_SECOND_AGGRO,
+    );
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, first, &[second_aggro], now)
+        .expect("second-aggro EventAI target should select the second threat entry");
+    assert_eq!(ready.target, second);
+
+    let farthest = test_creature_ai_cast_script(
+        4011,
+        40,
+        EVENT_AI_EVENT_AGGRO,
+        [0, 0, 0, 0],
+        6016,
+        EVENT_AI_TARGET_HOSTILE_FARTHEST_AWAY,
+    );
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(creature_guid, first, &[farthest], now)
+        .expect("farthest EventAI target should select the farthest threat entry");
+    assert_eq!(ready.target, second);
+}
+
+#[test]
+fn map_runtime_creature_aura_only_spell_cast_applies_to_creature() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(476);
+    spawn.guid = 1908;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let template = frost_armor_spell_template();
+    let cast = map
+        .prepare_db_creature_spell_cast_from_template(
+            creature_guid,
+            creature_guid,
+            &template,
+            None,
+            None,
+            None,
+            now,
+        )
+        .expect("aura-only creature spell should prepare a real cast");
+    assert!(matches!(cast.effect, ActiveDbCreatureSpellEffect::None));
+    map.start_db_creature_spell_cast(cast)
+        .unwrap()
+        .expect("aura-only cast should start");
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(creature_guid, player, now)
+        .unwrap()
+        .expect("aura-only cast should complete");
+    assert!(matches!(
+        completed.effect,
+        DbCreatureCompletedSpellEffect::AuraOnly
+    ));
+    assert!(completed.creature_aura_event.is_some());
+    assert!(map
+        .creatures
+        .get(&creature_guid.raw())
+        .unwrap()
+        .active_auras
+        .iter()
+        .any(|aura| aura.spell_id == 12544));
+}
+
+#[test]
 fn map_runtime_db_creature_evade_and_return_home_are_authoritative() {
     let mut map = MapRuntime::new(0, 0);
     let mut spawn = test_creature_spawn(6);
@@ -15113,6 +15602,29 @@ fn test_player_runtime_with_controller(
     }
 }
 
+#[test]
+fn gm_flag_prevents_player_world_damage() {
+    let mut player =
+        test_player_runtime(7, SessionId(7), WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    player.flags |= PLAYER_FLAGS_GM;
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
+    let source = ObjectGuid::new(HighGuid::Unit, 0, 42);
+
+    let applied = apply_player_runtime_world_damage(
+        &mut player,
+        player_guid,
+        Some(source),
+        10,
+        WorldDamageKind::Melee,
+        Instant::now(),
+    )
+    .unwrap();
+
+    assert!(applied.is_none());
+    assert_eq!(player.health, 20);
+    assert_eq!(player.death_state, PlayerDeathState::Alive);
+}
+
 fn test_player_combat_stats() -> PlayerCombatStats {
     let world_stats = PlayerWorldStats {
         base_health: 20,
@@ -15630,6 +16142,175 @@ fn root_aura_template_stops_movement_until_expiration() {
     assert!(!active_aura_has_root(
         &map.players.get(&7).unwrap().active_auras
     ));
+}
+
+#[test]
+fn utility_visibility_auras_use_generic_template_metadata() {
+    let caster = ObjectGuid::new(HighGuid::Unit, 6, 68);
+    let now = Instant::now();
+
+    let mut guard_detection = test_spell_template(18950);
+    guard_detection.spell_name = "Invisibility and Stealth Detection".to_string();
+    guard_detection.effect1 = SPELL_EFFECT_APPLY_AURA;
+    guard_detection.effect_apply_aura_name1 = SPELL_AURA_MOD_INVISIBILITY_DETECTION;
+    guard_detection.effect_base_points1 = 99_998;
+    guard_detection.effect_misc_value1 = 1;
+    guard_detection.effect2 = SPELL_EFFECT_APPLY_AURA;
+    guard_detection.effect_apply_aura_name2 = SPELL_AURA_MOD_STEALTH_DETECT;
+    guard_detection.effect_base_points2 = 99_998;
+    guard_detection.effect_misc_value2 = 0;
+    let aura = build_active_aura(
+        &guard_detection,
+        caster,
+        60,
+        test_spell_effect_value_context(&guard_detection),
+        now,
+        None,
+    );
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![
+            AuraStatModifier::InvisibilityDetect {
+                kind: 1,
+                amount: 99_999,
+            },
+            AuraStatModifier::StealthDetect {
+                kind: 0,
+                amount: 99_999,
+            },
+        ]
+    );
+    assert!(spell_template_coverage_issues(&guard_detection).is_empty());
+
+    let mut perception = test_spell_template(20600);
+    perception.spell_name = "Perception".to_string();
+    perception.effect1 = SPELL_EFFECT_APPLY_AURA;
+    perception.effect_apply_aura_name1 = SPELL_AURA_MOD_STEALTH_DETECT;
+    perception.effect_base_points1 = 49;
+    let aura = build_active_aura(
+        &perception,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&perception),
+        now,
+        None,
+    );
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::StealthDetect {
+            kind: 0,
+            amount: 50,
+        }]
+    );
+
+    let mut shroud = test_spell_template(10848);
+    shroud.spell_name = "Shroud of Death".to_string();
+    shroud.effect1 = SPELL_EFFECT_APPLY_AURA;
+    shroud.effect_apply_aura_name1 = SPELL_AURA_DUMMY;
+    shroud.effect_misc_value1 = 42;
+    let aura = build_active_aura(
+        &shroud,
+        caster,
+        60,
+        test_spell_effect_value_context(&shroud),
+        now,
+        None,
+    );
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::Dummy {
+            aura_name: SPELL_AURA_DUMMY,
+            misc_value: 42,
+            amount: 1,
+        }]
+    );
+}
+
+#[test]
+fn tracking_auras_update_player_tracking_fields() {
+    let mut tracking = test_spell_template(999_440);
+    tracking.effect1 = SPELL_EFFECT_APPLY_AURA;
+    tracking.effect_apply_aura_name1 = SPELL_AURA_TRACK_CREATURES;
+    tracking.effect_misc_value1 = 1;
+    tracking.effect2 = SPELL_EFFECT_APPLY_AURA;
+    tracking.effect_apply_aura_name2 = SPELL_AURA_TRACK_CREATURES;
+    tracking.effect_misc_value2 = 8;
+    tracking.effect3 = SPELL_EFFECT_APPLY_AURA;
+    tracking.effect_apply_aura_name3 = SPELL_AURA_TRACK_RESOURCES;
+    tracking.effect_misc_value3 = 2;
+    let aura = build_active_aura(
+        &tracking,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&tracking),
+        Instant::now(),
+        None,
+    );
+
+    assert_eq!(
+        active_aura_track_creatures_mask(std::slice::from_ref(&aura)),
+        (1 << 0) | (1 << 7)
+    );
+    assert_eq!(
+        active_aura_track_resources_mask(std::slice::from_ref(&aura)),
+        1 << 1
+    );
+
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_aura_update_body(player, &[aura]).unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[PLAYER_TRACK_CREATURES], Some((1 << 0) | (1 << 7)));
+    assert_eq!(values[PLAYER_TRACK_RESOURCES], Some(1 << 1));
+}
+
+#[test]
+fn ghost_and_water_walk_auras_are_distinct_runtime_modifiers() {
+    let now = Instant::now();
+    let caster = ObjectGuid::new(HighGuid::Unit, 6, 68);
+
+    let mut ghost_template = test_spell_template(9036);
+    ghost_template.spell_name = "Ghost".to_string();
+    ghost_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    ghost_template.effect_apply_aura_name1 = SPELL_AURA_GHOST;
+    let ghost = build_active_aura(
+        &ghost_template,
+        caster,
+        60,
+        test_spell_effect_value_context(&ghost_template),
+        now,
+        None,
+    );
+    assert_eq!(ghost.stat_modifiers, vec![AuraStatModifier::Ghost]);
+    assert_eq!(
+        active_aura_unit_vis_flags(std::slice::from_ref(&ghost)),
+        UNIT_VIS_FLAG_GHOST
+    );
+
+    let creature = ObjectGuid::new(HighGuid::Unit, 6, 42);
+    let body = build_db_creature_aura_update_body(creature, std::slice::from_ref(&ghost)).unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], creature);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_BYTES_1], Some(UNIT_VIS_FLAG_GHOST << 24));
+
+    let clear = build_db_creature_aura_update_body(creature, &[]).unwrap();
+    let (values, trailing) = decode_values_update_block(&clear[5..], creature);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_BYTES_1], Some(0));
+
+    let mut water_walk_template = test_spell_template(546);
+    water_walk_template.spell_name = "Water Walking".to_string();
+    water_walk_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    water_walk_template.effect_apply_aura_name1 = SPELL_AURA_WATER_WALK;
+    let water_walk = build_active_aura(
+        &water_walk_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&water_walk_template),
+        now,
+        None,
+    );
+    assert_eq!(water_walk.stat_modifiers, vec![AuraStatModifier::WaterWalk]);
 }
 
 #[test]
@@ -22936,6 +23617,18 @@ fn fireball_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+fn frost_armor_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(12544);
+    template.spell_name = "Frost Armor".to_string();
+    template.school = 16;
+    template.duration_index = 21;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_base_points1 = 11;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_RESISTANCE;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template
+}
+
 fn fireball_with_dot_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = fireball_spell_template();
     template.casting_time_index = 0;
@@ -23036,6 +23729,70 @@ fn charge_spell_template() -> wow_db::SpellTemplateQuery {
     template.speed = 27.0;
     template.effect1 = SPELL_EFFECT_CHARGE;
     template.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
+    template.effect2 = SPELL_EFFECT_ENERGIZE;
+    template.effect_base_points2 = 89;
+    template.effect_die_sides2 = 1;
+    template.effect_implicit_target_a2 = TARGET_UNIT_CASTER;
+    template.effect3 = 64;
+    template.effect_trigger_spell3 = 7922;
+    template.effect_implicit_target_a3 = TARGET_UNIT_ENEMY;
+    template.dmg_class = 1;
+    template
+}
+
+fn charge_stun_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(7922);
+    template.spell_name = "Charge Stun".to_string();
+    template.school = 1;
+    template.attributes = 327696;
+    template.attributes_ex = 512;
+    template.duration_index = 36;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_STUN;
+    template.effect_base_points1 = -1;
+    template.effect_die_sides1 = 1;
+    template.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
+    template.dmg_class = 1;
+    template
+}
+
+fn thunder_clap_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(6343);
+    template.spell_name = "Thunder Clap".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    template.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    template.power_type = POWER_TYPE_RAGE;
+    template.mana_cost = 200;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_500;
+    template.effect1 = SPELL_EFFECT_SCHOOL_DAMAGE;
+    template.effect_base_points1 = 9;
+    template.effect_die_sides1 = 1;
+    template.effect_implicit_target_a1 = TARGET_LOCATION_CASTER_SRC;
+    template.effect_radius_index1 = 14;
+    template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name2 = SPELL_AURA_MOD_MELEE_HASTE;
+    template.effect_base_points2 = -11;
+    template.effect_die_sides2 = 1;
+    template.effect_implicit_target_a2 = TARGET_LOCATION_CASTER_SRC;
+    template.effect_radius_index2 = 14;
+    template.duration_index = 1;
+    template.spell_family_name = 4;
+    template.spell_family_flags = 128;
+    template.dmg_class = 1;
+    template
+}
+
+fn frost_nova_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(122);
+    template.spell_name = "Frost Nova".to_string();
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_ROOT;
+    template.effect_implicit_target_a1 = TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC;
+    template.effect_radius_index1 = 11;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_500;
     template
 }
 
@@ -23667,14 +24424,7 @@ fn create_item_spell_effects_use_scaled_conjure_count_and_stack_cap() {
 
 #[test]
 fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
-    let mut frost_nova = test_spell_template(122);
-    frost_nova.effect1 = SPELL_EFFECT_APPLY_AURA;
-    frost_nova.effect_apply_aura_name1 = SPELL_AURA_MOD_ROOT;
-    frost_nova.effect_implicit_target_a1 = TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC;
-    frost_nova.effect_radius_index1 = 11;
-    frost_nova.start_recovery_category = 133;
-    frost_nova.start_recovery_time = 1_500;
-
+    let frost_nova = frost_nova_spell_template();
     let profile = player_spell_cast_profile(&frost_nova).expect("frost nova profile");
     assert_eq!(profile.kind, SpellCastKind::AuraApplication);
     assert_eq!(profile.aura_target, SpellAuraTarget::CasterAreaEnemy);
@@ -23708,6 +24458,154 @@ fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
     assert_eq!(
         spell_effect_radius_yards(&maps, spell_info.effects[0]),
         Some(8.0)
+    );
+}
+
+#[test]
+fn thunder_clap_uses_caster_source_aoe_damage_and_attack_speed_debuff() {
+    let thunder_clap = thunder_clap_spell_template();
+    let profile = player_spell_cast_profile(&thunder_clap).expect("thunder clap profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.aura_target, SpellAuraTarget::CasterAreaEnemy);
+    assert_eq!(profile.damage, 10);
+
+    let spell_info = SpellInfo::from_template(&thunder_clap);
+    assert_eq!(
+        spell_info.unit_target_kind(profile.kind),
+        SpellTargetKind::Caster
+    );
+    assert!(effect_targets_caster_centered_hostile_area(
+        spell_info.effects[0]
+    ));
+    assert!(effect_targets_caster_centered_hostile_area(
+        spell_info.effects[1]
+    ));
+
+    let aura = build_active_aura(
+        &thunder_clap,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        6,
+        test_spell_effect_value_context(&thunder_clap),
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive, "Thunder Clap is a hostile AoE debuff");
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::MeleeAttackTimePercent { percent: -10 }]
+    );
+
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        14,
+        SpellRadiusEntry {
+            radius: 5.0,
+            radius_per_level: 0.0,
+            max_radius: 5.0,
+        },
+    );
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+    assert_eq!(
+        spell_effect_radius_yards(&maps, spell_info.effects[0]),
+        Some(5.0)
+    );
+}
+
+#[test]
+fn caster_centered_hostile_aoe_spell_packets_do_not_self_target() {
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let incoming_self_target = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(caster),
+        gameobject_target: None,
+    };
+    let profile = player_spell_cast_profile(&thunder_clap_spell_template()).unwrap();
+    let targets = normalize_spell_cast_targets(incoming_self_target, &profile, caster);
+
+    assert_eq!(targets.target_mask, 0);
+    assert_eq!(targets.unit_target, None);
+    let go = build_spell_go_body(caster, 6343, &targets).unwrap();
+    let mut cursor = PackedGuid::packed_size(caster) * 2;
+    assert_eq!(read_u32(&go, &mut cursor).unwrap(), 6343);
+    cursor += 2;
+    assert_eq!(
+        go[cursor], 0,
+        "SMSG_SPELL_GO must not list the caster as a hit target"
+    );
+    cursor += 2;
+    assert_eq!(
+        u16::from_le_bytes(go[cursor..cursor + 2].try_into().unwrap()),
+        0
+    );
+    assert_eq!(cursor + 2, go.len());
+}
+
+#[test]
+fn spell_effect_coverage_classifies_every_cmangos_effect_id() {
+    for effect_id in 0..CMANGOS_MAX_SPELL_EFFECTS {
+        assert_ne!(
+            spell_effect_support(effect_id),
+            SpellMechanicSupport::Unknown,
+            "effect {effect_id} must be classified as implemented, no-op, or pending"
+        );
+    }
+    assert_eq!(
+        spell_effect_support(CMANGOS_MAX_SPELL_EFFECTS),
+        SpellMechanicSupport::Unknown
+    );
+}
+
+#[test]
+fn spell_aura_coverage_classifies_every_cmangos_aura_id() {
+    for aura_type in 0..CMANGOS_TOTAL_AURAS {
+        assert_ne!(
+            spell_aura_support(aura_type),
+            SpellMechanicSupport::Unknown,
+            "aura {aura_type} must be classified as implemented, no-op, or pending"
+        );
+    }
+    assert_eq!(
+        spell_aura_support(CMANGOS_TOTAL_AURAS),
+        SpellMechanicSupport::Unknown
+    );
+}
+
+#[test]
+fn starter_warrior_spell_templates_have_no_spell_coverage_gaps() {
+    for template in [
+        heroic_strike_spell_template(),
+        battle_shout_spell_template(),
+        rend_spell_template(),
+        charge_spell_template(),
+        charge_stun_spell_template(),
+        thunder_clap_spell_template(),
+    ] {
+        assert_eq!(
+            spell_template_coverage_issues(&template),
+            Vec::new(),
+            "{} should be covered by generic spell machinery",
+            template.spell_name
+        );
+    }
+}
+
+#[test]
+fn spell_coverage_audit_reports_pending_effects_and_auras() {
+    let mut template = test_spell_template(999_900);
+    template.effect1 = 28;
+    template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name2 = 7;
+
+    let issues = spell_template_coverage_issues(&template);
+    assert_eq!(issues.len(), 2);
+    assert_eq!(issues[0].mechanic, SpellCoverageMechanic::Effect);
+    assert_eq!(issues[0].mechanic_id, 28);
+    assert_eq!(issues[0].support, SpellMechanicSupport::Pending("summon"));
+    assert_eq!(issues[1].mechanic, SpellCoverageMechanic::Aura);
+    assert_eq!(issues[1].mechanic_id, 7);
+    assert_eq!(
+        issues[1].support,
+        SpellMechanicSupport::Pending("control state")
     );
 }
 
@@ -25153,6 +26051,265 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         92
     );
+}
+
+#[tokio::test]
+async fn thunder_clap_damages_and_debuffs_nearby_hostile_creatures() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        14,
+        SpellRadiusEntry {
+            radius: 5.0,
+            radius_per_level: 0.0,
+            max_radius: 5.0,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(6343, Some(thunder_clap_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.power2 = 300;
+    maps.add_player(player).await.unwrap();
+    let mut first = test_creature_spawn(6);
+    first.guid = 45;
+    first.position_x = -8947.0;
+    first.position_y = -132.0;
+    first.position_z = 83.5312;
+    first.template.faction = 17;
+    let first_target = creature_spawn_guid(&first);
+    let mut second = test_creature_spawn(6);
+    second.guid = 46;
+    second.position_x = -8948.0;
+    second.position_y = -135.0;
+    second.position_z = 83.5312;
+    second.template.faction = 17;
+    let second_target = creature_spawn_guid(&second);
+    let mut out_of_range = test_creature_spawn(6);
+    out_of_range.guid = 47;
+    out_of_range.position_x = -8930.0;
+    out_of_range.position_y = -132.0;
+    out_of_range.position_z = 83.5312;
+    out_of_range.template.faction = 17;
+    let out_of_range_target = creature_spawn_guid(&out_of_range);
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(first),
+            DbCreatureRuntime::new(second),
+            DbCreatureRuntime::new(out_of_range),
+        ],
+    )
+    .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&6343u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, 7)).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(6343);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 6,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_rage: 300,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let first = maps.db_creature_snapshot(0, first_target).await.unwrap();
+    let second = maps.db_creature_snapshot(0, second_target).await.unwrap();
+    let out_of_range = maps
+        .db_creature_snapshot(0, out_of_range_target)
+        .await
+        .unwrap();
+    assert_eq!(first.health, 110);
+    assert_eq!(second.health, 110);
+    assert_eq!(out_of_range.health, 120);
+    assert!(first.active_auras.iter().any(|aura| aura.spell_id == 6343));
+    assert!(second.active_auras.iter().any(|aura| aura.spell_id == 6343));
+    assert!(out_of_range.active_auras.is_empty());
+    assert_eq!(session.character.player_rage, 100);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn frost_nova_roots_neutral_attackable_creatures() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        11,
+        SpellRadiusEntry {
+            radius: 8.0,
+            radius_per_level: 0.0,
+            max_radius: 8.0,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(122, Some(frost_nova_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId::next(), player_position))
+        .await
+        .unwrap();
+
+    let mut neutral = test_creature_spawn(6);
+    neutral.guid = 48;
+    neutral.position_x = -8947.0;
+    neutral.position_y = -132.0;
+    neutral.position_z = 83.5312;
+    neutral.template.faction = 25;
+    let neutral_target = creature_spawn_guid(&neutral);
+    let mut friendly = test_creature_spawn(6);
+    friendly.guid = 49;
+    friendly.position_x = -8948.0;
+    friendly.position_y = -135.0;
+    friendly.position_z = 83.5312;
+    friendly.template.faction = 12;
+    let friendly_target = creature_spawn_guid(&friendly);
+    let mut out_of_range = test_creature_spawn(6);
+    out_of_range.guid = 50;
+    out_of_range.position_x = -8930.0;
+    out_of_range.position_y = -132.0;
+    out_of_range.position_z = 83.5312;
+    out_of_range.template.faction = 25;
+    let out_of_range_target = creature_spawn_guid(&out_of_range);
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(neutral),
+            DbCreatureRuntime::new(friendly),
+            DbCreatureRuntime::new(out_of_range),
+        ],
+    )
+    .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&122u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, 7)).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(122);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 6,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let neutral = maps.db_creature_snapshot(0, neutral_target).await.unwrap();
+    let friendly = maps.db_creature_snapshot(0, friendly_target).await.unwrap();
+    let out_of_range = maps
+        .db_creature_snapshot(0, out_of_range_target)
+        .await
+        .unwrap();
+    assert!(neutral.active_auras.iter().any(|aura| aura.spell_id == 122));
+    assert!(active_aura_has_root(&neutral.active_auras));
+    assert!(friendly.active_auras.is_empty());
+    assert!(out_of_range.active_auras.is_empty());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
 }
 
 #[tokio::test]
@@ -26802,6 +27959,9 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
     object_mgr
         .prime_spell_template_for_test(100, Some(charge_spell_template()))
         .await;
+    object_mgr
+        .prime_spell_template_for_test(7922, Some(charge_stun_spell_template()))
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -26878,6 +28038,11 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
         .position;
     assert!(charged_position.x > 0.0 && charged_position.x < 10.0);
     assert_eq!(session.combat.active_combat_target, Some(target));
+    assert_eq!(session.character.player_rage, 90);
+    assert!(
+        active_aura_has_stun(&creature.active_auras),
+        "Charge should fire its triggered Charge Stun spell"
+    );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(packets
         .iter()
@@ -26902,6 +28067,9 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
     let object_mgr = ObjectMgr::default();
     object_mgr
         .prime_spell_template_for_test(100, Some(charge_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(7922, Some(charge_stun_spell_template()))
         .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
@@ -30186,6 +31354,35 @@ fn parses_gm_dot_commands_for_creature_spawn_and_die() {
         parse_gm_dot_command(".character level 999"),
         Some(Ok(GmDotCommand::LevelSet(DEFAULT_MAX_PLAYER_LEVEL)))
     );
+    assert_eq!(
+        parse_gm_dot_command(".go 1 2"),
+        Some(Ok(GmDotCommand::Go(GmGoDestination::Coordinates {
+            x: 1.0,
+            y: 2.0,
+            z: None,
+            map_id: None,
+        })))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".go 1 2 3 0"),
+        Some(Ok(GmDotCommand::Go(GmGoDestination::Coordinates {
+            x: 1.0,
+            y: 2.0,
+            z: Some(3.0),
+            map_id: Some(0),
+        })))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".go Northshire Abbey"),
+        Some(Ok(GmDotCommand::Go(GmGoDestination::Waypoint(
+            "Northshire Abbey".to_string()
+        ))))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".modify speed 5"),
+        Some(Ok(GmDotCommand::ModifySpeed(5.0)))
+    );
+    assert!(find_gm_waypoint("Northshire Abbey").is_some());
     assert_eq!(gm_relative_level(58, 5), DEFAULT_MAX_PLAYER_LEVEL);
     assert_eq!(gm_relative_level(3, -10), 1);
 }

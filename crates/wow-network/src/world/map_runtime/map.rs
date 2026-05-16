@@ -377,6 +377,7 @@ pub(in crate::world) struct ActiveDbCreatureSpellCast {
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) target: ObjectGuid,
     pub(in crate::world) spell_id: u32,
+    pub(in crate::world) requires_behind: bool,
     pub(in crate::world) effect: ActiveDbCreatureSpellEffect,
     pub(in crate::world) aura: Option<ActiveAura>,
     pub(in crate::world) range: Option<SpellRangeEntry>,
@@ -387,6 +388,7 @@ pub(in crate::world) struct ActiveDbCreatureSpellCast {
 
 #[derive(Debug, Clone)]
 pub(in crate::world) enum ActiveDbCreatureSpellEffect {
+    None,
     Damage {
         amount: u32,
         school: u8,
@@ -528,10 +530,12 @@ pub(in crate::world) struct DbCreatureCompletedSpellCastEvent {
     pub(in crate::world) spell_go_body: Vec<u8>,
     pub(in crate::world) effect: DbCreatureCompletedSpellEffect,
     pub(in crate::world) aura_event: Option<PlayerAuraUpdateEvent>,
+    pub(in crate::world) creature_aura_event: Option<DbCreatureAuraUpdateEvent>,
 }
 
 #[derive(Debug)]
 pub(in crate::world) enum DbCreatureCompletedSpellEffect {
+    AuraOnly,
     PlayerDamage(DbCreaturePlayerSpellDamageEvent),
     CreatureHeal(DbCreatureSpellHealEvent),
     Interrupted(DbCreatureInterruptedSpellCastEvent),

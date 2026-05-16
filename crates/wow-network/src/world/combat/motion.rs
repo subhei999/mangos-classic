@@ -234,7 +234,7 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_has_root(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras) {
         return None;
     }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
@@ -304,7 +304,7 @@ pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_has_root(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras) {
         return None;
     }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
@@ -472,7 +472,7 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     chase_destination: Option<WorldPosition>,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_has_root(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras) {
         return None;
     }
     let start = creature.current_position;
@@ -568,7 +568,7 @@ pub(in crate::world) fn start_db_creature_return_home_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_has_root(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras) {
         return None;
     }
     if matches!(creature.motion, CreatureMotionState::ReturnHome(_)) {
@@ -641,7 +641,7 @@ pub(in crate::world) fn start_db_creature_flee_motion_runtime(
     now: Instant,
     duration: Duration,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_has_root(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras) {
         return None;
     }
     if matches!(creature.motion, CreatureMotionState::Flee(_)) {

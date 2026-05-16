@@ -247,6 +247,11 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
         )
         .await;
     }
+    if active_aura_has_stun(&active.creature.active_auras) {
+        defer_ready_db_creature_swing_retry(shared_world, map_id, session, attacker, player, now)
+            .await;
+        return Ok(());
+    }
     if active.creature.is_fleeing() {
         defer_ready_db_creature_swing_retry(shared_world, map_id, session, attacker, player, now)
             .await;
@@ -278,6 +283,23 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
         shared_world,
         map_id,
         session,
+        attacker,
+        player,
+        now,
+        header_crypto,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    if try_start_db_creature_event_ai_spell_cast(
+        stream,
+        context.world_db_pool,
+        shared_world,
+        session_id,
+        map_id,
+        session,
+        &active.creature,
         attacker,
         player,
         now,
@@ -551,6 +573,7 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
         return Ok(false);
     }
     let spell_range = shared_world.maps.spell_range(template.range_index);
+    let spell_info = SpellInfo::from_template(&template);
     if shared_world
         .maps
         .validate_db_creature_spell_against_target(
@@ -559,6 +582,7 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
             ready.target,
             &session.movement.db_creature_navigation,
             spell_range,
+            spell_info.requires_behind_target(),
         )
         .await
         .check
@@ -567,7 +591,6 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
         return Ok(false);
     }
     let target = ready.target;
-    let spell_info = SpellInfo::from_template(&template);
     let aura =
         (target.is_player() && spell_info.has_effect(SpellEffectDispatch::ApplyAura)).then(|| {
             build_active_aura(
@@ -633,6 +656,7 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
         caster: attacker,
         target,
         spell_id: template.id,
+        requires_behind: spell_info.requires_behind_target(),
         effect,
         aura,
         range: spell_range,
@@ -668,6 +692,213 @@ pub(in crate::world) async fn try_start_db_creature_spell_cast(
             session,
             attacker,
             target,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn try_start_db_creature_event_ai_spell_cast(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    current_session_id: SessionId,
+    map_id: u32,
+    session: &mut WorldSessionState,
+    creature: &DbCreatureRuntime,
+    attacker: ObjectGuid,
+    victim: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let scripts = shared_world
+        .object_mgr
+        .creature_ai_scripts(world_db_pool, creature.spawn.entry)
+        .await?;
+    if scripts.is_empty() {
+        return Ok(false);
+    }
+    let Some(ready) = shared_world
+        .maps
+        .ready_db_creature_event_ai_spell_cast(map_id, attacker, victim, &scripts, now)
+        .await
+    else {
+        return Ok(false);
+    };
+    let Some(template) = shared_world
+        .object_mgr
+        .spell_template(world_db_pool, ready.spell_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let spell_range = shared_world.maps.spell_range(template.range_index);
+    let spell_info = SpellInfo::from_template(&template);
+    if shared_world
+        .maps
+        .validate_db_creature_spell_against_target(
+            map_id,
+            attacker,
+            ready.target,
+            &session.movement.db_creature_navigation,
+            spell_range,
+            spell_info.requires_behind_target(),
+        )
+        .await
+        .check
+        != DbCreatureSpellTargetCheck::Clear
+    {
+        return Ok(false);
+    }
+    let Some(cast) = shared_world
+        .maps
+        .prepare_db_creature_spell_cast_from_template(
+            map_id,
+            attacker,
+            ready.target,
+            &template,
+            now,
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    let cast_time_millis = cast.cast_time_millis;
+    let target = cast.target;
+    let Some(start_packets) = shared_world
+        .maps
+        .start_db_creature_spell_cast(map_id, cast)
+        .await?
+    else {
+        return Ok(false);
+    };
+    shared_world
+        .maps
+        .apply_db_creature_event_ai_spell_cooldown(map_id, attacker, &ready, now)
+        .await;
+    send_or_dispatch_creature_spell_packets(
+        stream,
+        shared_world,
+        session,
+        start_packets,
+        Some(current_session_id),
+        header_crypto,
+    )
+    .await?;
+    if cast_time_millis == 0 {
+        complete_ready_db_creature_spell_cast(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            attacker,
+            target,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn try_start_db_creature_ooc_event_ai_spell_cast(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    current_session_id: SessionId,
+    map_id: u32,
+    session: &mut WorldSessionState,
+    _creature: &DbCreatureRuntime,
+    attacker: ObjectGuid,
+    nearby_player: ObjectGuid,
+    scripts: &[wow_db::CreatureAiScriptQuery],
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(ready) = shared_world
+        .maps
+        .ready_db_creature_event_ai_ooc_spell_cast(map_id, attacker, scripts, now)
+        .await
+    else {
+        return Ok(false);
+    };
+    let Some(template) = shared_world
+        .object_mgr
+        .spell_template(world_db_pool, ready.spell_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let spell_range = shared_world.maps.spell_range(template.range_index);
+    let spell_info = SpellInfo::from_template(&template);
+    if ready.target != attacker
+        && shared_world
+            .maps
+            .validate_db_creature_spell_against_target(
+                map_id,
+                attacker,
+                ready.target,
+                &session.movement.db_creature_navigation,
+                spell_range,
+                spell_info.requires_behind_target(),
+            )
+            .await
+            .check
+            != DbCreatureSpellTargetCheck::Clear
+    {
+        return Ok(false);
+    }
+    let Some(cast) = shared_world
+        .maps
+        .prepare_db_creature_spell_cast_from_template(
+            map_id,
+            attacker,
+            ready.target,
+            &template,
+            now,
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    let cast_time_millis = cast.cast_time_millis;
+    let target = cast.target;
+    let Some(start_packets) = shared_world
+        .maps
+        .start_db_creature_spell_cast(map_id, cast)
+        .await?
+    else {
+        return Ok(false);
+    };
+    shared_world
+        .maps
+        .apply_db_creature_event_ai_spell_cooldown(map_id, attacker, &ready, now)
+        .await;
+    send_or_dispatch_creature_spell_packets(
+        stream,
+        shared_world,
+        session,
+        start_packets,
+        Some(current_session_id),
+        header_crypto,
+    )
+    .await?;
+    if cast_time_millis == 0 {
+        complete_ready_db_creature_spell_cast(
+            stream,
+            shared_world,
+            map_id,
+            session,
+            attacker,
+            if target.is_player() {
+                target
+            } else {
+                nearby_player
+            },
             now,
             header_crypto,
         )
@@ -785,6 +1016,7 @@ pub(in crate::world) async fn complete_ready_db_creature_spell_cast(
         return Ok(false);
     };
     let mut aura_event = event.aura_event;
+    let creature_aura_event = event.creature_aura_event;
     match event.effect {
         DbCreatureCompletedSpellEffect::Interrupted(interrupted) => {
             send_or_dispatch_creature_spell_packets(
@@ -904,6 +1136,28 @@ pub(in crate::world) async fn complete_ready_db_creature_spell_cast(
             .await?;
             shared_world.sessions.dispatch(heal.observer_packets).await;
         }
+        DbCreatureCompletedSpellEffect::AuraOnly => {
+            let spell_go_body = event.spell_go_body;
+            send_packet(
+                stream,
+                SMSG_SPELL_GO,
+                &spell_go_body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            broadcast_db_creature_packet(
+                CreatureCombatBroadcast {
+                    shared_world,
+                    map_id,
+                    player: victim,
+                },
+                session,
+                attacker,
+                SMSG_SPELL_GO,
+                spell_go_body,
+            )
+            .await;
+        }
     }
     if let Some(aura_event) = aura_event {
         for packet in aura_event.direct_packets {
@@ -918,6 +1172,28 @@ pub(in crate::world) async fn complete_ready_db_creature_spell_cast(
         shared_world
             .sessions
             .dispatch(aura_event.observer_packets)
+            .await;
+    }
+    if let Some(creature_aura_event) = creature_aura_event {
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &creature_aura_event.update_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        for packet in creature_aura_event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        shared_world
+            .sessions
+            .dispatch(creature_aura_event.observer_packets)
             .await;
     }
     Ok(true)
@@ -1343,6 +1619,11 @@ pub(in crate::world) fn db_creature_unit_flags(
 ) -> u32 {
     creature.spawn.template.unit_flags
         | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+        | (if active_aura_has_stun(&creature.active_auras) {
+            UNIT_FLAG_STUNNED
+        } else {
+            0
+        })
         | (if creature.is_fleeing() {
             UNIT_FLAG_FLEEING
         } else {

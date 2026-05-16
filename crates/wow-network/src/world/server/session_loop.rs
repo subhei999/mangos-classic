@@ -105,6 +105,7 @@ pub(in crate::world) async fn handle_client(
     send_auth_ok(&mut stream, Some(&mut header_crypto)).await?;
     let mut session = WorldSessionState {
         account: AccountSessionState {
+            account_id: account.id,
             account_security: account.gmlevel,
             gm_mode: false,
             ..AccountSessionState::default()

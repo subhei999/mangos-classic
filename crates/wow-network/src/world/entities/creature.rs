@@ -56,6 +56,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) spell_list_availability_id: Option<u32>,
     pub(in crate::world) unavailable_spell_list_positions: HashSet<u32>,
     pub(in crate::world) triggered_event_ai_scripts: HashSet<i32>,
+    pub(in crate::world) event_ai_cooldowns_until: HashMap<i32, Instant>,
     pub(in crate::world) native_display: CreatureDisplaySelection,
     pub(in crate::world) display_id_override: Option<u32>,
     pub(in crate::world) pending_movement_scripts: Vec<u32>,
@@ -339,7 +340,11 @@ pub(in crate::world) fn write_db_creature_update_values(
         UNIT_FIELD_MAXDAMAGE,
         template.max_melee_dmg.to_bits(),
     )?;
-    set_update_value(&mut values, UNIT_FIELD_BYTES_1, 0)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        creature_unit_bytes_1(active_auras),
+    )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
@@ -359,9 +364,18 @@ pub(in crate::world) fn build_db_creature_aura_update_body(
 
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_unit_aura_update_values(&mut values, active_auras)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_BYTES_1,
+        creature_unit_bytes_1(active_auras),
+    )?;
 
     write_update_values(&mut block, &values)?;
     Ok(build_update_object_body(&[block]))
+}
+
+pub(in crate::world) fn creature_unit_bytes_1(active_auras: &[ActiveAura]) -> u32 {
+    active_aura_unit_vis_flags(active_auras) << 24
 }
 
 pub(in crate::world) fn build_db_creature_emote_state_update_body(

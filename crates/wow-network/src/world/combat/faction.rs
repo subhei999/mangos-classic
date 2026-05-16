@@ -21,6 +21,18 @@ pub(in crate::world) fn can_faction_attack_on_sight(
         == FactionReaction::Hostile
 }
 
+pub(in crate::world) fn can_player_attack_creature_with_spell(
+    faction_templates: &FactionTemplateStore,
+    creature_faction: u32,
+    player_race: u8,
+) -> bool {
+    faction_reaction_to(
+        faction_templates,
+        creature_faction,
+        faction_for_race(player_race),
+    ) != FactionReaction::Friendly
+}
+
 pub(in crate::world) fn faction_reaction_to(
     faction_templates: &FactionTemplateStore,
     this_faction: u32,

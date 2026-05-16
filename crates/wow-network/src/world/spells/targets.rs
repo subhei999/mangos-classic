@@ -14,6 +14,13 @@ pub(in crate::world) fn normalize_spell_cast_targets(
     spell_profile: &SpellCastProfile,
     caster: ObjectGuid,
 ) -> SpellCastTargets {
+    if spell_profile.aura_target == SpellAuraTarget::CasterAreaEnemy {
+        targets.target_mask &= !(SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY);
+        targets.unit_target = None;
+        targets.gameobject_target = None;
+        return targets;
+    }
+
     targets.target_mask =
         (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;
     if targets.unit_target.is_none()
@@ -21,10 +28,7 @@ pub(in crate::world) fn normalize_spell_cast_targets(
             spell_profile.kind,
             SpellCastKind::AuraApplication | SpellCastKind::CreateItem | SpellCastKind::DirectHeal
         )
-        && matches!(
-            spell_profile.aura_target,
-            SpellAuraTarget::Caster | SpellAuraTarget::CasterAreaEnemy
-        )
+        && spell_profile.aura_target == SpellAuraTarget::Caster
     {
         targets.unit_target = Some(caster);
     }

@@ -771,12 +771,13 @@ pub(in crate::world) fn creature_melee_input_against_player(
         .max_level
         .max(creature.spawn.template.min_level);
     let attacker_skill = u16::from(level.max(1)).saturating_mul(5);
+    let damage_done = active_aura_physical_damage_done(&creature.active_auras) as f32;
     MeleeDamageInput {
         attacker_level: level.max(1),
         attacker_skill,
         victim_defense: defense.defense_skill,
-        min_damage: creature.spawn.template.min_melee_dmg,
-        max_damage: creature.spawn.template.max_melee_dmg,
+        min_damage: (creature.spawn.template.min_melee_dmg + damage_done).max(1.0),
+        max_damage: (creature.spawn.template.max_melee_dmg + damage_done).max(1.0),
         victim_armor: defense.armor,
         victim_block_value: defense.block_value,
         chances: starter_player_defense_chances(level, defense),

@@ -1280,6 +1280,23 @@ impl MapRuntimeManager {
         Ok(packets)
     }
 
+    pub(in crate::world) async fn set_player_gm_flags(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        player_flags: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .set_player_gm_flags(character_guid, player_flags)?;
+        Ok(packets)
+    }
+
     #[allow(dead_code)]
     pub(in crate::world) async fn share_db_creature_snapshots(
         &self,
@@ -1541,7 +1558,7 @@ impl MapRuntimeManager {
         event
     }
 
-    pub(in crate::world) async fn nearby_hostile_db_creature_guids_for_player(
+    pub(in crate::world) async fn nearby_attackable_db_creature_guids_for_player_spell(
         &self,
         map_id: u32,
         character_guid: u32,
@@ -1554,7 +1571,7 @@ impl MapRuntimeManager {
         let targets = map
             .lock()
             .await
-            .nearby_hostile_db_creature_guids_for_player(
+            .nearby_attackable_db_creature_guids_for_player_spell(
                 &self.faction_templates,
                 character_guid,
                 radius,
@@ -2177,6 +2194,7 @@ impl MapRuntimeManager {
         target: ObjectGuid,
         navigation: &DbCreatureNavigationGuardrail,
         range: Option<SpellRangeEntry>,
+        requires_behind: bool,
     ) -> DbCreatureSpellTargetValidation {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -2184,10 +2202,13 @@ impl MapRuntimeManager {
                 check: DbCreatureSpellTargetCheck::MissingCaster,
             };
         };
-        let validation = map
-            .lock()
-            .await
-            .validate_db_creature_spell_against_target(caster, target, navigation, range);
+        let validation = map.lock().await.validate_db_creature_spell_against_target(
+            caster,
+            target,
+            navigation,
+            range,
+            requires_behind,
+        );
         validation
     }
 
@@ -2551,6 +2572,77 @@ impl MapRuntimeManager {
             .await
             .ready_db_creature_spell_cast(attacker, victim, spell_list, conditions, now);
         ready
+    }
+
+    pub(in crate::world) async fn ready_db_creature_event_ai_spell_cast(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+    ) -> Option<ReadyDbCreatureEventAiSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let ready = map
+            .lock()
+            .await
+            .ready_db_creature_event_ai_spell_cast(attacker, victim, scripts, now);
+        ready
+    }
+
+    pub(in crate::world) async fn ready_db_creature_event_ai_ooc_spell_cast(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        scripts: &[wow_db::CreatureAiScriptQuery],
+        now: Instant,
+    ) -> Option<ReadyDbCreatureEventAiSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let ready = map
+            .lock()
+            .await
+            .ready_db_creature_event_ai_ooc_spell_cast(attacker, scripts, now);
+        ready
+    }
+
+    pub(in crate::world) async fn prepare_db_creature_spell_cast_from_template(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        target: ObjectGuid,
+        template: &wow_db::SpellTemplateQuery,
+        now: Instant,
+    ) -> Option<ActiveDbCreatureSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let duration = self.spell_duration(template.duration_index);
+        let range = self.spell_range(template.range_index);
+        let cast_time = self.spell_cast_time(template.casting_time_index);
+        let cast = map
+            .lock()
+            .await
+            .prepare_db_creature_spell_cast_from_template(
+                caster, target, template, duration, range, cast_time, now,
+            );
+        cast
+    }
+
+    pub(in crate::world) async fn apply_db_creature_event_ai_spell_cooldown(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        ready: &ReadyDbCreatureEventAiSpellCast,
+        now: Instant,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .apply_db_creature_event_ai_spell_cooldown(attacker, ready, now);
     }
 
     pub(in crate::world) async fn start_db_creature_spell_cast(

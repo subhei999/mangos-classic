@@ -99,6 +99,18 @@ pub(in crate::world) fn build_spline_set_speed_body(
     Ok(SplineSetSpeedResponse { guid, speed }.body())
 }
 
+pub(in crate::world) fn build_force_run_speed_change_body(
+    player: ObjectGuid,
+    counter: u32,
+    speed: f32,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(PackedGuid::packed_size(player) + 8);
+    PackedGuid::write(&mut body, player)?;
+    body.extend_from_slice(&counter.to_le_bytes());
+    body.extend_from_slice(&speed.to_le_bytes());
+    Ok(body)
+}
+
 pub(in crate::world) fn build_monster_move_facing_target_path_body(
     guid: ObjectGuid,
 

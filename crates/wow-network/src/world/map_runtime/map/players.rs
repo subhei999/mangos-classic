@@ -2582,6 +2582,39 @@ impl MapRuntime {
             .collect())
     }
 
+    pub(in crate::world) fn set_player_gm_flags(
+        &mut self,
+        character_guid: u32,
+        player_flags: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.flags = player_flags;
+        let player_position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_gm_mode_update_body(
+                ObjectGuid::new(HighGuid::Player, 0, character_guid),
+                player.race,
+                player_flags,
+            )?,
+        };
+        Ok(self
+            .nearby_player_guids(
+                player_position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(packet.clone()))
+            })
+            .collect())
+    }
+
     #[cfg(test)]
     pub(in crate::world) fn update_player_db_creature_visibility(
         &mut self,

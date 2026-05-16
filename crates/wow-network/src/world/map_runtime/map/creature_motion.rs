@@ -631,6 +631,7 @@ impl MapRuntime {
         creature.loot_current_looter_pass_slots.clear();
         creature.loot_owner = None;
         creature.triggered_event_ai_scripts.clear();
+        creature.event_ai_cooldowns_until.clear();
         self.clear_db_creature_combat(creature_guid);
         self.creatures.get(&creature_guid.raw()).cloned()
     }
@@ -642,6 +643,13 @@ impl MapRuntime {
         now: Instant,
     ) -> Vec<DbCreatureRuntime> {
         if character.position.map_id != self.map_id {
+            return Vec::new();
+        }
+        if self
+            .players
+            .get(&character.guid)
+            .is_some_and(|player| player.flags & PLAYER_FLAGS_GM != 0)
+        {
             return Vec::new();
         }
         let mut guids = HashSet::new();

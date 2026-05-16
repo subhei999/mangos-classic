@@ -20,6 +20,43 @@ pub(in crate::world) enum SpellEffectDispatch {
     Unsupported(u32),
 }
 
+pub(in crate::world) const CMANGOS_MAX_SPELL_EFFECTS: u32 = 130;
+#[allow(dead_code)]
+pub(in crate::world) const CMANGOS_TOTAL_AURAS: u32 = 192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum SpellMechanicSupport {
+    Implemented,
+    KnownNoOp,
+    Pending(&'static str),
+    Unknown,
+}
+
+impl SpellMechanicSupport {
+    #[allow(dead_code)]
+    pub(in crate::world) fn blocks_runtime(self) -> bool {
+        matches!(self, Self::Pending(_) | Self::Unknown)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum SpellCoverageMechanic {
+    Effect,
+    Aura,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SpellCoverageIssue {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) effect_index: usize,
+    pub(in crate::world) mechanic: SpellCoverageMechanic,
+    pub(in crate::world) mechanic_id: u32,
+    pub(in crate::world) mechanic_name: &'static str,
+    pub(in crate::world) support: SpellMechanicSupport,
+}
+
 impl SpellEffectDispatch {
     pub(in crate::world) fn from_effect_id(effect_id: u32) -> Self {
         match effect_id {
@@ -45,6 +82,267 @@ impl SpellEffectDispatch {
     }
 }
 
+pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSupport {
+    if effect_id >= CMANGOS_MAX_SPELL_EFFECTS {
+        return SpellMechanicSupport::Unknown;
+    }
+    match effect_id {
+        0 => SpellMechanicSupport::KnownNoOp,
+        SPELL_EFFECT_SCHOOL_DAMAGE
+        | SPELL_EFFECT_TELEPORT_UNITS
+        | SPELL_EFFECT_APPLY_AURA
+        | SPELL_EFFECT_HEAL
+        | SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
+        | SPELL_EFFECT_CREATE_ITEM
+        | SPELL_EFFECT_ENERGIZE
+        | SPELL_EFFECT_WEAPON_PERCENT_DAMAGE
+        | 33
+        | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER
+        | SPELL_EFFECT_WEAPON_DAMAGE
+        | 36
+        | 59
+        | 60
+        | 64
+        | SPELL_EFFECT_ADD_COMBO_POINTS
+        | SPELL_EFFECT_CHARGE
+        | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => SpellMechanicSupport::Implemented,
+        4 | 12 | 13 | 14 | 15 | 20 | 21 | 23 | 25 | 26 | 37 | 39 | 48 | 49 | 51 | 52 | 65 | 66
+        | 78 | 81 | 91 | 122 | 126 | 127 => SpellMechanicSupport::KnownNoOp,
+        1 => SpellMechanicSupport::Pending("instant kill"),
+        3 | 77 => SpellMechanicSupport::Pending("dummy/script effect"),
+        7 => SpellMechanicSupport::Pending("environmental damage"),
+        8 | 62 => SpellMechanicSupport::Pending("power drain/burn"),
+        9 => SpellMechanicSupport::Pending("health leech"),
+        11 => SpellMechanicSupport::Pending("bind"),
+        16 => SpellMechanicSupport::Pending("quest complete"),
+        18 | 94 | 113 | 117 => SpellMechanicSupport::Pending("resurrection"),
+        19 => SpellMechanicSupport::Pending("extra attacks"),
+        22 => SpellMechanicSupport::Pending("parry state"),
+        27 | 35 | 119 | 128 | 129 => SpellMechanicSupport::Pending("area aura"),
+        28 | 34 | 41 | 42 | 73 | 76 | 85 | 93 | 97 | 104 | 105 | 106 | 107 | 112 => {
+            SpellMechanicSupport::Pending("summon")
+        }
+        29 | 70 | 124 => SpellMechanicSupport::Pending("movement displacement"),
+        32 => SpellMechanicSupport::Pending("trigger missile"),
+        38 | 108 => SpellMechanicSupport::Pending("dispel"),
+        40 => SpellMechanicSupport::Pending("dual wield"),
+        44 | 118 => SpellMechanicSupport::Pending("skill modification"),
+        45 => SpellMechanicSupport::Pending("honor"),
+        46 => SpellMechanicSupport::Pending("spawn visual"),
+        47 => SpellMechanicSupport::Pending("trade skill"),
+        50 => SpellMechanicSupport::Pending("transport door"),
+        53 | 54 | 92 => SpellMechanicSupport::Pending("item enchant"),
+        55 => SpellMechanicSupport::Pending("tame creature"),
+        56 | 57 | 101 | 102 | 109 => SpellMechanicSupport::Pending("pet"),
+        61 => SpellMechanicSupport::Pending("game event"),
+        63 | 125 => SpellMechanicSupport::Pending("threat"),
+        67 | 75 => SpellMechanicSupport::Pending("special heal"),
+        68 => SpellMechanicSupport::Pending("interrupt cast"),
+        69 => SpellMechanicSupport::Pending("distract"),
+        71 => SpellMechanicSupport::Pending("pick pocket"),
+        72 | 82 => SpellMechanicSupport::Pending("bind/farsight"),
+        74 | 87 | 88 | 89 | 90 | 110 => SpellMechanicSupport::Pending("totem"),
+        79 => SpellMechanicSupport::Pending("sanctuary"),
+        SPELL_EFFECT_DUEL => SpellMechanicSupport::Pending("duel"),
+        SPELL_EFFECT_STUCK => SpellMechanicSupport::Pending("stuck"),
+        86 => SpellMechanicSupport::Pending("activate object"),
+        95 | 99 | SPELL_EFFECT_SKIN_PLAYER_CORPSE => {
+            SpellMechanicSupport::Pending("corpse/skinning/disenchant")
+        }
+        98 => SpellMechanicSupport::Pending("knockback"),
+        100 => SpellMechanicSupport::Pending("inebriate"),
+        103 => SpellMechanicSupport::Pending("reputation effect"),
+        111 | 115 => SpellMechanicSupport::Pending("durability"),
+        114 => SpellMechanicSupport::Pending("taunt"),
+        120 => SpellMechanicSupport::Pending("graveyard teleport"),
+        123 => SpellMechanicSupport::Pending("taxi"),
+        _ => SpellMechanicSupport::Unknown,
+    }
+}
+
+#[allow(dead_code)]
+pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSupport {
+    if aura_type >= CMANGOS_TOTAL_AURAS {
+        return SpellMechanicSupport::Unknown;
+    }
+    match aura_type {
+        0 => SpellMechanicSupport::KnownNoOp,
+        SPELL_AURA_PERIODIC_DAMAGE
+        | SPELL_AURA_PERIODIC_HEAL
+        | SPELL_AURA_MOD_STUN
+        | SPELL_AURA_MOD_DAMAGE_DONE
+        | SPELL_AURA_DUMMY
+        | SPELL_AURA_MOD_STEALTH_DETECT
+        | SPELL_AURA_MOD_INVISIBILITY_DETECTION
+        | SPELL_AURA_OBS_MOD_HEALTH
+        | SPELL_AURA_MOD_RESISTANCE
+        | SPELL_AURA_PERIODIC_ENERGIZE
+        | SPELL_AURA_MOD_ROOT
+        | SPELL_AURA_MOD_STAT
+        | SPELL_AURA_MOD_SKILL
+        | SPELL_AURA_MOD_INCREASE_SPEED
+        | SPELL_AURA_MOD_DECREASE_SPEED
+        | SPELL_AURA_PROC_TRIGGER_SPELL
+        | SPELL_AURA_MOD_RESISTANCE_PCT
+        | SPELL_AURA_MOD_REGEN
+        | SPELL_AURA_MOD_POWER_REGEN
+        | SPELL_AURA_MOD_SKILL_TALENT
+        | SPELL_AURA_MOD_ATTACK_POWER
+        | SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE
+        | SPELL_AURA_MOD_MELEE_HASTE
+        | SPELL_AURA_MOD_REPUTATION_GAIN
+        | SPELL_AURA_TRACK_CREATURES
+        | SPELL_AURA_TRACK_RESOURCES
+        | SPELL_AURA_GHOST
+        | SPELL_AURA_WATER_WALK => SpellMechanicSupport::Implemented,
+        46 | 48 | 164 => SpellMechanicSupport::KnownNoOp,
+        1 | 76 | 82 | 105 | 106 | 144 => SpellMechanicSupport::Pending("movement/visibility state"),
+        2 | 5 | 6 | 7 | 16 | 18 | 25 | 27 | 36 | 60 | 66 | 67 | 78 | 128 | 176 | 177 => {
+            SpellMechanicSupport::Pending("control state")
+        }
+        23 | 43 | 107 | 108 | 109 | 111 | 112 => {
+            SpellMechanicSupport::Pending("trigger/script aura")
+        }
+        9 | 10 | 11 | 14 | 15 | 28 | 32 | 34 | 35 | 47 | 49 | 51 | 52 | 54 | 55 | 57 | 58 | 59
+        | 65 | 69 | 70 | 71 | 72 | 73 | 79 | 80 | 83 | 87 | 88 | 89 | 90 | 91 | 102 | 103 | 110
+        | 113 | 114 | 115 | 116 | 117 | 118 | 122 | 123 | 124 | 125 | 126 | 127 | 129 | 130
+        | 131 | 132 | 133 | 134 | 135 | 136 | 140 | 141 | 142 | 143 | 147 | 149 | 150 | 152
+        | 153 | 154 | 155 | 157 | 158 | 160 | 161 | 163 | 165 | 166 | 167 | 168 | 169 | 171
+        | 172 | 174 | 175 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188
+        | 189 | 190 | 191 => SpellMechanicSupport::Pending("stat/combat modifier"),
+        68 | 75 | 119 | 120 | 121 | 139 | 145 | 146 | 151 | 159 | 170 | 173 => {
+            SpellMechanicSupport::Pending("tracking/reaction/client state")
+        }
+        21 | 53 | 62 | 63 | 64 | 81 | 86 | 96 | 162 => {
+            SpellMechanicSupport::Pending("resource shield/funnel")
+        }
+        37 | 38 | 39 | 40 | 41 | 77 | 92 | 93 | 94 | 97 | 148 => {
+            SpellMechanicSupport::Pending("immunity/special state")
+        }
+        50 | 56 | 61 | 74 | 100 => SpellMechanicSupport::Pending("visual/model/client state"),
+        _ => SpellMechanicSupport::Unknown,
+    }
+}
+
+#[allow(dead_code)]
+pub(in crate::world) fn spell_template_coverage_issues(
+    template: &wow_db::SpellTemplateQuery,
+) -> Vec<SpellCoverageIssue> {
+    let spell_info = SpellInfo::from_template(template);
+    let mut issues = Vec::new();
+    for (index, effect) in spell_info.effects.into_iter().enumerate() {
+        if effect.effect_id != 0 {
+            let support = spell_effect_support(effect.effect_id);
+            if support.blocks_runtime() {
+                issues.push(SpellCoverageIssue {
+                    spell_id: template.id,
+                    effect_index: index,
+                    mechanic: SpellCoverageMechanic::Effect,
+                    mechanic_id: effect.effect_id,
+                    mechanic_name: spell_effect_coverage_name(effect.effect_id),
+                    support,
+                });
+            }
+        }
+        if effect.dispatch == SpellEffectDispatch::ApplyAura && effect.aura_name != 0 {
+            let support = spell_aura_support(effect.aura_name);
+            if support.blocks_runtime() {
+                issues.push(SpellCoverageIssue {
+                    spell_id: template.id,
+                    effect_index: index,
+                    mechanic: SpellCoverageMechanic::Aura,
+                    mechanic_id: effect.aura_name,
+                    mechanic_name: spell_aura_coverage_name(effect.aura_name),
+                    support,
+                });
+            }
+        }
+    }
+    issues
+}
+
+#[allow(dead_code)]
+pub(in crate::world) async fn spell_coverage_issues_for_spell_ids(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    spell_ids: impl IntoIterator<Item = u32>,
+) -> anyhow::Result<Vec<SpellCoverageIssue>> {
+    let mut issues = Vec::new();
+    for spell_id in spell_ids {
+        let Some(template) = object_mgr.spell_template(world_db_pool, spell_id).await? else {
+            warn!(
+                spell_id,
+                "Skipping spell coverage audit for missing spell_template row"
+            );
+            continue;
+        };
+        issues.extend(spell_template_coverage_issues(&template));
+    }
+    Ok(issues)
+}
+
+pub(in crate::world) fn spell_effect_coverage_name(effect_id: u32) -> &'static str {
+    match effect_id {
+        0 => "SPELL_EFFECT_NONE",
+        SPELL_EFFECT_SCHOOL_DAMAGE => "SPELL_EFFECT_SCHOOL_DAMAGE",
+        SPELL_EFFECT_TELEPORT_UNITS => "SPELL_EFFECT_TELEPORT_UNITS",
+        SPELL_EFFECT_APPLY_AURA => "SPELL_EFFECT_APPLY_AURA",
+        SPELL_EFFECT_HEAL => "SPELL_EFFECT_HEAL",
+        SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL => "SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL",
+        SPELL_EFFECT_CREATE_ITEM => "SPELL_EFFECT_CREATE_ITEM",
+        SPELL_EFFECT_ENERGIZE => "SPELL_EFFECT_ENERGIZE",
+        SPELL_EFFECT_WEAPON_PERCENT_DAMAGE => "SPELL_EFFECT_WEAPON_PERCENT_DAMAGE",
+        33 => "SPELL_EFFECT_OPEN_LOCK",
+        SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => "SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER",
+        SPELL_EFFECT_WEAPON_DAMAGE => "SPELL_EFFECT_WEAPON_DAMAGE",
+        59 => "SPELL_EFFECT_OPEN_LOCK_ITEM",
+        60 => "SPELL_EFFECT_PROFICIENCY",
+        64 => "SPELL_EFFECT_TRIGGER_SPELL",
+        SPELL_EFFECT_ADD_COMBO_POINTS => "SPELL_EFFECT_ADD_COMBO_POINTS",
+        SPELL_EFFECT_CHARGE => "SPELL_EFFECT_CHARGE",
+        SPELL_EFFECT_NORMALIZED_WEAPON_DMG => "SPELL_EFFECT_NORMALIZED_WEAPON_DMG",
+        _ if effect_id < CMANGOS_MAX_SPELL_EFFECTS => "CMANGOS_SPELL_EFFECT",
+        _ => "UNKNOWN_SPELL_EFFECT",
+    }
+}
+
+#[allow(dead_code)]
+pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str {
+    match aura_type {
+        0 => "SPELL_AURA_NONE",
+        SPELL_AURA_PERIODIC_DAMAGE => "SPELL_AURA_PERIODIC_DAMAGE",
+        SPELL_AURA_PERIODIC_HEAL => "SPELL_AURA_PERIODIC_HEAL",
+        SPELL_AURA_MOD_STUN => "SPELL_AURA_MOD_STUN",
+        SPELL_AURA_MOD_DAMAGE_DONE => "SPELL_AURA_MOD_DAMAGE_DONE",
+        SPELL_AURA_DUMMY => "SPELL_AURA_DUMMY",
+        SPELL_AURA_MOD_STEALTH_DETECT => "SPELL_AURA_MOD_STEALTH_DETECT",
+        SPELL_AURA_MOD_INVISIBILITY_DETECTION => "SPELL_AURA_MOD_INVISIBILITY_DETECTION",
+        SPELL_AURA_OBS_MOD_HEALTH => "SPELL_AURA_OBS_MOD_HEALTH",
+        SPELL_AURA_MOD_RESISTANCE => "SPELL_AURA_MOD_RESISTANCE",
+        SPELL_AURA_PERIODIC_ENERGIZE => "SPELL_AURA_PERIODIC_ENERGIZE",
+        SPELL_AURA_MOD_ROOT => "SPELL_AURA_MOD_ROOT",
+        SPELL_AURA_MOD_STAT => "SPELL_AURA_MOD_STAT",
+        SPELL_AURA_MOD_SKILL => "SPELL_AURA_MOD_SKILL",
+        SPELL_AURA_MOD_INCREASE_SPEED => "SPELL_AURA_MOD_INCREASE_SPEED",
+        SPELL_AURA_MOD_DECREASE_SPEED => "SPELL_AURA_MOD_DECREASE_SPEED",
+        SPELL_AURA_PROC_TRIGGER_SPELL => "SPELL_AURA_PROC_TRIGGER_SPELL",
+        SPELL_AURA_MOD_RESISTANCE_PCT => "SPELL_AURA_MOD_RESISTANCE_PCT",
+        SPELL_AURA_MOD_REGEN => "SPELL_AURA_MOD_REGEN",
+        SPELL_AURA_MOD_POWER_REGEN => "SPELL_AURA_MOD_POWER_REGEN",
+        SPELL_AURA_MOD_SKILL_TALENT => "SPELL_AURA_MOD_SKILL_TALENT",
+        SPELL_AURA_MOD_ATTACK_POWER => "SPELL_AURA_MOD_ATTACK_POWER",
+        SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE => "SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE",
+        SPELL_AURA_MOD_MELEE_HASTE => "SPELL_AURA_MOD_MELEE_HASTE",
+        SPELL_AURA_MOD_REPUTATION_GAIN => "SPELL_AURA_MOD_REPUTATION_GAIN",
+        SPELL_AURA_TRACK_CREATURES => "SPELL_AURA_TRACK_CREATURES",
+        SPELL_AURA_TRACK_RESOURCES => "SPELL_AURA_TRACK_RESOURCES",
+        SPELL_AURA_GHOST => "SPELL_AURA_GHOST",
+        SPELL_AURA_WATER_WALK => "SPELL_AURA_WATER_WALK",
+        _ if aura_type < CMANGOS_TOTAL_AURAS => "CMANGOS_SPELL_AURA",
+        _ => "UNKNOWN_SPELL_AURA",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_spell_effects(
     stream: &mut WorldPacketSink,
@@ -63,10 +361,12 @@ pub(in crate::world) async fn apply_player_spell_effects(
     let spell_info = SpellInfo::from_template(spell_template);
     let mut charge_applied = false;
     let mut direct_heal_applied = false;
+    let mut direct_energize_applied = false;
     let mut aura_applied = false;
     let mut create_item_applied = false;
     let mut weapon_damage_applied = false;
     let mut landed_damage = false;
+    let mut learned_spells = HashSet::new();
     let combo_points_for_effects = spell_combo_points_for_effects(
         deps.shared_world,
         caster,
@@ -176,6 +476,21 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 direct_heal_applied = true;
             }
+            SpellEffectDispatch::Energize if !direct_energize_applied => {
+                apply_player_direct_energize_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    &spell_info,
+                    effect_value_context,
+                    header_crypto,
+                )
+                .await?;
+                direct_energize_applied = true;
+            }
             SpellEffectDispatch::CreateItem
                 if spell_profile.kind == SpellCastKind::CreateItem && !create_item_applied =>
             {
@@ -215,10 +530,43 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 aura_applied = true;
             }
+            SpellEffectDispatch::TriggerSpell if effect.trigger_spell != 0 => {
+                apply_player_trigger_spell_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    effect.trigger_spell,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
+            SpellEffectDispatch::LearnSpell if effect.trigger_spell != 0 => {
+                if learned_spells.insert(effect.trigger_spell) {
+                    apply_player_learn_spell_effect(
+                        stream,
+                        deps,
+                        session,
+                        character_guid,
+                        effect.trigger_spell,
+                        header_crypto,
+                    )
+                    .await?;
+                }
+            }
             SpellEffectDispatch::Unsupported(effect_id) => {
+                let support = spell_effect_support(effect_id);
                 warn!(
                     spell_id = spell_template.id,
-                    effect_id, "Skipping unsupported player spell effect"
+                    effect_id,
+                    effect_name = spell_effect_coverage_name(effect_id),
+                    ?support,
+                    "Skipping unsupported player spell effect"
                 );
             }
             _ => {}
@@ -504,6 +852,8 @@ pub(in crate::world) struct PlayerDirectDamageEffect {
     pub(in crate::world) requires_melee: bool,
     pub(in crate::world) uses_weapon_outcome: bool,
     pub(in crate::world) suppress_attacker_state: bool,
+    pub(in crate::world) caster_centered_hostile_area: bool,
+    pub(in crate::world) radius_index: u32,
 }
 
 pub(in crate::world) fn player_direct_damage_effect(
@@ -528,6 +878,8 @@ pub(in crate::world) fn player_direct_damage_effect(
         requires_melee: spell_profile.requires_melee,
         uses_weapon_outcome: false,
         suppress_attacker_state: effect.dispatch == SpellEffectDispatch::SchoolDamage,
+        caster_centered_hostile_area: effect_targets_caster_centered_hostile_area(effect),
+        radius_index: effect.radius_index,
     })
 }
 
@@ -545,6 +897,8 @@ pub(in crate::world) fn player_weapon_damage_effect(
         requires_melee: spell_profile.requires_melee,
         uses_weapon_outcome: true,
         suppress_attacker_state: true,
+        caster_centered_hostile_area: false,
+        radius_index: 0,
     }
 }
 
@@ -621,6 +975,48 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
     targets: &SpellCastTargets,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
+    if damage_effect.caster_centered_hostile_area {
+        let Some(radius) = deps
+            .shared_world
+            .maps
+            .spell_radius(damage_effect.radius_index)
+            .map(|entry| entry.radius)
+            .filter(|radius| *radius > 0.0)
+        else {
+            warn!(
+                spell_id = damage_effect.spell_id,
+                radius_index = damage_effect.radius_index,
+                "Skipping caster-centered AoE damage with missing SpellRadius.dbc row"
+            );
+            return Ok(false);
+        };
+        let targets = deps
+            .shared_world
+            .maps
+            .nearby_attackable_db_creature_guids_for_player_spell(map_id, character_guid, radius)
+            .await;
+        let mut landed = false;
+        for target in targets {
+            let area_targets = SpellCastTargets {
+                target_mask: SPELL_CAST_TARGET_UNIT,
+                unit_target: Some(target),
+                gameobject_target: None,
+            };
+            landed |= apply_db_creature_spell_damage(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                damage_effect,
+                &area_targets,
+                header_crypto,
+            )
+            .await?;
+        }
+        return Ok(landed);
+    }
     apply_db_creature_spell_damage(
         stream,
         deps,
@@ -631,6 +1027,193 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
         damage_effect,
         targets,
         header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_direct_energize_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let energize = spell_direct_energize(spell_info, value_context);
+    if energize == 0 {
+        return Ok(());
+    }
+    match spell_info.template.power_type {
+        POWER_TYPE_RAGE => {
+            let old_rage = session.character.player_rage;
+            session.character.player_rage = session
+                .character
+                .player_rage
+                .saturating_add(energize)
+                .min(POWER_RAGE_DEFAULT);
+            let amount = session.character.player_rage.saturating_sub(old_rage);
+            if amount == 0 {
+                return Ok(());
+            }
+            deps.shared_world
+                .maps
+                .set_player_power2(map_id, character_guid, session.character.player_rage)
+                .await;
+            send_packet(
+                stream,
+                SMSG_SPELLENERGIZELOG,
+                &build_spell_energize_log_body(
+                    caster,
+                    caster,
+                    spell_info.template.id,
+                    POWER_TYPE_RAGE,
+                    amount,
+                )?,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            send_packet(
+                stream,
+                SMSG_UPDATE_OBJECT,
+                &build_player_rage_update_body(caster, session.character.player_rage)?,
+                Some(header_crypto),
+            )
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_trigger_spell_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    triggered_spell_id: u32,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(triggered_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, triggered_spell_id)
+        .await?
+    else {
+        warn!(
+            triggered_spell_id,
+            "Skipping trigger-spell effect with missing spell_template row"
+        );
+        return Ok(());
+    };
+    let triggered_info = SpellInfo::from_template(&triggered_template);
+    let Some(triggered_profile) = triggered_info.player_cast_profile() else {
+        warn!(
+            triggered_spell_id,
+            "Skipping trigger-spell effect with unsupported triggered spell shape"
+        );
+        return Ok(());
+    };
+    let triggered_value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        &triggered_template,
+        &session.character.character_skills,
+        0,
+    );
+    match triggered_profile.kind {
+        SpellCastKind::AuraApplication | SpellCastKind::DirectHeal => {
+            apply_player_spell_aura(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                character_level,
+                map_id,
+                &triggered_template,
+                &triggered_profile,
+                targets,
+                triggered_value_context,
+                now,
+                header_crypto,
+            )
+            .await?;
+        }
+        SpellCastKind::InstantDamage => {
+            for effect in triggered_info.effects {
+                if let Some(damage_effect) = player_direct_damage_effect(
+                    &triggered_template,
+                    &triggered_profile,
+                    effect,
+                    triggered_value_context,
+                ) {
+                    apply_player_direct_damage_effect(
+                        stream,
+                        deps,
+                        session,
+                        caster,
+                        character_guid,
+                        map_id,
+                        damage_effect,
+                        targets,
+                        header_crypto,
+                    )
+                    .await?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(in crate::world) async fn apply_player_learn_spell_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    learned_spell_id: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if learned_spell_id == 0 || session.character.active_spells.contains(&learned_spell_id) {
+        return Ok(());
+    }
+    let Some(_) =
+        wow_db::learn_character_spell(deps.character_db_pool, character_guid, learned_spell_id, 0)
+            .await?
+    else {
+        return Ok(());
+    };
+    session.character.active_spells.insert(learned_spell_id);
+    send_packet(
+        stream,
+        SMSG_LEARNED_SPELL,
+        &build_learned_spell_body(learned_spell_id),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let known_spells = wow_db::get_character_spells(deps.character_db_pool, character_guid).await?;
+    send_known_proficiencies(
+        stream,
+        deps.world_db_pool,
+        &known_spells,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        SMSG_INITIAL_SPELLS,
+        &build_initial_spells_body(&known_spells),
+        Some(header_crypto),
     )
     .await
 }
@@ -1337,7 +1920,11 @@ pub(in crate::world) async fn apply_player_spell_aura(
             let targets = deps
                 .shared_world
                 .maps
-                .nearby_hostile_db_creature_guids_for_player(map_id, character_guid, radius)
+                .nearby_attackable_db_creature_guids_for_player_spell(
+                    map_id,
+                    character_guid,
+                    radius,
+                )
                 .await;
             for target in targets {
                 let Some(target_creature) = deps

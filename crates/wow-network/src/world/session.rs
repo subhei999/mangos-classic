@@ -302,6 +302,7 @@ pub(in crate::world) struct WorldSessionState {
 
 #[derive(Debug, Default)]
 pub(in crate::world) struct AccountSessionState {
+    pub(in crate::world) account_id: u32,
     pub(in crate::world) account_security: u8,
     pub(in crate::world) gm_mode: bool,
     pub(in crate::world) account_data: HashMap<u32, AccountDataCache>,
@@ -465,9 +466,17 @@ pub(in crate::world) enum AuraStatModifier {
     AttackPower {
         amount: i32,
     },
+    DamageDone {
+        school_mask: u32,
+        amount: i32,
+    },
     Resistance {
         school_mask: u32,
         amount: i32,
+    },
+    ResistancePercent {
+        school_mask: u32,
+        percent: i32,
     },
     Skill {
         skill_id: u16,
@@ -481,6 +490,7 @@ pub(in crate::world) enum AuraStatModifier {
         percent: i32,
     },
     Root,
+    Stun,
     Stat {
         stat: Option<usize>,
         amount: i32,
@@ -491,6 +501,27 @@ pub(in crate::world) enum AuraStatModifier {
     },
     ReputationGainPercent {
         percent: i32,
+    },
+    StealthDetect {
+        kind: i32,
+        amount: i32,
+    },
+    InvisibilityDetect {
+        kind: i32,
+        amount: i32,
+    },
+    TrackCreatures {
+        creature_type: i32,
+    },
+    TrackResources {
+        resource_type: i32,
+    },
+    Ghost,
+    WaterWalk,
+    Dummy {
+        aura_name: u32,
+        misc_value: i32,
+        amount: i32,
     },
 }
 

@@ -40,6 +40,16 @@ pub(in crate::world) async fn handle_combat_tick(
     )
     .await?;
     advance_db_creature_return_home_motions(deps.shared_world, session, now).await;
+    advance_db_creature_ooc_event_ai_spell_casts(
+        stream,
+        deps.world_db_pool,
+        deps.shared_world,
+        deps.session_id,
+        session,
+        now,
+        header_crypto,
+    )
+    .await?;
     if session.death.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
@@ -99,6 +109,88 @@ pub(in crate::world) async fn handle_combat_tick(
         header_crypto,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn advance_db_creature_ooc_event_ai_spell_casts(
+    stream: &mut WorldPacketSink,
+    world_db_pool: &MySqlPool,
+    shared_world: SharedWorldDeps<'_>,
+    current_session_id: SessionId,
+    session: &mut WorldSessionState,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let map_id = character.position.map_id;
+    let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+    let nearby = shared_world
+        .maps
+        .nearby_db_creature_snapshots(map_id, character.position, CREATURE_SPAWN_RADIUS_YARDS, 128)
+        .await;
+    for creature in nearby {
+        if !creature.is_alive() || creature.is_evading_home() || creature.is_fleeing() {
+            continue;
+        }
+        let attacker = creature.guid();
+        if let Some(due_at) = shared_world
+            .maps
+            .active_db_creature_spell_cast_due_at(map_id, attacker)
+            .await
+        {
+            if now >= due_at {
+                complete_ready_db_creature_spell_cast(
+                    stream,
+                    shared_world,
+                    map_id,
+                    session,
+                    attacker,
+                    player,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
+            continue;
+        }
+        let scripts = shared_world
+            .object_mgr
+            .creature_ai_scripts(world_db_pool, creature.spawn.entry)
+            .await?;
+        if scripts.is_empty()
+            || !scripts.iter().any(|script| {
+                matches!(
+                    script.event_type,
+                    EVENT_AI_EVENT_TIMER_OOC | EVENT_AI_EVENT_SPAWNED
+                ) && db_creature_event_ai_actions(script)
+                    .iter()
+                    .any(|action| action.action_type == EVENT_AI_ACTION_CAST)
+            })
+        {
+            continue;
+        }
+        if try_start_db_creature_ooc_event_ai_spell_cast(
+            stream,
+            world_db_pool,
+            shared_world,
+            current_session_id,
+            map_id,
+            session,
+            &creature,
+            attacker,
+            player,
+            &scripts,
+            now,
+            header_crypto,
+        )
+        .await?
+        {
+            continue;
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::world) async fn expire_disconnected_players(

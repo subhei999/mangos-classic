@@ -2064,6 +2064,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "world-load-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "sha1",
+ "sqlx",
+ "tokio",
+ "wow-common",
+ "wow-crypto",
+ "wow-db",
+ "wow-proto",
+ "wow_srp",
+]
+
+[[package]]
 name = "worldserver"
 version = "0.1.0"
 dependencies = [

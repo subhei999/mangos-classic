@@ -17,7 +17,17 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   polymorph diminishing state, polymorph helper regen plumbing, centralized
   creature damage-break handling, and now a dedicated confused-motion owner and
   scheduler instead of routing sheep wander through the ambient idle-motion
-  queue.
+  queue. It now also adds a reproducible release-mode playerbot performance
+  scenario: 500 deterministic map-0 idle bots using a Northshire-centered
+  1000-yard radius spread, combat-disabled bot runtime, force-active roaming
+  without client-interest gating, a dedicated `config/worldserver.perf.toml`, and
+  `scripts/start-playerbot-idle-perf.ps1` to boot the stack. The perf swarm now
+  uses a benchmark-only `local_roam_only` mode so idle movement starts directly
+  from the map movement tick instead of consuming the async playerbot planner.
+  It now also adds a thin-client load harness in `bins/world-load-test` plus
+  `scripts/start-thin-client-load.ps1` so release auth/world servers can seed
+  dedicated accounts/characters and drive hundreds of normal SRP/world logins
+  with movement heartbeats.
 - The user remains the Northshire Checkpoint 2 grader through real-client
   playtesting. Do not add or maintain a Northshire grading harness.
 - Playerbots are disabled for normal testing in
@@ -25,16 +35,25 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-- Keep building CMaNGOS-shaped spell behavior generically rather than
-  special-casing individual Mage spell IDs.
-- Immediate recommended follow-up: real-client verify the `Polymorph`
-  combat-state regression reported after the latest sheep/combat-owner change,
-  then continue helper-heal proof and diminishing-return reset/timing,
-  especially evade/reset behavior.
-- Immediate real-client focus: verify `Polymorph` sheep/heal/confuse/damage
-  break on direct damage, DoTs, and Blizzard ticks; confirm no-facing casts;
-  then continue Mana Shield, Fire/Frost Ward, Remove Curse, Blink, Arcane
-  Missiles, and Flamestrike smoke.
+- The new user-directed performance setups are ready:
+  `scripts/start-playerbot-idle-perf.ps1` for the planner-free 500-bot
+  lower-bound scenario, and `scripts/start-thin-client-load.ps1` for a real
+  auth/world login swarm that seeds dedicated accounts/characters and drives
+  normal movement packets through release `authserver`/`worldserver`.
+- The thin-client launcher now defaults to a Northshire-centered safe spread
+  (`150` yards, `25 ms` login stagger, `3` attempts per client) that avoids
+  creature-combat noise while still exercising normal session bootstrap,
+  player visibility, and movement packet handling.
+- A dedicated benchmark report now lives in
+  `docs/performance_movement_benchmark.md` and should be the append-only home
+  for thin-client and playerbot perf baselines as architecture changes land.
+- Immediate recommended follow-up for performance work: capture observability
+  baselines from both the lower-bound playerbot scenario and the thin-client
+  release scenario, then compare future batched player-movement changes
+  against the same `50`-client benchmark first before scaling back up.
+- After perf baseline capture, return to the Mage/parity real-client checks,
+  especially the open `Polymorph` combat-state regression and then the pending
+  Mana Shield / Ward / utility spell smoke list.
 
 ## What Changed Recently
 
@@ -68,6 +87,51 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   critical real-client bug where sheep can leave the player out of combat even
   after the mob resumes attacking. Treat the local test as insufficient proof
   until the live repro is resolved.
+- Playerbot config now supports `combat_enabled`, `force_active`, and random
+  distributions including `cell_scatter` and `grid_scatter`, while the perf
+  launcher can also drive a simple `radius` spread through env overrides. The
+  force-active path bypasses client-interest sleeping only for explicitly
+  configured bot load tests, while combat-disabled bots skip combat
+  planning/ticks so the 500-bot benchmark is dominated by idle roaming and
+  shared map ownership instead of creature AI.
+- The perf benchmark now also supports `local_roam_only`, which suppresses
+  planner-owned idle roam inputs and synthesizes local roam routes directly in
+  the movement tick. On the refreshed 500-bot release run, latest planner cost
+  dropped to roughly `0.023 ms`, while movement remained the dominant phase
+  (`157.556 ms` latest sample, `90.412 ms` 1-minute average during early warmup).
+- A follow-up gate now tracks whether any planner-driven bots exist at all. If
+  the world only contains `local_roam_only` + combat-disabled perf bots, the
+  async planner loop returns before touching maps or contending on the map
+  mutex. After restarting the release benchmark with that gate, planner
+  observability fell to effectively noise (`0.001 ms` latest, `0.000 ms`
+  1-minute average in the first settled scrape) while movement stayed dominant.
+- `scripts/run-client-stack-18085.ps1` and `scripts/restart-game-stack.ps1`
+  now accept release-mode starts. The dedicated perf wrapper uses
+  `target\release\*.exe` plus `config/worldserver.perf.toml` so the benchmark
+  does not include the old single visibility bot from `worldserver.local.toml`.
+- `bins/world-load-test` now reuses the in-tree SRP/world protocol helpers to
+  seed dedicated load-test accounts and characters, log them in normally
+  through `authserver` + `worldserver`, and drive `MSG_MOVE_HEARTBEAT` for a
+  bounded hold window. Login bootstrap now waits for self-spawn updates instead
+  of assuming a fixed packet count, and each client gets a small retry budget
+  so burst runs survive transient socket aborts.
+- The thin-client harness now emits a more real-client-like movement mix
+  instead of pure heartbeats: quiet periods, `MSG_MOVE_START_FORWARD`,
+  `MSG_MOVE_HEARTBEAT`, `MSG_MOVE_STOP`, `MSG_MOVE_SET_FACING`, and occasional
+  `MSG_MOVE_JUMP` / `MSG_MOVE_FALL_LAND` packets with matching movement flags
+  and jump payloads, while still staying inside the configured local roam
+  radius.
+- A new benchmark report now records the current methodology, observability
+  metrics of interest, and baseline numbers for the `50`-client release thin
+  client scenario. The first settled scrape recorded about `51.656 ms`
+  1-minute map tick average, `5.079 ms` 1-minute tick lag average, `48`
+  connected/active clients at scrape time, and `24.477 ms`
+  `player_environment` phase average.
+- `scripts/start-thin-client-load.ps1` now restarts the release stack against
+  `config/worldserver.local.toml`, then runs the thin-client harness with safe
+  defaults (`500` clients, `25 ms` stagger, Northshire `150`-yard spread,
+  `3` max attempts). Verified runs completed cleanly at `50`, `200`, and `500`
+  clients with `10 s` hold windows.
 
 ## Tests Run
 
@@ -94,11 +158,50 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   passed.
 - `cargo test -p wow-network begin_shared_db_creature_combat_uses_mapruntime_liveness_without_session_cache --lib`
   passed.
+- `cargo test -p wow-config world_config_accepts_playerbot_roster --lib`
+  passed.
+- `cargo test -p worldserver playerbot_spawn_configs --bin worldserver`
+  passed.
+- `cargo test -p wow-network map_runtime_force_active_playerbot_moves_without_client_interest --lib`
+  passed.
+- `cargo test -p wow-network map_runtime_combat_disabled_playerbot_skips_combat_planning --lib`
+  passed.
+- `cargo test -p wow-network map_runtime_local_roam_only_playerbot_skips_planner_inputs_and_still_moves --lib`
+  passed.
+- `cargo test -p wow-network map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots --lib`
+  passed.
 - `cargo test -p wow-network --lib` passed: 743 tests.
 - `.\scripts\test-rust.cmd` passed fmt/clippy/check/unit/integration coverage
   again, then failed only at the final `cargo build -p authserver` step because
   Windows could not overwrite a running `target\debug\authserver.exe`
   (`Access is denied`, os error 5).
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-playerbot-idle-perf.ps1`
+  successfully launched the release stack. Verified:
+  `target\release\worldserver.exe`, observability dashboard `200`, exactly
+  500 `Loaded playerbot actor into MapRuntime` log lines, and Northshire
+  placement inside the requested 1000-yard radius (`max_distance=999.75` from
+  center `(-8949, -132)`).
+- `cargo build -p world-load-test` passed.
+- `cargo build --release -p world-load-test` passed.
+- `cargo test -p world-load-test` passed (`3` unit tests covering opcode mix,
+  radius envelope, and jump payloads).
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 5 -HoldSeconds 10 -CenterX -8949 -CenterY -132 -CenterZ 83.5 -Radius 150`
+  passed: `5/5` clients completed normal auth/world login plus movement.
+- `.\target\release\world-load-test.exe --client-count 5 --hold-seconds 10 ...`
+  passed against the live release auth/world stack after the richer movement
+  signal upgrade: `5/5` clients completed, `75` movement packets sent.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 50 -HoldSeconds 10`
+  passed with the new safe defaults: `50/50` clients completed, `1000`
+  movements sent, `16300` packets drained.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 200 -HoldSeconds 10`
+  passed: `200/200` clients completed, `4000` movements sent, `89899`
+  packets drained.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 500 -HoldSeconds 10`
+  passed: `500/500` clients completed, `9832` movements sent, `555140`
+  packets drained.
+- Live observability capture for the `50`-client thin-client release baseline
+  is now recorded in `docs/performance_movement_benchmark.md`, including a
+  settled scrape at `2026-05-17T14:15:54-07:00`.
 
 ## Real-Client Verification Needed
 
@@ -147,17 +250,24 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Utility effects still pending: duel ownership, stuck/graveyard/hearth flow,
   and remove-insignia/player-corpse logic.
 - The full script may fail to rebuild while local auth/world binaries are
-  running because Windows locks `target\debug\*.exe`; stop the stack before
-  verification builds.
+  running because Windows locks `target\debug\*.exe` and `target\release\*.exe`;
+  stop the stack before verification builds.
 
 ## Key Files
 
 - `crates/wow-db/src/world_data.rs`
+- `bins/world-load-test/src/main.rs`
 - `crates/wow-network/src/world/globals/object_mgr.rs`
 - `crates/wow-network/src/world/session.rs`
 - `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/spells/effects.rs`
 - `crates/wow-network/src/world/map_runtime/map.rs`
+- `crates/wow-network/src/world/playerbots.rs`
+- `config/worldserver.perf.toml`
+- `scripts/start-playerbot-idle-perf.ps1`
+- `scripts/start-thin-client-load.ps1`
+- `docs/performance_movement_benchmark.md`
+- `scripts/run-client-stack-18085.ps1`
 - `crates/wow-network/src/world/map_runtime/map_manager.rs`
 - `crates/wow-network/src/world/map_runtime/map/creature_damage.rs`
 - `crates/wow-network/src/world/map_runtime/map/dynamic_objects.rs`

@@ -21,10 +21,19 @@ pub(in crate::world) struct PlayerbotRuntimeState {
     pub(in crate::world) next_combat_think_at: Instant,
     pub(in crate::world) active_leg: Option<PlayerbotMovementLeg>,
     pub(in crate::world) route: Vec<WorldPosition>,
+    pub(in crate::world) combat_enabled: bool,
+    pub(in crate::world) local_roam_only: bool,
+    pub(in crate::world) force_active: bool,
     pub(in crate::world) travel_destination: Option<WorldPosition>,
     pub(in crate::world) engage_target: Option<ObjectGuid>,
     pub(in crate::world) movement_start_retries_remaining: u8,
     pub(in crate::world) roam_step: u8,
+}
+
+pub(in crate::world) fn playerbot_runtime_requires_async_planner(
+    bot: &PlayerbotRuntimeState,
+) -> bool {
+    bot.combat_enabled || bot.travel_destination.is_some() || !bot.local_roam_only
 }
 
 #[derive(Debug, Clone, Copy)]

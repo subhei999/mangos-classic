@@ -1,6 +1,7 @@
 param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
+    [string]$WorldConfigPath = "config\\worldserver.local.toml",
     [string]$WorldSqlPath = $env:CMANGOS_WORLD_SQL,
     [switch]$ResetWorldDatabase,
     [switch]$ResetCharacters,
@@ -8,6 +9,7 @@ param(
     [switch]$SeedLegacyRustFixtures,
     [switch]$EnablePlayerbots,
     [int]$PlayerbotRandomCount = -1,
+    [switch]$Release,
     [int]$RestartDelaySeconds = 2
 )
 
@@ -361,8 +363,12 @@ DELETE FROM mangos.creature_template WHERE Entry = 910007;
 Invoke-MariaDb "mangos" $removeStaleHarnessCreatureSql
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-Invoke-Checked cargo @("build", "-p", "authserver")
-Invoke-Checked cargo @("build", "-p", "worldserver")
+$cargoBuildArgs = @("build")
+if ($Release) {
+    $cargoBuildArgs += "--release"
+}
+Invoke-Checked cargo ($cargoBuildArgs + @("-p", "authserver"))
+Invoke-Checked cargo ($cargoBuildArgs + @("-p", "worldserver"))
 
 Get-Process authserver,worldserver -ErrorAction SilentlyContinue | Stop-Process -Force
 
@@ -370,7 +376,9 @@ $authLog = Join-Path $repoRoot "auth-client-$AuthPort.log"
 $worldLog = Join-Path $repoRoot "world-client-$WorldPort.log"
 Remove-Item $authLog, $worldLog -ErrorAction SilentlyContinue
 
-$authCmd = "set `"RUST_LOG=info`" && target\debug\authserver.exe --config config\authserver.local.toml >> `"$authLog`" 2>&1"
+$buildProfile = if ($Release) { "release" } else { "debug" }
+$resolvedWorldConfigPath = Resolve-Path $WorldConfigPath
+$authCmd = "set `"RUST_LOG=info`" && target\$buildProfile\authserver.exe --config config\authserver.local.toml >> `"$authLog`" 2>&1"
 $worldCmd = "set `"RUST_LOG=info`" && set `"WORLD_BIND_PORT=$WorldPort`""
 if ($EnablePlayerbots -or $PlayerbotRandomCount -ge 0) {
     $worldCmd += " && set `"WORLD_PLAYERBOTS__ENABLED=true`""
@@ -386,7 +394,7 @@ if ($EnablePlayerbots -or $PlayerbotRandomCount -ge 0) {
 if ($SeedLegacyRustFixtures) {
     $worldCmd += " && set `"WORLD_ENABLE_LEGACY_FIXTURE_NPCS=1`""
 }
-$worldCmd += " && target\debug\worldserver.exe --config config\worldserver.local.toml >> `"$worldLog`" 2>&1"
+$worldCmd += " && target\$buildProfile\worldserver.exe --config `"$resolvedWorldConfigPath`" >> `"$worldLog`" 2>&1"
 
 $auth = Start-StackProcess "authserver" "authserver" $authCmd $authLog
 $world = Start-StackProcess "worldserver" "worldserver" $worldCmd $worldLog

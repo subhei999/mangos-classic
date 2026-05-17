@@ -1,4 +1,4 @@
-# Local Docker-backed worldserver skeleton configuration.
+# Local Docker-backed worldserver configuration for repeatable performance runs.
 
 bind_address = "127.0.0.1"
 bind_port = 8085
@@ -26,25 +26,21 @@ password = "mangos"
 database = "characters"
 
 [world]
-# CMaNGOS reference: mangosd.conf MapUpdateInterval, in milliseconds.
 MapUpdateInterval = 100
 char_delete_method = 0
 char_delete_min_level = 0
 
 [playerbots]
-# Disabled for normal local starts so real-client multiplayer testing is not
-# polluted by synthetic player actors. Use restart-game-stack.ps1
-# -EnablePlayerbots for explicit bot load tests, or
-# scripts/start-playerbot-idle-perf.ps1 for the release 500-bot idle benchmark.
 enabled = false
 combat_enabled = true
+local_roam_only = true
 force_active = false
 
 [playerbots.random]
 enabled = false
 count = 0
 start_guid = 9010000
-name_prefix = "Loadbot"
+name_prefix = "Perfbot"
 race = 1
 class = 1
 gender = 0
@@ -53,9 +49,9 @@ map = 0
 center_x = -8949.0
 center_y = -132.0
 center_z = 83.5
-radius = 80.0
+radius = 1000.0
 distribution = "radius"
-seed = 42
+seed = 500
 
 [playerbots.travel]
 enabled = false
@@ -64,19 +60,6 @@ x = -9095.620
 y = 422.026
 z = 92.0445
 radius = 10.0
-
-[[playerbots.bots]]
-guid = 9000001
-name = "Northshirebot"
-race = 1
-class = 1
-gender = 0
-level = 1
-map = 0
-x = -8949.0
-y = -132.0
-z = 83.5
-orientation = 0.0
 
 [observability]
 enabled = true

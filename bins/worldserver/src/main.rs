@@ -4,7 +4,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use wow_common::position::WorldPosition;
-use wow_config::WorldServerConfig;
+use wow_config::{PlayerbotRandomDistribution, WorldServerConfig};
 use wow_db::create_pool;
 use wow_db::{CharacterDeleteMethod, CharacterDeleteOptions};
 use wow_network::world::PlayerbotSpawnConfig;
@@ -12,6 +12,14 @@ use wow_network::world::WorldServerOptions;
 use wow_network::WorldServer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAP_SIZE_YARDS: f32 = 34_133.333;
+const GRID_SIZE_YARDS: f32 = 533.333_3;
+const MAX_NUMBER_OF_GRIDS: u32 = 64;
+const MAX_NUMBER_OF_CELLS: u32 = 16;
+const CELL_SIZE_YARDS: f32 = GRID_SIZE_YARDS / MAX_NUMBER_OF_CELLS as f32;
+const TOTAL_CELL_COUNT_PER_AXIS: u32 = MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_CELLS;
+const CELL_SCATTER_JITTER_RATIO: f32 = 0.35;
+const GRID_SCATTER_JITTER_RATIO: f32 = 0.2;
 
 fn print_banner() {
     println!(
@@ -173,6 +181,9 @@ fn playerbot_spawn_configs(
             gender: bot.gender,
             level: bot.level,
             position: WorldPosition::new(bot.map, bot.x, bot.y, bot.z, bot.orientation),
+            combat_enabled: config.playerbots.combat_enabled,
+            local_roam_only: config.playerbots.local_roam_only,
+            force_active: config.playerbots.force_active,
             travel_destination: playerbot_travel_destination(config, bot.guid),
             player_bytes: bot.player_bytes,
             player_bytes2: bot.player_bytes2,
@@ -184,20 +195,27 @@ fn playerbot_spawn_configs(
         return Ok(spawns);
     }
 
-    if !random.radius.is_finite() || random.radius < 0.0 {
+    if matches!(random.distribution, PlayerbotRandomDistribution::Radius)
+        && (!random.radius.is_finite() || random.radius < 0.0)
+    {
         anyhow::bail!("playerbots.random.radius must be finite and non-negative");
     }
     let end_guid = random
         .start_guid
         .checked_add(random.count.saturating_sub(1))
         .context("playerbots.random start_guid + count overflows u32")?;
+    if matches!(
+        random.distribution,
+        PlayerbotRandomDistribution::GridScatter
+    ) && random.count > MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_GRIDS
+    {
+        anyhow::bail!("playerbots.random.count exceeds available map grids for grid_scatter");
+    }
 
     let mut rng = DeterministicPlayerbotRng::new(random.seed);
     for guid in random.start_guid..=end_guid {
-        let distance = rng.next_unit_f32().sqrt() * random.radius;
-        let angle = rng.next_unit_f32() * std::f32::consts::TAU;
-        let orientation = rng.next_unit_f32() * std::f32::consts::TAU;
         let index = guid - random.start_guid;
+        let position = playerbot_random_position(random, index, &mut rng);
         spawns.push(PlayerbotSpawnConfig {
             guid,
             name: format!("{}{}", random.name_prefix, alphabetic_suffix(index)),
@@ -205,13 +223,10 @@ fn playerbot_spawn_configs(
             class: random.class,
             gender: random.gender,
             level: random.level,
-            position: WorldPosition::new(
-                random.map,
-                random.center_x + distance * angle.cos(),
-                random.center_y + distance * angle.sin(),
-                random.center_z,
-                orientation,
-            ),
+            position,
+            combat_enabled: config.playerbots.combat_enabled,
+            local_roam_only: config.playerbots.local_roam_only,
+            force_active: config.playerbots.force_active,
             travel_destination: playerbot_travel_destination(config, guid),
             player_bytes: random.player_bytes,
             player_bytes2: random.player_bytes2,
@@ -238,6 +253,148 @@ fn playerbot_travel_destination(config: &WorldServerConfig, guid: u32) -> Option
         destination.y += distance * angle.sin();
     }
     Some(destination)
+}
+
+fn playerbot_random_position(
+    random: &wow_config::PlayerbotRandomConfig,
+    index: u32,
+    rng: &mut DeterministicPlayerbotRng,
+) -> WorldPosition {
+    let orientation = rng.next_unit_f32() * std::f32::consts::TAU;
+    match random.distribution {
+        PlayerbotRandomDistribution::Radius => {
+            let distance = rng.next_unit_f32().sqrt() * random.radius;
+            let angle = rng.next_unit_f32() * std::f32::consts::TAU;
+            WorldPosition::new(
+                random.map,
+                random.center_x + distance * angle.cos(),
+                random.center_y + distance * angle.sin(),
+                random.center_z,
+                orientation,
+            )
+        }
+        PlayerbotRandomDistribution::CellScatter => {
+            let (x, y) = playerbot_scatter_cell_position(random, index, rng);
+            WorldPosition::new(random.map, x, y, random.center_z, orientation)
+        }
+        PlayerbotRandomDistribution::GridScatter => {
+            let (x, y) = playerbot_scatter_grid_position(index, random.seed, rng);
+            WorldPosition::new(random.map, x, y, random.center_z, orientation)
+        }
+    }
+}
+
+fn playerbot_scatter_cell_position(
+    random: &wow_config::PlayerbotRandomConfig,
+    index: u32,
+    rng: &mut DeterministicPlayerbotRng,
+) -> (f32, f32) {
+    let center_global_x = global_cell_axis_for_world_axis(random.center_y);
+    let center_global_y = global_cell_axis_for_world_axis(random.center_x);
+    let (cell_x, cell_y) = shuffled_scatter_cell(
+        center_global_x,
+        center_global_y,
+        random.count,
+        index,
+        random.seed,
+    );
+    let jitter_x = (rng.next_unit_f32() - 0.5) * CELL_SIZE_YARDS * CELL_SCATTER_JITTER_RATIO;
+    let jitter_y = (rng.next_unit_f32() - 0.5) * CELL_SIZE_YARDS * CELL_SCATTER_JITTER_RATIO;
+    (
+        world_axis_center_for_global_cell(cell_y) + jitter_x,
+        world_axis_center_for_global_cell(cell_x) + jitter_y,
+    )
+}
+
+fn shuffled_scatter_cell(
+    center_global_x: u32,
+    center_global_y: u32,
+    count: u32,
+    index: u32,
+    seed: u64,
+) -> (u32, u32) {
+    let mut radius_cells = ((count as f32).sqrt().ceil() as i32).max(1);
+    loop {
+        let mut cells = Vec::new();
+        for offset_x in -radius_cells..=radius_cells {
+            for offset_y in -radius_cells..=radius_cells {
+                let cell_x = center_global_x as i32 + offset_x;
+                let cell_y = center_global_y as i32 + offset_y;
+                if !(0..TOTAL_CELL_COUNT_PER_AXIS as i32).contains(&cell_x)
+                    || !(0..TOTAL_CELL_COUNT_PER_AXIS as i32).contains(&cell_y)
+                {
+                    continue;
+                }
+                cells.push((cell_x as u32, cell_y as u32));
+            }
+        }
+        if cells.len() >= count as usize {
+            shuffle_cells_deterministically(&mut cells, seed);
+            return cells[index as usize];
+        }
+        radius_cells += 1;
+    }
+}
+
+fn playerbot_scatter_grid_position(
+    index: u32,
+    seed: u64,
+    rng: &mut DeterministicPlayerbotRng,
+) -> (f32, f32) {
+    let (grid_x, grid_y) = shuffled_scatter_grid(index, seed);
+    let jitter_x = (rng.next_unit_f32() - 0.5) * GRID_SIZE_YARDS * GRID_SCATTER_JITTER_RATIO;
+    let jitter_y = (rng.next_unit_f32() - 0.5) * GRID_SIZE_YARDS * GRID_SCATTER_JITTER_RATIO;
+    (
+        world_axis_center_for_grid_axis(grid_y) + jitter_x,
+        world_axis_center_for_grid_axis(grid_x) + jitter_y,
+    )
+}
+
+fn shuffled_scatter_grid(index: u32, seed: u64) -> (u32, u32) {
+    let mut grids = Vec::with_capacity((MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_GRIDS) as usize);
+    for grid_x in 0..MAX_NUMBER_OF_GRIDS {
+        for grid_y in 0..MAX_NUMBER_OF_GRIDS {
+            grids.push((grid_x, grid_y));
+        }
+    }
+    grids.sort_by_key(|&(grid_x, grid_y)| {
+        let grid_key = u64::from(grid_x) << 32 | u64::from(grid_y);
+        cell_shuffle_key(seed ^ grid_key)
+    });
+    grids[index as usize]
+}
+
+fn shuffle_cells_deterministically(cells: &mut [(u32, u32)], seed: u64) {
+    cells.sort_unstable();
+    cells.sort_by_key(|&(cell_x, cell_y)| {
+        let cell_key = u64::from(cell_x) << 32 | u64::from(cell_y);
+        cell_shuffle_key(seed ^ cell_key)
+    });
+}
+
+fn cell_shuffle_key(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn global_cell_axis_for_world_axis(axis: f32) -> u32 {
+    let half = MAP_SIZE_YARDS / 2.0;
+    ((half - axis) / CELL_SIZE_YARDS)
+        .floor()
+        .clamp(0.0, (TOTAL_CELL_COUNT_PER_AXIS - 1) as f32) as u32
+}
+
+fn world_axis_center_for_global_cell(global_cell_axis: u32) -> f32 {
+    let half = MAP_SIZE_YARDS / 2.0;
+    half - ((global_cell_axis as f32 + 0.5) * CELL_SIZE_YARDS)
+}
+
+fn world_axis_center_for_grid_axis(grid_axis: u32) -> f32 {
+    let half = MAP_SIZE_YARDS / 2.0;
+    half - ((grid_axis as f32 + 0.5) * GRID_SIZE_YARDS)
 }
 
 fn playerbot_guid_seed(seed: u64, guid: u32) -> u64 {
@@ -281,6 +438,7 @@ mod tests {
     use super::*;
     use figment::providers::{Format, Toml};
     use figment::Figment;
+    use std::collections::HashSet;
 
     fn test_config(toml_content: &str) -> WorldServerConfig {
         Figment::new()
@@ -304,6 +462,9 @@ database = "characters"
 
 [playerbots]
 enabled = true
+combat_enabled = false
+local_roam_only = true
+force_active = true
 
 [playerbots.random]
 enabled = true
@@ -334,6 +495,9 @@ radius = 10.0
         assert_eq!(spawns[0].name, "Loadbota");
         assert_eq!(spawns[1].name, "Loadbotb");
         assert_eq!(spawns[2].name, "Loadbotc");
+        assert!(spawns.iter().all(|spawn| !spawn.combat_enabled));
+        assert!(spawns.iter().all(|spawn| spawn.local_roam_only));
+        assert!(spawns.iter().all(|spawn| spawn.force_active));
         assert!(spawns.iter().all(|spawn| spawn.position.map_id == 0));
         assert!(spawns
             .iter()
@@ -372,6 +536,112 @@ radius = 10.0
             spawns[0].travel_destination,
             second_pass[0].travel_destination
         );
+    }
+
+    #[test]
+    fn playerbot_spawn_configs_can_scatter_random_bots_into_unique_cells() {
+        let config = test_config(
+            r#"
+[login_database]
+database = "realmd"
+
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[playerbots]
+enabled = true
+
+[playerbots.random]
+enabled = true
+count = 64
+start_guid = 9010000
+name_prefix = "Perfbot"
+map = 0
+center_x = -8949.0
+center_y = -132.0
+center_z = 83.5
+distribution = "cell_scatter"
+seed = 7
+"#,
+        );
+
+        let spawns = playerbot_spawn_configs(&config).expect("scatter bot spawns");
+        let cells = spawns
+            .iter()
+            .map(|spawn| {
+                (
+                    global_cell_axis_for_world_axis(spawn.position.y),
+                    global_cell_axis_for_world_axis(spawn.position.x),
+                )
+            })
+            .collect::<HashSet<_>>();
+
+        assert_eq!(spawns.len(), 64);
+        assert_eq!(
+            cells.len(),
+            64,
+            "scatter layout should keep every bot in a unique cell"
+        );
+
+        let second_pass = playerbot_spawn_configs(&config).expect("repeat scatter bot spawns");
+        assert_eq!(spawns[0].position, second_pass[0].position);
+        assert_eq!(spawns[63].position, second_pass[63].position);
+    }
+
+    #[test]
+    fn playerbot_spawn_configs_can_scatter_random_bots_into_unique_grids() {
+        let config = test_config(
+            r#"
+[login_database]
+database = "realmd"
+
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[playerbots]
+enabled = true
+
+[playerbots.random]
+enabled = true
+count = 500
+start_guid = 9010000
+name_prefix = "Perfbot"
+map = 0
+center_x = 0.0
+center_y = 0.0
+center_z = 83.5
+distribution = "grid_scatter"
+seed = 500
+"#,
+        );
+
+        let spawns = playerbot_spawn_configs(&config).expect("grid scatter bot spawns");
+        let grids = spawns
+            .iter()
+            .map(|spawn| {
+                (
+                    global_cell_axis_for_world_axis(spawn.position.y) / MAX_NUMBER_OF_CELLS,
+                    global_cell_axis_for_world_axis(spawn.position.x) / MAX_NUMBER_OF_CELLS,
+                )
+            })
+            .collect::<HashSet<_>>();
+
+        assert_eq!(spawns.len(), 500);
+        assert_eq!(
+            grids.len(),
+            500,
+            "grid scatter should place each bot in a unique grid"
+        );
+
+        let second_pass = playerbot_spawn_configs(&config).expect("repeat grid scatter bot spawns");
+        assert_eq!(spawns[0].position, second_pass[0].position);
+        assert_eq!(spawns[499].position, second_pass[499].position);
     }
 
     #[test]

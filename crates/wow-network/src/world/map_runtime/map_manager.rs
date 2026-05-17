@@ -16,6 +16,7 @@ pub(in crate::world) struct MapRuntimeManager {
     pub(in crate::world) skill_race_class_infos_by_skill:
         HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
+    pub(in crate::world) planner_driven_playerbot_count: AtomicUsize,
     pub(in crate::world) next_gm_creature_guid: AtomicU64,
     pub(in crate::world) creature_grid_load_ensure_calls: AtomicU64,
     pub(in crate::world) creature_grid_load_cache_hits: AtomicU64,
@@ -139,6 +140,10 @@ impl MapRuntimeManager {
 
     pub(in crate::world) fn spell_radius(&self, radius_index: u32) -> Option<SpellRadiusEntry> {
         self.spell_radii.get(&radius_index).copied()
+    }
+
+    pub(in crate::world) fn has_async_playerbot_planner_work(&self) -> bool {
+        self.planner_driven_playerbot_count.load(Ordering::Relaxed) > 0
     }
 
     pub(in crate::world) fn skill_line_ability_for_spell(
@@ -445,6 +450,10 @@ impl MapRuntimeManager {
         player: PlayerRuntime,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let map_key = (player.position.map_id, 0);
+        let new_requires_async_planner = player
+            .bot_runtime
+            .as_ref()
+            .is_some_and(playerbot_runtime_requires_async_planner);
         let map = {
             let mut maps = self.maps.lock().await;
             maps.entry(map_key)
@@ -458,7 +467,21 @@ impl MapRuntimeManager {
                 })
                 .clone()
         };
-        let packets = map.lock().await.add_player(player);
+        let mut map = map.lock().await;
+        let old_requires_async_planner = map.player_guid_requires_async_planner(player.guid);
+        let packets = map.add_player(player);
+        drop(map);
+        match (old_requires_async_planner, new_requires_async_planner) {
+            (false, true) => {
+                self.planner_driven_playerbot_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            (true, false) => {
+                self.planner_driven_playerbot_count
+                    .fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
         packets
     }
 
@@ -471,7 +494,14 @@ impl MapRuntimeManager {
         let Some(map) = map else {
             return Vec::new();
         };
-        let packets = map.lock().await.remove_player(character_guid);
+        let mut map = map.lock().await;
+        let removed_requires_async_planner = map.player_guid_requires_async_planner(character_guid);
+        let packets = map.remove_player(character_guid);
+        drop(map);
+        if removed_requires_async_planner {
+            self.planner_driven_playerbot_count
+                .fetch_sub(1, Ordering::Relaxed);
+        }
         packets
     }
 
@@ -3054,6 +3084,9 @@ impl MapRuntimeManager {
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
     ) -> anyhow::Result<PlayerbotPlanningTick> {
+        if !self.has_async_playerbot_planner_work() {
+            return Ok(PlayerbotPlanningTick::default());
+        }
         let maps = {
             self.maps
                 .lock()
@@ -3405,6 +3438,7 @@ impl MapRuntimeManager {
             })
             .clone()
     }
+
 }
 
 fn pending_spell_event_unit_target_generation(

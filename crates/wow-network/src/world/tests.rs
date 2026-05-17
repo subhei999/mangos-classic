@@ -10501,6 +10501,123 @@ fn map_runtime_playerbot_random_roam_planning_is_not_nav_budget_limited() {
 }
 
 #[test]
+fn map_runtime_force_active_playerbot_moves_without_client_interest() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.force_active = true;
+    bot.next_think_at = now;
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+
+    assert_eq!(tick.advanced_bots, 1);
+    assert!(
+        map.players
+            .get(&2)
+            .unwrap()
+            .bot_runtime
+            .as_ref()
+            .unwrap()
+            .active_leg
+            .is_some(),
+        "force-active bots should keep roaming even without nearby client players"
+    );
+}
+
+#[test]
+fn map_runtime_combat_disabled_playerbot_skips_combat_planning() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.force_active = true;
+    bot.combat_enabled = false;
+    bot.next_think_at = now;
+    bot.next_combat_think_at = now;
+
+    let inputs = map.collect_playerbot_plan_inputs(now);
+
+    assert_eq!(inputs.len(), 1);
+    assert!(inputs[0].movement_due_at.is_some());
+    assert!(inputs[0].combat_due_at.is_none());
+    let tick = map
+        .advance_playerbot_combat_tick(
+            &FactionTemplateStore::fallback_bridge(),
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .unwrap();
+    assert_eq!(tick.advanced_bots, 0);
+    assert_eq!(tick.creature_swings, 0);
+}
+
+#[test]
+fn map_runtime_local_roam_only_playerbot_skips_planner_inputs_and_still_moves() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    map.add_player(test_bot_player_runtime(2, BotId(1), bot_position))
+        .unwrap();
+    let bot = map
+        .players
+        .get_mut(&2)
+        .unwrap()
+        .bot_runtime
+        .as_mut()
+        .unwrap();
+    bot.force_active = true;
+    bot.local_roam_only = true;
+    bot.combat_enabled = false;
+    bot.next_think_at = now;
+    bot.next_combat_think_at = now;
+
+    let inputs = map.collect_playerbot_plan_inputs(now);
+
+    assert!(
+        inputs.is_empty(),
+        "local-roam-only perf bots should not enter the planner input queue"
+    );
+
+    let tick = map
+        .advance_playerbot_movement_tick(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(tick.advanced_bots, 1);
+    assert!(
+        map.players
+            .get(&2)
+            .unwrap()
+            .bot_runtime
+            .as_ref()
+            .unwrap()
+            .active_leg
+            .is_some(),
+        "local-roam-only perf bots should still begin roaming from the movement tick"
+    );
+}
+
+#[test]
 fn map_runtime_playerbot_route_failure_backs_off() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();
@@ -11715,6 +11832,52 @@ async fn active_db_creature_combat_snapshot_uses_mapruntime_without_session_cach
     assert_eq!(active.combat.attacker, combat.attacker);
     assert_eq!(active.combat.victim, victim);
     assert_eq!(active.creature.guid(), attacker);
+}
+
+#[tokio::test]
+async fn map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots() {
+    let maps = MapRuntimeManager::default();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+
+    let mut perf_bot = test_bot_player_runtime(2, BotId(1), bot_position);
+    {
+        let bot = perf_bot.bot_runtime.as_mut().unwrap();
+        bot.force_active = true;
+        bot.local_roam_only = true;
+        bot.combat_enabled = false;
+    }
+    maps.add_player(perf_bot).await.unwrap();
+
+    assert!(!maps.has_async_playerbot_planner_work());
+    assert_eq!(
+        maps.planner_driven_playerbot_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+
+    let tick = maps
+        .plan_all_playerbot_intents(&DbCreatureNavigationGuardrail::default(), Instant::now())
+        .await
+        .unwrap();
+    assert_eq!(tick.planned_bots, 0);
+
+    let planner_bot = test_bot_player_runtime(3, BotId(2), bot_position);
+    maps.add_player(planner_bot).await.unwrap();
+
+    assert!(maps.has_async_playerbot_planner_work());
+    assert_eq!(
+        maps.planner_driven_playerbot_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    maps.remove_player(0, 3).await;
+    assert!(!maps.has_async_playerbot_planner_work());
+    assert_eq!(
+        maps.planner_driven_playerbot_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[test]
@@ -15525,6 +15688,9 @@ fn test_bot_player_runtime(guid: u32, bot_id: BotId, position: WorldPosition) ->
         next_combat_think_at: Instant::now() + playerbot_next_combat_think_delay(guid),
         active_leg: None,
         route: Vec::new(),
+        combat_enabled: true,
+        local_roam_only: false,
+        force_active: false,
         travel_destination: None,
         engage_target: None,
         movement_start_retries_remaining: 0,
@@ -17288,7 +17454,6 @@ fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
     assert_eq!(late_visible.flags, 0);
     assert_eq!(late_visible.position.orientation, 2.25);
 }
-
 #[test]
 fn other_player_create_block_includes_public_unit_target() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);

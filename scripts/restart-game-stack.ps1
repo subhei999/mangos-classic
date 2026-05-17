@@ -2,11 +2,13 @@ param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
     [int]$ReadyTimeoutSeconds = 90,
+    [string]$WorldConfigPath = "config\\worldserver.local.toml",
     [switch]$ResetWorldDatabase,
     [switch]$ResetCharacters,
     [switch]$SeedLegacyRustFixtures,
     [switch]$EnablePlayerbots,
     [int]$PlayerbotRandomCount = -1,
+    [switch]$Release,
     [switch]$Help
 )
 
@@ -21,11 +23,13 @@ function Show-Usage {
     Write-Host "  -WorldPort <port>             Worldserver port. Default: 18085"
     Write-Host "  -AuthPort <port>              Authserver port. Default: 13724"
     Write-Host "  -ReadyTimeoutSeconds <secs>   Time to wait for ports after launch. Default: 90"
+    Write-Host "  -WorldConfigPath <path>       Worldserver config file. Default: config\\worldserver.local.toml"
     Write-Host "  -ResetWorldDatabase           Recreate the local mangos world database"
     Write-Host "  -ResetCharacters              Recreate the RUSTAUTH starter character"
     Write-Host "  -SeedLegacyRustFixtures       Add old Rust fixture NPCs for debugging"
     Write-Host "  -EnablePlayerbots             Opt into configured local playerbots"
     Write-Host "  -PlayerbotRandomCount <count> Enable generated random playerbots with this count"
+    Write-Host "  -Release                      Build and launch target\\release binaries"
     Write-Host "  -Help                         Show this help"
 }
 
@@ -87,6 +91,7 @@ $stackScript = Join-Path $PSScriptRoot "run-client-stack-18085.ps1"
 $stackArgs = @(
     "-WorldPort", $WorldPort,
     "-AuthPort", $AuthPort,
+    "-WorldConfigPath", $WorldConfigPath,
     "-NoAutoRestart"
 )
 
@@ -104,6 +109,9 @@ if ($EnablePlayerbots) {
 }
 if ($PlayerbotRandomCount -ge 0) {
     $stackArgs += @("-PlayerbotRandomCount", $PlayerbotRandomCount)
+}
+if ($Release) {
+    $stackArgs += "-Release"
 }
 
 Write-Host "Restarting Rust game stack from $repoRoot"

@@ -59,6 +59,8 @@ char_delete_min_level = 0
 # --------------------------------------------------------------------------
 [playerbots]
 enabled = false
+combat_enabled = true
+force_active = false
 
 # Optional deterministic local load-test swarm. These generated bots are
 # appended to any explicit [[playerbots.bots]] entries when playerbots are
@@ -77,6 +79,7 @@ enabled = false
 # center_y = -132.0
 # center_z = 83.5
 # radius = 80.0
+# distribution = "radius" # or "cell_scatter"/"grid_scatter" for deterministic wide scatter
 # seed = 42
 
 # Optional shared travel destination for all configured/generated bots. The

@@ -80,6 +80,12 @@ pub struct ObservabilityConfig {
 pub struct PlayerbotsConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_playerbot_combat_enabled")]
+    pub combat_enabled: bool,
+    #[serde(default)]
+    pub local_roam_only: bool,
+    #[serde(default)]
+    pub force_active: bool,
     #[serde(default)]
     pub random: PlayerbotRandomConfig,
     #[serde(default)]
@@ -132,12 +138,23 @@ pub struct PlayerbotRandomConfig {
     pub center_z: f32,
     #[serde(default)]
     pub radius: f32,
+    #[serde(default)]
+    pub distribution: PlayerbotRandomDistribution,
     #[serde(default = "default_playerbot_random_seed")]
     pub seed: u64,
     #[serde(default)]
     pub player_bytes: u32,
     #[serde(default)]
     pub player_bytes2: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerbotRandomDistribution {
+    #[default]
+    Radius,
+    CellScatter,
+    GridScatter,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,6 +190,9 @@ fn default_playerbot_class() -> u8 {
 }
 fn default_playerbot_level() -> u8 {
     1
+}
+fn default_playerbot_combat_enabled() -> bool {
+    true
 }
 fn default_playerbot_random_start_guid() -> u32 {
     9_010_000
@@ -405,6 +425,9 @@ database = "characters"
 
 [playerbots]
 enabled = true
+combat_enabled = false
+local_roam_only = true
+force_active = true
 
 [playerbots.random]
 enabled = true
@@ -412,10 +435,11 @@ count = 511
 start_guid = 9010000
 name_prefix = "Loadbot"
 map = 0
-center_x = -8949.0
-center_y = -132.0
+center_x = 0.0
+center_y = 0.0
 center_z = 83.5
 radius = 80.0
+distribution = "grid_scatter"
 seed = 42
 
 [playerbots.travel]
@@ -439,11 +463,18 @@ z = 83.5
             .expect("should parse playerbot roster");
 
         assert!(config.playerbots.enabled);
+        assert!(!config.playerbots.combat_enabled);
+        assert!(config.playerbots.local_roam_only);
+        assert!(config.playerbots.force_active);
         assert!(config.playerbots.random.enabled);
         assert_eq!(config.playerbots.random.count, 511);
         assert_eq!(config.playerbots.random.start_guid, 9_010_000);
         assert_eq!(config.playerbots.random.name_prefix, "Loadbot");
         assert!((config.playerbots.random.radius - 80.0).abs() < f32::EPSILON);
+        assert_eq!(
+            config.playerbots.random.distribution,
+            PlayerbotRandomDistribution::GridScatter
+        );
         assert!(config.playerbots.travel.enabled);
         assert!((config.playerbots.travel.x + 9_095.62).abs() < f32::EPSILON);
         assert!((config.playerbots.travel.radius - 10.0).abs() < f32::EPSILON);

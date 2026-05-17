@@ -4,6 +4,7 @@ members = [
     "bins/auth-flow-test",
     "bins/character-lifecycle-test",
     "bins/starter-zone-flow-test",
+    "bins/world-load-test",
     "bins/world-flow-test",
     "bins/authserver",
     "bins/worldserver",

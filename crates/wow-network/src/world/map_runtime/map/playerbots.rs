@@ -103,10 +103,16 @@ impl MapRuntime {
                     .active_leg
                     .map(|leg| playerbot_position_on_leg(leg, now))
                     .unwrap_or(player.position);
-                let movement_due_at =
-                    (bot.active_leg.is_none() && bot.route.is_empty() && now >= bot.next_think_at)
-                        .then_some(bot.next_think_at);
-                let combat_due_at = (player.active_combat_target.is_none()
+                let local_roam_only = bot.local_roam_only
+                    && bot.travel_destination.is_none()
+                    && bot.engage_target.is_none();
+                let movement_due_at = (!local_roam_only
+                    && bot.active_leg.is_none()
+                    && bot.route.is_empty()
+                    && now >= bot.next_think_at)
+                    .then_some(bot.next_think_at);
+                let combat_due_at = (bot.combat_enabled
+                    && player.active_combat_target.is_none()
                     && now >= bot.next_combat_think_at)
                     .then_some(bot.next_combat_think_at);
                 if movement_due_at.is_none() && combat_due_at.is_none() {
@@ -231,7 +237,11 @@ impl MapRuntime {
                     player.position.distance_2d(&destination) <= PLAYERBOT_DESTINATION_EPSILON_YARDS
                 }) {
                     "travel_arrived"
-                } else if now >= bot.next_think_at {
+                } else if now >= bot.next_think_at
+                    && !(bot.local_roam_only
+                        && bot.travel_destination.is_none()
+                        && bot.engage_target.is_none())
+                {
                     "planning_due"
                 } else if bot.travel_destination.is_some() {
                     "waiting_retry_or_budget"
@@ -350,7 +360,10 @@ impl MapRuntime {
             let Some(bot) = player.bot_runtime.as_ref() else {
                 continue;
             };
-            if player.health == 0 || !self.playerbot_is_in_active_grid(player) {
+            if player.health == 0
+                || !bot.combat_enabled
+                || !self.playerbot_is_in_active_grid(player)
+            {
                 continue;
             }
             let due_at = playerbot_combat_due_at(player, bot, now);
@@ -384,7 +397,8 @@ impl MapRuntime {
             .filter(|combat| {
                 self.players
                     .get(&combat.victim.counter())
-                    .is_some_and(|player| player.bot_runtime.is_some() && player.health > 0)
+                    .and_then(|player| player.bot_runtime.as_ref().map(|bot| (player, bot)))
+                    .is_some_and(|(player, bot)| player.health > 0 && bot.combat_enabled)
             })
             .copied()
             .collect::<Vec<_>>();
@@ -1118,6 +1132,13 @@ impl MapRuntime {
         if player
             .bot_runtime
             .as_ref()
+            .is_some_and(|bot| bot.force_active)
+        {
+            return true;
+        }
+        if player
+            .bot_runtime
+            .as_ref()
             .is_some_and(|bot| bot.travel_destination.is_some())
         {
             return true;
@@ -1126,6 +1147,13 @@ impl MapRuntime {
         self.grids.get(&grid).is_some_and(|grid| {
             grid.active_player_count > 0 && matches!(grid.state, GridState::Active)
         })
+    }
+
+    pub(in crate::world) fn player_guid_requires_async_planner(&self, player_guid: u32) -> bool {
+        self.players
+            .get(&player_guid)
+            .and_then(|player| player.bot_runtime.as_ref())
+            .is_some_and(playerbot_runtime_requires_async_planner)
     }
 
     pub(in crate::world) fn prepare_playerbot_roam_movement(
@@ -1176,18 +1204,31 @@ impl MapRuntime {
 
         if now >= bot.next_think_at {
             if bot.route.is_empty() {
-                let Some(movement_intent) = movement_intent else {
-                    bot.next_think_at = now + playerbot_missing_intent_defer_delay(bot_guid);
-                    crate::observability::record_playerbot_event("missing_movement_intent_defer");
-                    return None;
-                };
-                let route = match movement_intent {
-                    PlayerbotMovementIntent::Defer => {
-                        bot.next_think_at = now + playerbot_route_plan_defer_delay(bot_guid);
-                        crate::observability::record_playerbot_event("route_budget_defer");
+                let route = if bot.local_roam_only
+                    && bot.travel_destination.is_none()
+                    && bot.engage_target.is_none()
+                {
+                    playerbot_roam_route_points(
+                        Some(&geometry),
+                        player.position,
+                        bot.home_position,
+                        bot.roam_step,
+                        bot_guid,
+                    )
+                } else {
+                    let Some(movement_intent) = movement_intent else {
+                        bot.next_think_at = now + playerbot_missing_intent_defer_delay(bot_guid);
+                        crate::observability::record_playerbot_event("missing_movement_intent_defer");
                         return None;
+                    };
+                    match movement_intent {
+                        PlayerbotMovementIntent::Defer => {
+                            bot.next_think_at = now + playerbot_route_plan_defer_delay(bot_guid);
+                            crate::observability::record_playerbot_event("route_budget_defer");
+                            return None;
+                        }
+                        PlayerbotMovementIntent::Route { route } => route,
                     }
-                    PlayerbotMovementIntent::Route { route } => route,
                 };
                 let Some(route) = route else {
                     if bot.engage_target.is_some() {

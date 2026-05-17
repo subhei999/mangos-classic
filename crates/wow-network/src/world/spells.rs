@@ -109,6 +109,7 @@ pub(in crate::world) async fn handle_cast_spell(
     stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     if let Some(failure) = spell_cast_failure(
         deps.shared_world,
+        deps.world_db_pool,
         session,
         &spell_template,
         &spell_profile,
@@ -900,6 +901,7 @@ pub(in crate::world) async fn complete_player_spell_cast(
 
     if let Some(failure) = spell_target_cast_failure(
         deps.shared_world,
+        deps.world_db_pool,
         session,
         &spell_template,
         &spell_profile,
@@ -1890,6 +1892,7 @@ pub(in crate::world) fn angle_towards(from: WorldPosition, to: WorldPosition) ->
 
 pub(in crate::world) async fn spell_cast_failure(
     shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
@@ -1924,6 +1927,7 @@ pub(in crate::world) async fn spell_cast_failure(
     }
     spell_target_cast_failure(
         shared_world,
+        world_db_pool,
         session,
         spell_template,
         spell_profile,
@@ -1934,6 +1938,7 @@ pub(in crate::world) async fn spell_cast_failure(
 
 pub(in crate::world) async fn spell_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
     session: &mut WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
@@ -1947,6 +1952,7 @@ pub(in crate::world) async fn spell_target_cast_failure(
     }
     if let Some(failure) = spell_unit_target_cast_failure(
         shared_world,
+        world_db_pool,
         session,
         spell_template,
         spell_profile,
@@ -2095,6 +2101,7 @@ pub(in crate::world) async fn spell_heal_cast_failure(
 
 pub(in crate::world) async fn spell_unit_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
@@ -2150,6 +2157,13 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
             target,
             &session.movement.db_creature_navigation,
             range,
+            spell_requires_infront_target(
+                shared_world.object_mgr,
+                world_db_pool,
+                spell_template.id,
+            )
+            .await
+            .unwrap_or(false),
         )
         .await;
     match validation.check {
@@ -2165,6 +2179,18 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
         | PlayerSpellTargetCheck::NavigationBlocked(_)
         | PlayerSpellTargetCheck::OutOfRange => Some(SPELL_FAILED_OUT_OF_RANGE),
     }
+}
+
+pub(in crate::world) async fn spell_requires_infront_target(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    spell_id: u32,
+) -> anyhow::Result<bool> {
+    Ok(object_mgr
+        .spell_facing_flag(world_db_pool, spell_id)
+        .await?
+        & SPELL_FACING_FLAG_INFRONT
+        != 0)
 }
 
 pub(in crate::world) async fn resolve_player_spell_cast_targets(
@@ -2392,6 +2418,7 @@ pub(in crate::world) const SPELL_AURA_MOD_INCREASE_SPEED: u32 = 31;
 pub(in crate::world) const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
 pub(in crate::world) const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
 pub(in crate::world) const SPELL_AURA_MOD_PACIFY_SILENCE: u32 = 60;
+pub(in crate::world) const SPELL_AURA_MOD_STALKED: u32 = 68;
 pub(in crate::world) const SPELL_AURA_SCHOOL_ABSORB: u32 = 69;
 pub(in crate::world) const SPELL_AURA_MANA_SHIELD: u32 = 97;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE_PCT: u32 = 101;
@@ -2450,15 +2477,50 @@ pub(in crate::world) const SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN: u32 = 0x0200_00
 pub(in crate::world) const SPELL_ATTR_EX2_AUTO_REPEAT: u32 = 0x0000_0020;
 pub(in crate::world) const SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT: u32 = 0x0040_0000;
 pub(in crate::world) const SPELL_ATTR_SS_FACING_BACK: u32 = 0x0000_0008;
+pub(in crate::world) const SPELL_FACING_FLAG_INFRONT: u32 = 0x0000_0001;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_COMBAT: u32 = 0x08;
 pub(in crate::world) const SPELL_RANGE_FLAG_MELEE: u32 = 0x1;
 pub(in crate::world) const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
 pub(in crate::world) const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
 pub(in crate::world) const BASE_CHARGE_SPEED: f32 = 27.0;
 pub(in crate::world) const SPELL_SCHOOL_MASK_NORMAL: u32 = 0x01;
+pub(in crate::world) const SPELL_FAMILY_GENERIC: u32 = 0;
+pub(in crate::world) const SPELL_FAMILY_MAGE: u32 = 3;
+pub(in crate::world) const SPELL_FAMILY_HUNTER: u32 = 9;
+pub(in crate::world) const MECHANIC_FEAR: u32 = 5;
+pub(in crate::world) const MECHANIC_ROOT: u32 = 7;
+pub(in crate::world) const MECHANIC_SLEEP: u32 = 10;
+pub(in crate::world) const MECHANIC_KNOCKOUT: u32 = 14;
+pub(in crate::world) const MECHANIC_POLYMORPH: u32 = 17;
+pub(in crate::world) const MECHANIC_BANISH: u32 = 18;
+pub(in crate::world) const MECHANIC_SHACKLE: u32 = 20;
+pub(in crate::world) const MECHANIC_TURN: u32 = 23;
+pub(in crate::world) const POLYMORPH_HELPER_REGEN_SPELL_ID: u32 = 12_939;
 pub(in crate::world) const MAX_AURA_SLOTS: usize = 48;
 pub(in crate::world) const MAX_POSITIVE_AURA_SLOTS: usize = 32;
 pub(in crate::world) const MAX_AURA_FLAG_FIELDS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::world) enum DiminishingGroupRuntime {
+    Polymorph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum DiminishingLevelRuntime {
+    Level1,
+    Level2,
+    Level3,
+    Immune,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SingleTargetAuraDescriptor {
+    pub(in crate::world) spell_id: u32,
+    pub(in crate::world) chain_root: u32,
+    pub(in crate::world) spell_family_name: u32,
+    pub(in crate::world) spell_family_flags: u64,
+    pub(in crate::world) mechanic: u32,
+}
 
 pub(in crate::world) fn spell_damage_pushback_delay_millis(pushback_count: u8) -> u32 {
     match pushback_count {
@@ -3034,6 +3096,100 @@ pub(in crate::world) fn spell_periodic_regen_aura(
         mana_amount,
         tick_millis,
         next_tick_at: now + Duration::from_millis(tick_millis as u64),
+        interrupts_on_move_and_stand: false,
+        suppresses_recent_damage: false,
+        makes_player_sit: false,
+    })
+}
+
+pub(in crate::world) fn mark_active_aura_periodic_regen_as_consumable(aura: &mut ActiveAura) {
+    let Some(regen) = aura.periodic_regen.as_mut() else {
+        return;
+    };
+    regen.interrupts_on_move_and_stand = true;
+    regen.suppresses_recent_damage = true;
+    regen.makes_player_sit = true;
+}
+
+pub(in crate::world) fn spell_is_mage_polymorph(template: &wow_db::SpellTemplateQuery) -> bool {
+    template.spell_family_name == SPELL_FAMILY_MAGE
+        && template.spell_family_flags & 0x0100_0000 != 0
+        && SpellInfo::from_template(template)
+            .effects
+            .iter()
+            .any(|effect| effect.aura_name == SPELL_AURA_MOD_CONFUSE)
+}
+
+pub(in crate::world) fn spell_is_single_target_aura_template(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    match template.mechanic {
+        MECHANIC_FEAR | MECHANIC_TURN => true,
+        MECHANIC_ROOT | MECHANIC_SLEEP | MECHANIC_KNOCKOUT | MECHANIC_POLYMORPH
+        | MECHANIC_BANISH | MECHANIC_SHACKLE => {
+            template.spell_family_name != SPELL_FAMILY_GENERIC && template.spell_family_flags != 0
+        }
+        _ => {
+            template.spell_family_name == SPELL_FAMILY_HUNTER
+                && SpellInfo::from_template(template)
+                    .effects
+                    .iter()
+                    .any(|effect| effect.aura_name == SPELL_AURA_MOD_STALKED)
+        }
+    }
+}
+
+pub(in crate::world) async fn single_target_aura_descriptor(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    template: &wow_db::SpellTemplateQuery,
+) -> anyhow::Result<Option<SingleTargetAuraDescriptor>> {
+    if !spell_is_single_target_aura_template(template) {
+        return Ok(None);
+    }
+    let chain_root = object_mgr
+        .spell_chain(world_db_pool, template.id)
+        .await?
+        .map(spell_chain_root)
+        .unwrap_or(template.id);
+    Ok(Some(SingleTargetAuraDescriptor {
+        spell_id: template.id,
+        chain_root,
+        spell_family_name: template.spell_family_name,
+        spell_family_flags: template.spell_family_flags,
+        mechanic: template.mechanic,
+    }))
+}
+
+pub(in crate::world) fn single_target_aura_descriptors_match(
+    left: SingleTargetAuraDescriptor,
+    right: SingleTargetAuraDescriptor,
+) -> bool {
+    left.spell_id == right.spell_id
+        || (left.chain_root != 0 && left.chain_root == right.chain_root)
+        || (left.spell_family_name != SPELL_FAMILY_GENERIC
+            && right.spell_family_name != SPELL_FAMILY_GENERIC
+            && left.spell_family_name == right.spell_family_name
+            && left.spell_family_flags != 0
+            && left.spell_family_flags == right.spell_family_flags)
+}
+
+pub(in crate::world) fn spell_diminishing_group(
+    template: &wow_db::SpellTemplateQuery,
+) -> Option<DiminishingGroupRuntime> {
+    (template.mechanic == MECHANIC_POLYMORPH).then_some(DiminishingGroupRuntime::Polymorph)
+}
+
+pub(in crate::world) fn diminishing_duration_millis(
+    duration_millis: Option<u32>,
+    level: DiminishingLevelRuntime,
+) -> Option<u32> {
+    let duration = duration_millis?;
+    Some(match level {
+        DiminishingLevelRuntime::Level1 => duration,
+        DiminishingLevelRuntime::Level2 => duration / 2,
+        DiminishingLevelRuntime::Level3 => duration / 4,
+        DiminishingLevelRuntime::Immune => 0,
     })
 }
 
@@ -3702,13 +3858,15 @@ pub(in crate::world) fn expire_session_auras(session: &mut WorldSessionState, no
 }
 
 pub(in crate::world) fn active_aura_interrupt_flags(aura: &ActiveAura) -> u32 {
-    let derived = if aura.periodic_regen.is_some() {
-        AURA_INTERRUPT_FLAG_DAMAGE
-            | AURA_INTERRUPT_FLAG_MOVING
-            | AURA_INTERRUPT_FLAG_STANDING_CANCELS
-    } else {
-        0
-    };
+    let derived = aura.periodic_regen.map_or(0, |regen| {
+        if regen.interrupts_on_move_and_stand {
+            AURA_INTERRUPT_FLAG_DAMAGE
+                | AURA_INTERRUPT_FLAG_MOVING
+                | AURA_INTERRUPT_FLAG_STANDING_CANCELS
+        } else {
+            0
+        }
+    });
     aura.interrupt_flags | derived
 }
 

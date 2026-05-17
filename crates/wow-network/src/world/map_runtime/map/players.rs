@@ -307,8 +307,10 @@ impl MapRuntime {
             let mut mana_changed = false;
             let mut energy_changed = false;
             let mut rage_changed = false;
-            let mut consumable_health_gain = 0u32;
-            let mut consumable_mana_gain = 0u32;
+            let mut suppressible_health_gain = 0u32;
+            let mut suppressible_mana_gain = 0u32;
+            let mut unsuppressed_health_gain = 0u32;
+            let mut unsuppressed_mana_gain = 0u32;
             let mut periodic_regen_events = Vec::new();
 
             for aura in &mut player.active_auras {
@@ -316,9 +318,17 @@ impl MapRuntime {
                     continue;
                 };
                 while regen.next_tick_at <= now {
-                    consumable_health_gain =
-                        consumable_health_gain.saturating_add(regen.health_amount);
-                    consumable_mana_gain = consumable_mana_gain.saturating_add(regen.mana_amount);
+                    if regen.suppresses_recent_damage {
+                        suppressible_health_gain =
+                            suppressible_health_gain.saturating_add(regen.health_amount);
+                        suppressible_mana_gain =
+                            suppressible_mana_gain.saturating_add(regen.mana_amount);
+                    } else {
+                        unsuppressed_health_gain =
+                            unsuppressed_health_gain.saturating_add(regen.health_amount);
+                        unsuppressed_mana_gain =
+                            unsuppressed_mana_gain.saturating_add(regen.mana_amount);
+                    }
                     periodic_regen_events.push((
                         aura.caster,
                         aura.spell_id,
@@ -330,14 +340,17 @@ impl MapRuntime {
             }
 
             let mut periodic_health_applied = 0u32;
-            if consumable_health_gain > 0
-                && !suppress_health_regen
-                && player.health < player.max_health
-            {
+            let total_health_gain =
+                unsuppressed_health_gain.saturating_add(if suppress_health_regen {
+                    0
+                } else {
+                    suppressible_health_gain
+                });
+            if total_health_gain > 0 && player.health < player.max_health {
                 let old_health = player.health;
                 let new_health = player
                     .health
-                    .saturating_add(consumable_health_gain)
+                    .saturating_add(total_health_gain)
                     .min(player.max_health);
                 health_changed = new_health != player.health;
                 player.health = new_health;
@@ -345,14 +358,16 @@ impl MapRuntime {
             }
 
             let mut periodic_mana_applied = 0u32;
-            if consumable_mana_gain > 0
-                && player.max_power1 > 0
-                && player.power1 < player.max_power1
-            {
+            let total_mana_gain = unsuppressed_mana_gain.saturating_add(if suppress_health_regen {
+                0
+            } else {
+                suppressible_mana_gain
+            });
+            if total_mana_gain > 0 && player.max_power1 > 0 && player.power1 < player.max_power1 {
                 let old_mana = player.power1;
                 let new_mana = player
                     .power1
-                    .saturating_add(consumable_mana_gain)
+                    .saturating_add(total_mana_gain)
                     .min(player.max_power1);
                 mana_changed = new_mana != player.power1;
                 player.power1 = new_mana;

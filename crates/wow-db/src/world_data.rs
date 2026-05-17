@@ -1086,6 +1086,21 @@ pub async fn get_spell_chain_query(
     .map_err(Into::into)
 }
 
+pub async fn get_spell_facing_flag_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_facing_load");
+    sqlx::query_scalar::<_, u32>(
+        "SELECT CAST(facingcasterflag AS UNSIGNED) AS facingcasterflag \
+         FROM spell_facing WHERE entry = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 pub async fn get_spell_group_memberships(
     pool: &MySqlPool,
     spell: u32,

@@ -12814,6 +12814,7 @@ fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_c
             creature_guid,
             &DbCreatureNavigationGuardrail::default(),
             Some(hunter_range),
+            false,
         )
         .check,
         PlayerSpellTargetCheck::TooClose,
@@ -12831,6 +12832,7 @@ fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_c
             creature_guid,
             &DbCreatureNavigationGuardrail::default(),
             Some(hunter_range),
+            false,
         )
         .check,
         PlayerSpellTargetCheck::Clear
@@ -15849,7 +15851,7 @@ fn polymorph_transform_updates_creature_display_and_breaks_on_damage() {
     };
 
     let event = map
-        .apply_db_creature_aura_replacing_spell_ids(creature_guid, 7, aura, &[], now)
+        .apply_db_creature_aura_replacing_spell_ids(creature_guid, 7, aura, &[], None, None, now)
         .unwrap()
         .unwrap();
     let creature = map.creatures.get(&creature_guid.raw()).unwrap();
@@ -15886,6 +15888,161 @@ fn polymorph_transform_updates_creature_display_and_breaks_on_damage() {
         .direct_packets
         .iter()
         .any(|packet| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn single_target_polymorph_replaces_previous_target_for_same_caster() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let descriptor = SingleTargetAuraDescriptor {
+        spell_id: 118,
+        chain_root: 118,
+        spell_family_name: SPELL_FAMILY_MAGE,
+        spell_family_flags: 0x0100_0000,
+        mechanic: MECHANIC_POLYMORPH,
+    };
+    let aura = ActiveAura {
+        spell_id: 118,
+        caster,
+        level: 12,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        positive: false,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::Confuse,
+            AuraStatModifier::Transform {
+                display_id: 100,
+                creature_entry: 0,
+            },
+        ],
+        proc_triggers: Vec::new(),
+    };
+
+    let mut first = test_creature_spawn(6);
+    first.guid = 401;
+    let first_guid = creature_spawn_guid(&first);
+    let mut second = test_creature_spawn(6);
+    second.guid = 402;
+    second.position_x = 5.0;
+    let second_guid = creature_spawn_guid(&second);
+    map.creatures
+        .insert(first_guid.raw(), DbCreatureRuntime::new(first));
+    map.creatures
+        .insert(second_guid.raw(), DbCreatureRuntime::new(second));
+
+    map.apply_db_creature_aura_replacing_spell_ids(
+        first_guid,
+        7,
+        aura.clone(),
+        &[],
+        Some(descriptor),
+        None,
+        now,
+    )
+    .unwrap()
+    .unwrap();
+    map.apply_db_creature_aura_replacing_spell_ids(
+        second_guid,
+        7,
+        aura,
+        &[],
+        Some(descriptor),
+        None,
+        now,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert!(map
+        .creatures
+        .get(&first_guid.raw())
+        .unwrap()
+        .active_auras
+        .is_empty());
+    assert_eq!(
+        map.creatures
+            .get(&second_guid.raw())
+            .unwrap()
+            .active_auras
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn polymorph_breaks_on_periodic_aura_damage() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 403;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.health = 100;
+    creature.active_auras.push(ActiveAura {
+        spell_id: 118,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 12,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        positive: false,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::Confuse,
+            AuraStatModifier::Transform {
+                display_id: 100,
+                creature_entry: 0,
+            },
+        ],
+        proc_triggers: Vec::new(),
+    });
+    creature.active_auras.push(ActiveAura {
+        spell_id: 772,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(9_000),
+        expires_at: Some(now + Duration::from_secs(9)),
+        periodic_damage: Some(PeriodicDamageAura {
+            aura_name: SPELL_AURA_PERIODIC_DAMAGE,
+            school: 1,
+            damage_class: 2,
+            attributes_ex2: 0,
+            attributes_ex3: 0,
+            caster_snapshot: SpellCombatUnitSnapshot {
+                level: 1,
+                class: 0,
+                intellect: 0,
+                resistances: [0; MAX_SPELL_SCHOOL],
+            },
+            amount: 7,
+            tick_millis: 3_000,
+            next_tick_at: now,
+        }),
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    });
+    map.creatures.insert(creature_guid.raw(), creature);
+
+    map.advance_db_creature_auras(now, 1_000).unwrap();
+
+    let creature = map.creatures.get(&creature_guid.raw()).unwrap();
+    assert_eq!(creature.health, 93);
+    assert!(creature
+        .active_auras
+        .iter()
+        .all(|aura| aura.spell_id != 118));
+    assert_eq!(creature.aura_display_id_override, None);
 }
 
 #[tokio::test]
@@ -16890,6 +17047,9 @@ fn map_owned_consumable_regen_aura_ticks_health_and_mana() {
                 mana_amount: 9,
                 tick_millis: 2_000,
                 next_tick_at: now,
+                interrupts_on_move_and_stand: false,
+                suppresses_recent_damage: false,
+                makes_player_sit: false,
             }),
             stat_modifiers: Vec::new(),
             proc_triggers: Vec::new(),
@@ -17243,6 +17403,67 @@ fn creature_combat_ownership_marks_player_in_combat() {
 }
 
 #[test]
+fn polymorph_clears_creature_combat_through_map_owner_and_allows_reentry() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 470;
+    spawn.position_x = player_position.x + 2.0;
+    spawn.position_y = player_position.y;
+    let attacker = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("creature combat should start");
+    assert!(map.player_runtime_snapshot(7).unwrap().in_combat);
+    assert!(map.active_creature_combats.contains_key(&attacker.raw()));
+    assert!(map.creature_threats.contains_key(&attacker.raw()));
+    assert!(map.creature_combat_leash.contains_key(&attacker.raw()));
+
+    let aura = ActiveAura {
+        spell_id: 118,
+        caster: victim,
+        level: 12,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        positive: false,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(now + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::Confuse,
+            AuraStatModifier::Transform {
+                display_id: 100,
+                creature_entry: 0,
+            },
+        ],
+        proc_triggers: Vec::new(),
+    };
+
+    map.apply_db_creature_aura_replacing_spell_ids(attacker, 7, aura, &[], None, None, now)
+        .unwrap()
+        .expect("polymorph should apply");
+
+    assert!(!map.player_runtime_snapshot(7).unwrap().in_combat);
+    assert!(!map.active_creature_combats.contains_key(&attacker.raw()));
+    assert!(!map.creature_threats.contains_key(&attacker.raw()));
+    assert!(!map.creature_combat_leash.contains_key(&attacker.raw()));
+
+    map.begin_db_creature_combat(attacker, victim, now + Duration::from_secs(1))
+        .expect("creature combat should restart after sheep breaks");
+
+    assert!(map.player_runtime_snapshot(7).unwrap().in_combat);
+    assert!(map.active_creature_combats.contains_key(&attacker.raw()));
+    assert!(map.creature_threats.contains_key(&attacker.raw()));
+    assert!(map.creature_combat_leash.contains_key(&attacker.raw()));
+}
+
+#[test]
 fn player_visible_equipment_update_block_updates_observer_item_visual() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let mut visible_equipment = [0; ENUM_EQUIPMENT_SLOTS];
@@ -17289,6 +17510,100 @@ fn map_runtime_idle_motion_start_guids_require_player_interest() {
         map.db_creature_idle_motion_start_guids(now),
         Vec::<u64>::new(),
         "CMaNGOS-shaped idle patrol starts should pause once no player keeps the area active"
+    );
+}
+
+#[test]
+fn map_runtime_confused_motion_start_guids_use_control_scheduler() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 405;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.active_auras.push(ActiveAura {
+        spell_id: 118,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        visible: true,
+        positive: false,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Confuse],
+        proc_triggers: Vec::new(),
+    });
+    runtime.begin_confused_motion(now);
+    map.insert_loaded_creature_grid(grid, vec![runtime]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    assert_eq!(
+        map.db_creature_idle_motion_start_guids(now),
+        Vec::<u64>::new()
+    );
+    assert_eq!(
+        map.db_creature_confused_motion_start_guids(now),
+        vec![guid.raw()]
+    );
+}
+
+#[test]
+fn map_runtime_tick_starts_confused_motion_from_control_scheduler() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 406;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    let guid = creature_spawn_guid(&spawn);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.active_auras.push(ActiveAura {
+        spell_id: 118,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        visible: true,
+        positive: false,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Confuse],
+        proc_triggers: Vec::new(),
+    });
+    runtime.begin_confused_motion(now);
+    map.insert_loaded_creature_grid(grid, vec![runtime]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    let tick = map
+        .advance_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .expect("control-motion tick should succeed");
+
+    assert_eq!(tick.creatures.len(), 1);
+    assert_eq!(tick.creatures[0].guid(), guid);
+    assert!(matches!(
+        tick.creatures[0].motion,
+        CreatureMotionState::Confused(_)
+    ));
+    assert!(
+        tick.packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == SMSG_MONSTER_MOVE),
+        "confused control start should broadcast movement"
     );
 }
 
@@ -17778,6 +18093,9 @@ fn map_runtime_environmental_damage_interrupts_regen() {
             mana_amount: 0,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(60),
+            interrupts_on_move_and_stand: true,
+            suppresses_recent_damage: true,
+            makes_player_sit: true,
         }),
         stat_modifiers: Vec::new(),
         proc_triggers: Vec::new(),
@@ -18279,6 +18597,9 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
             mana_amount: 9,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(2),
+            interrupts_on_move_and_stand: false,
+            suppresses_recent_damage: false,
+            makes_player_sit: false,
         }),
         stat_modifiers: Vec::new(),
         proc_triggers: Vec::new(),
@@ -21919,6 +22240,49 @@ fn db_creature_random_motion_uses_spawn_movement_type_and_spawn_dist() {
 }
 
 #[test]
+fn db_creature_confused_motion_uses_dedicated_state_and_pause_timer() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.active_auras.push(ActiveAura {
+        spell_id: 118,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE,
+        visible: true,
+        positive: false,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Confuse],
+        proc_triggers: Vec::new(),
+    });
+    runtime.begin_confused_motion(now);
+    let original_waypoint_due = runtime.next_waypoint_move_at;
+
+    let motion = start_db_creature_confused_motion_runtime(
+        &DbCreatureNavigationGuardrail::default(),
+        None,
+        &mut runtime,
+        now,
+    )
+    .expect("confused creature should start a sheep wander spline");
+
+    assert!(matches!(runtime.motion, CreatureMotionState::Confused(_)));
+    assert_eq!(runtime.next_confused_move_at, None);
+
+    advance_db_creature_motion_runtime(&mut runtime, now + motion.duration);
+
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+    assert!(runtime.next_confused_move_at.is_some());
+    assert_eq!(runtime.next_waypoint_move_at, original_waypoint_due);
+}
+
+#[test]
 fn db_creature_random_motion_duration_uses_template_walk_speed() {
     let mut spawn = test_creature_spawn(6);
     spawn.position_x = 0.0;
@@ -24643,6 +25007,9 @@ async fn item_use_spell_failure_allows_refreshing_existing_aura_during_cooldown(
             mana_amount: 0,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(2),
+            interrupts_on_move_and_stand: true,
+            suppresses_recent_damage: true,
+            makes_player_sit: true,
         }),
         stat_modifiers: Vec::new(),
         proc_triggers: Vec::new(),
@@ -26586,6 +26953,9 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         .prime_spell_template_for_test(133, Some(fireball))
         .await;
     object_mgr
+        .prime_spell_facing_flag_for_test(133, Some(1))
+        .await;
+    object_mgr
         .prime_creature_ai_scripts_for_test(6, Vec::new())
         .await;
     let shared_world = SharedWorldDeps {
@@ -28315,7 +28685,7 @@ async fn stand_state_change_to_stand_cancels_consumable_regen_aura() {
         spell_id: 1127,
         caster: ObjectGuid::new(HighGuid::Player, 0, 7),
         level: 1,
-        interrupt_flags: 0,
+        interrupt_flags: AURA_INTERRUPT_FLAG_STANDING_CANCELS,
         positive: true,
         visible: true,
         duration_millis: Some(30_000),
@@ -28326,6 +28696,9 @@ async fn stand_state_change_to_stand_cancels_consumable_regen_aura() {
             mana_amount: 0,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(2),
+            interrupts_on_move_and_stand: true,
+            suppresses_recent_damage: true,
+            makes_player_sit: true,
         }),
         stat_modifiers: Vec::new(),
         proc_triggers: Vec::new(),
@@ -28743,6 +29116,9 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
     template.range_index = 900;
     object_mgr
         .prime_spell_template_for_test(133, Some(template))
+        .await;
+    object_mgr
+        .prime_spell_facing_flag_for_test(133, Some(1))
         .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
@@ -30036,6 +30412,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -30085,6 +30462,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &heroic_template,
             &profile,
@@ -30099,6 +30477,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &heroic_template,
             &profile,
@@ -30135,6 +30514,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &heroic_template,
             &profile,
@@ -30168,6 +30548,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &gcd_template,
             &gcd_profile,
@@ -30190,6 +30571,7 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &heroic_template,
             &profile,
@@ -30215,11 +30597,15 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     let maps = Arc::new(manager);
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
         sessions: &sessions,
     };
+    object_mgr
+        .prime_spell_facing_flag_for_test(133, Some(1))
+        .await;
     let map_id = 0;
     let character_guid = 7;
     let player_position = WorldPosition::new(map_id, 0.0, 0.0, 0.0, 0.0);
@@ -30283,6 +30669,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &template,
             &profile,
@@ -30300,6 +30687,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &template,
             &profile,
@@ -30323,6 +30711,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
             &mut session,
             &template,
             &profile,
@@ -30345,6 +30734,116 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     assert_eq!(
         spell_cast_failure(
             shared_world,
+            &world_db_pool,
+            &mut session,
+            &template,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn polymorph_cast_failure_does_not_require_facing_without_spell_facing_flag() {
+    let mut manager = MapRuntimeManager::default();
+    manager.spell_ranges.insert(
+        900,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 30.0,
+            flags: 0,
+        },
+    );
+    let maps = Arc::new(manager);
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    object_mgr.prime_spell_facing_flag_for_test(118, None).await;
+
+    let map_id = 0;
+    let character_guid = 7;
+    let player_position = WorldPosition::new(map_id, 0.0, 0.0, 0.0, std::f32::consts::PI);
+    let mut player = test_player_runtime(character_guid, SessionId(7), player_position);
+    let caster_world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 80,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = caster_world_stats;
+    player.effective_world_stats = caster_world_stats;
+    player.max_power1 = caster_world_stats.max_mana();
+    player.power1 = 100;
+    maps.add_player(player).await.unwrap();
+    let mut creature_spawn = test_creature_spawn(6);
+    creature_spawn.guid = 66;
+    creature_spawn.position_x = 10.0;
+    creature_spawn.position_y = 0.0;
+    creature_spawn.position_z = 0.0;
+    let target = creature_spawn_guid(&creature_spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(creature_spawn)])
+        .await;
+
+    let mut template = test_spell_template(118);
+    template.range_index = 900;
+    template.dispel = 1;
+    template.mechanic = MECHANIC_POLYMORPH;
+    template.spell_family_name = SPELL_FAMILY_MAGE;
+    template.spell_family_flags = 0x0100_0000;
+    template.aura_interrupt_flags = AURA_INTERRUPT_FLAG_DAMAGE;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_CONFUSE;
+    template.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
+    template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name2 = SPELL_AURA_TRANSFORM;
+    template.effect_misc_value2 = 16372;
+    template.effect_implicit_target_a2 = TARGET_UNIT_ENEMY;
+    let profile = player_spell_cast_profile(&template).unwrap();
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+        gameobject_target: None,
+        source_location: None,
+        destination: None,
+    };
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: character_guid,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: caster_world_stats.max_health(),
+            player_mana: 100,
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail::default(),
+            ..MovementSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &world_db_pool,
             &mut session,
             &template,
             &profile,

@@ -71,6 +71,26 @@ pub(in crate::world) fn advance_db_creature_motion_runtime(
             };
             creature.current_position = position;
         }
+        CreatureMotionState::Confused(confused) => {
+            let Some(position) = advance_timed_path_motion(
+                confused.start,
+                &confused.path,
+                confused.started_at,
+                confused.duration,
+                now,
+            ) else {
+                creature.current_position = confused.destination;
+                creature.motion = CreatureMotionState::Idle;
+                creature.next_confused_move_at = Some(
+                    now + Duration::from_millis(db_creature_confused_pause_millis(
+                        creature.guid().raw(),
+                        creature.next_spline_id,
+                    )),
+                );
+                return;
+            };
+            creature.current_position = position;
+        }
         CreatureMotionState::Waypoint(waypoint) => {
             let Some(position) = advance_timed_path_motion(
                 waypoint.start,
@@ -299,22 +319,23 @@ pub(in crate::world) fn start_db_creature_confused_motion_runtime(
         return None;
     }
     let start = creature.current_position;
+    let center = creature.confused_origin.unwrap_or(start);
     let Some(path_result) = db_creature_random_path_from_center(
         navigation,
         geometry,
         creature,
         start,
-        start,
+        center,
         CMANGOS_CONFUSED_MOVEMENT_RADIUS_YARDS,
     ) else {
-        creature.next_random_move_at =
+        creature.next_confused_move_at =
             Some(now + Duration::from_millis(CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS));
         return None;
     };
     let path = path_result.points;
     let destination = *path.last()?;
     if distance_2d(start.x, start.y, destination.x, destination.y) <= f32::EPSILON {
-        creature.next_random_move_at =
+        creature.next_confused_move_at =
             Some(now + Duration::from_millis(CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS));
         return None;
     }
@@ -322,14 +343,14 @@ pub(in crate::world) fn start_db_creature_confused_motion_runtime(
     let duration = db_creature_random_motion_duration(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
-    creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
+    creature.motion = CreatureMotionState::Confused(CreatureRandomMotion {
         start,
         destination,
         path: path.clone(),
         started_at: now,
         duration,
     });
-    creature.next_random_move_at = None;
+    creature.next_confused_move_at = None;
     Some(StartedCreatureMotion {
         start,
         path,
@@ -843,6 +864,14 @@ pub(in crate::world) fn retimed_db_creature_motion(
             creature.default_movement_run,
             None,
         ),
+        CreatureMotionState::Confused(motion) => (
+            motion.start,
+            motion.path.clone(),
+            motion.started_at,
+            motion.duration,
+            false,
+            None,
+        ),
         CreatureMotionState::Waypoint(motion) => (
             motion.start,
             motion.path.clone(),
@@ -883,7 +912,7 @@ pub(in crate::world) fn retimed_db_creature_motion(
         return None;
     }
     let new_duration = match original {
-        CreatureMotionState::Random(_) => {
+        CreatureMotionState::Random(_) | CreatureMotionState::Confused(_) => {
             db_creature_random_motion_duration(creature, current_position, &remaining_path, run)
         }
         CreatureMotionState::Chase(_) => {
@@ -898,6 +927,15 @@ pub(in crate::world) fn retimed_db_creature_motion(
     match creature.motion.clone() {
         CreatureMotionState::Random(_) => {
             creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
+                start: current_position,
+                destination,
+                path: remaining_path.clone(),
+                started_at: now,
+                duration: new_duration,
+            });
+        }
+        CreatureMotionState::Confused(_) => {
+            creature.motion = CreatureMotionState::Confused(CreatureRandomMotion {
                 start: current_position,
                 destination,
                 path: remaining_path.clone(),

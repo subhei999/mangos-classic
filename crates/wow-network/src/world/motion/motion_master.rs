@@ -5,6 +5,7 @@ pub(in crate::world) enum CreatureMotionState {
     #[default]
     Idle,
     Random(CreatureRandomMotion),
+    Confused(CreatureRandomMotion),
     Waypoint(CreatureWaypointMotion),
     Chase(CreatureChaseMotion),
     Flee(CreatureFleeMotion),

@@ -461,7 +461,9 @@ pub(in crate::world) fn should_advance_db_creature_idle_motion(
             .is_none_or(|target| target.raw() != guid)
         && matches!(
             creature.motion,
-            CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_)
+            CreatureMotionState::Random(_)
+                | CreatureMotionState::Confused(_)
+                | CreatureMotionState::Waypoint(_)
         )
 }
 
@@ -497,6 +499,7 @@ pub(in crate::world) fn should_start_db_creature_idle_motion(
             .active_combat_target
             .is_none_or(|target| target.raw() != guid)
         && matches!(creature.motion, CreatureMotionState::Idle)
+        && !active_aura_has_confuse(&creature.active_auras)
         && (creature.next_random_move_at.is_some_and(|at| now >= at)
             || creature.next_waypoint_move_at.is_some_and(|at| now >= at))
 }
@@ -1508,6 +1511,13 @@ pub(in crate::world) async fn player_ranged_auto_attack_failure(
             target,
             &session.movement.db_creature_navigation,
             range,
+            spell_requires_infront_target(
+                shared_world.object_mgr,
+                world_db_pool,
+                spell_template.id,
+            )
+            .await
+            .unwrap_or(false),
         )
         .await;
     Ok(match validation.check {

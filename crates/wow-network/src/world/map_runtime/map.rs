@@ -283,6 +283,19 @@ pub(in crate::world) struct PlayerDeathPresentationRuntime {
     pub(in crate::world) waiting_since: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct TrackedSingleTargetAuraRuntime {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) descriptor: SingleTargetAuraDescriptor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::world) struct DiminishingStateRuntime {
+    pub(in crate::world) active_stack_count: u16,
+    pub(in crate::world) next_level: u8,
+    pub(in crate::world) last_hit_at: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub(in crate::world) struct PlayerRewardRuntimeUpdate {
     pub(in crate::world) level: u8,
@@ -352,6 +365,7 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) next_dynamic_object_counter: u32,
     pub(in crate::world) playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
     pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
+    pub(in crate::world) next_confused_motion_start_check_at: Option<Instant>,
     pub(in crate::world) next_idle_motion_start_check_at: Option<Instant>,
     pub(in crate::world) pending_db_scripts: Vec<PendingDbScriptAction>,
     pub(in crate::world) next_player_regen_tick_at: Option<Instant>,
@@ -362,6 +376,12 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) next_spell_event_id: u64,
     pub(in crate::world) pending_player_death_presentations:
         HashMap<u32, PlayerDeathPresentationRuntime>,
+    pub(in crate::world) tracked_single_target_auras:
+        HashMap<u64, Vec<TrackedSingleTargetAuraRuntime>>,
+    pub(in crate::world) active_diminishing_auras:
+        HashMap<(u64, u64, u32), DiminishingGroupRuntime>,
+    pub(in crate::world) diminishing_states:
+        HashMap<u64, HashMap<DiminishingGroupRuntime, DiminishingStateRuntime>>,
 }
 
 #[derive(Debug, Clone)]
@@ -782,6 +802,7 @@ impl MapRuntime {
             next_dynamic_object_counter: 1,
             playerbot_intents: HashMap::new(),
             next_idle_motion_tick_at: None,
+            next_confused_motion_start_check_at: None,
             next_idle_motion_start_check_at: None,
             pending_db_scripts: Vec::new(),
             next_player_regen_tick_at: None,
@@ -791,6 +812,9 @@ impl MapRuntime {
             pending_spell_events: Vec::new(),
             next_spell_event_id: 1,
             pending_player_death_presentations: HashMap::new(),
+            tracked_single_target_auras: HashMap::new(),
+            active_diminishing_auras: HashMap::new(),
+            diminishing_states: HashMap::new(),
         }
     }
 
@@ -814,6 +838,97 @@ impl MapRuntime {
                 .values()
                 .filter(|player| matches!(player.controller, PlayerController::Bot { .. }))
                 .count() as u64,
+        }
+    }
+
+    pub(in crate::world) fn current_diminishing_level(
+        &mut self,
+        target: ObjectGuid,
+        group: DiminishingGroupRuntime,
+        now: Instant,
+    ) -> DiminishingLevelRuntime {
+        let Some(groups) = self.diminishing_states.get_mut(&target.raw()) else {
+            return DiminishingLevelRuntime::Level1;
+        };
+        let Some(state) = groups.get_mut(&group) else {
+            return DiminishingLevelRuntime::Level1;
+        };
+        if state.active_stack_count == 0
+            && state.last_hit_at.is_some_and(|last_hit_at| {
+                now.saturating_duration_since(last_hit_at) > Duration::from_secs(15)
+            })
+        {
+            state.next_level = 0;
+        }
+        match state.next_level {
+            0 => DiminishingLevelRuntime::Level1,
+            1 => DiminishingLevelRuntime::Level2,
+            2 => DiminishingLevelRuntime::Level3,
+            _ => DiminishingLevelRuntime::Immune,
+        }
+    }
+
+    pub(in crate::world) fn register_diminishing_aura(
+        &mut self,
+        target: ObjectGuid,
+        caster: ObjectGuid,
+        spell_id: u32,
+        group: DiminishingGroupRuntime,
+        now: Instant,
+    ) {
+        self.active_diminishing_auras
+            .insert((target.raw(), caster.raw(), spell_id), group);
+        let state = self
+            .diminishing_states
+            .entry(target.raw())
+            .or_default()
+            .entry(group)
+            .or_default();
+        state.active_stack_count = state.active_stack_count.saturating_add(1);
+        state.last_hit_at = Some(now);
+        state.next_level = match state.next_level {
+            0 => 1,
+            1 => 2,
+            _ => 3,
+        };
+    }
+
+    pub(in crate::world) fn reconcile_target_aura_trackers(
+        &mut self,
+        target: ObjectGuid,
+        active_auras: &[ActiveAura],
+        now: Instant,
+    ) {
+        let active_pairs = active_auras
+            .iter()
+            .map(|aura| (aura.caster.raw(), aura.spell_id))
+            .collect::<HashSet<_>>();
+        self.tracked_single_target_auras
+            .retain(|caster_raw, entries| {
+                entries.retain(|entry| {
+                    entry.target != target
+                        || active_pairs.contains(&(*caster_raw, entry.descriptor.spell_id))
+                });
+                !entries.is_empty()
+            });
+        let removed = self
+            .active_diminishing_auras
+            .iter()
+            .filter_map(|(key, group)| {
+                (key.0 == target.raw() && !active_pairs.contains(&(key.1, key.2)))
+                    .then_some((*key, *group))
+            })
+            .collect::<Vec<_>>();
+        for (key, group) in removed {
+            self.active_diminishing_auras.remove(&key);
+            if let Some(state) = self
+                .diminishing_states
+                .get_mut(&target.raw())
+                .and_then(|groups| groups.get_mut(&group))
+            {
+                state.active_stack_count = state.active_stack_count.saturating_sub(1);
+                state.last_hit_at = Some(now);
+            }
         }
     }
 }

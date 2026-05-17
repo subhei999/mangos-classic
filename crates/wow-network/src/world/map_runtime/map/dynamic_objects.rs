@@ -224,6 +224,8 @@ impl MapRuntime {
             } else {
                 None
             };
+            let damage_interrupt_packets =
+                self.remove_db_creature_damage_interrupt_auras(target, now)?;
             let Some(applied) = self.apply_creature_world_damage(
                 target,
                 dynamic_object.caster,
@@ -298,6 +300,9 @@ impl MapRuntime {
                         body: update_body.clone(),
                     },
                 ));
+                for packet in &damage_interrupt_packets {
+                    packets.push((session_id, packet.clone()));
+                }
                 if let Some(packet) = &motion_stop_packet {
                     packets.push((session_id, packet.clone()));
                 }

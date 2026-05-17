@@ -45,6 +45,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellTemplateQuery>>>,
     pub(in crate::world) spell_chains:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::SpellChainQuery>>>,
+    pub(in crate::world) spell_facing_flags:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Option<u32>>>,
     pub(in crate::world) spell_group_memberships:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::SpellGroupMembershipQuery>>>,
     pub(in crate::world) creature_spell_lists:
@@ -67,6 +69,7 @@ pub(in crate::world) struct ObjectMgrCacheStats {
     pub(in crate::world) loot_template_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_template_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_chain_db_loads: std::sync::atomic::AtomicU64,
+    pub(in crate::world) spell_facing_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) spell_group_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) creature_spell_list_db_loads: std::sync::atomic::AtomicU64,
     pub(in crate::world) creature_ai_script_db_loads: std::sync::atomic::AtomicU64,
@@ -85,6 +88,7 @@ pub(in crate::world) struct ObjectMgrCacheSnapshot {
     pub(in crate::world) loot_template_db_loads: u64,
     pub(in crate::world) spell_template_db_loads: u64,
     pub(in crate::world) spell_chain_db_loads: u64,
+    pub(in crate::world) spell_facing_db_loads: u64,
     pub(in crate::world) spell_group_db_loads: u64,
     pub(in crate::world) creature_spell_list_db_loads: u64,
     pub(in crate::world) creature_ai_script_db_loads: u64,
@@ -578,6 +582,24 @@ impl ObjectMgr {
         Ok(chain)
     }
 
+    pub(in crate::world) async fn spell_facing_flag(
+        &self,
+        world_db_pool: &MySqlPool,
+        spell: u32,
+    ) -> anyhow::Result<u32> {
+        let mut cache = self.spell_facing_flags.lock().await;
+        if let Some(flag) = cache.get(&spell) {
+            return Ok(flag.unwrap_or(0));
+        }
+
+        let flag = wow_db::get_spell_facing_flag_query(world_db_pool, spell).await?;
+        self.stats
+            .spell_facing_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cache.insert(spell, flag);
+        Ok(flag.unwrap_or(0))
+    }
+
     pub(in crate::world) async fn spell_group_memberships(
         &self,
         world_db_pool: &MySqlPool,
@@ -835,6 +857,15 @@ impl ObjectMgr {
     }
 
     #[cfg(test)]
+    pub(in crate::world) async fn prime_spell_facing_flag_for_test(
+        &self,
+        spell: u32,
+        flag: Option<u32>,
+    ) {
+        self.spell_facing_flags.lock().await.insert(spell, flag);
+    }
+
+    #[cfg(test)]
     pub(in crate::world) async fn prime_creature_ai_scripts_for_test(
         &self,
         entry: u32,
@@ -893,6 +924,10 @@ impl ObjectMgr {
             spell_chain_db_loads: self
                 .stats
                 .spell_chain_db_loads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            spell_facing_db_loads: self
+                .stats
+                .spell_facing_db_loads
                 .load(std::sync::atomic::Ordering::Relaxed),
             spell_group_db_loads: self
                 .stats

@@ -327,6 +327,7 @@ impl MapRuntime {
         target: ObjectGuid,
         navigation: &DbCreatureNavigationGuardrail,
         range: Option<SpellRangeEntry>,
+        requires_infront: bool,
     ) -> PlayerSpellTargetValidation {
         let Some(player) = self.players.get(&character_guid) else {
             return PlayerSpellTargetValidation {
@@ -371,11 +372,13 @@ impl MapRuntime {
                 };
             }
         }
-        if !has_in_arc(
-            player.position,
-            creature.current_position,
-            SPELL_CAST_ARC_RADIANS,
-        ) {
+        if requires_infront
+            && !has_in_arc(
+                player.position,
+                creature.current_position,
+                SPELL_CAST_ARC_RADIANS,
+            )
+        {
             return PlayerSpellTargetValidation {
                 check: PlayerSpellTargetCheck::BadFacing,
             };

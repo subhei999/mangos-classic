@@ -2242,6 +2242,38 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     else {
                         return Ok(());
                     };
+                    augment_mage_polymorph_regen_from_helper_spell(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template,
+                        &mut aura,
+                        now,
+                        target_creature.max_health(),
+                    )
+                    .await?;
+                    let single_target_descriptor = single_target_aura_descriptor(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template,
+                    )
+                    .await?;
+                    let diminishing_group = spell_diminishing_group(spell_template);
+                    if let Some(group) = diminishing_group {
+                        let level = deps
+                            .shared_world
+                            .maps
+                            .current_diminishing_level(map_id, target, group, now)
+                            .await
+                            .unwrap_or(DiminishingLevelRuntime::Level1);
+                        let adjusted_duration =
+                            diminishing_duration_millis(aura.duration_millis, level).unwrap_or(0);
+                        if adjusted_duration == 0 {
+                            return Ok(());
+                        }
+                        aura.duration_millis = Some(adjusted_duration);
+                        aura.expires_at =
+                            Some(now + Duration::from_millis(adjusted_duration as u64));
+                    }
                     let resolution = aura_rank_conflict_resolution(
                         deps.shared_world.object_mgr,
                         deps.world_db_pool,
@@ -2262,6 +2294,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             character_guid,
                             aura,
                             &resolution,
+                            single_target_descriptor,
+                            diminishing_group,
                             now,
                         )
                         .await?
@@ -2356,6 +2390,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         character_guid,
                         aura.clone(),
                         &resolution,
+                        None,
+                        None,
                         now,
                     )
                     .await?
@@ -2457,6 +2493,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         character_guid,
                         aura.clone(),
                         &resolution,
+                        None,
+                        None,
                         now,
                     )
                     .await?
@@ -2497,6 +2535,46 @@ pub(in crate::world) async fn apply_player_spell_aura(
             }
         }
     }
+    Ok(())
+}
+
+async fn augment_mage_polymorph_regen_from_helper_spell(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    spell_template: &wow_db::SpellTemplateQuery,
+    aura: &mut ActiveAura,
+    now: Instant,
+    target_max_health: u32,
+) -> anyhow::Result<()> {
+    if !spell_is_mage_polymorph(spell_template) {
+        return Ok(());
+    }
+    let Some(helper_template) = object_mgr
+        .spell_template(world_db_pool, POLYMORPH_HELPER_REGEN_SPELL_ID)
+        .await?
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            helper_spell_id = POLYMORPH_HELPER_REGEN_SPELL_ID,
+            "Mage polymorph helper regen spell_template row is missing"
+        );
+        return Ok(());
+    };
+    let helper_context = SpellEffectValueContext::unranked(&helper_template, 0);
+    let Some(mut regen) = spell_periodic_regen_aura(
+        &SpellInfo::from_template(&helper_template),
+        helper_context,
+        now,
+    ) else {
+        warn!(
+            spell_id = spell_template.id,
+            helper_spell_id = POLYMORPH_HELPER_REGEN_SPELL_ID,
+            "Mage polymorph helper regen spell has no periodic regen aura payload"
+        );
+        return Ok(());
+    };
+    regen.health_amount = (target_max_health / 10).max(1);
+    aura.periodic_regen = Some(regen);
     Ok(())
 }
 
@@ -2964,7 +3042,11 @@ pub(in crate::world) async fn apply_item_aura_effect(
             .maps
             .spell_duration(spell_template.duration_index),
     );
-    let makes_player_sit = aura.periodic_regen.is_some();
+    let mut aura = aura;
+    mark_active_aura_periodic_regen_as_consumable(&mut aura);
+    let makes_player_sit = aura
+        .periodic_regen
+        .is_some_and(|regen| regen.makes_player_sit);
     apply_player_aura(session, aura.clone());
     if makes_player_sit {
         session.character.player_stand_state = PLAYER_STAND_STATE_SIT;

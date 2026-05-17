@@ -22,7 +22,9 @@ impl DbCreatureRuntime {
             current_position: home_position,
             motion: CreatureMotionState::Idle,
             next_random_move_at,
+            next_confused_move_at: None,
             next_waypoint_move_at,
+            confused_origin: None,
             waypoint_next_index: 0,
             waypoint_forward: true,
             waypoint_resume_position: None,
@@ -128,7 +130,9 @@ impl DbCreatureRuntime {
                 creature.event_ai_cooldowns_until.clear();
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
+                creature.next_confused_move_at = None;
                 creature.next_waypoint_move_at = None;
+                creature.confused_origin = None;
                 creature.waypoint_resume_position = None;
             }
         }
@@ -179,6 +183,24 @@ impl DbCreatureRuntime {
         )
         .then_some(Instant::now())
         .filter(|_| !spawn.waypoint_path.is_empty())
+    }
+
+    pub(in crate::world) fn begin_confused_motion(&mut self, now: Instant) {
+        self.confused_origin = Some(self.current_position);
+        self.next_confused_move_at = Some(now);
+    }
+
+    pub(in crate::world) fn clear_confused_motion(&mut self) {
+        self.next_confused_move_at = None;
+        self.confused_origin = None;
+    }
+
+    pub(in crate::world) fn resume_default_motion_now(&mut self, now: Instant) {
+        if self.has_waypoint_movement() {
+            self.next_waypoint_move_at = Some(now);
+        } else if self.random_wander_radius() > 0.0 {
+            self.next_random_move_at = Some(now);
+        }
     }
 
     pub(in crate::world) fn max_health(&self) -> u32 {
@@ -395,7 +417,9 @@ impl DbCreatureRuntime {
         self.loot_method = None;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
+        self.next_confused_move_at = None;
         self.next_waypoint_move_at = None;
+        self.confused_origin = None;
         self.waypoint_resume_position = None;
         self.already_called_assistance = false;
     }
@@ -457,7 +481,9 @@ impl DbCreatureRuntime {
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
+        self.next_confused_move_at = None;
         self.next_waypoint_move_at = None;
+        self.confused_origin = None;
         self.waypoint_next_index = 0;
         self.waypoint_forward = true;
         self.waypoint_resume_position = None;
@@ -503,7 +529,9 @@ impl DbCreatureRuntime {
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = Self::initial_random_move_at(&self.spawn);
+        self.next_confused_move_at = None;
         self.next_waypoint_move_at = Self::initial_waypoint_move_at(&self.spawn);
+        self.confused_origin = None;
         self.waypoint_next_index = 0;
         self.waypoint_forward = true;
         self.waypoint_resume_position = None;

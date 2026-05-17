@@ -1590,11 +1590,14 @@ impl MapRuntimeManager {
             caster_character_guid,
             aura,
             &[],
+            None,
+            None,
             now,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) async fn apply_db_creature_aura_replacing_spell_ids(
         &self,
         map_id: u32,
@@ -1602,6 +1605,8 @@ impl MapRuntimeManager {
         caster_character_guid: u32,
         aura: ActiveAura,
         replace_spell_ids: &[u32],
+        single_target_descriptor: Option<SingleTargetAuraDescriptor>,
+        diminishing_group: Option<DiminishingGroupRuntime>,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let resolution = AuraRankConflictResolution {
@@ -1615,11 +1620,14 @@ impl MapRuntimeManager {
             caster_character_guid,
             aura,
             &resolution,
+            single_target_descriptor,
+            diminishing_group,
             now,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) async fn apply_db_creature_aura_replacing_conflicts(
         &self,
         map_id: u32,
@@ -1627,6 +1635,8 @@ impl MapRuntimeManager {
         caster_character_guid: u32,
         aura: ActiveAura,
         resolution: &AuraRankConflictResolution,
+        single_target_descriptor: Option<SingleTargetAuraDescriptor>,
+        diminishing_group: Option<DiminishingGroupRuntime>,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
@@ -1640,10 +1650,27 @@ impl MapRuntimeManager {
                 caster_character_guid,
                 aura,
                 resolution,
+                single_target_descriptor,
+                diminishing_group,
                 now,
             )
         };
         event
+    }
+
+    pub(in crate::world) async fn current_diminishing_level(
+        &self,
+        map_id: u32,
+        target: ObjectGuid,
+        group: DiminishingGroupRuntime,
+        now: Instant,
+    ) -> Option<DiminishingLevelRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let level = map
+            .lock()
+            .await
+            .current_diminishing_level(target, group, now);
+        Some(level)
     }
 
     pub(in crate::world) async fn remove_db_creature_auras_by_dispel_type(
@@ -2341,6 +2368,7 @@ impl MapRuntimeManager {
         target: ObjectGuid,
         navigation: &DbCreatureNavigationGuardrail,
         range: Option<SpellRangeEntry>,
+        requires_infront: bool,
     ) -> PlayerSpellTargetValidation {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
@@ -2353,6 +2381,7 @@ impl MapRuntimeManager {
             target,
             navigation,
             range,
+            requires_infront,
         );
         validation
     }

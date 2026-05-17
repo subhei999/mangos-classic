@@ -452,6 +452,9 @@ pub(in crate::world) struct PeriodicRegenAura {
     pub(in crate::world) mana_amount: u32,
     pub(in crate::world) tick_millis: u32,
     pub(in crate::world) next_tick_at: Instant,
+    pub(in crate::world) interrupts_on_move_and_stand: bool,
+    pub(in crate::world) suppresses_recent_damage: bool,
+    pub(in crate::world) makes_player_sit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

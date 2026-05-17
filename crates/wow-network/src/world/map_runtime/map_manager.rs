@@ -65,8 +65,11 @@ pub(in crate::world) fn apply_creature_display_scale_fallbacks(
 }
 
 impl MapRuntimeManager {
-    pub(in crate::world) fn with_movement_actor_enabled(mut self, enabled: bool) -> Self {
-        self.movement_actor_settings = self.movement_actor_settings.with_enabled(enabled);
+    pub(in crate::world) fn with_movement_actor_settings(
+        mut self,
+        settings: MovementActorSettings,
+    ) -> Self {
+        self.movement_actor_settings = settings;
         self
     }
 
@@ -529,11 +532,13 @@ impl MapRuntimeManager {
         opcode: u16,
         movement: &MovementInfo,
         server_time: u32,
-    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+    ) -> anyhow::Result<MovementUpdateOutcome> {
         let map_key = (map_id, 0);
         let map = { self.maps.lock().await.get(&map_key).cloned() };
         let Some(map) = map else {
-            return Ok(Vec::new());
+            return Ok(MovementUpdateOutcome::Applied {
+                packets: Vec::new(),
+            });
         };
 
         if let Some(actor) = self.movement_actor_for_map(map_key, map.clone()).await {
@@ -546,9 +551,9 @@ impl MapRuntimeManager {
         let mut map = map.lock().await;
         crate::observability::record_movement_map_mutex_wait(mutex_wait_started_at.elapsed());
         let mutex_hold_started_at = Instant::now();
-        let packets = map.update_player_position(character_guid, opcode, movement, server_time);
+        let packets = map.update_player_position(character_guid, opcode, movement, server_time)?;
         crate::observability::record_movement_map_mutex_hold(mutex_hold_started_at.elapsed());
-        packets
+        Ok(MovementUpdateOutcome::Applied { packets })
     }
 
     pub(in crate::world) async fn discover_player_area(

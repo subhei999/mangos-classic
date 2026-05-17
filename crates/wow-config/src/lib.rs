@@ -58,6 +58,10 @@ pub struct WorldConfig {
     pub char_delete_min_level: u8,
     #[serde(default)]
     pub experimental_movement_actor: bool,
+    #[serde(default = "default_experimental_movement_actor_queue_capacity")]
+    pub experimental_movement_actor_queue_capacity: usize,
+    #[serde(default = "default_experimental_movement_actor_max_batch_size")]
+    pub experimental_movement_actor_max_batch_size: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +231,12 @@ fn default_char_delete_method() -> u8 {
 fn default_char_delete_min_level() -> u8 {
     0
 }
+fn default_experimental_movement_actor_queue_capacity() -> usize {
+    1024
+}
+fn default_experimental_movement_actor_max_batch_size() -> usize {
+    64
+}
 
 // ---------------------------------------------------------------------------
 // AuthServerConfig
@@ -291,6 +301,10 @@ impl Default for WorldConfig {
             char_delete_method: default_char_delete_method(),
             char_delete_min_level: default_char_delete_min_level(),
             experimental_movement_actor: false,
+            experimental_movement_actor_queue_capacity:
+                default_experimental_movement_actor_queue_capacity(),
+            experimental_movement_actor_max_batch_size:
+                default_experimental_movement_actor_max_batch_size(),
         }
     }
 }
@@ -360,6 +374,8 @@ database = "realmd"
         assert_eq!(wc.char_delete_method, 0);
         assert_eq!(wc.char_delete_min_level, 0);
         assert!(!wc.experimental_movement_actor);
+        assert_eq!(wc.experimental_movement_actor_queue_capacity, 1024);
+        assert_eq!(wc.experimental_movement_actor_max_batch_size, 64);
     }
 
     #[test]
@@ -383,6 +399,36 @@ MapUpdateInterval = 75
             .expect("should parse CMaNGOS-shaped map update interval");
 
         assert_eq!(config.world.map_update_interval_ms, 75);
+    }
+
+    #[test]
+    fn world_config_accepts_movement_actor_tuning() {
+        let toml_content = r#"
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[login_database]
+database = "realmd"
+
+[world]
+experimental_movement_actor = true
+experimental_movement_actor_queue_capacity = 2048
+experimental_movement_actor_max_batch_size = 128
+"#;
+        let config: WorldServerConfig = Figment::new()
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("should parse movement actor tuning");
+
+        assert!(config.world.experimental_movement_actor);
+        assert_eq!(
+            config.world.experimental_movement_actor_queue_capacity,
+            2048
+        );
+        assert_eq!(config.world.experimental_movement_actor_max_batch_size, 128);
     }
 
     #[test]

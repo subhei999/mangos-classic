@@ -910,12 +910,6 @@ pub(in crate::world) async fn teleport_gm(
 
     let character_guid = current_character.guid;
     let client_time = current_character.client_time;
-    if let Some(character) = session.character.active_character.as_mut() {
-        character.position = target;
-        character.movement_flags = 0;
-        character.fall_time = 0;
-        character.jump = JumpInfo::default();
-    }
     let account_id = session.account.account_id;
     let movement = MovementInfo {
         flags: 0,
@@ -924,7 +918,7 @@ pub(in crate::world) async fn teleport_gm(
         fall_time: 0,
         jump: JumpInfo::default(),
     };
-    let observer_packets = deps
+    let movement_outcome = deps
         .maps
         .update_player_position(
             old_map_id,
@@ -934,6 +928,22 @@ pub(in crate::world) async fn teleport_gm(
             movement.client_time,
         )
         .await?;
+    let observer_packets = match movement_outcome {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => {
+            warn!(
+                guid = character_guid,
+                "Skipping GM teleport follow-up because the movement actor superseded the update"
+            );
+            return Ok(());
+        }
+    };
+    if let Some(character) = session.character.active_character.as_mut() {
+        character.position = target;
+        character.movement_flags = 0;
+        character.fall_time = 0;
+        character.jump = JumpInfo::default();
+    }
     deps.sessions.dispatch(observer_packets).await;
     deps.maps
         .reset_player_visibility_scan_positions(old_map_id, character_guid)

@@ -85,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
         map_update_interval_ms = map_update_interval_ms,
         observability_enabled = config.observability.enabled,
         observability_bind = %format!("{}:{}", config.observability.bind_address, config.observability.bind_port),
+        movement_actor_enabled = config.world.experimental_movement_actor,
+        movement_actor_queue_capacity = config.world.experimental_movement_actor_queue_capacity,
+        movement_actor_max_batch_size = config.world.experimental_movement_actor_max_batch_size,
         login_database = %config.login_database.database,
         character_database = %config.character_database.database,
         world_database = %config.world_database.database,
@@ -141,6 +144,8 @@ async fn main() -> anyhow::Result<()> {
             data_dir: config.data_dir.into(),
             world_tick_interval: Duration::from_millis(u64::from(map_update_interval_ms)),
             movement_actor_enabled: config.world.experimental_movement_actor,
+            movement_actor_queue_capacity: config.world.experimental_movement_actor_queue_capacity,
+            movement_actor_max_batch_size: config.world.experimental_movement_actor_max_batch_size,
             playerbots,
         },
     )

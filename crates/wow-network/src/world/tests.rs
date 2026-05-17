@@ -17291,7 +17291,8 @@ fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
 
 #[tokio::test]
 async fn map_runtime_manager_movement_actor_disabled_keeps_direct_mutex_path() {
-    let maps = MapRuntimeManager::default().with_movement_actor_enabled(false);
+    let maps = MapRuntimeManager::default()
+        .with_movement_actor_settings_for_test(MovementActorSettings::for_test(false, 16, 8));
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
     let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
     maps.add_player(test_player_runtime(1, SessionId(1), player_position))
@@ -17308,10 +17309,14 @@ async fn map_runtime_manager_movement_actor_disabled_keeps_direct_mutex_path() {
         jump: JumpInfo::default(),
     };
 
-    let packets = maps
+    let packets = match maps
         .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
         .await
-        .unwrap();
+        .unwrap()
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("direct mutex path should apply movement"),
+    };
 
     assert!(maps.movement_actors.lock().await.is_empty());
     assert!(
@@ -17345,20 +17350,28 @@ async fn map_runtime_manager_movement_actor_matches_direct_path_packets() {
         jump: JumpInfo::default(),
     };
 
-    let direct_packets = direct_maps
+    let direct_packets = match direct_maps
         .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
         .await
         .unwrap()
-        .into_iter()
-        .map(|(session, packet)| (session, packet.opcode, packet.body))
-        .collect::<Vec<_>>();
-    let actor_packets = actor_maps
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("direct path should apply movement"),
+    }
+    .into_iter()
+    .map(|(session, packet)| (session, packet.opcode, packet.body))
+    .collect::<Vec<_>>();
+    let actor_packets = match actor_maps
         .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
         .await
         .unwrap()
-        .into_iter()
-        .map(|(session, packet)| (session, packet.opcode, packet.body))
-        .collect::<Vec<_>>();
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("actor path should apply movement"),
+    }
+    .into_iter()
+    .map(|(session, packet)| (session, packet.opcode, packet.body))
+    .collect::<Vec<_>>();
 
     assert_eq!(actor_packets, direct_packets);
     let direct_snapshot = direct_maps.player_runtime_snapshot(0, 1).await.unwrap();

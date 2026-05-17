@@ -22,13 +22,7 @@ impl Default for MovementActorSettings {
 }
 
 impl MovementActorSettings {
-    pub(in crate::world) fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-
-    #[cfg(test)]
-    pub(in crate::world) fn for_test(
+    pub(in crate::world) fn new(
         enabled: bool,
         queue_capacity: usize,
         max_batch_size: usize,
@@ -39,6 +33,23 @@ impl MovementActorSettings {
             max_batch_size,
         }
     }
+
+    #[cfg(test)]
+    pub(in crate::world) fn for_test(
+        enabled: bool,
+        queue_capacity: usize,
+        max_batch_size: usize,
+    ) -> Self {
+        Self::new(enabled, queue_capacity, max_batch_size)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) enum MovementUpdateOutcome {
+    Applied {
+        packets: Vec<(SessionId, OutboundWorldPacket)>,
+    },
+    Superseded,
 }
 
 #[derive(Debug)]
@@ -53,8 +64,7 @@ pub(in crate::world) struct MovementUpdateCommand {
     pub(in crate::world) movement: MovementInfo,
     pub(in crate::world) server_time: u32,
     pub(in crate::world) enqueued_at: Instant,
-    pub(in crate::world) reply:
-        oneshot::Sender<anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>>>,
+    pub(in crate::world) reply: oneshot::Sender<anyhow::Result<MovementUpdateOutcome>>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,7 +90,7 @@ impl MovementActorHandle {
         opcode: u16,
         movement: &MovementInfo,
         server_time: u32,
-    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+    ) -> anyhow::Result<MovementUpdateOutcome> {
         let enqueue_started_at = Instant::now();
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
@@ -204,12 +214,12 @@ async fn process_movement_batch(map: &Arc<Mutex<MapRuntime>>, batch: Vec<Movemen
 
     for command in superseded {
         crate::observability::record_movement_actor_reply_latency(command.enqueued_at.elapsed());
-        let _ = command.reply.send(Ok(Vec::new()));
+        let _ = command.reply.send(Ok(MovementUpdateOutcome::Superseded));
     }
 
     for (reply, enqueued_at, result) in replies {
         crate::observability::record_movement_actor_reply_latency(enqueued_at.elapsed());
-        let _ = reply.send(result);
+        let _ = reply.send(result.map(|packets| MovementUpdateOutcome::Applied { packets }));
     }
 }
 
@@ -249,5 +259,61 @@ mod tests {
             .find(|command| command.character_guid == 7)
             .expect("latest command for player 7");
         assert!((command.movement.position.orientation - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn process_movement_batch_replies_superseded_for_older_same_character_updates() {
+        let map = Arc::new(Mutex::new(MapRuntime::new(0, 0)));
+
+        let (first_reply_tx, first_reply_rx) = oneshot::channel();
+        let (latest_reply_tx, latest_reply_rx) = oneshot::channel();
+        let batch = vec![
+            MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
+                character_guid: 7,
+                opcode: MSG_MOVE_STOP as u16,
+                movement: MovementInfo {
+                    flags: 0,
+                    client_time: 1,
+                    position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.25),
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 1,
+                enqueued_at: Instant::now(),
+                reply: first_reply_tx,
+            }),
+            MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
+                character_guid: 7,
+                opcode: MSG_MOVE_STOP as u16,
+                movement: MovementInfo {
+                    flags: 0,
+                    client_time: 2,
+                    position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.5),
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 2,
+                enqueued_at: Instant::now(),
+                reply: latest_reply_tx,
+            }),
+        ];
+
+        process_movement_batch(&map, batch).await;
+
+        assert!(matches!(
+            first_reply_rx
+                .await
+                .expect("first reply")
+                .expect("first result"),
+            MovementUpdateOutcome::Superseded
+        ));
+        let latest = latest_reply_rx
+            .await
+            .expect("latest reply")
+            .expect("latest result");
+        match latest {
+            MovementUpdateOutcome::Applied { packets } => assert!(packets.is_empty()),
+            MovementUpdateOutcome::Superseded => panic!("latest movement should apply"),
+        }
     }
 }

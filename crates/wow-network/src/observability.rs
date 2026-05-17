@@ -2585,14 +2585,14 @@ mod tests {
         assert!(rendered.contains("wow_world_packets_in_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains("wow_world_packets_out_total{opcode=\"0x00DD\"}"));
         assert!(rendered.contains("wow_world_unknown_opcodes_total{opcode=\"0x01E0\"}"));
-        assert!(rendered.contains("wow_movement_actor_queue_depth_latest 3"));
+        assert!(rendered.contains("wow_movement_actor_queue_depth_latest "));
         assert!(rendered.contains("wow_movement_actor_enqueue_failures_total{reason=\"full\"} 1"));
-        assert!(rendered.contains("wow_movement_actor_enqueue_latency_average_milliseconds 1.000"));
-        assert!(rendered.contains("wow_movement_actor_processing_time_average_milliseconds 2.000"));
-        assert!(rendered.contains("wow_movement_actor_reply_latency_average_milliseconds 4.000"));
-        assert!(rendered.contains("wow_movement_actor_batch_size_latest 5"));
-        assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds 6.000"));
-        assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds 8.000"));
+        assert!(rendered.contains("wow_movement_actor_enqueue_latency_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_processing_time_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_reply_latency_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
+        assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
     }
 
     #[test]

@@ -11,9 +11,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Worktree:
   `C:\Users\subhe\Documents\mangos-worktrees\g12-movement-actor-proxy`.
 - Base commit: `e1625858a4ea4dd6f7cc2bf9d85d2cb1063c84c8`.
-- Current local work is uncommitted and adds a feature-flagged movement actor
+- Current local work is committed and adds a feature-flagged movement actor
   proxy path that coexists with the existing `Arc<Mutex<MapRuntime>>`
-  ownership model.
+  ownership model, plus a follow-up safety fix so superseded deduped movement
+  replies are explicit instead of masquerading as empty applied updates.
 - The user remains the Northshire Checkpoint 2 grader through real-client
   playtesting. Do not add or maintain a Northshire grading harness.
 
@@ -24,7 +25,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Keep the current `MapRuntimeManager` map registry and mutex path intact.
 - Route movement through an explicit bounded mailbox when
   `world.experimental_movement_actor = true`, while preserving the legacy
-  direct mutex path when disabled.
+  direct mutex path when disabled and making superseded deduped movement
+  observable to callers.
 - The touched subsystem is G12 shared runtime hardening with a world/map
   runtime architecture focus, not a gameplay-feature rewrite.
 
@@ -33,6 +35,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Added `world::map_runtime::movement_actor`, a bounded `tokio::mpsc` movement
   actor that receives `UpdatePlayerPosition` commands, batches mailbox drains,
   dedupes by `character_guid`, and replies to every caller through a oneshot.
+- Superseded same-character movement updates now return an explicit
+  `MovementUpdateOutcome::Superseded` result. `handle_movement` and GM
+  teleport follow-up logic only run visibility, aura, aggro, area-discovery,
+  and related post-movement side effects when the movement update was actually
+  applied.
 - The actor is a Phase 1 proxy only: it still locks the existing
   `Arc<Mutex<MapRuntime>>` internally and calls
   `MapRuntime::update_player_position(...)`. This keeps ownership safe while
@@ -40,7 +47,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `MapRuntimeManager::update_player_position(...)` now supports two backends:
   actor path when enabled and available, or the existing direct mutex path as
   fallback.
-- Added config plumbing for `world.experimental_movement_actor` from
+- Added config plumbing for `world.experimental_movement_actor`,
+  `world.experimental_movement_actor_queue_capacity`, and
+  `world.experimental_movement_actor_max_batch_size` from
   `config/worldserver.toml` through `wow-config`, `worldserver`, and
   `WorldServerOptions`.
 - Added movement-path observability for actor queue depth, enqueue failures,
@@ -56,7 +65,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - `cargo test -p wow-network movement_actor --lib` passed.
 - `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
   passed.
-- `cargo test -p wow-network --lib` passed: 749 tests.
+- `cargo test -p wow-network map_runtime_manager_movement_actor --lib` passed.
+- `cargo test -p wow-network --lib` passed: 750 tests.
 - `cargo fmt` applied required formatting.
 - `.\scripts\test-rust.cmd` passed after formatting and code changes.
 
@@ -65,8 +75,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - The feature-flagged proxy path is wired end-to-end and coexists safely with
   the old mutex path.
 - Tests cover actor-disabled fallback, actor-path packet parity against the
-  direct path, bounded-mailbox backpressure, concurrent reply completion, and
-  batch dedupe semantics for repeated player movement within one drained batch.
+  direct path, bounded-mailbox backpressure, concurrent reply completion,
+  explicit superseded replies for same-character dedupe, and batch dedupe
+  semantics for repeated player movement within one drained batch.
 - Confidence is good for the proxy architecture slice, but there is not yet a
   synthetic benchmark proving whether batching materially improves burst
   movement throughput under larger player counts.
@@ -81,9 +92,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Decide whether the next step should stay movement-only or grow toward a true
   map-owned actor once enough evidence exists that command routing and
   backpressure are worth the ownership move.
-- If batching semantics need to change, keep the safety rule explicit:
-  superseded movement commands currently complete with `Ok(Vec::new())`
-  instead of silently dropping replies.
+- If batching semantics need to change again, preserve the explicit contract:
+  superseded movement commands currently complete with
+  `MovementUpdateOutcome::Superseded` instead of silently dropping replies or
+  pretending the movement applied with no packets.
 
 ## Key Files
 

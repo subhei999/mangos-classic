@@ -4,6 +4,7 @@ use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use wow_common::guid::{HighGuid, ObjectGuid};
@@ -66,6 +67,7 @@ const DEFAULT_MOVE_INTERVAL_MS: u64 = 500;
 const DEFAULT_LOGIN_STAGGER_MS: u64 = 25;
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5;
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+const LOGIN_READY_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -185,6 +187,20 @@ struct ClientRunResult {
     packets_drained: u32,
 }
 
+#[derive(Debug)]
+struct MovementStartGate {
+    target: usize,
+    state: Mutex<MovementStartGateState>,
+    condvar: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct MovementStartGateState {
+    ready: usize,
+    open: bool,
+    aborted: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = parse_args()?;
@@ -217,15 +233,18 @@ async fn main() -> anyhow::Result<()> {
 
     let started_at = Instant::now();
     let mut handles = Vec::with_capacity(specs.len());
+    let movement_start_gate = Arc::new(MovementStartGate::new(specs.len()));
     for spec in specs {
         let auth_addr = config.auth_addr.clone();
         let world_addr = config.world_addr.clone();
         let move_interval = Duration::from_millis(config.move_interval_ms);
-        let stagger = Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
+        let stagger =
+            Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
         let hold_duration = Duration::from_secs(config.hold_seconds);
         let drain_timeout = Duration::from_millis(config.drain_timeout_ms);
         let move_radius = config.move_radius;
         let max_attempts = config.max_attempts.max(1);
+        let movement_start_gate = Arc::clone(&movement_start_gate);
         handles.push(thread::spawn(move || {
             thread::sleep(stagger);
             run_client_with_retries(
@@ -237,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
                 drain_timeout,
                 move_radius,
                 max_attempts,
+                movement_start_gate,
             )
         }));
     }
@@ -294,7 +314,11 @@ async fn seed_accounts_and_characters(
         let account_id = seed_account(login_pool, &username, &config.password).await?;
         cleanup_account(login_pool, character_pool, account_id).await?;
 
-        let character_name = format!("{}{}", config.character_prefix, alphabetic_suffix(index as u32));
+        let character_name = format!(
+            "{}{}",
+            config.character_prefix,
+            alphabetic_suffix(index as u32)
+        );
         let created = wow_db::create_character(
             character_pool,
             world_pool,
@@ -404,6 +428,7 @@ fn run_client_with_retries(
     drain_timeout: Duration,
     move_radius: f32,
     max_attempts: u32,
+    movement_start_gate: Arc<MovementStartGate>,
 ) -> anyhow::Result<ClientRunResult> {
     let mut last_error = None;
     for attempt in 1..=max_attempts.max(1) {
@@ -415,6 +440,7 @@ fn run_client_with_retries(
             move_interval,
             drain_timeout,
             move_radius,
+            movement_start_gate.as_ref(),
         ) {
             Ok(result) => return Ok(result),
             Err(error) => {
@@ -426,6 +452,7 @@ fn run_client_with_retries(
         }
     }
 
+    movement_start_gate.abort();
     Err(last_error
         .unwrap_or_else(|| anyhow::anyhow!("client run failed without an error"))
         .context(format!(
@@ -443,6 +470,7 @@ fn run_client(
     move_interval: Duration,
     drain_timeout: Duration,
     move_radius: f32,
+    movement_start_gate: &MovementStartGate,
 ) -> anyhow::Result<ClientRunResult> {
     let srp_client = complete_auth_flow(auth_addr, &spec.username, &spec.password)
         .with_context(|| format!("auth flow for {}", spec.username))?;
@@ -452,9 +480,14 @@ fn run_client(
     let characters = world.char_enum()?;
     let selected = characters
         .into_iter()
-        .find(|character| character.guid == spec.character_guid || character.name == spec.character_name)
+        .find(|character| {
+            character.guid == spec.character_guid || character.name == spec.character_name
+        })
         .with_context(|| format!("character enum missing {}", spec.character_name))?;
     world.login_character(selected.guid)?;
+    movement_start_gate
+        .wait_until_open(Duration::from_secs(LOGIN_READY_TIMEOUT_SECS))
+        .with_context(|| format!("movement start gate for {}", spec.username))?;
 
     let run_started_at = Instant::now();
     let mut result = ClientRunResult::default();
@@ -532,8 +565,11 @@ impl MovementActor {
                     remaining_steps -= 1;
                     self.phase = MovementPhase::Idle { remaining_steps };
                     if should_adjust_facing(self.spec.index, self.script_step, remaining_steps) {
-                        let next_orientation =
-                            idle_facing(self.spec.spawn_position.orientation, self.spec.index, self.script_step);
+                        let next_orientation = idle_facing(
+                            self.spec.spawn_position.orientation,
+                            self.spec.index,
+                            self.script_step,
+                        );
                         self.position.orientation = next_orientation;
                         Some(self.packet(
                             MSG_MOVE_SET_FACING,
@@ -576,13 +612,7 @@ impl MovementActor {
                         self.phase = MovementPhase::Idle {
                             remaining_steps: idle_span_for_index(self.spec.index, self.script_step),
                         };
-                        Some(self.packet(
-                            MSG_MOVE_STOP,
-                            0,
-                            self.position,
-                            0,
-                            JumpInfo::default(),
-                        ))
+                        Some(self.packet(MSG_MOVE_STOP, 0, self.position, 0, JumpInfo::default()))
                     } else {
                         remaining_steps -= 1;
                         self.phase = MovementPhase::Moving { remaining_steps };
@@ -598,8 +628,8 @@ impl MovementActor {
             }
             MovementPhase::Landing { remaining_steps } => {
                 let next_position = self.advance_position();
-                let heading =
-                    heading_between(self.position, next_position).unwrap_or(self.position.orientation);
+                let heading = heading_between(self.position, next_position)
+                    .unwrap_or(self.position.orientation);
                 self.position = with_orientation(next_position, heading);
                 self.phase = if remaining_steps == 0 {
                     MovementPhase::Idle {
@@ -639,6 +669,64 @@ impl MovementActor {
             position,
             fall_time,
             jump,
+        }
+    }
+}
+
+impl MovementStartGate {
+    fn new(target: usize) -> Self {
+        Self {
+            target,
+            state: Mutex::new(MovementStartGateState::default()),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn wait_until_open(&self, timeout: Duration) -> anyhow::Result<()> {
+        if self.target <= 1 {
+            return Ok(());
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("movement start gate mutex poisoned"))?;
+
+        if state.aborted {
+            anyhow::bail!("movement start gate aborted before client became ready");
+        }
+
+        state.ready = state.ready.saturating_add(1);
+        if state.ready >= self.target {
+            state.open = true;
+            self.condvar.notify_all();
+            return Ok(());
+        }
+
+        let (state, wait_result) = self
+            .condvar
+            .wait_timeout_while(state, timeout, |state| !state.open && !state.aborted)
+            .map_err(|_| anyhow::anyhow!("movement start gate condvar poisoned"))?;
+
+        if state.aborted {
+            anyhow::bail!("movement start gate aborted while waiting for ready clients");
+        }
+
+        ensure!(
+            state.open || !wait_result.timed_out(),
+            "movement start gate timed out after {:?} with {}/{} clients ready",
+            timeout,
+            state.ready,
+            self.target
+        );
+
+        Ok(())
+    }
+
+    fn abort(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.aborted = true;
+            self.condvar.notify_all();
         }
     }
 }
@@ -722,7 +810,11 @@ fn complete_auth_flow(
 
     let proof = send_proof(&mut stream, &client)?;
     ensure!(proof.cmd == AuthCommand::LogonProof);
-    ensure!(proof.error == 0, "auth proof failed with {} for {username}", proof.error);
+    ensure!(
+        proof.error == 0,
+        "auth proof failed with {} for {username}",
+        proof.error
+    );
     Ok(client.verify_server_proof(proof.m2)?)
 }
 
@@ -915,8 +1007,7 @@ impl WorldClient {
                 Err(error) => {
                     self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                     if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-                        if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
-                        {
+                        if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
                             return Ok(());
                         }
                     }
@@ -1272,7 +1363,10 @@ mod tests {
 
         assert!(saw_start, "movement stream should start moving");
         assert!(saw_stop, "movement stream should stop between segments");
-        assert!(saw_facing, "movement stream should include facing-only updates");
+        assert!(
+            saw_facing,
+            "movement stream should include facing-only updates"
+        );
         assert!(saw_jump, "movement stream should include jumps");
         assert!(saw_land, "movement stream should include landing packets");
     }
@@ -1308,5 +1402,40 @@ mod tests {
         assert!(jump.jump.z_speed > 0.0);
         assert!(jump.jump.xy_speed > 0.0);
         assert!(jump.fall_time > 0);
+    }
+
+    #[test]
+    fn movement_start_gate_opens_once_all_clients_are_ready() {
+        let gate = Arc::new(MovementStartGate::new(2));
+        let gate_clone = Arc::clone(&gate);
+
+        let worker = thread::spawn(move || gate_clone.wait_until_open(Duration::from_secs(1)));
+        thread::sleep(Duration::from_millis(10));
+
+        gate.wait_until_open(Duration::from_secs(1))
+            .expect("main waiter should open gate");
+        worker
+            .join()
+            .expect("worker should join")
+            .expect("worker waiter should open gate");
+    }
+
+    #[test]
+    fn movement_start_gate_reports_abort() {
+        let gate = Arc::new(MovementStartGate::new(2));
+        let gate_clone = Arc::clone(&gate);
+
+        let worker = thread::spawn(move || gate_clone.wait_until_open(Duration::from_secs(1)));
+        thread::sleep(Duration::from_millis(10));
+        gate.abort();
+
+        let error = worker
+            .join()
+            .expect("worker should join")
+            .expect_err("worker should see abort");
+        assert!(
+            error.to_string().contains("aborted"),
+            "unexpected error: {error:#}"
+        );
     }
 }

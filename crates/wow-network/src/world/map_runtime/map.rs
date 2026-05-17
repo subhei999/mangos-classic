@@ -376,6 +376,7 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
     pub(in crate::world) next_confused_motion_start_check_at: Option<Instant>,
     pub(in crate::world) next_idle_motion_start_check_at: Option<Instant>,
+    pub(in crate::world) active_player_environment_guids: HashSet<u32>,
     pub(in crate::world) pending_db_scripts: Vec<PendingDbScriptAction>,
     pub(in crate::world) next_player_regen_tick_at: Option<Instant>,
     pub(in crate::world) active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
@@ -513,6 +514,8 @@ pub(in crate::world) struct PendingSpellCastTargets {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct PlayerEnvironmentRuntime {
     pub(in crate::world) flags: u32,
+    pub(in crate::world) last_flags_position: Option<WorldPosition>,
+    pub(in crate::world) next_flags_refresh_at: Option<Instant>,
     pub(in crate::world) last_tick_at: Option<Instant>,
     pub(in crate::world) last_damage_at: Option<Instant>,
     pub(in crate::world) fatigue: MirrorTimerRuntime,
@@ -524,6 +527,8 @@ impl Default for PlayerEnvironmentRuntime {
     fn default() -> Self {
         Self {
             flags: 0,
+            last_flags_position: None,
+            next_flags_refresh_at: None,
             last_tick_at: None,
             last_damage_at: None,
             fatigue: MirrorTimerRuntime::new(MIRROR_TIMER_FATIGUE, MIRROR_TIMER_FATIGUE_MAX_MILLIS),
@@ -781,6 +786,7 @@ impl MapRuntime {
         )
     }
 
+    #[allow(dead_code)]
     pub(in crate::world) fn with_geometry(
         map_id: u32,
         instance_id: u32,
@@ -813,6 +819,7 @@ impl MapRuntime {
             next_idle_motion_tick_at: None,
             next_confused_motion_start_check_at: None,
             next_idle_motion_start_check_at: None,
+            active_player_environment_guids: HashSet::new(),
             pending_db_scripts: Vec::new(),
             next_player_regen_tick_at: None,
             active_player_spell_casts: HashMap::new(),

@@ -3154,10 +3154,11 @@ pub(in crate::world) async fn apply_player_near_teleport_effect(
         character.position
     };
     let old_map_id = map_id;
-    deps.shared_world
+    let environment_packets = deps
+        .shared_world
         .maps
         .set_player_position(old_map_id, character_guid, position)
-        .await;
+        .await?;
     deps.shared_world
         .maps
         .reset_player_visibility_scan_positions(old_map_id, character_guid)
@@ -3180,6 +3181,10 @@ pub(in crate::world) async fn apply_player_near_teleport_effect(
         Some(&mut *header_crypto),
     )
     .await?;
+    deps.shared_world
+        .sessions
+        .dispatch(environment_packets)
+        .await;
     stream_newly_visible_db_creatures(
         stream,
         deps.character_db_pool,
@@ -3257,10 +3262,11 @@ pub(in crate::world) async fn apply_item_teleport_spell_effect(
     character.position = homebind;
     character.movement_flags = 0;
     character.fall_time = 0;
-    deps.shared_world
+    let environment_packets = deps
+        .shared_world
         .maps
         .set_player_position(old_map_id, character_guid, homebind)
-        .await;
+        .await?;
     deps.shared_world
         .maps
         .reset_player_visibility_scan_positions(old_map_id, character_guid)
@@ -3284,6 +3290,10 @@ pub(in crate::world) async fn apply_item_teleport_spell_effect(
         Some(&mut *header_crypto),
     )
     .await?;
+    deps.shared_world
+        .sessions
+        .dispatch(environment_packets)
+        .await;
     stream_newly_visible_db_creatures(
         stream,
         deps.character_db_pool,

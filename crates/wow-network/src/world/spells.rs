@@ -1806,10 +1806,10 @@ pub(in crate::world) async fn apply_charge_movement(
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = destination;
     }
-    shared_world
+    let environment_packets = shared_world
         .maps
         .set_player_position(map_id, character_guid, destination)
-        .await;
+        .await?;
 
     send_packet(
         stream,
@@ -1818,6 +1818,7 @@ pub(in crate::world) async fn apply_charge_movement(
         Some(&mut *header_crypto),
     )
     .await?;
+    shared_world.sessions.dispatch(environment_packets).await;
     let observer_packets = shared_world
         .maps
         .broadcast_nearby_player_packet(

@@ -6,6 +6,23 @@ pub(in crate::world) const PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS: u64 = 500;
 pub(in crate::world) const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
 pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
 pub(in crate::world) const CMANGOS_DISCONNECTED_PLAYER_LINGER: Duration = Duration::from_secs(60);
+pub(in crate::world) const PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL: Duration =
+    Duration::from_millis(750);
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PlayerEnvironmentTickMetrics {
+    scanned_players: usize,
+    environment_flags_time: Duration,
+    timer_update_time: Duration,
+    damage_application_time: Duration,
+    nearby_fanout_time: Duration,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct PlayerEnvironmentRefreshOutcome {
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) sampled_geometry: bool,
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -18,6 +35,24 @@ pub(in crate::world) struct PlayerAreaDiscoveryEvent {
 }
 
 impl MapRuntime {
+    fn set_player_environment_tick_tracked(&mut self, character_guid: u32, tracked: bool) {
+        if tracked {
+            self.active_player_environment_guids.insert(character_guid);
+        } else {
+            self.active_player_environment_guids.remove(&character_guid);
+        }
+    }
+
+    fn tracked_player_environment_guids(&self) -> Vec<u32> {
+        let mut guids = self
+            .active_player_environment_guids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        guids.sort_unstable();
+        guids
+    }
+
     pub(in crate::world) fn advance_player_environment_tick(
         &mut self,
         now: Instant,
@@ -35,156 +70,186 @@ impl MapRuntime {
         let mut direct_packets = Vec::new();
         let mut damage_events = Vec::new();
         let mut aura_interrupt_events = Vec::new();
+        let mut metrics = PlayerEnvironmentTickMetrics::default();
         let geometry = self.geometry.clone();
+        let tracked_player_guids = self.tracked_player_environment_guids();
 
-        for player in self.players.values_mut() {
-            if player.bot_runtime.is_some() {
-                continue;
-            }
-            let character_guid = player.guid;
-            let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-            let old_flags = player.environment.flags;
-            let new_flags = flags_for(&geometry, player.position);
-            direct_packets.extend(update_player_environment_flags(
-                player, old_flags, new_flags,
-            )?);
-            let player_session_id = player.client_session_id();
-
-            let diff_millis = player
-                .environment
-                .last_tick_at
-                .map(|last| {
-                    now.saturating_duration_since(last)
-                        .as_millis()
-                        .min(u128::from(u32::MAX)) as u32
-                })
-                .unwrap_or(0);
-            player.environment.last_tick_at = Some(now);
-
-            let mut damage = Vec::new();
-            let fatigue_active = player_environment_timer_active(player, MIRROR_TIMER_FATIGUE);
-            let fatigue_deactivated =
-                player_environment_timer_deactivated(player, MIRROR_TIMER_FATIGUE);
-            if advance_environment_timer(
-                &mut player.environment.fatigue,
-                diff_millis,
-                fatigue_active,
-                fatigue_deactivated,
-                &mut direct_packets,
-                player_session_id,
-            )? {
-                damage.push((
-                    DAMAGE_EXHAUSTED,
-                    environmental_breath_or_fatigue_damage(player.max_health, player.level),
-                ));
-            }
-            let breath_active = player_environment_timer_active(player, MIRROR_TIMER_BREATH);
-            let breath_deactivated =
-                player_environment_timer_deactivated(player, MIRROR_TIMER_BREATH);
-            if advance_environment_timer(
-                &mut player.environment.breath,
-                diff_millis,
-                breath_active,
-                breath_deactivated,
-                &mut direct_packets,
-                player_session_id,
-            )? {
-                damage.push((
-                    DAMAGE_DROWNING,
-                    environmental_breath_or_fatigue_damage(player.max_health, player.level),
-                ));
-            }
-            let environmental_active =
-                player_environment_timer_active(player, MIRROR_TIMER_ENVIRONMENTAL);
-            let environmental_deactivated =
-                player_environment_timer_deactivated(player, MIRROR_TIMER_ENVIRONMENTAL);
-            if advance_environment_timer(
-                &mut player.environment.environmental,
-                diff_millis,
-                environmental_active,
-                environmental_deactivated,
-                &mut direct_packets,
-                player_session_id,
-            )? && player.environment.flags & ENVIRONMENT_FLAG_IN_MAGMA != 0
-            {
-                damage.push((DAMAGE_LAVA, environmental_lava_damage()));
-            }
-
-            if player.health == 0 || player.flags & PLAYER_FLAGS_GHOST != 0 {
-                continue;
-            }
-
-            for (damage_type, amount) in damage {
-                if amount == 0 || player.health == 0 {
-                    continue;
-                }
-                let applied_damage = amount.min(player.health);
-                if remove_active_auras_with_interrupt_flag(
-                    &mut player.active_auras,
-                    AURA_INTERRUPT_FLAG_DAMAGE,
-                ) {
-                    player.stand_state = PLAYER_STAND_STATE_STAND;
-                    let aura_packet = OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_player_aura_update_body(player_guid, &player.active_auras)?,
-                    };
-                    let stand_packet = OutboundWorldPacket {
-                        opcode: SMSG_UPDATE_OBJECT,
-                        body: build_player_stand_state_update_body_for_class(
-                            character_guid,
-                            player.class,
-                            player.stand_state,
-                        )?,
-                    };
-                    if let Some(packet) = player.packet_to_client(aura_packet.clone()) {
-                        direct_packets.push(packet);
-                    }
-                    if let Some(packet) = player.packet_to_client(stand_packet.clone()) {
-                        direct_packets.push(packet);
-                    }
-                    aura_interrupt_events.push((
-                        character_guid,
-                        player.position,
-                        aura_packet,
-                        stand_packet,
-                    ));
-                }
-                let Some(applied) = apply_player_runtime_world_damage(
-                    player,
-                    player_guid,
-                    None,
-                    amount,
-                    WorldDamageKind::Environmental,
-                    now,
-                )?
-                else {
+        for character_guid in tracked_player_guids {
+            let keep_tracked = {
+                let Some(player) = self.players.get_mut(&character_guid) else {
+                    self.set_player_environment_tick_tracked(character_guid, false);
                     continue;
                 };
-                damage_events.push((
-                    character_guid,
-                    applied.position,
+                if player.bot_runtime.is_some() {
+                    self.set_player_environment_tick_tracked(character_guid, false);
+                    continue;
+                }
+                metrics.scanned_players += 1;
+                let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+                let player_session_id = player.client_session_id();
+
+                let diff_millis = player
+                    .environment
+                    .last_tick_at
+                    .map(|last| {
+                        now.saturating_duration_since(last)
+                            .as_millis()
+                            .min(u128::from(u32::MAX)) as u32
+                    })
+                    .unwrap_or(0);
+                player.environment.last_tick_at = Some(now);
+                if player_environment_needs_periodic_revalidation(&player.environment, now) {
+                    let flags_started = Instant::now();
+                    let refresh = refresh_player_environment_flags_with(
+                        player,
+                        &geometry,
+                        now,
+                        false,
+                        &mut flags_for,
+                    )?;
+                    metrics.environment_flags_time += flags_started.elapsed();
+                    if refresh.sampled_geometry {
+                        crate::observability::record_player_environment_periodic_revalidation();
+                    }
+                    direct_packets.extend(refresh.packets);
+                } else {
+                    crate::observability::record_player_environment_timer_only_processing();
+                }
+
+                let mut damage = Vec::new();
+                let timer_started = Instant::now();
+                let fatigue_active = player_environment_timer_active(player, MIRROR_TIMER_FATIGUE);
+                let fatigue_deactivated =
+                    player_environment_timer_deactivated(player, MIRROR_TIMER_FATIGUE);
+                if advance_environment_timer(
+                    &mut player.environment.fatigue,
+                    diff_millis,
+                    fatigue_active,
+                    fatigue_deactivated,
+                    &mut direct_packets,
                     player_session_id,
-                    applied.direct_packets,
-                    applied.observer_packets,
-                    applied.aura_packet,
-                    applied.died,
-                    applied.death_presentation_deferred,
-                    OutboundWorldPacket {
-                        opcode: SMSG_ENVIRONMENTALDAMAGELOG,
-                        body: build_environmental_damage_log_body(
+                )? {
+                    damage.push((
+                        DAMAGE_EXHAUSTED,
+                        environmental_breath_or_fatigue_damage(player.max_health, player.level),
+                    ));
+                }
+                let breath_active = player_environment_timer_active(player, MIRROR_TIMER_BREATH);
+                let breath_deactivated =
+                    player_environment_timer_deactivated(player, MIRROR_TIMER_BREATH);
+                if advance_environment_timer(
+                    &mut player.environment.breath,
+                    diff_millis,
+                    breath_active,
+                    breath_deactivated,
+                    &mut direct_packets,
+                    player_session_id,
+                )? {
+                    damage.push((
+                        DAMAGE_DROWNING,
+                        environmental_breath_or_fatigue_damage(player.max_health, player.level),
+                    ));
+                }
+                let environmental_active =
+                    player_environment_timer_active(player, MIRROR_TIMER_ENVIRONMENTAL);
+                let environmental_deactivated =
+                    player_environment_timer_deactivated(player, MIRROR_TIMER_ENVIRONMENTAL);
+                if advance_environment_timer(
+                    &mut player.environment.environmental,
+                    diff_millis,
+                    environmental_active,
+                    environmental_deactivated,
+                    &mut direct_packets,
+                    player_session_id,
+                )? && player.environment.flags & ENVIRONMENT_FLAG_IN_MAGMA != 0
+                {
+                    damage.push((DAMAGE_LAVA, environmental_lava_damage()));
+                }
+                metrics.timer_update_time += timer_started.elapsed();
+                let keep_tracked = player_environment_needs_tick_processing(&player.environment);
+
+                if player.health != 0 && player.flags & PLAYER_FLAGS_GHOST == 0 {
+                    let damage_started = Instant::now();
+                    for (damage_type, amount) in damage {
+                        if amount == 0 || player.health == 0 {
+                            continue;
+                        }
+                        let applied_damage = amount.min(player.health);
+                        if remove_active_auras_with_interrupt_flag(
+                            &mut player.active_auras,
+                            AURA_INTERRUPT_FLAG_DAMAGE,
+                        ) {
+                            player.stand_state = PLAYER_STAND_STATE_STAND;
+                            let aura_packet = OutboundWorldPacket {
+                                opcode: SMSG_UPDATE_OBJECT,
+                                body: build_player_aura_update_body(
+                                    player_guid,
+                                    &player.active_auras,
+                                )?,
+                            };
+                            let stand_packet = OutboundWorldPacket {
+                                opcode: SMSG_UPDATE_OBJECT,
+                                body: build_player_stand_state_update_body_for_class(
+                                    character_guid,
+                                    player.class,
+                                    player.stand_state,
+                                )?,
+                            };
+                            if let Some(packet) = player.packet_to_client(aura_packet.clone()) {
+                                direct_packets.push(packet);
+                            }
+                            if let Some(packet) = player.packet_to_client(stand_packet.clone()) {
+                                direct_packets.push(packet);
+                            }
+                            aura_interrupt_events.push((
+                                character_guid,
+                                player.position,
+                                aura_packet,
+                                stand_packet,
+                            ));
+                        }
+                        let Some(applied) = apply_player_runtime_world_damage(
+                            player,
                             player_guid,
-                            damage_type,
-                            applied_damage,
-                            0,
-                            0,
-                        )?,
-                    },
-                    applied.health_packet,
-                ));
-            }
+                            None,
+                            amount,
+                            WorldDamageKind::Environmental,
+                            now,
+                        )?
+                        else {
+                            continue;
+                        };
+                        damage_events.push((
+                            character_guid,
+                            applied.position,
+                            player_session_id,
+                            applied.direct_packets,
+                            applied.observer_packets,
+                            applied.aura_packet,
+                            applied.died,
+                            applied.death_presentation_deferred,
+                            OutboundWorldPacket {
+                                opcode: SMSG_ENVIRONMENTALDAMAGELOG,
+                                body: build_environmental_damage_log_body(
+                                    player_guid,
+                                    damage_type,
+                                    applied_damage,
+                                    0,
+                                    0,
+                                )?,
+                            },
+                            applied.health_packet,
+                        ));
+                    }
+                    metrics.damage_application_time += damage_started.elapsed();
+                }
+                keep_tracked
+            };
+            self.set_player_environment_tick_tracked(character_guid, keep_tracked);
         }
 
         let mut packets = direct_packets;
+        let nearby_fanout_started = Instant::now();
         for (character_guid, position, aura_packet, stand_packet) in aura_interrupt_events {
             packets.extend(
                 self.nearby_player_guids(
@@ -270,7 +335,47 @@ impl MapRuntime {
                 .flatten(),
             );
         }
+        metrics.nearby_fanout_time += nearby_fanout_started.elapsed();
+        crate::observability::record_player_environment_players_scanned(metrics.scanned_players);
+        crate::observability::record_player_environment_flags_time(metrics.environment_flags_time);
+        crate::observability::record_player_environment_timer_update_time(
+            metrics.timer_update_time,
+        );
+        crate::observability::record_player_environment_damage_application_time(
+            metrics.damage_application_time,
+        );
+        crate::observability::record_player_environment_nearby_fanout_time(
+            metrics.nearby_fanout_time,
+        );
+        crate::observability::record_player_environment_packets_emitted(packets.len());
 
+        Ok(packets)
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) fn refresh_player_environment_flags_for_test(
+        &mut self,
+        character_guid: u32,
+        now: Instant,
+        mut flags_for: impl FnMut(&WorldGeometry, WorldPosition) -> u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let (packets, keep_tracked) = {
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                return Ok(Vec::new());
+            };
+            let refresh = refresh_player_environment_flags_with(
+                player,
+                &self.geometry,
+                now,
+                true,
+                &mut flags_for,
+            )?;
+            (
+                refresh.packets,
+                player_environment_needs_tick_processing(&player.environment),
+            )
+        };
+        self.set_player_environment_tick_tracked(character_guid, keep_tracked);
         Ok(packets)
     }
 
@@ -562,6 +667,12 @@ impl MapRuntime {
         let player_grid = grid_coord_for_position(player.position);
         let player_cell = cell_coord_for_position(player.position);
         player.cell = player_cell;
+        let refresh =
+            refresh_player_environment_flags(&mut player, &self.geometry, Instant::now(), true)?;
+        if refresh.sampled_geometry {
+            crate::observability::record_player_environment_login_refresh();
+        }
+        packets.extend(refresh.packets);
         let player_object = ObjectGuid::new(HighGuid::Player, 0, player_guid);
         let new_player_packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
@@ -629,6 +740,10 @@ impl MapRuntime {
                 .client_players
                 .insert(player_guid);
         }
+        self.set_player_environment_tick_tracked(
+            player_guid,
+            player_environment_needs_tick_processing(&player.environment),
+        );
         self.players.insert(player_guid, player);
         self.invalidate_idle_motion_start_schedule();
 
@@ -885,6 +1000,8 @@ impl MapRuntime {
             self.invalidate_idle_motion_start_schedule();
         }
 
+        let mut environment_packets = Vec::new();
+        let mut keep_environment_tracked = false;
         let mut fall_applied = None;
         if let Some(player) = self.players.get_mut(&character_guid) {
             player.position = movement.position;
@@ -910,6 +1027,14 @@ impl MapRuntime {
             } else {
                 player.visible_objects = retained_non_player_visible;
             }
+            let refresh =
+                refresh_player_environment_flags(player, &self.geometry, Instant::now(), true)?;
+            if refresh.sampled_geometry {
+                crate::observability::record_player_environment_movement_refresh();
+            }
+            environment_packets.extend(refresh.packets);
+            keep_environment_tracked =
+                player_environment_needs_tick_processing(&player.environment);
             if let Some(damage) = fall_update.damage {
                 fall_applied = apply_player_runtime_world_damage(
                     player,
@@ -921,6 +1046,8 @@ impl MapRuntime {
                 )?;
             }
         }
+        self.set_player_environment_tick_tracked(character_guid, keep_environment_tracked);
+        packets.extend(environment_packets);
 
         if let Some(applied) = fall_applied.as_mut().filter(|applied| applied.died) {
             if applied.death_presentation_deferred {
@@ -2135,12 +2262,25 @@ impl MapRuntime {
         &mut self,
         character_guid: u32,
         position: WorldPosition,
-    ) {
-        let Some(player) = self.players.get_mut(&character_guid) else {
-            return;
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let (packets, keep_tracked) = {
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                return Ok(Vec::new());
+            };
+            player.position = position;
+            player.cell = cell_coord_for_position(position);
+            let refresh =
+                refresh_player_environment_flags(player, &self.geometry, Instant::now(), true)?;
+            if refresh.sampled_geometry {
+                crate::observability::record_player_environment_teleport_refresh();
+            }
+            (
+                refresh.packets,
+                player_environment_needs_tick_processing(&player.environment),
+            )
         };
-        player.position = position;
-        player.cell = cell_coord_for_position(position);
+        self.set_player_environment_tick_tracked(character_guid, keep_tracked);
+        Ok(packets)
     }
 
     pub(in crate::world) fn set_player_power2(&mut self, character_guid: u32, power2: u32) {
@@ -2518,6 +2658,7 @@ impl MapRuntime {
         &mut self,
         character_guid: u32,
     ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        self.set_player_environment_tick_tracked(character_guid, false);
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };
@@ -3121,6 +3262,87 @@ pub(in crate::world) fn should_rescan_visibility_from(
     }
     distance_squared_2d(previous.x, previous.y, position.x, position.y)
         >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
+}
+
+pub(in crate::world) fn should_refresh_player_environment_flags(
+    environment: &PlayerEnvironmentRuntime,
+    position: WorldPosition,
+    now: Instant,
+    force_refresh: bool,
+) -> bool {
+    force_refresh
+        || environment.last_flags_position != Some(position)
+        || player_environment_needs_periodic_revalidation(environment, now)
+}
+
+pub(in crate::world) fn refresh_player_environment_flags(
+    player: &mut PlayerRuntime,
+    geometry: &WorldGeometry,
+    now: Instant,
+    force_refresh: bool,
+) -> anyhow::Result<PlayerEnvironmentRefreshOutcome> {
+    refresh_player_environment_flags_with(
+        player,
+        geometry,
+        now,
+        force_refresh,
+        &mut |geometry, position| geometry.environment_flags(position),
+    )
+}
+
+pub(in crate::world) fn player_environment_needs_tick_processing(
+    environment: &PlayerEnvironmentRuntime,
+) -> bool {
+    environment.flags != 0
+        || environment.fatigue.active
+        || environment.breath.active
+        || environment.environmental.active
+}
+
+pub(in crate::world) fn player_environment_needs_periodic_revalidation(
+    environment: &PlayerEnvironmentRuntime,
+    now: Instant,
+) -> bool {
+    environment.flags != 0
+        && environment
+            .next_flags_refresh_at
+            .map_or(true, |next_refresh_at| now >= next_refresh_at)
+}
+
+fn refresh_player_environment_flags_with(
+    player: &mut PlayerRuntime,
+    geometry: &WorldGeometry,
+    now: Instant,
+    force_refresh: bool,
+    flags_for: &mut impl FnMut(&WorldGeometry, WorldPosition) -> u32,
+) -> anyhow::Result<PlayerEnvironmentRefreshOutcome> {
+    if player.bot_runtime.is_some() {
+        return Ok(PlayerEnvironmentRefreshOutcome::default());
+    }
+    if !should_refresh_player_environment_flags(
+        &player.environment,
+        player.position,
+        now,
+        force_refresh,
+    ) {
+        crate::observability::record_player_environment_cached_skip();
+        return Ok(PlayerEnvironmentRefreshOutcome::default());
+    }
+
+    crate::observability::record_player_environment_geometry_check();
+    let old_flags = player.environment.flags;
+    let new_flags = flags_for(geometry, player.position);
+    let packets = update_player_environment_flags(player, old_flags, new_flags)?;
+    if force_refresh {
+        player.environment.last_tick_at = Some(now);
+    }
+    player.environment.last_flags_position = Some(player.position);
+    player.environment.next_flags_refresh_at =
+        (new_flags != 0).then_some(now + PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL);
+    Ok(PlayerEnvironmentRefreshOutcome {
+        packets,
+        sampled_geometry: true,
+    })
 }
 
 pub(in crate::world) fn moving_bot_start_packet(

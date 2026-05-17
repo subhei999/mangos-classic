@@ -18355,11 +18355,13 @@ fn map_runtime_underwater_breath_timer_applies_drowning_damage_and_log() {
     map.add_player(test_player_runtime(1, SessionId(1), position))
         .unwrap();
     let now = Instant::now();
+    map.refresh_player_environment_flags_for_test(1, now, |_geometry, _position| {
+        ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+    })
+    .unwrap();
 
     let start_packets = map
-        .advance_player_environment_tick_with_flags(now, |_geometry, _position| {
-            ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
-        })
+        .advance_player_environment_tick_with_flags(now, |_geometry, _position| 0)
         .unwrap();
     assert!(start_packets
         .iter()
@@ -18410,14 +18412,137 @@ fn map_runtime_player_environment_tick_skips_playerbots() {
         })
         .unwrap();
 
-    assert_eq!(environment_checks, 1);
-    assert!(packets
-        .iter()
-        .any(|(session, packet)| *session == SessionId(1)
-            && packet.opcode == SMSG_START_MIRROR_TIMER));
+    assert_eq!(environment_checks, 0);
+    assert!(packets.is_empty());
     for guid in 2..18 {
         assert_eq!(map.players.get(&guid).unwrap().environment.flags, 0);
     }
+}
+
+#[test]
+fn map_runtime_add_player_refreshes_environment_cache_on_login() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), position))
+        .unwrap();
+    let environment = &map.players.get(&1).unwrap().environment;
+    assert_eq!(environment.last_flags_position, Some(position));
+    assert_eq!(environment.next_flags_refresh_at, None);
+    assert!(map.active_player_environment_guids.is_empty());
+}
+
+#[test]
+fn map_runtime_player_environment_tick_uses_cached_safe_flags_without_geometry_refresh() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), position))
+        .unwrap();
+    let now = Instant::now();
+    let mut environment_checks = 0usize;
+    let last_tick_at = map.players.get(&1).unwrap().environment.last_tick_at;
+
+    let packets = map
+        .advance_player_environment_tick_with_flags(now, |_geometry, _position| {
+            environment_checks += 1;
+            0
+        })
+        .unwrap();
+
+    assert_eq!(environment_checks, 0);
+    assert!(packets.is_empty());
+    assert_eq!(
+        map.players.get(&1).unwrap().environment.last_tick_at,
+        last_tick_at
+    );
+    assert!(map.active_player_environment_guids.is_empty());
+}
+
+#[test]
+fn map_runtime_update_player_position_refreshes_environment_cache() {
+    let mut map = MapRuntime::new(0, 0);
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), start))
+        .unwrap();
+
+    let moved = WorldPosition::new(0, 2.0, 0.0, 0.0, 0.0);
+    map.update_player_position(
+        1,
+        MSG_MOVE_HEARTBEAT as u16,
+        &MovementInfo {
+            flags: 0,
+            client_time: 1,
+            position: moved,
+            fall_time: 0,
+            jump: JumpInfo::default(),
+        },
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(
+        map.players.get(&1).unwrap().environment.last_flags_position,
+        Some(moved)
+    );
+}
+
+#[test]
+fn map_runtime_set_player_position_refreshes_environment_cache() {
+    let mut map = MapRuntime::new(0, 0);
+    let start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), start))
+        .unwrap();
+    let destination = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+
+    map.set_player_position(1, destination).unwrap();
+
+    assert_eq!(
+        map.players.get(&1).unwrap().environment.last_flags_position,
+        Some(destination)
+    );
+}
+
+#[test]
+fn map_runtime_player_environment_tick_periodically_rechecks_active_cached_flags() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), position))
+        .unwrap();
+    let now = Instant::now();
+    let mut environment_checks = 0usize;
+
+    map.refresh_player_environment_flags_for_test(1, now, |_geometry, _position| {
+        environment_checks += 1;
+        ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+    })
+    .unwrap();
+    assert_eq!(environment_checks, 1);
+    assert!(map.active_player_environment_guids.contains(&1));
+
+    let start_packets = map
+        .advance_player_environment_tick_with_flags(
+            now + Duration::from_millis(100),
+            |_geometry, _position| {
+                environment_checks += 1;
+                ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+            },
+        )
+        .unwrap();
+    assert!(start_packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1)
+            && packet.opcode == SMSG_START_MIRROR_TIMER));
+    assert_eq!(environment_checks, 1);
+
+    map.advance_player_environment_tick_with_flags(
+        now + PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL + Duration::from_millis(1),
+        |_geometry, _position| {
+            environment_checks += 1;
+            ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+        },
+    )
+    .unwrap();
+    assert_eq!(environment_checks, 2);
+    assert!(map.active_player_environment_guids.contains(&1));
 }
 
 #[test]
@@ -18454,11 +18579,13 @@ fn map_runtime_environmental_damage_interrupts_regen() {
     });
     map.add_player(player).unwrap();
     map.advance_player_regen_tick(now).unwrap();
-
-    map.advance_player_environment_tick_with_flags(now, |_geometry, _position| {
+    map.refresh_player_environment_flags_for_test(1, now, |_geometry, _position| {
         ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
     })
     .unwrap();
+
+    map.advance_player_environment_tick_with_flags(now, |_geometry, _position| 0)
+        .unwrap();
     map.advance_player_environment_tick_with_flags(
         now + Duration::from_secs(60),
         |_geometry, _position| {
@@ -18484,11 +18611,13 @@ fn map_runtime_magma_environmental_timer_applies_lava_damage_without_client_time
     player.max_health = 1_000;
     map.add_player(player).unwrap();
     let now = Instant::now();
+    map.refresh_player_environment_flags_for_test(1, now, |_geometry, _position| {
+        ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_IN_MAGMA
+    })
+    .unwrap();
 
     let start_packets = map
-        .advance_player_environment_tick_with_flags(now, |_geometry, _position| {
-            ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_IN_MAGMA
-        })
+        .advance_player_environment_tick_with_flags(now, |_geometry, _position| 0)
         .unwrap();
     assert!(start_packets
         .iter()

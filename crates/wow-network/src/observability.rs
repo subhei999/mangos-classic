@@ -56,6 +56,14 @@ struct MetricsRegistry {
     movement_actor_batch_size: NumericStats,
     movement_map_mutex_wait: Histogram,
     movement_map_mutex_hold: Histogram,
+    player_environment_geometry_checks_total: AtomicU64,
+    player_environment_cached_skips_total: AtomicU64,
+    player_environment_login_refreshes_total: AtomicU64,
+    player_environment_movement_refreshes_total: AtomicU64,
+    player_environment_teleport_refreshes_total: AtomicU64,
+    player_environment_periodic_revalidations_total: AtomicU64,
+    player_environment_timer_only_processing_total: AtomicU64,
+    player_environment_subphases: PlayerEnvironmentSubphaseMetrics,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -198,6 +206,16 @@ impl NumericStats {
     fn max(&self) -> u64 {
         self.max.load(Ordering::Relaxed)
     }
+}
+
+#[derive(Default)]
+struct PlayerEnvironmentSubphaseMetrics {
+    players_scanned: NumericStats,
+    packets_emitted: NumericStats,
+    environment_flags_time: Histogram,
+    timer_update_time: Histogram,
+    damage_application_time: Histogram,
+    nearby_fanout_time: Histogram,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -504,6 +522,90 @@ pub fn record_movement_map_mutex_wait(duration: Duration) {
 
 pub fn record_movement_map_mutex_hold(duration: Duration) {
     registry().movement_map_mutex_hold.record(duration);
+}
+
+pub fn record_player_environment_geometry_check() {
+    registry()
+        .player_environment_geometry_checks_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_cached_skip() {
+    registry()
+        .player_environment_cached_skips_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_login_refresh() {
+    registry()
+        .player_environment_login_refreshes_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_movement_refresh() {
+    registry()
+        .player_environment_movement_refreshes_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_teleport_refresh() {
+    registry()
+        .player_environment_teleport_refreshes_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_periodic_revalidation() {
+    registry()
+        .player_environment_periodic_revalidations_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_timer_only_processing() {
+    registry()
+        .player_environment_timer_only_processing_total
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_player_environment_players_scanned(players_scanned: usize) {
+    registry()
+        .player_environment_subphases
+        .players_scanned
+        .record(players_scanned as u64);
+}
+
+pub fn record_player_environment_packets_emitted(packet_count: usize) {
+    registry()
+        .player_environment_subphases
+        .packets_emitted
+        .record(packet_count as u64);
+}
+
+pub fn record_player_environment_flags_time(duration: Duration) {
+    registry()
+        .player_environment_subphases
+        .environment_flags_time
+        .record(duration);
+}
+
+pub fn record_player_environment_timer_update_time(duration: Duration) {
+    registry()
+        .player_environment_subphases
+        .timer_update_time
+        .record(duration);
+}
+
+pub fn record_player_environment_damage_application_time(duration: Duration) {
+    registry()
+        .player_environment_subphases
+        .damage_application_time
+        .record(duration);
+}
+
+pub fn record_player_environment_nearby_fanout_time(duration: Duration) {
+    registry()
+        .player_environment_subphases
+        .nearby_fanout_time
+        .record(duration);
 }
 
 pub fn record_map_tick(duration: Duration, lag: Duration, budget: Duration) {
@@ -1030,6 +1132,63 @@ pub fn render_prometheus() -> String {
         "time movement work held the MapRuntime mutex while applying updates",
         &metrics.movement_map_mutex_hold,
     );
+    write_counter(
+        &mut body,
+        "wow_player_environment_geometry_checks_total",
+        "Total player-environment cache refreshes that sampled world geometry.",
+        metrics
+            .player_environment_geometry_checks_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_cached_skips_total",
+        "Total player-environment cache hits that skipped world geometry sampling.",
+        metrics
+            .player_environment_cached_skips_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_login_refreshes_total",
+        "Total player-environment geometry refreshes forced by player login or add-player ownership.",
+        metrics
+            .player_environment_login_refreshes_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_movement_refreshes_total",
+        "Total player-environment geometry refreshes forced by applied player movement ownership.",
+        metrics
+            .player_environment_movement_refreshes_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_teleport_refreshes_total",
+        "Total player-environment geometry refreshes forced by teleport or authoritative set-position ownership.",
+        metrics
+            .player_environment_teleport_refreshes_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_periodic_revalidations_total",
+        "Total player-environment geometry refreshes performed by the narrow periodic active-state revalidation path.",
+        metrics
+            .player_environment_periodic_revalidations_total
+            .load(Ordering::Relaxed),
+    );
+    write_counter(
+        &mut body,
+        "wow_player_environment_timer_only_processing_total",
+        "Total player-environment tick passes that advanced cached timers without re-sampling world geometry.",
+        metrics
+            .player_environment_timer_only_processing_total
+            .load(Ordering::Relaxed),
+    );
+    write_player_environment_subphase_metrics(&mut body, &metrics.player_environment_subphases);
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
     body
@@ -1127,6 +1286,38 @@ fn write_float_gauge(body: &mut String, name: &str, help: &str, value: f64) {
     body.push(' ');
     body.push_str(&format!("{value:.3}"));
     body.push('\n');
+}
+
+fn write_numeric_summary(
+    body: &mut String,
+    prefix: &str,
+    help_prefix: &str,
+    values: &NumericStats,
+) {
+    write_counter(
+        body,
+        &format!("{prefix}_samples_total"),
+        &format!("Total recorded samples for {help_prefix}."),
+        values.count(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_average"),
+        &format!("Average {help_prefix}."),
+        values.average(),
+    );
+    write_gauge(
+        body,
+        &format!("{prefix}_latest"),
+        &format!("Most recent {help_prefix}."),
+        values.latest(),
+    );
+    write_gauge(
+        body,
+        &format!("{prefix}_max"),
+        &format!("Maximum observed {help_prefix} since server start."),
+        values.max(),
+    );
 }
 
 fn write_histogram(body: &mut String, name: &str, help: &str, histogram: &Histogram) {
@@ -1253,6 +1444,144 @@ fn write_map_phase_duration_summaries(body: &mut String, phases: &MapPhaseDurati
         phases,
         ROLLING_FIVE_MINUTES,
         RollingStats::max_milliseconds,
+    );
+}
+
+fn write_player_environment_subphase_metrics(
+    body: &mut String,
+    metrics: &PlayerEnvironmentSubphaseMetrics,
+) {
+    write_numeric_summary(
+        body,
+        "wow_player_environment_players_scanned",
+        "non-bot players scanned per player-environment tick",
+        &metrics.players_scanned,
+    );
+    write_numeric_summary(
+        body,
+        "wow_player_environment_packets_emitted",
+        "packets emitted per player-environment tick",
+        &metrics.packets_emitted,
+    );
+    write_histogram(
+        body,
+        "wow_player_environment_flags_time_seconds",
+        "Time spent sampling environment flags during one player-environment tick.",
+        &metrics.environment_flags_time,
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_flags_time_average_milliseconds",
+        "Average time spent sampling environment flags during one player-environment tick.",
+        metrics.environment_flags_time.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_flags_time_latest_milliseconds",
+        "Most recent time spent sampling environment flags during one player-environment tick.",
+        metrics.environment_flags_time.latest_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_flags_time_max_milliseconds",
+        "Maximum observed environment flag sampling time since server start.",
+        metrics.environment_flags_time.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        body,
+        "wow_player_environment_flags_time",
+        "time spent sampling environment flags during one player-environment tick",
+        &metrics.environment_flags_time,
+    );
+    write_histogram(
+        body,
+        "wow_player_environment_timer_update_time_seconds",
+        "Time spent advancing environment timers during one player-environment tick.",
+        &metrics.timer_update_time,
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_timer_update_time_average_milliseconds",
+        "Average time spent advancing environment timers during one player-environment tick.",
+        metrics.timer_update_time.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_timer_update_time_latest_milliseconds",
+        "Most recent time spent advancing environment timers during one player-environment tick.",
+        metrics.timer_update_time.latest_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_timer_update_time_max_milliseconds",
+        "Maximum observed environment timer update time since server start.",
+        metrics.timer_update_time.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        body,
+        "wow_player_environment_timer_update_time",
+        "time spent advancing environment timers during one player-environment tick",
+        &metrics.timer_update_time,
+    );
+    write_histogram(
+        body,
+        "wow_player_environment_damage_application_time_seconds",
+        "Time spent applying environmental damage during one player-environment tick.",
+        &metrics.damage_application_time,
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_damage_application_time_average_milliseconds",
+        "Average time spent applying environmental damage during one player-environment tick.",
+        metrics.damage_application_time.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_damage_application_time_latest_milliseconds",
+        "Most recent time spent applying environmental damage during one player-environment tick.",
+        metrics.damage_application_time.latest_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_damage_application_time_max_milliseconds",
+        "Maximum observed environmental damage application time since server start.",
+        metrics.damage_application_time.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        body,
+        "wow_player_environment_damage_application_time",
+        "time spent applying environmental damage during one player-environment tick",
+        &metrics.damage_application_time,
+    );
+    write_histogram(
+        body,
+        "wow_player_environment_nearby_fanout_time_seconds",
+        "Time spent broadcasting nearby player-environment updates during one player-environment tick.",
+        &metrics.nearby_fanout_time,
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_nearby_fanout_time_average_milliseconds",
+        "Average time spent broadcasting nearby player-environment updates during one player-environment tick.",
+        metrics.nearby_fanout_time.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_nearby_fanout_time_latest_milliseconds",
+        "Most recent time spent broadcasting nearby player-environment updates during one player-environment tick.",
+        metrics.nearby_fanout_time.latest_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        "wow_player_environment_nearby_fanout_time_max_milliseconds",
+        "Maximum observed nearby player-environment fanout time since server start.",
+        metrics.nearby_fanout_time.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        body,
+        "wow_player_environment_nearby_fanout_time",
+        "time spent broadcasting nearby player-environment updates during one player-environment tick",
+        &metrics.nearby_fanout_time,
     );
 }
 
@@ -2540,6 +2869,19 @@ mod tests {
         record_movement_actor_batch_size(5);
         record_movement_map_mutex_wait(Duration::from_millis(6));
         record_movement_map_mutex_hold(Duration::from_millis(8));
+        record_player_environment_geometry_check();
+        record_player_environment_cached_skip();
+        record_player_environment_login_refresh();
+        record_player_environment_movement_refresh();
+        record_player_environment_teleport_refresh();
+        record_player_environment_periodic_revalidation();
+        record_player_environment_timer_only_processing();
+        record_player_environment_players_scanned(48);
+        record_player_environment_packets_emitted(96);
+        record_player_environment_flags_time(Duration::from_millis(9));
+        record_player_environment_timer_update_time(Duration::from_millis(10));
+        record_player_environment_damage_application_time(Duration::from_millis(11));
+        record_player_environment_nearby_fanout_time(Duration::from_millis(12));
 
         let rendered = render_prometheus();
 
@@ -2593,6 +2935,23 @@ mod tests {
         assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
         assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
         assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
+        assert!(rendered.contains("wow_player_environment_geometry_checks_total 1"));
+        assert!(rendered.contains("wow_player_environment_cached_skips_total 1"));
+        assert!(rendered.contains("wow_player_environment_login_refreshes_total 1"));
+        assert!(rendered.contains("wow_player_environment_movement_refreshes_total 1"));
+        assert!(rendered.contains("wow_player_environment_teleport_refreshes_total 1"));
+        assert!(rendered.contains("wow_player_environment_periodic_revalidations_total 1"));
+        assert!(rendered.contains("wow_player_environment_timer_only_processing_total 1"));
+        assert!(rendered.contains("wow_player_environment_players_scanned_latest 48"));
+        assert!(rendered.contains("wow_player_environment_packets_emitted_latest 96"));
+        assert!(rendered.contains("wow_player_environment_flags_time_average_milliseconds 9.000"));
+        assert!(rendered
+            .contains("wow_player_environment_timer_update_time_average_milliseconds 10.000"));
+        assert!(rendered.contains(
+            "wow_player_environment_damage_application_time_average_milliseconds 11.000"
+        ));
+        assert!(rendered
+            .contains("wow_player_environment_nearby_fanout_time_average_milliseconds 12.000"));
     }
 
     #[test]

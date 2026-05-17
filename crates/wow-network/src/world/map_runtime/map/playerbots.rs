@@ -1218,7 +1218,9 @@ impl MapRuntime {
                 } else {
                     let Some(movement_intent) = movement_intent else {
                         bot.next_think_at = now + playerbot_missing_intent_defer_delay(bot_guid);
-                        crate::observability::record_playerbot_event("missing_movement_intent_defer");
+                        crate::observability::record_playerbot_event(
+                            "missing_movement_intent_defer",
+                        );
                         return None;
                     };
                     match movement_intent {

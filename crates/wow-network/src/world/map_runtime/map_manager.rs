@@ -1843,14 +1843,13 @@ impl MapRuntimeManager {
         map_id: u32,
         character_guid: u32,
         position: WorldPosition,
-    ) {
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let Some(map) = map else {
-            return;
+            return Ok(Vec::new());
         };
-        map.lock()
-            .await
-            .set_player_position(character_guid, position);
+        let mut map = map.lock().await;
+        map.set_player_position(character_guid, position)
     }
 
     #[cfg(test)]

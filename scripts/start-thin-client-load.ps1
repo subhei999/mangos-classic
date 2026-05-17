@@ -12,6 +12,10 @@ param(
     [double]$CenterZ = 83.5,
     [double]$Radius = 150.0,
     [double]$MoveRadius = 6.0,
+    [string]$WorldConfigPath = "config\\worldserver.local.toml",
+    [switch]$EnableMovementActor,
+    [int]$MovementActorQueueCapacity = 1024,
+    [int]$MovementActorMaxBatchSize = 64,
     [switch]$SeedOnly
 )
 
@@ -19,13 +23,68 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $restartScript = Join-Path $PSScriptRoot "restart-game-stack.ps1"
+$baseWorldConfigPath = Join-Path $repoRoot $WorldConfigPath
+
+function New-BenchmarkWorldConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+        [Parameter(Mandatory = $true)]
+        [bool]$MovementActorEnabled,
+        [Parameter(Mandatory = $true)]
+        [int]$QueueCapacity,
+        [Parameter(Mandatory = $true)]
+        [int]$MaxBatchSize
+    )
+
+    $content = Get-Content -Path $BasePath -Raw
+    $content = [System.Text.RegularExpressions.Regex]::Replace(
+        $content,
+        "(?m)^experimental_movement_actor\s*=.*\r?\n?",
+        ""
+    )
+    $content = [System.Text.RegularExpressions.Regex]::Replace(
+        $content,
+        "(?m)^experimental_movement_actor_queue_capacity\s*=.*\r?\n?",
+        ""
+    )
+    $content = [System.Text.RegularExpressions.Regex]::Replace(
+        $content,
+        "(?m)^experimental_movement_actor_max_batch_size\s*=.*\r?\n?",
+        ""
+    )
+
+    $worldHeader = "[world]"
+    $worldHeaderIndex = $content.IndexOf($worldHeader)
+    if ($worldHeaderIndex -lt 0) {
+        throw "Failed to find [world] section in $BasePath"
+    }
+    $insertIndex = $worldHeaderIndex + $worldHeader.Length
+    $movementActorSettings = @"
+
+experimental_movement_actor = $($MovementActorEnabled.ToString().ToLowerInvariant())
+experimental_movement_actor_queue_capacity = $QueueCapacity
+experimental_movement_actor_max_batch_size = $MaxBatchSize
+"@
+    $content = $content.Insert($insertIndex, $movementActorSettings)
+
+    $generatedPath = Join-Path $env:TEMP ("worldserver.thin-client." + [Guid]::NewGuid().ToString("N") + ".toml")
+    Set-Content -Path $generatedPath -Value $content
+    return $generatedPath
+}
+
+$effectiveWorldConfigPath = New-BenchmarkWorldConfig `
+    -BasePath $baseWorldConfigPath `
+    -MovementActorEnabled:$EnableMovementActor `
+    -QueueCapacity $MovementActorQueueCapacity `
+    -MaxBatchSize $MovementActorMaxBatchSize
 
 Write-Host "Starting release auth/world stack for thin-client load test from $repoRoot"
 & powershell -NoProfile -ExecutionPolicy Bypass -File $restartScript `
     -WorldPort $WorldPort `
     -AuthPort $AuthPort `
     -ReadyTimeoutSeconds $ReadyTimeoutSeconds `
-    -WorldConfigPath "config\\worldserver.local.toml" `
+    -WorldConfigPath $effectiveWorldConfigPath `
     -Release
 
 if ($LASTEXITCODE -ne 0) {

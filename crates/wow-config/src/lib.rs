@@ -56,6 +56,8 @@ pub struct WorldConfig {
     pub char_delete_method: u8,
     #[serde(default = "default_char_delete_min_level")]
     pub char_delete_min_level: u8,
+    #[serde(default)]
+    pub experimental_movement_actor: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +290,7 @@ impl Default for WorldConfig {
             motd: default_motd(),
             char_delete_method: default_char_delete_method(),
             char_delete_min_level: default_char_delete_min_level(),
+            experimental_movement_actor: false,
         }
     }
 }
@@ -356,6 +359,7 @@ database = "realmd"
         assert_eq!(wc.motd, "Welcome to CMaNGOS Rust!");
         assert_eq!(wc.char_delete_method, 0);
         assert_eq!(wc.char_delete_min_level, 0);
+        assert!(!wc.experimental_movement_actor);
     }
 
     #[test]

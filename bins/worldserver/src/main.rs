@@ -140,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         WorldServerOptions {
             data_dir: config.data_dir.into(),
             world_tick_interval: Duration::from_millis(u64::from(map_update_interval_ms)),
+            movement_actor_enabled: config.world.experimental_movement_actor,
             playerbots,
         },
     )

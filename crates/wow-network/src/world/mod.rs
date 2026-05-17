@@ -90,6 +90,7 @@ pub struct WorldServer {
 pub struct WorldServerOptions {
     pub data_dir: PathBuf,
     pub world_tick_interval: Duration,
+    pub movement_actor_enabled: bool,
     pub playerbots: Vec<PlayerbotSpawnConfig>,
 }
 
@@ -105,6 +106,7 @@ impl WorldServer {
         let WorldServerOptions {
             data_dir,
             world_tick_interval,
+            movement_actor_enabled,
             playerbots,
         } = options;
         if world_tick_interval.is_zero() {
@@ -158,7 +160,8 @@ impl WorldServer {
                 static_world_cache,
                 next_gm_creature_guid,
                 db_scripts,
-            ),
+            )
+            .with_movement_actor_enabled(movement_actor_enabled),
         );
         let playerbots = Arc::new(initialize_playerbots(&maps, &world_db_pool, &playerbots).await?);
         info!(

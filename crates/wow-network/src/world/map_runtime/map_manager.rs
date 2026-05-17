@@ -3,6 +3,8 @@ use super::*;
 #[derive(Debug, Default)]
 pub(in crate::world) struct MapRuntimeManager {
     pub(in crate::world) maps: Mutex<MapRuntimeHandles>,
+    pub(in crate::world) movement_actors: Mutex<MovementActorHandles>,
+    pub(in crate::world) movement_actor_settings: MovementActorSettings,
     pub(in crate::world) static_world_cache: Arc<StaticWorldSpawnCache>,
     pub(in crate::world) geometry: Arc<WorldGeometry>,
     pub(in crate::world) db_scripts: Arc<DbScriptRegistry>,
@@ -24,6 +26,7 @@ pub(in crate::world) struct MapRuntimeManager {
 }
 
 pub(in crate::world) type MapRuntimeHandles = HashMap<(u32, u32), Arc<Mutex<MapRuntime>>>;
+pub(in crate::world) type MovementActorHandles = HashMap<(u32, u32), MovementActorHandle>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -62,6 +65,20 @@ pub(in crate::world) fn apply_creature_display_scale_fallbacks(
 }
 
 impl MapRuntimeManager {
+    pub(in crate::world) fn with_movement_actor_enabled(mut self, enabled: bool) -> Self {
+        self.movement_actor_settings = self.movement_actor_settings.with_enabled(enabled);
+        self
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) fn with_movement_actor_settings_for_test(
+        mut self,
+        settings: MovementActorSettings,
+    ) -> Self {
+        self.movement_actor_settings = settings;
+        self
+    }
+
     #[allow(dead_code)]
     pub(in crate::world) fn with_world_data_files(world_data_files: &WorldDataFiles) -> Self {
         Self::with_world_data_files_and_static_cache(
@@ -513,14 +530,24 @@ impl MapRuntimeManager {
         movement: &MovementInfo,
         server_time: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map_key = (map_id, 0);
+        let map = { self.maps.lock().await.get(&map_key).cloned() };
         let Some(map) = map else {
             return Ok(Vec::new());
         };
-        let packets =
-            map.lock()
-                .await
-                .update_player_position(character_guid, opcode, movement, server_time);
+
+        if let Some(actor) = self.movement_actor_for_map(map_key, map.clone()).await {
+            return actor
+                .update_player_position(character_guid, opcode, movement, server_time)
+                .await;
+        }
+
+        let mutex_wait_started_at = Instant::now();
+        let mut map = map.lock().await;
+        crate::observability::record_movement_map_mutex_wait(mutex_wait_started_at.elapsed());
+        let mutex_hold_started_at = Instant::now();
+        let packets = map.update_player_position(character_guid, opcode, movement, server_time);
+        crate::observability::record_movement_map_mutex_hold(mutex_hold_started_at.elapsed());
         packets
     }
 
@@ -3404,6 +3431,25 @@ impl MapRuntimeManager {
                 )))
             })
             .clone()
+    }
+
+    async fn movement_actor_for_map(
+        &self,
+        map_key: (u32, u32),
+        map: Arc<Mutex<MapRuntime>>,
+    ) -> Option<MovementActorHandle> {
+        if !self.movement_actor_settings.enabled {
+            return None;
+        }
+        let mut actors = self.movement_actors.lock().await;
+        Some(
+            actors
+                .entry(map_key)
+                .or_insert_with(|| {
+                    MovementActorHandle::spawn_proxy(map, self.movement_actor_settings)
+                })
+                .clone(),
+        )
     }
 }
 

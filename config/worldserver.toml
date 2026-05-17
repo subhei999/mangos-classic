@@ -54,6 +54,12 @@ MapUpdateInterval = 100
 char_delete_method = 0
 char_delete_min_level = 0
 
+# Experimental proof slice: route movement updates through a bounded per-map
+# actor mailbox while still applying them against the existing MapRuntime mutex.
+experimental_movement_actor = false
+experimental_movement_actor_queue_capacity = 1024
+experimental_movement_actor_max_batch_size = 64
+
 # --------------------------------------------------------------------------
 # Server-side playerbots
 # --------------------------------------------------------------------------

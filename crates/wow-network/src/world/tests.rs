@@ -17454,6 +17454,193 @@ fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
     assert_eq!(late_visible.flags, 0);
     assert_eq!(late_visible.position.orientation, 2.25);
 }
+#[tokio::test]
+async fn map_runtime_manager_movement_actor_disabled_keeps_direct_mutex_path() {
+    let maps = MapRuntimeManager::default()
+        .with_movement_actor_settings_for_test(MovementActorSettings::for_test(false, 16, 8));
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .await
+        .unwrap();
+    maps.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .await
+        .unwrap();
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1234,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 2.25),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    let packets = match maps
+        .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
+        .await
+        .unwrap()
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("direct mutex path should apply movement"),
+    };
+
+    assert!(maps.movement_actors.lock().await.is_empty());
+    assert!(
+        packets
+            .iter()
+            .any(|(session, packet)| *session == SessionId(2)
+                && packet.opcode == MSG_MOVE_STOP as u16)
+    );
+}
+
+#[tokio::test]
+async fn map_runtime_manager_movement_actor_matches_direct_path_packets() {
+    let direct_maps = MapRuntimeManager::default();
+    let actor_maps = MapRuntimeManager::default()
+        .with_movement_actor_settings_for_test(MovementActorSettings::for_test(true, 16, 8));
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    for maps in [&direct_maps, &actor_maps] {
+        maps.add_player(test_player_runtime(1, SessionId(1), player_position))
+            .await
+            .unwrap();
+        maps.add_player(test_player_runtime(2, SessionId(2), observer_position))
+            .await
+            .unwrap();
+    }
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1234,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 2.25),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    let direct_packets = match direct_maps
+        .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
+        .await
+        .unwrap()
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("direct path should apply movement"),
+    }
+    .into_iter()
+    .map(|(session, packet)| (session, packet.opcode, packet.body))
+    .collect::<Vec<_>>();
+    let actor_packets = match actor_maps
+        .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 5678)
+        .await
+        .unwrap()
+    {
+        MovementUpdateOutcome::Applied { packets } => packets,
+        MovementUpdateOutcome::Superseded => panic!("actor path should apply movement"),
+    }
+    .into_iter()
+    .map(|(session, packet)| (session, packet.opcode, packet.body))
+    .collect::<Vec<_>>();
+
+    assert_eq!(actor_packets, direct_packets);
+    let direct_snapshot = direct_maps.player_runtime_snapshot(0, 1).await.unwrap();
+    let actor_snapshot = actor_maps.player_runtime_snapshot(0, 1).await.unwrap();
+    assert_eq!(
+        actor_snapshot.position.orientation,
+        direct_snapshot.position.orientation
+    );
+    assert_eq!(
+        actor_snapshot.movement_flags,
+        direct_snapshot.movement_flags
+    );
+    assert_eq!(actor_maps.movement_actors.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn map_runtime_manager_movement_actor_surfaces_full_mailbox_backpressure() {
+    let maps = MapRuntimeManager::default()
+        .with_movement_actor_settings_for_test(MovementActorSettings::for_test(true, 1, 1));
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(1, SessionId(1), position))
+        .await
+        .unwrap();
+    let (sender, receiver) = mpsc::channel(1);
+    let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+    sender
+        .try_send(MovementActorCommand::UpdatePlayerPosition(
+            MovementUpdateCommand {
+                character_guid: 1,
+                opcode: MSG_MOVE_STOP as u16,
+                movement: MovementInfo {
+                    flags: 0,
+                    client_time: 1,
+                    position,
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 1,
+                enqueued_at: Instant::now(),
+                reply,
+            },
+        ))
+        .unwrap();
+    let _receiver = receiver;
+    maps.movement_actors
+        .lock()
+        .await
+        .insert((0, 0), MovementActorHandle { sender });
+
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 2,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.5),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let error = maps
+        .update_player_position(0, 1, MSG_MOVE_STOP as u16, &movement, 2)
+        .await
+        .expect_err("mailbox should report backpressure");
+
+    assert!(error.to_string().contains("mailbox is full"));
+}
+
+#[tokio::test]
+async fn map_runtime_manager_movement_actor_completes_all_concurrent_replies() {
+    let maps = Arc::new(
+        MapRuntimeManager::default()
+            .with_movement_actor_settings_for_test(MovementActorSettings::for_test(true, 32, 16)),
+    );
+    let observer_position = WorldPosition::new(0, -8955.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(99, SessionId(99), observer_position))
+        .await
+        .unwrap();
+    for guid in 1..=8 {
+        maps.add_player(test_player_runtime(
+            guid,
+            SessionId(guid as u64),
+            WorldPosition::new(0, -8950.0 + guid as f32, -130.0, 83.5, 0.0),
+        ))
+        .await
+        .unwrap();
+    }
+
+    let mut tasks = Vec::new();
+    for guid in 1..=8 {
+        let maps = maps.clone();
+        tasks.push(tokio::spawn(async move {
+            let movement = MovementInfo {
+                flags: 0,
+                client_time: guid,
+                position: WorldPosition::new(0, -8950.0 + guid as f32, -129.5, 83.5, 0.25),
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            };
+            maps.update_player_position(0, guid, MSG_MOVE_STOP as u16, &movement, guid)
+                .await
+        }));
+    }
+
+    for task in tasks {
+        assert!(task.await.unwrap().is_ok());
+    }
+}
 #[test]
 fn other_player_create_block_includes_public_unit_target() {
     let guid = ObjectGuid::new(HighGuid::Player, 0, 7);

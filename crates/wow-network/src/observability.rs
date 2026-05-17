@@ -47,6 +47,15 @@ struct MetricsRegistry {
     world_outbound_queue_full_total: AtomicU64,
     world_outbound_queue_depth_latest: AtomicU64,
     world_outbound_queue_depth_max: AtomicU64,
+    movement_actor_queue_depth_latest: AtomicU64,
+    movement_actor_queue_depth_max: AtomicU64,
+    movement_actor_enqueue_failures: Mutex<HashMap<&'static str, u64>>,
+    movement_actor_enqueue_latency: Histogram,
+    movement_actor_processing_time: Histogram,
+    movement_actor_reply_latency: Histogram,
+    movement_actor_batch_size: NumericStats,
+    movement_map_mutex_wait: Histogram,
+    movement_map_mutex_hold: Histogram,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -147,6 +156,47 @@ impl DurationStats {
 
     fn max_milliseconds(self) -> f64 {
         self.max_micros as f64 / 1_000.0
+    }
+}
+
+#[derive(Default)]
+struct NumericStats {
+    count: AtomicU64,
+    sum: AtomicU64,
+    latest: AtomicU64,
+    max: AtomicU64,
+}
+
+impl NumericStats {
+    fn record(&self, value: u64) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.sum.fetch_add(value, Ordering::Relaxed);
+        self.latest.store(value, Ordering::Relaxed);
+        let _ = self
+            .max
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (value > current).then_some(value)
+            });
+    }
+
+    fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    fn average(&self) -> f64 {
+        let count = self.count();
+        if count == 0 {
+            return 0.0;
+        }
+        self.sum.load(Ordering::Relaxed) as f64 / count as f64
+    }
+
+    fn latest(&self) -> u64 {
+        self.latest.load(Ordering::Relaxed)
+    }
+
+    fn max(&self) -> u64 {
+        self.max.load(Ordering::Relaxed)
     }
 }
 
@@ -407,6 +457,53 @@ pub fn record_world_outbound_queue_full() {
     registry()
         .world_outbound_queue_full_total
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_movement_actor_queue_depth(depth: usize) {
+    let metrics = registry();
+    let depth = depth as u64;
+    metrics
+        .movement_actor_queue_depth_latest
+        .store(depth, Ordering::Relaxed);
+    let _ = metrics.movement_actor_queue_depth_max.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |current| (depth > current).then_some(depth),
+    );
+}
+
+pub fn record_movement_actor_enqueue_failure(reason: &'static str) {
+    let mut counters = registry()
+        .movement_actor_enqueue_failures
+        .lock()
+        .expect("metrics movement actor enqueue failures poisoned");
+    *counters.entry(reason).or_insert(0) += 1;
+}
+
+pub fn record_movement_actor_enqueue_latency(duration: Duration) {
+    registry().movement_actor_enqueue_latency.record(duration);
+}
+
+pub fn record_movement_actor_processing_time(duration: Duration) {
+    registry().movement_actor_processing_time.record(duration);
+}
+
+pub fn record_movement_actor_reply_latency(duration: Duration) {
+    registry().movement_actor_reply_latency.record(duration);
+}
+
+pub fn record_movement_actor_batch_size(batch_size: usize) {
+    registry()
+        .movement_actor_batch_size
+        .record(batch_size as u64);
+}
+
+pub fn record_movement_map_mutex_wait(duration: Duration) {
+    registry().movement_map_mutex_wait.record(duration);
+}
+
+pub fn record_movement_map_mutex_hold(duration: Duration) {
+    registry().movement_map_mutex_hold.record(duration);
 }
 
 pub fn record_map_tick(duration: Duration, lag: Duration, budget: Duration) {
@@ -731,6 +828,207 @@ pub fn render_prometheus() -> String {
         metrics
             .world_outbound_queue_depth_max
             .load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut body,
+        "wow_movement_actor_queue_depth_latest",
+        "Most recently observed movement actor mailbox depth.",
+        metrics
+            .movement_actor_queue_depth_latest
+            .load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut body,
+        "wow_movement_actor_queue_depth_max",
+        "Maximum observed movement actor mailbox depth since server start.",
+        metrics
+            .movement_actor_queue_depth_max
+            .load(Ordering::Relaxed),
+    );
+    write_label_counter(
+        &mut body,
+        "wow_movement_actor_enqueue_failures_total",
+        "Total movement actor enqueue failures by reason.",
+        "reason",
+        &metrics.movement_actor_enqueue_failures,
+    );
+    write_histogram(
+        &mut body,
+        "wow_movement_actor_enqueue_latency_seconds",
+        "Time spent enqueueing movement work into the movement actor mailbox.",
+        &metrics.movement_actor_enqueue_latency,
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_enqueue_latency_average_milliseconds",
+        "Average time spent enqueueing movement work into the movement actor mailbox.",
+        metrics
+            .movement_actor_enqueue_latency
+            .average_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_enqueue_latency_latest_milliseconds",
+        "Most recent time spent enqueueing movement work into the movement actor mailbox.",
+        metrics.movement_actor_enqueue_latency.latest_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_enqueue_latency_max_milliseconds",
+        "Maximum observed movement actor enqueue time since server start.",
+        metrics.movement_actor_enqueue_latency.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_movement_actor_enqueue_latency",
+        "time spent enqueueing movement work into the movement actor mailbox",
+        &metrics.movement_actor_enqueue_latency,
+    );
+    write_histogram(
+        &mut body,
+        "wow_movement_actor_processing_time_seconds",
+        "Time spent processing one drained movement actor batch.",
+        &metrics.movement_actor_processing_time,
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_processing_time_average_milliseconds",
+        "Average time spent processing one drained movement actor batch.",
+        metrics
+            .movement_actor_processing_time
+            .average_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_processing_time_latest_milliseconds",
+        "Most recent time spent processing one drained movement actor batch.",
+        metrics.movement_actor_processing_time.latest_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_processing_time_max_milliseconds",
+        "Maximum observed movement actor batch processing time since server start.",
+        metrics.movement_actor_processing_time.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_movement_actor_processing_time",
+        "time spent processing one drained movement actor batch",
+        &metrics.movement_actor_processing_time,
+    );
+    write_histogram(
+        &mut body,
+        "wow_movement_actor_reply_latency_seconds",
+        "Time from movement actor enqueue until the caller reply is completed.",
+        &metrics.movement_actor_reply_latency,
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_reply_latency_average_milliseconds",
+        "Average time from movement actor enqueue until the caller reply is completed.",
+        metrics.movement_actor_reply_latency.average_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_reply_latency_latest_milliseconds",
+        "Most recent time from movement actor enqueue until the caller reply is completed.",
+        metrics.movement_actor_reply_latency.latest_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_reply_latency_max_milliseconds",
+        "Maximum observed movement actor reply latency since server start.",
+        metrics.movement_actor_reply_latency.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_movement_actor_reply_latency",
+        "time from movement actor enqueue until the caller reply is completed",
+        &metrics.movement_actor_reply_latency,
+    );
+    write_counter(
+        &mut body,
+        "wow_movement_actor_batches_total",
+        "Total drained movement actor batches.",
+        metrics.movement_actor_batch_size.count(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_actor_batch_size_average",
+        "Average number of commands drained per movement actor batch.",
+        metrics.movement_actor_batch_size.average(),
+    );
+    write_gauge(
+        &mut body,
+        "wow_movement_actor_batch_size_latest",
+        "Most recent number of commands drained in one movement actor batch.",
+        metrics.movement_actor_batch_size.latest(),
+    );
+    write_gauge(
+        &mut body,
+        "wow_movement_actor_batch_size_max",
+        "Maximum observed number of commands drained in one movement actor batch since server start.",
+        metrics.movement_actor_batch_size.max(),
+    );
+    write_histogram(
+        &mut body,
+        "wow_movement_map_mutex_wait_seconds",
+        "Time movement work spent waiting to acquire the MapRuntime mutex.",
+        &metrics.movement_map_mutex_wait,
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_wait_average_milliseconds",
+        "Average time movement work spent waiting to acquire the MapRuntime mutex.",
+        metrics.movement_map_mutex_wait.average_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_wait_latest_milliseconds",
+        "Most recent time movement work spent waiting to acquire the MapRuntime mutex.",
+        metrics.movement_map_mutex_wait.latest_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_wait_max_milliseconds",
+        "Maximum observed movement mutex wait time since server start.",
+        metrics.movement_map_mutex_wait.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_movement_map_mutex_wait",
+        "time movement work spent waiting to acquire the MapRuntime mutex",
+        &metrics.movement_map_mutex_wait,
+    );
+    write_histogram(
+        &mut body,
+        "wow_movement_map_mutex_hold_seconds",
+        "Time movement work held the MapRuntime mutex while applying updates.",
+        &metrics.movement_map_mutex_hold,
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_hold_average_milliseconds",
+        "Average time movement work held the MapRuntime mutex while applying updates.",
+        metrics.movement_map_mutex_hold.average_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_hold_latest_milliseconds",
+        "Most recent time movement work held the MapRuntime mutex while applying updates.",
+        metrics.movement_map_mutex_hold.latest_milliseconds(),
+    );
+    write_float_gauge(
+        &mut body,
+        "wow_movement_map_mutex_hold_max_milliseconds",
+        "Maximum observed movement mutex hold time since server start.",
+        metrics.movement_map_mutex_hold.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(
+        &mut body,
+        "wow_movement_map_mutex_hold",
+        "time movement work held the MapRuntime mutex while applying updates",
+        &metrics.movement_map_mutex_hold,
     );
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
@@ -2234,6 +2532,14 @@ mod tests {
         record_world_packet_in(0x01E0);
         record_world_packet_out(0x00DD);
         record_world_unknown_opcode(0x01E0);
+        record_movement_actor_queue_depth(3);
+        record_movement_actor_enqueue_failure("full");
+        record_movement_actor_enqueue_latency(Duration::from_millis(1));
+        record_movement_actor_processing_time(Duration::from_millis(2));
+        record_movement_actor_reply_latency(Duration::from_millis(4));
+        record_movement_actor_batch_size(5);
+        record_movement_map_mutex_wait(Duration::from_millis(6));
+        record_movement_map_mutex_hold(Duration::from_millis(8));
 
         let rendered = render_prometheus();
 
@@ -2279,6 +2585,14 @@ mod tests {
         assert!(rendered.contains("wow_world_packets_in_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains("wow_world_packets_out_total{opcode=\"0x00DD\"}"));
         assert!(rendered.contains("wow_world_unknown_opcodes_total{opcode=\"0x01E0\"}"));
+        assert!(rendered.contains("wow_movement_actor_queue_depth_latest "));
+        assert!(rendered.contains("wow_movement_actor_enqueue_failures_total{reason=\"full\"} 1"));
+        assert!(rendered.contains("wow_movement_actor_enqueue_latency_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_processing_time_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_reply_latency_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
+        assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
+        assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
     }
 
     #[test]

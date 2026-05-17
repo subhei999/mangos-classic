@@ -20,6 +20,9 @@ pub(in crate::world) struct StoppedCreatureMotion {
 // Keep chase on mmap-backed paths until the fast path can sample terrain/nav
 // height like CMaNGOS' straight-line PathFinder branch.
 pub(in crate::world) const DB_CREATURE_CHASE_STRAIGHT_FAST_PATH_ENABLED: bool = false;
+pub(in crate::world) const CMANGOS_CONFUSED_MOVEMENT_RADIUS_YARDS: f32 = 2.5;
+pub(in crate::world) const CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS: u64 = 500;
+pub(in crate::world) const CMANGOS_CONFUSED_MOVEMENT_DELAY_MAX_MILLIS: u64 = 1500;
 
 #[cfg(test)]
 pub(in crate::world) fn advance_db_creature_motion(
@@ -53,12 +56,15 @@ pub(in crate::world) fn advance_db_creature_motion_runtime(
             ) else {
                 creature.current_position = random.destination;
                 creature.motion = CreatureMotionState::Idle;
-                creature.next_random_move_at = Some(
-                    now + Duration::from_millis(db_creature_random_pause_millis(
+                let pause_millis = if active_aura_has_confuse(&creature.active_auras) {
+                    db_creature_confused_pause_millis(
                         creature.guid().raw(),
                         creature.next_spline_id,
-                    )),
-                );
+                    )
+                } else {
+                    db_creature_random_pause_millis(creature.guid().raw(), creature.next_spline_id)
+                };
+                creature.next_random_move_at = Some(now + Duration::from_millis(pause_millis));
                 creature.next_waypoint_move_at =
                     DbCreatureRuntime::initial_waypoint_move_at(&creature.spawn);
                 return;
@@ -260,6 +266,59 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
         return None;
     }
     let run = creature.default_movement_run;
+    let duration = db_creature_random_motion_duration(creature, start, &path, run);
+    let spline_id = creature.next_spline_id;
+    creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.motion = CreatureMotionState::Random(CreatureRandomMotion {
+        start,
+        destination,
+        path: path.clone(),
+        started_at: now,
+        duration,
+    });
+    creature.next_random_move_at = None;
+    Some(StartedCreatureMotion {
+        start,
+        path,
+        spline_id,
+        duration,
+        run,
+    })
+}
+
+pub(in crate::world) fn start_db_creature_confused_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
+    creature: &mut DbCreatureRuntime,
+    now: Instant,
+) -> Option<StartedCreatureMotion> {
+    if !active_aura_has_confuse(&creature.active_auras) {
+        return None;
+    }
+    if !matches!(creature.motion, CreatureMotionState::Idle) {
+        return None;
+    }
+    let start = creature.current_position;
+    let Some(path_result) = db_creature_random_path_from_center(
+        navigation,
+        geometry,
+        creature,
+        start,
+        start,
+        CMANGOS_CONFUSED_MOVEMENT_RADIUS_YARDS,
+    ) else {
+        creature.next_random_move_at =
+            Some(now + Duration::from_millis(CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS));
+        return None;
+    };
+    let path = path_result.points;
+    let destination = *path.last()?;
+    if distance_2d(start.x, start.y, destination.x, destination.y) <= f32::EPSILON {
+        creature.next_random_move_at =
+            Some(now + Duration::from_millis(CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS));
+        return None;
+    }
+    let run = false;
     let duration = db_creature_random_motion_duration(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
@@ -1158,9 +1217,27 @@ pub(in crate::world) fn db_creature_random_path(
     start: WorldPosition,
     radius: f32,
 ) -> Option<DbCreaturePath> {
+    db_creature_random_path_from_center(
+        navigation,
+        geometry,
+        creature,
+        creature.home_position,
+        start,
+        radius,
+    )
+}
+
+pub(in crate::world) fn db_creature_random_path_from_center(
+    navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
+    creature: &DbCreatureRuntime,
+    center: WorldPosition,
+    start: WorldPosition,
+    radius: f32,
+) -> Option<DbCreaturePath> {
     if db_creature_uses_unit_fixture_pathing(navigation) {
         let raw_destination = db_creature_random_destination(
-            creature.home_position,
+            center,
             radius,
             creature.guid().raw(),
             creature.next_spline_id,
@@ -1175,17 +1252,34 @@ pub(in crate::world) fn db_creature_random_path(
         );
     }
 
-    db_creature_mmap_random_path(navigation, creature, start, radius)
+    db_creature_mmap_random_path_from_center(navigation, creature, center, start, radius)
 }
 
+#[allow(dead_code)]
 pub(in crate::world) fn db_creature_mmap_random_path(
     navigation: &DbCreatureNavigationGuardrail,
     creature: &DbCreatureRuntime,
     start: WorldPosition,
     radius: f32,
 ) -> Option<DbCreaturePath> {
+    db_creature_mmap_random_path_from_center(
+        navigation,
+        creature,
+        creature.home_position,
+        start,
+        radius,
+    )
+}
+
+pub(in crate::world) fn db_creature_mmap_random_path_from_center(
+    navigation: &DbCreatureNavigationGuardrail,
+    creature: &DbCreatureRuntime,
+    center: WorldPosition,
+    start: WorldPosition,
+    radius: f32,
+) -> Option<DbCreaturePath> {
     let data_dir = navigation.world_data_files.data_dir_for_native.as_ref()?;
-    if start.map_id != creature.home_position.map_id || radius <= 0.0 || !radius.is_finite() {
+    if start.map_id != center.map_id || radius <= 0.0 || !radius.is_finite() {
         return None;
     }
     let start_tile = mmap_tile_for_position(start)?;
@@ -1203,7 +1297,7 @@ pub(in crate::world) fn db_creature_mmap_random_path(
         let native_path = native_mmap_find_random_path(
             data_dir,
             NativeMmapRandomPathRequest {
-                center: creature.home_position,
+                center,
                 start,
                 start_tile,
                 radius,
@@ -1807,6 +1901,13 @@ pub(in crate::world) fn db_creature_random_pause_millis(guid: u64, spline_id: u3
     let span = DB_CREATURE_RANDOM_DELAY_MAX_MILLIS - DB_CREATURE_RANDOM_DELAY_MIN_MILLIS;
     DB_CREATURE_RANDOM_DELAY_MIN_MILLIS
         + (db_creature_pseudo_random_unit(guid, spline_id, 2) * span as f32) as u64
+}
+
+pub(in crate::world) fn db_creature_confused_pause_millis(guid: u64, spline_id: u32) -> u64 {
+    let span =
+        CMANGOS_CONFUSED_MOVEMENT_DELAY_MAX_MILLIS - CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS;
+    CMANGOS_CONFUSED_MOVEMENT_DELAY_MIN_MILLIS
+        + (db_creature_pseudo_random_unit(guid, spline_id, 3) * span as f32) as u64
 }
 
 pub(in crate::world) fn db_creature_pseudo_random_unit(

@@ -247,7 +247,7 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
         )
         .await;
     }
-    if active_aura_has_stun(&active.creature.active_auras) {
+    if active_aura_has_hard_control(&active.creature.active_auras) {
         defer_ready_db_creature_swing_retry(shared_world, map_id, session, attacker, player, now)
             .await;
         return Ok(());
@@ -447,6 +447,25 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
         )
         .await?;
         if !opening_cancelled {
+            if let Some(channel_event) = shared_world
+                .maps
+                .interrupt_active_player_channel_for_damage(map_id, character_snapshot.guid, now)
+                .await?
+            {
+                shared_world
+                    .sessions
+                    .dispatch(channel_event.observer_packets)
+                    .await;
+                for packet in channel_event.direct_packets {
+                    send_packet(
+                        stream,
+                        packet.opcode,
+                        &packet.body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                }
+            }
             if let Some(delay_millis) = shared_world
                 .maps
                 .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
@@ -1621,6 +1640,11 @@ pub(in crate::world) fn db_creature_unit_flags(
         | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
         | (if active_aura_has_stun(&creature.active_auras) {
             UNIT_FLAG_STUNNED
+        } else {
+            0
+        })
+        | (if active_aura_has_confuse(&creature.active_auras) {
+            UNIT_FLAG_CONFUSED
         } else {
             0
         })

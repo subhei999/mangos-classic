@@ -58,7 +58,24 @@ impl MapRuntime {
         let Some(player) = self.players.get(&character_guid) else {
             return Vec::new();
         };
-        let position = player.position;
+        self.nearby_attackable_db_creature_guids_for_player_spell_at_position(
+            faction_templates,
+            character_guid,
+            player.position,
+            radius,
+        )
+    }
+
+    pub(in crate::world) fn nearby_attackable_db_creature_guids_for_player_spell_at_position(
+        &self,
+        faction_templates: &FactionTemplateStore,
+        character_guid: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) -> Vec<ObjectGuid> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Vec::new();
+        };
         let mut raw_creatures = HashSet::new();
         self.visit_nearby_cells(position, radius, |cell| {
             raw_creatures.extend(cell.creatures.iter().copied());

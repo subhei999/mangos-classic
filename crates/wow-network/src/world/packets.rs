@@ -23,7 +23,7 @@ use wow_proto::{
     UseItemRequest, WorldAuthSessionRequest, WorldOpcode,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum ParsedWorldClientPacket {
     AuthSession(WorldAuthSessionRequest),
     Ping(PingRequest),

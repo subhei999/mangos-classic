@@ -12,9 +12,24 @@ pub(in crate::world) enum SpellTargetResolution {
 pub(in crate::world) fn normalize_spell_cast_targets(
     mut targets: SpellCastTargets,
     spell_profile: &SpellCastProfile,
+    spell_info: &SpellInfo<'_>,
     caster: ObjectGuid,
 ) -> SpellCastTargets {
-    if spell_profile.aura_target == SpellAuraTarget::CasterAreaEnemy {
+    let target_kind = spell_info.unit_target_kind(spell_profile.kind);
+    if matches!(
+        target_kind,
+        SpellTargetKind::Caster | SpellTargetKind::Destination
+    ) && matches!(
+        spell_profile.aura_target,
+        SpellAuraTarget::CasterAreaEnemy | SpellAuraTarget::DestinationAreaEnemy
+    ) {
+        targets.target_mask &= !(SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY);
+        targets.unit_target = None;
+        targets.gameobject_target = None;
+        return targets;
+    }
+
+    if target_kind == SpellTargetKind::Destination {
         targets.target_mask &= !(SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY);
         targets.unit_target = None;
         targets.gameobject_target = None;
@@ -29,6 +44,7 @@ pub(in crate::world) fn normalize_spell_cast_targets(
             SpellCastKind::AuraApplication | SpellCastKind::CreateItem | SpellCastKind::DirectHeal
         )
         && spell_profile.aura_target == SpellAuraTarget::Caster
+        && target_kind == SpellTargetKind::Caster
     {
         targets.unit_target = Some(caster);
     }

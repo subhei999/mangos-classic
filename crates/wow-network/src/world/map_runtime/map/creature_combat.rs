@@ -702,6 +702,7 @@ impl MapRuntime {
         creature.triggered_event_ai_scripts.insert(ready.script_id);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) fn prepare_db_creature_spell_cast_from_template(
         &self,
         caster: ObjectGuid,
@@ -1064,6 +1065,8 @@ impl MapRuntime {
             target_mask: SPELL_CAST_TARGET_UNIT,
             unit_target: Some(cast.target),
             gameobject_target: None,
+            source_location: None,
+            destination: None,
         };
         let start_body =
             build_spell_start_body(cast.caster, cast.spell_id, cast.cast_time_millis, &targets)?;
@@ -1191,6 +1194,8 @@ impl MapRuntime {
             target_mask: SPELL_CAST_TARGET_UNIT,
             unit_target: Some(cast.target),
             gameobject_target: None,
+            source_location: None,
+            destination: None,
         };
         let pending_aura = cast.aura.clone();
         let (effect, spell_go_body) = match cast.effect {
@@ -1663,11 +1668,12 @@ impl MapRuntime {
                 Vec::new(),
             )
         } else {
-            let Some(applied) = self.apply_player_world_damage(
+            let Some(applied) = self.apply_player_world_damage_with_school_mask(
                 victim,
                 Some(attacker),
                 damage,
                 WorldDamageKind::SpellDirect,
+                u32::from(school).max(SPELL_SCHOOL_MASK_NORMAL),
                 now,
             )?
             else {

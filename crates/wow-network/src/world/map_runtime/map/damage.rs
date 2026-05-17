@@ -55,11 +55,37 @@ impl MapRuntime {
         kind: WorldDamageKind,
         now: Instant,
     ) -> anyhow::Result<Option<AppliedPlayerWorldDamage>> {
+        self.apply_player_world_damage_with_school_mask(
+            target,
+            source,
+            requested_damage,
+            kind,
+            SPELL_SCHOOL_MASK_NORMAL,
+            now,
+        )
+    }
+
+    pub(in crate::world) fn apply_player_world_damage_with_school_mask(
+        &mut self,
+        target: ObjectGuid,
+        source: Option<ObjectGuid>,
+        requested_damage: u32,
+        kind: WorldDamageKind,
+        school_mask: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<AppliedPlayerWorldDamage>> {
         let Some(player) = self.players.get_mut(&target.counter()) else {
             return Ok(None);
         };
-        let mut applied =
-            apply_player_runtime_world_damage(player, target, source, requested_damage, kind, now)?;
+        let mut applied = apply_player_runtime_world_damage_with_school_mask(
+            player,
+            target,
+            source,
+            requested_damage,
+            kind,
+            school_mask,
+            now,
+        )?;
         if let Some(damage) = applied.as_mut().filter(|damage| damage.died) {
             if damage.death_presentation_deferred {
                 self.pending_player_death_presentations.insert(
@@ -319,6 +345,26 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
     kind: WorldDamageKind,
     now: Instant,
 ) -> anyhow::Result<Option<AppliedPlayerWorldDamage>> {
+    apply_player_runtime_world_damage_with_school_mask(
+        player,
+        target,
+        source,
+        requested_damage,
+        kind,
+        SPELL_SCHOOL_MASK_NORMAL,
+        now,
+    )
+}
+
+pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
+    player: &mut PlayerRuntime,
+    target: ObjectGuid,
+    source: Option<ObjectGuid>,
+    requested_damage: u32,
+    kind: WorldDamageKind,
+    school_mask: u32,
+    now: Instant,
+) -> anyhow::Result<Option<AppliedPlayerWorldDamage>> {
     if requested_damage == 0
         || player.health == 0
         || player.death_state != PlayerDeathState::Alive
@@ -328,8 +374,10 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
         return Ok(None);
     }
 
+    let absorb = absorb_player_runtime_damage(player, requested_damage, school_mask);
+    let requested_damage_after_absorb = requested_damage.saturating_sub(absorb.absorbed);
     let previous_health = player.health;
-    let applied_damage = requested_damage.min(previous_health);
+    let applied_damage = requested_damage_after_absorb.min(previous_health);
     player.health = previous_health.saturating_sub(applied_damage);
     player.environment.last_damage_at = Some(now);
     let died = player.health == 0;
@@ -337,8 +385,19 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
     let direct_session_id = player.client_session_id();
     let death_presentation_deferred = died && player_runtime_is_airborne(player);
     let mut direct_packets = Vec::new();
+    if absorb.mana_spent > 0 {
+        direct_packets.push(OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_mana_update_body(target, player.power1)?,
+        });
+    }
     let aura_packet = if died && !player.active_auras.is_empty() {
         player.active_auras.clear();
+        Some(OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_player_aura_update_body(target, &player.active_auras)?,
+        })
+    } else if absorb.aura_changed {
         Some(OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_player_aura_update_body(target, &player.active_auras)?,
@@ -372,6 +431,7 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
             source = source_guid.as_deref(),
             ?kind,
             requested_damage,
+            absorbed_damage = absorb.absorbed,
             applied_damage,
             old_health = previous_health,
             "MapRuntime finalized player death from world damage"
@@ -413,6 +473,102 @@ pub(in crate::world) fn apply_player_runtime_world_damage(
         aura_packet,
         death_presentation_deferred,
     }))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::world) struct PlayerDamageAbsorb {
+    pub(in crate::world) absorbed: u32,
+    pub(in crate::world) mana_spent: u32,
+    pub(in crate::world) aura_changed: bool,
+}
+
+pub(in crate::world) fn absorb_player_runtime_damage(
+    player: &mut PlayerRuntime,
+    requested_damage: u32,
+    school_mask: u32,
+) -> PlayerDamageAbsorb {
+    let mut remaining_damage = requested_damage;
+    let mut result = PlayerDamageAbsorb::default();
+    for aura in &mut player.active_auras {
+        if remaining_damage == 0 {
+            break;
+        }
+        for modifier in &mut aura.stat_modifiers {
+            let AuraStatModifier::SchoolAbsorb {
+                school_mask: aura_school_mask,
+                amount,
+            } = modifier
+            else {
+                continue;
+            };
+            if *amount <= 0 || (*aura_school_mask & school_mask) == 0 {
+                continue;
+            }
+            let absorbed = remaining_damage.min(*amount as u32);
+            *amount -= absorbed as i32;
+            remaining_damage -= absorbed;
+            result.absorbed = result.absorbed.saturating_add(absorbed);
+            result.aura_changed = true;
+            if remaining_damage == 0 {
+                break;
+            }
+        }
+    }
+
+    for aura in &mut player.active_auras {
+        if remaining_damage == 0 {
+            break;
+        }
+        for modifier in &mut aura.stat_modifiers {
+            let AuraStatModifier::ManaShield {
+                school_mask: aura_school_mask,
+                amount,
+                mana_multiplier_millis,
+            } = modifier
+            else {
+                continue;
+            };
+            if *amount <= 0 || (*aura_school_mask & school_mask) == 0 {
+                continue;
+            }
+            let mut absorbed = remaining_damage.min(*amount as u32);
+            if *mana_multiplier_millis > 0 {
+                let max_absorb = ((u64::from(player.power1) * 1000)
+                    / u64::from(*mana_multiplier_millis))
+                .min(u64::from(u32::MAX)) as u32;
+                absorbed = absorbed.min(max_absorb);
+                let mana_spent = ((u64::from(absorbed) * u64::from(*mana_multiplier_millis)) / 1000)
+                    .min(u64::from(player.power1)) as u32;
+                player.power1 = player.power1.saturating_sub(mana_spent);
+                result.mana_spent = result.mana_spent.saturating_add(mana_spent);
+            }
+            if absorbed == 0 {
+                continue;
+            }
+            *amount -= absorbed as i32;
+            remaining_damage -= absorbed;
+            result.absorbed = result.absorbed.saturating_add(absorbed);
+            result.aura_changed = true;
+            if remaining_damage == 0 {
+                break;
+            }
+        }
+    }
+
+    if result.aura_changed {
+        player.active_auras.retain(|aura| {
+            !aura.stat_modifiers.iter().any(|modifier| {
+                matches!(
+                    modifier,
+                    AuraStatModifier::SchoolAbsorb { amount, .. }
+                        | AuraStatModifier::ManaShield { amount, .. }
+                        if *amount <= 0
+                )
+            })
+        });
+    }
+
+    result
 }
 
 pub(in crate::world) fn player_runtime_is_airborne(player: &PlayerRuntime) -> bool {

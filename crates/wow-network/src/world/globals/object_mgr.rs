@@ -35,6 +35,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
     pub(in crate::world) creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
+    pub(in crate::world) creature_templates:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::CreatureTemplateQuery>>>,
     pub(in crate::world) reference_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     pub(in crate::world) gameobject_loot_templates:
@@ -489,6 +491,21 @@ impl ObjectMgr {
         Ok(rows)
     }
 
+    pub(in crate::world) async fn creature_template(
+        &self,
+        world_db_pool: &MySqlPool,
+        creature_entry: u32,
+    ) -> anyhow::Result<Option<wow_db::CreatureTemplateQuery>> {
+        let mut cache = self.creature_templates.lock().await;
+        if let Some(template) = cache.get(&creature_entry) {
+            return Ok(template.clone());
+        }
+
+        let template = wow_db::get_creature_template_query(world_db_pool, creature_entry).await?;
+        cache.insert(creature_entry, template.clone());
+        Ok(template)
+    }
+
     pub(in crate::world) async fn gameobject_loot_items(
         &self,
         world_db_pool: &MySqlPool,
@@ -785,6 +802,18 @@ impl ObjectMgr {
             .lock()
             .await
             .insert(creature_entry, rows);
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) async fn prime_creature_template_for_test(
+        &self,
+        creature_entry: u32,
+        template: Option<wow_db::CreatureTemplateQuery>,
+    ) {
+        self.creature_templates
+            .lock()
+            .await
+            .insert(creature_entry, template);
     }
 
     #[cfg(test)]

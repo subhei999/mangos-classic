@@ -218,6 +218,73 @@ impl MapRuntimeManager {
         active_cast
     }
 
+    pub(in crate::world) async fn cancel_active_player_channel(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let Some(map) = self.maps.lock().await.get(&(map_id, 0)).cloned() else {
+            return Ok(None);
+        };
+        let mut map = map.lock().await;
+        let event = if let Some(event) = map.cancel_player_channel(character_guid)? {
+            Some(event)
+        } else {
+            map.cancel_player_dynamic_object_channel(character_guid)?
+        };
+        Ok(event)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn start_player_periodic_trigger_channel(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        target: ObjectGuid,
+        duration_millis: u32,
+        tick_millis: u32,
+        damage_effect: PlayerDirectDamageEffect,
+        channel_interrupt_flags: u32,
+        triggered_spell_speed: f32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let event = map.lock().await.start_player_periodic_trigger_channel(
+            caster,
+            caster_character_guid,
+            spell_id,
+            target,
+            duration_millis,
+            tick_millis,
+            channel_interrupt_flags,
+            triggered_spell_speed,
+            damage_effect,
+            now,
+        )?;
+        Ok(event)
+    }
+
+    pub(in crate::world) async fn interrupt_active_player_channel_for_damage(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let Some(map) = self.maps.lock().await.get(&(map_id, 0)).cloned() else {
+            return Ok(None);
+        };
+        let mut map = map.lock().await;
+        let event =
+            if let Some(event) = map.interrupt_player_channel_for_damage(character_guid, now)? {
+                Some(event)
+            } else {
+                map.interrupt_dynamic_object_channel_for_damage(character_guid, now)?
+            };
+        Ok(event)
+    }
+
     pub(in crate::world) async fn cancel_active_player_opening_spell_cast(
         &self,
         map_id: u32,
@@ -1488,6 +1555,27 @@ impl MapRuntimeManager {
         event
     }
 
+    pub(in crate::world) async fn remove_player_auras_by_dispel_type(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        dispel_type: u32,
+        count: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerAuraDispelEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.remove_player_auras_by_dispel_type(
+            character_guid,
+            dispel_type,
+            count,
+            now,
+        );
+        event
+    }
+
     pub(in crate::world) async fn apply_db_creature_aura(
         &self,
         map_id: u32,
@@ -1558,6 +1646,65 @@ impl MapRuntimeManager {
         event
     }
 
+    pub(in crate::world) async fn remove_db_creature_auras_by_dispel_type(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        dispel_type: u32,
+        count: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraDispelEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.remove_db_creature_auras_by_dispel_type(
+            creature_guid,
+            caster_character_guid,
+            dispel_type,
+            count,
+            now,
+        );
+        event
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn create_persistent_area_dynamic_object(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        effect_index: usize,
+        position: WorldPosition,
+        radius: f32,
+        duration_millis: u32,
+        periodic_damage: Option<PeriodicDamageAura>,
+        channeled: bool,
+        channel_interrupt_flags: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<DynamicObjectCreateEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.create_persistent_area_dynamic_object(
+            caster,
+            caster_character_guid,
+            spell_id,
+            effect_index,
+            position,
+            radius,
+            duration_millis,
+            periodic_damage,
+            channeled,
+            channel_interrupt_flags,
+            now,
+        )?;
+        Ok(event)
+    }
+
     pub(in crate::world) async fn nearby_attackable_db_creature_guids_for_player_spell(
         &self,
         map_id: u32,
@@ -1574,6 +1721,29 @@ impl MapRuntimeManager {
             .nearby_attackable_db_creature_guids_for_player_spell(
                 &self.faction_templates,
                 character_guid,
+                radius,
+            );
+        targets
+    }
+
+    pub(in crate::world) async fn nearby_attackable_db_creature_guids_for_player_spell_at_position(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+        radius: f32,
+    ) -> Vec<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let targets = map
+            .lock()
+            .await
+            .nearby_attackable_db_creature_guids_for_player_spell_at_position(
+                &self.faction_templates,
+                character_guid,
+                position,
                 radius,
             );
         targets
@@ -2971,6 +3141,40 @@ impl MapRuntimeManager {
                 map.lock()
                     .await
                     .advance_db_creature_auras(now, now_epoch_secs)?,
+            );
+        }
+        Ok(packets)
+    }
+
+    pub(in crate::world) async fn advance_all_dynamic_objects(
+        &self,
+        now: Instant,
+        now_epoch_secs: u64,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(map.lock().await.advance_dynamic_objects(
+                &self.faction_templates,
+                now,
+                now_epoch_secs,
+            )?);
+        }
+        Ok(packets)
+    }
+
+    pub(in crate::world) async fn advance_all_player_channels(
+        &self,
+        now: Instant,
+        now_epoch_secs: u64,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
+        let mut packets = Vec::new();
+        for map in maps {
+            packets.extend(
+                map.lock()
+                    .await
+                    .advance_player_channels(now, now_epoch_secs)?,
             );
         }
         Ok(packets)

@@ -11,11 +11,16 @@ pub(in crate::world) enum SpellEffectDispatch {
     Heal,
     Energize,
     Teleport,
+    Leap,
     Charge,
     OpenLock,
+    Dispel,
+    DispelMechanic,
+    PersistentAreaAura,
     LearnSpell,
     LearnSkill,
     TriggerSpell,
+    TriggerMissile,
     AddComboPoints,
     Unsupported(u32),
 }
@@ -71,10 +76,15 @@ impl SpellEffectDispatch {
             SPELL_EFFECT_HEAL => Self::Heal,
             SPELL_EFFECT_ENERGIZE => Self::Energize,
             SPELL_EFFECT_TELEPORT_UNITS | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => Self::Teleport,
+            SPELL_EFFECT_LEAP => Self::Leap,
             SPELL_EFFECT_CHARGE => Self::Charge,
+            SPELL_EFFECT_DISPEL => Self::Dispel,
+            SPELL_EFFECT_DISPEL_MECHANIC => Self::DispelMechanic,
+            SPELL_EFFECT_PERSISTENT_AREA_AURA => Self::PersistentAreaAura,
             33 | 59 => Self::OpenLock,
             36 => Self::LearnSpell,
             44 => Self::LearnSkill,
+            SPELL_EFFECT_TRIGGER_MISSILE => Self::TriggerMissile,
             64 => Self::TriggerSpell,
             SPELL_EFFECT_ADD_COMBO_POINTS => Self::AddComboPoints,
             other => Self::Unsupported(other),
@@ -95,7 +105,9 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         | SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL
         | SPELL_EFFECT_CREATE_ITEM
         | SPELL_EFFECT_ENERGIZE
+        | SPELL_EFFECT_LEAP
         | SPELL_EFFECT_WEAPON_PERCENT_DAMAGE
+        | SPELL_EFFECT_TRIGGER_MISSILE
         | 33
         | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER
         | SPELL_EFFECT_WEAPON_DAMAGE
@@ -105,6 +117,8 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         | 64
         | SPELL_EFFECT_ADD_COMBO_POINTS
         | SPELL_EFFECT_CHARGE
+        | SPELL_EFFECT_DISPEL
+        | SPELL_EFFECT_PERSISTENT_AREA_AURA
         | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => SpellMechanicSupport::Implemented,
         4 | 12 | 13 | 14 | 15 | 20 | 21 | 23 | 25 | 26 | 37 | 39 | 48 | 49 | 51 | 52 | 65 | 66
         | 78 | 81 | 91 | 122 | 126 | 127 => SpellMechanicSupport::KnownNoOp,
@@ -118,13 +132,12 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         18 | 94 | 113 | 117 => SpellMechanicSupport::Pending("resurrection"),
         19 => SpellMechanicSupport::Pending("extra attacks"),
         22 => SpellMechanicSupport::Pending("parry state"),
-        27 | 35 | 119 | 128 | 129 => SpellMechanicSupport::Pending("area aura"),
+        35 | 119 | 128 | 129 => SpellMechanicSupport::Pending("area aura"),
         28 | 34 | 41 | 42 | 73 | 76 | 85 | 93 | 97 | 104 | 105 | 106 | 107 | 112 => {
             SpellMechanicSupport::Pending("summon")
         }
-        29 | 70 | 124 => SpellMechanicSupport::Pending("movement displacement"),
-        32 => SpellMechanicSupport::Pending("trigger missile"),
-        38 | 108 => SpellMechanicSupport::Pending("dispel"),
+        70 | 124 => SpellMechanicSupport::Pending("movement displacement"),
+        SPELL_EFFECT_DISPEL_MECHANIC => SpellMechanicSupport::Pending("dispel mechanic"),
         40 => SpellMechanicSupport::Pending("dual wield"),
         44 | 118 => SpellMechanicSupport::Pending("skill modification"),
         45 => SpellMechanicSupport::Pending("honor"),
@@ -175,6 +188,7 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_MOD_STEALTH_DETECT
         | SPELL_AURA_MOD_INVISIBILITY_DETECTION
         | SPELL_AURA_OBS_MOD_HEALTH
+        | SPELL_AURA_PERIODIC_TRIGGER_SPELL
         | SPELL_AURA_MOD_RESISTANCE
         | SPELL_AURA_PERIODIC_ENERGIZE
         | SPELL_AURA_MOD_ROOT
@@ -194,17 +208,23 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_TRACK_CREATURES
         | SPELL_AURA_TRACK_RESOURCES
         | SPELL_AURA_GHOST
-        | SPELL_AURA_WATER_WALK => SpellMechanicSupport::Implemented,
+        | SPELL_AURA_WATER_WALK
+        | SPELL_AURA_MOD_CONFUSE
+        | SPELL_AURA_MOD_FEAR
+        | SPELL_AURA_MOD_PACIFY
+        | SPELL_AURA_MOD_SILENCE
+        | SPELL_AURA_MOD_PACIFY_SILENCE
+        | SPELL_AURA_SCHOOL_ABSORB
+        | SPELL_AURA_MANA_SHIELD
+        | SPELL_AURA_FEATHER_FALL => SpellMechanicSupport::Implemented,
         46 | 48 | 164 => SpellMechanicSupport::KnownNoOp,
-        1 | 76 | 82 | 105 | 106 | 144 => SpellMechanicSupport::Pending("movement/visibility state"),
-        2 | 5 | 6 | 7 | 16 | 18 | 25 | 27 | 36 | 60 | 66 | 67 | 78 | 128 | 176 | 177 => {
+        1 | 76 | 82 | 106 | 144 => SpellMechanicSupport::Pending("movement/visibility state"),
+        2 | 6 | 16 | 18 | 36 | 66 | 67 | 78 | 128 | 176 | 177 => {
             SpellMechanicSupport::Pending("control state")
         }
-        23 | 43 | 107 | 108 | 109 | 111 | 112 => {
-            SpellMechanicSupport::Pending("trigger/script aura")
-        }
+        43 | 107 | 108 | 109 | 111 | 112 => SpellMechanicSupport::Pending("trigger/script aura"),
         9 | 10 | 11 | 14 | 15 | 28 | 32 | 34 | 35 | 47 | 49 | 51 | 52 | 54 | 55 | 57 | 58 | 59
-        | 65 | 69 | 70 | 71 | 72 | 73 | 79 | 80 | 83 | 87 | 88 | 89 | 90 | 91 | 102 | 103 | 110
+        | 65 | 70 | 71 | 72 | 73 | 79 | 80 | 83 | 87 | 88 | 89 | 90 | 91 | 102 | 103 | 110
         | 113 | 114 | 115 | 116 | 117 | 118 | 122 | 123 | 124 | 125 | 126 | 127 | 129 | 130
         | 131 | 132 | 133 | 134 | 135 | 136 | 140 | 141 | 142 | 143 | 147 | 149 | 150 | 152
         | 153 | 154 | 155 | 157 | 158 | 160 | 161 | 163 | 165 | 166 | 167 | 168 | 169 | 171
@@ -216,7 +236,7 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         21 | 53 | 62 | 63 | 64 | 81 | 86 | 96 | 162 => {
             SpellMechanicSupport::Pending("resource shield/funnel")
         }
-        37 | 38 | 39 | 40 | 41 | 77 | 92 | 93 | 94 | 97 | 148 => {
+        37 | 38 | 39 | 40 | 41 | 77 | 92 | 93 | 94 | 148 => {
             SpellMechanicSupport::Pending("immunity/special state")
         }
         50 | 56 | 61 | 74 | 100 => SpellMechanicSupport::Pending("visual/model/client state"),
@@ -291,7 +311,9 @@ pub(in crate::world) fn spell_effect_coverage_name(effect_id: u32) -> &'static s
         SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL => "SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL",
         SPELL_EFFECT_CREATE_ITEM => "SPELL_EFFECT_CREATE_ITEM",
         SPELL_EFFECT_ENERGIZE => "SPELL_EFFECT_ENERGIZE",
+        SPELL_EFFECT_LEAP => "SPELL_EFFECT_LEAP",
         SPELL_EFFECT_WEAPON_PERCENT_DAMAGE => "SPELL_EFFECT_WEAPON_PERCENT_DAMAGE",
+        SPELL_EFFECT_TRIGGER_MISSILE => "SPELL_EFFECT_TRIGGER_MISSILE",
         33 => "SPELL_EFFECT_OPEN_LOCK",
         SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => "SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER",
         SPELL_EFFECT_WEAPON_DAMAGE => "SPELL_EFFECT_WEAPON_DAMAGE",
@@ -300,6 +322,9 @@ pub(in crate::world) fn spell_effect_coverage_name(effect_id: u32) -> &'static s
         64 => "SPELL_EFFECT_TRIGGER_SPELL",
         SPELL_EFFECT_ADD_COMBO_POINTS => "SPELL_EFFECT_ADD_COMBO_POINTS",
         SPELL_EFFECT_CHARGE => "SPELL_EFFECT_CHARGE",
+        SPELL_EFFECT_DISPEL => "SPELL_EFFECT_DISPEL",
+        SPELL_EFFECT_DISPEL_MECHANIC => "SPELL_EFFECT_DISPEL_MECHANIC",
+        SPELL_EFFECT_PERSISTENT_AREA_AURA => "SPELL_EFFECT_PERSISTENT_AREA_AURA",
         SPELL_EFFECT_NORMALIZED_WEAPON_DMG => "SPELL_EFFECT_NORMALIZED_WEAPON_DMG",
         _ if effect_id < CMANGOS_MAX_SPELL_EFFECTS => "CMANGOS_SPELL_EFFECT",
         _ => "UNKNOWN_SPELL_EFFECT",
@@ -312,20 +337,28 @@ pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str
         0 => "SPELL_AURA_NONE",
         SPELL_AURA_PERIODIC_DAMAGE => "SPELL_AURA_PERIODIC_DAMAGE",
         SPELL_AURA_PERIODIC_HEAL => "SPELL_AURA_PERIODIC_HEAL",
+        SPELL_AURA_MOD_CONFUSE => "SPELL_AURA_MOD_CONFUSE",
+        SPELL_AURA_MOD_FEAR => "SPELL_AURA_MOD_FEAR",
         SPELL_AURA_MOD_STUN => "SPELL_AURA_MOD_STUN",
         SPELL_AURA_MOD_DAMAGE_DONE => "SPELL_AURA_MOD_DAMAGE_DONE",
         SPELL_AURA_DUMMY => "SPELL_AURA_DUMMY",
         SPELL_AURA_MOD_STEALTH_DETECT => "SPELL_AURA_MOD_STEALTH_DETECT",
         SPELL_AURA_MOD_INVISIBILITY_DETECTION => "SPELL_AURA_MOD_INVISIBILITY_DETECTION",
         SPELL_AURA_OBS_MOD_HEALTH => "SPELL_AURA_OBS_MOD_HEALTH",
+        SPELL_AURA_PERIODIC_TRIGGER_SPELL => "SPELL_AURA_PERIODIC_TRIGGER_SPELL",
         SPELL_AURA_MOD_RESISTANCE => "SPELL_AURA_MOD_RESISTANCE",
         SPELL_AURA_PERIODIC_ENERGIZE => "SPELL_AURA_PERIODIC_ENERGIZE",
+        SPELL_AURA_MOD_PACIFY => "SPELL_AURA_MOD_PACIFY",
         SPELL_AURA_MOD_ROOT => "SPELL_AURA_MOD_ROOT",
+        SPELL_AURA_MOD_SILENCE => "SPELL_AURA_MOD_SILENCE",
         SPELL_AURA_MOD_STAT => "SPELL_AURA_MOD_STAT",
         SPELL_AURA_MOD_SKILL => "SPELL_AURA_MOD_SKILL",
         SPELL_AURA_MOD_INCREASE_SPEED => "SPELL_AURA_MOD_INCREASE_SPEED",
         SPELL_AURA_MOD_DECREASE_SPEED => "SPELL_AURA_MOD_DECREASE_SPEED",
         SPELL_AURA_PROC_TRIGGER_SPELL => "SPELL_AURA_PROC_TRIGGER_SPELL",
+        SPELL_AURA_MOD_PACIFY_SILENCE => "SPELL_AURA_MOD_PACIFY_SILENCE",
+        SPELL_AURA_SCHOOL_ABSORB => "SPELL_AURA_SCHOOL_ABSORB",
+        SPELL_AURA_MANA_SHIELD => "SPELL_AURA_MANA_SHIELD",
         SPELL_AURA_MOD_RESISTANCE_PCT => "SPELL_AURA_MOD_RESISTANCE_PCT",
         SPELL_AURA_MOD_REGEN => "SPELL_AURA_MOD_REGEN",
         SPELL_AURA_MOD_POWER_REGEN => "SPELL_AURA_MOD_POWER_REGEN",
@@ -338,6 +371,7 @@ pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str
         SPELL_AURA_TRACK_RESOURCES => "SPELL_AURA_TRACK_RESOURCES",
         SPELL_AURA_GHOST => "SPELL_AURA_GHOST",
         SPELL_AURA_WATER_WALK => "SPELL_AURA_WATER_WALK",
+        SPELL_AURA_FEATHER_FALL => "SPELL_AURA_FEATHER_FALL",
         _ if aura_type < CMANGOS_TOTAL_AURAS => "CMANGOS_SPELL_AURA",
         _ => "UNKNOWN_SPELL_AURA",
     }
@@ -366,7 +400,17 @@ pub(in crate::world) async fn apply_player_spell_effects(
     let mut create_item_applied = false;
     let mut weapon_damage_applied = false;
     let mut landed_damage = false;
+    let mut direct_damage_processed = false;
+    let mut deferred_hostile_aura = false;
     let mut learned_spells = HashSet::new();
+    let spell_has_hostile_direct_damage = spell_info.effects.iter().any(|effect| {
+        matches!(
+            effect.dispatch,
+            SpellEffectDispatch::SchoolDamage
+                | SpellEffectDispatch::WeaponDamage
+                | SpellEffectDispatch::WeaponPercentDamage
+        ) && spell_info_effect_targets_hostile(*effect)
+    });
     let combo_points_for_effects = spell_combo_points_for_effects(
         deps.shared_world,
         caster,
@@ -383,7 +427,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
         combo_points_for_effects,
     );
 
-    for effect in spell_info.effects {
+    for (effect_index, effect) in spell_info.effects.into_iter().enumerate() {
         match effect.dispatch {
             SpellEffectDispatch::Empty => {}
             SpellEffectDispatch::Charge
@@ -425,6 +469,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                         header_crypto,
                     )
                     .await?;
+                    direct_damage_processed = true;
                 }
             }
             SpellEffectDispatch::WeaponDamage | SpellEffectDispatch::WeaponPercentDamage
@@ -444,6 +489,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     header_crypto,
                 )
                 .await?;
+                direct_damage_processed = true;
                 weapon_damage_applied = true;
             }
             SpellEffectDispatch::AddComboPoints if landed_damage => {
@@ -506,11 +552,63 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 create_item_applied = true;
             }
+            SpellEffectDispatch::Leap | SpellEffectDispatch::Teleport
+                if spell_profile.kind == SpellCastKind::Teleport =>
+            {
+                apply_player_near_teleport_effect(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    map_id,
+                    spell_template,
+                    effect,
+                    targets,
+                    header_crypto,
+                )
+                .await?;
+            }
+            SpellEffectDispatch::ApplyAura
+                if effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
+                    && (spell_template.attributes_ex
+                        & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
+                        != 0 =>
+            {
+                apply_player_periodic_trigger_channel_effect(
+                    stream,
+                    deps,
+                    caster,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    spell_template,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+                aura_applied = true;
+            }
             SpellEffectDispatch::ApplyAura
                 if matches!(
                     spell_profile.kind,
                     SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
-                ) && !aura_applied =>
+                ) && !aura_applied
+                    && {
+                        if spell_has_hostile_direct_damage
+                            && spell_info_effect_targets_hostile(effect)
+                            && !landed_damage
+                        {
+                            if !direct_damage_processed {
+                                deferred_hostile_aura = true;
+                            }
+                            false
+                        } else {
+                            true
+                        }
+                    } =>
             {
                 apply_player_spell_aura(
                     stream,
@@ -530,6 +628,25 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
                 aura_applied = true;
             }
+            SpellEffectDispatch::PersistentAreaAura => {
+                apply_player_persistent_area_aura_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    spell_template,
+                    effect_index,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
             SpellEffectDispatch::TriggerSpell if effect.trigger_spell != 0 => {
                 apply_player_trigger_spell_effect(
                     stream,
@@ -546,18 +663,42 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 )
                 .await?;
             }
-            SpellEffectDispatch::LearnSpell if effect.trigger_spell != 0 => {
-                if learned_spells.insert(effect.trigger_spell) {
-                    apply_player_learn_spell_effect(
-                        stream,
-                        deps,
-                        session,
-                        character_guid,
-                        effect.trigger_spell,
-                        header_crypto,
-                    )
-                    .await?;
-                }
+            SpellEffectDispatch::Dispel => {
+                apply_player_dispel_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    spell_template.id,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
+            SpellEffectDispatch::DispelMechanic => {
+                warn!(
+                    spell_id = spell_template.id,
+                    mechanic = effect.misc_value,
+                    "Skipping SPELL_EFFECT_DISPEL_MECHANIC until aura mechanic ownership is represented"
+                );
+            }
+            SpellEffectDispatch::LearnSpell
+                if effect.trigger_spell != 0 && learned_spells.insert(effect.trigger_spell) =>
+            {
+                apply_player_learn_spell_effect(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    effect.trigger_spell,
+                    header_crypto,
+                )
+                .await?;
             }
             SpellEffectDispatch::Unsupported(effect_id) => {
                 let support = spell_effect_support(effect_id);
@@ -573,6 +714,25 @@ pub(in crate::world) async fn apply_player_spell_effects(
         }
     }
 
+    if deferred_hostile_aura && landed_damage && !aura_applied {
+        apply_player_spell_aura(
+            stream,
+            deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            spell_template,
+            spell_profile,
+            targets,
+            effect_value_context,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
+
     if spell_profile.needs_combo_points && landed_damage {
         clear_player_combo_points_after_finisher(
             stream,
@@ -586,6 +746,21 @@ pub(in crate::world) async fn apply_player_spell_effects(
     }
 
     Ok(())
+}
+
+fn spell_info_effect_targets_hostile(effect: SpellInfoEffect) -> bool {
+    [effect.implicit_target_a, effect.implicit_target_b]
+        .into_iter()
+        .any(|target| {
+            matches!(
+                target,
+                TARGET_UNIT_ENEMY
+                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC
+                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC
+                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC
+                    | TARGET_LOCATION_CASTER_SRC
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -853,6 +1028,7 @@ pub(in crate::world) struct PlayerDirectDamageEffect {
     pub(in crate::world) uses_weapon_outcome: bool,
     pub(in crate::world) suppress_attacker_state: bool,
     pub(in crate::world) caster_centered_hostile_area: bool,
+    pub(in crate::world) destination_hostile_area: bool,
     pub(in crate::world) radius_index: u32,
 }
 
@@ -879,6 +1055,7 @@ pub(in crate::world) fn player_direct_damage_effect(
         uses_weapon_outcome: false,
         suppress_attacker_state: effect.dispatch == SpellEffectDispatch::SchoolDamage,
         caster_centered_hostile_area: effect_targets_caster_centered_hostile_area(effect),
+        destination_hostile_area: effect_targets_destination_hostile_area(effect),
         radius_index: effect.radius_index,
     })
 }
@@ -898,6 +1075,7 @@ pub(in crate::world) fn player_weapon_damage_effect(
         uses_weapon_outcome: true,
         suppress_attacker_state: true,
         caster_centered_hostile_area: false,
+        destination_hostile_area: false,
         radius_index: 0,
     }
 }
@@ -1001,6 +1179,64 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
                 target_mask: SPELL_CAST_TARGET_UNIT,
                 unit_target: Some(target),
                 gameobject_target: None,
+                source_location: None,
+                destination: None,
+            };
+            landed |= apply_db_creature_spell_damage(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                damage_effect,
+                &area_targets,
+                header_crypto,
+            )
+            .await?;
+        }
+        return Ok(landed);
+    }
+    if damage_effect.destination_hostile_area {
+        let Some(radius) = deps
+            .shared_world
+            .maps
+            .spell_radius(damage_effect.radius_index)
+            .map(|entry| entry.radius)
+            .filter(|radius| *radius > 0.0)
+        else {
+            warn!(
+                spell_id = damage_effect.spell_id,
+                radius_index = damage_effect.radius_index,
+                "Skipping destination AoE damage with missing SpellRadius.dbc row"
+            );
+            return Ok(false);
+        };
+        let Some(destination) = spell_target_destination_position(map_id, targets) else {
+            warn!(
+                spell_id = damage_effect.spell_id,
+                "Skipping destination AoE damage with missing target destination"
+            );
+            return Ok(false);
+        };
+        let targets = deps
+            .shared_world
+            .maps
+            .nearby_attackable_db_creature_guids_for_player_spell_at_position(
+                map_id,
+                character_guid,
+                destination,
+                radius,
+            )
+            .await;
+        let mut landed = false;
+        for target in targets {
+            let area_targets = SpellCastTargets {
+                target_mask: SPELL_CAST_TARGET_UNIT,
+                unit_target: Some(target),
+                gameobject_target: None,
+                source_location: None,
+                destination: None,
             };
             landed |= apply_db_creature_spell_damage(
                 stream,
@@ -1031,6 +1267,20 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
     .await
 }
 
+pub(in crate::world) fn spell_target_destination_position(
+    map_id: u32,
+    targets: &SpellCastTargets,
+) -> Option<WorldPosition> {
+    let destination = targets.destination?;
+    Some(WorldPosition::new(
+        map_id,
+        destination.x,
+        destination.y,
+        destination.z,
+        0.0,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_direct_energize_effect(
     stream: &mut WorldPacketSink,
@@ -1047,46 +1297,188 @@ pub(in crate::world) async fn apply_player_direct_energize_effect(
     if energize == 0 {
         return Ok(());
     }
-    match spell_info.template.power_type {
-        POWER_TYPE_RAGE => {
-            let old_rage = session.character.player_rage;
-            session.character.player_rage = session
-                .character
-                .player_rage
-                .saturating_add(energize)
-                .min(POWER_RAGE_DEFAULT);
-            let amount = session.character.player_rage.saturating_sub(old_rage);
-            if amount == 0 {
-                return Ok(());
-            }
-            deps.shared_world
-                .maps
-                .set_player_power2(map_id, character_guid, session.character.player_rage)
-                .await;
+    if spell_info.template.power_type == POWER_TYPE_RAGE {
+        let old_rage = session.character.player_rage;
+        session.character.player_rage = session
+            .character
+            .player_rage
+            .saturating_add(energize)
+            .min(POWER_RAGE_DEFAULT);
+        let amount = session.character.player_rage.saturating_sub(old_rage);
+        if amount == 0 {
+            return Ok(());
+        }
+        deps.shared_world
+            .maps
+            .set_player_power2(map_id, character_guid, session.character.player_rage)
+            .await;
+        send_packet(
+            stream,
+            SMSG_SPELLENERGIZELOG,
+            &build_spell_energize_log_body(
+                caster,
+                caster,
+                spell_info.template.id,
+                POWER_TYPE_RAGE,
+                amount,
+            )?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &build_player_rage_update_body(caster, session.character.player_rage)?,
+            Some(header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_dispel_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_id: u32,
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Ok(dispel_type) = u32::try_from(effect.misc_value) else {
+        return Ok(());
+    };
+    if dispel_type == 0 {
+        return Ok(());
+    }
+    let count = spell_effect_calculated_u32(effect, value_context)
+        .unwrap_or(1)
+        .max(1);
+    let target = targets.unit_target.unwrap_or(caster);
+    if target.is_player() {
+        let target_character_guid = target.counter();
+        if target_character_guid == character_guid {
+            remove_session_auras_by_dispel_type(
+                &mut session.auras.active_auras,
+                dispel_type,
+                count,
+            );
+        }
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .remove_player_auras_by_dispel_type(
+                map_id,
+                target_character_guid,
+                dispel_type,
+                count,
+                now,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        send_packet(
+            stream,
+            SMSG_SPELLDISPELLOG,
+            &build_spell_dispel_log_body(target, caster, &event.removed_spell_ids)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_or_dispatch_player_aura_event(
+            stream,
+            deps.shared_world,
+            character_guid,
+            target_character_guid,
+            event.aura_update,
+            header_crypto,
+        )
+        .await?;
+    } else if target.is_creature() {
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .remove_db_creature_auras_by_dispel_type(
+                map_id,
+                target,
+                character_guid,
+                dispel_type,
+                count,
+                now,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        send_packet(
+            stream,
+            SMSG_SPELLDISPELLOG,
+            &build_spell_dispel_log_body(target, caster, &event.removed_spell_ids)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        send_packet(
+            stream,
+            SMSG_UPDATE_OBJECT,
+            &event.aura_update.update_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        for packet in event.aura_update.direct_packets {
             send_packet(
                 stream,
-                SMSG_SPELLENERGIZELOG,
-                &build_spell_energize_log_body(
-                    caster,
-                    caster,
-                    spell_info.template.id,
-                    POWER_TYPE_RAGE,
-                    amount,
-                )?,
+                packet.opcode,
+                &packet.body,
                 Some(&mut *header_crypto),
             )
             .await?;
-            send_packet(
-                stream,
-                SMSG_UPDATE_OBJECT,
-                &build_player_rage_update_body(caster, session.character.player_rage)?,
-                Some(header_crypto),
-            )
-            .await?;
         }
-        _ => {}
+        deps.shared_world
+            .sessions
+            .dispatch(event.aura_update.observer_packets)
+            .await;
     }
+    debug!(spell_id, dispel_type, count, "Applied player dispel effect");
     Ok(())
+}
+
+pub(in crate::world) fn remove_session_auras_by_dispel_type(
+    active_auras: &mut Vec<ActiveAura>,
+    dispel_type: u32,
+    count: u32,
+) -> Vec<u32> {
+    let mut remaining = count.max(1) as usize;
+    let mut removed = Vec::new();
+    active_auras.retain(|aura| {
+        if remaining == 0 || !active_aura_matches_dispel_type(aura, dispel_type) {
+            return true;
+        }
+        removed.push(aura.spell_id);
+        remaining -= 1;
+        false
+    });
+    removed
+}
+
+pub(in crate::world) fn build_spell_dispel_log_body(
+    target: ObjectGuid,
+    caster: ObjectGuid,
+    removed_spell_ids: &[u32],
+) -> anyhow::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(8 + 8 + 4 + removed_spell_ids.len() * 4);
+    body.extend_from_slice(&target.raw().to_le_bytes());
+    body.extend_from_slice(&caster.raw().to_le_bytes());
+    body.extend_from_slice(&(removed_spell_ids.len() as u32).to_le_bytes());
+    for spell_id in removed_spell_ids {
+        body.extend_from_slice(&spell_id.to_le_bytes());
+    }
+    Ok(body)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1722,7 +2114,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let aura = build_active_aura(
+    let mut aura = build_active_aura(
         spell_template,
         caster,
         character_level,
@@ -1732,6 +2124,13 @@ pub(in crate::world) async fn apply_player_spell_aura(
             .maps
             .spell_duration(spell_template.duration_index),
     );
+    resolve_active_aura_transform_displays(
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        &mut aura,
+    )
+    .await?;
+    let suppress_hostile_refs = active_aura_suppresses_hostile_refs(&aura);
     match spell_profile.aura_target {
         SpellAuraTarget::Caster => {
             let resolution = aura_rank_conflict_resolution(
@@ -1888,16 +2287,18 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             .dispatch(event.observer_packets)
                             .await;
                     }
-                    begin_db_creature_retaliation_if_needed(
-                        stream,
-                        deps.shared_world,
-                        map_id,
-                        session,
-                        target,
-                        caster,
-                        header_crypto,
-                    )
-                    .await?;
+                    if !suppress_hostile_refs {
+                        begin_db_creature_retaliation_if_needed(
+                            stream,
+                            deps.shared_world,
+                            map_id,
+                            session,
+                            target,
+                            caster,
+                            header_crypto,
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -1980,16 +2381,119 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         .dispatch(event.observer_packets)
                         .await;
                 }
-                begin_db_creature_retaliation_if_needed(
-                    stream,
-                    deps.shared_world,
+                if !suppress_hostile_refs {
+                    begin_db_creature_retaliation_if_needed(
+                        stream,
+                        deps.shared_world,
+                        map_id,
+                        session,
+                        target,
+                        caster,
+                        header_crypto,
+                    )
+                    .await?;
+                }
+            }
+        }
+        SpellAuraTarget::DestinationAreaEnemy => {
+            let spell_info = SpellInfo::from_template(spell_template);
+            let Some(effect) = spell_info.effects.into_iter().find(|effect| {
+                effect.dispatch == SpellEffectDispatch::ApplyAura
+                    && effect_targets_destination_hostile_area(*effect)
+            }) else {
+                return Ok(());
+            };
+            let Some(radius) = spell_effect_radius_yards(deps.shared_world.maps, effect) else {
+                warn!(
+                    spell_id = spell_template.id,
+                    radius_index = effect.radius_index,
+                    "Skipping destination AoE aura with missing SpellRadius.dbc row"
+                );
+                return Ok(());
+            };
+            let Some(destination) = spell_target_destination_position(map_id, targets) else {
+                warn!(
+                    spell_id = spell_template.id,
+                    "Skipping destination AoE aura with missing target destination"
+                );
+                return Ok(());
+            };
+            let targets = deps
+                .shared_world
+                .maps
+                .nearby_attackable_db_creature_guids_for_player_spell_at_position(
                     map_id,
-                    session,
-                    target,
+                    character_guid,
+                    destination,
+                    radius,
+                )
+                .await;
+            for target in targets {
+                let Some(target_creature) = deps
+                    .shared_world
+                    .maps
+                    .db_creature_snapshot(map_id, target)
+                    .await
+                else {
+                    continue;
+                };
+                let resolution = aura_rank_conflict_resolution(
+                    deps.shared_world.object_mgr,
+                    deps.world_db_pool,
+                    spell_template.id,
                     caster,
-                    header_crypto,
+                    &target_creature.active_auras,
                 )
                 .await?;
+                if resolution.failure.is_some() {
+                    continue;
+                }
+                if let Some(event) = deps
+                    .shared_world
+                    .maps
+                    .apply_db_creature_aura_replacing_conflicts(
+                        map_id,
+                        target,
+                        character_guid,
+                        aura.clone(),
+                        &resolution,
+                        now,
+                    )
+                    .await?
+                {
+                    send_packet(
+                        stream,
+                        SMSG_UPDATE_OBJECT,
+                        &event.update_body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                    for packet in event.direct_packets {
+                        send_packet(
+                            stream,
+                            packet.opcode,
+                            &packet.body,
+                            Some(&mut *header_crypto),
+                        )
+                        .await?;
+                    }
+                    deps.shared_world
+                        .sessions
+                        .dispatch(event.observer_packets)
+                        .await;
+                }
+                if !suppress_hostile_refs {
+                    begin_db_creature_retaliation_if_needed(
+                        stream,
+                        deps.shared_world,
+                        map_id,
+                        session,
+                        target,
+                        caster,
+                        header_crypto,
+                    )
+                    .await?;
+                }
             }
         }
     }
@@ -2027,6 +2531,250 @@ pub(in crate::world) fn spell_direct_energize(
         .filter(|effect| effect.dispatch == SpellEffectDispatch::Energize)
         .filter_map(|effect| spell_effect_calculated_u32(effect, value_context))
         .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    _session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect_index: usize,
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(destination) = spell_target_destination_position(map_id, targets) else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping persistent area aura with missing target destination"
+        );
+        return Ok(());
+    };
+    let Some(radius) = spell_effect_radius_yards(deps.shared_world.maps, effect) else {
+        warn!(
+            spell_id = spell_template.id,
+            radius_index = effect.radius_index,
+            "Skipping persistent area aura with missing SpellRadius.dbc row"
+        );
+        return Ok(());
+    };
+    let Some(duration) = deps
+        .shared_world
+        .maps
+        .spell_duration(spell_template.duration_index)
+        .map(|duration| duration.duration_millis)
+        .filter(|duration| *duration > 0)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index = spell_template.duration_index,
+            "Skipping persistent area aura with missing positive SpellDuration.dbc row"
+        );
+        return Ok(());
+    };
+    let periodic_damage = persistent_area_periodic_damage(
+        spell_template,
+        effect,
+        character_level,
+        value_context,
+        now,
+    );
+    let channeled = (spell_template.attributes_ex
+        & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
+        != 0;
+    let Some(event) = deps
+        .shared_world
+        .maps
+        .create_persistent_area_dynamic_object(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            effect_index,
+            destination,
+            radius,
+            duration as u32,
+            periodic_damage,
+            channeled,
+            spell_template.channel_interrupt_flags,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    deps.shared_world
+        .sessions
+        .dispatch(event.observer_packets)
+        .await;
+    Ok(())
+}
+
+pub(in crate::world) fn persistent_area_periodic_damage(
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    caster_level: u8,
+    value_context: SpellEffectValueContext,
+    now: Instant,
+) -> Option<PeriodicDamageAura> {
+    if effect.aura_name != SPELL_AURA_PERIODIC_DAMAGE || effect.amplitude == 0 {
+        return None;
+    }
+    let damage = spell_effect_calculated_u32(effect, value_context)?;
+    Some(PeriodicDamageAura {
+        aura_name: effect.aura_name,
+        school: spell_template.school,
+        damage_class: spell_template.dmg_class,
+        attributes_ex2: spell_template.attributes_ex2,
+        attributes_ex3: spell_template.attributes_ex3,
+        caster_snapshot: spell_periodic_damage_fallback_caster_snapshot(caster_level),
+        amount: damage,
+        tick_millis: effect.amplitude,
+        next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    _value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping periodic trigger channel with missing unit target"
+        );
+        return Ok(());
+    };
+    if effect.trigger_spell == 0 || effect.amplitude == 0 {
+        warn!(
+            spell_id = spell_template.id,
+            effect_trigger_spell = effect.trigger_spell,
+            effect_amplitude = effect.amplitude,
+            "Skipping periodic trigger channel with incomplete trigger data"
+        );
+        return Ok(());
+    }
+    let Some(duration) = deps
+        .shared_world
+        .maps
+        .spell_duration(spell_template.duration_index)
+        .map(|duration| duration.duration_millis)
+        .filter(|duration| *duration > 0)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index = spell_template.duration_index,
+            "Skipping periodic trigger channel with missing positive SpellDuration.dbc row"
+        );
+        return Ok(());
+    };
+    let Some(triggered_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, effect.trigger_spell)
+        .await?
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel with missing triggered spell_template row"
+        );
+        return Ok(());
+    };
+    let triggered_info = SpellInfo::from_template(&triggered_template);
+    let Some(triggered_profile) = triggered_info.player_cast_profile() else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel with unsupported triggered spell shape"
+        );
+        return Ok(());
+    };
+    let triggered_value_context = SpellEffectValueContext::with_spell_rank_level(
+        &triggered_template,
+        character_level as i32,
+        0,
+    );
+    let Some(damage_effect) = triggered_info
+        .effects
+        .into_iter()
+        .find_map(|triggered_effect| {
+            player_direct_damage_effect(
+                &triggered_template,
+                &triggered_profile,
+                triggered_effect,
+                triggered_value_context,
+            )
+        })
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel whose triggered spell has no direct damage effect"
+        );
+        return Ok(());
+    };
+    let Some(event) = deps
+        .shared_world
+        .maps
+        .start_player_periodic_trigger_channel(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            target,
+            duration as u32,
+            effect.amplitude,
+            damage_effect,
+            spell_template.channel_interrupt_flags,
+            triggered_template.speed,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    deps.shared_world
+        .sessions
+        .dispatch(event.observer_packets)
+        .await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2279,6 +3027,128 @@ pub(in crate::world) async fn apply_item_aura_effect(
         deps.shared_world.sessions.dispatch(observer_packets).await;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_near_teleport_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    targets: &SpellCastTargets,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(destination) = spell_target_destination_position(map_id, targets).or_else(|| {
+        player_near_teleport_forward_destination(
+            deps.shared_world.maps,
+            session,
+            spell_template,
+            effect,
+            map_id,
+        )
+    }) else {
+        warn!(
+            character_guid,
+            "Skipping near teleport spell with missing destination"
+        );
+        return Ok(());
+    };
+    let position = {
+        let Some(character) = session.character.active_character.as_mut() else {
+            return Ok(());
+        };
+        character.position = WorldPosition::new(
+            destination.map_id,
+            destination.x,
+            destination.y,
+            destination.z,
+            character.position.orientation,
+        );
+        character.movement_flags = 0;
+        character.fall_time = 0;
+        character.position
+    };
+    let old_map_id = map_id;
+    deps.shared_world
+        .maps
+        .set_player_position(old_map_id, character_guid, position)
+        .await;
+    deps.shared_world
+        .maps
+        .reset_player_visibility_scan_positions(old_map_id, character_guid)
+        .await;
+    deps.shared_world
+        .maps
+        .sync_player_gameplay_state(old_map_id, character_guid, session)
+        .await;
+    wow_db::update_character_position(
+        deps.character_db_pool,
+        deps.account_id,
+        character_guid,
+        position,
+    )
+    .await?;
+    send_packet(
+        stream,
+        MSG_MOVE_TELEPORT_ACK,
+        &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    stream_newly_visible_db_creatures(
+        stream,
+        deps.character_db_pool,
+        deps.world_db_pool,
+        deps.shared_world.maps,
+        session,
+        header_crypto,
+    )
+    .await?;
+    Ok(())
+}
+
+pub(in crate::world) fn player_near_teleport_forward_destination(
+    maps: &MapRuntimeManager,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    map_id: u32,
+) -> Option<WorldPosition> {
+    if effect.dispatch != SpellEffectDispatch::Leap {
+        return None;
+    }
+    if effect.implicit_target_a != TARGET_LOCATION_CASTER_FRONT_LEAP
+        && effect.implicit_target_b != TARGET_LOCATION_CASTER_FRONT_LEAP
+    {
+        return None;
+    }
+    let character = session.character.active_character.as_ref()?;
+    let distance = maps
+        .spell_radius(effect.radius_index)
+        .map(|radius| radius.radius)
+        .or_else(|| {
+            maps.spell_range(spell_template.range_index)
+                .map(|range| range.max_range)
+        })?;
+    if distance <= 0.0 || !distance.is_finite() {
+        return None;
+    }
+    let orientation = character.position.orientation;
+    let destination = WorldPosition::new(
+        map_id,
+        character.position.x + orientation.cos() * distance,
+        character.position.y + orientation.sin() * distance,
+        character.position.z,
+        orientation,
+    );
+    Some(
+        maps.geometry
+            .ground_position(destination)
+            .unwrap_or(destination),
+    )
 }
 
 pub(in crate::world) async fn apply_item_teleport_spell_effect(

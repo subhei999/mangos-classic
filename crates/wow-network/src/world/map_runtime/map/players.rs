@@ -1536,6 +1536,47 @@ impl MapRuntime {
         changed
     }
 
+    pub(in crate::world) fn remove_player_auras_by_dispel_type(
+        &mut self,
+        character_guid: u32,
+        dispel_type: u32,
+        count: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerAuraDispelEvent>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
+        let remove_count = count.max(1) as usize;
+        let mut removed_spell_ids = Vec::new();
+        let mut remaining = remove_count;
+        let was_rooted = active_aura_has_root(&player.active_auras);
+        player.active_auras.retain(|aura| {
+            if remaining == 0 || !active_aura_matches_dispel_type(aura, dispel_type) {
+                return true;
+            }
+            removed_spell_ids.push(aura.spell_id);
+            remaining -= 1;
+            false
+        });
+        if removed_spell_ids.is_empty() {
+            return Ok(None);
+        }
+        let is_rooted = active_aura_has_root(&player.active_auras);
+        refresh_player_runtime_stats_from_auras(player);
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+        let mut aura_update = self.build_player_aura_update_event(character_guid, now)?;
+        if let Some(packet) =
+            build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+        {
+            aura_update.direct_packets.push(packet);
+        }
+        Ok(Some(PlayerAuraDispelEvent {
+            removed_spell_ids,
+            aura_update,
+        }))
+    }
+
     pub(in crate::world) fn apply_player_aura(
         &mut self,
         character_guid: u32,
@@ -1650,15 +1691,22 @@ impl MapRuntime {
                 if tick.dealt_damage == 0 {
                     continue;
                 }
-                pending_damage_ticks.push((aura.caster, aura.spell_id, periodic.aura_name, tick));
+                pending_damage_ticks.push((
+                    aura.caster,
+                    aura.spell_id,
+                    periodic.aura_name,
+                    periodic.school,
+                    tick,
+                ));
             }
             let _ = player;
-            for (caster, spell_id, aura_name, tick) in pending_damage_ticks {
-                let Some(applied) = self.apply_player_world_damage(
+            for (caster, spell_id, aura_name, school, tick) in pending_damage_ticks {
+                let Some(applied) = self.apply_player_world_damage_with_school_mask(
                     player_guid,
                     Some(caster),
                     tick.dealt_damage,
                     WorldDamageKind::PeriodicAura,
+                    school.max(SPELL_SCHOOL_MASK_NORMAL),
                     now,
                 )?
                 else {

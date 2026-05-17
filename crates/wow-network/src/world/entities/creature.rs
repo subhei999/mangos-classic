@@ -59,6 +59,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) event_ai_cooldowns_until: HashMap<i32, Instant>,
     pub(in crate::world) native_display: CreatureDisplaySelection,
     pub(in crate::world) display_id_override: Option<u32>,
+    pub(in crate::world) aura_display_id_override: Option<u32>,
     pub(in crate::world) pending_movement_scripts: Vec<u32>,
 }
 
@@ -150,7 +151,9 @@ pub(in crate::world) fn build_db_creature_runtime_create_block_for_player(
         },
         &creature.active_auras,
         creature.native_display,
-        creature.display_id_override,
+        creature
+            .aura_display_id_override
+            .or(creature.display_id_override),
         creature.power1,
     )
 }
@@ -223,7 +226,9 @@ pub(in crate::world) fn write_db_creature_update_values(
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
-    let display_id = display_id_override.unwrap_or(native_display.display_id);
+    let display_id = active_aura_transform_display_id(active_auras)
+        .or(display_id_override)
+        .unwrap_or(native_display.display_id);
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_update_value(&mut values, 0x000, guid.raw() as u32)?;
     set_update_value(&mut values, 0x001, (guid.raw() >> 32) as u32)?;

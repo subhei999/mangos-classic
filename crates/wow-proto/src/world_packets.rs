@@ -903,15 +903,26 @@ impl TextEmoteRequest {
 }
 
 pub const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
+pub const SPELL_CAST_TARGET_SOURCE_LOCATION: u16 = 0x0020;
+pub const SPELL_CAST_TARGET_DEST_LOCATION: u16 = 0x0040;
 pub const SPELL_CAST_TARGET_UNIT_ENEMY: u16 = 0x0080;
 pub const SPELL_CAST_TARGET_GAMEOBJECT: u16 = 0x0800;
 pub const SPELL_CAST_TARGET_LOCKED: u16 = 0x4000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpellTargetLocation {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpellCastTargets {
     pub target_mask: u16,
     pub unit_target: Option<ObjectGuid>,
     pub gameobject_target: Option<ObjectGuid>,
+    pub source_location: Option<SpellTargetLocation>,
+    pub destination: Option<SpellTargetLocation>,
 }
 
 impl SpellCastTargets {
@@ -920,6 +931,8 @@ impl SpellCastTargets {
             target_mask: 0,
             unit_target: None,
             gameobject_target: None,
+            source_location: None,
+            destination: None,
         }
     }
 
@@ -938,10 +951,32 @@ impl SpellCastTargets {
             } else {
                 None
             };
+        let source_location = if target_mask & SPELL_CAST_TARGET_SOURCE_LOCATION != 0 {
+            ensure_remaining(buf, 12, "SpellCastTargets source location")?;
+            Some(SpellTargetLocation {
+                x: buf.get_f32_le(),
+                y: buf.get_f32_le(),
+                z: buf.get_f32_le(),
+            })
+        } else {
+            None
+        };
+        let destination = if target_mask & SPELL_CAST_TARGET_DEST_LOCATION != 0 {
+            ensure_remaining(buf, 12, "SpellCastTargets destination")?;
+            Some(SpellTargetLocation {
+                x: buf.get_f32_le(),
+                y: buf.get_f32_le(),
+                z: buf.get_f32_le(),
+            })
+        } else {
+            None
+        };
         Ok(Self {
             target_mask,
             unit_target,
             gameobject_target,
+            source_location,
+            destination,
         })
     }
 
@@ -954,6 +989,26 @@ impl SpellCastTargets {
         if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
             write_packed_guid(buf, self.gameobject_target.unwrap_or(ObjectGuid::EMPTY))?;
         }
+        if target_mask & SPELL_CAST_TARGET_SOURCE_LOCATION != 0 {
+            let location = self.source_location.unwrap_or(SpellTargetLocation {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            buf.put_f32_le(location.x);
+            buf.put_f32_le(location.y);
+            buf.put_f32_le(location.z);
+        }
+        if target_mask & SPELL_CAST_TARGET_DEST_LOCATION != 0 {
+            let location = self.destination.unwrap_or(SpellTargetLocation {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            buf.put_f32_le(location.x);
+            buf.put_f32_le(location.y);
+            buf.put_f32_le(location.z);
+        }
         Ok(())
     }
 }
@@ -964,7 +1019,7 @@ impl Default for SpellCastTargets {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CastSpellRequest {
     pub spell_id: u32,
     pub targets: SpellCastTargets,
@@ -985,7 +1040,7 @@ impl CastSpellRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UseItemRequest {
     pub bag: u8,
     pub slot: u8,
@@ -2222,6 +2277,26 @@ fn write_spell_cast_targets_body(buf: &mut impl BufMut, targets: &SpellCastTarge
     if target_mask & (SPELL_CAST_TARGET_GAMEOBJECT | SPELL_CAST_TARGET_LOCKED) != 0 {
         put_packed_guid(buf, targets.gameobject_target.unwrap_or(ObjectGuid::EMPTY));
     }
+    if target_mask & SPELL_CAST_TARGET_SOURCE_LOCATION != 0 {
+        let location = targets.source_location.unwrap_or(SpellTargetLocation {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        buf.put_f32_le(location.x);
+        buf.put_f32_le(location.y);
+        buf.put_f32_le(location.z);
+    }
+    if target_mask & SPELL_CAST_TARGET_DEST_LOCATION != 0 {
+        let location = targets.destination.unwrap_or(SpellTargetLocation {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        buf.put_f32_le(location.x);
+        buf.put_f32_le(location.y);
+        buf.put_f32_le(location.z);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2496,7 +2571,7 @@ pub struct SpellAmmoVisual {
     pub inventory_type: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmsgSpellGoResponse {
     pub source: ObjectGuid,
     pub caster: ObjectGuid,
@@ -2542,7 +2617,7 @@ impl ServerWorldPacket for SmsgSpellGoResponse {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmsgSpellStartResponse {
     pub source: ObjectGuid,
     pub caster: ObjectGuid,
@@ -4632,6 +4707,8 @@ mod tests {
             target_mask: SPELL_CAST_TARGET_UNIT,
             unit_target: Some(target),
             gameobject_target: None,
+            source_location: None,
+            destination: None,
         };
         let go = SmsgSpellGoResponse {
             source: caster,

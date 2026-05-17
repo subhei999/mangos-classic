@@ -100,7 +100,7 @@ pub(in crate::world) async fn handle_cast_spell(
         deps.shared_world.maps,
         map_id,
         character_guid,
-        normalize_spell_cast_targets(packet.targets, &spell_profile, caster),
+        normalize_spell_cast_targets(packet.targets, &spell_profile, &spell_info, caster),
         &spell_info,
         spell_profile.kind,
     )
@@ -684,6 +684,8 @@ impl PendingSpellCastTargets {
             target_mask: targets.target_mask,
             unit_target: targets.unit_target,
             gameobject_target: targets.gameobject_target,
+            source_location: targets.source_location,
+            destination: targets.destination,
         }
     }
 
@@ -692,6 +694,8 @@ impl PendingSpellCastTargets {
             target_mask: self.target_mask,
             unit_target: self.unit_target,
             gameobject_target: self.gameobject_target,
+            source_location: self.source_location,
+            destination: self.destination,
         }
     }
 }
@@ -1274,7 +1278,23 @@ pub(in crate::world) async fn cancel_pending_player_spell_cast(
         .cancel_active_player_spell_cast(map_id, character_guid)
         .await
     else {
-        return Ok(false);
+        let Some(channel_event) = maps
+            .cancel_active_player_channel(map_id, character_guid)
+            .await?
+        else {
+            return Ok(false);
+        };
+        for packet in channel_event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        sessions.dispatch(channel_event.observer_packets).await;
+        return Ok(true);
     };
     maps.clear_player_spell_recovery(map_id, character_guid, &active_cast.profile)
         .await;
@@ -1957,6 +1977,7 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
             spell_profile.kind,
             SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
         )
+        || spell_has_direct_damage_application(spell_template)
     {
         return Ok(None);
     }
@@ -2016,7 +2037,7 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
             .await?;
             Ok(resolution.failure)
         }
-        SpellAuraTarget::CasterAreaEnemy => Ok(None),
+        SpellAuraTarget::CasterAreaEnemy | SpellAuraTarget::DestinationAreaEnemy => Ok(None),
     }
 }
 
@@ -2081,7 +2102,7 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
 ) -> Option<u8> {
     let target_kind = SpellInfo::from_template(spell_template).unit_target_kind(spell_profile.kind);
     if target_kind.requires_unit_target() && targets.unit_target.is_none() {
-        return Some(SPELL_FAILED_OUT_OF_RANGE);
+        return Some(SPELL_FAILED_BAD_IMPLICIT_TARGETS);
     }
     if target_kind == SpellTargetKind::FriendlyUnit {
         let character = session.character.active_character.as_ref()?;
@@ -2110,7 +2131,7 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
     let character = session.character.active_character.as_ref()?;
     let target = targets.unit_target?;
     if !target.is_creature() {
-        return Some(SPELL_FAILED_OUT_OF_RANGE);
+        return Some(SPELL_FAILED_BAD_TARGETS);
     }
     let range = if spell_template.range_index == 0 {
         None
@@ -2292,6 +2313,7 @@ pub(in crate::world) enum SpellAuraTarget {
     Caster,
     UnitTarget,
     CasterAreaEnemy,
+    DestinationAreaEnemy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2300,6 +2322,7 @@ pub(in crate::world) enum SpellTargetKind {
     Unit,
     HostileUnit,
     FriendlyUnit,
+    Destination,
 }
 
 impl SpellTargetKind {
@@ -2323,11 +2346,16 @@ pub(in crate::world) const SPELL_ATTR_USES_RANGED_SLOT: u32 = 0x0000_0002;
 pub(in crate::world) const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
+pub(in crate::world) const SPELL_ATTR_EX_IS_CHANNELED: u32 = 0x0000_0004;
+pub(in crate::world) const SPELL_ATTR_EX_IS_SELF_CHANNELED: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
 pub(in crate::world) const SPELL_EFFECT_SCHOOL_DAMAGE: u32 = 2;
+pub(in crate::world) const SPELL_EFFECT_PERSISTENT_AREA_AURA: u32 = 27;
+pub(in crate::world) const SPELL_EFFECT_TRIGGER_MISSILE: u32 = 32;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL: u32 = 17;
 pub(in crate::world) const SPELL_EFFECT_CREATE_ITEM: u32 = 24;
+pub(in crate::world) const SPELL_EFFECT_LEAP: u32 = 29;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_PERCENT_DAMAGE: u32 = 31;
 pub(in crate::world) const SPELL_EFFECT_WEAPON_DAMAGE: u32 = 58;
 pub(in crate::world) const SPELL_EFFECT_ADD_COMBO_POINTS: u32 = 80;
@@ -2335,6 +2363,8 @@ pub(in crate::world) const SPELL_EFFECT_NORMALIZED_WEAPON_DMG: u32 = 121;
 pub(in crate::world) const SPELL_EFFECT_APPLY_AURA: u32 = 6;
 pub(in crate::world) const SPELL_EFFECT_TELEPORT_UNITS: u32 = 5;
 pub(in crate::world) const SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER: u32 = 43;
+pub(in crate::world) const SPELL_EFFECT_DISPEL: u32 = 38;
+pub(in crate::world) const SPELL_EFFECT_DISPEL_MECHANIC: u32 = 108;
 pub(in crate::world) const SPELL_EFFECT_HEAL: u32 = 10;
 pub(in crate::world) const SPELL_EFFECT_ENERGIZE: u32 = 30;
 pub(in crate::world) const SPELL_EFFECT_CHARGE: u32 = 96;
@@ -2343,19 +2373,27 @@ pub(in crate::world) const SPELL_EFFECT_STUCK: u32 = 84;
 pub(in crate::world) const SPELL_EFFECT_SKIN_PLAYER_CORPSE: u32 = 116;
 pub(in crate::world) const SPELL_AURA_PERIODIC_DAMAGE: u32 = 3;
 pub(in crate::world) const SPELL_AURA_DUMMY: u32 = 4;
+pub(in crate::world) const SPELL_AURA_MOD_CONFUSE: u32 = 5;
+pub(in crate::world) const SPELL_AURA_MOD_FEAR: u32 = 7;
 pub(in crate::world) const SPELL_AURA_PERIODIC_HEAL: u32 = 8;
 pub(in crate::world) const SPELL_AURA_MOD_STUN: u32 = 12;
 pub(in crate::world) const SPELL_AURA_MOD_DAMAGE_DONE: u32 = 13;
 pub(in crate::world) const SPELL_AURA_MOD_STEALTH_DETECT: u32 = 17;
 pub(in crate::world) const SPELL_AURA_MOD_INVISIBILITY_DETECTION: u32 = 19;
 pub(in crate::world) const SPELL_AURA_OBS_MOD_HEALTH: u32 = 20;
+pub(in crate::world) const SPELL_AURA_PERIODIC_TRIGGER_SPELL: u32 = 23;
 pub(in crate::world) const SPELL_AURA_PERIODIC_ENERGIZE: u32 = 24;
+pub(in crate::world) const SPELL_AURA_MOD_PACIFY: u32 = 25;
 pub(in crate::world) const SPELL_AURA_MOD_ROOT: u32 = 26;
+pub(in crate::world) const SPELL_AURA_MOD_SILENCE: u32 = 27;
 pub(in crate::world) const SPELL_AURA_MOD_STAT: u32 = 29;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE: u32 = 22;
 pub(in crate::world) const SPELL_AURA_MOD_INCREASE_SPEED: u32 = 31;
 pub(in crate::world) const SPELL_AURA_MOD_DECREASE_SPEED: u32 = 33;
 pub(in crate::world) const SPELL_AURA_PROC_TRIGGER_SPELL: u32 = 42;
+pub(in crate::world) const SPELL_AURA_MOD_PACIFY_SILENCE: u32 = 60;
+pub(in crate::world) const SPELL_AURA_SCHOOL_ABSORB: u32 = 69;
+pub(in crate::world) const SPELL_AURA_MANA_SHIELD: u32 = 97;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE_PCT: u32 = 101;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL: u32 = 30;
@@ -2367,10 +2405,13 @@ pub(in crate::world) const SPELL_AURA_MOD_MELEE_HASTE: u32 = 138;
 pub(in crate::world) const SPELL_AURA_MOD_REPUTATION_GAIN: u32 = 156;
 pub(in crate::world) const SPELL_AURA_TRACK_CREATURES: u32 = 44;
 pub(in crate::world) const SPELL_AURA_TRACK_RESOURCES: u32 = 45;
+pub(in crate::world) const SPELL_AURA_TRANSFORM: u32 = 56;
 pub(in crate::world) const SPELL_AURA_GHOST: u32 = 95;
 pub(in crate::world) const SPELL_AURA_WATER_WALK: u32 = 104;
+pub(in crate::world) const SPELL_AURA_FEATHER_FALL: u32 = 105;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
+pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION: u32 = 0x0000_4000;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_STANDING_CANCELS: u32 = 0x0004_0000;
 pub(in crate::world) const PLAYER_STAND_STATE_STAND: u8 = 0;
 pub(in crate::world) const PLAYER_STAND_STATE_SIT: u8 = 1;
@@ -2380,16 +2421,21 @@ pub(in crate::world) const PLAYER_STAND_STATE_KNEEL: u8 = 8;
 pub(in crate::world) const POWER_TYPE_MANA: u32 = 0;
 pub(in crate::world) const POWER_TYPE_RAGE: u32 = 1;
 pub(in crate::world) const POWER_TYPE_ENERGY: u32 = 3;
+pub(in crate::world) const DISPEL_ALL: u32 = 7;
 pub(in crate::world) const POSITIVE_AURA_FLAGS: u32 = 0x05;
 pub(in crate::world) const NEGATIVE_AURA_FLAGS: u32 = 0x08;
 pub(in crate::world) const TARGET_UNIT_CASTER: u32 = 1;
 pub(in crate::world) const TARGET_UNIT_ENEMY: u32 = 6;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC: u32 = 15;
+pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC: u32 = 16;
 pub(in crate::world) const TARGET_LOCATION_CASTER_SRC: u32 = 22;
+pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC: u32 = 28;
 pub(in crate::world) const TARGET_UNIT_FRIEND: u32 = 21;
 pub(in crate::world) const TARGET_UNIT: u32 = 25;
 pub(in crate::world) const TARGET_UNIT_PARTY: u32 = 35;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE: u32 = 36;
+pub(in crate::world) const TARGET_LOCATION_CASTER_TARGET_POSITION: u32 = 53;
+pub(in crate::world) const TARGET_LOCATION_CASTER_FRONT_LEAP: u32 = 55;
 pub(in crate::world) const TARGET_UNIT_FRIEND_AND_PARTY: u32 = 37;
 pub(in crate::world) const TARGET_UNIT_FRIEND_CHAIN_HEAL: u32 = 45;
 pub(in crate::world) const TARGET_UNIT_RAID: u32 = 57;
@@ -2409,6 +2455,7 @@ pub(in crate::world) const SPELL_RANGE_FLAG_MELEE: u32 = 0x1;
 pub(in crate::world) const SPELL_RANGE_FLAG_RANGED: u32 = 0x2;
 pub(in crate::world) const SPELL_CAST_ARC_RADIANS: f32 = std::f32::consts::PI;
 pub(in crate::world) const BASE_CHARGE_SPEED: f32 = 27.0;
+pub(in crate::world) const SPELL_SCHOOL_MASK_NORMAL: u32 = 0x01;
 pub(in crate::world) const MAX_AURA_SLOTS: usize = 48;
 pub(in crate::world) const MAX_POSITIVE_AURA_SLOTS: usize = 32;
 pub(in crate::world) const MAX_AURA_FLAG_FIELDS: usize = 6;
@@ -2463,6 +2510,22 @@ pub(in crate::world) fn spell_has_aura_application(template: &wow_db::SpellTempl
         .effects
         .iter()
         .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
+}
+
+pub(in crate::world) fn spell_has_direct_damage_application(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    SpellInfo::from_template(template)
+        .effects
+        .iter()
+        .any(|effect| {
+            matches!(
+                effect.dispatch,
+                SpellEffectDispatch::SchoolDamage
+                    | SpellEffectDispatch::WeaponDamage
+                    | SpellEffectDispatch::WeaponPercentDamage
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2837,6 +2900,7 @@ pub(in crate::world) fn build_active_aura(
         spell_id: template.id,
         caster,
         level,
+        interrupt_flags: template.aura_interrupt_flags,
         positive: active_aura_is_positive(&spell_info),
         visible: true,
         duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
@@ -2849,11 +2913,43 @@ pub(in crate::world) fn build_active_aura(
     }
 }
 
+pub(in crate::world) async fn resolve_active_aura_transform_displays(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    aura: &mut ActiveAura,
+) -> anyhow::Result<()> {
+    for modifier in &mut aura.stat_modifiers {
+        let AuraStatModifier::Transform {
+            display_id,
+            creature_entry,
+        } = modifier
+        else {
+            continue;
+        };
+        if *creature_entry == 0 {
+            continue;
+        }
+        let Some(template) = object_mgr
+            .creature_template(world_db_pool, *creature_entry)
+            .await?
+        else {
+            warn!(
+                spell_id = aura.spell_id,
+                creature_entry, "Transform aura references missing creature_template entry"
+            );
+            continue;
+        };
+        *display_id = choose_creature_display(&template).display_id;
+    }
+    Ok(())
+}
+
 pub(in crate::world) fn active_aura_is_positive(spell_info: &SpellInfo<'_>) -> bool {
     !spell_info.effects.iter().any(|effect| {
         effect.dispatch == SpellEffectDispatch::ApplyAura
             && (effect_targets_direct_hostile_unit(*effect)
                 || effect_targets_caster_centered_hostile_area(*effect)
+                || effect_targets_destination_hostile_area(*effect)
                 || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE)
     })
 }
@@ -3045,7 +3141,7 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_DAMAGE_DONE => Some(AuraStatModifier::DamageDone {
-                school_mask: u32::try_from(effect.misc_value).ok()?,
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_INCREASE_SPEED => Some(AuraStatModifier::MoveSpeedPercent {
@@ -3058,15 +3154,37 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_RESISTANCE => Some(AuraStatModifier::Resistance {
-                school_mask: u32::try_from(effect.misc_value).ok()?,
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_RESISTANCE_PCT => Some(AuraStatModifier::ResistancePercent {
-                school_mask: u32::try_from(effect.misc_value).ok()?,
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_ROOT => Some(AuraStatModifier::Root),
             SPELL_AURA_MOD_STUN => Some(AuraStatModifier::Stun),
+            SPELL_AURA_MOD_CONFUSE => Some(AuraStatModifier::Confuse),
+            SPELL_AURA_MOD_FEAR => Some(AuraStatModifier::Fear),
+            SPELL_AURA_TRANSFORM => {
+                let display_id = spell_effect_calculated_u32(effect, value_context).unwrap_or(0);
+                Some(AuraStatModifier::Transform {
+                    display_id,
+                    creature_entry: u32::try_from(effect.misc_value).unwrap_or(0),
+                })
+            }
+            SPELL_AURA_MOD_PACIFY => Some(AuraStatModifier::Pacify),
+            SPELL_AURA_MOD_SILENCE => Some(AuraStatModifier::Silence),
+            SPELL_AURA_MOD_PACIFY_SILENCE => Some(AuraStatModifier::PacifySilence),
+            SPELL_AURA_FEATHER_FALL => Some(AuraStatModifier::FeatherFall),
+            SPELL_AURA_SCHOOL_ABSORB => Some(AuraStatModifier::SchoolAbsorb {
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MANA_SHIELD => Some(AuraStatModifier::ManaShield {
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
+                amount: spell_effect_calculated_i32(effect, value_context),
+                mana_multiplier_millis: (effect.multiple_value.max(0.0) * 1000.0).round() as u32,
+            }),
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
@@ -3107,7 +3225,20 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             }),
             _ => None,
         })
+        .chain(
+            (spell_info.template.dispel > 0).then_some(AuraStatModifier::DispelType {
+                dispel_type: spell_info.template.dispel,
+            }),
+        )
         .collect()
+}
+
+pub(in crate::world) fn spell_school_mask_from_misc_value(misc_value: i32) -> u32 {
+    if misc_value < 0 {
+        u32::MAX
+    } else {
+        misc_value as u32
+    }
 }
 
 pub(in crate::world) fn active_aura_skill_bonus(active_auras: &[ActiveAura], skill_id: u16) -> i16 {
@@ -3193,8 +3324,84 @@ pub(in crate::world) fn active_aura_has_stun(active_auras: &[ActiveAura]) -> boo
         .any(|modifier| *modifier == AuraStatModifier::Stun)
 }
 
+pub(in crate::world) fn active_aura_has_confuse(active_auras: &[ActiveAura]) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(|modifier| *modifier == AuraStatModifier::Confuse)
+}
+
+pub(in crate::world) fn active_aura_has_hard_control(active_auras: &[ActiveAura]) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(|modifier| {
+            matches!(
+                modifier,
+                AuraStatModifier::Stun
+                    | AuraStatModifier::Confuse
+                    | AuraStatModifier::Fear
+                    | AuraStatModifier::Pacify
+                    | AuraStatModifier::PacifySilence
+            )
+        })
+}
+
+pub(in crate::world) fn active_aura_dispel_type(active_aura: &ActiveAura) -> Option<u32> {
+    active_aura
+        .stat_modifiers
+        .iter()
+        .find_map(|modifier| match modifier {
+            AuraStatModifier::DispelType { dispel_type } => Some(*dispel_type),
+            _ => None,
+        })
+}
+
+pub(in crate::world) fn active_aura_matches_dispel_type(
+    active_aura: &ActiveAura,
+    dispel_type: u32,
+) -> bool {
+    active_aura_dispel_type(active_aura).is_some_and(|aura_dispel_type| {
+        dispel_type == DISPEL_ALL || aura_dispel_type == dispel_type
+    })
+}
+
 pub(in crate::world) fn active_aura_blocks_movement(active_auras: &[ActiveAura]) -> bool {
     active_aura_has_root(active_auras) || active_aura_has_stun(active_auras)
+}
+
+pub(in crate::world) fn active_aura_transform_display_id(
+    active_auras: &[ActiveAura],
+) -> Option<u32> {
+    active_auras.iter().rev().find_map(|aura| {
+        aura.stat_modifiers
+            .iter()
+            .find_map(|modifier| match modifier {
+                AuraStatModifier::Transform { display_id, .. } if *display_id != 0 => {
+                    Some(*display_id)
+                }
+                _ => None,
+            })
+    })
+}
+
+pub(in crate::world) fn active_aura_breaks_on_damage(active_aura: &ActiveAura) -> bool {
+    active_aura.interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE != 0
+        && active_aura.stat_modifiers.iter().any(|modifier| {
+            matches!(
+                modifier,
+                AuraStatModifier::Confuse
+                    | AuraStatModifier::Stun
+                    | AuraStatModifier::Transform { .. }
+            )
+        })
+}
+
+pub(in crate::world) fn active_aura_suppresses_hostile_refs(active_aura: &ActiveAura) -> bool {
+    active_aura
+        .stat_modifiers
+        .iter()
+        .any(|modifier| matches!(modifier, AuraStatModifier::Confuse | AuraStatModifier::Fear))
 }
 
 pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
@@ -3495,13 +3702,14 @@ pub(in crate::world) fn expire_session_auras(session: &mut WorldSessionState, no
 }
 
 pub(in crate::world) fn active_aura_interrupt_flags(aura: &ActiveAura) -> u32 {
-    if aura.periodic_regen.is_some() {
+    let derived = if aura.periodic_regen.is_some() {
         AURA_INTERRUPT_FLAG_DAMAGE
             | AURA_INTERRUPT_FLAG_MOVING
             | AURA_INTERRUPT_FLAG_STANDING_CANCELS
     } else {
         0
-    }
+    };
+    aura.interrupt_flags | derived
 }
 
 pub(in crate::world) fn remove_active_auras_with_interrupt_flag(

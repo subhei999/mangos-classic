@@ -61,6 +61,7 @@ impl DbCreatureRuntime {
             event_ai_cooldowns_until: HashMap::new(),
             native_display,
             display_id_override: None,
+            aura_display_id_override: None,
             pending_movement_scripts: Vec::new(),
         }
     }
@@ -452,6 +453,7 @@ impl DbCreatureRuntime {
         self.loot_method = None;
         self.native_display = choose_creature_display(&self.spawn.template);
         self.display_id_override = None;
+        self.aura_display_id_override = None;
         self.current_position = self.home_position;
         self.motion = CreatureMotionState::Idle;
         self.next_random_move_at = None;
@@ -479,6 +481,7 @@ impl DbCreatureRuntime {
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
+        self.aura_display_id_override = None;
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.respawn_at = None;

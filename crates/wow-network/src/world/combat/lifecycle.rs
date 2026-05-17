@@ -856,6 +856,8 @@ pub(in crate::world) async fn send_db_creature_swing(
             target_mask: SPELL_CAST_TARGET_UNIT,
             unit_target: Some(target),
             gameobject_target: None,
+            source_location: None,
+            destination: None,
         };
         let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
         send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
@@ -1108,6 +1110,8 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target),
         gameobject_target: None,
+        source_location: None,
+        destination: None,
     };
     let spell_start_body =
         build_spell_start_body_with_ammo(attacker, spell_id, 0, &targets, ammo_visual)?;

@@ -459,7 +459,9 @@ impl MapRuntime {
         if !creature.is_alive() {
             return None;
         }
-        let motion =
+        let motion = if active_aura_has_confuse(&creature.active_auras) {
+            start_db_creature_confused_motion_runtime(navigation, Some(&geometry), creature, now)
+        } else {
             start_db_creature_random_motion_runtime(navigation, Some(&geometry), creature, now)
                 .or_else(|| {
                     start_db_creature_waypoint_motion_runtime(
@@ -468,7 +470,8 @@ impl MapRuntime {
                         creature,
                         now,
                     )
-                });
+                })
+        };
         let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         if motion.is_none() && script_ids.is_empty() {
             return None;

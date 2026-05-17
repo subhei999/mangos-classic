@@ -19,6 +19,7 @@ pub(in crate::world) struct SpellInfoEffect {
     pub(in crate::world) dice_per_level: f32,
     pub(in crate::world) real_points_per_level: f32,
     pub(in crate::world) points_per_combo_point: f32,
+    pub(in crate::world) multiple_value: f32,
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
@@ -35,7 +36,7 @@ pub(in crate::world) struct SpellInfoEffectSlot {
     pub(in crate::world) effect_id: u32,
     pub(in crate::world) aura_name: u32,
     pub(in crate::world) base_points: i32,
-    pub(in crate::world) roll: (i32, u32, f32, f32, f32),
+    pub(in crate::world) roll: (i32, u32, f32, f32, f32, f32),
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
@@ -59,6 +60,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_dice_per_level1,
                     template.effect_real_points_per_level1,
                     template.effect_points_per_combo_point1,
+                    template.effect_multiple_value1,
                 ),
                 amplitude: template.effect_amplitude1,
                 implicit_target_a: template.effect_implicit_target_a1,
@@ -79,6 +81,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_dice_per_level2,
                     template.effect_real_points_per_level2,
                     template.effect_points_per_combo_point2,
+                    template.effect_multiple_value2,
                 ),
                 amplitude: template.effect_amplitude2,
                 implicit_target_a: template.effect_implicit_target_a2,
@@ -99,6 +102,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_dice_per_level3,
                     template.effect_real_points_per_level3,
                     template.effect_points_per_combo_point3,
+                    template.effect_multiple_value3,
                 ),
                 amplitude: template.effect_amplitude3,
                 implicit_target_a: template.effect_implicit_target_a3,
@@ -139,14 +143,22 @@ impl<'a> SpellInfo<'a> {
             SpellCastKind::NextMeleeSwing
         } else if self.has_effect(SpellEffectDispatch::Charge) {
             SpellCastKind::Charge
+        } else if self.has_effect(SpellEffectDispatch::Teleport)
+            || self.has_effect(SpellEffectDispatch::Leap)
+        {
+            SpellCastKind::Teleport
         } else if self.has_direct_heal_effect() {
             SpellCastKind::DirectHeal
+        } else if self.has_effect(SpellEffectDispatch::Dispel) {
+            SpellCastKind::AuraApplication
         } else if self.has_effect(SpellEffectDispatch::CreateItem) {
             SpellCastKind::CreateItem
         } else if self.has_effect(SpellEffectDispatch::ApplyAura) {
             SpellCastKind::AuraApplication
         } else if self.has_direct_damage_effect() {
             SpellCastKind::InstantDamage
+        } else if self.has_effect(SpellEffectDispatch::PersistentAreaAura) {
+            SpellCastKind::AuraApplication
         } else {
             return None;
         };
@@ -216,6 +228,17 @@ impl<'a> SpellInfo<'a> {
             .any(|effect| effect.dispatch == dispatch)
     }
 
+    pub(in crate::world) fn has_channeled_periodic_trigger(&self) -> bool {
+        (self.template.attributes_ex
+            & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
+            != 0
+            && self.effects.iter().any(|effect| {
+                effect.dispatch == SpellEffectDispatch::ApplyAura
+                    && effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
+                    && effect.trigger_spell != 0
+            })
+    }
+
     pub(in crate::world) fn has_on_next_swing_attribute(&self) -> bool {
         (self.template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING))
             != 0
@@ -262,13 +285,19 @@ impl<'a> SpellInfo<'a> {
     }
 
     pub(in crate::world) fn aura_target(&self) -> SpellAuraTarget {
-        if let Some(effect) = self
-            .effects
-            .iter()
-            .find(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
-        {
+        if let Some(effect) = self.effects.iter().find(|effect| {
+            matches!(
+                effect.dispatch,
+                SpellEffectDispatch::ApplyAura
+                    | SpellEffectDispatch::PersistentAreaAura
+                    | SpellEffectDispatch::Dispel
+            )
+        }) {
             if effect_targets_caster_centered_hostile_area(*effect) {
                 return SpellAuraTarget::CasterAreaEnemy;
+            }
+            if effect_targets_destination_hostile_area(*effect) {
+                return SpellAuraTarget::DestinationAreaEnemy;
             }
             return match effect.implicit_target_a {
                 TARGET_UNIT_CASTER => SpellAuraTarget::Caster,
@@ -300,15 +329,21 @@ impl<'a> SpellInfo<'a> {
                 }
             }
             SpellCastKind::AuraApplication => {
+                if self.has_channeled_periodic_trigger() {
+                    return SpellTargetKind::HostileUnit;
+                }
                 let aura_target = self.aura_target();
                 if matches!(
                     aura_target,
                     SpellAuraTarget::Caster | SpellAuraTarget::CasterAreaEnemy
                 ) {
                     SpellTargetKind::Caster
+                } else if aura_target == SpellAuraTarget::DestinationAreaEnemy {
+                    SpellTargetKind::Destination
                 } else if self.effects.iter().any(|effect| {
                     effect_targets_direct_hostile_unit(*effect)
                         || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+                        || effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
                 }) {
                     SpellTargetKind::HostileUnit
                 } else if self
@@ -328,8 +363,18 @@ impl<'a> SpellInfo<'a> {
                         SpellEffectDispatch::SchoolDamage
                             | SpellEffectDispatch::WeaponDamage
                             | SpellEffectDispatch::WeaponPercentDamage
+                    ) && effect_targets_destination_hostile_area(*effect)
+                }) {
+                    SpellTargetKind::Destination
+                } else if self.effects.iter().any(|effect| {
+                    matches!(
+                        effect.dispatch,
+                        SpellEffectDispatch::SchoolDamage
+                            | SpellEffectDispatch::WeaponDamage
+                            | SpellEffectDispatch::WeaponPercentDamage
                     ) && (effect.implicit_target_a == TARGET_UNIT_CASTER
-                        || effect_targets_caster_centered_hostile_area(*effect))
+                        || effect_targets_caster_centered_hostile_area(*effect)
+                        || effect_targets_destination_hostile_area(*effect))
                 }) {
                     SpellTargetKind::Caster
                 } else {
@@ -439,6 +484,7 @@ impl SpellInfoEffect {
             dice_per_level: slot.roll.2,
             real_points_per_level: slot.roll.3,
             points_per_combo_point: slot.roll.4,
+            multiple_value: slot.roll.5,
             amplitude: slot.amplitude,
             implicit_target_a: slot.implicit_target_a,
             implicit_target_b: slot.implicit_target_b,
@@ -458,6 +504,12 @@ pub(in crate::world) fn effect_targets_caster_centered_hostile_area(
     is_caster_centered_hostile_area_target(effect.implicit_target_a)
         || is_caster_centered_hostile_area_target(effect.implicit_target_b)
         || effect_targets_caster_source_hostile_area(effect)
+}
+
+pub(in crate::world) fn effect_targets_destination_hostile_area(effect: SpellInfoEffect) -> bool {
+    is_destination_hostile_area_target(effect.implicit_target_a)
+        || is_destination_hostile_area_target(effect.implicit_target_b)
+        || effect_targets_caster_target_position_hostile_area(effect)
 }
 
 pub(in crate::world) fn effect_targets_direct_hostile_unit(effect: SpellInfoEffect) -> bool {
@@ -500,9 +552,28 @@ pub(in crate::world) fn is_caster_centered_hostile_area_target(target: u32) -> b
     )
 }
 
+pub(in crate::world) fn is_destination_hostile_area_target(target: u32) -> bool {
+    matches!(
+        target,
+        TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC | TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC
+    )
+}
+
 fn effect_targets_caster_source_hostile_area(effect: SpellInfoEffect) -> bool {
     effect.radius_index != 0
         && matches!(effect.implicit_target_a, TARGET_LOCATION_CASTER_SRC)
+        && matches!(
+            effect.dispatch,
+            SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::ApplyAura
+        )
+}
+
+fn effect_targets_caster_target_position_hostile_area(effect: SpellInfoEffect) -> bool {
+    effect.radius_index != 0
+        && matches!(
+            effect.implicit_target_a,
+            TARGET_LOCATION_CASTER_TARGET_POSITION
+        )
         && matches!(
             effect.dispatch,
             SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::ApplyAura

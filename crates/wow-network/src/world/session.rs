@@ -409,6 +409,7 @@ pub(in crate::world) struct ActiveAura {
     pub(in crate::world) spell_id: u32,
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) level: u8,
+    pub(in crate::world) interrupt_flags: u32,
     pub(in crate::world) positive: bool,
     pub(in crate::world) visible: bool,
     pub(in crate::world) duration_millis: Option<u32>,
@@ -491,6 +492,28 @@ pub(in crate::world) enum AuraStatModifier {
     },
     Root,
     Stun,
+    Confuse,
+    Fear,
+    Transform {
+        display_id: u32,
+        creature_entry: u32,
+    },
+    Pacify,
+    Silence,
+    PacifySilence,
+    FeatherFall,
+    DispelType {
+        dispel_type: u32,
+    },
+    SchoolAbsorb {
+        school_mask: u32,
+        amount: i32,
+    },
+    ManaShield {
+        school_mask: u32,
+        amount: i32,
+        mana_multiplier_millis: u32,
+    },
     Stat {
         stat: Option<usize>,
         amount: i32,

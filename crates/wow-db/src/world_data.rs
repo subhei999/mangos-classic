@@ -665,6 +665,8 @@ pub struct SpellTemplateQuery {
     pub attributes_ex3: u32,
     pub attributes_serverside: u32,
     pub interrupt_flags: u32,
+    pub aura_interrupt_flags: u32,
+    pub channel_interrupt_flags: u32,
     pub casting_time_index: u32,
     pub range_index: u32,
     pub speed: f32,
@@ -702,6 +704,9 @@ pub struct SpellTemplateQuery {
     pub effect_points_per_combo_point1: f32,
     pub effect_points_per_combo_point2: f32,
     pub effect_points_per_combo_point3: f32,
+    pub effect_multiple_value1: f32,
+    pub effect_multiple_value2: f32,
+    pub effect_multiple_value3: f32,
     pub effect_misc_value1: i32,
     pub effect_misc_value2: i32,
     pub effect_misc_value3: i32,
@@ -957,7 +962,8 @@ pub async fn get_spell_template_query(
                 Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
                 AttributesServerside AS attributes_serverside, \
-                InterruptFlags AS interrupt_flags, \
+                InterruptFlags AS interrupt_flags, AuraInterruptFlags AS aura_interrupt_flags, \
+                ChannelInterruptFlags AS channel_interrupt_flags, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 MaxLevel AS max_level, BaseLevel AS base_level, SpellLevel AS spell_level, \
@@ -979,6 +985,9 @@ pub async fn get_spell_template_query(
                 EffectPointsPerComboPoint1 AS effect_points_per_combo_point1, \
                 EffectPointsPerComboPoint2 AS effect_points_per_combo_point2, \
                 EffectPointsPerComboPoint3 AS effect_points_per_combo_point3, \
+                EffectMultipleValue1 AS effect_multiple_value1, \
+                EffectMultipleValue2 AS effect_multiple_value2, \
+                EffectMultipleValue3 AS effect_multiple_value3, \
                 EffectMiscValue1 AS effect_misc_value1, EffectMiscValue2 AS effect_misc_value2, \
                 EffectMiscValue3 AS effect_misc_value3, \
                 EffectTriggerSpell1 AS effect_trigger_spell1, \

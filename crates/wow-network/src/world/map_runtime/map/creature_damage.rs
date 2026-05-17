@@ -50,7 +50,7 @@ impl MapRuntime {
         resolution: &AuraRankConflictResolution,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreatureAuraUpdateEvent>> {
-        let in_combat = self
+        let mut in_combat = self
             .active_creature_combats
             .contains_key(&creature_guid.raw());
         let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
@@ -63,13 +63,24 @@ impl MapRuntime {
         let old_speeds = creature.move_speeds;
         let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let was_stunned = active_aura_has_stun(&creature.active_auras);
+        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        let old_display_id = db_creature_effective_display_id(creature);
         apply_active_aura_replacing_conflicts(&mut creature.active_auras, aura, resolution);
         let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let is_stunned = active_aura_has_stun(&creature.active_auras);
+        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        if !was_confused && is_confused {
+            self.active_creature_combats.remove(&creature_guid.raw());
+            in_combat = false;
+        }
+        refresh_db_creature_aura_display_override(creature);
+        if !was_confused && is_confused {
+            creature.next_random_move_at = Some(now);
+        }
         let previous_speeds = creature.refresh_move_speeds();
         debug_assert_eq!(old_speeds, previous_speeds);
-        let stop_packet = if !was_movement_blocked
-            && is_movement_blocked
+        let stop_packet = if ((!was_movement_blocked && is_movement_blocked)
+            || (!was_confused && is_confused))
             && !matches!(creature.motion, CreatureMotionState::Idle)
         {
             let stop = stop_db_creature_motion_runtime(creature);
@@ -87,7 +98,35 @@ impl MapRuntime {
         if let Some(packet) = stop_packet {
             direct_packets.push(packet);
         }
-        if was_stunned != is_stunned {
+        if is_confused {
+            if let Some(confused_motion) = start_db_creature_confused_motion_runtime(
+                &DbCreatureNavigationGuardrail::default(),
+                Some(&self.geometry),
+                creature,
+                now,
+            ) {
+                direct_packets.push(OutboundWorldPacket {
+                    opcode: SMSG_MONSTER_MOVE,
+                    body: build_monster_move_path_body_inner(
+                        creature_guid,
+                        confused_motion.start,
+                        &confused_motion.path,
+                        confused_motion.spline_id,
+                        confused_motion.duration.as_millis().max(1) as u32,
+                        None,
+                        confused_motion.run,
+                    )?,
+                });
+            }
+        }
+        let new_display_id = db_creature_effective_display_id(creature);
+        if old_display_id != new_display_id {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
+            });
+        }
+        if was_stunned != is_stunned || was_confused != is_confused {
             direct_packets.push(OutboundWorldPacket {
                 opcode: SMSG_UPDATE_OBJECT,
                 body: build_unit_flags_update_body(
@@ -143,6 +182,123 @@ impl MapRuntime {
         }))
     }
 
+    pub(in crate::world) fn remove_db_creature_auras_by_dispel_type(
+        &mut self,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        dispel_type: u32,
+        count: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraDispelEvent>> {
+        let in_combat = self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw());
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(None);
+        };
+        if !creature.is_alive() {
+            return Ok(None);
+        }
+        let old_attack_duration = creature.base_attack_duration();
+        let old_speeds = creature.move_speeds;
+        let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let was_stunned = active_aura_has_stun(&creature.active_auras);
+        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        let old_display_id = db_creature_effective_display_id(creature);
+        let remove_count = count.max(1) as usize;
+        let mut remaining = remove_count;
+        let mut removed_spell_ids = Vec::new();
+        creature.active_auras.retain(|aura| {
+            if remaining == 0 || !active_aura_matches_dispel_type(aura, dispel_type) {
+                return true;
+            }
+            removed_spell_ids.push(aura.spell_id);
+            remaining -= 1;
+            false
+        });
+        if removed_spell_ids.is_empty() {
+            return Ok(None);
+        }
+        let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let is_stunned = active_aura_has_stun(&creature.active_auras);
+        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        refresh_db_creature_aura_display_override(creature);
+        let previous_speeds = creature.refresh_move_speeds();
+        debug_assert_eq!(old_speeds, previous_speeds);
+        let stop_packet = if was_movement_blocked
+            && !is_movement_blocked
+            && matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            None
+        } else if !was_movement_blocked
+            && is_movement_blocked
+            && !matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            let stop = stop_db_creature_motion_runtime(creature);
+            Some(OutboundWorldPacket {
+                opcode: SMSG_MONSTER_MOVE,
+                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
+            })
+        } else {
+            None
+        };
+        let new_attack_duration = creature.base_attack_duration();
+        let active_auras = creature.active_auras.clone();
+        let mut direct_packets =
+            db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?;
+        if let Some(packet) = stop_packet {
+            direct_packets.push(packet);
+        }
+        let new_display_id = db_creature_effective_display_id(creature);
+        if old_display_id != new_display_id {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
+            });
+        }
+        if was_stunned != is_stunned || was_confused != is_confused {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_unit_flags_update_body(
+                    creature_guid,
+                    db_creature_unit_flags(creature, in_combat),
+                )?,
+            });
+        }
+        let position = creature.current_position;
+        self.adjust_db_creature_attack_timer_for_base_time_change(
+            creature_guid,
+            old_attack_duration,
+            new_attack_duration,
+            now,
+        );
+        let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
+        let aura_update = DbCreatureAuraUpdateEvent {
+            update_body: update_body.clone(),
+            direct_packets: direct_packets.clone(),
+            observer_packets: self
+                .nearby_player_guids(
+                    position,
+                    CREATURE_SPAWN_RADIUS_YARDS,
+                    Some(caster_character_guid),
+                )
+                .into_iter()
+                .filter_map(|player_guid| {
+                    self.players.get(&player_guid).and_then(|player| {
+                        player.packet_to_client(OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: update_body.clone(),
+                        })
+                    })
+                })
+                .collect(),
+        };
+        Ok(Some(DbCreatureAuraDispelEvent {
+            removed_spell_ids,
+            aura_update,
+        }))
+    }
+
     pub(in crate::world) fn adjust_db_creature_attack_timer_for_base_time_change(
         &mut self,
         creature_guid: ObjectGuid,
@@ -172,6 +328,80 @@ impl MapRuntime {
         };
     }
 
+    pub(in crate::world) fn remove_db_creature_damage_interrupt_auras(
+        &mut self,
+        creature_guid: ObjectGuid,
+        now: Instant,
+    ) -> anyhow::Result<Vec<OutboundWorldPacket>> {
+        let in_combat = self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw());
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(Vec::new());
+        };
+        if !creature.is_alive()
+            || !creature
+                .active_auras
+                .iter()
+                .any(active_aura_breaks_on_damage)
+        {
+            return Ok(Vec::new());
+        }
+
+        let old_speeds = creature.move_speeds;
+        let old_display_id = db_creature_effective_display_id(creature);
+        let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let was_stunned = active_aura_has_stun(&creature.active_auras);
+        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        creature
+            .active_auras
+            .retain(|aura| !active_aura_breaks_on_damage(aura));
+        refresh_db_creature_aura_display_override(creature);
+        let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let is_stunned = active_aura_has_stun(&creature.active_auras);
+        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        let previous_speeds = creature.refresh_move_speeds();
+        debug_assert_eq!(old_speeds, previous_speeds);
+
+        let mut packets = Vec::new();
+        if ((was_confused && !is_confused) || (!was_movement_blocked && is_movement_blocked))
+            && !matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            let stop = stop_db_creature_motion_runtime(creature);
+            packets.push(OutboundWorldPacket {
+                opcode: SMSG_MONSTER_MOVE,
+                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
+            });
+        }
+        packets.extend(db_creature_aura_runtime_packets(
+            creature_guid,
+            creature,
+            old_speeds,
+            now,
+        )?);
+        let new_display_id = db_creature_effective_display_id(creature);
+        if old_display_id != new_display_id {
+            packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
+            });
+        }
+        if was_stunned != is_stunned || was_confused != is_confused {
+            packets.push(OutboundWorldPacket {
+                opcode: SMSG_UPDATE_OBJECT,
+                body: build_unit_flags_update_body(
+                    creature_guid,
+                    db_creature_unit_flags(creature, in_combat),
+                )?,
+            });
+        }
+        packets.push(OutboundWorldPacket {
+            opcode: SMSG_UPDATE_OBJECT,
+            body: build_db_creature_aura_update_body(creature_guid, &creature.active_auras)?,
+        });
+        Ok(packets)
+    }
+
     pub(in crate::world) fn advance_db_creature_auras(
         &mut self,
         now: Instant,
@@ -193,11 +423,13 @@ impl MapRuntime {
 
             let old_speeds = creature.move_speeds;
             let old_attack_duration = creature.base_attack_duration();
+            let old_display_id = db_creature_effective_display_id(creature);
             let before = creature.active_auras.len();
             let mut aura_changed = false;
             let target_snapshot = db_creature_spell_snapshot(creature);
 
             let mut tick_packets = Vec::new();
+            let mut death_motion_stop_packet = None;
             let mut pending_damage_ticks = Vec::new();
             let mut died_from_pending_tick = false;
             for aura in &mut creature.active_auras {
@@ -230,6 +462,19 @@ impl MapRuntime {
                 pending_damage_ticks.push((aura.caster, aura.spell_id, periodic.aura_name, tick));
             }
             for (caster, spell_id, aura_name, tick) in pending_damage_ticks {
+                if tick.dealt_damage >= creature.health
+                    && !matches!(creature.motion, CreatureMotionState::Idle)
+                {
+                    let stop = stop_db_creature_motion_runtime(creature);
+                    death_motion_stop_packet = Some(OutboundWorldPacket {
+                        opcode: SMSG_MONSTER_MOVE,
+                        body: build_monster_move_stop_body(
+                            creature_guid,
+                            stop.position,
+                            stop.spline_id,
+                        )?,
+                    });
+                }
                 let Some(applied) = apply_creature_runtime_world_damage(
                     creature,
                     creature_guid,
@@ -268,8 +513,11 @@ impl MapRuntime {
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
             aura_changed |= creature.active_auras.len() != before;
+            if aura_changed {
+                refresh_db_creature_aura_display_override(creature);
+            }
             let died_from_aura = died_from_pending_tick || creature.health == 0;
-            let runtime_packets = if aura_changed && !died_from_aura {
+            let mut runtime_packets = if aura_changed && !died_from_aura {
                 let previous_speeds = creature.refresh_move_speeds();
                 debug_assert_eq!(old_speeds, previous_speeds);
                 let new_attack_duration = creature.base_attack_duration();
@@ -282,6 +530,15 @@ impl MapRuntime {
             } else {
                 Vec::new()
             };
+            if aura_changed && !died_from_aura {
+                let new_display_id = db_creature_effective_display_id(creature);
+                if old_display_id != new_display_id {
+                    runtime_packets.push(OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
+                    });
+                }
+            }
 
             if aura_changed || !tick_packets.is_empty() {
                 let update_body = if creature.health == 0 {
@@ -327,6 +584,9 @@ impl MapRuntime {
                         },
                     ));
                     for packet in &runtime_packets {
+                        packets.push((session_id, packet.clone()));
+                    }
+                    if let Some(packet) = &death_motion_stop_packet {
                         packets.push((session_id, packet.clone()));
                     }
                 }
@@ -381,6 +641,11 @@ impl MapRuntime {
             0
         };
         let old_wounded_speed_multiplier = creature.wounded_combat_speed_multiplier();
+        let damage_interrupt_packets = if requested_damage > 0 {
+            self.remove_db_creature_damage_interrupt_auras(creature_guid, request.now)?
+        } else {
+            Vec::new()
+        };
         let motion_stop_packet = {
             let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
                 return Ok(None);
@@ -652,6 +917,16 @@ impl MapRuntime {
                     .map(|(_, session_id)| (session_id, packet.clone())),
             );
         }
+        if !damage_interrupt_packets.is_empty() {
+            observer_packets.extend(nearby_observers.iter().copied().flat_map(
+                |(_, session_id)| {
+                    damage_interrupt_packets
+                        .iter()
+                        .cloned()
+                        .map(move |packet| (session_id, packet))
+                },
+            ));
+        }
         observer_packets.extend(player_melee_cleanup_packets);
         let death_finalization = if is_dead {
             let combat_flag_packet = OutboundWorldPacket {
@@ -694,6 +969,10 @@ impl MapRuntime {
                 request.exclude_character_guid,
             )?
         };
+        let mut direct_packets = damage_interrupt_packets;
+        if let Some(packet) = wounded_motion_packet {
+            direct_packets.push(packet);
+        }
         Ok(Some(DbCreatureDamageEvent {
             damage,
             attacker_rage_damage,
@@ -702,7 +981,7 @@ impl MapRuntime {
             spell_non_melee_log_body,
             spell_miss_log_body,
             update_body,
-            direct_packets: wounded_motion_packet.into_iter().collect(),
+            direct_packets,
             death_finalization,
             target_switch,
             observer_packets,
@@ -874,6 +1153,19 @@ pub(in crate::world) fn push_speed_change_packet(
         body: build_spline_set_speed_body(creature_guid, new_speed)?,
     });
     Ok(())
+}
+
+pub(in crate::world) fn refresh_db_creature_aura_display_override(
+    creature: &mut DbCreatureRuntime,
+) {
+    creature.aura_display_id_override = active_aura_transform_display_id(&creature.active_auras);
+}
+
+pub(in crate::world) fn db_creature_effective_display_id(creature: &DbCreatureRuntime) -> u32 {
+    creature
+        .aura_display_id_override
+        .or(creature.display_id_override)
+        .unwrap_or(creature.native_display.display_id)
 }
 
 pub(in crate::world) fn db_creature_motion_speed_changed(

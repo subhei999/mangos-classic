@@ -348,12 +348,16 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
     pub(in crate::world) creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     pub(in crate::world) corpses: HashMap<u64, PlayerCorpseRuntime>,
+    pub(in crate::world) dynamic_objects: HashMap<u64, DynamicObjectRuntime>,
+    pub(in crate::world) next_dynamic_object_counter: u32,
     pub(in crate::world) playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
     pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
     pub(in crate::world) next_idle_motion_start_check_at: Option<Instant>,
     pub(in crate::world) pending_db_scripts: Vec<PendingDbScriptAction>,
     pub(in crate::world) next_player_regen_tick_at: Option<Instant>,
     pub(in crate::world) active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
+    pub(in crate::world) active_player_channels: HashMap<u32, ActivePlayerChannel>,
+    pub(in crate::world) pending_player_channel_impacts: Vec<PendingPlayerChannelImpact>,
     pub(in crate::world) pending_spell_events: Vec<PendingSpellEvent>,
     pub(in crate::world) next_spell_event_id: u64,
     pub(in crate::world) pending_player_death_presentations:
@@ -370,6 +374,31 @@ pub(in crate::world) struct ActivePlayerSpellCast {
     pub(in crate::world) cast_time_millis: u32,
     pub(in crate::world) interrupt_flags: u32,
     pub(in crate::world) damage_pushback_count: u8,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct ActivePlayerChannel {
+    pub(in crate::world) caster: ObjectGuid,
+    pub(in crate::world) caster_character_guid: u32,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) expires_at: Instant,
+    pub(in crate::world) next_tick_at: Instant,
+    pub(in crate::world) tick_millis: u32,
+    pub(in crate::world) ticks_remaining: u32,
+    pub(in crate::world) channel_interrupt_flags: u32,
+    pub(in crate::world) damage_delay_count: u8,
+    pub(in crate::world) triggered_spell_speed: f32,
+    pub(in crate::world) damage_effect: PlayerDirectDamageEffect,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct PendingPlayerChannelImpact {
+    pub(in crate::world) caster: ObjectGuid,
+    pub(in crate::world) caster_character_guid: u32,
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) impact_at: Instant,
+    pub(in crate::world) damage_effect: PlayerDirectDamageEffect,
+    pub(in crate::world) outcome: SpellDamageOutcome,
 }
 
 #[derive(Debug, Clone)]
@@ -448,6 +477,8 @@ pub(in crate::world) struct PendingSpellCastTargets {
     pub(in crate::world) target_mask: u16,
     pub(in crate::world) unit_target: Option<ObjectGuid>,
     pub(in crate::world) gameobject_target: Option<ObjectGuid>,
+    pub(in crate::world) source_location: Option<wow_proto::SpellTargetLocation>,
+    pub(in crate::world) destination: Option<wow_proto::SpellTargetLocation>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -590,6 +621,12 @@ pub(in crate::world) struct DbCreatureAuraUpdateEvent {
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug)]
+pub(in crate::world) struct DbCreatureAuraDispelEvent {
+    pub(in crate::world) removed_spell_ids: Vec<u32>,
+    pub(in crate::world) aura_update: DbCreatureAuraUpdateEvent,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::world) struct DbCreatureDamageRequest {
     pub(in crate::world) creature_guid: ObjectGuid,
@@ -671,6 +708,12 @@ pub(in crate::world) struct PlayerAuraUpdateEvent {
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug)]
+pub(in crate::world) struct PlayerAuraDispelEvent {
+    pub(in crate::world) removed_spell_ids: Vec<u32>,
+    pub(in crate::world) aura_update: PlayerAuraUpdateEvent,
+}
+
 #[derive(Debug, Default)]
 pub(in crate::world) struct MapDbCreatureVisibilityStage {
     pub(in crate::world) nearby_creatures: Vec<DbCreatureRuntime>,
@@ -735,12 +778,16 @@ impl MapRuntime {
             creature_combat_leash: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
+            dynamic_objects: HashMap::new(),
+            next_dynamic_object_counter: 1,
             playerbot_intents: HashMap::new(),
             next_idle_motion_tick_at: None,
             next_idle_motion_start_check_at: None,
             pending_db_scripts: Vec::new(),
             next_player_regen_tick_at: None,
             active_player_spell_casts: HashMap::new(),
+            active_player_channels: HashMap::new(),
+            pending_player_channel_impacts: Vec::new(),
             pending_spell_events: Vec::new(),
             next_spell_event_id: 1,
             pending_player_death_presentations: HashMap::new(),
@@ -778,8 +825,10 @@ mod creature_loot;
 mod creature_motion;
 mod creature_snapshots;
 mod damage;
+mod dynamic_objects;
 mod gameobject_loot;
 mod gameobject_snapshots;
+mod player_channels;
 mod player_corpses;
 mod playerbots;
 mod players;
@@ -790,5 +839,7 @@ pub(in crate::world) use self::creature_damage::*;
 pub(in crate::world) use self::creature_loot::*;
 pub(in crate::world) use self::creature_motion::*;
 pub(in crate::world) use self::damage::*;
+pub(in crate::world) use self::dynamic_objects::*;
+pub(in crate::world) use self::player_channels::*;
 pub(in crate::world) use self::playerbots::*;
 pub(in crate::world) use self::players::*;

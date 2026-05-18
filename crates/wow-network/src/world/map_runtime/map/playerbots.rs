@@ -1156,6 +1156,10 @@ impl MapRuntime {
             .is_some_and(playerbot_runtime_requires_async_planner)
     }
 
+    pub(in crate::world) fn has_playerbots(&self) -> bool {
+        self.active_playerbot_count != 0
+    }
+
     pub(in crate::world) fn prepare_playerbot_roam_movement(
         &mut self,
         bot_guid: u32,

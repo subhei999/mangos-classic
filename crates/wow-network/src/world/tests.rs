@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use super::*;
 
 fn test_smsg_pong_opcode() -> u16 {
@@ -11835,6 +11837,68 @@ async fn active_db_creature_combat_snapshot_uses_mapruntime_without_session_cach
 }
 
 #[tokio::test]
+async fn map_runtime_manager_advances_db_creature_combats_for_victim_without_session_side_loop() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    object_mgr
+        .prime_creature_ai_scripts_for_test(0, Vec::new())
+        .await;
+    let player_position = WorldPosition::new(0, -1.0, 0.0, 0.0, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 336;
+    spawn.entry = 0;
+    spawn.template.entry = 0;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.orientation = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    maps.begin_db_creature_combat(0, attacker, victim, now)
+        .await
+        .expect("map-owned live creature should begin combat");
+
+    let tick = maps
+        .advance_db_creature_combats_for_victim(
+            &world_db_pool,
+            &object_mgr,
+            0,
+            victim,
+            SessionId(7),
+            PlayerMeleeDefenseInput {
+                level: 1,
+                defense_skill: 1,
+                armor: 0,
+                block_value: 0,
+                dodge_percent: 0.0,
+                parry_percent: 0.0,
+                block_percent: 0.0,
+            },
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .await
+        .unwrap();
+
+    assert!(tick.player_in_combat);
+    assert_eq!(tick.active_combats.len(), 1);
+    assert!(tick.local_effects.is_empty());
+    assert!(
+        tick.direct_packets
+            .iter()
+            .any(|packet| packet.opcode == SMSG_MONSTER_MOVE),
+        "manager-owned victim advance should emit the facing update directly"
+    );
+}
+
+#[tokio::test]
 async fn map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots() {
     let maps = MapRuntimeManager::default();
     let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
@@ -11878,6 +11942,36 @@ async fn map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots()
             .load(std::sync::atomic::Ordering::Relaxed),
         0
     );
+}
+
+#[tokio::test]
+async fn map_runtime_manager_skips_playerbot_ticks_when_world_has_no_playerbots() {
+    let maps = MapRuntimeManager::default();
+    let position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(2, SessionId(2), position))
+        .await
+        .unwrap();
+
+    let movement = maps
+        .advance_all_playerbot_movement_ticks(
+            &DbCreatureNavigationGuardrail::default(),
+            Instant::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(movement.advanced_bots, 0);
+    assert!(movement.packets.is_empty());
+
+    let combat = maps
+        .advance_all_playerbot_combat_ticks(
+            &DbCreatureNavigationGuardrail::default(),
+            Instant::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(combat.advanced_bots, 0);
+    assert_eq!(combat.creature_swings, 0);
+    assert!(combat.packets.is_empty());
 }
 
 #[test]
@@ -14958,6 +15052,121 @@ fn map_runtime_event_ai_ooc_timer_and_spawned_select_self_casts() {
         .is_none());
 }
 
+#[tokio::test]
+async fn map_runtime_manager_ooc_event_ai_tick_runs_without_viewer_session() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let map_id = 0;
+    let mut spawn = test_creature_spawn(6810);
+    spawn.guid = 6810;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(map_id, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(
+            6810,
+            vec![test_creature_ai_cast_script(
+                681_001,
+                6810,
+                EVENT_AI_EVENT_TIMER_OOC,
+                [0, 0, 5_000, 5_000],
+                12544,
+                EVENT_AI_TARGET_SELF,
+            )],
+        )
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(12544, Some(frost_armor_spell_template()))
+        .await;
+    let now = Instant::now();
+
+    let tick = maps
+        .advance_all_db_creature_ooc_event_ai_spell_ticks(
+            &world_db_pool,
+            &object_mgr,
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .await
+        .expect("map-owned OOC EventAI tick should succeed");
+    assert!(tick.packets.is_empty());
+
+    let map = maps.get_or_create_map(map_id, 0).await;
+    let map = map.lock().await;
+    let creature = map
+        .creatures
+        .get(&creature_guid.raw())
+        .expect("creature should remain loaded");
+    assert!(creature.triggered_event_ai_scripts.contains(&681_001));
+    assert!(creature.event_ai_cooldowns_until.contains_key(&681_001));
+    assert!(matches!(
+        map.db_creature_ooc_event_ai_capabilities.get(&6810),
+        Some(DbCreatureOocEventAiCapability::OocCast(_))
+    ));
+}
+
+#[tokio::test]
+async fn map_runtime_manager_ooc_event_ai_tick_dispatches_packets_to_nearby_players() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let map_id = 0;
+    let player_position = WorldPosition::new(map_id, 5.0, 0.0, 0.0, 0.0);
+    maps.add_player(test_player_runtime(77, SessionId(77), player_position))
+        .await
+        .expect("player should be added");
+    let mut spawn = test_creature_spawn(6811);
+    spawn.guid = 6811;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    maps.share_db_creature_snapshots(map_id, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(
+            6811,
+            vec![test_creature_ai_cast_script(
+                681_002,
+                6811,
+                EVENT_AI_EVENT_TIMER_OOC,
+                [0, 0, 5_000, 5_000],
+                12544,
+                EVENT_AI_TARGET_SELF,
+            )],
+        )
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(12544, Some(frost_armor_spell_template()))
+        .await;
+    let now = Instant::now();
+
+    let tick = maps
+        .advance_all_db_creature_ooc_event_ai_spell_ticks(
+            &world_db_pool,
+            &object_mgr,
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .await
+        .expect("map-owned OOC EventAI tick should succeed");
+
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(77)
+            && packet.opcode == SMSG_SPELL_START));
+    assert!(
+        tick.packets
+            .iter()
+            .any(|(session_id, packet)| *session_id == SessionId(77)
+                && packet.opcode == SMSG_SPELL_GO)
+    );
+}
+
 #[test]
 fn map_runtime_event_ai_target_modes_use_threat_list() {
     let mut map = MapRuntime::new(0, 0);
@@ -15466,6 +15675,86 @@ fn map_runtime_creature_lifecycle_due_scan_does_not_require_player_visibility() 
     );
 }
 
+#[test]
+fn map_runtime_db_creature_lifecycle_tick_processes_due_events_once() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 90;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.spawn_time_secs_min = 3;
+    spawn.spawn_time_secs_max = 3;
+    spawn.template.corpse_decay = 1;
+    let creature_guid = creature_spawn_guid(&spawn);
+
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.players
+        .get_mut(&1)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
+    map.players
+        .get_mut(&2)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
+
+    let killed_at = Instant::now();
+    map.apply_db_creature_damage(DbCreatureDamageRequest {
+        creature_guid,
+        killer: ObjectGuid::new(HighGuid::Player, 0, 1),
+        damage: 9_999,
+        melee_outcome: None,
+        spell_damage_outcome: None,
+        spell_id: None,
+        spell_school: 0,
+        suppress_attacker_state: false,
+        now: killed_at,
+        now_epoch_secs: 3_000,
+        exclude_character_guid: Some(1),
+        corpse_loot: None,
+    })
+    .unwrap()
+    .expect("death event");
+
+    let corpse_tick = map
+        .advance_db_creature_lifecycle_tick(killed_at + Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(corpse_tick.respawn_updates.len(), 0);
+    assert_eq!(corpse_tick.packets.len(), 2);
+    assert!(corpse_tick
+        .packets
+        .iter()
+        .all(|(_, packet)| packet.opcode == SMSG_DESTROY_OBJECT));
+    assert!(map
+        .advance_db_creature_lifecycle_tick(killed_at + Duration::from_secs(1))
+        .unwrap()
+        .packets
+        .is_empty());
+
+    let respawn_tick = map
+        .advance_db_creature_lifecycle_tick(killed_at + Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(respawn_tick.respawn_updates.len(), 1);
+    assert_eq!(respawn_tick.respawn_updates[0].creature_spawn_guid, 90);
+    assert_eq!(respawn_tick.packets.len(), 2);
+    assert!(respawn_tick
+        .packets
+        .iter()
+        .all(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(map
+        .advance_db_creature_lifecycle_tick(killed_at + Duration::from_secs(3))
+        .unwrap()
+        .packets
+        .is_empty());
+}
+
 fn insert_map_runtime_player_for_test(map: &mut MapRuntime, guid: u32, position: WorldPosition) {
     let grid = grid_coord_for_position(position);
     let cell = cell_coord_for_position(position);
@@ -15615,6 +15904,73 @@ fn db_creature_movement_script_delays_are_milliseconds() {
 }
 
 #[test]
+fn db_creature_movement_scripts_preserve_due_time_then_priority_order() {
+    let now = Instant::now();
+    let mut registry = DbScriptRegistry::default();
+    let mut late_priority = test_db_script_command(101, SCRIPT_COMMAND_TALK, 0);
+    late_priority.priority = 5;
+    late_priority.dataint = 5001;
+    let mut early_priority = test_db_script_command(101, SCRIPT_COMMAND_TALK, 0);
+    early_priority.priority = 1;
+    early_priority.dataint = 5002;
+    registry
+        .movement_scripts
+        .insert(101, vec![late_priority, early_priority]);
+    registry.broadcast_texts.insert(
+        5001,
+        wow_db::BroadcastTextQuery {
+            id: 5001,
+            text: Some("Later".to_string()),
+            text1: None,
+            chat_type: CHAT_TYPE_SAY,
+            language: LANG_UNIVERSAL,
+            sound: 0,
+            emote: 0,
+        },
+    );
+    registry.broadcast_texts.insert(
+        5002,
+        wow_db::BroadcastTextQuery {
+            id: 5002,
+            text: Some("Sooner".to_string()),
+            text1: None,
+            chat_type: CHAT_TYPE_SAY,
+            language: LANG_UNIVERSAL,
+            sound: 0,
+            emote: 0,
+        },
+    );
+
+    let mut map =
+        MapRuntime::with_geometry(0, 0, Arc::new(WorldGeometry::default()), Arc::new(registry));
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, position);
+    let creature = DbCreatureRuntime::new(test_creature_spawn(11260));
+    let creature_guid = creature.guid();
+    map.players
+        .get_mut(&1)
+        .unwrap()
+        .visible_objects
+        .insert(creature_guid);
+    map.creatures.insert(creature_guid.raw(), creature);
+
+    map.schedule_db_creature_movement_script(creature_guid, 101, now);
+    let packets = map.advance_pending_db_scripts(now).unwrap();
+
+    assert_eq!(packets.len(), 2);
+    assert!(packets[0]
+        .1
+        .body
+        .windows("Sooner".len())
+        .any(|window| window == b"Sooner"));
+    assert!(packets[1]
+        .1
+        .body
+        .windows("Later".len())
+        .any(|window| window == b"Later"));
+}
+
+#[test]
 fn db_creature_movement_scripts_run_for_zero_distance_waypoint_nodes() {
     let now = Instant::now();
     let mut registry = DbScriptRegistry::default();
@@ -15654,6 +16010,7 @@ fn db_creature_movement_scripts_run_for_zero_distance_waypoint_nodes() {
             creature_guid,
             now,
         )
+        .outcome
         .unwrap();
     for script_id in script_ids {
         map.schedule_db_creature_movement_script(snapshot.guid(), script_id, now);
@@ -18066,6 +18423,166 @@ fn map_runtime_idle_motion_tick_is_once_per_map_tick() {
         )
         .unwrap();
     assert!(next.packets.is_empty());
+}
+
+#[test]
+fn map_runtime_idle_motion_tracking_drops_active_mover_on_combat_claim() {
+    let mut map = MapRuntime::new(0, 0);
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let now = Instant::now();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 333;
+    spawn.position_x = center.x;
+    spawn.position_y = center.y;
+    spawn.position_z = center.z;
+    spawn.movement_type = DB_MOTION_TYPE_WAYPOINT;
+    spawn.waypoint_path = vec![test_waypoint(1, center.x + 5.0, center.y, 0)];
+    let guid = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_waypoint_move_at = Some(now);
+    map.insert_loaded_creature_grid(grid_coord_for_position(center), vec![runtime]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+
+    let tick = map
+        .advance_active_db_creature_idle_motions(&DbCreatureNavigationGuardrail::default(), now)
+        .unwrap();
+    assert_eq!(tick.creatures.len(), 1);
+    assert!(map.active_db_creature_motion_guids.contains(&guid.raw()));
+
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 8);
+    map.begin_db_creature_combat(guid, victim, now + Duration::from_millis(1))
+        .expect("moving creature should enter combat");
+
+    assert!(map
+        .db_creature_idle_motion_advancement_guids(now + Duration::from_millis(1))
+        .guids
+        .is_empty());
+    assert!(!map.active_db_creature_motion_guids.contains(&guid.raw()));
+}
+
+#[test]
+fn map_runtime_idle_motion_advancement_queue_only_returns_due_movers() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let center = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let grid = grid_coord_for_position(center);
+    let future_due_at = now + Duration::from_secs(5);
+
+    let mut due_spawn = test_creature_spawn(6);
+    due_spawn.guid = 501;
+    due_spawn.position_x = center.x;
+    due_spawn.position_y = center.y;
+    due_spawn.position_z = center.z;
+    let due_guid = creature_spawn_guid(&due_spawn);
+    let due_destination = WorldPosition::new(0, center.x + 5.0, center.y, center.z, 0.0);
+    let mut due_runtime = DbCreatureRuntime::new(due_spawn);
+    due_runtime.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
+        node_index: 0,
+        start: center,
+        destination: due_destination,
+        path: vec![due_destination],
+        started_at: now,
+        duration: Duration::from_secs(2),
+    });
+    due_runtime.next_waypoint_move_at = None;
+
+    let mut future_spawn = test_creature_spawn(6);
+    future_spawn.guid = 502;
+    future_spawn.position_x = center.x + 10.0;
+    future_spawn.position_y = center.y;
+    future_spawn.position_z = center.z;
+    let future_guid = creature_spawn_guid(&future_spawn);
+    let future_destination = WorldPosition::new(0, center.x + 15.0, center.y, center.z, 0.0);
+    let mut future_runtime = DbCreatureRuntime::new(future_spawn);
+    future_runtime.motion = CreatureMotionState::Waypoint(CreatureWaypointMotion {
+        node_index: 0,
+        start: WorldPosition::new(0, center.x + 10.0, center.y, center.z, 0.0),
+        destination: future_destination,
+        path: vec![future_destination],
+        started_at: now,
+        duration: Duration::from_secs(2),
+    });
+    future_runtime.next_waypoint_move_at = None;
+
+    map.insert_loaded_creature_grid(grid, vec![due_runtime, future_runtime]);
+    map.add_player(test_player_runtime(8, SessionId(8), center))
+        .unwrap();
+    map.active_db_creature_motion_guids.insert(due_guid.raw());
+    map.active_db_creature_motion_guids
+        .insert(future_guid.raw());
+    map.db_creature_motion_advance_due_at
+        .insert(due_guid.raw(), now);
+    map.idle_db_creature_motion_advances
+        .push(Reverse(ScheduledDbCreatureMotionAdvance {
+            due_at: now,
+            guid: due_guid.raw(),
+        }));
+    map.db_creature_motion_advance_due_at
+        .insert(future_guid.raw(), future_due_at);
+    map.idle_db_creature_motion_advances
+        .push(Reverse(ScheduledDbCreatureMotionAdvance {
+            due_at: future_due_at,
+            guid: future_guid.raw(),
+        }));
+
+    let ready = map.db_creature_idle_motion_advancement_guids(now);
+
+    assert_eq!(ready.guids, vec![due_guid.raw()]);
+    assert!(
+        !map.db_creature_motion_advance_due_at
+            .contains_key(&due_guid.raw()),
+        "ready mover should be removed from the due map until it is rescheduled by advancement"
+    );
+    assert_eq!(
+        map.db_creature_motion_advance_due_at
+            .get(&future_guid.raw()),
+        Some(&future_due_at),
+        "future mover should stay queued for its later due time"
+    );
+}
+
+#[test]
+fn map_runtime_idle_motion_start_reschedules_advancement_without_spatial_refresh() {
+    let now = Instant::now();
+    let mut map = MapRuntime::with_geometry(
+        0,
+        0,
+        Arc::new(WorldGeometry::default()),
+        Arc::new(DbScriptRegistry::default()),
+    );
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, position);
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 777;
+    spawn.position_x = position.x;
+    spawn.position_y = position.y;
+    spawn.position_z = position.z;
+    spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    spawn.spawn_dist = 5.0;
+    let guid = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.next_random_move_at = Some(now);
+
+    map.insert_loaded_creature_grid(grid_coord_for_position(position), vec![runtime]);
+    let expected_due_at = now + Duration::from_millis(WORLD_TICK_MILLIS);
+    map.next_idle_motion_tick_at = Some(expected_due_at);
+
+    let (snapshot, motion, script_ids) = map
+        .start_db_creature_idle_motion(&DbCreatureNavigationGuardrail::default(), guid, now)
+        .outcome
+        .expect("idle creature should start moving");
+
+    assert!(motion.is_some());
+    assert!(script_ids.is_empty());
+    assert_eq!(snapshot.guid(), guid);
+    assert!(map.active_db_creature_motion_guids.contains(&guid.raw()));
+    assert_eq!(
+        map.db_creature_motion_advance_due_at.get(&guid.raw()),
+        Some(&expected_due_at),
+        "motion start should still reschedule the next advancement tick even without a spatial refresh"
+    );
 }
 
 #[test]

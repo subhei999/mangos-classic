@@ -8,26 +8,29 @@ impl MapRuntime {
         &mut self,
         creatures: Vec<DbCreatureRuntime>,
     ) -> Vec<DbCreatureRuntime> {
-        creatures
-            .into_iter()
-            .map(|creature| {
-                let guid = creature.guid().raw();
-                let shared = self.creatures.entry(guid).or_insert_with(|| {
-                    let cell = cell_coord_for_position(creature.current_position);
-                    let grid = grid_coord_for_position(creature.current_position);
-                    self.grids
-                        .entry(grid)
-                        .or_default()
-                        .cells
-                        .entry(cell)
-                        .or_default()
-                        .creatures
-                        .insert(creature.guid().raw());
-                    creature
-                });
-                shared.clone()
-            })
-            .collect()
+        let mut shared_creatures = Vec::with_capacity(creatures.len());
+        for creature in creatures {
+            let guid = creature.guid().raw();
+            let shared = self.creatures.entry(guid).or_insert_with(|| {
+                let cell = cell_coord_for_position(creature.current_position);
+                let grid = grid_coord_for_position(creature.current_position);
+                self.grids
+                    .entry(grid)
+                    .or_default()
+                    .cells
+                    .entry(cell)
+                    .or_default()
+                    .creatures
+                    .insert(creature.guid().raw());
+                creature
+            });
+            let shared = shared.clone();
+            shared_creatures.push(shared);
+            self.sync_db_creature_idle_motion_tracking(guid);
+            self.sync_db_creature_lifecycle_tracking(guid);
+            self.sync_db_creature_ooc_event_ai_tracking(guid, Instant::now());
+        }
+        shared_creatures
     }
 
     pub(in crate::world) fn spawn_db_creature_and_broadcast(
@@ -77,6 +80,10 @@ impl MapRuntime {
         let Some(creature) = self.creatures.remove(&raw_guid) else {
             return Ok(None);
         };
+        self.clear_db_creature_lifecycle_tracking(raw_guid);
+        self.clear_db_creature_ooc_event_ai_tracking(raw_guid);
+        self.active_db_creature_motion_guids.remove(&raw_guid);
+        self.db_creature_motion_advance_due_at.remove(&raw_guid);
         let guid = creature.guid();
         let position = creature.current_position;
         let grid_coord = grid_coord_for_position(position);
@@ -189,6 +196,21 @@ impl MapRuntime {
             })
             .collect();
         self.refresh_grid_state(grid_coord);
+        let loaded_guids = self
+            .grids
+            .get(&grid_coord)
+            .map(|grid| {
+                grid.cells
+                    .values()
+                    .flat_map(|cell| cell.creatures.iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for guid in loaded_guids {
+            self.sync_db_creature_idle_motion_tracking(guid);
+            self.sync_db_creature_lifecycle_tracking(guid);
+            self.sync_db_creature_ooc_event_ai_tracking(guid, Instant::now());
+        }
         self.invalidate_idle_motion_start_schedule();
         loaded
     }
@@ -448,6 +470,9 @@ impl MapRuntime {
         self.grids.entry(new_grid).or_default().last_touched = Instant::now();
         self.creatures.insert(guid, creature);
         self.refresh_grid_state(new_grid);
+        self.sync_db_creature_idle_motion_tracking(guid);
+        self.sync_db_creature_lifecycle_tracking(guid);
+        self.sync_db_creature_ooc_event_ai_tracking(guid, Instant::now());
     }
 
     pub(in crate::world) fn update_db_creature_snapshot_and_broadcast(
@@ -476,6 +501,7 @@ impl MapRuntime {
         let Some(grid) = self.grids.get(&grid_coord) else {
             return;
         };
+        let previous_state = grid.state;
         let state = if grid.active_player_count > 0
             || grid.cells.values().any(|cell| {
                 cell.players.iter().any(|guid| {
@@ -497,6 +523,9 @@ impl MapRuntime {
         };
         if let Some(grid) = self.grids.get_mut(&grid_coord) {
             grid.state = state;
+        }
+        if previous_state != state {
+            self.sync_db_creature_idle_motion_tracking_for_grid(grid_coord);
         }
     }
 
@@ -590,6 +619,8 @@ impl MapRuntime {
             self.loaded_player_corpse_grids.remove(&grid_coord);
             for cell in grid.cells.values() {
                 for creature_guid in &cell.creatures {
+                    self.active_db_creature_motion_guids.remove(creature_guid);
+                    self.db_creature_motion_advance_due_at.remove(creature_guid);
                     self.creatures.remove(creature_guid);
                 }
                 for gameobject_guid in &cell.gameobjects {

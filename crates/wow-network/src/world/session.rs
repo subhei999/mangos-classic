@@ -25,6 +25,12 @@ pub(in crate::world) struct OutboundWorldPacket {
     pub(in crate::world) body: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::world) struct QueuedOutboundWorldPacket {
+    pub(in crate::world) packet: OutboundWorldPacket,
+    pub(in crate::world) enqueued_at: Instant,
+}
+
 pub(in crate::world) const WORLD_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,13 +62,13 @@ pub(in crate::world) enum WorldPacketSendError {
 
 #[derive(Debug, Clone)]
 pub(in crate::world) enum WorldPacketSender {
-    Bounded(mpsc::Sender<OutboundWorldPacket>),
+    Bounded(mpsc::Sender<QueuedOutboundWorldPacket>),
     #[cfg(test)]
     Unbounded(mpsc::UnboundedSender<OutboundWorldPacket>),
 }
 
-impl From<mpsc::Sender<OutboundWorldPacket>> for WorldPacketSender {
-    fn from(sender: mpsc::Sender<OutboundWorldPacket>) -> Self {
+impl From<mpsc::Sender<QueuedOutboundWorldPacket>> for WorldPacketSender {
+    fn from(sender: mpsc::Sender<QueuedOutboundWorldPacket>) -> Self {
         Self::Bounded(sender)
     }
 }
@@ -80,7 +86,10 @@ impl WorldPacketSender {
         packet: OutboundWorldPacket,
     ) -> Result<(), WorldPacketSendError> {
         match self {
-            Self::Bounded(sender) => match sender.try_send(packet) {
+            Self::Bounded(sender) => match sender.try_send(QueuedOutboundWorldPacket {
+                packet,
+                enqueued_at: Instant::now(),
+            }) {
                 Ok(()) => {
                     crate::observability::record_world_outbound_queue_depth(
                         sender.max_capacity().saturating_sub(sender.capacity()),
@@ -266,6 +275,7 @@ pub(in crate::world) struct WorldRuntimeState {
     pub(in crate::world) online_characters: OnlineCharacters,
     pub(in crate::world) delete_options: CharacterDeleteOptions,
     pub(in crate::world) character_db_pool: MySqlPool,
+    pub(in crate::world) world_db_pool: MySqlPool,
     pub(in crate::world) world_data_files: Arc<WorldDataFiles>,
     pub(in crate::world) world_tick_interval: Duration,
     pub(in crate::world) game_event_schedules: Arc<Vec<wow_db::GameEventScheduleQuery>>,

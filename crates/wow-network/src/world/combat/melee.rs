@@ -260,6 +260,7 @@ pub(in crate::world) fn db_creature_has_player_in_arc(
     )
 }
 
+#[allow(dead_code)]
 pub(in crate::world) async fn db_creature_has_player_in_arc_from_map(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
@@ -283,6 +284,7 @@ pub(in crate::world) async fn db_creature_has_player_in_arc_from_map(
     )
 }
 
+#[allow(dead_code)]
 pub(in crate::world) async fn send_db_creature_face_target(
     stream: &mut WorldPacketSink,
     broadcast: CreatureCombatBroadcast<'_>,
@@ -372,6 +374,7 @@ pub(in crate::world) fn face_db_creature_toward_player(
     Some((creature.current_position, spline_id))
 }
 
+#[allow(dead_code)]
 pub(in crate::world) async fn face_db_creature_toward_player_from_map(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,

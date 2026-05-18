@@ -194,6 +194,7 @@ impl MapRuntime {
         }
         if confused_changed {
             self.invalidate_idle_motion_start_schedule();
+            self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
         self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
         if let Some(group) = diminishing_group {
@@ -354,6 +355,7 @@ impl MapRuntime {
         let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
         if was_confused != is_confused {
             self.invalidate_idle_motion_start_schedule();
+            self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
         let aura_update = DbCreatureAuraUpdateEvent {
             update_body: update_body.clone(),
@@ -521,6 +523,7 @@ impl MapRuntime {
         };
         if confused_changed {
             self.invalidate_idle_motion_start_schedule();
+            self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
         self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
         self.adjust_db_creature_attack_timer_for_base_time_change(
@@ -577,23 +580,29 @@ impl MapRuntime {
         if old_duration == new_duration {
             return;
         }
-        let Some(combat) = self.active_creature_combats.get_mut(&creature_guid.raw()) else {
-            return;
-        };
         let old_millis = old_duration.as_millis() as i128;
         let new_millis = new_duration.as_millis() as i128;
         let diff = new_millis - old_millis;
-        if diff >= 0 {
-            combat.next_swing_at += Duration::from_millis(diff as u64);
+        let Some(due_at) = ({
+            let Some(combat) = self.active_creature_combats.get_mut(&creature_guid.raw()) else {
+                return;
+            };
+            if diff >= 0 {
+                combat.next_swing_at += Duration::from_millis(diff as u64);
+            } else {
+                let remaining = combat.next_swing_at.saturating_duration_since(now);
+                let reduction = Duration::from_millis(diff.unsigned_abs() as u64);
+                combat.next_swing_at = if reduction >= remaining {
+                    now
+                } else {
+                    combat.next_swing_at - reduction
+                };
+            }
+            Some(combat.next_swing_at)
+        }) else {
             return;
-        }
-        let remaining = combat.next_swing_at.saturating_duration_since(now);
-        let reduction = Duration::from_millis(diff.unsigned_abs() as u64);
-        combat.next_swing_at = if reduction >= remaining {
-            now
-        } else {
-            combat.next_swing_at - reduction
         };
+        self.schedule_db_creature_combat_due_at(creature_guid, due_at);
     }
 
     pub(in crate::world) fn remove_db_creature_damage_interrupt_auras(
@@ -618,6 +627,7 @@ impl MapRuntime {
         };
         if !packets.is_empty() {
             self.invalidate_idle_motion_start_schedule();
+            self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
             self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
         }
         Ok(packets)
@@ -850,6 +860,7 @@ impl MapRuntime {
             };
             if invalidated_motion_schedule {
                 self.invalidate_idle_motion_start_schedule();
+                self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
             }
             if let Some((update_body, position)) = observer_update {
                 let nearby = self
@@ -1014,6 +1025,7 @@ impl MapRuntime {
         let Some(creature) = self.creatures.get(&creature_guid.raw()).cloned() else {
             return Ok(None);
         };
+        self.sync_db_creature_lifecycle_tracking(creature_guid.raw());
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
         if is_dead {
             self.clear_db_creature_combat(creature_guid);

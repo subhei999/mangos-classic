@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(dead_code)]
 pub(in crate::world) async fn db_creature_should_evade_from_map(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
@@ -31,6 +32,7 @@ pub(in crate::world) fn db_creature_should_evade(
     ) > DB_CREATURE_LEASH_RADIUS_YARDS
 }
 
+#[allow(dead_code)]
 pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     stream: &mut WorldPacketSink,
     broadcast: CreatureCombatBroadcast<'_>,

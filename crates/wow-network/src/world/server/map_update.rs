@@ -64,19 +64,105 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
             &runtime_state.game_event_schedules,
             current_unix_epoch_secs() as i64,
         );
+        let phase_started_at = Instant::now();
         match runtime_state
             .maps
             .refresh_static_game_event_spawns(&runtime_state.character_db_pool, game_events, now)
             .await
         {
             Ok(packets) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::StaticGameEventRefresh,
+                    phase_started_at.elapsed(),
+                );
                 if !packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::StaticGameEventRefreshDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
                 }
             }
             Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::StaticGameEventRefresh,
+                    phase_started_at.elapsed(),
+                );
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime game-event spawn refresh failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .advance_all_db_creature_lifecycle_ticks(now)
+            .await
+        {
+            Ok(tick) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::DbCreatureLifecycle,
+                    phase_started_at.elapsed(),
+                );
+                if !tick.packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(tick.packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::DbCreatureLifecycleDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+                if let Err(error) = persist_respawn_updates_batched(
+                    &runtime_state.character_db_pool,
+                    &tick.respawn_updates,
+                )
+                .await
+                {
+                    crate::observability::record_map_tick_error();
+                    warn!("Map runtime DB-creature lifecycle persistence failed: {error}");
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::DbCreatureLifecycle,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime DB-creature lifecycle tick failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
+        match runtime_state
+            .maps
+            .advance_all_db_creature_ooc_event_ai_spell_ticks(
+                &runtime_state.world_db_pool,
+                &runtime_state.object_mgr,
+                &navigation,
+                now,
+            )
+            .await
+        {
+            Ok(tick) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                    phase_started_at.elapsed(),
+                );
+                if !tick.packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(tick.packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::DbCreatureOocEventAiDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime DB-creature OOC EventAI tick failed: {error}");
             }
         }
         let phase_started_at = Instant::now();
@@ -274,21 +360,21 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::DynamicObjects,
                     phase_started_at.elapsed(),
                 );
                 if !packets.is_empty() {
                     let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(packets).await;
                     crate::observability::record_map_phase_duration(
-                        crate::observability::MapTickPhase::AuraExpirationDispatch,
+                        crate::observability::MapTickPhase::DynamicObjectsDispatch,
                         dispatch_started_at.elapsed(),
                     );
                 }
             }
             Err(error) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::DynamicObjects,
                     phase_started_at.elapsed(),
                 );
                 crate::observability::record_map_tick_error();
@@ -303,21 +389,21 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::PlayerChannels,
                     phase_started_at.elapsed(),
                 );
                 if !packets.is_empty() {
                     let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(packets).await;
                     crate::observability::record_map_phase_duration(
-                        crate::observability::MapTickPhase::AuraExpirationDispatch,
+                        crate::observability::MapTickPhase::PlayerChannelsDispatch,
                         dispatch_started_at.elapsed(),
                     );
                 }
             }
             Err(error) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::PlayerChannels,
                     phase_started_at.elapsed(),
                 );
                 crate::observability::record_map_tick_error();
@@ -332,21 +418,21 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::DbCreatureAuras,
                     phase_started_at.elapsed(),
                 );
                 if !packets.is_empty() {
                     let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(packets).await;
                     crate::observability::record_map_phase_duration(
-                        crate::observability::MapTickPhase::AuraExpirationDispatch,
+                        crate::observability::MapTickPhase::DbCreatureAurasDispatch,
                         dispatch_started_at.elapsed(),
                     );
                 }
             }
             Err(error) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::AuraExpiration,
+                    crate::observability::MapTickPhase::DbCreatureAuras,
                     phase_started_at.elapsed(),
                 );
                 crate::observability::record_map_tick_error();
@@ -361,31 +447,53 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         {
             Ok(packets) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::PlayerEnvironment,
+                    crate::observability::MapTickPhase::PlayerDeathPresentation,
                     phase_started_at.elapsed(),
                 );
                 if !packets.is_empty() {
                     let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(packets).await;
                     crate::observability::record_map_phase_duration(
-                        crate::observability::MapTickPhase::PlayerEnvironmentDispatch,
+                        crate::observability::MapTickPhase::PlayerDeathPresentationDispatch,
                         dispatch_started_at.elapsed(),
                     );
                 }
             }
             Err(error) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::PlayerEnvironment,
+                    crate::observability::MapTickPhase::PlayerDeathPresentation,
                     phase_started_at.elapsed(),
                 );
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime player death presentation tick failed: {error}");
             }
         }
+        let phase_started_at = Instant::now();
         runtime_state.maps.record_observability_snapshots().await;
+        crate::observability::record_map_phase_duration(
+            crate::observability::MapTickPhase::ObservabilitySnapshot,
+            phase_started_at.elapsed(),
+        );
         crate::observability::record_map_tick(tick_started_at.elapsed(), tick_lag, tick_budget);
         while next_tick_at <= now {
             next_tick_at += tick_budget;
         }
     }
+}
+
+async fn persist_respawn_updates_batched(
+    character_db_pool: &MySqlPool,
+    updates: &[DbCreatureRespawnPersistenceUpdate],
+) -> anyhow::Result<()> {
+    for update in updates {
+        wow_db::save_creature_respawn_time(
+            character_db_pool,
+            update.creature_spawn_guid,
+            0,
+            0,
+            current_unix_epoch_secs(),
+        )
+        .await?;
+    }
+    Ok(())
 }

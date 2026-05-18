@@ -3,6 +3,33 @@ use super::*;
 // CMaNGOS-shaped nearby player and cell visitor helpers.
 
 impl MapRuntime {
+    pub(in crate::world) fn has_nearby_client_player(
+        &self,
+        position: WorldPosition,
+        radius: f32,
+        exclude_guid: Option<u32>,
+    ) -> bool {
+        for (grid_coord, cell_coord) in calculate_cell_area(position, radius) {
+            let Some(grid) = self.grids.get(&grid_coord) else {
+                continue;
+            };
+            let Some(cell) = grid.cells.get(&cell_coord) else {
+                continue;
+            };
+            for guid in &cell.client_players {
+                if Some(*guid) == exclude_guid {
+                    continue;
+                }
+                if self.players.get(guid).is_some_and(|player| {
+                    is_position_inside_radius(player.position, position, radius)
+                }) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(in crate::world) fn nearby_player_guids(
         &self,
         position: WorldPosition,

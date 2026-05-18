@@ -5,7 +5,9 @@
 #include "DetourNavMeshQuery.h"
 #include "DetourStatus.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -28,6 +30,7 @@ constexpr float WOW_GRID_CENTER_ID = 32.0f;
 constexpr float WOW_GRID_SIZE = 533.3333f;
 constexpr float PI = 3.14159265358979323846f;
 constexpr unsigned short NAV_GROUND = 1;
+using SteadyClock = std::chrono::steady_clock;
 
 struct MmapTileHeader
 {
@@ -449,6 +452,12 @@ dtStatus findSmoothPath(
     *smoothPathCount = static_cast<int>(smoothCount);
     return DT_SUCCESS;
 }
+
+std::uint64_t elapsedNanos(SteadyClock::time_point start)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(SteadyClock::now() - start).count());
+}
 }
 
 extern "C"
@@ -458,6 +467,15 @@ struct WowMmapPathPoint
     float x;
     float y;
     float z;
+};
+
+struct WowMmapCallTimings
+{
+    std::uint64_t lock_and_tile_load_nanos;
+    std::uint64_t query_alloc_init_nanos;
+    std::uint64_t find_nearest_poly_nanos;
+    std::uint64_t find_path_nanos;
+    std::uint64_t find_smooth_path_nanos;
 };
 
 int wow_mmap_find_path(
@@ -476,10 +494,13 @@ int wow_mmap_find_path(
     unsigned short includeFlags,
     unsigned short excludeFlags,
     WowMmapPathPoint* outPoints,
-    int maxPoints) noexcept
+    int maxPoints,
+    WowMmapCallTimings* outTimings) noexcept
 {
     try
     {
+        if (outTimings)
+            std::memset(outTimings, 0, sizeof(*outTimings));
         if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
             return -1;
         if (startTileX > 63 || startTileY > 63 || targetTileX > 63 || targetTileY > 63)
@@ -488,6 +509,7 @@ int wow_mmap_find_path(
             !std::isfinite(targetX) || !std::isfinite(targetY) || !std::isfinite(targetZ))
             return -8;
 
+        const auto lockAndTileLoadStart = SteadyClock::now();
         std::lock_guard<std::mutex> lock(g_mapsMutex);
         int loadMapError = -2;
         CachedMap* cached = loadMapDataLocked(dataDir, mapId, &loadMapError);
@@ -498,7 +520,10 @@ int wow_mmap_find_path(
             return -3;
         if (!loadNeighborTilesLocked(*cached, dataDir, mapId, targetTileX, targetTileY))
             return -4;
+        if (outTimings)
+            outTimings->lock_and_tile_load_nanos = elapsedNanos(lockAndTileLoadStart);
 
+        const auto queryAllocInitStart = SteadyClock::now();
         std::unique_ptr<dtNavMeshQuery, decltype(&dtFreeNavMeshQuery)> query(dtAllocNavMeshQuery(), dtFreeNavMeshQuery);
         if (!query)
             return -5;
@@ -506,6 +531,8 @@ int wow_mmap_find_path(
         {
             return -6;
         }
+        if (outTimings)
+            outTimings->query_alloc_init_nanos = elapsedNanos(queryAllocInitStart);
 
         dtQueryFilter filter;
         filter.setIncludeFlags(includeFlags);
@@ -519,6 +546,7 @@ int wow_mmap_find_path(
         dtPolyRef startRef = 0;
         dtPolyRef targetRef = 0;
 
+        const auto nearestPolyStart = SteadyClock::now();
         if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
         {
             return 0;
@@ -527,21 +555,29 @@ int wow_mmap_find_path(
         {
             return 0;
         }
+        if (outTimings)
+            outTimings->find_nearest_poly_nanos = elapsedNanos(nearestPolyStart);
 
         dtPolyRef polys[MAX_PATH_POLYS];
         int polyCount = 0;
+        const auto findPathStart = SteadyClock::now();
         if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, nearestTarget, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
         {
             return 0;
         }
+        if (outTimings)
+            outTimings->find_path_nanos = elapsedNanos(findPathStart);
 
         const int smoothLimit = maxPoints < MAX_SMOOTH_POINTS ? maxPoints : MAX_SMOOTH_POINTS;
         std::vector<float> smooth(smoothLimit * VERTEX_SIZE);
         int smoothCount = 0;
+        const auto findSmoothPathStart = SteadyClock::now();
         if (dtStatusFailed(findSmoothPath(cached->mesh, query.get(), filter, nearestStart, nearestTarget, polys, polyCount, smooth.data(), &smoothCount, smoothLimit)) || smoothCount < 2)
         {
             return 0;
         }
+        if (outTimings)
+            outTimings->find_smooth_path_nanos = elapsedNanos(findSmoothPathStart);
 
         for (int i = 0; i < smoothCount; ++i)
         {
@@ -576,10 +612,13 @@ int wow_mmap_find_random_path(
     unsigned short includeFlags,
     unsigned short excludeFlags,
     WowMmapPathPoint* outPoints,
-    int maxPoints) noexcept
+    int maxPoints,
+    WowMmapCallTimings* outTimings) noexcept
 {
     try
     {
+        if (outTimings)
+            std::memset(outTimings, 0, sizeof(*outTimings));
         if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
             return -1;
         if (startTileX > 63 || startTileY > 63)
@@ -601,6 +640,7 @@ int wow_mmap_find_random_path(
         if (!tileForPosition(targetX, targetY, targetTileX, targetTileY))
             return -9;
 
+        const auto lockAndTileLoadStart = SteadyClock::now();
         std::lock_guard<std::mutex> lock(g_mapsMutex);
         int loadMapError = -2;
         CachedMap* cached = loadMapDataLocked(dataDir, mapId, &loadMapError);
@@ -611,12 +651,17 @@ int wow_mmap_find_random_path(
             return -3;
         if (!loadNeighborTilesLocked(*cached, dataDir, mapId, targetTileX, targetTileY))
             return -4;
+        if (outTimings)
+            outTimings->lock_and_tile_load_nanos = elapsedNanos(lockAndTileLoadStart);
 
+        const auto queryAllocInitStart = SteadyClock::now();
         std::unique_ptr<dtNavMeshQuery, decltype(&dtFreeNavMeshQuery)> query(dtAllocNavMeshQuery(), dtFreeNavMeshQuery);
         if (!query)
             return -5;
         if (dtStatusFailed(query->init(cached->mesh, 2048)))
             return -6;
+        if (outTimings)
+            outTimings->query_alloc_init_nanos = elapsedNanos(queryAllocInitStart);
 
         dtQueryFilter filter;
         filter.setIncludeFlags(includeFlags);
@@ -630,6 +675,7 @@ int wow_mmap_find_random_path(
         dtPolyRef startRef = 0;
         dtPolyRef targetRef = 0;
 
+        const auto nearestPolyStart = SteadyClock::now();
         if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
             return 0;
         if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
@@ -637,17 +683,25 @@ int wow_mmap_find_random_path(
         if (dtStatusFailed(query->getPolyHeight(targetRef, nearestTarget, &nearestTarget[1])))
             return 0;
         dtVcopy(targetPoint, nearestTarget);
+        if (outTimings)
+            outTimings->find_nearest_poly_nanos = elapsedNanos(nearestPolyStart);
 
         dtPolyRef polys[MAX_PATH_POLYS];
         int polyCount = 0;
+        const auto findPathStart = SteadyClock::now();
         if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, targetPoint, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
             return 0;
+        if (outTimings)
+            outTimings->find_path_nanos = elapsedNanos(findPathStart);
 
         const int smoothLimit = maxPoints < MAX_SMOOTH_POINTS ? maxPoints : MAX_SMOOTH_POINTS;
         std::vector<float> smooth(smoothLimit * VERTEX_SIZE);
         int smoothCount = 0;
+        const auto findSmoothPathStart = SteadyClock::now();
         if (dtStatusFailed(findSmoothPath(cached->mesh, query.get(), filter, nearestStart, targetPoint, polys, polyCount, smooth.data(), &smoothCount, smoothLimit)) || smoothCount < 2)
             return 0;
+        if (outTimings)
+            outTimings->find_smooth_path_nanos = elapsedNanos(findSmoothPathStart);
 
         for (int i = 0; i < smoothCount; ++i)
         {

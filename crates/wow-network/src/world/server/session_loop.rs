@@ -171,12 +171,20 @@ pub(in crate::world) async fn handle_client(
                     read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
                 ) => match read_result {
                 Ok(Ok((opcode, body))) => {
+                    let packet_branch_started_at = Instant::now();
                     let parsed_packet = packets::parse_world_client_packet(opcode, &body)?;
                     let opcode = parsed_packet.opcode();
-                    last_client_packet_at = Instant::now();
+                    let packet_received_at = Instant::now();
+                    last_client_packet_at = packet_received_at;
+                    let refresh_started_at = Instant::now();
                     let map_player_died =
                         refresh_active_player_session_cache(&runtime_state.maps, &mut session)
                             .await;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
+                        refresh_started_at.elapsed(),
+                    );
+                    let finalize_death_started_at = Instant::now();
                     finalize_map_owned_player_death_if_needed(
                         &mut stream,
                         &character_db_pool,
@@ -191,6 +199,10 @@ pub(in crate::world) async fn handle_client(
                         map_player_died,
                     )
                     .await?;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
+                        finalize_death_started_at.elapsed(),
+                    );
                     if is_movement_opcode(opcode) {
                         debug!(
                             opcode = format_args!("0x{opcode:04X}"),
@@ -212,6 +224,7 @@ pub(in crate::world) async fn handle_client(
                     )
                     .await
                     {
+                        let pending_spell_started_at = Instant::now();
                         complete_pending_player_spell_cast(
                             &mut stream,
                             SpellCastDeps {
@@ -229,6 +242,10 @@ pub(in crate::world) async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
+                            pending_spell_started_at.elapsed(),
+                        );
                     }
 
                     let mut dispatch_context = WorldPacketDispatchContext {
@@ -243,7 +260,26 @@ pub(in crate::world) async fn handle_client(
                         session: &mut session,
                         header_crypto: &mut header_crypto,
                     };
-                    dispatch_world_packet(&mut dispatch_context, &parsed_packet, &body).await?;
+                    crate::observability::record_world_packet_dispatch_delay(
+                        opcode,
+                        packet_received_at.elapsed(),
+                    );
+                    let packet_handler_started_at = Instant::now();
+                    let dispatch_result =
+                        dispatch_world_packet(&mut dispatch_context, &parsed_packet, &body).await;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::PacketDispatch,
+                        packet_handler_started_at.elapsed(),
+                    );
+                    crate::observability::record_world_packet_handler_duration(
+                        opcode,
+                        packet_handler_started_at.elapsed(),
+                    );
+                    crate::observability::record_world_packet_service_time(
+                        opcode,
+                        packet_received_at.elapsed(),
+                    );
+                    dispatch_result?;
 
                     if pending_player_spell_cast_is_due(
                         runtime_state.maps.as_ref(),
@@ -252,6 +288,7 @@ pub(in crate::world) async fn handle_client(
                     )
                     .await
                     {
+                        let pending_spell_started_at = Instant::now();
                         complete_pending_player_spell_cast(
                             &mut stream,
                             SpellCastDeps {
@@ -269,6 +306,10 @@ pub(in crate::world) async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
+                            pending_spell_started_at.elapsed(),
+                        );
                     }
                     if complete_pending_logout_if_due(
                         &mut stream,
@@ -286,10 +327,20 @@ pub(in crate::world) async fn handle_client(
                     )
                     .await?
                     {
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
+                            packet_branch_started_at.elapsed(),
+                        );
                         continue;
                     }
+                    let sync_started_at = Instant::now();
                     sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::SyncGameplayState,
+                        sync_started_at.elapsed(),
+                    );
                     if Instant::now() >= next_world_tick_at {
+                        let combat_tick_started_at = Instant::now();
                         handle_combat_tick(
                             &mut stream,
                             CombatTickDeps {
@@ -307,6 +358,11 @@ pub(in crate::world) async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::CombatTick,
+                            combat_tick_started_at.elapsed(),
+                        );
+                        let loot_timeouts_started_at = Instant::now();
                         handle_loot_roll_timeouts(
                             &mut stream,
                             LootMutationDeps {
@@ -323,13 +379,26 @@ pub(in crate::world) async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::LootRollTimeouts,
+                            loot_timeouts_started_at.elapsed(),
+                        );
+                        let sync_started_at = Instant::now();
                         sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::SyncGameplayState,
+                            sync_started_at.elapsed(),
+                        );
                         advance_world_tick_deadline(
                             &mut next_world_tick_at,
                             Instant::now(),
                             world_tick_interval,
                         );
                     }
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
+                        packet_branch_started_at.elapsed(),
+                    );
                 }
                 Ok(Err(e)) => {
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
@@ -352,9 +421,16 @@ pub(in crate::world) async fn handle_client(
                     break Ok(());
                 }
                 Err(_) => {
+                    let timeout_branch_started_at = Instant::now();
+                    let refresh_started_at = Instant::now();
                     let map_player_died =
                         refresh_active_player_session_cache(&runtime_state.maps, &mut session)
                             .await;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
+                        refresh_started_at.elapsed(),
+                    );
+                    let finalize_death_started_at = Instant::now();
                     finalize_map_owned_player_death_if_needed(
                         &mut stream,
                         &character_db_pool,
@@ -369,6 +445,10 @@ pub(in crate::world) async fn handle_client(
                         map_player_died,
                     )
                     .await?;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
+                        finalize_death_started_at.elapsed(),
+                    );
                     if pending_player_spell_cast_is_due(
                         runtime_state.maps.as_ref(),
                         &session,
@@ -376,6 +456,7 @@ pub(in crate::world) async fn handle_client(
                     )
                     .await
                     {
+                        let pending_spell_started_at = Instant::now();
                         complete_pending_player_spell_cast(
                             &mut stream,
                             SpellCastDeps {
@@ -393,6 +474,10 @@ pub(in crate::world) async fn handle_client(
                             &mut header_crypto,
                         )
                         .await?;
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
+                            pending_spell_started_at.elapsed(),
+                        );
                     }
                     if complete_pending_logout_if_due(
                         &mut stream,
@@ -410,8 +495,13 @@ pub(in crate::world) async fn handle_client(
                     )
                     .await?
                     {
+                        crate::observability::record_world_session_loop_phase_duration(
+                            crate::observability::WorldSessionLoopPhase::TimeoutBranchTotal,
+                            timeout_branch_started_at.elapsed(),
+                        );
                         continue;
                     }
+                    let combat_tick_started_at = Instant::now();
                     handle_combat_tick(
                         &mut stream,
                         CombatTickDeps {
@@ -429,6 +519,11 @@ pub(in crate::world) async fn handle_client(
                         &mut header_crypto,
                     )
                     .await?;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::CombatTick,
+                        combat_tick_started_at.elapsed(),
+                    );
+                    let loot_timeouts_started_at = Instant::now();
                     handle_loot_roll_timeouts(
                         &mut stream,
                         LootMutationDeps {
@@ -445,11 +540,24 @@ pub(in crate::world) async fn handle_client(
                         &mut header_crypto,
                     )
                     .await?;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::LootRollTimeouts,
+                        loot_timeouts_started_at.elapsed(),
+                    );
+                    let sync_started_at = Instant::now();
                     sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::SyncGameplayState,
+                        sync_started_at.elapsed(),
+                    );
                     advance_world_tick_deadline(
                         &mut next_world_tick_at,
                         Instant::now(),
                         world_tick_interval,
+                    );
+                    crate::observability::record_world_session_loop_phase_duration(
+                        crate::observability::WorldSessionLoopPhase::TimeoutBranchTotal,
+                        timeout_branch_started_at.elapsed(),
                     );
                 }
                 }
@@ -510,28 +618,38 @@ pub(in crate::world) async fn handle_client(
 pub(in crate::world) async fn world_session_writer(
     session_id: SessionId,
     mut write_stream: OwnedWriteHalf,
-    mut outbound_rx: mpsc::Receiver<OutboundWorldPacket>,
+    mut outbound_rx: mpsc::Receiver<QueuedOutboundWorldPacket>,
     mut header_crypto: HeaderCrypto,
     disconnect_tx: mpsc::Sender<WorldSessionDisconnectReason>,
 ) {
-    while let Some(packet) = outbound_rx.recv().await {
+    while let Some(queued) = outbound_rx.recv().await {
+        crate::observability::record_world_packet_outbound_queue_latency(
+            queued.packet.opcode,
+            queued.enqueued_at.elapsed(),
+        );
+        let write_started_at = Instant::now();
         match timeout(
             WORLD_SESSION_WRITE_TIMEOUT,
             send_packet_direct(
                 &mut write_stream,
-                packet.opcode,
-                &packet.body,
+                queued.packet.opcode,
+                &queued.packet.body,
                 Some(&mut header_crypto),
             ),
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                crate::observability::record_world_packet_write_duration(
+                    queued.packet.opcode,
+                    write_started_at.elapsed(),
+                );
+            }
             Ok(Err(error)) => {
                 let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteError);
                 warn!(
                     ?session_id,
-                    opcode = format_args!("0x{:04X}", packet.opcode),
+                    opcode = format_args!("0x{:04X}", queued.packet.opcode),
                     "World session writer stopped after socket write failed: {}",
                     error
                 );
@@ -541,7 +659,7 @@ pub(in crate::world) async fn world_session_writer(
                 let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteTimeout);
                 warn!(
                     ?session_id,
-                    opcode = format_args!("0x{:04X}", packet.opcode),
+                    opcode = format_args!("0x{:04X}", queued.packet.opcode),
                     timeout_ms = WORLD_SESSION_WRITE_TIMEOUT.as_millis(),
                     "World session writer stopped after socket write timed out"
                 );

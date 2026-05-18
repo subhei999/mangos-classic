@@ -228,11 +228,12 @@ impl WorldServer {
             bind_addr,
             login_db_pool,
             character_db_pool: character_db_pool.clone(),
-            world_db_pool,
+            world_db_pool: world_db_pool.clone(),
             runtime_state: WorldRuntimeState {
                 online_characters: Arc::new(Mutex::new(HashSet::new())),
                 delete_options,
                 character_db_pool: character_db_pool.clone(),
+                world_db_pool: world_db_pool.clone(),
                 world_data_files,
                 world_tick_interval,
                 game_event_schedules: Arc::new(game_event_schedules),

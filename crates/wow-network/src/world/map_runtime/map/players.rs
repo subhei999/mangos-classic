@@ -744,8 +744,14 @@ impl MapRuntime {
             player_guid,
             player_environment_needs_tick_processing(&player.environment),
         );
+        if player.bot_runtime.is_some() {
+            self.active_playerbot_count = self.active_playerbot_count.saturating_add(1);
+        }
+        let player_position = player.position;
         self.players.insert(player_guid, player);
-        self.invalidate_idle_motion_start_schedule();
+        self.sync_db_creature_idle_motion_tracking_for_player_interest_positions(&[
+            player_position,
+        ]);
 
         Ok(packets)
     }
@@ -997,7 +1003,6 @@ impl MapRuntime {
                 self.refresh_grid_state(old_grid);
             }
             self.refresh_grid_state(new_grid);
-            self.invalidate_idle_motion_start_schedule();
         }
 
         let mut environment_packets = Vec::new();
@@ -1154,7 +1159,10 @@ impl MapRuntime {
             Instant::now(),
             false,
         )?);
-        self.invalidate_idle_motion_start_schedule();
+        self.sync_db_creature_idle_motion_tracking_for_player_interest_positions(&[
+            current_player.position,
+            movement.position,
+        ]);
 
         Ok(packets)
     }
@@ -2230,6 +2238,7 @@ impl MapRuntime {
         }
     }
 
+    #[allow(dead_code)]
     pub(in crate::world) fn player_auto_attack_target(
         &self,
         character_guid: u32,
@@ -2662,6 +2671,9 @@ impl MapRuntime {
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };
+        if player.bot_runtime.is_some() {
+            self.active_playerbot_count = self.active_playerbot_count.saturating_sub(1);
+        }
         let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         self.active_player_spell_casts.remove(&character_guid);
         self.pending_spell_events
@@ -3306,7 +3318,7 @@ pub(in crate::world) fn player_environment_needs_periodic_revalidation(
     environment.flags != 0
         && environment
             .next_flags_refresh_at
-            .map_or(true, |next_refresh_at| now >= next_refresh_at)
+            .is_none_or(|next_refresh_at| now >= next_refresh_at)
 }
 
 fn refresh_player_environment_flags_with(

@@ -2,6 +2,8 @@ use anyhow::{ensure, Context};
 use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
+use sqlx::FromRow;
+use std::collections::HashSet;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
@@ -59,20 +61,27 @@ const DEFAULT_CENTER_Y: f32 = -132.0;
 const DEFAULT_CENTER_Z: f32 = 83.5;
 const DEFAULT_RADIUS: f32 = 150.0;
 const DEFAULT_MAP_ID: u32 = 0;
+const MAP_SIZE_YARDS: f32 = 34133.333;
+const MAX_NUMBER_OF_GRIDS: u32 = 64;
+const GRID_SIZE_YARDS: f32 = 533.333_3;
 
 const DEFAULT_MOVE_RADIUS: f32 = 6.0;
 const DEFAULT_CLIENT_COUNT: usize = 500;
 const DEFAULT_HOLD_SECONDS: u64 = 60;
+const DEFAULT_LOGIN_BOOTSTRAP_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_MOVE_INTERVAL_MS: u64 = 500;
 const DEFAULT_LOGIN_STAGGER_MS: u64 = 25;
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5;
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
-const LOGIN_READY_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_LOGIN_READY_TIMEOUT_SECS: u64 = 30;
+const CLIENT_THREAD_STACK_SIZE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 struct Config {
     client_count: usize,
     hold_seconds: u64,
+    login_bootstrap_timeout_secs: u64,
+    login_ready_timeout_secs: u64,
     move_interval_ms: u64,
     login_stagger_ms: u64,
     drain_timeout_ms: u64,
@@ -86,6 +95,7 @@ struct Config {
     character_database_url: String,
     world_database_url: String,
     map_id: u32,
+    spawn_mode: SpawnMode,
     center_x: f32,
     center_y: f32,
     center_z: f32,
@@ -97,11 +107,40 @@ struct Config {
     seed_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnMode {
+    LocalRadius,
+    CreatureGridScatter,
+}
+
+impl SpawnMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalRadius => "local_radius",
+            Self::CreatureGridScatter => "creature_grid_scatter",
+        }
+    }
+}
+
+impl std::str::FromStr for SpawnMode {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "local_radius" => Ok(Self::LocalRadius),
+            "creature_grid_scatter" => Ok(Self::CreatureGridScatter),
+            _ => Err("expected local_radius or creature_grid_scatter"),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             client_count: DEFAULT_CLIENT_COUNT,
             hold_seconds: DEFAULT_HOLD_SECONDS,
+            login_bootstrap_timeout_secs: DEFAULT_LOGIN_BOOTSTRAP_TIMEOUT_SECS,
+            login_ready_timeout_secs: DEFAULT_LOGIN_READY_TIMEOUT_SECS,
             move_interval_ms: DEFAULT_MOVE_INTERVAL_MS,
             login_stagger_ms: DEFAULT_LOGIN_STAGGER_MS,
             drain_timeout_ms: DEFAULT_DRAIN_TIMEOUT_MS,
@@ -115,6 +154,7 @@ impl Default for Config {
             character_database_url: DEFAULT_CHARACTER_DATABASE_URL.to_string(),
             world_database_url: DEFAULT_WORLD_DATABASE_URL.to_string(),
             map_id: DEFAULT_MAP_ID,
+            spawn_mode: SpawnMode::LocalRadius,
             center_x: DEFAULT_CENTER_X,
             center_y: DEFAULT_CENTER_Y,
             center_z: DEFAULT_CENTER_Z,
@@ -136,6 +176,15 @@ struct ClientSpec {
     character_name: String,
     character_guid: u32,
     spawn_position: WorldPosition,
+}
+
+#[derive(Debug, Clone, Copy, FromRow)]
+struct CreatureSpawnAnchor {
+    guid: u32,
+    position_x: f32,
+    position_y: f32,
+    position_z: f32,
+    orientation: f32,
 }
 
 #[derive(Debug)]
@@ -241,24 +290,38 @@ async fn main() -> anyhow::Result<()> {
         let stagger =
             Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
         let hold_duration = Duration::from_secs(config.hold_seconds);
+        let login_bootstrap_timeout = Duration::from_secs(config.login_bootstrap_timeout_secs);
+        let login_ready_timeout = Duration::from_secs(config.login_ready_timeout_secs);
         let drain_timeout = Duration::from_millis(config.drain_timeout_ms);
         let move_radius = config.move_radius;
         let max_attempts = config.max_attempts.max(1);
         let movement_start_gate = Arc::clone(&movement_start_gate);
-        handles.push(thread::spawn(move || {
-            thread::sleep(stagger);
-            run_client_with_retries(
-                &spec,
-                &auth_addr,
-                &world_addr,
-                hold_duration,
-                move_interval,
-                drain_timeout,
-                move_radius,
-                max_attempts,
-                movement_start_gate,
-            )
-        }));
+        let username = spec.username.clone();
+        let thread_name = format!("thin-client-{:04}", spec.index + 1);
+        let handle = thread::Builder::new()
+            // The load harness does shallow blocking I/O work. A smaller stack
+            // avoids unstable virtual-memory pressure when spinning up
+            // thousands of client threads on Windows.
+            .stack_size(CLIENT_THREAD_STACK_SIZE_BYTES)
+            .name(thread_name)
+            .spawn(move || {
+                thread::sleep(stagger);
+                run_client_with_retries(
+                    &spec,
+                    &auth_addr,
+                    &world_addr,
+                    hold_duration,
+                    login_bootstrap_timeout,
+                    login_ready_timeout,
+                    move_interval,
+                    drain_timeout,
+                    move_radius,
+                    max_attempts,
+                    movement_start_gate,
+                )
+            })
+            .with_context(|| format!("spawn thin-client thread {username}"))?;
+        handles.push(handle);
     }
 
     let mut total_movements = 0u64;
@@ -309,7 +372,14 @@ async fn seed_accounts_and_characters(
     world_pool: &MySqlPool,
 ) -> anyhow::Result<Vec<ClientSpec>> {
     let mut specs = Vec::with_capacity(config.client_count);
-    for index in 0..config.client_count {
+    let spawn_positions = seed_spawn_positions(config, world_pool)
+        .await
+        .context("prepare thin-client spawn positions")?;
+    for (index, spawn_position) in spawn_positions
+        .into_iter()
+        .enumerate()
+        .take(config.client_count)
+    {
         let username = format!("{}{:04}", config.account_prefix, index + 1);
         let account_id = seed_account(login_pool, &username, &config.password).await?;
         cleanup_account(login_pool, character_pool, account_id).await?;
@@ -336,8 +406,6 @@ async fn seed_accounts_and_characters(
             },
         )
         .await?;
-
-        let spawn_position = seeded_spawn_position(config, index as u32);
         wow_db::update_character_position(character_pool, account_id, created.guid, spawn_position)
             .await?;
         wow_db::refresh_realm_character_count(login_pool, character_pool, account_id, 1).await?;
@@ -352,6 +420,20 @@ async fn seed_accounts_and_characters(
         });
     }
     Ok(specs)
+}
+
+async fn seed_spawn_positions(
+    config: &Config,
+    world_pool: &MySqlPool,
+) -> anyhow::Result<Vec<WorldPosition>> {
+    match config.spawn_mode {
+        SpawnMode::LocalRadius => Ok((0..config.client_count)
+            .map(|index| seeded_spawn_position(config, index as u32))
+            .collect()),
+        SpawnMode::CreatureGridScatter => creature_grid_scatter_spawn_positions(config, world_pool)
+            .await
+            .context("load sparse creature-grid scatter positions"),
+    }
 }
 
 async fn seed_account(
@@ -419,11 +501,98 @@ fn seeded_spawn_position(config: &Config, index: u32) -> WorldPosition {
     )
 }
 
+async fn creature_grid_scatter_spawn_positions(
+    config: &Config,
+    world_pool: &MySqlPool,
+) -> anyhow::Result<Vec<WorldPosition>> {
+    let anchors = sqlx::query_as::<_, CreatureSpawnAnchor>(
+        "SELECT CAST(guid AS UNSIGNED) AS guid, \
+                CAST(position_x AS DOUBLE) AS position_x, \
+                CAST(position_y AS DOUBLE) AS position_y, \
+                CAST(position_z AS DOUBLE) AS position_z, \
+                CAST(orientation AS DOUBLE) AS orientation \
+         FROM creature \
+         WHERE map = ? \
+         ORDER BY guid ASC",
+    )
+    .bind(config.map_id)
+    .fetch_all(world_pool)
+    .await
+    .with_context(|| format!("load creature spawn anchors for map {}", config.map_id))?;
+
+    build_creature_grid_scatter_positions(config.map_id, config.client_count, &anchors)
+}
+
+fn build_creature_grid_scatter_positions(
+    map_id: u32,
+    client_count: usize,
+    anchors: &[CreatureSpawnAnchor],
+) -> anyhow::Result<Vec<WorldPosition>> {
+    let mut shuffled = anchors.to_vec();
+    shuffled.sort_by_key(|anchor| scatter_shuffle_key(u64::from(anchor.guid)));
+
+    let mut seen_grids = HashSet::new();
+    let mut ordered = Vec::with_capacity(shuffled.len());
+    let mut leftovers = Vec::new();
+    for anchor in shuffled {
+        let grid = grid_coord_for_world_axes(anchor.position_x, anchor.position_y);
+        if seen_grids.insert(grid) {
+            ordered.push(anchor);
+        } else {
+            leftovers.push(anchor);
+        }
+    }
+    ordered.extend(leftovers);
+
+    ensure!(
+        ordered.len() >= client_count,
+        "not enough map {} creature spawn anchors for {} clients",
+        map_id,
+        client_count
+    );
+
+    Ok(ordered
+        .into_iter()
+        .take(client_count)
+        .map(|anchor| {
+            WorldPosition::new(
+                map_id,
+                anchor.position_x,
+                anchor.position_y,
+                anchor.position_z,
+                anchor.orientation,
+            )
+        })
+        .collect())
+}
+
+fn grid_coord_for_world_axes(x: f32, y: f32) -> (u32, u32) {
+    let half = MAP_SIZE_YARDS / 2.0;
+    let grid_x = ((half - y) / GRID_SIZE_YARDS)
+        .floor()
+        .clamp(0.0, (MAX_NUMBER_OF_GRIDS - 1) as f32) as u32;
+    let grid_y = ((half - x) / GRID_SIZE_YARDS)
+        .floor()
+        .clamp(0.0, (MAX_NUMBER_OF_GRIDS - 1) as f32) as u32;
+    (grid_x, grid_y)
+}
+
+fn scatter_shuffle_key(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_client_with_retries(
     spec: &ClientSpec,
     auth_addr: &str,
     world_addr: &str,
     hold_duration: Duration,
+    login_bootstrap_timeout: Duration,
+    login_ready_timeout: Duration,
     move_interval: Duration,
     drain_timeout: Duration,
     move_radius: f32,
@@ -437,6 +606,8 @@ fn run_client_with_retries(
             auth_addr,
             world_addr,
             hold_duration,
+            login_bootstrap_timeout,
+            login_ready_timeout,
             move_interval,
             drain_timeout,
             move_radius,
@@ -462,11 +633,14 @@ fn run_client_with_retries(
         )))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_client(
     spec: &ClientSpec,
     auth_addr: &str,
     world_addr: &str,
     hold_duration: Duration,
+    login_bootstrap_timeout: Duration,
+    login_ready_timeout: Duration,
     move_interval: Duration,
     drain_timeout: Duration,
     move_radius: f32,
@@ -484,9 +658,9 @@ fn run_client(
             character.guid == spec.character_guid || character.name == spec.character_name
         })
         .with_context(|| format!("character enum missing {}", spec.character_name))?;
-    world.login_character(selected.guid)?;
+    world.login_character(selected.guid, login_bootstrap_timeout)?;
     movement_start_gate
-        .wait_until_open(Duration::from_secs(LOGIN_READY_TIMEOUT_SECS))
+        .wait_until_open(login_ready_timeout)
         .with_context(|| format!("movement start gate for {}", spec.username))?;
 
     let run_started_at = Instant::now();
@@ -740,11 +914,11 @@ fn moving_span_for_index(index: usize, step: u32) -> u32 {
 }
 
 fn should_adjust_facing(index: usize, step: u32, remaining_steps: u32) -> bool {
-    remaining_steps > 0 && (stable_u32(index, step, 2) % 3 == 0)
+    remaining_steps > 0 && stable_u32(index, step, 2).is_multiple_of(3)
 }
 
 fn should_jump_on_step(index: usize, step: u32, remaining_steps: u32) -> bool {
-    remaining_steps > 3 && stable_u32(index, step, 3) % 11 == 0
+    remaining_steps > 3 && stable_u32(index, step, 3).is_multiple_of(11)
 }
 
 fn idle_facing(base_orientation: f32, index: usize, step: u32) -> f32 {
@@ -903,7 +1077,7 @@ impl WorldClient {
         parse_char_enum(&body)
     }
 
-    fn login_character(&mut self, guid: u32) -> anyhow::Result<()> {
+    fn login_character(&mut self, guid: u32, bootstrap_timeout: Duration) -> anyhow::Result<()> {
         let guid = ObjectGuid::new(HighGuid::Player, 0, guid);
         write_client_packet(
             &mut self.stream,
@@ -911,13 +1085,12 @@ impl WorldClient {
             &guid.raw().to_le_bytes(),
             Some(&mut self.crypto),
         )?;
-        self.drain_login_bootstrap()?;
+        self.drain_login_bootstrap(bootstrap_timeout)?;
         Ok(())
     }
 
-    fn drain_login_bootstrap(&mut self) -> anyhow::Result<()> {
+    fn drain_login_bootstrap(&mut self, bootstrap_timeout: Duration) -> anyhow::Result<()> {
         const LOGIN_BOOTSTRAP_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
-        const LOGIN_BOOTSTRAP_MAX_DURATION: Duration = Duration::from_secs(15);
         const LOGIN_BOOTSTRAP_POST_UPDATE_DRAIN: Duration = Duration::from_secs(1);
 
         let started = Instant::now();
@@ -929,12 +1102,12 @@ impl WorldClient {
                 self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                 return Ok(());
             }
-            if started.elapsed() >= LOGIN_BOOTSTRAP_MAX_DURATION {
+            if started.elapsed() >= bootstrap_timeout {
                 self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                 ensure!(
                     saw_update,
                     "login bootstrap exceeded {:?} before receiving SMSG_UPDATE_OBJECT",
-                    LOGIN_BOOTSTRAP_MAX_DURATION
+                    bootstrap_timeout
                 );
                 return Ok(());
             }
@@ -1208,6 +1381,12 @@ fn parse_args() -> anyhow::Result<Config> {
             "--hold-seconds" => {
                 config.hold_seconds = parse_value(&arg, args.next())?;
             }
+            "--login-bootstrap-timeout-secs" => {
+                config.login_bootstrap_timeout_secs = parse_value(&arg, args.next())?;
+            }
+            "--login-ready-timeout-secs" => {
+                config.login_ready_timeout_secs = parse_value(&arg, args.next())?;
+            }
             "--move-interval-ms" => {
                 config.move_interval_ms = parse_value(&arg, args.next())?;
             }
@@ -1246,6 +1425,9 @@ fn parse_args() -> anyhow::Result<Config> {
             }
             "--map-id" => {
                 config.map_id = parse_value(&arg, args.next())?;
+            }
+            "--spawn-mode" => {
+                config.spawn_mode = parse_value(&arg, args.next())?;
             }
             "--center-x" => {
                 config.center_x = parse_value(&arg, args.next())?;
@@ -1302,6 +1484,10 @@ fn print_usage() {
     println!("world-load-test");
     println!("  --client-count <n>          Default: {DEFAULT_CLIENT_COUNT}");
     println!("  --hold-seconds <secs>       Default: {DEFAULT_HOLD_SECONDS}");
+    println!(
+        "  --login-bootstrap-timeout-secs <secs> Default: {DEFAULT_LOGIN_BOOTSTRAP_TIMEOUT_SECS}"
+    );
+    println!("  --login-ready-timeout-secs <secs> Default: {DEFAULT_LOGIN_READY_TIMEOUT_SECS}");
     println!("  --move-interval-ms <ms>     Default: {DEFAULT_MOVE_INTERVAL_MS}");
     println!("  --login-stagger-ms <ms>     Default: {DEFAULT_LOGIN_STAGGER_MS}");
     println!("  --drain-timeout-ms <ms>     Default: {DEFAULT_DRAIN_TIMEOUT_MS}");
@@ -1315,6 +1501,10 @@ fn print_usage() {
     println!("  --character-db-url <url>");
     println!("  --world-db-url <url>");
     println!("  --map-id <id>               Default: {DEFAULT_MAP_ID}");
+    println!(
+        "  --spawn-mode <mode>         Default: {} (local_radius | creature_grid_scatter)",
+        SpawnMode::LocalRadius.as_str()
+    );
     println!("  --center-x <x>              Default: {DEFAULT_CENTER_X}");
     println!("  --center-y <y>              Default: {DEFAULT_CENTER_Y}");
     println!("  --center-z <z>              Default: {DEFAULT_CENTER_Z}");
@@ -1435,6 +1625,74 @@ mod tests {
             .expect_err("worker should see abort");
         assert!(
             error.to_string().contains("aborted"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn creature_grid_scatter_prioritizes_unique_grids_before_reuse() {
+        let anchors = vec![
+            CreatureSpawnAnchor {
+                guid: 1,
+                position_x: -8949.0,
+                position_y: -132.0,
+                position_z: 83.5,
+                orientation: 0.0,
+            },
+            CreatureSpawnAnchor {
+                guid: 2,
+                position_x: -8950.0,
+                position_y: -130.0,
+                position_z: 83.5,
+                orientation: 0.0,
+            },
+            CreatureSpawnAnchor {
+                guid: 3,
+                position_x: -1000.0,
+                position_y: 1000.0,
+                position_z: 25.0,
+                orientation: 1.0,
+            },
+            CreatureSpawnAnchor {
+                guid: 4,
+                position_x: 5000.0,
+                position_y: -5000.0,
+                position_z: 30.0,
+                orientation: 2.0,
+            },
+        ];
+
+        let positions =
+            build_creature_grid_scatter_positions(0, 4, &anchors).expect("scatter positions");
+
+        let first_three_grids = positions
+            .iter()
+            .take(3)
+            .map(|position| grid_coord_for_world_axes(position.x, position.y))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            first_three_grids.len(),
+            3,
+            "first pass should consume unique grids before reusing one"
+        );
+    }
+
+    #[test]
+    fn creature_grid_scatter_requires_enough_anchors() {
+        let anchors = vec![CreatureSpawnAnchor {
+            guid: 1,
+            position_x: -8949.0,
+            position_y: -132.0,
+            position_z: 83.5,
+            orientation: 0.0,
+        }];
+
+        let error = build_creature_grid_scatter_positions(0, 2, &anchors)
+            .expect_err("insufficient anchors should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("not enough map 0 creature spawn anchors"),
             "unexpected error: {error:#}"
         );
     }

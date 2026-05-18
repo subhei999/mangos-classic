@@ -1,4 +1,5 @@
 use super::*;
+use std::cmp::Ordering;
 
 // CMaNGOS reference: src/game/DBScripts/ScriptMgr.* and
 // src/game/Globals/ObjectMgr.cpp DoDisplayText.
@@ -82,6 +83,50 @@ pub(in crate::world) struct PendingDbScriptAction {
     pub(in crate::world) due_at: Instant,
     pub(in crate::world) source: ObjectGuid,
     pub(in crate::world) command: wow_db::DbScriptCommandQuery,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct ScheduledPendingDbScriptAction {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) priority: u32,
+    pub(in crate::world) sequence: u64,
+    pub(in crate::world) action: PendingDbScriptAction,
+}
+
+impl ScheduledPendingDbScriptAction {
+    pub(in crate::world) fn new(action: PendingDbScriptAction, sequence: u64) -> Self {
+        Self {
+            due_at: action.due_at,
+            priority: action.command.priority,
+            sequence,
+            action,
+        }
+    }
+}
+
+impl PartialEq for ScheduledPendingDbScriptAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.due_at == other.due_at
+            && self.priority == other.priority
+            && self.sequence == other.sequence
+    }
+}
+
+impl Eq for ScheduledPendingDbScriptAction {}
+
+impl PartialOrd for ScheduledPendingDbScriptAction {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScheduledPendingDbScriptAction {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.due_at
+            .cmp(&other.due_at)
+            .then_with(|| self.priority.cmp(&other.priority))
+            .then_with(|| self.sequence.cmp(&other.sequence))
+    }
 }
 
 pub(in crate::world) const SCRIPT_COMMAND_TALK: u32 = 0;

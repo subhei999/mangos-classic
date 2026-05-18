@@ -1,6 +1,7 @@
 use super::*;
 
 use std::ffi::CStr;
+use std::time::Duration;
 
 pub(in crate::world) const MAX_NATIVE_MMAP_PATH_POINTS: usize = 74;
 
@@ -28,6 +29,16 @@ pub(in crate::world) struct NativeMmapPathPoint {
     pub(in crate::world) z: f32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::world) struct NativeMmapCallTimings {
+    pub(in crate::world) lock_and_tile_load_nanos: u64,
+    pub(in crate::world) query_alloc_init_nanos: u64,
+    pub(in crate::world) find_nearest_poly_nanos: u64,
+    pub(in crate::world) find_path_nanos: u64,
+    pub(in crate::world) find_smooth_path_nanos: u64,
+}
+
 extern "C" {
     pub(in crate::world) fn wow_mmap_find_path(
         data_dir: *const std::os::raw::c_char,
@@ -46,6 +57,7 @@ extern "C" {
         exclude_flags: u16,
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
+        out_timings: *mut NativeMmapCallTimings,
     ) -> i32;
 
     pub(in crate::world) fn wow_mmap_find_random_path(
@@ -66,6 +78,7 @@ extern "C" {
         exclude_flags: u16,
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
+        out_timings: *mut NativeMmapCallTimings,
     ) -> i32;
 }
 
@@ -117,6 +130,7 @@ pub(in crate::world) fn native_mmap_find_path(
         y: 0.0,
         z: 0.0,
     }; MAX_NATIVE_MMAP_PATH_POINTS];
+    let mut timings = NativeMmapCallTimings::default();
 
     // SAFETY: this is the only Rust call into the Detour mmap bridge. The C
     // string comes from `CString`, positions and tile ids are range-checked
@@ -141,8 +155,14 @@ pub(in crate::world) fn native_mmap_find_path(
             filter.exclude_flags,
             points.as_mut_ptr(),
             MAX_NATIVE_MMAP_PATH_POINTS as i32,
+            &mut timings,
         )
     };
+
+    crate::observability::record_native_mmap_query(
+        crate::observability::NativeMmapQueryKind::Path,
+        native_mmap_query_timings(timings),
+    );
 
     native_mmap_path_from_count(start.map_id, count, &points)
 }
@@ -181,6 +201,7 @@ pub(in crate::world) fn native_mmap_find_random_path(
         y: 0.0,
         z: 0.0,
     }; MAX_NATIVE_MMAP_PATH_POINTS];
+    let mut timings = NativeMmapCallTimings::default();
 
     // SAFETY: the C string comes from `CString`, the start position and tile are
     // validated above, and the output buffer length matches `max_points`.
@@ -203,10 +224,28 @@ pub(in crate::world) fn native_mmap_find_random_path(
             request.filter.exclude_flags,
             points.as_mut_ptr(),
             MAX_NATIVE_MMAP_PATH_POINTS as i32,
+            &mut timings,
         )
     };
 
+    crate::observability::record_native_mmap_query(
+        crate::observability::NativeMmapQueryKind::RandomPath,
+        native_mmap_query_timings(timings),
+    );
+
     native_mmap_path_from_count(request.start.map_id, count, &points)
+}
+
+fn native_mmap_query_timings(
+    timings: NativeMmapCallTimings,
+) -> crate::observability::NativeMmapQueryTimings {
+    crate::observability::NativeMmapQueryTimings {
+        lock_and_tile_load: Duration::from_nanos(timings.lock_and_tile_load_nanos),
+        query_alloc_init: Duration::from_nanos(timings.query_alloc_init_nanos),
+        find_nearest_poly: Duration::from_nanos(timings.find_nearest_poly_nanos),
+        find_path: Duration::from_nanos(timings.find_path_nanos),
+        find_smooth_path: Duration::from_nanos(timings.find_smooth_path_nanos),
+    }
 }
 
 pub(in crate::world) fn native_mmap_path_from_count(

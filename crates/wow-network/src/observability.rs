@@ -43,6 +43,12 @@ struct MetricsRegistry {
     world_packets_in: Mutex<HashMap<u32, u64>>,
     world_packets_out: Mutex<HashMap<u32, u64>>,
     world_unknown_opcodes: Mutex<HashMap<u32, u64>>,
+    world_packet_dispatch_delay: Mutex<HashMap<u32, Histogram>>,
+    world_packet_handler_duration: Mutex<HashMap<u32, Histogram>>,
+    world_packet_service_time: Mutex<HashMap<u32, Histogram>>,
+    world_packet_outbound_queue_latency: Mutex<HashMap<u32, Histogram>>,
+    world_packet_write_duration: Mutex<HashMap<u32, Histogram>>,
+    world_session_loop_phase_duration: WorldSessionLoopPhaseDurations,
     world_session_disconnects: Mutex<HashMap<&'static str, u64>>,
     world_outbound_queue_full_total: AtomicU64,
     world_outbound_queue_depth_latest: AtomicU64,
@@ -56,6 +62,7 @@ struct MetricsRegistry {
     movement_actor_batch_size: NumericStats,
     movement_map_mutex_wait: Histogram,
     movement_map_mutex_hold: Histogram,
+    native_mmap: NativeMmapMetrics,
     player_environment_geometry_checks_total: AtomicU64,
     player_environment_cached_skips_total: AtomicU64,
     player_environment_login_refreshes_total: AtomicU64,
@@ -63,6 +70,7 @@ struct MetricsRegistry {
     player_environment_teleport_refreshes_total: AtomicU64,
     player_environment_periodic_revalidations_total: AtomicU64,
     player_environment_timer_only_processing_total: AtomicU64,
+    idle_motion_subphases: IdleMotionSubphaseMetrics,
     player_environment_subphases: PlayerEnvironmentSubphaseMetrics,
 }
 
@@ -72,6 +80,8 @@ pub struct MapRuntimeSnapshot {
     pub instance_id: u32,
     pub active_players: u64,
     pub active_playerbots: u64,
+    pub tracked_idle_motion_creatures: u64,
+    pub tracked_idle_motion_start_candidates: u64,
     pub active_creatures: u64,
     pub active_gameobjects: u64,
     pub loaded_grids: u64,
@@ -218,8 +228,66 @@ struct PlayerEnvironmentSubphaseMetrics {
     nearby_fanout_time: Histogram,
 }
 
+#[derive(Default)]
+struct IdleMotionSubphaseMetrics {
+    due_creatures: NumericStats,
+    started_creatures: NumericStats,
+    packets_emitted: NumericStats,
+    advancement_queue_pop_time: Histogram,
+    advancement_validation_time: Histogram,
+    motion_advance_time: Histogram,
+    spatial_update_time: Histogram,
+    start_queue_pop_time: Histogram,
+    motion_start_time: Histogram,
+    motion_start_path_build_time: Histogram,
+    motion_start_snapshot_clone_time: Histogram,
+    motion_start_post_start_tracking_time: Histogram,
+    motion_start_broadcast_time: Histogram,
+    motion_script_schedule_time: Histogram,
+    pending_script_execution_time: Histogram,
+    start_schedule_rebuild_time: Histogram,
+}
+
+#[derive(Default)]
+struct NativeMmapMetrics {
+    path_calls_total: AtomicU64,
+    random_path_calls_total: AtomicU64,
+    path: NativeMmapStageMetrics,
+    random_path: NativeMmapStageMetrics,
+}
+
+#[derive(Default)]
+struct NativeMmapStageMetrics {
+    lock_and_tile_load_time: Histogram,
+    query_alloc_init_time: Histogram,
+    find_nearest_poly_time: Histogram,
+    find_path_time: Histogram,
+    find_smooth_path_time: Histogram,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NativeMmapQueryKind {
+    Path,
+    RandomPath,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NativeMmapQueryTimings {
+    pub(crate) lock_and_tile_load: Duration,
+    pub(crate) query_alloc_init: Duration,
+    pub(crate) find_nearest_poly: Duration,
+    pub(crate) find_path: Duration,
+    pub(crate) find_smooth_path: Duration,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum MapTickPhase {
+    StaticGameEventRefresh,
+    StaticGameEventRefreshDispatch,
+    DbCreatureLifecycle,
+    DbCreatureLifecycleDispatch,
+    DbCreatureOocEventAi,
+    DbCreatureOocEventAiDispatch,
     IdleMotion,
     IdleMotionDispatch,
     PlayerEnvironment,
@@ -233,11 +301,26 @@ pub enum MapTickPhase {
     PlayerRegenDispatch,
     AuraExpiration,
     AuraExpirationDispatch,
+    DynamicObjects,
+    DynamicObjectsDispatch,
+    PlayerChannels,
+    PlayerChannelsDispatch,
+    DbCreatureAuras,
+    DbCreatureAurasDispatch,
+    PlayerDeathPresentation,
+    PlayerDeathPresentationDispatch,
+    ObservabilitySnapshot,
 }
 
 impl MapTickPhase {
     fn label(self) -> &'static str {
         match self {
+            Self::StaticGameEventRefresh => "static_game_event_refresh",
+            Self::StaticGameEventRefreshDispatch => "static_game_event_refresh_dispatch",
+            Self::DbCreatureLifecycle => "db_creature_lifecycle",
+            Self::DbCreatureLifecycleDispatch => "db_creature_lifecycle_dispatch",
+            Self::DbCreatureOocEventAi => "db_creature_ooc_event_ai",
+            Self::DbCreatureOocEventAiDispatch => "db_creature_ooc_event_ai_dispatch",
             Self::IdleMotion => "idle_motion",
             Self::IdleMotionDispatch => "idle_motion_dispatch",
             Self::PlayerEnvironment => "player_environment",
@@ -251,11 +334,67 @@ impl MapTickPhase {
             Self::PlayerRegenDispatch => "player_regen_dispatch",
             Self::AuraExpiration => "aura_expiration",
             Self::AuraExpirationDispatch => "aura_expiration_dispatch",
+            Self::DynamicObjects => "dynamic_objects",
+            Self::DynamicObjectsDispatch => "dynamic_objects_dispatch",
+            Self::PlayerChannels => "player_channels",
+            Self::PlayerChannelsDispatch => "player_channels_dispatch",
+            Self::DbCreatureAuras => "db_creature_auras",
+            Self::DbCreatureAurasDispatch => "db_creature_auras_dispatch",
+            Self::PlayerDeathPresentation => "player_death_presentation",
+            Self::PlayerDeathPresentationDispatch => "player_death_presentation_dispatch",
+            Self::ObservabilitySnapshot => "observability_snapshot",
         }
     }
 }
 
-const MAP_TICK_PHASES: [MapTickPhase; 13] = [
+#[derive(Debug, Clone, Copy)]
+pub enum WorldSessionLoopPhase {
+    RefreshActivePlayerCache,
+    FinalizePlayerDeath,
+    PendingSpellCompletion,
+    PacketDispatch,
+    SyncGameplayState,
+    CombatTick,
+    LootRollTimeouts,
+    PacketBranchTotal,
+    TimeoutBranchTotal,
+}
+
+impl WorldSessionLoopPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RefreshActivePlayerCache => "refresh_active_player_cache",
+            Self::FinalizePlayerDeath => "finalize_player_death",
+            Self::PendingSpellCompletion => "pending_spell_completion",
+            Self::PacketDispatch => "packet_dispatch",
+            Self::SyncGameplayState => "sync_gameplay_state",
+            Self::CombatTick => "combat_tick",
+            Self::LootRollTimeouts => "loot_roll_timeouts",
+            Self::PacketBranchTotal => "packet_branch_total",
+            Self::TimeoutBranchTotal => "timeout_branch_total",
+        }
+    }
+}
+
+const WORLD_SESSION_LOOP_PHASES: [WorldSessionLoopPhase; 9] = [
+    WorldSessionLoopPhase::RefreshActivePlayerCache,
+    WorldSessionLoopPhase::FinalizePlayerDeath,
+    WorldSessionLoopPhase::PendingSpellCompletion,
+    WorldSessionLoopPhase::PacketDispatch,
+    WorldSessionLoopPhase::SyncGameplayState,
+    WorldSessionLoopPhase::CombatTick,
+    WorldSessionLoopPhase::LootRollTimeouts,
+    WorldSessionLoopPhase::PacketBranchTotal,
+    WorldSessionLoopPhase::TimeoutBranchTotal,
+];
+
+const MAP_TICK_PHASES: [MapTickPhase; 28] = [
+    MapTickPhase::StaticGameEventRefresh,
+    MapTickPhase::StaticGameEventRefreshDispatch,
+    MapTickPhase::DbCreatureLifecycle,
+    MapTickPhase::DbCreatureLifecycleDispatch,
+    MapTickPhase::DbCreatureOocEventAi,
+    MapTickPhase::DbCreatureOocEventAiDispatch,
     MapTickPhase::IdleMotion,
     MapTickPhase::IdleMotionDispatch,
     MapTickPhase::PlayerEnvironment,
@@ -269,10 +408,25 @@ const MAP_TICK_PHASES: [MapTickPhase; 13] = [
     MapTickPhase::PlayerRegenDispatch,
     MapTickPhase::AuraExpiration,
     MapTickPhase::AuraExpirationDispatch,
+    MapTickPhase::DynamicObjects,
+    MapTickPhase::DynamicObjectsDispatch,
+    MapTickPhase::PlayerChannels,
+    MapTickPhase::PlayerChannelsDispatch,
+    MapTickPhase::DbCreatureAuras,
+    MapTickPhase::DbCreatureAurasDispatch,
+    MapTickPhase::PlayerDeathPresentation,
+    MapTickPhase::PlayerDeathPresentationDispatch,
+    MapTickPhase::ObservabilitySnapshot,
 ];
 
 #[derive(Default)]
 struct MapPhaseDurations {
+    static_game_event_refresh: Histogram,
+    static_game_event_refresh_dispatch: Histogram,
+    db_creature_lifecycle: Histogram,
+    db_creature_lifecycle_dispatch: Histogram,
+    db_creature_ooc_event_ai: Histogram,
+    db_creature_ooc_event_ai_dispatch: Histogram,
     idle_motion: Histogram,
     idle_motion_dispatch: Histogram,
     player_environment: Histogram,
@@ -286,11 +440,57 @@ struct MapPhaseDurations {
     player_regen_dispatch: Histogram,
     aura_expiration: Histogram,
     aura_expiration_dispatch: Histogram,
+    dynamic_objects: Histogram,
+    dynamic_objects_dispatch: Histogram,
+    player_channels: Histogram,
+    player_channels_dispatch: Histogram,
+    db_creature_auras: Histogram,
+    db_creature_auras_dispatch: Histogram,
+    player_death_presentation: Histogram,
+    player_death_presentation_dispatch: Histogram,
+    observability_snapshot: Histogram,
+}
+
+#[derive(Default)]
+struct WorldSessionLoopPhaseDurations {
+    refresh_active_player_cache: Histogram,
+    finalize_player_death: Histogram,
+    pending_spell_completion: Histogram,
+    packet_dispatch: Histogram,
+    sync_gameplay_state: Histogram,
+    combat_tick: Histogram,
+    loot_roll_timeouts: Histogram,
+    packet_branch_total: Histogram,
+    timeout_branch_total: Histogram,
+}
+
+impl WorldSessionLoopPhaseDurations {
+    fn get(&self, phase: WorldSessionLoopPhase) -> &Histogram {
+        match phase {
+            WorldSessionLoopPhase::RefreshActivePlayerCache => &self.refresh_active_player_cache,
+            WorldSessionLoopPhase::FinalizePlayerDeath => &self.finalize_player_death,
+            WorldSessionLoopPhase::PendingSpellCompletion => &self.pending_spell_completion,
+            WorldSessionLoopPhase::PacketDispatch => &self.packet_dispatch,
+            WorldSessionLoopPhase::SyncGameplayState => &self.sync_gameplay_state,
+            WorldSessionLoopPhase::CombatTick => &self.combat_tick,
+            WorldSessionLoopPhase::LootRollTimeouts => &self.loot_roll_timeouts,
+            WorldSessionLoopPhase::PacketBranchTotal => &self.packet_branch_total,
+            WorldSessionLoopPhase::TimeoutBranchTotal => &self.timeout_branch_total,
+        }
+    }
 }
 
 impl MapPhaseDurations {
     fn get(&self, phase: MapTickPhase) -> &Histogram {
         match phase {
+            MapTickPhase::StaticGameEventRefresh => &self.static_game_event_refresh,
+            MapTickPhase::StaticGameEventRefreshDispatch => {
+                &self.static_game_event_refresh_dispatch
+            }
+            MapTickPhase::DbCreatureLifecycle => &self.db_creature_lifecycle,
+            MapTickPhase::DbCreatureLifecycleDispatch => &self.db_creature_lifecycle_dispatch,
+            MapTickPhase::DbCreatureOocEventAi => &self.db_creature_ooc_event_ai,
+            MapTickPhase::DbCreatureOocEventAiDispatch => &self.db_creature_ooc_event_ai_dispatch,
             MapTickPhase::IdleMotion => &self.idle_motion,
             MapTickPhase::IdleMotionDispatch => &self.idle_motion_dispatch,
             MapTickPhase::PlayerEnvironment => &self.player_environment,
@@ -304,6 +504,17 @@ impl MapPhaseDurations {
             MapTickPhase::PlayerRegenDispatch => &self.player_regen_dispatch,
             MapTickPhase::AuraExpiration => &self.aura_expiration,
             MapTickPhase::AuraExpirationDispatch => &self.aura_expiration_dispatch,
+            MapTickPhase::DynamicObjects => &self.dynamic_objects,
+            MapTickPhase::DynamicObjectsDispatch => &self.dynamic_objects_dispatch,
+            MapTickPhase::PlayerChannels => &self.player_channels,
+            MapTickPhase::PlayerChannelsDispatch => &self.player_channels_dispatch,
+            MapTickPhase::DbCreatureAuras => &self.db_creature_auras,
+            MapTickPhase::DbCreatureAurasDispatch => &self.db_creature_auras_dispatch,
+            MapTickPhase::PlayerDeathPresentation => &self.player_death_presentation,
+            MapTickPhase::PlayerDeathPresentationDispatch => {
+                &self.player_death_presentation_dispatch
+            }
+            MapTickPhase::ObservabilitySnapshot => &self.observability_snapshot,
         }
     }
 }
@@ -442,8 +653,55 @@ pub fn record_world_packet_in(opcode: u32) {
     increment_opcode(&registry().world_packets_in, opcode);
 }
 
+pub fn record_world_packet_dispatch_delay(opcode: u32, duration: Duration) {
+    let mut durations = registry()
+        .world_packet_dispatch_delay
+        .lock()
+        .expect("metrics world packet dispatch delay poisoned");
+    durations.entry(opcode).or_default().record(duration);
+}
+
+pub fn record_world_packet_handler_duration(opcode: u32, duration: Duration) {
+    let mut durations = registry()
+        .world_packet_handler_duration
+        .lock()
+        .expect("metrics world packet handler duration poisoned");
+    durations.entry(opcode).or_default().record(duration);
+}
+
+pub fn record_world_packet_service_time(opcode: u32, duration: Duration) {
+    let mut durations = registry()
+        .world_packet_service_time
+        .lock()
+        .expect("metrics world packet service time poisoned");
+    durations.entry(opcode).or_default().record(duration);
+}
+
 pub fn record_world_packet_out(opcode: u16) {
     increment_opcode(&registry().world_packets_out, opcode as u32);
+}
+
+pub fn record_world_packet_outbound_queue_latency(opcode: u16, duration: Duration) {
+    let mut durations = registry()
+        .world_packet_outbound_queue_latency
+        .lock()
+        .expect("metrics world packet outbound queue latency poisoned");
+    durations.entry(opcode as u32).or_default().record(duration);
+}
+
+pub fn record_world_packet_write_duration(opcode: u16, duration: Duration) {
+    let mut durations = registry()
+        .world_packet_write_duration
+        .lock()
+        .expect("metrics world packet write duration poisoned");
+    durations.entry(opcode as u32).or_default().record(duration);
+}
+
+pub fn record_world_session_loop_phase_duration(phase: WorldSessionLoopPhase, duration: Duration) {
+    registry()
+        .world_session_loop_phase_duration
+        .get(phase)
+        .record(duration);
 }
 
 pub fn record_world_unknown_opcode(opcode: u32) {
@@ -524,6 +782,45 @@ pub fn record_movement_map_mutex_hold(duration: Duration) {
     registry().movement_map_mutex_hold.record(duration);
 }
 
+pub(crate) fn record_native_mmap_query(kind: NativeMmapQueryKind, timings: NativeMmapQueryTimings) {
+    let metrics = &registry().native_mmap;
+    let stage_metrics = match kind {
+        NativeMmapQueryKind::Path => {
+            metrics.path_calls_total.fetch_add(1, Ordering::Relaxed);
+            &metrics.path
+        }
+        NativeMmapQueryKind::RandomPath => {
+            metrics
+                .random_path_calls_total
+                .fetch_add(1, Ordering::Relaxed);
+            &metrics.random_path
+        }
+    };
+    if !timings.lock_and_tile_load.is_zero() {
+        stage_metrics
+            .lock_and_tile_load_time
+            .record(timings.lock_and_tile_load);
+    }
+    if !timings.query_alloc_init.is_zero() {
+        stage_metrics
+            .query_alloc_init_time
+            .record(timings.query_alloc_init);
+    }
+    if !timings.find_nearest_poly.is_zero() {
+        stage_metrics
+            .find_nearest_poly_time
+            .record(timings.find_nearest_poly);
+    }
+    if !timings.find_path.is_zero() {
+        stage_metrics.find_path_time.record(timings.find_path);
+    }
+    if !timings.find_smooth_path.is_zero() {
+        stage_metrics
+            .find_smooth_path_time
+            .record(timings.find_smooth_path);
+    }
+}
+
 pub fn record_player_environment_geometry_check() {
     registry()
         .player_environment_geometry_checks_total
@@ -564,6 +861,118 @@ pub fn record_player_environment_timer_only_processing() {
     registry()
         .player_environment_timer_only_processing_total
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_idle_motion_due_creatures(creature_count: usize) {
+    registry()
+        .idle_motion_subphases
+        .due_creatures
+        .record(creature_count as u64);
+}
+
+pub fn record_idle_motion_started_creatures(creature_count: usize) {
+    registry()
+        .idle_motion_subphases
+        .started_creatures
+        .record(creature_count as u64);
+}
+
+pub fn record_idle_motion_packets_emitted(packet_count: usize) {
+    registry()
+        .idle_motion_subphases
+        .packets_emitted
+        .record(packet_count as u64);
+}
+
+pub fn record_idle_motion_advancement_queue_pop_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .advancement_queue_pop_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_advancement_validation_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .advancement_validation_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_advance_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_advance_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_spatial_update_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .spatial_update_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_start_queue_pop_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .start_queue_pop_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_start_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_start_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_start_path_build_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_start_path_build_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_start_snapshot_clone_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_start_snapshot_clone_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_start_post_start_tracking_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_start_post_start_tracking_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_start_broadcast_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_start_broadcast_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_motion_script_schedule_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .motion_script_schedule_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_pending_script_execution_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .pending_script_execution_time
+        .record(duration);
+}
+
+pub fn record_idle_motion_start_schedule_rebuild_time(duration: Duration) {
+    registry()
+        .idle_motion_subphases
+        .start_schedule_rebuild_time
+        .record(duration);
 }
 
 pub fn record_player_environment_players_scanned(players_scanned: usize) {
@@ -900,6 +1309,45 @@ pub fn render_prometheus() -> String {
         "Total authenticated world packets with no handler.",
         &metrics.world_unknown_opcodes,
     );
+    write_opcode_histogram_metric_summaries(
+        &mut body,
+        "wow_world_packet_dispatch_delay",
+        "authenticated world packet dispatch delay",
+        "Time from authenticated world packet receipt until handler dispatch began.",
+        &metrics.world_packet_dispatch_delay,
+    );
+    write_opcode_histogram_metric_summaries(
+        &mut body,
+        "wow_world_packet_handler_duration",
+        "authenticated world packet handler duration",
+        "Time spent handling an authenticated world packet by opcode.",
+        &metrics.world_packet_handler_duration,
+    );
+    write_opcode_histogram_metric_summaries(
+        &mut body,
+        "wow_world_packet_service_time",
+        "authenticated world packet service time",
+        "Time from authenticated world packet receipt until handler completion.",
+        &metrics.world_packet_service_time,
+    );
+    write_opcode_histogram_metric_summaries(
+        &mut body,
+        "wow_world_packet_outbound_queue_latency",
+        "authenticated world packet outbound queue latency",
+        "Time a world packet spent waiting in the session outbound queue before socket write.",
+        &metrics.world_packet_outbound_queue_latency,
+    );
+    write_opcode_histogram_metric_summaries(
+        &mut body,
+        "wow_world_packet_write_duration",
+        "authenticated world packet socket write duration",
+        "Time spent writing a world packet to the session socket.",
+        &metrics.world_packet_write_duration,
+    );
+    write_world_session_loop_phase_duration_summaries(
+        &mut body,
+        &metrics.world_session_loop_phase_duration,
+    );
     write_label_counter(
         &mut body,
         "wow_world_session_disconnects_total",
@@ -1132,6 +1580,7 @@ pub fn render_prometheus() -> String {
         "time movement work held the MapRuntime mutex while applying updates",
         &metrics.movement_map_mutex_hold,
     );
+    write_native_mmap_metrics(&mut body, &metrics.native_mmap);
     write_counter(
         &mut body,
         "wow_player_environment_geometry_checks_total",
@@ -1188,6 +1637,7 @@ pub fn render_prometheus() -> String {
             .player_environment_timer_only_processing_total
             .load(Ordering::Relaxed),
     );
+    write_idle_motion_subphase_metrics(&mut body, &metrics.idle_motion_subphases);
     write_player_environment_subphase_metrics(&mut body, &metrics.player_environment_subphases);
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
@@ -1447,6 +1897,299 @@ fn write_map_phase_duration_summaries(body: &mut String, phases: &MapPhaseDurati
     );
 }
 
+fn write_world_session_loop_phase_duration_summaries(
+    body: &mut String,
+    phases: &WorldSessionLoopPhaseDurations,
+) {
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_average_milliseconds Average world session loop phase duration.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_average_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_latest_milliseconds Most recent world session loop phase duration.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_latest_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_max_milliseconds Maximum observed world session loop phase duration since server start.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_max_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_average_1m_milliseconds Average world session loop phase duration over the last minute.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_average_1m_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_max_1m_milliseconds Maximum world session loop phase duration over the last minute.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_max_1m_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_average_5m_milliseconds Average world session loop phase duration over the last five minutes.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_average_5m_milliseconds gauge\n");
+    body.push_str(
+        "# HELP wow_world_session_loop_phase_duration_max_5m_milliseconds Maximum world session loop phase duration over the last five minutes.\n",
+    );
+    body.push_str("# TYPE wow_world_session_loop_phase_duration_max_5m_milliseconds gauge\n");
+
+    for phase in WORLD_SESSION_LOOP_PHASES {
+        let histogram = phases.get(phase);
+        let label = phase.label();
+        let rolling_1m = histogram.rolling_stats(ROLLING_ONE_MINUTE);
+        let rolling_5m = histogram.rolling_stats(ROLLING_FIVE_MINUTES);
+        body.push_str("wow_world_session_loop_phase_duration_average_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", histogram.average_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_latest_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", histogram.latest_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_max_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", histogram.max_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_average_1m_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", rolling_1m.average_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_max_1m_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", rolling_1m.max_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_average_5m_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", rolling_5m.average_milliseconds()));
+        body.push('\n');
+
+        body.push_str("wow_world_session_loop_phase_duration_max_5m_milliseconds{phase=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", rolling_5m.max_milliseconds()));
+        body.push('\n');
+    }
+}
+
+fn write_histogram_metric_summary(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    help: &str,
+    histogram: &Histogram,
+) {
+    write_histogram(body, &format!("{prefix}_seconds"), help, histogram);
+    write_float_gauge(
+        body,
+        &format!("{prefix}_average_milliseconds"),
+        &format!("Average {subject}."),
+        histogram.average_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_latest_milliseconds"),
+        &format!("Most recent {subject}."),
+        histogram.latest_milliseconds(),
+    );
+    write_float_gauge(
+        body,
+        &format!("{prefix}_max_milliseconds"),
+        &format!("Maximum observed {subject} since server start."),
+        histogram.max_milliseconds(),
+    );
+    write_rolling_histogram_gauges(body, prefix, subject, histogram);
+}
+
+fn write_idle_motion_subphase_metrics(body: &mut String, metrics: &IdleMotionSubphaseMetrics) {
+    write_numeric_summary(
+        body,
+        "wow_idle_motion_due_creatures",
+        "due creatures advanced per idle-motion tick",
+        &metrics.due_creatures,
+    );
+    write_numeric_summary(
+        body,
+        "wow_idle_motion_started_creatures",
+        "creatures whose idle/confused motion started per idle-motion tick",
+        &metrics.started_creatures,
+    );
+    write_numeric_summary(
+        body,
+        "wow_idle_motion_packets_emitted",
+        "packets emitted per idle-motion tick",
+        &metrics.packets_emitted,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_advancement_queue_pop_time",
+        "time spent popping due idle-motion advancement entries during one idle-motion tick",
+        "Time spent popping due idle-motion advancement entries during one idle-motion tick.",
+        &metrics.advancement_queue_pop_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_advancement_validation_time",
+        "time spent validating due idle-motion advancement entries during one idle-motion tick",
+        "Time spent validating due idle-motion advancement entries during one idle-motion tick.",
+        &metrics.advancement_validation_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_advance_time",
+        "time spent advancing tracked idle-motion creature runtime during one idle-motion tick",
+        "Time spent advancing tracked idle-motion creature runtime during one idle-motion tick.",
+        &metrics.motion_advance_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_spatial_update_time",
+        "time spent refreshing idle-motion creature spatial state during one idle-motion tick",
+        "Time spent refreshing idle-motion creature spatial state during one idle-motion tick.",
+        &metrics.spatial_update_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_start_queue_pop_time",
+        "time spent collecting due idle/confused motion starts during one idle-motion tick",
+        "Time spent collecting due idle/confused motion starts during one idle-motion tick.",
+        &metrics.start_queue_pop_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_start_time",
+        "time spent starting idle/confused motion during one idle-motion tick",
+        "Time spent starting idle/confused motion during one idle-motion tick.",
+        &metrics.motion_start_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_start_path_build_time",
+        "time spent building idle/confused motion starts during one idle-motion tick",
+        "Time spent building idle/confused motion starts during one idle-motion tick.",
+        &metrics.motion_start_path_build_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_start_snapshot_clone_time",
+        "time spent cloning creature snapshots for idle/confused motion starts during one idle-motion tick",
+        "Time spent cloning creature snapshots for idle/confused motion starts during one idle-motion tick.",
+        &metrics.motion_start_snapshot_clone_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_start_post_start_tracking_time",
+        "time spent resyncing idle-motion tracking after idle/confused motion starts during one idle-motion tick",
+        "Time spent resyncing idle-motion tracking after idle/confused motion starts during one idle-motion tick.",
+        &metrics.motion_start_post_start_tracking_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_start_broadcast_time",
+        "time spent broadcasting newly started idle/confused creature motion during one idle-motion tick",
+        "Time spent broadcasting newly started idle/confused creature motion during one idle-motion tick.",
+        &metrics.motion_start_broadcast_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_motion_script_schedule_time",
+        "time spent scheduling DB creature movement scripts during one idle-motion tick",
+        "Time spent scheduling DB creature movement scripts during one idle-motion tick.",
+        &metrics.motion_script_schedule_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_pending_script_execution_time",
+        "time spent executing due DB creature movement scripts during one idle-motion tick",
+        "Time spent executing due DB creature movement scripts during one idle-motion tick.",
+        &metrics.pending_script_execution_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_idle_motion_start_schedule_rebuild_time",
+        "time spent rebuilding idle-motion start schedules during one idle-motion tick",
+        "Time spent rebuilding idle-motion start schedules during one idle-motion tick.",
+        &metrics.start_schedule_rebuild_time,
+    );
+}
+
+fn write_native_mmap_metrics(body: &mut String, metrics: &NativeMmapMetrics) {
+    write_counter(
+        body,
+        "wow_native_mmap_path_calls_total",
+        "Total native mmap direct path queries.",
+        metrics.path_calls_total.load(Ordering::Relaxed),
+    );
+    write_counter(
+        body,
+        "wow_native_mmap_random_path_calls_total",
+        "Total native mmap random path queries.",
+        metrics.random_path_calls_total.load(Ordering::Relaxed),
+    );
+    write_native_mmap_stage_metrics(
+        body,
+        "wow_native_mmap_path",
+        "native mmap direct path query",
+        &metrics.path,
+    );
+    write_native_mmap_stage_metrics(
+        body,
+        "wow_native_mmap_random_path",
+        "native mmap random path query",
+        &metrics.random_path,
+    );
+}
+
+fn write_native_mmap_stage_metrics(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    metrics: &NativeMmapStageMetrics,
+) {
+    write_histogram_metric_summary(
+        body,
+        &format!("{prefix}_lock_and_tile_load_time"),
+        &format!("time spent loading native mmap cache state for one {subject}"),
+        &format!("Time spent loading native mmap cache state for one {subject}."),
+        &metrics.lock_and_tile_load_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        &format!("{prefix}_query_alloc_init_time"),
+        &format!("time spent allocating and initializing Detour query state for one {subject}"),
+        &format!("Time spent allocating and initializing Detour query state for one {subject}."),
+        &metrics.query_alloc_init_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        &format!("{prefix}_find_nearest_poly_time"),
+        &format!("time spent finding start and target nav polys for one {subject}"),
+        &format!("Time spent finding start and target nav polys for one {subject}."),
+        &metrics.find_nearest_poly_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        &format!("{prefix}_find_path_time"),
+        &format!("time spent running Detour corridor pathfinding for one {subject}"),
+        &format!("Time spent running Detour corridor pathfinding for one {subject}."),
+        &metrics.find_path_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        &format!("{prefix}_find_smooth_path_time"),
+        &format!("time spent smoothing Detour corridor output for one {subject}"),
+        &format!("Time spent smoothing Detour corridor output for one {subject}."),
+        &metrics.find_smooth_path_time,
+    );
+}
+
 fn write_player_environment_subphase_metrics(
     body: &mut String,
     metrics: &PlayerEnvironmentSubphaseMetrics,
@@ -1610,6 +2353,20 @@ fn write_map_runtime_gauges(
         "Currently active playerbot actors by map runtime.",
         &values,
         |snapshot| snapshot.active_playerbots,
+    );
+    write_map_runtime_gauge_family(
+        body,
+        "wow_map_tracked_idle_motion_creatures",
+        "DB creatures currently tracked in the idle-motion advancement set by map runtime.",
+        &values,
+        |snapshot| snapshot.tracked_idle_motion_creatures,
+    );
+    write_map_runtime_gauge_family(
+        body,
+        "wow_map_tracked_idle_motion_start_candidates",
+        "DB creatures queued in idle/confused motion start schedules by map runtime.",
+        &values,
+        |snapshot| snapshot.tracked_idle_motion_start_candidates,
     );
     write_map_runtime_gauge_family(
         body,
@@ -1960,6 +2717,137 @@ fn write_opcode_counter(
         body.push_str(&format_opcode(opcode));
         body.push_str("\"} ");
         body.push_str(&count.to_string());
+        body.push('\n');
+    }
+}
+
+fn write_opcode_histogram_metric_summaries(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    _help: &str,
+    histograms: &Mutex<HashMap<u32, Histogram>>,
+) {
+    write_opcode_histogram_gauge(
+        body,
+        &format!("{prefix}_average_milliseconds"),
+        &format!("Average {subject}."),
+        histograms,
+        Histogram::average_milliseconds,
+    );
+    write_opcode_histogram_gauge(
+        body,
+        &format!("{prefix}_latest_milliseconds"),
+        &format!("Most recent {subject}."),
+        histograms,
+        Histogram::latest_milliseconds,
+    );
+    write_opcode_histogram_gauge(
+        body,
+        &format!("{prefix}_max_milliseconds"),
+        &format!("Maximum observed {subject} since server start."),
+        histograms,
+        Histogram::max_milliseconds,
+    );
+    write_opcode_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_average_1m_milliseconds"),
+        &format!("Average {subject} over the last minute."),
+        histograms,
+        ROLLING_ONE_MINUTE,
+        RollingStats::average_milliseconds,
+    );
+    write_opcode_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_max_1m_milliseconds"),
+        &format!("Maximum observed {subject} over the last minute."),
+        histograms,
+        ROLLING_ONE_MINUTE,
+        RollingStats::max_milliseconds,
+    );
+    write_opcode_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_average_5m_milliseconds"),
+        &format!("Average {subject} over the last five minutes."),
+        histograms,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::average_milliseconds,
+    );
+    write_opcode_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_max_5m_milliseconds"),
+        &format!("Maximum observed {subject} over the last five minutes."),
+        histograms,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::max_milliseconds,
+    );
+}
+
+fn write_opcode_histogram_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    histograms: &Mutex<HashMap<u32, Histogram>>,
+    value: fn(&Histogram) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+
+    let mut values = histograms
+        .lock()
+        .expect("metrics opcode histogram poisoned")
+        .iter()
+        .map(|(opcode, histogram)| (*opcode, value(histogram)))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(opcode, _)| *opcode);
+
+    for (opcode, metric_value) in values {
+        body.push_str(name);
+        body.push_str("{opcode=\"");
+        body.push_str(&format_opcode(opcode));
+        body.push_str("\"} ");
+        body.push_str(&format!("{metric_value:.3}"));
+        body.push('\n');
+    }
+}
+
+fn write_opcode_histogram_rolling_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    histograms: &Mutex<HashMap<u32, Histogram>>,
+    window: Duration,
+    value: fn(RollingStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+
+    let mut values = histograms
+        .lock()
+        .expect("metrics opcode histogram poisoned")
+        .iter()
+        .map(|(opcode, histogram)| (*opcode, value(histogram.rolling_stats(window))))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(opcode, _)| *opcode);
+
+    for (opcode, metric_value) in values {
+        body.push_str(name);
+        body.push_str("{opcode=\"");
+        body.push_str(&format_opcode(opcode));
+        body.push_str("\"} ");
+        body.push_str(&format!("{metric_value:.3}"));
         body.push('\n');
     }
 }
@@ -2400,6 +3288,16 @@ tr:last-child td { border-bottom: 0; }
       <div id="unknownTable"></div>
     </div>
   </section>
+
+  <section class="section solo-chart">
+    <h2>Packet Latency</h2>
+    <div id="packetLatencyTable"></div>
+  </section>
+
+  <section class="section solo-chart">
+    <h2>Session Loop</h2>
+    <div id="sessionLoopTable"></div>
+  </section>
 </main>
 
 <script>
@@ -2419,6 +3317,15 @@ const metricKey = (name, labels) => {
 const fmt = (value, digits = 3) => Number.isFinite(value) ? value.toFixed(digits) : "0.000";
 const intFmt = (value) => Number.isFinite(value) ? Math.round(value).toLocaleString() : "0";
 const classForMs = (value, warn, bad) => value >= bad ? "metric-bad" : value >= warn ? "metric-warn" : "metric-good";
+const watchedPacketOpcodes = [
+  { opcode: "0x012E", label: "CastSpell" },
+  { opcode: "0x00EE", label: "MoveHeartbeat" },
+  { opcode: "0x00B5", label: "MoveStartForward" },
+  { opcode: "0x00B7", label: "MoveStop" },
+  { opcode: "0x00BB", label: "MoveJump" },
+  { opcode: "0x00C9", label: "MoveLand" },
+  { opcode: "0x00DA", label: "MoveSetFacing" }
+];
 
 function parseMetrics(text) {
   const metrics = new Map();
@@ -2690,6 +3597,66 @@ function renderPackets(metrics) {
   $("unknownTable").innerHTML = unknownRows.length ? table(["Opcode", "Total", "Delta"], unknownRows) : `<div class="empty">No unknown opcodes.</div>`;
 }
 
+function renderPacketLatency(metrics) {
+  const rows = watchedPacketOpcodes.map(({ opcode, label }) => {
+    const dispatchAvg = getLabeled(metrics, "wow_world_packet_dispatch_delay_average_1m_milliseconds", { opcode });
+    const dispatchMax = getLabeled(metrics, "wow_world_packet_dispatch_delay_max_1m_milliseconds", { opcode });
+    const handlerAvg = getLabeled(metrics, "wow_world_packet_handler_duration_average_1m_milliseconds", { opcode });
+    const handlerMax = getLabeled(metrics, "wow_world_packet_handler_duration_max_1m_milliseconds", { opcode });
+    const serviceAvg = getLabeled(metrics, "wow_world_packet_service_time_average_1m_milliseconds", { opcode });
+    const serviceLatest = getLabeled(metrics, "wow_world_packet_service_time_latest_milliseconds", { opcode });
+    const serviceMax = getLabeled(metrics, "wow_world_packet_service_time_max_1m_milliseconds", { opcode });
+    const outboundAvg = getLabeled(metrics, "wow_world_packet_outbound_queue_latency_average_1m_milliseconds", { opcode });
+    const writeAvg = getLabeled(metrics, "wow_world_packet_write_duration_average_1m_milliseconds", { opcode });
+    return [
+      opcode,
+      label,
+      fmt(dispatchAvg),
+      fmt(dispatchMax),
+      fmt(handlerAvg),
+      fmt(handlerMax),
+      fmt(serviceAvg),
+      fmt(serviceLatest),
+      fmt(serviceMax),
+      fmt(outboundAvg),
+      fmt(writeAvg)
+    ];
+  }).filter((row) =>
+    Number(row[2]) > 0 || Number(row[3]) > 0 || Number(row[4]) > 0 ||
+    Number(row[5]) > 0 || Number(row[6]) > 0 || Number(row[7]) > 0 || Number(row[8]) > 0
+  );
+
+  $("packetLatencyTable").innerHTML = rows.length
+    ? table(
+        ["Opcode", "Name", "Dispatch 1m", "Dispatch Max 1m", "Handler 1m", "Handler Max 1m", "Service 1m", "Service Latest", "Service Max 1m", "OutQ 1m", "Write 1m"],
+        rows
+      )
+    : `<div class="empty">No watched packet latency samples yet.</div>`;
+}
+
+function renderSessionLoop(metrics) {
+  const averages = byLabel(
+    series(metrics, "wow_world_session_loop_phase_duration_average_1m_milliseconds").length
+      ? series(metrics, "wow_world_session_loop_phase_duration_average_1m_milliseconds")
+      : series(metrics, "wow_world_session_loop_phase_duration_average_milliseconds"),
+    "phase"
+  );
+  const latest = byLabel(series(metrics, "wow_world_session_loop_phase_duration_latest_milliseconds"), "phase");
+  const maxes = byLabel(
+    series(metrics, "wow_world_session_loop_phase_duration_max_1m_milliseconds").length
+      ? series(metrics, "wow_world_session_loop_phase_duration_max_1m_milliseconds")
+      : series(metrics, "wow_world_session_loop_phase_duration_max_milliseconds"),
+    "phase"
+  );
+  const phases = [...new Set([...averages.keys(), ...latest.keys(), ...maxes.keys()])].sort();
+  $("sessionLoopTable").innerHTML = phases.length
+    ? table(
+        ["Phase", "Avg 1m", "Latest", "Max 1m"],
+        phases.map((phase) => [phase, fmt(averages.get(phase) ?? 0), fmt(latest.get(phase) ?? 0), fmt(maxes.get(phase) ?? 0)])
+      )
+    : `<div class="empty">No session loop phase samples yet.</div>`;
+}
+
 function deltaText(metrics, row) {
   const key = metricKey(row.name, row.labels);
   const previous = state.previous.get(key) ?? row.value;
@@ -2721,6 +3688,8 @@ async function refresh() {
     renderCache(metrics);
     renderDb(metrics);
     renderPackets(metrics);
+    renderPacketLatency(metrics);
+    renderSessionLoop(metrics);
     state.previous = metrics;
     $("statusDot").className = "status-dot good";
     $("statusText").textContent = "live";
@@ -2837,6 +3806,8 @@ mod tests {
             instance_id: 0,
             active_players: 1,
             active_playerbots: 1,
+            tracked_idle_motion_creatures: 9,
+            tracked_idle_motion_start_candidates: 11,
             active_creatures: 42,
             active_gameobjects: 3,
             loaded_grids: 4,
@@ -2861,6 +3832,7 @@ mod tests {
         record_world_packet_in(0x01E0);
         record_world_packet_out(0x00DD);
         record_world_unknown_opcode(0x01E0);
+        record_world_packet_handler_duration(0x012E, Duration::from_millis(33));
         record_movement_actor_queue_depth(3);
         record_movement_actor_enqueue_failure("full");
         record_movement_actor_enqueue_latency(Duration::from_millis(1));
@@ -2869,6 +3841,26 @@ mod tests {
         record_movement_actor_batch_size(5);
         record_movement_map_mutex_wait(Duration::from_millis(6));
         record_movement_map_mutex_hold(Duration::from_millis(8));
+        record_native_mmap_query(
+            NativeMmapQueryKind::Path,
+            NativeMmapQueryTimings {
+                lock_and_tile_load: Duration::from_millis(22),
+                query_alloc_init: Duration::from_millis(23),
+                find_nearest_poly: Duration::from_millis(24),
+                find_path: Duration::from_millis(25),
+                find_smooth_path: Duration::from_millis(26),
+            },
+        );
+        record_native_mmap_query(
+            NativeMmapQueryKind::RandomPath,
+            NativeMmapQueryTimings {
+                lock_and_tile_load: Duration::from_millis(27),
+                query_alloc_init: Duration::from_millis(28),
+                find_nearest_poly: Duration::from_millis(29),
+                find_path: Duration::from_millis(30),
+                find_smooth_path: Duration::from_millis(31),
+            },
+        );
         record_player_environment_geometry_check();
         record_player_environment_cached_skip();
         record_player_environment_login_refresh();
@@ -2876,6 +3868,22 @@ mod tests {
         record_player_environment_teleport_refresh();
         record_player_environment_periodic_revalidation();
         record_player_environment_timer_only_processing();
+        record_idle_motion_due_creatures(13);
+        record_idle_motion_started_creatures(4);
+        record_idle_motion_packets_emitted(17);
+        record_idle_motion_advancement_queue_pop_time(Duration::from_millis(13));
+        record_idle_motion_advancement_validation_time(Duration::from_millis(14));
+        record_idle_motion_motion_advance_time(Duration::from_millis(15));
+        record_idle_motion_spatial_update_time(Duration::from_millis(16));
+        record_idle_motion_start_queue_pop_time(Duration::from_millis(17));
+        record_idle_motion_motion_start_time(Duration::from_millis(18));
+        record_idle_motion_motion_start_path_build_time(Duration::from_millis(19));
+        record_idle_motion_motion_start_snapshot_clone_time(Duration::from_millis(20));
+        record_idle_motion_motion_start_post_start_tracking_time(Duration::from_millis(21));
+        record_idle_motion_motion_start_broadcast_time(Duration::from_millis(22));
+        record_idle_motion_motion_script_schedule_time(Duration::from_millis(23));
+        record_idle_motion_pending_script_execution_time(Duration::from_millis(24));
+        record_idle_motion_start_schedule_rebuild_time(Duration::from_millis(25));
         record_player_environment_players_scanned(48);
         record_player_environment_packets_emitted(96);
         record_player_environment_flags_time(Duration::from_millis(9));
@@ -2913,6 +3921,11 @@ mod tests {
         assert!(rendered.contains("wow_monitoring_session_marks_total "));
         assert!(rendered.contains("wow_map_active_players{map_id=\"0\",instance_id=\"0\"} 1"));
         assert!(rendered.contains("wow_map_active_playerbots{map_id=\"0\",instance_id=\"0\"} 1"));
+        assert!(rendered
+            .contains("wow_map_tracked_idle_motion_creatures{map_id=\"0\",instance_id=\"0\"} 9"));
+        assert!(rendered.contains(
+            "wow_map_tracked_idle_motion_start_candidates{map_id=\"0\",instance_id=\"0\"} 11"
+        ));
         assert!(rendered.contains("wow_map_active_creatures{map_id=\"0\",instance_id=\"0\"} 42"));
         assert!(
             rendered.contains("wow_map_active_creature_combats{map_id=\"0\",instance_id=\"0\"} 2")
@@ -2927,6 +3940,9 @@ mod tests {
         assert!(rendered.contains("wow_world_packets_in_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains("wow_world_packets_out_total{opcode=\"0x00DD\"}"));
         assert!(rendered.contains("wow_world_unknown_opcodes_total{opcode=\"0x01E0\"}"));
+        assert!(rendered.contains(
+            "wow_world_packet_handler_duration_average_milliseconds{opcode=\"0x012E\"} 33.000"
+        ));
         assert!(rendered.contains("wow_movement_actor_queue_depth_latest "));
         assert!(rendered.contains("wow_movement_actor_enqueue_failures_total{reason=\"full\"} 1"));
         assert!(rendered.contains("wow_movement_actor_enqueue_latency_average_milliseconds "));
@@ -2935,6 +3951,13 @@ mod tests {
         assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
         assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
         assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
+        assert!(rendered.contains("wow_native_mmap_path_calls_total 1"));
+        assert!(rendered.contains("wow_native_mmap_random_path_calls_total 1"));
+        assert!(rendered
+            .contains("wow_native_mmap_path_query_alloc_init_time_average_milliseconds 23.000"));
+        assert!(rendered.contains(
+            "wow_native_mmap_random_path_find_smooth_path_time_average_milliseconds 31.000"
+        ));
         assert!(rendered.contains("wow_player_environment_geometry_checks_total 1"));
         assert!(rendered.contains("wow_player_environment_cached_skips_total 1"));
         assert!(rendered.contains("wow_player_environment_login_refreshes_total 1"));
@@ -2942,6 +3965,39 @@ mod tests {
         assert!(rendered.contains("wow_player_environment_teleport_refreshes_total 1"));
         assert!(rendered.contains("wow_player_environment_periodic_revalidations_total 1"));
         assert!(rendered.contains("wow_player_environment_timer_only_processing_total 1"));
+        assert!(rendered.contains("wow_idle_motion_due_creatures_latest 13"));
+        assert!(rendered.contains("wow_idle_motion_started_creatures_latest 4"));
+        assert!(rendered.contains("wow_idle_motion_packets_emitted_latest 17"));
+        assert!(rendered
+            .contains("wow_idle_motion_advancement_queue_pop_time_average_milliseconds 13.000"));
+        assert!(rendered
+            .contains("wow_idle_motion_advancement_validation_time_average_milliseconds 14.000"));
+        assert!(
+            rendered.contains("wow_idle_motion_motion_advance_time_average_milliseconds 15.000")
+        );
+        assert!(
+            rendered.contains("wow_idle_motion_spatial_update_time_average_milliseconds 16.000")
+        );
+        assert!(
+            rendered.contains("wow_idle_motion_start_queue_pop_time_average_milliseconds 17.000")
+        );
+        assert!(rendered.contains("wow_idle_motion_motion_start_time_average_milliseconds 18.000"));
+        assert!(rendered
+            .contains("wow_idle_motion_motion_start_path_build_time_average_milliseconds 19.000"));
+        assert!(rendered.contains(
+            "wow_idle_motion_motion_start_snapshot_clone_time_average_milliseconds 20.000"
+        ));
+        assert!(rendered.contains(
+            "wow_idle_motion_motion_start_post_start_tracking_time_average_milliseconds 21.000"
+        ));
+        assert!(rendered
+            .contains("wow_idle_motion_motion_start_broadcast_time_average_milliseconds 22.000"));
+        assert!(rendered
+            .contains("wow_idle_motion_motion_script_schedule_time_average_milliseconds 23.000"));
+        assert!(rendered
+            .contains("wow_idle_motion_pending_script_execution_time_average_milliseconds 24.000"));
+        assert!(rendered
+            .contains("wow_idle_motion_start_schedule_rebuild_time_average_milliseconds 25.000"));
         assert!(rendered.contains("wow_player_environment_players_scanned_latest 48"));
         assert!(rendered.contains("wow_player_environment_packets_emitted_latest 96"));
         assert!(rendered.contains("wow_player_environment_flags_time_average_milliseconds 9.000"));
@@ -2952,6 +4008,15 @@ mod tests {
         ));
         assert!(rendered
             .contains("wow_player_environment_nearby_fanout_time_average_milliseconds 12.000"));
+        assert!(rendered.contains(
+            "wow_map_phase_duration_average_milliseconds{phase=\"dynamic_objects\"} 0.000"
+        ));
+        assert!(rendered.contains(
+            "wow_map_phase_duration_average_milliseconds{phase=\"player_death_presentation\"} 0.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_session_loop_phase_duration_average_milliseconds{phase=\"packet_branch_total\"} 0.000"
+        ));
     }
 
     #[test]
@@ -2974,6 +4039,9 @@ mod tests {
         assert!(rendered.contains("fetch(\"/dashboard/mark\""));
         assert!(rendered.contains("Loop Avg 10s"));
         assert!(rendered.contains("loopAvg10sChart"));
+        assert!(rendered.contains("Packet Latency"));
+        assert!(rendered.contains("Session Loop"));
+        assert!(rendered.contains("sessionLoopTable"));
         assert!(rendered.contains("wow_map_tick_duration_average_milliseconds"));
         assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds"));
         assert!(rendered.contains("wow_static_world_cache_load_spawns"));

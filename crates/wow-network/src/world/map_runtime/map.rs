@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap};
+
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -348,6 +351,84 @@ pub(in crate::world) struct PlayerHealEvent {
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::world) struct ScheduledDbCreatureMotionStart {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) guid: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::world) struct ScheduledDbCreatureMotionAdvance {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) guid: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::world) struct ScheduledDbCreatureLifecycle {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) guid: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::world) struct ScheduledDbCreatureOocEventAi {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) guid: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::world) struct ScheduledDbCreatureCombat {
+    pub(in crate::world) due_at: Instant,
+    pub(in crate::world) guid: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) enum DbCreatureOocEventAiCapability {
+    Unknown,
+    None,
+    OocCast(Arc<[wow_db::CreatureAiScriptQuery]>),
+}
+
+#[derive(Debug)]
+pub(in crate::world) enum ReadyDbCreatureOocEventAiAction {
+    Complete {
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+    },
+    Start {
+        attacker: ObjectGuid,
+        ready: ReadyDbCreatureEventAiSpellCast,
+    },
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct DbCreatureOocEventAiTick {
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum DbCreatureVictimCombatLocalEffect {
+    Melee {
+        attacker: ObjectGuid,
+        damage_taken: u32,
+        victim_health: u32,
+        rage_gain: u32,
+        player_died: bool,
+    },
+    SpellDamage {
+        victim_health: u32,
+        player_died: bool,
+    },
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct DbCreatureVictimCombatAdvanceTick {
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) local_effects: Vec<DbCreatureVictimCombatLocalEffect>,
+    pub(in crate::world) active_combats: Vec<CreatureCombatState>,
+    pub(in crate::world) player_in_combat: bool,
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(in crate::world) struct MapRuntime {
@@ -366,18 +447,43 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) gameobject_loots: HashMap<u64, DbGameObjectLootState>,
     pub(in crate::world) gameobject_looting_by_character: HashMap<u32, u64>,
     pub(in crate::world) active_creature_combats: HashMap<u64, CreatureCombatState>,
+    pub(in crate::world) creature_combats_by_victim: HashMap<u64, BTreeSet<u64>>,
+    pub(in crate::world) active_creature_combat_due: BinaryHeap<Reverse<ScheduledDbCreatureCombat>>,
     pub(in crate::world) active_creature_spell_casts: HashMap<u64, ActiveDbCreatureSpellCast>,
     pub(in crate::world) creature_combat_leash: HashMap<u64, CreatureCombatLeashState>,
     pub(in crate::world) creature_threats: HashMap<u64, Vec<CreatureThreatEntry>>,
     pub(in crate::world) corpses: HashMap<u64, PlayerCorpseRuntime>,
     pub(in crate::world) dynamic_objects: HashMap<u64, DynamicObjectRuntime>,
     pub(in crate::world) next_dynamic_object_counter: u32,
+    pub(in crate::world) active_playerbot_count: usize,
     pub(in crate::world) playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
     pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
     pub(in crate::world) next_confused_motion_start_check_at: Option<Instant>,
     pub(in crate::world) next_idle_motion_start_check_at: Option<Instant>,
+    pub(in crate::world) idle_motion_start_schedule_dirty: bool,
+    pub(in crate::world) active_db_creature_motion_guids: BTreeSet<u64>,
+    pub(in crate::world) db_creature_motion_advance_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) idle_db_creature_motion_advances:
+        BinaryHeap<Reverse<ScheduledDbCreatureMotionAdvance>>,
+    pub(in crate::world) confused_db_creature_motion_start_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) confused_db_creature_motion_starts:
+        BinaryHeap<Reverse<ScheduledDbCreatureMotionStart>>,
+    pub(in crate::world) idle_db_creature_motion_start_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) idle_db_creature_motion_starts:
+        BinaryHeap<Reverse<ScheduledDbCreatureMotionStart>>,
+    pub(in crate::world) db_creature_corpse_expiry_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) db_creature_corpse_expiries:
+        BinaryHeap<Reverse<ScheduledDbCreatureLifecycle>>,
+    pub(in crate::world) db_creature_respawn_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) db_creature_respawns: BinaryHeap<Reverse<ScheduledDbCreatureLifecycle>>,
+    pub(in crate::world) db_creature_ooc_event_ai_capabilities:
+        HashMap<u32, DbCreatureOocEventAiCapability>,
+    pub(in crate::world) db_creature_ooc_event_ai_due_at: HashMap<u64, Instant>,
+    pub(in crate::world) db_creature_ooc_event_ai_due:
+        BinaryHeap<Reverse<ScheduledDbCreatureOocEventAi>>,
     pub(in crate::world) active_player_environment_guids: HashSet<u32>,
-    pub(in crate::world) pending_db_scripts: Vec<PendingDbScriptAction>,
+    pub(in crate::world) pending_db_scripts: BinaryHeap<Reverse<ScheduledPendingDbScriptAction>>,
+    pub(in crate::world) next_pending_db_script_sequence: u64,
     pub(in crate::world) next_player_regen_tick_at: Option<Instant>,
     pub(in crate::world) active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
     pub(in crate::world) active_player_channels: HashMap<u32, ActivePlayerChannel>,
@@ -443,6 +549,17 @@ pub(in crate::world) struct ActiveDbCreatureSpellCast {
     pub(in crate::world) mana_cost: u32,
     pub(in crate::world) cast_time_millis: u32,
     pub(in crate::world) due_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct DbCreatureRespawnPersistenceUpdate {
+    pub(in crate::world) creature_spawn_guid: u32,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct DbCreatureLifecycleTick {
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) respawn_updates: Vec<DbCreatureRespawnPersistenceUpdate>,
 }
 
 #[derive(Debug, Clone)]
@@ -720,6 +837,7 @@ pub(in crate::world) struct DbCreatureEventAiActionsEvent {
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub(in crate::world) struct DbCreatureLifecycleEvent {
     #[allow(dead_code)]
@@ -809,18 +927,37 @@ impl MapRuntime {
             gameobject_loots: HashMap::new(),
             gameobject_looting_by_character: HashMap::new(),
             active_creature_combats: HashMap::new(),
+            creature_combats_by_victim: HashMap::new(),
+            active_creature_combat_due: BinaryHeap::new(),
             active_creature_spell_casts: HashMap::new(),
             creature_combat_leash: HashMap::new(),
             creature_threats: HashMap::new(),
             corpses: HashMap::new(),
             dynamic_objects: HashMap::new(),
             next_dynamic_object_counter: 1,
+            active_playerbot_count: 0,
             playerbot_intents: HashMap::new(),
             next_idle_motion_tick_at: None,
             next_confused_motion_start_check_at: None,
             next_idle_motion_start_check_at: None,
+            idle_motion_start_schedule_dirty: true,
+            active_db_creature_motion_guids: BTreeSet::new(),
+            db_creature_motion_advance_due_at: HashMap::new(),
+            idle_db_creature_motion_advances: BinaryHeap::new(),
+            confused_db_creature_motion_start_due_at: HashMap::new(),
+            confused_db_creature_motion_starts: BinaryHeap::new(),
+            idle_db_creature_motion_start_due_at: HashMap::new(),
+            idle_db_creature_motion_starts: BinaryHeap::new(),
+            db_creature_corpse_expiry_due_at: HashMap::new(),
+            db_creature_corpse_expiries: BinaryHeap::new(),
+            db_creature_respawn_due_at: HashMap::new(),
+            db_creature_respawns: BinaryHeap::new(),
+            db_creature_ooc_event_ai_capabilities: HashMap::new(),
+            db_creature_ooc_event_ai_due_at: HashMap::new(),
+            db_creature_ooc_event_ai_due: BinaryHeap::new(),
             active_player_environment_guids: HashSet::new(),
-            pending_db_scripts: Vec::new(),
+            pending_db_scripts: BinaryHeap::new(),
+            next_pending_db_script_sequence: 0,
             next_player_regen_tick_at: None,
             active_player_spell_casts: HashMap::new(),
             active_player_channels: HashMap::new(),
@@ -849,11 +986,11 @@ impl MapRuntime {
             loaded_player_corpse_grids: self.loaded_player_corpse_grids.len() as u64,
             active_creature_combats: self.active_creature_combats.len() as u64,
             corpses: self.corpses.len() as u64,
-            active_playerbots: self
-                .players
-                .values()
-                .filter(|player| matches!(player.controller, PlayerController::Bot { .. }))
-                .count() as u64,
+            active_playerbots: self.active_playerbot_count as u64,
+            tracked_idle_motion_creatures: self.active_db_creature_motion_guids.len() as u64,
+            tracked_idle_motion_start_candidates: (self.confused_db_creature_motion_starts.len()
+                + self.idle_db_creature_motion_starts.len())
+                as u64,
         }
     }
 

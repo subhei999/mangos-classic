@@ -201,6 +201,7 @@ impl MapRuntime {
             .retain(|_, looting_guid| *looting_guid != creature_guid);
         creature.reduce_corpse_decay_after_loot(now);
         let creature = creature.clone();
+        self.sync_db_creature_lifecycle_tracking(creature_guid);
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let direct_packet = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,

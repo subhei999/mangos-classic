@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use super::*;
 
 // Shared DB-creature motion and AI-transition authority.
@@ -6,6 +8,32 @@ use super::*;
 pub(in crate::world) struct DbCreatureIdleMotionTick {
     pub(in crate::world) creatures: Vec<DbCreatureRuntime>,
     pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::world) struct DbCreatureMotionAdvanceMetrics {
+    pub(in crate::world) runtime_time: Duration,
+    pub(in crate::world) spatial_update_time: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::world) struct DbCreatureMotionStartMetrics {
+    pub(in crate::world) path_build_time: Duration,
+    pub(in crate::world) snapshot_clone_time: Duration,
+    pub(in crate::world) post_start_tracking_time: Duration,
+}
+
+#[derive(Debug)]
+pub(in crate::world) struct DbCreatureMotionStartAttempt {
+    pub(in crate::world) outcome:
+        Option<(DbCreatureRuntime, Option<StartedCreatureMotion>, Vec<u32>)>,
+    pub(in crate::world) metrics: DbCreatureMotionStartMetrics,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct ReadyDbCreatureIdleMotionAdvancements {
+    pub(in crate::world) guids: Vec<u64>,
+    pub(in crate::world) validation_time: Duration,
 }
 
 impl MapRuntime {
@@ -38,77 +66,167 @@ impl MapRuntime {
         self.unload_expired_idle_grids(now);
 
         let mut creatures = Vec::new();
-        for guid in self.db_creature_idle_motion_advancement_guids() {
-            if let Some((creature, script_ids)) =
+        let advancement_queue_started_at = Instant::now();
+        let due_advancements = self.db_creature_idle_motion_advancement_guids(now);
+        let advancement_queue_pop_time = advancement_queue_started_at.elapsed();
+        let due_creature_count = due_advancements.guids.len();
+        let mut motion_advance_time = Duration::ZERO;
+        let mut spatial_update_time = Duration::ZERO;
+        let mut motion_script_schedule_time = Duration::ZERO;
+        for guid in due_advancements.guids {
+            if let Some((creature, script_ids, metrics)) =
                 self.advance_db_creature_motion(ObjectGuid::from_raw(guid), now)
             {
+                motion_advance_time += metrics.runtime_time;
+                spatial_update_time += metrics.spatial_update_time;
                 for script_id in script_ids {
+                    let script_schedule_started_at = Instant::now();
                     self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
+                    motion_script_schedule_time += script_schedule_started_at.elapsed();
                 }
                 creatures.push(creature);
             }
         }
 
         let mut packets = Vec::new();
+        let pending_script_started_at = Instant::now();
         packets.extend(self.advance_pending_db_scripts(now)?);
+        let pending_script_execution_time = pending_script_started_at.elapsed();
+        let mut start_schedule_rebuild_time = Duration::ZERO;
+        let mut motion_start_broadcast_time = Duration::ZERO;
+        if self.idle_motion_start_schedule_dirty {
+            let start_schedule_rebuild_started_at = Instant::now();
+            self.rebuild_db_creature_motion_start_schedules();
+            start_schedule_rebuild_time += start_schedule_rebuild_started_at.elapsed();
+        }
+        let mut started_creatures = 0usize;
+        let mut start_queue_pop_time = Duration::ZERO;
+        let mut motion_start_time = Duration::ZERO;
+        let mut motion_start_path_build_time = Duration::ZERO;
+        let mut motion_start_snapshot_clone_time = Duration::ZERO;
+        let mut motion_start_post_start_tracking_time = Duration::ZERO;
         if self
             .next_confused_motion_start_check_at
             .is_none_or(|next| now >= next)
         {
-            for guid in self.db_creature_confused_motion_start_guids(now) {
+            let start_queue_started_at = Instant::now();
+            let confused_guids = self.db_creature_confused_motion_start_guids(now);
+            start_queue_pop_time += start_queue_started_at.elapsed();
+            for guid in confused_guids {
+                let motion_started_at = Instant::now();
                 let creature_guid = ObjectGuid::from_raw(guid);
-                let Some((creature, motion, script_ids)) =
-                    self.start_db_creature_confused_motion(navigation, creature_guid, now)
-                else {
+                let attempt =
+                    self.start_db_creature_confused_motion(navigation, creature_guid, now);
+                motion_start_path_build_time += attempt.metrics.path_build_time;
+                motion_start_snapshot_clone_time += attempt.metrics.snapshot_clone_time;
+                motion_start_post_start_tracking_time += attempt.metrics.post_start_tracking_time;
+                let Some((creature, motion, script_ids)) = attempt.outcome else {
+                    motion_start_time += motion_started_at.elapsed();
                     continue;
                 };
+                motion_start_time += motion_started_at.elapsed();
                 for script_id in script_ids {
+                    let script_schedule_started_at = Instant::now();
                     self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
+                    motion_script_schedule_time += script_schedule_started_at.elapsed();
                 }
                 if let Some(motion) = motion {
+                    let broadcast_started_at = Instant::now();
                     packets.extend(self.broadcast_started_db_creature_motion(
                         creature_guid,
                         &creature,
                         &motion,
                     )?);
+                    motion_start_broadcast_time += broadcast_started_at.elapsed();
                 }
+                started_creatures += 1;
                 creatures.push(creature);
             }
-            self.next_confused_motion_start_check_at =
-                self.next_db_creature_confused_motion_start_at();
         }
         if self
             .next_idle_motion_start_check_at
             .is_none_or(|next| now >= next)
         {
-            for guid in self.db_creature_idle_motion_start_guids(now) {
+            let start_queue_started_at = Instant::now();
+            let idle_guids = self.db_creature_idle_motion_start_guids(now);
+            start_queue_pop_time += start_queue_started_at.elapsed();
+            for guid in idle_guids {
+                let motion_started_at = Instant::now();
                 let creature_guid = ObjectGuid::from_raw(guid);
-                let Some((creature, motion, script_ids)) =
-                    self.start_db_creature_idle_motion(navigation, creature_guid, now)
-                else {
+                let attempt = self.start_db_creature_idle_motion(navigation, creature_guid, now);
+                motion_start_path_build_time += attempt.metrics.path_build_time;
+                motion_start_snapshot_clone_time += attempt.metrics.snapshot_clone_time;
+                motion_start_post_start_tracking_time += attempt.metrics.post_start_tracking_time;
+                let Some((creature, motion, script_ids)) = attempt.outcome else {
+                    motion_start_time += motion_started_at.elapsed();
                     continue;
                 };
+                motion_start_time += motion_started_at.elapsed();
                 for script_id in script_ids {
+                    let script_schedule_started_at = Instant::now();
                     self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
+                    motion_script_schedule_time += script_schedule_started_at.elapsed();
                 }
                 if let Some(motion) = motion {
+                    let broadcast_started_at = Instant::now();
                     packets.extend(self.broadcast_started_db_creature_motion(
                         creature_guid,
                         &creature,
                         &motion,
                     )?);
+                    motion_start_broadcast_time += broadcast_started_at.elapsed();
                 }
+                started_creatures += 1;
                 creatures.push(creature);
             }
-            self.next_idle_motion_start_check_at = self.next_db_creature_idle_motion_start_at();
         }
+        self.refresh_db_creature_motion_start_check_hints();
+        crate::observability::record_idle_motion_due_creatures(due_creature_count);
+        crate::observability::record_idle_motion_started_creatures(started_creatures);
+        crate::observability::record_idle_motion_packets_emitted(packets.len());
+        crate::observability::record_idle_motion_advancement_queue_pop_time(
+            advancement_queue_pop_time,
+        );
+        crate::observability::record_idle_motion_advancement_validation_time(
+            due_advancements.validation_time,
+        );
+        crate::observability::record_idle_motion_motion_advance_time(motion_advance_time);
+        crate::observability::record_idle_motion_spatial_update_time(spatial_update_time);
+        crate::observability::record_idle_motion_start_queue_pop_time(start_queue_pop_time);
+        crate::observability::record_idle_motion_motion_start_time(motion_start_time);
+        crate::observability::record_idle_motion_motion_start_path_build_time(
+            motion_start_path_build_time,
+        );
+        crate::observability::record_idle_motion_motion_start_snapshot_clone_time(
+            motion_start_snapshot_clone_time,
+        );
+        crate::observability::record_idle_motion_motion_start_post_start_tracking_time(
+            motion_start_post_start_tracking_time,
+        );
+        crate::observability::record_idle_motion_motion_start_broadcast_time(
+            motion_start_broadcast_time,
+        );
+        crate::observability::record_idle_motion_motion_script_schedule_time(
+            motion_script_schedule_time,
+        );
+        crate::observability::record_idle_motion_pending_script_execution_time(
+            pending_script_execution_time,
+        );
+        crate::observability::record_idle_motion_start_schedule_rebuild_time(
+            start_schedule_rebuild_time,
+        );
 
         Ok(DbCreatureIdleMotionTick { creatures, packets })
     }
 
     pub(in crate::world) fn invalidate_idle_motion_start_schedule(&mut self) {
+        self.idle_motion_start_schedule_dirty = true;
         self.next_confused_motion_start_check_at = None;
         self.next_idle_motion_start_check_at = None;
+        self.confused_db_creature_motion_start_due_at.clear();
+        self.idle_db_creature_motion_start_due_at.clear();
+        self.confused_db_creature_motion_starts.clear();
+        self.idle_db_creature_motion_starts.clear();
     }
 
     fn broadcast_started_db_creature_motion(
@@ -161,19 +279,20 @@ impl MapRuntime {
         let Some(commands) = self.db_scripts.movement_script(script_id) else {
             return;
         };
-        self.pending_db_scripts
-            .extend(
-                commands
-                    .iter()
-                    .cloned()
-                    .map(|command| PendingDbScriptAction {
-                        due_at: now + Duration::from_millis(command.delay as u64),
-                        source: creature_guid,
-                        command,
-                    }),
-            );
-        self.pending_db_scripts
-            .sort_by_key(|action| (action.due_at, action.command.priority));
+        for command in commands.iter().cloned() {
+            let action = PendingDbScriptAction {
+                due_at: now + Duration::from_millis(command.delay as u64),
+                source: creature_guid,
+                command,
+            };
+            self.pending_db_scripts
+                .push(Reverse(ScheduledPendingDbScriptAction::new(
+                    action,
+                    self.next_pending_db_script_sequence,
+                )));
+            self.next_pending_db_script_sequence =
+                self.next_pending_db_script_sequence.wrapping_add(1);
+        }
     }
 
     pub(in crate::world) fn advance_pending_db_scripts(
@@ -184,20 +303,16 @@ impl MapRuntime {
             return Ok(Vec::new());
         }
 
-        let mut due = Vec::new();
-        let mut pending = Vec::new();
-        for action in self.pending_db_scripts.drain(..) {
-            if action.due_at <= now {
-                due.push(action);
-            } else {
-                pending.push(action);
-            }
-        }
-        self.pending_db_scripts = pending;
-
         let mut packets = Vec::new();
-        for action in due {
-            packets.extend(self.execute_db_creature_script_action(action)?);
+        while self
+            .pending_db_scripts
+            .peek()
+            .is_some_and(|entry| entry.0.due_at <= now)
+        {
+            let Some(Reverse(entry)) = self.pending_db_scripts.pop() else {
+                break;
+            };
+            packets.extend(self.execute_db_creature_script_action(entry.action)?);
         }
         Ok(packets)
     }
@@ -353,21 +468,6 @@ impl MapRuntime {
             .collect()
     }
 
-    pub(in crate::world) fn db_creatures_in_active_or_blocked_grids(
-        &self,
-    ) -> Vec<(u64, &DbCreatureRuntime)> {
-        self.creatures
-            .iter()
-            .filter(|(_, creature)| {
-                let grid = grid_coord_for_position(creature.current_position);
-                self.grids.get(&grid).is_some_and(|grid| {
-                    matches!(grid.state, GridState::Active | GridState::UnloadBlocked(_))
-                })
-            })
-            .map(|(guid, creature)| (*guid, creature))
-            .collect()
-    }
-
     pub(in crate::world) fn db_creatures_in_player_interest_radius(
         &self,
     ) -> Vec<(u64, &DbCreatureRuntime)> {
@@ -392,126 +492,181 @@ impl MapRuntime {
             .into_iter()
             .filter_map(|guid| {
                 let creature = self.creatures.get(&guid)?;
-                self.players
-                    .values()
-                    .filter(|player| player.is_client_controlled())
-                    .any(|player| {
-                        is_position_inside_radius(
-                            creature.current_position,
-                            player.position,
-                            CREATURE_SPAWN_RADIUS_YARDS,
-                        )
-                    })
+                self.db_creature_has_player_interest(creature.current_position)
                     .then_some((guid, creature))
             })
             .collect()
     }
 
-    pub(in crate::world) fn db_creature_idle_motion_advancement_guids(&self) -> Vec<u64> {
-        let mut guids = self
-            .db_creatures_in_active_or_blocked_grids()
-            .into_iter()
-            .filter_map(|(guid, creature)| {
-                (creature.is_alive()
-                    && !self.active_creature_combats.contains_key(&guid)
-                    && matches!(
-                        creature.motion,
-                        CreatureMotionState::Random(_)
-                            | CreatureMotionState::Confused(_)
-                            | CreatureMotionState::Waypoint(_)
-                    ))
-                .then_some(guid)
-            })
-            .collect::<Vec<_>>();
-        guids.sort_unstable();
-        guids
+    pub(in crate::world) fn db_creature_idle_motion_advancement_guids(
+        &mut self,
+        now: Instant,
+    ) -> ReadyDbCreatureIdleMotionAdvancements {
+        let mut ready = ReadyDbCreatureIdleMotionAdvancements::default();
+        let mut seen = HashSet::new();
+        while self
+            .idle_db_creature_motion_advances
+            .peek()
+            .is_some_and(|entry| entry.0.due_at <= now)
+        {
+            let Some(Reverse(entry)) = self.idle_db_creature_motion_advances.pop() else {
+                break;
+            };
+            let validation_started_at = Instant::now();
+            let Some(current_due_at) = self
+                .db_creature_motion_advance_due_at
+                .get(&entry.guid)
+                .copied()
+            else {
+                ready.validation_time += validation_started_at.elapsed();
+                continue;
+            };
+            if current_due_at != entry.due_at {
+                ready.validation_time += validation_started_at.elapsed();
+                continue;
+            }
+            let should_advance = self.creatures.get(&entry.guid).is_some_and(|creature| {
+                self.db_creature_should_advance_idle_motion(entry.guid, creature)
+            });
+            ready.validation_time += validation_started_at.elapsed();
+            if !should_advance {
+                self.active_db_creature_motion_guids.remove(&entry.guid);
+                self.db_creature_motion_advance_due_at.remove(&entry.guid);
+                continue;
+            }
+            self.db_creature_motion_advance_due_at.remove(&entry.guid);
+            if seen.insert(entry.guid) {
+                ready.guids.push(entry.guid);
+            }
+        }
+        ready
     }
 
     pub(in crate::world) fn db_creature_confused_motion_start_guids(
-        &self,
+        &mut self,
         now: Instant,
     ) -> Vec<u64> {
-        let mut guids = self
-            .db_creatures_in_player_interest_radius()
-            .into_iter()
-            .filter_map(|(guid, creature)| {
-                (creature.is_alive()
-                    && !self.active_creature_combats.contains_key(&guid)
-                    && matches!(creature.motion, CreatureMotionState::Idle)
-                    && active_aura_has_confuse(&creature.active_auras)
-                    && creature.next_confused_move_at.is_some_and(|at| now >= at))
-                .then_some(guid)
-            })
-            .collect::<Vec<_>>();
-        guids.sort_unstable();
+        if self.idle_motion_start_schedule_dirty {
+            self.rebuild_db_creature_motion_start_schedules();
+        }
+        let mut seen = HashSet::new();
+        let mut guids = Vec::new();
+        while self
+            .confused_db_creature_motion_starts
+            .peek()
+            .is_some_and(|entry| entry.0.due_at <= now)
+        {
+            let Some(Reverse(entry)) = self.confused_db_creature_motion_starts.pop() else {
+                break;
+            };
+            let Some(current_due_at) = self
+                .confused_db_creature_motion_start_due_at
+                .get(&entry.guid)
+                .copied()
+            else {
+                continue;
+            };
+            if current_due_at != entry.due_at {
+                continue;
+            }
+            let Some(creature) = self.creatures.get(&entry.guid) else {
+                self.confused_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+                continue;
+            };
+            if self.db_creature_confused_motion_due_at(entry.guid, creature) != Some(entry.due_at)
+                || !self.db_creature_has_player_interest(creature.current_position)
+            {
+                self.confused_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+                continue;
+            }
+            self.confused_db_creature_motion_start_due_at
+                .remove(&entry.guid);
+            if seen.insert(entry.guid) {
+                guids.push(entry.guid);
+            }
+        }
+        self.refresh_db_creature_motion_start_check_hints();
         guids
     }
 
-    pub(in crate::world) fn next_db_creature_confused_motion_start_at(&self) -> Option<Instant> {
-        self.db_creatures_in_player_interest_radius()
-            .into_iter()
-            .filter(|(guid, creature)| {
-                creature.is_alive()
-                    && !self.active_creature_combats.contains_key(guid)
-                    && matches!(creature.motion, CreatureMotionState::Idle)
-                    && active_aura_has_confuse(&creature.active_auras)
-            })
-            .filter_map(|(_, creature)| creature.next_confused_move_at)
-            .min()
-    }
-
-    pub(in crate::world) fn db_creature_idle_motion_start_guids(&self, now: Instant) -> Vec<u64> {
-        let mut guids = self
-            .db_creatures_in_player_interest_radius()
-            .into_iter()
-            .filter_map(|(guid, creature)| {
-                (creature.is_alive()
-                    && !self.active_creature_combats.contains_key(&guid)
-                    && matches!(creature.motion, CreatureMotionState::Idle)
-                    && !active_aura_has_confuse(&creature.active_auras)
-                    && (creature.next_random_move_at.is_some_and(|at| now >= at)
-                        || creature.next_waypoint_move_at.is_some_and(|at| now >= at)))
-                .then_some(guid)
-            })
-            .collect::<Vec<_>>();
-        guids.sort_unstable();
+    pub(in crate::world) fn db_creature_idle_motion_start_guids(
+        &mut self,
+        now: Instant,
+    ) -> Vec<u64> {
+        if self.idle_motion_start_schedule_dirty {
+            self.rebuild_db_creature_motion_start_schedules();
+        }
+        let mut seen = HashSet::new();
+        let mut guids = Vec::new();
+        while self
+            .idle_db_creature_motion_starts
+            .peek()
+            .is_some_and(|entry| entry.0.due_at <= now)
+        {
+            let Some(Reverse(entry)) = self.idle_db_creature_motion_starts.pop() else {
+                break;
+            };
+            let Some(current_due_at) = self
+                .idle_db_creature_motion_start_due_at
+                .get(&entry.guid)
+                .copied()
+            else {
+                continue;
+            };
+            if current_due_at != entry.due_at {
+                continue;
+            }
+            let Some(creature) = self.creatures.get(&entry.guid) else {
+                self.idle_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+                continue;
+            };
+            if self.db_creature_idle_motion_due_at(entry.guid, creature) != Some(entry.due_at)
+                || !self.db_creature_has_player_interest(creature.current_position)
+            {
+                self.idle_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+                continue;
+            }
+            self.idle_db_creature_motion_start_due_at
+                .remove(&entry.guid);
+            if seen.insert(entry.guid) {
+                guids.push(entry.guid);
+            }
+        }
+        self.refresh_db_creature_motion_start_check_hints();
         guids
-    }
-
-    pub(in crate::world) fn next_db_creature_idle_motion_start_at(&self) -> Option<Instant> {
-        self.db_creatures_in_player_interest_radius()
-            .into_iter()
-            .filter(|(guid, creature)| {
-                creature.is_alive()
-                    && !self.active_creature_combats.contains_key(guid)
-                    && matches!(creature.motion, CreatureMotionState::Idle)
-                    && !active_aura_has_confuse(&creature.active_auras)
-            })
-            .filter_map(|(_, creature)| {
-                [creature.next_random_move_at, creature.next_waypoint_move_at]
-                    .into_iter()
-                    .flatten()
-                    .min()
-            })
-            .min()
     }
 
     pub(in crate::world) fn advance_db_creature_motion(
         &mut self,
         creature_guid: ObjectGuid,
         now: Instant,
-    ) -> Option<(DbCreatureRuntime, Vec<u32>)> {
+    ) -> Option<(DbCreatureRuntime, Vec<u32>, DbCreatureMotionAdvanceMetrics)> {
         let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        let runtime_started_at = Instant::now();
         advance_db_creature_motion_runtime(creature, now);
+        let runtime_time = runtime_started_at.elapsed();
         let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         let snapshot = creature.clone();
+        let spatial_started_at = Instant::now();
         self.refresh_db_creature_spatial_index(
             creature_guid.raw(),
             old_position,
             snapshot.current_position,
         );
-        Some((snapshot, script_ids))
+        let spatial_update_time = spatial_started_at.elapsed();
+        Some((
+            snapshot,
+            script_ids,
+            DbCreatureMotionAdvanceMetrics {
+                runtime_time,
+                spatial_update_time,
+            },
+        ))
     }
 
     pub(in crate::world) fn start_db_creature_idle_motion(
@@ -519,21 +674,40 @@ impl MapRuntime {
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
         now: Instant,
-    ) -> Option<(DbCreatureRuntime, Option<StartedCreatureMotion>, Vec<u32>)> {
+    ) -> DbCreatureMotionStartAttempt {
+        let mut metrics = DbCreatureMotionStartMetrics::default();
+        let path_build_started_at = Instant::now();
         if self
             .active_creature_combats
             .contains_key(&creature_guid.raw())
         {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
-        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
-        let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
+        };
         if !creature.is_alive() {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
         if active_aura_has_confuse(&creature.active_auras) {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
         let motion =
             start_db_creature_random_motion_runtime(navigation, Some(&geometry), creature, now)
@@ -547,15 +721,23 @@ impl MapRuntime {
                 });
         let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         if motion.is_none() && script_ids.is_empty() {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
+        metrics.path_build_time = path_build_started_at.elapsed();
+        let clone_started_at = Instant::now();
         let snapshot = creature.clone();
-        self.refresh_db_creature_spatial_index(
-            creature_guid.raw(),
-            old_position,
-            snapshot.current_position,
-        );
-        Some((snapshot, motion, script_ids))
+        metrics.snapshot_clone_time = clone_started_at.elapsed();
+        let post_start_tracking_started_at = Instant::now();
+        self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
+        metrics.post_start_tracking_time = post_start_tracking_started_at.elapsed();
+        DbCreatureMotionStartAttempt {
+            outcome: Some((snapshot, motion, script_ids)),
+            metrics,
+        }
     }
 
     pub(in crate::world) fn start_db_creature_confused_motion(
@@ -563,32 +745,55 @@ impl MapRuntime {
         navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
         now: Instant,
-    ) -> Option<(DbCreatureRuntime, Option<StartedCreatureMotion>, Vec<u32>)> {
+    ) -> DbCreatureMotionStartAttempt {
+        let mut metrics = DbCreatureMotionStartMetrics::default();
+        let path_build_started_at = Instant::now();
         if self
             .active_creature_combats
             .contains_key(&creature_guid.raw())
         {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
-        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
-        let creature = self.creatures.get_mut(&creature_guid.raw())?;
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
+        };
         if !creature.is_alive() || !active_aura_has_confuse(&creature.active_auras) {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
         let motion =
             start_db_creature_confused_motion_runtime(navigation, Some(&geometry), creature, now);
         let script_ids = std::mem::take(&mut creature.pending_movement_scripts);
         if motion.is_none() && script_ids.is_empty() {
-            return None;
+            metrics.path_build_time = path_build_started_at.elapsed();
+            return DbCreatureMotionStartAttempt {
+                outcome: None,
+                metrics,
+            };
         }
+        metrics.path_build_time = path_build_started_at.elapsed();
+        let clone_started_at = Instant::now();
         let snapshot = creature.clone();
-        self.refresh_db_creature_spatial_index(
-            creature_guid.raw(),
-            old_position,
-            snapshot.current_position,
-        );
-        Some((snapshot, motion, script_ids))
+        metrics.snapshot_clone_time = clone_started_at.elapsed();
+        let post_start_tracking_started_at = Instant::now();
+        self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
+        metrics.post_start_tracking_time = post_start_tracking_started_at.elapsed();
+        DbCreatureMotionStartAttempt {
+            outcome: Some((snapshot, motion, script_ids)),
+            metrics,
+        }
     }
 
     pub(in crate::world) fn start_db_creature_chase_motion(
@@ -599,7 +804,6 @@ impl MapRuntime {
         target_position: WorldPosition,
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
-        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
         let chase_destination =
             self.db_creature_chase_slot_destination(creature_guid, target, target_position);
@@ -617,11 +821,7 @@ impl MapRuntime {
             now,
         )?;
         let snapshot = creature.clone();
-        self.refresh_db_creature_spatial_index(
-            creature_guid.raw(),
-            old_position,
-            snapshot.current_position,
-        );
+        self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         Some((snapshot, motion))
     }
 
@@ -634,7 +834,6 @@ impl MapRuntime {
         now: Instant,
         duration: Duration,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
-        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
@@ -650,11 +849,7 @@ impl MapRuntime {
             duration,
         )?;
         let snapshot = creature.clone();
-        self.refresh_db_creature_spatial_index(
-            creature_guid.raw(),
-            old_position,
-            snapshot.current_position,
-        );
+        self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         Some((snapshot, motion))
     }
 
@@ -664,7 +859,6 @@ impl MapRuntime {
         creature_guid: ObjectGuid,
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
-        let old_position = self.creatures.get(&creature_guid.raw())?.current_position;
         let geometry = self.geometry.clone();
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         let motion = start_db_creature_return_home_motion_runtime(
@@ -674,11 +868,7 @@ impl MapRuntime {
             now,
         )?;
         let snapshot = creature.clone();
-        self.refresh_db_creature_spatial_index(
-            creature_guid.raw(),
-            old_position,
-            snapshot.current_position,
-        );
+        self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         Some((snapshot, motion))
     }
 
@@ -743,6 +933,7 @@ impl MapRuntime {
         creature.event_ai_cooldowns_until.clear();
         creature.clear_confused_motion();
         self.clear_db_creature_combat(creature_guid);
+        self.sync_db_creature_lifecycle_tracking(creature_guid.raw());
         self.creatures.get(&creature_guid.raw()).cloned()
     }
 
@@ -847,6 +1038,283 @@ impl MapRuntime {
         Some((caller, targets.into_iter().map(|(_, guid)| guid).collect()))
     }
 
+    pub(in crate::world) fn sync_db_creature_idle_motion_tracking(&mut self, creature_guid: u64) {
+        let Some(creature) = self.creatures.get(&creature_guid) else {
+            self.active_db_creature_motion_guids.remove(&creature_guid);
+            self.db_creature_motion_advance_due_at
+                .remove(&creature_guid);
+            self.confused_db_creature_motion_start_due_at
+                .remove(&creature_guid);
+            self.idle_db_creature_motion_start_due_at
+                .remove(&creature_guid);
+            return;
+        };
+        let current_position = creature.current_position;
+        let should_advance = self.db_creature_should_advance_idle_motion(creature_guid, creature);
+        let confused_due_at = self.db_creature_confused_motion_due_at(creature_guid, creature);
+        let idle_due_at = self.db_creature_idle_motion_due_at(creature_guid, creature);
+
+        if should_advance {
+            self.active_db_creature_motion_guids.insert(creature_guid);
+            let due_at = self
+                .db_creature_motion_advance_due_at
+                .get(&creature_guid)
+                .copied()
+                .unwrap_or_else(|| self.next_idle_motion_tick_at.unwrap_or_else(Instant::now));
+            self.set_db_creature_motion_advance_due_at(creature_guid, due_at);
+        } else {
+            self.active_db_creature_motion_guids.remove(&creature_guid);
+            self.db_creature_motion_advance_due_at
+                .remove(&creature_guid);
+        }
+
+        if self.idle_motion_start_schedule_dirty {
+            return;
+        }
+
+        let has_interest = self.db_creature_has_player_interest(current_position);
+        if has_interest {
+            if let Some(due_at) = confused_due_at {
+                self.set_db_creature_confused_motion_start_due_at(creature_guid, due_at);
+            } else {
+                self.confused_db_creature_motion_start_due_at
+                    .remove(&creature_guid);
+            }
+            if let Some(due_at) = idle_due_at {
+                self.set_db_creature_idle_motion_start_due_at(creature_guid, due_at);
+            } else {
+                self.idle_db_creature_motion_start_due_at
+                    .remove(&creature_guid);
+            }
+        } else {
+            self.confused_db_creature_motion_start_due_at
+                .remove(&creature_guid);
+            self.idle_db_creature_motion_start_due_at
+                .remove(&creature_guid);
+        }
+        self.refresh_db_creature_motion_start_check_hints();
+    }
+
+    pub(in crate::world) fn sync_db_creature_idle_motion_tracking_for_player_interest_positions(
+        &mut self,
+        positions: &[WorldPosition],
+    ) {
+        let mut creature_guids = HashSet::new();
+        for position in positions {
+            self.visit_nearby_cells(*position, CREATURE_SPAWN_RADIUS_YARDS, |cell| {
+                creature_guids.extend(cell.creatures.iter().copied());
+            });
+        }
+        for creature_guid in creature_guids {
+            self.sync_db_creature_idle_motion_tracking(creature_guid);
+        }
+    }
+
+    fn set_db_creature_motion_advance_due_at(&mut self, creature_guid: u64, due_at: Instant) {
+        if self
+            .db_creature_motion_advance_due_at
+            .get(&creature_guid)
+            .is_some_and(|current| *current == due_at)
+        {
+            return;
+        }
+        self.db_creature_motion_advance_due_at
+            .insert(creature_guid, due_at);
+        self.idle_db_creature_motion_advances
+            .push(Reverse(ScheduledDbCreatureMotionAdvance {
+                due_at,
+                guid: creature_guid,
+            }));
+    }
+
+    fn set_db_creature_confused_motion_start_due_at(
+        &mut self,
+        creature_guid: u64,
+        due_at: Instant,
+    ) {
+        if self
+            .confused_db_creature_motion_start_due_at
+            .get(&creature_guid)
+            .is_some_and(|current| *current == due_at)
+        {
+            return;
+        }
+        self.confused_db_creature_motion_start_due_at
+            .insert(creature_guid, due_at);
+        self.confused_db_creature_motion_starts
+            .push(Reverse(ScheduledDbCreatureMotionStart {
+                due_at,
+                guid: creature_guid,
+            }));
+    }
+
+    fn set_db_creature_idle_motion_start_due_at(&mut self, creature_guid: u64, due_at: Instant) {
+        if self
+            .idle_db_creature_motion_start_due_at
+            .get(&creature_guid)
+            .is_some_and(|current| *current == due_at)
+        {
+            return;
+        }
+        self.idle_db_creature_motion_start_due_at
+            .insert(creature_guid, due_at);
+        self.idle_db_creature_motion_starts
+            .push(Reverse(ScheduledDbCreatureMotionStart {
+                due_at,
+                guid: creature_guid,
+            }));
+    }
+
+    pub(in crate::world) fn sync_db_creature_idle_motion_tracking_for_grid(
+        &mut self,
+        grid_coord: GridCoord,
+    ) {
+        let guids = self
+            .grids
+            .get(&grid_coord)
+            .map(|grid| {
+                grid.cells
+                    .values()
+                    .flat_map(|cell| cell.creatures.iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for guid in guids {
+            self.sync_db_creature_idle_motion_tracking(guid);
+        }
+    }
+
+    fn rebuild_db_creature_motion_start_schedules(&mut self) {
+        self.confused_db_creature_motion_start_due_at.clear();
+        self.idle_db_creature_motion_start_due_at.clear();
+        self.confused_db_creature_motion_starts.clear();
+        self.idle_db_creature_motion_starts.clear();
+        let scheduled = self
+            .db_creatures_in_player_interest_radius()
+            .into_iter()
+            .map(|(guid, creature)| {
+                (
+                    guid,
+                    self.db_creature_confused_motion_due_at(guid, creature),
+                    self.db_creature_idle_motion_due_at(guid, creature),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (guid, confused_due_at, idle_due_at) in scheduled {
+            if let Some(due_at) = confused_due_at {
+                self.set_db_creature_confused_motion_start_due_at(guid, due_at);
+            }
+            if let Some(due_at) = idle_due_at {
+                self.set_db_creature_idle_motion_start_due_at(guid, due_at);
+            }
+        }
+        self.idle_motion_start_schedule_dirty = false;
+        self.refresh_db_creature_motion_start_check_hints();
+    }
+
+    fn refresh_db_creature_motion_start_check_hints(&mut self) {
+        self.next_confused_motion_start_check_at =
+            self.next_valid_db_creature_motion_start_at(true);
+        self.next_idle_motion_start_check_at = self.next_valid_db_creature_motion_start_at(false);
+    }
+
+    fn next_valid_db_creature_motion_start_at(&mut self, confused: bool) -> Option<Instant> {
+        loop {
+            let entry = if confused {
+                self.confused_db_creature_motion_starts.peek().copied()
+            } else {
+                self.idle_db_creature_motion_starts.peek().copied()
+            }?;
+            let Reverse(entry) = entry;
+            let valid = self.creatures.get(&entry.guid).is_some_and(|creature| {
+                let due_at = if confused {
+                    self.confused_db_creature_motion_start_due_at
+                        .get(&entry.guid)
+                        .copied()
+                } else {
+                    self.idle_db_creature_motion_start_due_at
+                        .get(&entry.guid)
+                        .copied()
+                };
+                due_at == Some(entry.due_at)
+                    && self.db_creature_has_player_interest(creature.current_position)
+            });
+            if valid {
+                return Some(entry.due_at);
+            }
+            if confused {
+                self.confused_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+            } else {
+                self.idle_db_creature_motion_start_due_at
+                    .remove(&entry.guid);
+            }
+            if confused {
+                self.confused_db_creature_motion_starts.pop();
+            } else {
+                self.idle_db_creature_motion_starts.pop();
+            }
+        }
+    }
+
+    fn db_creature_should_advance_idle_motion(
+        &self,
+        creature_guid: u64,
+        creature: &DbCreatureRuntime,
+    ) -> bool {
+        creature.is_alive()
+            && !self.active_creature_combats.contains_key(&creature_guid)
+            && self.db_creature_is_in_active_or_blocked_grid(creature.current_position)
+            && matches!(
+                creature.motion,
+                CreatureMotionState::Random(_)
+                    | CreatureMotionState::Confused(_)
+                    | CreatureMotionState::Waypoint(_)
+            )
+    }
+
+    fn db_creature_confused_motion_due_at(
+        &self,
+        creature_guid: u64,
+        creature: &DbCreatureRuntime,
+    ) -> Option<Instant> {
+        (creature.is_alive()
+            && !self.active_creature_combats.contains_key(&creature_guid)
+            && matches!(creature.motion, CreatureMotionState::Idle)
+            && active_aura_has_confuse(&creature.active_auras))
+        .then_some(creature.next_confused_move_at)
+        .flatten()
+    }
+
+    fn db_creature_idle_motion_due_at(
+        &self,
+        creature_guid: u64,
+        creature: &DbCreatureRuntime,
+    ) -> Option<Instant> {
+        if !creature.is_alive()
+            || self.active_creature_combats.contains_key(&creature_guid)
+            || !matches!(creature.motion, CreatureMotionState::Idle)
+            || active_aura_has_confuse(&creature.active_auras)
+        {
+            return None;
+        }
+        [creature.next_random_move_at, creature.next_waypoint_move_at]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    fn db_creature_is_in_active_or_blocked_grid(&self, position: WorldPosition) -> bool {
+        let grid = grid_coord_for_position(position);
+        self.grids.get(&grid).is_some_and(|grid| {
+            matches!(grid.state, GridState::Active | GridState::UnloadBlocked(_))
+        })
+    }
+
+    fn db_creature_has_player_interest(&self, position: WorldPosition) -> bool {
+        self.has_nearby_client_player(position, CREATURE_SPAWN_RADIUS_YARDS, None)
+    }
+
     pub(in crate::world) fn refresh_db_creature_spatial_index(
         &mut self,
         creature_guid: u64,
@@ -877,6 +1345,7 @@ impl MapRuntime {
             self.refresh_grid_state(old_grid);
         }
         self.refresh_grid_state(new_grid);
+        self.sync_db_creature_idle_motion_tracking(creature_guid);
     }
 
     pub(in crate::world) fn db_creature_chase_slot_destination(

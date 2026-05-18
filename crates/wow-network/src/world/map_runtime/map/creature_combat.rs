@@ -212,13 +212,66 @@ impl MapRuntime {
         if !player.is_player() {
             return;
         }
-        let in_combat = self
-            .active_creature_combats
-            .values()
-            .any(|combat| combat.victim == player);
+        let indexed_in_combat = self
+            .creature_combats_by_victim
+            .get(&player.raw())
+            .is_some_and(|attackers| !attackers.is_empty());
+        let in_combat = indexed_in_combat
+            || self
+                .active_creature_combats
+                .values()
+                .any(|combat| combat.victim == player);
         if let Some(runtime) = self.players.get_mut(&player.counter()) {
             runtime.in_combat = in_combat;
         }
+    }
+
+    fn track_db_creature_combat_victim(&mut self, victim: ObjectGuid, attacker: ObjectGuid) {
+        self.creature_combats_by_victim
+            .entry(victim.raw())
+            .or_default()
+            .insert(attacker.raw());
+    }
+
+    fn untrack_db_creature_combat_victim(&mut self, victim: ObjectGuid, attacker: ObjectGuid) {
+        let victim_raw = victim.raw();
+        if let Some(attackers) = self.creature_combats_by_victim.get_mut(&victim_raw) {
+            attackers.remove(&attacker.raw());
+            if attackers.is_empty() {
+                self.creature_combats_by_victim.remove(&victim_raw);
+            }
+        }
+    }
+
+    pub(in crate::world) fn schedule_db_creature_combat_due_at(
+        &mut self,
+        attacker: ObjectGuid,
+        due_at: Instant,
+    ) {
+        self.active_creature_combat_due
+            .push(Reverse(ScheduledDbCreatureCombat {
+                due_at,
+                guid: attacker.raw(),
+            }));
+    }
+
+    pub(in crate::world) fn active_db_creature_combat_attackers_for_victim(
+        &self,
+        victim: ObjectGuid,
+    ) -> Vec<ObjectGuid> {
+        let mut attackers = self
+            .creature_combats_by_victim
+            .get(&victim.raw())
+            .into_iter()
+            .flat_map(|indexed| indexed.iter().copied())
+            .collect::<BTreeSet<_>>();
+        attackers.extend(
+            self.active_creature_combats
+                .values()
+                .filter(|combat| combat.victim == victim)
+                .map(|combat| combat.attacker.raw()),
+        );
+        attackers.into_iter().map(ObjectGuid::from_raw).collect()
     }
 
     pub(in crate::world) fn db_creature_combat_snapshot(
@@ -636,6 +689,186 @@ impl MapRuntime {
         self.ready_db_creature_event_ai_spell_cast_inner(attacker, None, scripts, now)
     }
 
+    pub(in crate::world) fn clear_db_creature_ooc_event_ai_tracking(&mut self, guid: u64) {
+        self.db_creature_ooc_event_ai_due_at.remove(&guid);
+    }
+
+    pub(in crate::world) fn set_db_creature_ooc_event_ai_capability(
+        &mut self,
+        creature_entry: u32,
+        capability: DbCreatureOocEventAiCapability,
+        now: Instant,
+    ) {
+        self.db_creature_ooc_event_ai_capabilities
+            .insert(creature_entry, capability);
+        let affected = self
+            .creatures
+            .values()
+            .filter(|creature| creature.spawn.entry == creature_entry)
+            .map(|creature| creature.guid().raw())
+            .collect::<Vec<_>>();
+        for guid in affected {
+            self.sync_db_creature_ooc_event_ai_tracking(guid, now);
+        }
+    }
+
+    pub(in crate::world) fn sync_db_creature_ooc_event_ai_tracking(
+        &mut self,
+        guid: u64,
+        now: Instant,
+    ) {
+        self.clear_db_creature_ooc_event_ai_tracking(guid);
+        let Some(creature) = self.creatures.get(&guid) else {
+            return;
+        };
+        if !creature.is_alive()
+            || creature.is_evading_home()
+            || creature.is_fleeing()
+            || self.active_creature_combats.contains_key(&guid)
+        {
+            return;
+        }
+        let creature_entry = creature.spawn.entry;
+
+        let due_at = if let Some(cast) = self.active_creature_spell_casts.get(&guid) {
+            Some(cast.due_at)
+        } else {
+            match self
+                .db_creature_ooc_event_ai_capabilities
+                .get(&creature_entry)
+                .unwrap_or(&DbCreatureOocEventAiCapability::Unknown)
+            {
+                DbCreatureOocEventAiCapability::Unknown => Some(now),
+                DbCreatureOocEventAiCapability::None => None,
+                DbCreatureOocEventAiCapability::OocCast(scripts) => {
+                    if scripts.iter().any(|script| {
+                        script.event_type == EVENT_AI_EVENT_SPAWNED
+                            && db_creature_event_ai_common_ready(creature, script)
+                            && db_creature_event_ai_spawned_condition(self, creature, script)
+                    }) {
+                        Some(now)
+                    } else {
+                        let Some(creature) = self.creatures.get_mut(&guid) else {
+                            return;
+                        };
+                        let mut next_due_at = None;
+                        for script in scripts.iter() {
+                            if script.event_type != EVENT_AI_EVENT_TIMER_OOC
+                                || !db_creature_event_ai_common_ready(creature, script)
+                            {
+                                continue;
+                            }
+                            let due_at =
+                                match creature.event_ai_cooldowns_until.get(&script.id).copied() {
+                                    Some(due_at) => due_at,
+                                    None => {
+                                        let initial_millis = random_millis_between_i32(
+                                            script.event_param1,
+                                            script.event_param2,
+                                        );
+                                        if initial_millis == 0 {
+                                            now
+                                        } else {
+                                            let due_at =
+                                                now + Duration::from_millis(initial_millis as u64);
+                                            creature
+                                                .event_ai_cooldowns_until
+                                                .insert(script.id, due_at);
+                                            due_at
+                                        }
+                                    }
+                                };
+                            next_due_at = Some(
+                                next_due_at.map_or(due_at, |current: Instant| current.min(due_at)),
+                            );
+                        }
+                        next_due_at
+                    }
+                }
+            }
+        };
+
+        let Some(due_at) = due_at else {
+            return;
+        };
+        self.db_creature_ooc_event_ai_due_at.insert(guid, due_at);
+        self.db_creature_ooc_event_ai_due
+            .push(Reverse(ScheduledDbCreatureOocEventAi { due_at, guid }));
+    }
+
+    pub(in crate::world) fn pop_ready_db_creature_ooc_event_ai_guid(
+        &mut self,
+        now: Instant,
+    ) -> Option<u64> {
+        while self
+            .db_creature_ooc_event_ai_due
+            .peek()
+            .is_some_and(|entry| entry.0.due_at <= now)
+        {
+            let Some(Reverse(entry)) = self.db_creature_ooc_event_ai_due.pop() else {
+                break;
+            };
+            if self
+                .db_creature_ooc_event_ai_due_at
+                .get(&entry.guid)
+                .copied()
+                != Some(entry.due_at)
+            {
+                continue;
+            }
+            self.db_creature_ooc_event_ai_due_at.remove(&entry.guid);
+            if self.creatures.contains_key(&entry.guid) {
+                return Some(entry.guid);
+            }
+        }
+        None
+    }
+
+    pub(in crate::world) fn creature_ooc_event_ai_capability(
+        &self,
+        guid: u64,
+    ) -> Option<DbCreatureOocEventAiCapability> {
+        let creature = self.creatures.get(&guid)?;
+        Some(
+            self.db_creature_ooc_event_ai_capabilities
+                .get(&creature.spawn.entry)
+                .cloned()
+                .unwrap_or(DbCreatureOocEventAiCapability::Unknown),
+        )
+    }
+
+    pub(in crate::world) fn prepare_ready_db_creature_ooc_event_ai_action(
+        &mut self,
+        guid: u64,
+        now: Instant,
+    ) -> Option<ReadyDbCreatureOocEventAiAction> {
+        let attacker = ObjectGuid::from_raw(guid);
+        match self.creature_ooc_event_ai_capability(guid)? {
+            DbCreatureOocEventAiCapability::Unknown => {
+                self.sync_db_creature_ooc_event_ai_tracking(guid, now);
+                None
+            }
+            DbCreatureOocEventAiCapability::None => None,
+            DbCreatureOocEventAiCapability::OocCast(scripts) => {
+                if let Some(cast) = self.active_creature_spell_casts.get(&guid) {
+                    if now < cast.due_at {
+                        self.sync_db_creature_ooc_event_ai_tracking(guid, now);
+                        return None;
+                    }
+                    let victim = self
+                        .active_creature_combats
+                        .get(&guid)
+                        .map(|combat| combat.victim)
+                        .unwrap_or(cast.target);
+                    return Some(ReadyDbCreatureOocEventAiAction::Complete { attacker, victim });
+                }
+                let ready =
+                    self.ready_db_creature_event_ai_ooc_spell_cast(attacker, &scripts, now)?;
+                Some(ReadyDbCreatureOocEventAiAction::Start { attacker, ready })
+            }
+        }
+    }
+
     fn ready_db_creature_event_ai_spell_cast_inner(
         &mut self,
         attacker: ObjectGuid,
@@ -703,6 +936,9 @@ impl MapRuntime {
             );
         }
         creature.triggered_event_ai_scripts.insert(ready.script_id);
+        let attacker_guid = attacker.raw();
+        let _ = creature;
+        self.sync_db_creature_ooc_event_ai_tracking(attacker_guid, now);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1103,8 +1339,9 @@ impl MapRuntime {
                 .transpose()?;
             (position, motion_stop_packet, power_update_packet)
         };
-        self.active_creature_spell_casts
-            .insert(cast.caster.raw(), cast);
+        let caster_guid = cast.caster.raw();
+        self.active_creature_spell_casts.insert(caster_guid, cast);
+        self.sync_db_creature_ooc_event_ai_tracking(caster_guid, Instant::now());
         Ok(Some(
             self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None)
                 .into_iter()
@@ -1179,6 +1416,7 @@ impl MapRuntime {
         if target_validation.check != DbCreatureSpellTargetCheck::Clear {
             self.active_creature_spell_casts.remove(&attacker.raw());
             let failure = db_creature_spell_failure_from_target_check(target_validation.check);
+            self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
             return Ok(Some(DbCreatureCompletedSpellCastEvent {
                 spell_go_body: Vec::new(),
                 effect: DbCreatureCompletedSpellEffect::Interrupted(
@@ -1274,12 +1512,163 @@ impl MapRuntime {
             }
             _ => None,
         };
+        self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
         Ok(Some(DbCreatureCompletedSpellCastEvent {
             spell_go_body,
             effect,
             aura_event,
             creature_aura_event,
         }))
+    }
+
+    pub(in crate::world) fn materialize_db_creature_completed_spell_cast_packets(
+        &self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        event: DbCreatureCompletedSpellCastEvent,
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        let mut packets = Vec::new();
+        let direct_session_id = victim
+            .is_player()
+            .then(|| self.players.get(&victim.counter()))
+            .flatten()
+            .and_then(PlayerRuntime::client_session_id);
+        let exclude_character_guid = victim.is_player().then_some(victim.counter());
+        let attacker_position = self
+            .creatures
+            .get(&attacker.raw())
+            .map(|creature| creature.current_position);
+
+        if !event.spell_go_body.is_empty() {
+            if let Some(session_id) = direct_session_id {
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_SPELL_GO,
+                        body: event.spell_go_body.clone(),
+                    },
+                ));
+            }
+            if let Some(position) = attacker_position {
+                packets.extend(self.nearby_player_packet_broadcast(
+                    position,
+                    exclude_character_guid,
+                    SMSG_SPELL_GO,
+                    event.spell_go_body.clone(),
+                ));
+            }
+        }
+
+        match event.effect {
+            DbCreatureCompletedSpellEffect::AuraOnly => {}
+            DbCreatureCompletedSpellEffect::Interrupted(interrupted) => {
+                packets.extend(interrupted.observer_packets);
+            }
+            DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
+                if let Some(session_id) = direct_session_id {
+                    for packet in damage.direct_packets {
+                        packets.push((session_id, packet));
+                    }
+                    if let Some(body) = damage.spell_miss_log_body {
+                        packets.push((
+                            session_id,
+                            OutboundWorldPacket {
+                                opcode: SMSG_SPELLLOGMISS,
+                                body,
+                            },
+                        ));
+                    }
+                    if let Some(body) = damage.spell_non_melee_log_body {
+                        packets.push((
+                            session_id,
+                            OutboundWorldPacket {
+                                opcode: SMSG_SPELLNONMELEEDAMAGELOG,
+                                body,
+                            },
+                        ));
+                    }
+                    if let Some(packet) = damage.aura_packet {
+                        packets.push((session_id, packet));
+                    }
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: damage.health_update_body,
+                        },
+                    ));
+                }
+                packets.extend(damage.observer_packets);
+            }
+            DbCreatureCompletedSpellEffect::CreatureHeal(heal) => {
+                if let Some(session_id) = direct_session_id {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_SPELLHEALLOG,
+                            body: heal.spell_heal_log_body,
+                        },
+                    ));
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: heal.health_update_body,
+                        },
+                    ));
+                }
+                packets.extend(heal.observer_packets);
+            }
+        }
+
+        if let Some(aura_event) = event.aura_event {
+            if let Some(session_id) = direct_session_id {
+                for packet in aura_event.direct_packets {
+                    packets.push((session_id, packet));
+                }
+            }
+            packets.extend(aura_event.observer_packets);
+        }
+        if let Some(creature_aura_event) = event.creature_aura_event {
+            if let Some(session_id) = direct_session_id {
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: SMSG_UPDATE_OBJECT,
+                        body: creature_aura_event.update_body,
+                    },
+                ));
+                for packet in creature_aura_event.direct_packets {
+                    packets.push((session_id, packet));
+                }
+            }
+            packets.extend(creature_aura_event.observer_packets);
+        }
+        packets
+    }
+
+    pub(in crate::world) fn nearby_player_packet_broadcast(
+        &self,
+        position: WorldPosition,
+        exclude_character_guid: Option<u32>,
+        opcode: u16,
+        body: Vec<u8>,
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        self.nearby_player_guids(
+            position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            exclude_character_guid,
+        )
+        .into_iter()
+        .filter_map(|player_guid| {
+            self.players.get(&player_guid).and_then(|player| {
+                player.packet_to_client(OutboundWorldPacket {
+                    opcode,
+                    body: body.clone(),
+                })
+            })
+        })
+        .collect()
     }
 
     pub(in crate::world) fn db_creature_interrupted_spell_cast_event(
@@ -1359,6 +1748,8 @@ impl MapRuntime {
             creature.aggro_enabled_at = None;
         }
         self.active_creature_combats.insert(attacker.raw(), combat);
+        self.track_db_creature_combat_victim(victim, attacker);
+        self.schedule_db_creature_combat_due_at(attacker, now);
         if victim.is_player() {
             if let Some(player) = self.players.get_mut(&victim.counter()) {
                 player.in_combat = true;
@@ -1373,6 +1764,8 @@ impl MapRuntime {
         {
             self.refresh_grid_state(grid_coord_for_position(position));
         }
+        self.sync_db_creature_idle_motion_tracking(attacker.raw());
+        self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
         Some(combat)
     }
 
@@ -1385,6 +1778,7 @@ impl MapRuntime {
         self.creature_combat_leash.remove(&attacker.raw());
         self.creature_threats.remove(&attacker.raw());
         if let Some(victim) = old_victim {
+            self.untrack_db_creature_combat_victim(victim, attacker);
             self.set_player_in_combat_from_creature_refs(victim);
         }
         if let Some(position) = self
@@ -1394,18 +1788,30 @@ impl MapRuntime {
         {
             self.refresh_grid_state(grid_coord_for_position(position));
         }
+        self.sync_db_creature_idle_motion_tracking(attacker.raw());
+        self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), Instant::now());
     }
 
     pub(in crate::world) fn clear_db_creature_combats_for_victim(&mut self, victim: ObjectGuid) {
-        let changed_grids = self
-            .active_creature_combats
-            .values()
-            .filter(|combat| combat.victim == victim)
-            .filter_map(|combat| self.creatures.get(&combat.attacker.raw()))
+        let mut removed_attackers = self
+            .creature_combats_by_victim
+            .remove(&victim.raw())
+            .unwrap_or_default();
+        removed_attackers.extend(
+            self.active_creature_combats
+                .values()
+                .filter(|combat| combat.victim == victim)
+                .map(|combat| combat.attacker.raw()),
+        );
+        let removed_attackers = removed_attackers.into_iter().collect::<Vec<_>>();
+        let changed_grids = removed_attackers
+            .iter()
+            .filter_map(|attacker| self.creatures.get(attacker))
             .map(|creature| grid_coord_for_position(creature.current_position))
             .collect::<HashSet<_>>();
-        self.active_creature_combats
-            .retain(|_, combat| combat.victim != victim);
+        for attacker in &removed_attackers {
+            self.active_creature_combats.remove(attacker);
+        }
         let active_attackers = self
             .active_creature_combats
             .keys()
@@ -1424,20 +1830,77 @@ impl MapRuntime {
         for grid in changed_grids {
             self.refresh_grid_state(grid);
         }
+        for attacker in removed_attackers {
+            self.sync_db_creature_idle_motion_tracking(attacker);
+            self.sync_db_creature_ooc_event_ai_tracking(attacker, Instant::now());
+        }
     }
 
     pub(in crate::world) fn active_db_creature_combats_for_victim(
         &self,
         victim: ObjectGuid,
     ) -> Vec<CreatureCombatState> {
-        let mut combats = self
-            .active_creature_combats
-            .values()
-            .filter(|combat| combat.victim == victim)
+        let mut attackers = self
+            .creature_combats_by_victim
+            .get(&victim.raw())
+            .into_iter()
+            .flat_map(|indexed| indexed.iter().copied())
+            .collect::<BTreeSet<_>>();
+        attackers.extend(
+            self.active_creature_combats
+                .values()
+                .filter(|combat| combat.victim == victim)
+                .map(|combat| combat.attacker.raw()),
+        );
+        let mut combats = attackers
+            .iter()
+            .filter_map(|attacker| self.active_creature_combats.get(attacker))
             .copied()
             .collect::<Vec<_>>();
         combats.sort_by_key(|combat| combat.attacker.raw());
         combats
+    }
+
+    pub(in crate::world) fn db_creature_can_reach_player_with_navigation(
+        &self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+    ) -> bool {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return false;
+        };
+        let Some(player) = self.players.get(&victim.counter()) else {
+            return false;
+        };
+        if !db_creature_navigation_check(navigation, creature.current_position, player.position)
+            .is_clear()
+        {
+            return false;
+        }
+        let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+        let dx = creature.current_position.x - player.position.x;
+        let dy = creature.current_position.y - player.position.y;
+        let dz = creature.current_position.z - player.position.z;
+        dx * dx + dy * dy + dz * dz <= reach * reach
+    }
+
+    pub(in crate::world) fn db_creature_has_player_in_arc(
+        &self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+    ) -> bool {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return false;
+        };
+        let Some(player) = self.players.get(&victim.counter()) else {
+            return false;
+        };
+        has_in_arc(
+            creature.current_position,
+            player.position,
+            PLAYER_MELEE_ARC_RADIANS,
+        )
     }
 
     #[allow(dead_code)]
@@ -1466,7 +1929,7 @@ impl MapRuntime {
         now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
-        let combat = {
+        let (combat, due_at) = {
             let Some(combat) = self.active_creature_combats.get_mut(&attacker.raw()) else {
                 return Ok(None);
             };
@@ -1474,8 +1937,9 @@ impl MapRuntime {
                 return Ok(None);
             }
             combat.next_swing_at = next_swing_at;
-            *combat
+            (*combat, combat.next_swing_at)
         };
+        self.schedule_db_creature_combat_due_at(attacker, due_at);
         let creature_motion = self
             .creatures
             .get(&attacker.raw())
@@ -1853,11 +2317,20 @@ impl MapRuntime {
         victim: ObjectGuid,
         now: Instant,
     ) -> Option<CreatureCombatState> {
-        let combat = self.active_creature_combats.get_mut(&attacker.raw())?;
-        if combat.attacker == attacker && combat.victim == victim && now >= combat.next_swing_at {
-            combat.next_swing_at = now + Duration::from_millis(DB_CREATURE_MELEE_RETRY_MILLIS);
+        let (combat, due_at, changed) = {
+            let combat = self.active_creature_combats.get_mut(&attacker.raw())?;
+            let mut changed = false;
+            if combat.attacker == attacker && combat.victim == victim && now >= combat.next_swing_at
+            {
+                combat.next_swing_at = now + Duration::from_millis(DB_CREATURE_MELEE_RETRY_MILLIS);
+                changed = true;
+            }
+            (*combat, combat.next_swing_at, changed)
+        };
+        if changed {
+            self.schedule_db_creature_combat_due_at(attacker, due_at);
         }
-        Some(*combat)
+        Some(combat)
     }
 
     pub(in crate::world) fn refresh_db_creature_combat_leash(
@@ -2018,6 +2491,8 @@ impl MapRuntime {
         let mut combat = current_combat;
         combat.victim = new_victim;
         self.active_creature_combats.insert(attacker.raw(), combat);
+        self.untrack_db_creature_combat_victim(current_combat.victim, attacker);
+        self.track_db_creature_combat_victim(new_victim, attacker);
         self.set_player_in_combat_from_creature_refs(current_combat.victim);
         if new_victim.is_player() {
             if let Some(player) = self.players.get_mut(&new_victim.counter()) {

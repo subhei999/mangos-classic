@@ -603,7 +603,7 @@ impl MapRuntime {
         let Some(creature) = self.creatures.get_mut(&target.raw()) else {
             return Ok(None);
         };
-        apply_creature_runtime_world_damage(
+        let applied = apply_creature_runtime_world_damage(
             creature,
             target,
             source,
@@ -611,7 +611,12 @@ impl MapRuntime {
             kind,
             now,
             now_epoch_secs,
-        )
+        )?;
+        if applied.is_some() {
+            self.sync_db_creature_lifecycle_tracking(target.raw());
+            self.sync_db_creature_ooc_event_ai_tracking(target.raw(), now);
+        }
+        Ok(applied)
     }
 }
 

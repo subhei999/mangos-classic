@@ -171,6 +171,7 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) jump: JumpInfo,
     pub(in crate::world) cell: CellCoord,
     pub(in crate::world) visible_objects: HashSet<ObjectGuid>,
+    pub(in crate::world) last_player_visibility_refresh_position: Option<WorldPosition>,
     pub(in crate::world) last_creature_visibility_position: Option<WorldPosition>,
     pub(in crate::world) last_gameobject_visibility_position: Option<WorldPosition>,
     pub(in crate::world) last_player_corpse_visibility_position: Option<WorldPosition>,

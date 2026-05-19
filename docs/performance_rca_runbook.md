@@ -304,6 +304,43 @@ VMap tile-load cache guard:
   scalability pass. Treat it as valid root-cause evidence because the active
   scrape and sentinel summaries were captured.
 
+Player visibility relocation threshold:
+
+- CMaNGOS only updates object visibility after relocation crosses
+  `Visibility.RelocationLowerLimit`, default `10` yards. Reference:
+  `Unit::OnRelocated` compares current position against
+  `m_last_notified_position` and only then calls
+  `UpdateObjectVisibility()`.
+- The Rust map-owned movement path was marking every accepted movement packet
+  for `player_visibility_refresh`, so the refresh phase could rebuild
+  player-player create/destroy visibility at `50 ms` movement cadence.
+- The Rust map runtime now tracks
+  `PlayerRuntime::last_player_visibility_refresh_position` and only marks a
+  player-player visibility refresh after `10` yards of relocation, preserving
+  the current visible-object set between relocation notifications.
+- Active steady scrape after the fix:
+  `logs/perf-rca/20260519-011936-500-same-grid-50ms-5-mage-sentinels-player-vis-relocation10-active-steady.summary.prom`
+- Harness summary:
+  `clients=500`, `failures=20`, `movements_sent=258904`,
+  `packets_drained=23672092`; sentinel result `casts_sent=89`,
+  `responses=88`, `avg_response_ms=39.000`,
+  `max_response_ms=374.827`.
+- The scrape reached `500` connected sessions and `498` active map players.
+  `CMSG_CAST_SPELL` service average/max were `81.326/419.431 ms`.
+- The intended producer dropped sharply compared with the vmap-cache-guard
+  control:
+  - `player_visibility_refresh/0x00A9` bytes:
+    `130,241,624 -> 1,852,928`
+  - `player_visibility_refresh/0x00A9` packets:
+    `187,980 -> 2,674`
+  - refresh players per sample:
+    `163.870 avg / 494 max -> 0.393 avg / 6 max`
+  - refresh packets per sample:
+    `1748.995 avg / 9834 max -> 13.057 avg / 224 max`
+- This confirms that per-packet player visibility refresh marking was a major
+  update-object churn source. Remaining high volume is now mostly movement
+  broadcast opcodes from `movement_apply`, especially `0x00EE`.
+
 ## Baseline Capture
 
 Use release binaries and record the exact shape before each run:
@@ -543,15 +580,15 @@ cross-crate boundary truly needs a shared helper.
 Do these in small, measurable steps and rerun the same `500` same-grid
 stationary-sentinel control after each one:
 
-1. Reduce `player_visibility_refresh` update-object churn, because it remains
-   the ongoing `SMSG_UPDATE_OBJECT` producer after movement heartbeat
-   coalescing. Keep `player_add_visibility` separate because the source metrics
-   show it is mostly startup/login visibility.
+1. Reduce remaining `movement_apply` movement-broadcast volume. After the
+   player visibility relocation threshold, `player_visibility_refresh` is no
+   longer the dominant ongoing `SMSG_UPDATE_OBJECT` producer; movement opcodes
+   from `movement_apply`, especially `0x00EE`, are again the largest byte
+   bucket.
 2. Add finer spell-handler stage timing for `CMSG_CAST_SPELL`: separate
    session dispatch wait, map lock wait, spell lookup/validation, map mutation,
-   direct response build, and observer broadcast. The vmap fix dramatically
-   improved sentinel response latency, but `CMSG_CAST_SPELL` service max still
-   reached about `1.1 s` during the active scrape.
+   direct response build, and observer broadcast. The latest controls brought
+   the average down, but service tails still need an exact stage split.
 3. Reduce area lookup frequency with a CMaNGOS-shaped rule: only recompute on
    meaningful cell/tile/area transitions or after a cached state invalidates,
    while preserving exploration and WMO override correctness.

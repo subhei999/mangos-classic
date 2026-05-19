@@ -8424,6 +8424,7 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(center),
         visible_objects: HashSet::new(),
+        last_player_visibility_refresh_position: None,
         last_creature_visibility_position: None,
         last_gameobject_visibility_position: None,
         last_player_corpse_visibility_position: None,
@@ -16548,6 +16549,7 @@ fn test_player_runtime_with_controller(
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(position),
         visible_objects: HashSet::new(),
+        last_player_visibility_refresh_position: None,
         last_creature_visibility_position: None,
         last_gameobject_visibility_position: None,
         last_player_corpse_visibility_position: None,
@@ -18410,6 +18412,57 @@ fn map_runtime_defers_player_visibility_enter_until_refresh_phase() {
 }
 
 #[test]
+fn map_runtime_skips_player_visibility_refresh_below_relocation_limit() {
+    let mut map = MapRuntime::new(0, 0);
+    let mover_start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(
+        0,
+        mover_start.x + PLAYER_VISIBILITY_RADIUS_YARDS + 5.0,
+        mover_start.y,
+        mover_start.z,
+        0.0,
+    );
+    map.add_player(test_player_runtime(1, SessionId(1), mover_start))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let movement = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1234,
+        position: WorldPosition::new(
+            0,
+            mover_start.x + PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS - 1.0,
+            mover_start.y,
+            mover_start.z,
+            0.0,
+        ),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &movement, 5678)
+        .unwrap();
+
+    assert!(map.pending_player_visibility_refreshes.is_empty());
+    assert!(map
+        .pending_player_visibility_refresh_old_positions
+        .is_empty());
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(!map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
+}
+
+#[test]
 fn map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves() {
     let mut map = MapRuntime::new(0, 0);
     let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -18419,7 +18472,13 @@ fn map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_mo
     let first = MovementInfo {
         flags: MOVEFLAG_FORWARD,
         client_time: 1,
-        position: WorldPosition::new(0, -8948.0, -130.0, 83.5, 0.0),
+        position: WorldPosition::new(
+            0,
+            start.x + PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS,
+            start.y,
+            start.z,
+            0.0,
+        ),
         fall_time: 0,
         jump: JumpInfo::default(),
     };
@@ -18433,7 +18492,13 @@ fn map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_mo
     let second = MovementInfo {
         flags: MOVEFLAG_FORWARD,
         client_time: 3,
-        position: WorldPosition::new(0, -8946.0, -130.0, 83.5, 0.0),
+        position: WorldPosition::new(
+            0,
+            start.x + PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS + 4.0,
+            start.y,
+            start.z,
+            0.0,
+        ),
         fall_time: 0,
         jump: JumpInfo::default(),
     };

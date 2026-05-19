@@ -10,6 +10,7 @@ pub(in crate::world) const PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL: Dur
     Duration::from_millis(750);
 pub(in crate::world) const MAX_PLAYER_VISIBILITY_REFRESHES_PER_TICK: usize = 1024;
 pub(in crate::world) const PLAYER_MOVEMENT_HEARTBEAT_BROADCAST_INTERVAL_MS: u32 = 100;
+pub(in crate::world) const PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS: f32 = 10.0;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct PlayerEnvironmentTickMetrics {
@@ -90,6 +91,24 @@ impl MapRuntime {
             .remove(&character_guid);
         self.pending_player_visibility_refresh_old_positions
             .remove(&character_guid);
+    }
+
+    fn mark_player_visibility_refresh_if_relocated(
+        &mut self,
+        character_guid: u32,
+        previous_position: WorldPosition,
+        current_position: WorldPosition,
+    ) {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return;
+        };
+        let last_refresh_position = player.last_player_visibility_refresh_position;
+        if !should_refresh_player_visibility_from(last_refresh_position, current_position) {
+            return;
+        }
+        let old_position = last_refresh_position.unwrap_or(previous_position);
+        player.last_player_visibility_refresh_position = Some(current_position);
+        self.mark_player_visibility_refresh_needed(character_guid, old_position);
     }
 
     fn should_broadcast_player_movement(
@@ -786,6 +805,7 @@ impl MapRuntime {
                     .insert(ObjectGuid::new(HighGuid::Player, 0, *other_guid));
             }
         }
+        player.last_player_visibility_refresh_position = Some(player.position);
         for other_guid in &visible_others {
             if let Some(other) = self.players.get_mut(other_guid) {
                 if other.is_client_controlled() {
@@ -1182,7 +1202,11 @@ impl MapRuntime {
         );
 
         let visibility_refresh_mark_started_at = Instant::now();
-        self.mark_player_visibility_refresh_needed(character_guid, current_player.position);
+        self.mark_player_visibility_refresh_if_relocated(
+            character_guid,
+            current_player.position,
+            movement.position,
+        );
         crate::observability::record_movement_apply_visibility_refresh_mark_time(
             visibility_refresh_mark_started_at.elapsed(),
         );
@@ -1799,6 +1823,7 @@ impl MapRuntime {
 
     pub(in crate::world) fn reset_player_visibility_scan_positions(&mut self, character_guid: u32) {
         if let Some(player) = self.players.get_mut(&character_guid) {
+            player.last_player_visibility_refresh_position = None;
             player.last_creature_visibility_position = None;
             player.last_gameobject_visibility_position = None;
             player.last_player_corpse_visibility_position = None;
@@ -3464,6 +3489,21 @@ pub(in crate::world) fn should_rescan_visibility_from(
     }
     distance_squared_2d(previous.x, previous.y, position.x, position.y)
         >= CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS * CREATURE_VISIBILITY_RESCAN_DISTANCE_YARDS
+}
+
+pub(in crate::world) fn should_refresh_player_visibility_from(
+    previous: Option<WorldPosition>,
+    position: WorldPosition,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    if previous.map_id != position.map_id {
+        return true;
+    }
+    distance_squared_2d(previous.x, previous.y, position.x, position.y)
+        >= PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS
+            * PLAYER_VISIBILITY_RELOCATION_LOWER_LIMIT_YARDS
 }
 
 pub(in crate::world) fn should_refresh_player_environment_flags(

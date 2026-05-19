@@ -617,6 +617,43 @@ VMap tile-load cache guard:
   "confirmed contributor fixed." The control is not a clean scalability pass
   because of thin-client failures, but it is strong RCA evidence.
 
+Player visibility relocation threshold:
+
+- CMaNGOS reference: `Unit::OnRelocated` only calls
+  `UpdateObjectVisibility()` after movement exceeds
+  `Visibility.RelocationLowerLimit`, default `10` yards, from
+  `m_last_notified_position`.
+- The Rust map-owned movement path was marking every accepted movement packet
+  for player-player visibility refresh. That made the
+  `player_visibility_refresh` phase rebuild create/destroy visibility at the
+  `50 ms` movement-packet cadence.
+- Fixed by adding
+  `PlayerRuntime::last_player_visibility_refresh_position` and only marking
+  player-player visibility refreshes after `10` yards of relocation.
+- Regression test added:
+  `map_runtime_skips_player_visibility_refresh_below_relocation_limit`.
+- Active-polled post-fix control:
+  `logs/perf-rca/20260519-011936-500-same-grid-50ms-5-mage-sentinels-player-vis-relocation10-active-steady.summary.prom`
+- Harness summary:
+  `clients=500`, `failures=20`, `movements_sent=258904`,
+  `packets_drained=23672092`; sentinel result `casts_sent=89`,
+  `responses=88`, `failures=44`, `pending=1`, `avg_response_ms=39.000`,
+  `max_response_ms=374.827`.
+- The scrape reached `500` connected sessions and `498` active map players.
+  `CMSG_CAST_SPELL` service average/max were `81.326/419.431 ms`.
+- Intended producer drop versus the vmap-cache-guard control:
+  - `player_visibility_refresh/0x00A9` bytes:
+    `130,241,624 -> 1,852,928`
+  - `player_visibility_refresh/0x00A9` packets:
+    `187,980 -> 2,674`
+  - refresh players per sample:
+    `163.870 avg / 494 max -> 0.393 avg / 6 max`
+  - refresh packets per sample:
+    `1748.995 avg / 9834 max -> 13.057 avg / 224 max`
+- Remaining largest outbound source is now movement broadcasts from
+  `movement_apply`, especially `0x00EE`; `player_visibility_refresh` is no
+  longer the main ongoing update-object churn source.
+
 ## Tests Run
 
 - `cargo fmt`
@@ -721,6 +758,14 @@ VMap tile-load cache guard:
   - `cargo build --release -p authserver -p worldserver -p world-load-test`
   - active-polled `500`-client stationary-sentinel control captured with
     `-EnableTokioUnstableMetrics`
+- Player visibility relocation threshold:
+  - `cargo test -p wow-network map_runtime_skips_player_visibility_refresh_below_relocation_limit --lib`
+  - `cargo test -p wow-network map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves --lib`
+  - `cargo test -p wow-network map_runtime_defers_player_visibility_enter_until_refresh_phase --lib`
+  - `cargo check -p worldserver`
+  - `cargo build --release -p authserver -p worldserver -p world-load-test`
+  - active-polled `500`-client stationary-sentinel control captured with
+    `-EnableTokioUnstableMetrics`
 
 ## Current Confidence
 
@@ -747,6 +792,10 @@ VMap tile-load cache guard:
   sentinel spell average from the prior comparable `948.112 ms` to
   `80.677 ms`, and reduced native area-info averages from roughly `23 ms` to
   micro-scale millisecond values.
+- High that per-packet player visibility refresh marking was a real
+  update-object churn source and is now fixed with the CMaNGOS-shaped
+  relocation threshold. The post-fix control reduced
+  `player_visibility_refresh/0x00A9` bytes from `130 MB` to `1.85 MB`.
 - High that the first attribution pass confirms the concrete split: outbound
   writer volume is dominated by `SMSG_UPDATE_OBJECT`, while position-status
   area discovery is dominated by repeated native WMO area-info misses.
@@ -785,6 +834,9 @@ VMap tile-load cache guard:
   clients exhausted all attempts. The active scrape still reached `500`
   connected sessions / active players and emitted the sentinel summary, so it
   is useful RCA evidence but not a final scalability acceptance run.
+- The post-player-visibility-threshold control also had twenty client
+  failures and one pending sentinel cast. It reached an active scrape and is
+  useful RCA evidence, but not a final clean scalability acceptance run.
 - The core matrix has some client failures in movement scenarios. Every row
   reached steady state and emitted sentinel summaries, so the matrix is useful
   for RCA shape, but exact pass/fail cleanliness is not perfect.
@@ -806,13 +858,11 @@ VMap tile-load cache guard:
 2. Keep OOC EventAI disabled for the next comparison run.
 3. Treat repeated native vmap tile loading as a confirmed contributor that is
    fixed by the current cache guard.
-4. Treat outbound replication/write fanout and `player_visibility_refresh`
-   update-object churn as the next leading RCA hypothesis. The post-fix control
-   still emitted very large movement/update-object packet volume even though
-   spell latency improved dramatically.
-5. Reduce `player_visibility_refresh`
-   `SMSG_UPDATE_OBJECT` churn. Keep `player_add_visibility` separate because
-   the source metrics show it is mostly startup/login visibility cost.
+4. Treat `player_visibility_refresh` update-object churn as fixed by the
+   relocation threshold. Keep `player_add_visibility` separate because the
+   source metrics show it is mostly startup/login visibility cost.
+5. Treat remaining `movement_apply` movement-broadcast volume as the next
+   leading RCA hypothesis, especially `0x00EE`.
 6. Add finer `CMSG_CAST_SPELL` handler timing before another broad
    optimization: separate map lock wait, spell validation, map mutation,
    response build, and observer broadcast. The average is much better after

@@ -116,6 +116,17 @@ pub(in crate::world) enum NativeTerrainAreaFlagStatus {
     NativeError,
 }
 
+impl NativeTerrainAreaFlagStatus {
+    fn metric_label(self) -> &'static str {
+        match self {
+            Self::Found => "found",
+            Self::NotFound => "not_found",
+            Self::InvalidInput => "invalid_input",
+            Self::NativeError => "native_error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct NativeTerrainAreaFlag {
     pub(in crate::world) status: NativeTerrainAreaFlagStatus,
@@ -128,6 +139,17 @@ pub(in crate::world) enum NativeTerrainAreaInfoStatus {
     NotFound,
     InvalidInput,
     NativeError,
+}
+
+impl NativeTerrainAreaInfoStatus {
+    fn metric_label(self) -> &'static str {
+        match self {
+            Self::Found => "found",
+            Self::NotFound => "not_found",
+            Self::InvalidInput => "invalid_input",
+            Self::NativeError => "native_error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -267,12 +289,17 @@ pub(in crate::world) fn native_map_area_flag(
     tile: (u32, u32),
 ) -> NativeTerrainAreaFlag {
     if !world_position_is_finite(position) || !native_mmap_tile_is_valid(tile) {
+        crate::observability::record_world_geometry_native_area_flag(
+            NativeTerrainAreaFlagStatus::InvalidInput.metric_label(),
+            Duration::ZERO,
+        );
         return NativeTerrainAreaFlag {
             status: NativeTerrainAreaFlagStatus::InvalidInput,
             area_flag: None,
         };
     }
 
+    let started_at = Instant::now();
     let mut area_flag = 0u32;
     // SAFETY: path, tile ids, coordinates, and output pointer are validated.
     // The C++ bridge catches exceptions and returns a status code instead of
@@ -288,7 +315,12 @@ pub(in crate::world) fn native_map_area_flag(
             &mut area_flag,
         )
     };
-    native_terrain_area_flag_from_status(result, area_flag)
+    let area_flag = native_terrain_area_flag_from_status(result, area_flag);
+    crate::observability::record_world_geometry_native_area_flag(
+        area_flag.status.metric_label(),
+        started_at.elapsed(),
+    );
+    area_flag
 }
 
 pub(in crate::world) fn native_map_area_info(
@@ -297,12 +329,17 @@ pub(in crate::world) fn native_map_area_info(
     tile: (u32, u32),
 ) -> NativeTerrainAreaInfo {
     if !world_position_is_finite(position) || !native_mmap_tile_is_valid(tile) {
+        crate::observability::record_world_geometry_native_area_info(
+            NativeTerrainAreaInfoStatus::InvalidInput.metric_label(),
+            Duration::ZERO,
+        );
         return NativeTerrainAreaInfo {
             status: NativeTerrainAreaInfoStatus::InvalidInput,
             info: None,
         };
     }
 
+    let started_at = Instant::now();
     let mut flags = 0u32;
     let mut adt_id = 0i32;
     let mut root_id = 0i32;
@@ -327,7 +364,13 @@ pub(in crate::world) fn native_map_area_info(
             &mut ground_z,
         )
     };
-    native_terrain_area_info_from_status(result, flags, adt_id, root_id, group_id, ground_z)
+    let area_info =
+        native_terrain_area_info_from_status(result, flags, adt_id, root_id, group_id, ground_z);
+    crate::observability::record_world_geometry_native_area_info(
+        area_info.status.metric_label(),
+        started_at.elapsed(),
+    );
+    area_info
 }
 
 pub(in crate::world) fn native_terrain_height_from_status(

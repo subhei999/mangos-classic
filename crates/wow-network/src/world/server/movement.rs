@@ -246,8 +246,13 @@ pub(in crate::world) async fn handle_movement(
             "Received movement packet before character login"
         );
     }
-    if !corpse_movement && player_position_status_update_due(session, Instant::now()) {
+    if corpse_movement {
+        crate::observability::record_world_position_status("skipped_corpse_movement");
+    } else if player_position_status_update_due(session, Instant::now()) {
+        crate::observability::record_world_position_status("attempted");
         handle_player_area_discovery(stream, &deps, session, header_crypto).await?;
+    } else {
+        crate::observability::record_world_position_status("skipped_not_due");
     }
     if map_owned_death_detected {
         if let Some(character) = session.character.active_character.as_ref() {
@@ -285,13 +290,19 @@ async fn handle_player_area_discovery(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(character) = session.character.active_character.as_ref() else {
+        crate::observability::record_world_position_status("skipped_no_active_character");
         return Ok(());
     };
     let character_guid = character.guid;
     let map_id = character.position.map_id;
     let position = character.position;
     let player_level = character.level;
-    let Some((area_flag, area_entry)) = deps.maps.geometry.area_entry(position) else {
+    let Some((area_flag, area_entry)) = deps
+        .maps
+        .geometry
+        .area_entry_with_source(position, "movement_position_status")
+    else {
+        crate::observability::record_world_position_status("area_not_found");
         return Ok(());
     };
     let Some(discovery) = deps
@@ -299,8 +310,10 @@ async fn handle_player_area_discovery(
         .discover_player_area(map_id, character_guid, area_flag)
         .await?
     else {
+        crate::observability::record_world_position_status("area_already_discovered");
         return Ok(());
     };
+    crate::observability::record_world_position_status("area_discovered");
 
     let explored_zones = format_explored_zones(&discovery.explored_zones);
     let rows = wow_db::update_character_explored_zones(
@@ -316,6 +329,11 @@ async fn handle_player_area_discovery(
             "No character row updated while persisting explored zones"
         );
     }
+    crate::observability::record_world_outbound_source_packet(
+        "area_discovery",
+        SMSG_UPDATE_OBJECT,
+        discovery.update_body.len() + 4,
+    );
     send_packet(
         stream,
         SMSG_UPDATE_OBJECT,
@@ -396,6 +414,11 @@ pub(in crate::world) async fn clear_player_state_emote_on_movement(
     };
     session.character.player_emote_state = 0;
     let body = build_emote_state_update_body(&character, 0)?;
+    crate::observability::record_world_outbound_source_packet(
+        "movement_clear_emote_direct",
+        SMSG_UPDATE_OBJECT,
+        body.len() + 4,
+    );
     send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
     let packets = maps
         .broadcast_nearby_player_packet(

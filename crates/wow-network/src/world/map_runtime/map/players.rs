@@ -9,6 +9,7 @@ pub(in crate::world) const CMANGOS_DISCONNECTED_PLAYER_LINGER: Duration = Durati
 pub(in crate::world) const PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL: Duration =
     Duration::from_millis(750);
 pub(in crate::world) const MAX_PLAYER_VISIBILITY_REFRESHES_PER_TICK: usize = 1024;
+pub(in crate::world) const PLAYER_MOVEMENT_HEARTBEAT_BROADCAST_INTERVAL_MS: u32 = 100;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct PlayerEnvironmentTickMetrics {
@@ -33,6 +34,24 @@ pub(in crate::world) struct PlayerAreaDiscoveryEvent {
     pub(in crate::world) field_value: u32,
     pub(in crate::world) explored_zones: [u32; PLAYER_EXPLORED_ZONES_SIZE],
     pub(in crate::world) update_body: Vec<u8>,
+}
+
+fn record_packet_source(source: &'static str, packet: &OutboundWorldPacket) {
+    crate::observability::record_world_outbound_source_packet(
+        source,
+        packet.opcode,
+        packet.body.len() + 4,
+    );
+}
+
+fn record_packet_tuple_source(source: &'static str, packet: &(SessionId, OutboundWorldPacket)) {
+    record_packet_source(source, &packet.1);
+}
+
+fn record_packet_tuples_source(source: &'static str, packets: &[(SessionId, OutboundWorldPacket)]) {
+    for packet in packets {
+        record_packet_tuple_source(source, packet);
+    }
 }
 
 impl MapRuntime {
@@ -71,6 +90,38 @@ impl MapRuntime {
             .remove(&character_guid);
         self.pending_player_visibility_refresh_old_positions
             .remove(&character_guid);
+    }
+
+    fn should_broadcast_player_movement(
+        &mut self,
+        character_guid: u32,
+        opcode: u16,
+        server_time: u32,
+    ) -> bool {
+        if opcode as u32 != MSG_MOVE_HEARTBEAT {
+            self.player_movement_heartbeat_broadcast_server_time
+                .remove(&character_guid);
+            return true;
+        }
+
+        let Some(last_broadcast_at) = self
+            .player_movement_heartbeat_broadcast_server_time
+            .get_mut(&character_guid)
+        else {
+            self.player_movement_heartbeat_broadcast_server_time
+                .insert(character_guid, server_time);
+            return true;
+        };
+
+        if server_time < *last_broadcast_at
+            || server_time.saturating_sub(*last_broadcast_at)
+                >= PLAYER_MOVEMENT_HEARTBEAT_BROADCAST_INTERVAL_MS
+        {
+            *last_broadcast_at = server_time;
+            true
+        } else {
+            false
+        }
     }
 
     pub(in crate::world) fn advance_player_environment_tick(
@@ -368,6 +419,7 @@ impl MapRuntime {
             metrics.nearby_fanout_time,
         );
         crate::observability::record_player_environment_packets_emitted(packets.len());
+        record_packet_tuples_source("player_environment_tick", &packets);
 
         Ok(packets)
     }
@@ -741,6 +793,7 @@ impl MapRuntime {
                 }
             }
         }
+        record_packet_tuples_source("player_add_visibility", &packets);
 
         let grid = self.grids.entry(player_grid).or_default();
         if player.is_client_controlled() {
@@ -783,6 +836,8 @@ impl MapRuntime {
         now: Instant,
     ) -> bool {
         self.clear_player_visibility_refresh(character_guid);
+        self.player_movement_heartbeat_broadcast_server_time
+            .remove(&character_guid);
         let Some(player) = self.players.get_mut(&character_guid) else {
             return false;
         };
@@ -887,24 +942,38 @@ impl MapRuntime {
             })
             .collect::<HashSet<_>>()
         };
+        let should_broadcast_movement =
+            self.should_broadcast_player_movement(character_guid, opcode, server_time);
+        let broadcast_observer_count = if should_broadcast_movement {
+            current_observers.len()
+        } else {
+            0
+        };
         crate::observability::record_movement_apply_observer_snapshot_time(
             observer_snapshot_started_at.elapsed(),
         );
-        crate::observability::record_movement_apply_observers_notified(current_observers.len());
+        crate::observability::record_movement_apply_observers_notified(broadcast_observer_count);
+        crate::observability::record_world_outbound_fanout(
+            "player_movement_broadcast",
+            opcode,
+            broadcast_observer_count,
+        );
 
         let mut packets = Vec::new();
 
         let movement_broadcast_started_at = Instant::now();
-        let movement_packet = OutboundWorldPacket {
-            opcode,
-            body: build_player_movement_broadcast_body(character_guid, movement, server_time)?,
-        };
-        for other_guid in &current_observers {
-            let Some(other) = self.players.get(other_guid) else {
-                continue;
+        if should_broadcast_movement {
+            let movement_packet = OutboundWorldPacket {
+                opcode,
+                body: build_player_movement_broadcast_body(character_guid, movement, server_time)?,
             };
-            if let Some(packet) = other.packet_to_client(movement_packet.clone()) {
-                packets.push(packet);
+            for other_guid in &current_observers {
+                let Some(other) = self.players.get(other_guid) else {
+                    continue;
+                };
+                if let Some(packet) = other.packet_to_client(movement_packet.clone()) {
+                    packets.push(packet);
+                }
             }
         }
         crate::observability::record_movement_apply_movement_broadcast_time(
@@ -1119,6 +1188,7 @@ impl MapRuntime {
         );
         crate::observability::record_movement_apply_packets_emitted(packets.len());
         crate::observability::record_movement_apply_total_time(update_started_at.elapsed());
+        record_packet_tuples_source("movement_apply", &packets);
 
         Ok(packets)
     }
@@ -1270,6 +1340,7 @@ impl MapRuntime {
         crate::observability::record_player_visibility_refresh_creature_interest_sync_time(
             creature_interest_sync_time,
         );
+        record_packet_tuples_source("player_visibility_refresh", &tick.packets);
 
         Ok(tick)
     }
@@ -2776,6 +2847,8 @@ impl MapRuntime {
     ) -> Vec<(SessionId, OutboundWorldPacket)> {
         self.set_player_environment_tick_tracked(character_guid, false);
         self.clear_player_visibility_refresh(character_guid);
+        self.player_movement_heartbeat_broadcast_server_time
+            .remove(&character_guid);
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };
@@ -2830,14 +2903,23 @@ impl MapRuntime {
         let Some(sender) = self.players.get(&sender_guid) else {
             return Vec::new();
         };
-        self.nearby_player_guids(sender.position, radius, Some(sender_guid))
+        let opcode = packet.opcode;
+        let packets = self
+            .nearby_player_guids(sender.position, radius, Some(sender_guid))
             .into_iter()
             .filter_map(|other_guid| {
                 self.players
                     .get(&other_guid)
                     .and_then(|other| other.packet_to_client(packet.clone()))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        crate::observability::record_world_outbound_fanout(
+            "nearby_player_packet",
+            opcode,
+            packets.len(),
+        );
+        record_packet_tuples_source("nearby_player_packet", &packets);
+        packets
     }
 
     pub(in crate::world) fn set_player_looting_state(

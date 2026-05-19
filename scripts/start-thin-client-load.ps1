@@ -17,8 +17,19 @@ param(
     [ValidateSet("local_radius", "creature_grid_scatter")]
     [string]$SpawnMode = "local_radius",
     [double]$MoveRadius = 6.0,
+    [int]$Race = 1,
+    [int]$CharacterClass = 1,
+    [int]$Gender = 0,
+    [int]$SentinelCastClients = 0,
+    [int]$SentinelCastSpellId = 168,
+    [int]$SentinelCastIntervalMs = 5000,
+    [int]$SentinelCastPhaseJitterMs = 0,
+    [int]$ClientThreadStackKb = 1024,
     [string]$WorldConfigPath = "config\\worldserver.local.toml",
     [switch]$EnableMovementActor,
+    [switch]$DisableMovement,
+    [switch]$DisableSentinelMovement,
+    [switch]$EnableTokioUnstableMetrics,
     [int]$MovementActorQueueCapacity = 1024,
     [int]$MovementActorMaxBatchSize = 64,
     [switch]$SeedOnly
@@ -29,6 +40,17 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $restartScript = Join-Path $PSScriptRoot "restart-game-stack.ps1"
 $baseWorldConfigPath = Join-Path $repoRoot $WorldConfigPath
+
+if ($EnableTokioUnstableMetrics) {
+    $existingRustFlags = $env:RUSTFLAGS
+    if ([string]::IsNullOrWhiteSpace($existingRustFlags)) {
+        $env:RUSTFLAGS = "--cfg tokio_unstable"
+    }
+    elseif ($existingRustFlags -notmatch "(^|\s)--cfg\s+tokio_unstable(\s|$)") {
+        $env:RUSTFLAGS = "$existingRustFlags --cfg tokio_unstable"
+    }
+    Write-Host "Tokio unstable runtime metrics enabled for this run with RUSTFLAGS=$env:RUSTFLAGS"
+}
 
 function New-BenchmarkWorldConfig {
     param(
@@ -117,12 +139,28 @@ $cargoArgs = @(
     "--center-y", [string]$CenterY,
     "--center-z", [string]$CenterZ,
     "--radius", [string]$Radius,
-    "--move-radius", [string]$MoveRadius
+    "--move-radius", [string]$MoveRadius,
+    "--race", $Race,
+    "--class", $CharacterClass,
+    "--gender", $Gender,
+    "--sentinel-cast-clients", $SentinelCastClients,
+    "--sentinel-cast-spell-id", $SentinelCastSpellId,
+    "--sentinel-cast-interval-ms", $SentinelCastIntervalMs,
+    "--sentinel-cast-phase-jitter-ms", $SentinelCastPhaseJitterMs,
+    "--client-thread-stack-kb", $ClientThreadStackKb
 )
 
 if ($SeedOnly) {
     $cargoArgs += "--seed-only"
 }
 
-Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms phase_jitter=${MovePhaseJitterMs}ms stagger=${LoginStaggerMs}ms"
+if ($DisableMovement) {
+    $cargoArgs += "--disable-movement"
+}
+
+if ($DisableSentinelMovement) {
+    $cargoArgs += "--disable-sentinel-movement"
+}
+
+Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms phase_jitter=${MovePhaseJitterMs}ms stagger=${LoginStaggerMs}ms sentinel_cast_clients=$SentinelCastClients sentinel_spell=$SentinelCastSpellId sentinel_phase_jitter=${SentinelCastPhaseJitterMs}ms client_thread_stack_kb=$ClientThreadStackKb disable_movement=$DisableMovement disable_sentinel_movement=$DisableSentinelMovement tokio_unstable_metrics=$EnableTokioUnstableMetrics"
 & cargo @cargoArgs

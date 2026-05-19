@@ -48,8 +48,24 @@ struct MetricsRegistry {
     world_packet_service_time: Mutex<HashMap<u32, Histogram>>,
     world_packet_outbound_queue_latency: Mutex<HashMap<u32, Histogram>>,
     world_packet_write_duration: Mutex<HashMap<u32, Histogram>>,
+    world_packet_outbound_enqueued_bytes: Mutex<HashMap<u32, u64>>,
+    world_packet_write_bytes: Mutex<HashMap<u32, u64>>,
+    world_outbound_fanout: Mutex<HashMap<(&'static str, u32), NumericStats>>,
+    world_outbound_source_packets: Mutex<HashMap<(&'static str, u32), u64>>,
+    world_outbound_source_bytes: Mutex<HashMap<(&'static str, u32), u64>>,
     world_session_loop_phase_duration: WorldSessionLoopPhaseDurations,
     world_session_disconnects: Mutex<HashMap<&'static str, u64>>,
+    channel_queue_age: Mutex<HashMap<&'static str, Histogram>>,
+    channel_queue_depth: Mutex<HashMap<&'static str, NumericStats>>,
+    channel_send_wait: Mutex<HashMap<&'static str, Histogram>>,
+    world_position_status: Mutex<HashMap<&'static str, u64>>,
+    world_geometry_area_entry: Mutex<HashMap<&'static str, Histogram>>,
+    world_geometry_wmo_area: Mutex<HashMap<&'static str, Histogram>>,
+    world_geometry_area_flag: Mutex<HashMap<&'static str, Histogram>>,
+    world_geometry_native_area_info: Mutex<HashMap<&'static str, Histogram>>,
+    world_geometry_native_area_flag: Mutex<HashMap<&'static str, Histogram>>,
+    world_geometry_lookup_results: Mutex<HashMap<&'static str, u64>>,
+    tokio_runtime: Mutex<Option<TokioRuntimeMetricsSnapshot>>,
     world_outbound_queue_full_total: AtomicU64,
     world_outbound_queue_depth_latest: AtomicU64,
     world_outbound_queue_depth_max: AtomicU64,
@@ -74,6 +90,115 @@ struct MetricsRegistry {
     player_environment_subphases: PlayerEnvironmentSubphaseMetrics,
     player_visibility_refresh_subphases: PlayerVisibilityRefreshSubphaseMetrics,
     movement_apply_subphases: MovementApplySubphaseMetrics,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokioRuntimeMetricsSnapshot {
+    sampled_at_unix_seconds: u64,
+    workers_count: u64,
+    live_tasks_count: u64,
+    total_park_count: u64,
+    max_park_count: u64,
+    min_park_count: u64,
+    total_busy_milliseconds: f64,
+    max_busy_milliseconds: f64,
+    min_busy_milliseconds: f64,
+    global_queue_depth: u64,
+    elapsed_milliseconds: f64,
+    #[cfg(tokio_unstable)]
+    mean_poll_milliseconds: f64,
+    #[cfg(tokio_unstable)]
+    mean_poll_worker_min_milliseconds: f64,
+    #[cfg(tokio_unstable)]
+    mean_poll_worker_max_milliseconds: f64,
+    #[cfg(tokio_unstable)]
+    total_noop_count: u64,
+    #[cfg(tokio_unstable)]
+    total_steal_count: u64,
+    #[cfg(tokio_unstable)]
+    total_steal_operations: u64,
+    #[cfg(tokio_unstable)]
+    num_remote_schedules: u64,
+    #[cfg(tokio_unstable)]
+    total_local_schedule_count: u64,
+    #[cfg(tokio_unstable)]
+    total_overflow_count: u64,
+    #[cfg(tokio_unstable)]
+    total_polls_count: u64,
+    #[cfg(tokio_unstable)]
+    total_local_queue_depth: u64,
+    #[cfg(tokio_unstable)]
+    max_local_queue_depth: u64,
+    #[cfg(tokio_unstable)]
+    min_local_queue_depth: u64,
+    #[cfg(tokio_unstable)]
+    blocking_queue_depth: u64,
+    #[cfg(tokio_unstable)]
+    blocking_threads_count: u64,
+    #[cfg(tokio_unstable)]
+    idle_blocking_threads_count: u64,
+    #[cfg(tokio_unstable)]
+    budget_forced_yield_count: u64,
+    #[cfg(tokio_unstable)]
+    io_driver_ready_count: u64,
+}
+
+impl TokioRuntimeMetricsSnapshot {
+    fn from_runtime_metrics(metrics: tokio_metrics::RuntimeMetrics) -> Self {
+        Self {
+            sampled_at_unix_seconds: current_unix_seconds(),
+            workers_count: metrics.workers_count as u64,
+            live_tasks_count: metrics.live_tasks_count as u64,
+            total_park_count: metrics.total_park_count,
+            max_park_count: metrics.max_park_count,
+            min_park_count: metrics.min_park_count,
+            total_busy_milliseconds: duration_to_milliseconds(metrics.total_busy_duration),
+            max_busy_milliseconds: duration_to_milliseconds(metrics.max_busy_duration),
+            min_busy_milliseconds: duration_to_milliseconds(metrics.min_busy_duration),
+            global_queue_depth: metrics.global_queue_depth as u64,
+            elapsed_milliseconds: duration_to_milliseconds(metrics.elapsed),
+            #[cfg(tokio_unstable)]
+            mean_poll_milliseconds: duration_to_milliseconds(metrics.mean_poll_duration),
+            #[cfg(tokio_unstable)]
+            mean_poll_worker_min_milliseconds: duration_to_milliseconds(
+                metrics.mean_poll_duration_worker_min,
+            ),
+            #[cfg(tokio_unstable)]
+            mean_poll_worker_max_milliseconds: duration_to_milliseconds(
+                metrics.mean_poll_duration_worker_max,
+            ),
+            #[cfg(tokio_unstable)]
+            total_noop_count: metrics.total_noop_count,
+            #[cfg(tokio_unstable)]
+            total_steal_count: metrics.total_steal_count,
+            #[cfg(tokio_unstable)]
+            total_steal_operations: metrics.total_steal_operations,
+            #[cfg(tokio_unstable)]
+            num_remote_schedules: metrics.num_remote_schedules,
+            #[cfg(tokio_unstable)]
+            total_local_schedule_count: metrics.total_local_schedule_count,
+            #[cfg(tokio_unstable)]
+            total_overflow_count: metrics.total_overflow_count,
+            #[cfg(tokio_unstable)]
+            total_polls_count: metrics.total_polls_count,
+            #[cfg(tokio_unstable)]
+            total_local_queue_depth: metrics.total_local_queue_depth as u64,
+            #[cfg(tokio_unstable)]
+            max_local_queue_depth: metrics.max_local_queue_depth as u64,
+            #[cfg(tokio_unstable)]
+            min_local_queue_depth: metrics.min_local_queue_depth as u64,
+            #[cfg(tokio_unstable)]
+            blocking_queue_depth: metrics.blocking_queue_depth as u64,
+            #[cfg(tokio_unstable)]
+            blocking_threads_count: metrics.blocking_threads_count as u64,
+            #[cfg(tokio_unstable)]
+            idle_blocking_threads_count: metrics.idle_blocking_threads_count as u64,
+            #[cfg(tokio_unstable)]
+            budget_forced_yield_count: metrics.budget_forced_yield_count,
+            #[cfg(tokio_unstable)]
+            io_driver_ready_count: metrics.io_driver_ready_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -734,6 +859,49 @@ pub fn record_world_packet_write_duration(opcode: u16, duration: Duration) {
     durations.entry(opcode as u32).or_default().record(duration);
 }
 
+pub fn record_world_packet_outbound_enqueued_bytes(opcode: u16, bytes: usize) {
+    add_opcode_counter(
+        &registry().world_packet_outbound_enqueued_bytes,
+        opcode as u32,
+        bytes as u64,
+    );
+}
+
+pub fn record_world_packet_write_bytes(opcode: u16, bytes: usize) {
+    add_opcode_counter(
+        &registry().world_packet_write_bytes,
+        opcode as u32,
+        bytes as u64,
+    );
+}
+
+pub fn record_world_outbound_fanout(source: &'static str, opcode: u16, recipients: usize) {
+    let mut fanout = registry()
+        .world_outbound_fanout
+        .lock()
+        .expect("metrics world outbound fanout poisoned");
+    fanout
+        .entry((source, opcode as u32))
+        .or_default()
+        .record(recipients as u64);
+}
+
+pub fn record_world_outbound_source_packet(source: &'static str, opcode: u16, bytes: usize) {
+    let metrics = registry();
+    add_source_opcode_counter(
+        &metrics.world_outbound_source_packets,
+        source,
+        opcode as u32,
+        1,
+    );
+    add_source_opcode_counter(
+        &metrics.world_outbound_source_bytes,
+        source,
+        opcode as u32,
+        bytes as u64,
+    );
+}
+
 pub fn record_world_session_loop_phase_duration(phase: WorldSessionLoopPhase, duration: Duration) {
     registry()
         .world_session_loop_phase_duration
@@ -751,6 +919,111 @@ pub fn record_world_session_disconnect(reason: &'static str) {
         .lock()
         .expect("metrics world session disconnect counter poisoned");
     *counters.entry(reason).or_insert(0) += 1;
+}
+
+pub fn record_channel_queue_age(channel: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .channel_queue_age
+        .lock()
+        .expect("metrics channel queue age poisoned");
+    durations.entry(channel).or_default().record(duration);
+}
+
+pub fn record_channel_queue_depth(channel: &'static str, depth: usize) {
+    let mut depths = registry()
+        .channel_queue_depth
+        .lock()
+        .expect("metrics channel queue depth poisoned");
+    depths.entry(channel).or_default().record(depth as u64);
+}
+
+pub fn record_channel_send_wait(channel: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .channel_send_wait
+        .lock()
+        .expect("metrics channel send wait poisoned");
+    durations.entry(channel).or_default().record(duration);
+}
+
+pub fn record_world_position_status(result: &'static str) {
+    let mut counters = registry()
+        .world_position_status
+        .lock()
+        .expect("metrics world position status poisoned");
+    *counters.entry(result).or_insert(0) += 1;
+}
+
+pub fn record_world_geometry_area_entry(source: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .world_geometry_area_entry
+        .lock()
+        .expect("metrics world geometry area entry poisoned");
+    durations.entry(source).or_default().record(duration);
+}
+
+pub fn record_world_geometry_wmo_area(source: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .world_geometry_wmo_area
+        .lock()
+        .expect("metrics world geometry wmo area poisoned");
+    durations.entry(source).or_default().record(duration);
+}
+
+pub fn record_world_geometry_area_flag(source: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .world_geometry_area_flag
+        .lock()
+        .expect("metrics world geometry area flag poisoned");
+    durations.entry(source).or_default().record(duration);
+}
+
+pub fn record_world_geometry_native_area_info(status: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .world_geometry_native_area_info
+        .lock()
+        .expect("metrics world geometry native area info poisoned");
+    durations.entry(status).or_default().record(duration);
+}
+
+pub fn record_world_geometry_native_area_flag(status: &'static str, duration: Duration) {
+    let mut durations = registry()
+        .world_geometry_native_area_flag
+        .lock()
+        .expect("metrics world geometry native area flag poisoned");
+    durations.entry(status).or_default().record(duration);
+}
+
+pub fn record_world_geometry_lookup_result(result: &'static str) {
+    let mut counters = registry()
+        .world_geometry_lookup_results
+        .lock()
+        .expect("metrics world geometry lookup result poisoned");
+    *counters.entry(result).or_insert(0) += 1;
+}
+
+pub fn record_tokio_runtime_metrics(metrics: tokio_metrics::RuntimeMetrics) {
+    let mut snapshot = registry()
+        .tokio_runtime
+        .lock()
+        .expect("metrics tokio runtime snapshot poisoned");
+    *snapshot = Some(TokioRuntimeMetricsSnapshot::from_runtime_metrics(metrics));
+}
+
+pub fn start_tokio_runtime_metrics_monitor(
+    handle: tokio::runtime::Handle,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let monitor = tokio_metrics::RuntimeMonitor::new(&handle);
+        let mut intervals = monitor.intervals();
+
+        loop {
+            if let Some(metrics) = intervals.next() {
+                record_tokio_runtime_metrics(metrics);
+            }
+            tokio::time::sleep(interval).await;
+        }
+    })
 }
 
 pub fn record_world_outbound_queue_depth(depth: usize) {
@@ -1301,9 +1574,30 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
+fn duration_to_milliseconds(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
 fn increment_opcode(counters: &Mutex<HashMap<u32, u64>>, opcode: u32) {
     let mut counters = counters.lock().expect("metrics opcode counter poisoned");
     *counters.entry(opcode).or_insert(0) += 1;
+}
+
+fn add_opcode_counter(counters: &Mutex<HashMap<u32, u64>>, opcode: u32, value: u64) {
+    let mut counters = counters.lock().expect("metrics opcode counter poisoned");
+    *counters.entry(opcode).or_insert(0) += value;
+}
+
+fn add_source_opcode_counter(
+    counters: &Mutex<HashMap<(&'static str, u32), u64>>,
+    source: &'static str,
+    opcode: u32,
+    value: u64,
+) {
+    let mut counters = counters
+        .lock()
+        .expect("metrics source/opcode counter poisoned");
+    *counters.entry((source, opcode)).or_insert(0) += value;
 }
 
 pub fn render_prometheus() -> String {
@@ -1486,6 +1780,36 @@ pub fn render_prometheus() -> String {
         "Time spent writing a world packet to the session socket.",
         &metrics.world_packet_write_duration,
     );
+    write_opcode_counter(
+        &mut body,
+        "wow_world_packet_outbound_enqueued_bytes_total",
+        "Total queued outbound world packet wire bytes by opcode, including the 4-byte server header.",
+        &metrics.world_packet_outbound_enqueued_bytes,
+    );
+    write_opcode_counter(
+        &mut body,
+        "wow_world_packet_write_bytes_total",
+        "Total outbound world packet wire bytes successfully written to sockets by opcode, including the 4-byte server header.",
+        &metrics.world_packet_write_bytes,
+    );
+    write_source_opcode_numeric_summaries(
+        &mut body,
+        "wow_world_outbound_fanout_recipients",
+        "outbound packet recipient fanout",
+        &metrics.world_outbound_fanout,
+    );
+    write_source_opcode_counter(
+        &mut body,
+        "wow_world_outbound_source_packets_total",
+        "Total outbound world packets attributed to a producer source by opcode.",
+        &metrics.world_outbound_source_packets,
+    );
+    write_source_opcode_counter(
+        &mut body,
+        "wow_world_outbound_source_bytes_total",
+        "Total outbound world packet wire bytes attributed to a producer source by opcode, including the 4-byte server header.",
+        &metrics.world_outbound_source_bytes,
+    );
     write_world_session_loop_phase_duration_summaries(
         &mut body,
         &metrics.world_session_loop_phase_duration,
@@ -1497,6 +1821,75 @@ pub fn render_prometheus() -> String {
         "reason",
         &metrics.world_session_disconnects,
     );
+    write_label_histogram_metric_summaries(
+        &mut body,
+        "wow_channel_queue_age",
+        "channel queue age",
+        &metrics.channel_queue_age,
+    );
+    write_label_numeric_summaries(
+        &mut body,
+        "wow_channel_queue_depth",
+        "channel",
+        "queued messages by channel",
+        &metrics.channel_queue_depth,
+    );
+    write_label_histogram_metric_summaries(
+        &mut body,
+        "wow_channel_send_wait",
+        "channel send wait",
+        &metrics.channel_send_wait,
+    );
+    write_label_counter(
+        &mut body,
+        "wow_world_position_status_total",
+        "Total player position-status area-discovery attempts and skips by result.",
+        "result",
+        &metrics.world_position_status,
+    );
+    write_label_histogram_metric_summaries_with_label(
+        &mut body,
+        "wow_world_geometry_area_entry",
+        "world geometry area-entry lookup duration",
+        "source",
+        &metrics.world_geometry_area_entry,
+    );
+    write_label_histogram_metric_summaries_with_label(
+        &mut body,
+        "wow_world_geometry_wmo_area",
+        "world geometry WMO area lookup duration",
+        "source",
+        &metrics.world_geometry_wmo_area,
+    );
+    write_label_histogram_metric_summaries_with_label(
+        &mut body,
+        "wow_world_geometry_area_flag",
+        "world geometry ADT area-flag lookup duration",
+        "source",
+        &metrics.world_geometry_area_flag,
+    );
+    write_label_histogram_metric_summaries_with_label(
+        &mut body,
+        "wow_world_geometry_native_area_info",
+        "native WMO area info lookup duration",
+        "status",
+        &metrics.world_geometry_native_area_info,
+    );
+    write_label_histogram_metric_summaries_with_label(
+        &mut body,
+        "wow_world_geometry_native_area_flag",
+        "native ADT area flag lookup duration",
+        "status",
+        &metrics.world_geometry_native_area_flag,
+    );
+    write_label_counter(
+        &mut body,
+        "wow_world_geometry_lookup_results_total",
+        "Total world geometry area lookup results by kind.",
+        "result",
+        &metrics.world_geometry_lookup_results,
+    );
+    write_tokio_runtime_metrics(&mut body, &metrics.tokio_runtime);
     write_counter(
         &mut body,
         "wow_world_outbound_queue_full_total",
@@ -1840,6 +2233,197 @@ fn write_playerbot_event_counters(body: &mut String, counters: &Mutex<HashMap<&'
     }
 }
 
+fn write_tokio_runtime_metrics(
+    body: &mut String,
+    snapshot: &Mutex<Option<TokioRuntimeMetricsSnapshot>>,
+) {
+    let snapshot = *snapshot
+        .lock()
+        .expect("metrics tokio runtime snapshot poisoned");
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+
+    write_gauge(
+        body,
+        "wow_tokio_runtime_sampled_at_unix_seconds",
+        "Unix timestamp for the latest Tokio runtime metrics sample.",
+        snapshot.sampled_at_unix_seconds,
+    );
+    write_gauge(
+        body,
+        "wow_tokio_runtime_workers",
+        "Tokio runtime worker thread count.",
+        snapshot.workers_count,
+    );
+    write_gauge(
+        body,
+        "wow_tokio_task_count",
+        "Current number of alive tasks in the Tokio runtime.",
+        snapshot.live_tasks_count,
+    );
+    write_counter(
+        body,
+        "wow_tokio_worker_park_total",
+        "Worker park count observed in the latest Tokio runtime interval.",
+        snapshot.total_park_count,
+    );
+    write_gauge(
+        body,
+        "wow_tokio_worker_park_max",
+        "Maximum worker park count observed in the latest Tokio runtime interval.",
+        snapshot.max_park_count,
+    );
+    write_gauge(
+        body,
+        "wow_tokio_worker_park_min",
+        "Minimum worker park count observed in the latest Tokio runtime interval.",
+        snapshot.min_park_count,
+    );
+    write_float_gauge(
+        body,
+        "wow_tokio_worker_busy_milliseconds",
+        "Total worker busy duration observed in the latest Tokio runtime interval.",
+        snapshot.total_busy_milliseconds,
+    );
+    write_float_gauge(
+        body,
+        "wow_tokio_worker_busy_max_milliseconds",
+        "Maximum per-worker busy duration observed in the latest Tokio runtime interval.",
+        snapshot.max_busy_milliseconds,
+    );
+    write_float_gauge(
+        body,
+        "wow_tokio_worker_busy_min_milliseconds",
+        "Minimum per-worker busy duration observed in the latest Tokio runtime interval.",
+        snapshot.min_busy_milliseconds,
+    );
+    write_gauge(
+        body,
+        "wow_tokio_runtime_global_queue_depth",
+        "Current number of tasks scheduled in the Tokio runtime global queue.",
+        snapshot.global_queue_depth,
+    );
+    write_float_gauge(
+        body,
+        "wow_tokio_runtime_elapsed_milliseconds",
+        "Elapsed time covered by the latest Tokio runtime metrics interval.",
+        snapshot.elapsed_milliseconds,
+    );
+
+    #[cfg(tokio_unstable)]
+    {
+        write_float_gauge(
+            body,
+            "wow_tokio_task_poll_duration_milliseconds",
+            "Average task poll duration from Tokio unstable runtime metrics.",
+            snapshot.mean_poll_milliseconds,
+        );
+        write_float_gauge(
+            body,
+            "wow_tokio_task_poll_duration_worker_min_milliseconds",
+            "Minimum worker average task poll duration from Tokio unstable runtime metrics.",
+            snapshot.mean_poll_worker_min_milliseconds,
+        );
+        write_float_gauge(
+            body,
+            "wow_tokio_task_poll_duration_worker_max_milliseconds",
+            "Maximum worker average task poll duration from Tokio unstable runtime metrics.",
+            snapshot.mean_poll_worker_max_milliseconds,
+        );
+        write_counter(
+            body,
+            "wow_tokio_worker_noop_total",
+            "Worker no-op count observed in the latest Tokio runtime interval.",
+            snapshot.total_noop_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_worker_steal_total",
+            "Worker steal count observed in the latest Tokio runtime interval.",
+            snapshot.total_steal_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_worker_steal_operations_total",
+            "Worker steal operation count observed in the latest Tokio runtime interval.",
+            snapshot.total_steal_operations,
+        );
+        write_counter(
+            body,
+            "wow_tokio_task_remote_schedule_total",
+            "Tasks scheduled from outside the Tokio runtime in the latest interval.",
+            snapshot.num_remote_schedules,
+        );
+        write_counter(
+            body,
+            "wow_tokio_task_local_schedule_total",
+            "Tasks scheduled from runtime workers in the latest interval.",
+            snapshot.total_local_schedule_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_worker_overflow_total",
+            "Worker local queue overflow count observed in the latest interval.",
+            snapshot.total_overflow_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_task_polls_total",
+            "Task polls observed in the latest Tokio runtime interval.",
+            snapshot.total_polls_count,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_runtime_local_queue_depth",
+            "Current total tasks scheduled in Tokio worker local queues.",
+            snapshot.total_local_queue_depth,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_runtime_local_queue_depth_max",
+            "Maximum worker local queue depth in the latest Tokio runtime interval.",
+            snapshot.max_local_queue_depth,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_runtime_local_queue_depth_min",
+            "Minimum worker local queue depth in the latest Tokio runtime interval.",
+            snapshot.min_local_queue_depth,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_spawn_blocking_queue_depth",
+            "Current Tokio blocking threadpool queue depth.",
+            snapshot.blocking_queue_depth,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_spawn_blocking_threads",
+            "Current Tokio blocking thread count.",
+            snapshot.blocking_threads_count,
+        );
+        write_gauge(
+            body,
+            "wow_tokio_spawn_blocking_idle_threads",
+            "Current idle Tokio blocking thread count.",
+            snapshot.idle_blocking_threads_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_runtime_budget_forced_yield_total",
+            "Tasks forced to yield after exhausting Tokio cooperative task budget.",
+            snapshot.budget_forced_yield_count,
+        );
+        write_counter(
+            body,
+            "wow_tokio_runtime_io_driver_ready_total",
+            "Ready events processed by Tokio runtime I/O driver.",
+            snapshot.io_driver_ready_count,
+        );
+    }
+}
+
 fn write_counter(body: &mut String, name: &str, help: &str, value: u64) {
     body.push_str("# HELP ");
     body.push_str(name);
@@ -1915,6 +2499,303 @@ fn write_numeric_summary(
         &format!("Maximum observed {help_prefix} since server start."),
         values.max(),
     );
+}
+
+fn write_label_numeric_summaries(
+    body: &mut String,
+    prefix: &str,
+    label_name: &str,
+    subject: &str,
+    values: &Mutex<HashMap<&'static str, NumericStats>>,
+) {
+    write_label_numeric_counter(
+        body,
+        &format!("{prefix}_samples_total"),
+        &format!("Total recorded samples for {subject}."),
+        label_name,
+        values,
+        NumericStats::count,
+    );
+    write_label_numeric_float_gauge(
+        body,
+        &format!("{prefix}_average"),
+        &format!("Average {subject}."),
+        label_name,
+        values,
+        NumericStats::average,
+    );
+    write_label_numeric_gauge(
+        body,
+        &format!("{prefix}_latest"),
+        &format!("Most recent {subject}."),
+        label_name,
+        values,
+        NumericStats::latest,
+    );
+    write_label_numeric_gauge(
+        body,
+        &format!("{prefix}_max"),
+        &format!("Maximum observed {subject} since server start."),
+        label_name,
+        values,
+        NumericStats::max,
+    );
+}
+
+fn write_label_numeric_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    values: &Mutex<HashMap<&'static str, NumericStats>>,
+    value: fn(&NumericStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    let locked = values.lock().expect("metrics labeled numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for (label, stats) in rows {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
+}
+
+fn write_label_numeric_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    values: &Mutex<HashMap<&'static str, NumericStats>>,
+    value: fn(&NumericStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    let locked = values.lock().expect("metrics labeled numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for (label, stats) in rows {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
+}
+
+fn write_label_numeric_float_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    values: &Mutex<HashMap<&'static str, NumericStats>>,
+    value: fn(&NumericStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    let locked = values.lock().expect("metrics labeled numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for (label, stats) in rows {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", value(stats)));
+        body.push('\n');
+    }
+}
+
+fn write_source_opcode_numeric_summaries(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    values: &Mutex<HashMap<(&'static str, u32), NumericStats>>,
+) {
+    write_source_opcode_numeric_counter(
+        body,
+        &format!("{prefix}_samples_total"),
+        &format!("Total recorded samples for {subject}."),
+        values,
+        NumericStats::count,
+    );
+    write_source_opcode_numeric_float_gauge(
+        body,
+        &format!("{prefix}_average"),
+        &format!("Average {subject}."),
+        values,
+        NumericStats::average,
+    );
+    write_source_opcode_numeric_gauge(
+        body,
+        &format!("{prefix}_latest"),
+        &format!("Most recent {subject}."),
+        values,
+        NumericStats::latest,
+    );
+    write_source_opcode_numeric_gauge(
+        body,
+        &format!("{prefix}_max"),
+        &format!("Maximum observed {subject} since server start."),
+        values,
+        NumericStats::max,
+    );
+}
+
+fn write_source_opcode_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    counters: &Mutex<HashMap<(&'static str, u32), u64>>,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    let locked = counters
+        .lock()
+        .expect("metrics source/opcode counter poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for ((source, opcode), count) in rows {
+        body.push_str(name);
+        body.push_str("{source=\"");
+        body.push_str(source);
+        body.push_str("\",opcode=\"");
+        body.push_str(&format_opcode(*opcode));
+        body.push_str("\"} ");
+        body.push_str(&count.to_string());
+        body.push('\n');
+    }
+}
+
+fn write_source_opcode_numeric_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &Mutex<HashMap<(&'static str, u32), NumericStats>>,
+    value: fn(&NumericStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    let locked = values
+        .lock()
+        .expect("metrics source/opcode numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for ((source, opcode), stats) in rows {
+        body.push_str(name);
+        body.push_str("{source=\"");
+        body.push_str(source);
+        body.push_str("\",opcode=\"");
+        body.push_str(&format_opcode(*opcode));
+        body.push_str("\"} ");
+        body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
+}
+
+fn write_source_opcode_numeric_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &Mutex<HashMap<(&'static str, u32), NumericStats>>,
+    value: fn(&NumericStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    let locked = values
+        .lock()
+        .expect("metrics source/opcode numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for ((source, opcode), stats) in rows {
+        body.push_str(name);
+        body.push_str("{source=\"");
+        body.push_str(source);
+        body.push_str("\",opcode=\"");
+        body.push_str(&format_opcode(*opcode));
+        body.push_str("\"} ");
+        body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
+}
+
+fn write_source_opcode_numeric_float_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    values: &Mutex<HashMap<(&'static str, u32), NumericStats>>,
+    value: fn(&NumericStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    let locked = values
+        .lock()
+        .expect("metrics source/opcode numeric poisoned");
+    let mut rows = locked.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    for ((source, opcode), stats) in rows {
+        body.push_str(name);
+        body.push_str("{source=\"");
+        body.push_str(source);
+        body.push_str("\",opcode=\"");
+        body.push_str(&format_opcode(*opcode));
+        body.push_str("\"} ");
+        body.push_str(&format!("{:.3}", value(stats)));
+        body.push('\n');
+    }
 }
 
 fn write_histogram(body: &mut String, name: &str, help: &str, histogram: &Histogram) {
@@ -3041,6 +3922,161 @@ fn write_opcode_histogram_metric_summaries(
         ROLLING_FIVE_MINUTES,
         RollingStats::max_milliseconds,
     );
+}
+
+fn write_label_histogram_metric_summaries(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    histograms: &Mutex<HashMap<&'static str, Histogram>>,
+) {
+    write_label_histogram_metric_summaries_with_label(body, prefix, subject, "channel", histograms);
+}
+
+fn write_label_histogram_metric_summaries_with_label(
+    body: &mut String,
+    prefix: &str,
+    subject: &str,
+    label_name: &str,
+    histograms: &Mutex<HashMap<&'static str, Histogram>>,
+) {
+    write_label_histogram_gauge(
+        body,
+        &format!("{prefix}_average_milliseconds"),
+        &format!("Average {subject}."),
+        label_name,
+        histograms,
+        Histogram::average_milliseconds,
+    );
+    write_label_histogram_gauge(
+        body,
+        &format!("{prefix}_latest_milliseconds"),
+        &format!("Most recent {subject}."),
+        label_name,
+        histograms,
+        Histogram::latest_milliseconds,
+    );
+    write_label_histogram_gauge(
+        body,
+        &format!("{prefix}_max_milliseconds"),
+        &format!("Maximum observed {subject} since server start."),
+        label_name,
+        histograms,
+        Histogram::max_milliseconds,
+    );
+    write_label_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_average_1m_milliseconds"),
+        &format!("Average {subject} over the last minute."),
+        label_name,
+        histograms,
+        ROLLING_ONE_MINUTE,
+        RollingStats::average_milliseconds,
+    );
+    write_label_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_max_1m_milliseconds"),
+        &format!("Maximum observed {subject} over the last minute."),
+        label_name,
+        histograms,
+        ROLLING_ONE_MINUTE,
+        RollingStats::max_milliseconds,
+    );
+    write_label_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_average_5m_milliseconds"),
+        &format!("Average {subject} over the last five minutes."),
+        label_name,
+        histograms,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::average_milliseconds,
+    );
+    write_label_histogram_rolling_gauge(
+        body,
+        &format!("{prefix}_max_5m_milliseconds"),
+        &format!("Maximum observed {subject} over the last five minutes."),
+        label_name,
+        histograms,
+        ROLLING_FIVE_MINUTES,
+        RollingStats::max_milliseconds,
+    );
+}
+
+fn write_label_histogram_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    histograms: &Mutex<HashMap<&'static str, Histogram>>,
+    value: fn(&Histogram) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+
+    let locked = histograms
+        .lock()
+        .expect("metrics labeled histogram poisoned");
+    let mut values = locked
+        .iter()
+        .map(|(label, histogram)| (*label, value(histogram)))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(label, _)| *label);
+
+    for (label, metric_value) in values {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{metric_value:.3}"));
+        body.push('\n');
+    }
+}
+
+fn write_label_histogram_rolling_gauge(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    histograms: &Mutex<HashMap<&'static str, Histogram>>,
+    window: Duration,
+    value: fn(RollingStats) -> f64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+
+    let locked = histograms
+        .lock()
+        .expect("metrics labeled histogram poisoned");
+    let mut values = locked
+        .iter()
+        .map(|(label, histogram)| (*label, value(histogram.rolling_stats(window))))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(label, _)| *label);
+
+    for (label, metric_value) in values {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label_name);
+        body.push_str("=\"");
+        body.push_str(label);
+        body.push_str("\"} ");
+        body.push_str(&format!("{metric_value:.3}"));
+        body.push('\n');
+    }
 }
 
 fn write_opcode_histogram_gauge(
@@ -4252,6 +5288,10 @@ mod tests {
         );
         record_world_packet_in(0x01E0);
         record_world_packet_out(0x00DD);
+        record_world_packet_outbound_enqueued_bytes(0x00DD, 128);
+        record_world_packet_write_bytes(0x00DD, 96);
+        record_world_outbound_fanout("test_broadcast", 0x00DD, 4);
+        record_world_outbound_source_packet("test_source", 0x00DD, 128);
         record_world_unknown_opcode(0x01E0);
         record_world_packet_handler_duration(0x012E, Duration::from_millis(33));
         record_movement_actor_queue_depth(3);
@@ -4262,6 +5302,16 @@ mod tests {
         record_movement_actor_batch_size(5);
         record_movement_map_mutex_wait(Duration::from_millis(6));
         record_movement_map_mutex_hold(Duration::from_millis(8));
+        record_channel_queue_age("test_channel", Duration::from_millis(9));
+        record_channel_queue_depth("test_channel", 7);
+        record_channel_send_wait("test_channel", Duration::from_millis(1));
+        record_world_position_status("attempted");
+        record_world_geometry_area_entry("test_source", Duration::from_millis(18));
+        record_world_geometry_wmo_area("test_source", Duration::from_millis(19));
+        record_world_geometry_area_flag("test_source", Duration::from_millis(20));
+        record_world_geometry_native_area_info("found", Duration::from_millis(21));
+        record_world_geometry_native_area_flag("not_found", Duration::from_millis(22));
+        record_world_geometry_lookup_result("area_entry_wmo_found");
         record_movement_actor_apply_start_latency(Duration::from_millis(9));
         record_movement_apply_observers_notified(6);
         record_movement_apply_packets_emitted(12);
@@ -4375,6 +5425,18 @@ mod tests {
             .contains("wow_static_world_cache_instantiation_rows_total{kind=\"creature\"} 3"));
         assert!(rendered.contains("wow_world_packets_in_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains("wow_world_packets_out_total{opcode=\"0x00DD\"}"));
+        assert!(rendered
+            .contains("wow_world_packet_outbound_enqueued_bytes_total{opcode=\"0x00DD\"} 128"));
+        assert!(rendered.contains("wow_world_packet_write_bytes_total{opcode=\"0x00DD\"} 96"));
+        assert!(rendered.contains(
+            "wow_world_outbound_fanout_recipients_latest{source=\"test_broadcast\",opcode=\"0x00DD\"} 4"
+        ));
+        assert!(rendered.contains(
+            "wow_world_outbound_source_packets_total{source=\"test_source\",opcode=\"0x00DD\"} 1"
+        ));
+        assert!(rendered.contains(
+            "wow_world_outbound_source_bytes_total{source=\"test_source\",opcode=\"0x00DD\"} 128"
+        ));
         assert!(rendered.contains("wow_world_unknown_opcodes_total{opcode=\"0x01E0\"}"));
         assert!(rendered.contains(
             "wow_world_packet_handler_duration_average_milliseconds{opcode=\"0x012E\"} 33.000"
@@ -4387,9 +5449,33 @@ mod tests {
         assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
         assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
         assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
-        assert!(
-            rendered.contains("wow_movement_actor_apply_start_latency_average_milliseconds 9.000")
-        );
+        assert!(rendered.contains(
+            "wow_channel_queue_age_average_milliseconds{channel=\"test_channel\"} 9.000"
+        ));
+        assert!(rendered.contains("wow_channel_queue_depth_latest{channel=\"test_channel\"} 7"));
+        assert!(rendered.contains(
+            "wow_channel_send_wait_average_milliseconds{channel=\"test_channel\"} 1.000"
+        ));
+        assert!(rendered.contains("wow_world_position_status_total{result=\"attempted\"} 1"));
+        assert!(rendered.contains(
+            "wow_world_geometry_area_entry_average_milliseconds{source=\"test_source\"} 18.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_geometry_wmo_area_average_milliseconds{source=\"test_source\"} 19.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_geometry_area_flag_average_milliseconds{source=\"test_source\"} 20.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_geometry_native_area_info_average_milliseconds{status=\"found\"} 21.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_geometry_native_area_flag_average_milliseconds{status=\"not_found\"} 22.000"
+        ));
+        assert!(rendered.contains(
+            "wow_world_geometry_lookup_results_total{result=\"area_entry_wmo_found\"} 1"
+        ));
+        assert!(rendered.contains("wow_movement_actor_apply_start_latency_average_milliseconds "));
         assert!(rendered.contains("wow_movement_apply_observers_notified_latest 6"));
         assert!(rendered.contains("wow_movement_apply_packets_emitted_latest 12"));
         assert!(rendered

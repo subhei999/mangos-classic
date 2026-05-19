@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-metrics = "0.5.0"
 bytes = "1"
 byteorder = "1"
 wow_srp = "0.7"

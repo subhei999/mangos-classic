@@ -31,7 +31,15 @@ pub(in crate::world) struct QueuedOutboundWorldPacket {
     pub(in crate::world) enqueued_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct QueuedWorldSessionDisconnect {
+    pub(in crate::world) reason: WorldSessionDisconnectReason,
+    pub(in crate::world) enqueued_at: Instant,
+}
+
 pub(in crate::world) const WORLD_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
+pub(in crate::world) const WORLD_SESSION_OUTBOUND_CHANNEL: &str = "world_session_outbound";
+pub(in crate::world) const WORLD_SESSION_DISCONNECT_CHANNEL: &str = "world_session_disconnect";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum WorldSessionDisconnectReason {
@@ -85,24 +93,45 @@ impl WorldPacketSender {
         &self,
         packet: OutboundWorldPacket,
     ) -> Result<(), WorldPacketSendError> {
+        crate::observability::record_world_packet_outbound_enqueued_bytes(
+            packet.opcode,
+            packet.body.len() + 4,
+        );
         match self {
-            Self::Bounded(sender) => match sender.try_send(QueuedOutboundWorldPacket {
-                packet,
-                enqueued_at: Instant::now(),
-            }) {
-                Ok(()) => {
-                    crate::observability::record_world_outbound_queue_depth(
-                        sender.max_capacity().saturating_sub(sender.capacity()),
-                    );
-                    Ok(())
+            Self::Bounded(sender) => {
+                let send_started_at = Instant::now();
+                let result = sender.try_send(QueuedOutboundWorldPacket {
+                    packet,
+                    enqueued_at: Instant::now(),
+                });
+                crate::observability::record_channel_send_wait(
+                    WORLD_SESSION_OUTBOUND_CHANNEL,
+                    send_started_at.elapsed(),
+                );
+                match result {
+                    Ok(()) => {
+                        let depth = sender.max_capacity().saturating_sub(sender.capacity());
+                        crate::observability::record_channel_queue_depth(
+                            WORLD_SESSION_OUTBOUND_CHANNEL,
+                            depth,
+                        );
+                        crate::observability::record_world_outbound_queue_depth(depth);
+                        Ok(())
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        crate::observability::record_channel_queue_depth(
+                            WORLD_SESSION_OUTBOUND_CHANNEL,
+                            sender.max_capacity(),
+                        );
+                        crate::observability::record_world_outbound_queue_full();
+                        crate::observability::record_world_outbound_queue_depth(
+                            sender.max_capacity(),
+                        );
+                        Err(WorldPacketSendError::Full)
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => Err(WorldPacketSendError::Closed),
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    crate::observability::record_world_outbound_queue_full();
-                    crate::observability::record_world_outbound_queue_depth(sender.max_capacity());
-                    Err(WorldPacketSendError::Full)
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => Err(WorldPacketSendError::Closed),
-            },
+            }
             #[cfg(test)]
             Self::Unbounded(sender) => sender
                 .send(packet)
@@ -157,7 +186,7 @@ pub(in crate::world) struct SessionHandle {
     pub(in crate::world) character_guid: Option<u32>,
     pub(in crate::world) character_name: Option<String>,
     pub(in crate::world) outbound: WorldPacketSender,
-    pub(in crate::world) disconnect: Option<mpsc::Sender<WorldSessionDisconnectReason>>,
+    pub(in crate::world) disconnect: Option<mpsc::Sender<QueuedWorldSessionDisconnect>>,
 }
 
 #[derive(Debug, Default)]
@@ -257,7 +286,21 @@ impl SessionRegistry {
         if let Some(outbound) = outbound {
             if matches!(outbound.send(packet), Err(WorldPacketSendError::Full)) {
                 if let Some(Some(disconnect)) = disconnect {
-                    let _ = disconnect.try_send(WorldSessionDisconnectReason::OutboundQueueFull);
+                    let send_started_at = Instant::now();
+                    let _ = disconnect.try_send(QueuedWorldSessionDisconnect {
+                        reason: WorldSessionDisconnectReason::OutboundQueueFull,
+                        enqueued_at: Instant::now(),
+                    });
+                    crate::observability::record_channel_send_wait(
+                        WORLD_SESSION_DISCONNECT_CHANNEL,
+                        send_started_at.elapsed(),
+                    );
+                    crate::observability::record_channel_queue_depth(
+                        WORLD_SESSION_DISCONNECT_CHANNEL,
+                        disconnect
+                            .max_capacity()
+                            .saturating_sub(disconnect.capacity()),
+                    );
                 }
             }
         }

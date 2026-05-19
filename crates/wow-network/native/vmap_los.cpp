@@ -65,13 +65,9 @@ int wow_vmap_line_of_sight(
             return -4;
 
         const std::string basePath = vmapBasePath(dataDir);
-        const VMAP::VMAPLoadResult startLoad =
-            manager->loadMap(basePath.c_str(), mapId, static_cast<int>(startTileX), static_cast<int>(startTileY));
-        if (startLoad == VMAP::VMAP_LOAD_RESULT_ERROR)
+        if (!wow_vmap_ensure_tile_loaded(manager, basePath, mapId, startTileX, startTileY))
             return -5;
-        const VMAP::VMAPLoadResult targetLoad =
-            manager->loadMap(basePath.c_str(), mapId, static_cast<int>(targetTileX), static_cast<int>(targetTileY));
-        if (targetLoad == VMAP::VMAP_LOAD_RESULT_ERROR)
+        if (!wow_vmap_ensure_tile_loaded(manager, basePath, mapId, targetTileX, targetTileY))
             return -6;
 
         const bool clear = manager->isInLineOfSight(

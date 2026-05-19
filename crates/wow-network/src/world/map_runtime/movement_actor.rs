@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 
 const DEFAULT_MOVEMENT_ACTOR_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_MOVEMENT_ACTOR_MAX_BATCH_SIZE: usize = 64;
+const MOVEMENT_ACTOR_CHANNEL: &str = "movement_actor";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) struct MovementActorSettings {
@@ -103,24 +104,41 @@ impl MovementActorHandle {
         });
         match self.sender.try_send(command) {
             Ok(()) => {
+                crate::observability::record_channel_send_wait(
+                    MOVEMENT_ACTOR_CHANNEL,
+                    enqueue_started_at.elapsed(),
+                );
                 crate::observability::record_movement_actor_enqueue_latency(
                     enqueue_started_at.elapsed(),
                 );
-                crate::observability::record_movement_actor_queue_depth(
-                    self.sender
-                        .max_capacity()
-                        .saturating_sub(self.sender.capacity()),
-                );
+                let depth = self
+                    .sender
+                    .max_capacity()
+                    .saturating_sub(self.sender.capacity());
+                crate::observability::record_channel_queue_depth(MOVEMENT_ACTOR_CHANNEL, depth);
+                crate::observability::record_movement_actor_queue_depth(depth);
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
+                crate::observability::record_channel_send_wait(
+                    MOVEMENT_ACTOR_CHANNEL,
+                    enqueue_started_at.elapsed(),
+                );
                 crate::observability::record_movement_actor_enqueue_latency(
                     enqueue_started_at.elapsed(),
+                );
+                crate::observability::record_channel_queue_depth(
+                    MOVEMENT_ACTOR_CHANNEL,
+                    self.sender.max_capacity(),
                 );
                 crate::observability::record_movement_actor_queue_depth(self.sender.max_capacity());
                 crate::observability::record_movement_actor_enqueue_failure("full");
                 anyhow::bail!("movement actor mailbox is full");
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
+                crate::observability::record_channel_send_wait(
+                    MOVEMENT_ACTOR_CHANNEL,
+                    enqueue_started_at.elapsed(),
+                );
                 crate::observability::record_movement_actor_enqueue_latency(
                     enqueue_started_at.elapsed(),
                 );
@@ -148,6 +166,7 @@ async fn run_movement_actor(
 ) {
     while let Some(first) = receiver.recv().await {
         let batch = drain_movement_batch(first, &mut receiver, max_batch_size.max(1));
+        crate::observability::record_channel_queue_depth(MOVEMENT_ACTOR_CHANNEL, receiver.len());
         process_movement_batch(&map, batch).await;
     }
 }
@@ -175,6 +194,10 @@ fn coalesce_movement_batch(batch: Vec<MovementActorCommand>) -> CoalescedMovemen
 
     for command in batch {
         let MovementActorCommand::UpdatePlayerPosition(command) = command;
+        crate::observability::record_channel_queue_age(
+            MOVEMENT_ACTOR_CHANNEL,
+            command.enqueued_at.elapsed(),
+        );
         if let Some(index) = latest_by_guid.get(&command.character_guid).copied() {
             let replaced = std::mem::replace(&mut latest[index], command);
             superseded.push(replaced);

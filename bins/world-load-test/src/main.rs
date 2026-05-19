@@ -3,8 +3,9 @@ use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::FromRow;
-use std::collections::HashSet;
-use std::io::{ErrorKind, Read, Write};
+use std::collections::{HashSet, VecDeque};
+use std::fmt;
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -27,6 +28,7 @@ const CLIENT_SEED: u32 = 0x1234_5678;
 const CMSG_CHAR_ENUM: u32 = 0x0037;
 const CMSG_PLAYER_LOGIN: u32 = 0x003D;
 const CMSG_LOGOUT_REQUEST: u32 = 0x004B;
+const CMSG_CAST_SPELL: u32 = 0x012E;
 const MSG_MOVE_START_FORWARD: u32 = 0x00B5;
 const MSG_MOVE_STOP: u32 = 0x00B7;
 const MSG_MOVE_JUMP: u32 = 0x00BB;
@@ -40,6 +42,7 @@ const SMSG_LOGOUT_COMPLETE: u32 = 0x004D;
 const SMSG_UPDATE_OBJECT: u32 = 0x00A9;
 const SMSG_AUTH_CHALLENGE: u32 = 0x01EC;
 const SMSG_AUTH_RESPONSE: u32 = 0x01EE;
+const SMSG_CAST_RESULT: u32 = 0x0130;
 
 const AUTH_OK: u8 = 0x0C;
 
@@ -75,7 +78,12 @@ const DEFAULT_LOGIN_STAGGER_MS: u64 = 25;
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5;
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_LOGIN_READY_TIMEOUT_SECS: u64 = 30;
-const CLIENT_THREAD_STACK_SIZE_BYTES: usize = 256 * 1024;
+const DEFAULT_SENTINEL_CAST_SPELL_ID: u32 = 168;
+const DEFAULT_SENTINEL_CAST_INTERVAL_MS: u64 = 5_000;
+const DEFAULT_SENTINEL_CAST_PHASE_JITTER_MS: u64 = 0;
+const DEFAULT_CLIENT_THREAD_STACK_KB: usize = 1024;
+const MIN_CLIENT_THREAD_STACK_KB: usize = 512;
+const SPELL_CAST_TARGET_UNIT: u16 = 0x0002;
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -103,6 +111,13 @@ struct Config {
     center_z: f32,
     radius: f32,
     move_radius: f32,
+    movement_enabled: bool,
+    sentinel_movement_enabled: bool,
+    sentinel_cast_clients: usize,
+    sentinel_cast_spell_id: u32,
+    sentinel_cast_interval_ms: u64,
+    sentinel_cast_phase_jitter_ms: u64,
+    client_thread_stack_kb: usize,
     race: u8,
     class: u8,
     gender: u8,
@@ -163,6 +178,13 @@ impl Default for Config {
             center_z: DEFAULT_CENTER_Z,
             radius: DEFAULT_RADIUS,
             move_radius: DEFAULT_MOVE_RADIUS,
+            movement_enabled: true,
+            sentinel_movement_enabled: true,
+            sentinel_cast_clients: 0,
+            sentinel_cast_spell_id: DEFAULT_SENTINEL_CAST_SPELL_ID,
+            sentinel_cast_interval_ms: DEFAULT_SENTINEL_CAST_INTERVAL_MS,
+            sentinel_cast_phase_jitter_ms: DEFAULT_SENTINEL_CAST_PHASE_JITTER_MS,
+            client_thread_stack_kb: DEFAULT_CLIENT_THREAD_STACK_KB,
             race: 1,
             class: 1,
             gender: 0,
@@ -237,6 +259,92 @@ struct MovementActor {
 struct ClientRunResult {
     movements_sent: u32,
     packets_drained: u32,
+    spell_casts_sent: u32,
+    spell_responses: u32,
+    spell_failures: u32,
+    spell_latency_total: Duration,
+    spell_latency_max: Duration,
+    spell_pending: u32,
+}
+
+impl ClientRunResult {
+    fn merge_spell_probe(&mut self, probe: SpellCastProbeResult) {
+        self.spell_casts_sent = probe.casts_sent;
+        self.spell_responses = probe.responses;
+        self.spell_failures = probe.failures;
+        self.spell_latency_total = probe.latency_total;
+        self.spell_latency_max = probe.latency_max;
+        self.spell_pending = probe.pending;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpellCastProbeConfig {
+    spell_id: u32,
+    interval: Duration,
+    phase_jitter: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SpellCastProbeResult {
+    casts_sent: u32,
+    responses: u32,
+    failures: u32,
+    latency_total: Duration,
+    latency_max: Duration,
+    pending: u32,
+}
+
+#[derive(Debug)]
+struct SpellCastProbe {
+    config: SpellCastProbeConfig,
+    caster: ObjectGuid,
+    next_cast_at: Instant,
+    pending_casts: VecDeque<Instant>,
+    result: SpellCastProbeResult,
+}
+
+#[derive(Debug)]
+enum WorldPacketReadError {
+    Io(io::Error),
+    Malformed(anyhow::Error),
+}
+
+impl WorldPacketReadError {
+    fn malformed(message: impl Into<String>) -> Self {
+        Self::Malformed(anyhow::anyhow!(message.into()))
+    }
+
+    fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+        )
+    }
+}
+
+impl fmt::Display for WorldPacketReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Malformed(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldPacketReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Malformed(error) => error.source(),
+        }
+    }
+}
+
+impl From<io::Error> for WorldPacketReadError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 #[derive(Debug)]
@@ -263,6 +371,14 @@ async fn main() -> anyhow::Result<()> {
     );
     ensure!(config.radius.is_finite() && config.radius >= 0.0);
     ensure!(config.move_radius.is_finite() && config.move_radius >= 0.0);
+    ensure!(
+        config.sentinel_cast_interval_ms > 0,
+        "sentinel cast interval must be greater than zero"
+    );
+    ensure!(
+        config.client_thread_stack_kb >= MIN_CLIENT_THREAD_STACK_KB,
+        "client thread stack must be at least {MIN_CLIENT_THREAD_STACK_KB} KiB"
+    );
 
     let login_pool = connect_pool(&config.login_database_url, 8).await?;
     let character_pool = connect_pool(&config.character_database_url, 8).await?;
@@ -286,6 +402,10 @@ async fn main() -> anyhow::Result<()> {
     let started_at = Instant::now();
     let mut handles = Vec::with_capacity(specs.len());
     let movement_start_gate = Arc::new(MovementStartGate::new(specs.len()));
+    let client_thread_stack_size_bytes = config
+        .client_thread_stack_kb
+        .checked_mul(1024)
+        .context("client thread stack size overflowed")?;
     for spec in specs {
         let auth_addr = config.auth_addr.clone();
         let world_addr = config.world_addr.clone();
@@ -298,15 +418,20 @@ async fn main() -> anyhow::Result<()> {
         let login_ready_timeout = Duration::from_secs(config.login_ready_timeout_secs);
         let drain_timeout = Duration::from_millis(config.drain_timeout_ms);
         let move_radius = config.move_radius;
+        let sentinel_cast_enabled = spec.index < config.sentinel_cast_clients;
+        let movement_enabled =
+            config.movement_enabled && (config.sentinel_movement_enabled || !sentinel_cast_enabled);
         let max_attempts = config.max_attempts.max(1);
+        let sentinel_cast = sentinel_cast_enabled.then_some(SpellCastProbeConfig {
+            spell_id: config.sentinel_cast_spell_id,
+            interval: Duration::from_millis(config.sentinel_cast_interval_ms),
+            phase_jitter: Duration::from_millis(config.sentinel_cast_phase_jitter_ms),
+        });
         let movement_start_gate = Arc::clone(&movement_start_gate);
         let username = spec.username.clone();
         let thread_name = format!("thin-client-{:04}", spec.index + 1);
         let handle = thread::Builder::new()
-            // The load harness does shallow blocking I/O work. A smaller stack
-            // avoids unstable virtual-memory pressure when spinning up
-            // thousands of client threads on Windows.
-            .stack_size(CLIENT_THREAD_STACK_SIZE_BYTES)
+            .stack_size(client_thread_stack_size_bytes)
             .name(thread_name)
             .spawn(move || {
                 thread::sleep(stagger);
@@ -321,6 +446,8 @@ async fn main() -> anyhow::Result<()> {
                     move_phase_jitter,
                     drain_timeout,
                     move_radius,
+                    movement_enabled,
+                    sentinel_cast,
                     max_attempts,
                     movement_start_gate,
                 )
@@ -331,12 +458,24 @@ async fn main() -> anyhow::Result<()> {
 
     let mut total_movements = 0u64;
     let mut total_packets_drained = 0u64;
+    let mut total_spell_casts = 0u64;
+    let mut total_spell_responses = 0u64;
+    let mut total_spell_failures = 0u64;
+    let mut total_spell_pending = 0u64;
+    let mut total_spell_latency = Duration::ZERO;
+    let mut max_spell_latency = Duration::ZERO;
     let mut failures = Vec::new();
     for handle in handles {
         match handle.join() {
             Ok(Ok(result)) => {
                 total_movements += u64::from(result.movements_sent);
                 total_packets_drained += u64::from(result.packets_drained);
+                total_spell_casts += u64::from(result.spell_casts_sent);
+                total_spell_responses += u64::from(result.spell_responses);
+                total_spell_failures += u64::from(result.spell_failures);
+                total_spell_pending += u64::from(result.spell_pending);
+                total_spell_latency += result.spell_latency_total;
+                max_spell_latency = max_spell_latency.max(result.spell_latency_max);
             }
             Ok(Err(error)) => failures.push(error.to_string()),
             Err(_) => failures.push("client thread panicked".to_string()),
@@ -351,6 +490,24 @@ async fn main() -> anyhow::Result<()> {
         total_movements,
         total_packets_drained
     );
+    if total_spell_casts > 0 {
+        let avg_spell_latency_ms = if total_spell_responses > 0 {
+            total_spell_latency.as_secs_f64() * 1000.0 / total_spell_responses as f64
+        } else {
+            0.0
+        };
+        println!(
+            "sentinel-cast summary: spell_id={}, clients={}, casts_sent={}, responses={}, failures={}, pending={}, avg_response_ms={:.3}, max_response_ms={:.3}",
+            config.sentinel_cast_spell_id,
+            config.sentinel_cast_clients.min(config.client_count),
+            total_spell_casts,
+            total_spell_responses,
+            total_spell_failures,
+            total_spell_pending,
+            avg_spell_latency_ms,
+            max_spell_latency.as_secs_f64() * 1000.0
+        );
+    }
 
     if failures.is_empty() {
         return Ok(());
@@ -602,6 +759,8 @@ fn run_client_with_retries(
     move_phase_jitter: Duration,
     drain_timeout: Duration,
     move_radius: f32,
+    movement_enabled: bool,
+    sentinel_cast: Option<SpellCastProbeConfig>,
     max_attempts: u32,
     movement_start_gate: Arc<MovementStartGate>,
 ) -> anyhow::Result<ClientRunResult> {
@@ -618,6 +777,8 @@ fn run_client_with_retries(
             move_phase_jitter,
             drain_timeout,
             move_radius,
+            movement_enabled,
+            sentinel_cast,
             movement_start_gate.as_ref(),
         ) {
             Ok(result) => return Ok(result),
@@ -652,6 +813,8 @@ fn run_client(
     move_phase_jitter: Duration,
     drain_timeout: Duration,
     move_radius: f32,
+    movement_enabled: bool,
+    sentinel_cast: Option<SpellCastProbeConfig>,
     movement_start_gate: &MovementStartGate,
 ) -> anyhow::Result<ClientRunResult> {
     let srp_client = complete_auth_flow(auth_addr, &spec.username, &spec.password)
@@ -677,16 +840,36 @@ fn run_client(
 
     let run_started_at = Instant::now();
     let mut result = ClientRunResult::default();
-    let mut movement = MovementActor::new(spec, move_radius, move_interval);
+    let mut movement =
+        movement_enabled.then(|| MovementActor::new(spec, move_radius, move_interval));
+    let mut spell_probe = sentinel_cast.map(|config| {
+        SpellCastProbe::new(
+            config,
+            ObjectGuid::new(HighGuid::Player, 0, selected.guid),
+            run_started_at,
+            spec.index,
+        )
+    });
     while run_started_at.elapsed() < hold_duration {
-        if let Some(packet) = movement.next_packet() {
-            world.send_movement_packet(&packet)?;
-            result.movements_sent = result.movements_sent.saturating_add(1);
+        if let Some(movement) = movement.as_mut() {
+            if let Some(packet) = movement.next_packet() {
+                world.send_movement_packet(&packet)?;
+                result.movements_sent = result.movements_sent.saturating_add(1);
+            }
         }
-        result.packets_drained = result
-            .packets_drained
-            .saturating_add(world.drain_pending_packets(drain_timeout)? as u32);
-        thread::sleep(move_interval);
+        if let Some(probe) = spell_probe.as_mut() {
+            if probe.is_due(Instant::now()) {
+                world.send_cast_spell(probe.spell_id(), probe.caster())?;
+                probe.record_sent(Instant::now());
+            }
+        }
+        result.packets_drained = result.packets_drained.saturating_add(
+            world.drain_pending_packets(drain_timeout, spell_probe.as_mut())? as u32,
+        );
+        thread::sleep(client_loop_sleep(move_interval, spell_probe.as_ref()));
+    }
+    if let Some(probe) = spell_probe {
+        result.merge_spell_probe(probe.finish());
     }
 
     world.logout()?;
@@ -857,6 +1040,80 @@ impl MovementActor {
             jump,
         }
     }
+}
+
+impl SpellCastProbe {
+    fn new(
+        config: SpellCastProbeConfig,
+        caster: ObjectGuid,
+        run_started_at: Instant,
+        client_index: usize,
+    ) -> Self {
+        let phase_jitter = movement_phase_jitter_for_index(client_index, config.phase_jitter);
+        Self {
+            config,
+            caster,
+            next_cast_at: run_started_at + phase_jitter,
+            pending_casts: VecDeque::new(),
+            result: SpellCastProbeResult::default(),
+        }
+    }
+
+    fn spell_id(&self) -> u32 {
+        self.config.spell_id
+    }
+
+    fn caster(&self) -> ObjectGuid {
+        self.caster
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        now >= self.next_cast_at
+    }
+
+    fn record_sent(&mut self, sent_at: Instant) {
+        self.result.casts_sent = self.result.casts_sent.saturating_add(1);
+        self.pending_casts.push_back(sent_at);
+        self.next_cast_at = sent_at + self.config.interval;
+    }
+
+    fn observe_server_packet(&mut self, opcode: u32, body: &[u8], received_at: Instant) {
+        if opcode != SMSG_CAST_RESULT {
+            return;
+        }
+        if body.len() < 4
+            || u32::from_le_bytes(body[0..4].try_into().unwrap()) != self.config.spell_id
+        {
+            return;
+        }
+        if body.get(4).copied().unwrap_or(0) != 0 {
+            self.result.failures = self.result.failures.saturating_add(1);
+        }
+        self.record_response(received_at);
+    }
+
+    fn record_response(&mut self, received_at: Instant) {
+        let Some(sent_at) = self.pending_casts.pop_front() else {
+            return;
+        };
+        let latency = received_at.saturating_duration_since(sent_at);
+        self.result.responses = self.result.responses.saturating_add(1);
+        self.result.latency_total += latency;
+        self.result.latency_max = self.result.latency_max.max(latency);
+    }
+
+    fn finish(mut self) -> SpellCastProbeResult {
+        self.result.pending = self.pending_casts.len() as u32;
+        self.result
+    }
+}
+
+fn client_loop_sleep(move_interval: Duration, spell_probe: Option<&SpellCastProbe>) -> Duration {
+    let mut sleep = move_interval.min(Duration::from_millis(100));
+    if let Some(probe) = spell_probe {
+        sleep = sleep.min(probe.config.interval.min(Duration::from_millis(100)));
+    }
+    sleep.max(Duration::from_millis(10))
 }
 
 impl MovementStartGate {
@@ -1135,11 +1392,7 @@ impl WorldClient {
                 Ok((SMSG_UPDATE_OBJECT, _)) => saw_update = true,
                 Ok(_) => {}
                 Err(error) => {
-                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-                        ensure!(
-                            matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
-                            "login bootstrap drain failed with unexpected IO error: {io_error}"
-                        );
+                    if error.is_timeout() {
                         if saw_update {
                             self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                             return Ok(());
@@ -1147,7 +1400,7 @@ impl WorldClient {
                         continue;
                     }
                     self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    return Err(error);
+                    return Err(error.into());
                 }
             }
         }
@@ -1162,20 +1415,36 @@ impl WorldClient {
         )
     }
 
-    fn drain_pending_packets(&mut self, timeout: Duration) -> anyhow::Result<usize> {
+    fn send_cast_spell(&mut self, spell_id: u32, caster: ObjectGuid) -> anyhow::Result<()> {
+        write_client_packet(
+            &mut self.stream,
+            CMSG_CAST_SPELL,
+            &cast_spell_self_body(spell_id, caster),
+            Some(&mut self.crypto),
+        )
+    }
+
+    fn drain_pending_packets(
+        &mut self,
+        timeout: Duration,
+        mut spell_probe: Option<&mut SpellCastProbe>,
+    ) -> anyhow::Result<usize> {
         self.stream.set_read_timeout(Some(timeout))?;
         let mut drained = 0usize;
         loop {
             match read_server_packet(&mut self.stream, Some(&mut self.crypto)) {
-                Ok(_) => drained += 1,
+                Ok((opcode, body)) => {
+                    drained += 1;
+                    if let Some(probe) = spell_probe.as_deref_mut() {
+                        probe.observe_server_packet(opcode, &body, Instant::now());
+                    }
+                }
                 Err(error) => {
                     self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-                        if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
-                            return Ok(drained);
-                        }
+                    if error.is_timeout() {
+                        return Ok(drained);
                     }
-                    return Err(error);
+                    return Err(error.into());
                 }
             }
         }
@@ -1199,12 +1468,10 @@ impl WorldClient {
                 Ok(_) => {}
                 Err(error) => {
                     self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-                        if matches!(io_error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
-                            return Ok(());
-                        }
+                    if error.is_timeout() {
+                        return Ok(());
                     }
-                    return Err(error);
+                    return Err(error.into());
                 }
             }
         }
@@ -1292,7 +1559,7 @@ fn write_client_packet(
 fn read_server_packet(
     stream: &mut TcpStream,
     crypto: Option<&mut HeaderCrypto>,
-) -> anyhow::Result<(u32, Vec<u8>)> {
+) -> Result<(u32, Vec<u8>), WorldPacketReadError> {
     let mut header = [0u8; 4];
     stream.read_exact(&mut header)?;
     if let Some(crypto) = crypto {
@@ -1301,10 +1568,11 @@ fn read_server_packet(
 
     let size = u16::from_be_bytes([header[0], header[1]]) as usize;
     let opcode = u16::from_le_bytes([header[2], header[3]]) as u32;
-    ensure!(
-        (2..=0x2800).contains(&size),
-        "malformed server packet size {size}"
-    );
+    if !(2..=0x2800).contains(&size) {
+        return Err(WorldPacketReadError::malformed(format!(
+            "malformed server packet size {size}"
+        )));
+    }
     let body_len = size - 2;
     let body = read_exact_vec(stream, body_len)?;
     Ok((opcode, body))
@@ -1326,6 +1594,29 @@ fn movement_body(packet: &MovementPacket) -> Vec<u8> {
         body.extend_from_slice(&packet.jump.xy_speed.to_le_bytes());
     }
     body
+}
+
+fn cast_spell_self_body(spell_id: u32, caster: ObjectGuid) -> Vec<u8> {
+    let mut body = Vec::with_capacity(16);
+    body.extend_from_slice(&spell_id.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    write_packed_guid(&mut body, caster);
+    body
+}
+
+fn write_packed_guid(body: &mut Vec<u8>, guid: ObjectGuid) {
+    let raw = guid.raw();
+    let mut mask = 0u8;
+    let mut bytes = Vec::new();
+    for index in 0..8 {
+        let byte = ((raw >> (index * 8)) & 0xFF) as u8;
+        if byte != 0 {
+            mask |= 1 << index;
+            bytes.push(byte);
+        }
+    }
+    body.push(mask);
+    body.extend_from_slice(&bytes);
 }
 
 fn connect_blocking(addr: &str) -> anyhow::Result<TcpStream> {
@@ -1358,7 +1649,7 @@ fn logon_challenge_request(username: &str) -> Vec<u8> {
     bytes.to_vec()
 }
 
-fn read_exact_vec(stream: &mut TcpStream, len: usize) -> anyhow::Result<Vec<u8>> {
+fn read_exact_vec(stream: &mut TcpStream, len: usize) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0u8; len];
     stream.read_exact(&mut bytes)?;
     Ok(bytes)
@@ -1467,6 +1758,27 @@ fn parse_args() -> anyhow::Result<Config> {
             "--move-radius" => {
                 config.move_radius = parse_value(&arg, args.next())?;
             }
+            "--disable-movement" => {
+                config.movement_enabled = false;
+            }
+            "--disable-sentinel-movement" => {
+                config.sentinel_movement_enabled = false;
+            }
+            "--sentinel-cast-clients" => {
+                config.sentinel_cast_clients = parse_value(&arg, args.next())?;
+            }
+            "--sentinel-cast-spell-id" => {
+                config.sentinel_cast_spell_id = parse_value(&arg, args.next())?;
+            }
+            "--sentinel-cast-interval-ms" => {
+                config.sentinel_cast_interval_ms = parse_value(&arg, args.next())?;
+            }
+            "--sentinel-cast-phase-jitter-ms" => {
+                config.sentinel_cast_phase_jitter_ms = parse_value(&arg, args.next())?;
+            }
+            "--client-thread-stack-kb" => {
+                config.client_thread_stack_kb = parse_value(&arg, args.next())?;
+            }
             "--race" => {
                 config.race = parse_value(&arg, args.next())?;
             }
@@ -1534,6 +1846,15 @@ fn print_usage() {
     println!("  --center-z <z>              Default: {DEFAULT_CENTER_Z}");
     println!("  --radius <yards>            Default: {DEFAULT_RADIUS}");
     println!("  --move-radius <yards>       Default: {DEFAULT_MOVE_RADIUS}");
+    println!("  --disable-movement          Keep clients stationary after login");
+    println!("  --disable-sentinel-movement Keep sentinel-cast clients stationary");
+    println!("  --sentinel-cast-clients <n> Default: 0 (disabled)");
+    println!("  --sentinel-cast-spell-id <id> Default: {DEFAULT_SENTINEL_CAST_SPELL_ID}");
+    println!("  --sentinel-cast-interval-ms <ms> Default: {DEFAULT_SENTINEL_CAST_INTERVAL_MS}");
+    println!(
+        "  --sentinel-cast-phase-jitter-ms <ms> Default: {DEFAULT_SENTINEL_CAST_PHASE_JITTER_MS}"
+    );
+    println!("  --client-thread-stack-kb <kb> Default: {DEFAULT_CLIENT_THREAD_STACK_KB}");
     println!("  --race <id>                 Default: 1");
     println!("  --class <id>                Default: 1");
     println!("  --gender <id>               Default: 0");
@@ -1617,6 +1938,55 @@ mod tests {
             movement_phase_jitter_for_index(7, Duration::ZERO),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn cast_spell_self_body_targets_player_guid() {
+        let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let body = cast_spell_self_body(168, caster);
+
+        assert_eq!(&body[0..4], 168u32.to_le_bytes().as_slice());
+        assert_eq!(&body[4..6], SPELL_CAST_TARGET_UNIT.to_le_bytes().as_slice());
+        let expected_packed = [0x01, 0x07];
+        assert_eq!(&body[6..], expected_packed.as_slice());
+    }
+
+    #[test]
+    fn spell_cast_probe_records_matching_cast_result_latency() {
+        let started = Instant::now();
+        let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+        let mut probe = SpellCastProbe::new(
+            SpellCastProbeConfig {
+                spell_id: 168,
+                interval: Duration::from_secs(5),
+                phase_jitter: Duration::ZERO,
+            },
+            caster,
+            started,
+            0,
+        );
+
+        probe.record_sent(started);
+        let mut body = Vec::new();
+        body.extend_from_slice(&168u32.to_le_bytes());
+        body.push(0);
+        probe.observe_server_packet(SMSG_CAST_RESULT, &body, started + Duration::from_millis(42));
+
+        let result = probe.finish();
+        assert_eq!(result.casts_sent, 1);
+        assert_eq!(result.responses, 1);
+        assert_eq!(result.failures, 0);
+        assert_eq!(result.pending, 0);
+        assert_eq!(result.latency_max, Duration::from_millis(42));
+    }
+
+    #[test]
+    fn world_packet_read_error_classifies_timeouts_without_downcast() {
+        let timeout = WorldPacketReadError::Io(io::Error::new(ErrorKind::TimedOut, "timeout"));
+        let malformed = WorldPacketReadError::malformed("bad packet");
+
+        assert!(timeout.is_timeout());
+        assert!(!malformed.is_timeout());
     }
 
     #[test]

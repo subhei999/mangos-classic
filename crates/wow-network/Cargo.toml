@@ -10,6 +10,7 @@ wow-crypto = { path = "../wow-crypto" }
 wow-db = { path = "../wow-db" }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+tokio-metrics = { workspace = true }
 bytes = { workspace = true }
 byteorder = { workspace = true }
 tracing = { workspace = true }
@@ -22,3 +23,6 @@ md-5 = "0.10"
 
 [build-dependencies]
 cc = "1.2.59"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

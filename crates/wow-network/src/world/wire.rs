@@ -790,8 +790,8 @@ pub(in crate::world) async fn send_packet_direct<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let size = (body.len() + 2) as u16;
     let mut packet = Vec::with_capacity(4 + body.len());
+    let size = (body.len() + 2) as u16;
     let mut header = [0u8; 4];
     header[0..2].copy_from_slice(&size.to_be_bytes());
     header[2..4].copy_from_slice(&opcode.to_le_bytes());

@@ -445,6 +445,7 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) pending_player_visibility_refreshes: BTreeSet<u32>,
     pub(in crate::world) pending_player_visibility_refresh_old_positions:
         HashMap<u32, WorldPosition>,
+    pub(in crate::world) player_movement_heartbeat_broadcast_server_time: HashMap<u32, u32>,
     pub(in crate::world) creatures: HashMap<u64, DbCreatureRuntime>,
     pub(in crate::world) creature_looting_by_character: HashMap<u32, u64>,
     pub(in crate::world) gameobjects: HashMap<u64, DbGameObjectRuntime>,
@@ -924,6 +925,7 @@ impl MapRuntime {
             players: HashMap::new(),
             pending_player_visibility_refreshes: BTreeSet::new(),
             pending_player_visibility_refresh_old_positions: HashMap::new(),
+            player_movement_heartbeat_broadcast_server_time: HashMap::new(),
             creatures: HashMap::new(),
             creature_looting_by_character: HashMap::new(),
             gameobjects: HashMap::new(),

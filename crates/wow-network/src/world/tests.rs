@@ -4712,7 +4712,7 @@ async fn session_registry_requests_disconnect_when_bounded_queue_is_full() {
         .await;
 
     assert_eq!(
-        disconnect_rx.try_recv().unwrap(),
+        disconnect_rx.try_recv().unwrap().reason,
         WorldSessionDisconnectReason::OutboundQueueFull
     );
 }
@@ -18267,6 +18267,67 @@ fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
     let late_visible = MovementInfo::read(&block[movement_start..]).unwrap();
     assert_eq!(late_visible.flags, 0);
     assert_eq!(late_visible.position.orientation, 2.25);
+}
+
+#[test]
+fn map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let first = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1,
+        position: WorldPosition::new(0, -8949.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let first_packets = map
+        .update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &first, 1000)
+        .unwrap();
+    assert!(first_packets.iter().any(|(session, packet)| {
+        *session == SessionId(2) && packet.opcode == MSG_MOVE_HEARTBEAT as u16
+    }));
+
+    let stale = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 2,
+        position: WorldPosition::new(0, -8948.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let stale_packets = map
+        .update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &stale, 1049)
+        .unwrap();
+    assert!(!stale_packets.iter().any(|(session, packet)| {
+        *session == SessionId(2) && packet.opcode == MSG_MOVE_HEARTBEAT as u16
+    }));
+    assert_eq!(map.players.get(&1).unwrap().position.x, stale.position.x);
+
+    let fresh = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 3,
+        position: WorldPosition::new(0, -8947.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let fresh_packets = map
+        .update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &fresh, 1100)
+        .unwrap();
+    let packet = fresh_packets
+        .iter()
+        .find(|(session, packet)| {
+            *session == SessionId(2) && packet.opcode == MSG_MOVE_HEARTBEAT as u16
+        })
+        .expect("observer should receive the latest heartbeat after coalesce interval");
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let broadcast = MovementInfo::read(&packet.1.body[PackedGuid::packed_size(guid)..]).unwrap();
+    assert_eq!(broadcast.client_time, 1100);
+    assert_eq!(broadcast.position.x, fresh.position.x);
 }
 
 #[test]

@@ -123,36 +123,59 @@ impl WorldGeometry {
         flags
     }
 
-    pub(in crate::world) fn area_flag(&self, position: WorldPosition) -> Option<u16> {
+    pub(in crate::world) fn area_flag_with_source(
+        &self,
+        position: WorldPosition,
+        source: &'static str,
+    ) -> Option<u16> {
+        let started_at = Instant::now();
         let data_dir = self.world_data_files.data_dir_for_native.as_ref()?;
         let tile = mmap_tile_for_position(position)?;
         let result = native_map_area_flag(data_dir, position, tile);
-        match result.status {
+        let area_flag = match result.status {
             NativeTerrainAreaFlagStatus::Found => result.area_flag,
             NativeTerrainAreaFlagStatus::NotFound
             | NativeTerrainAreaFlagStatus::InvalidInput
             | NativeTerrainAreaFlagStatus::NativeError => None,
-        }
+        };
+        crate::observability::record_world_geometry_area_flag(source, started_at.elapsed());
+        area_flag
     }
 
-    pub(in crate::world) fn area_entry(
+    pub(in crate::world) fn area_entry_with_source(
         &self,
         position: WorldPosition,
+        source: &'static str,
     ) -> Option<(u16, AreaTableEntry)> {
-        if let Some(entry) = self.wmo_area_entry(position) {
-            return Some((entry.explore_flag, entry));
+        let started_at = Instant::now();
+        let result = if let Some(entry) = self.wmo_area_entry_with_source(position, source) {
+            crate::observability::record_world_geometry_lookup_result("area_entry_wmo_found");
+            Some((entry.explore_flag, entry))
+        } else {
+            self.area_flag_with_source(position, source)
+                .and_then(|area_flag| {
+                    let entry = self
+                        .world_data_files
+                        .area_entry_by_flag_and_map(area_flag, position.map_id)?;
+                    crate::observability::record_world_geometry_lookup_result(
+                        "area_entry_area_flag_found",
+                    );
+                    Some((area_flag, entry))
+                })
+        };
+        if result.is_none() {
+            crate::observability::record_world_geometry_lookup_result("area_entry_not_found");
         }
-        let area_flag = self.area_flag(position)?;
-        let entry = self
-            .world_data_files
-            .area_entry_by_flag_and_map(area_flag, position.map_id)?;
-        Some((area_flag, entry))
+        crate::observability::record_world_geometry_area_entry(source, started_at.elapsed());
+        result
     }
 
-    pub(in crate::world) fn wmo_area_entry(
+    pub(in crate::world) fn wmo_area_entry_with_source(
         &self,
         position: WorldPosition,
+        source: &'static str,
     ) -> Option<AreaTableEntry> {
+        let started_at = Instant::now();
         let data_dir = self.world_data_files.data_dir_for_native.as_ref()?;
         let tile = mmap_tile_for_position(position)?;
         let result = native_map_area_info(data_dir, position, tile);
@@ -160,14 +183,19 @@ impl WorldGeometry {
             NativeTerrainAreaInfoStatus::Found => result.info?,
             NativeTerrainAreaInfoStatus::NotFound
             | NativeTerrainAreaInfoStatus::InvalidInput
-            | NativeTerrainAreaInfoStatus::NativeError => return None,
+            | NativeTerrainAreaInfoStatus::NativeError => {
+                crate::observability::record_world_geometry_wmo_area(source, started_at.elapsed());
+                return None;
+            }
         };
-        self.world_data_files.area_entry_by_wmo_triple_and_map(
+        let entry = self.world_data_files.area_entry_by_wmo_triple_and_map(
             info.root_id,
             info.adt_id,
             info.group_id,
             position.map_id,
-        )
+        );
+        crate::observability::record_world_geometry_wmo_area(source, started_at.elapsed());
+        entry
     }
 
     pub(in crate::world) fn sample_height(

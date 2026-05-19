@@ -175,7 +175,19 @@ pub(in crate::world) async fn handle_client(
                 pending_movement_timeout_duration(pending_movement.as_ref(), now, loop_timeout);
             tokio::select! {
                 disconnect_reason = disconnect_rx.recv() => {
-                    let reason = disconnect_reason.unwrap_or(WorldSessionDisconnectReason::WriteError);
+                    let reason = if let Some(queued) = disconnect_reason {
+                        crate::observability::record_channel_queue_age(
+                            WORLD_SESSION_DISCONNECT_CHANNEL,
+                            queued.enqueued_at.elapsed(),
+                        );
+                        crate::observability::record_channel_queue_depth(
+                            WORLD_SESSION_DISCONNECT_CHANNEL,
+                            disconnect_rx.len(),
+                        );
+                        queued.reason
+                    } else {
+                        WorldSessionDisconnectReason::WriteError
+                    };
                     crate::observability::record_world_session_disconnect(reason.metric_label());
                     anyhow::bail!("world session disconnect requested: {:?}", reason);
                 }
@@ -776,13 +788,22 @@ pub(in crate::world) async fn world_session_writer(
     mut write_stream: OwnedWriteHalf,
     mut outbound_rx: mpsc::Receiver<QueuedOutboundWorldPacket>,
     mut header_crypto: HeaderCrypto,
-    disconnect_tx: mpsc::Sender<WorldSessionDisconnectReason>,
+    disconnect_tx: mpsc::Sender<QueuedWorldSessionDisconnect>,
 ) {
     while let Some(queued) = outbound_rx.recv().await {
+        crate::observability::record_channel_queue_age(
+            WORLD_SESSION_OUTBOUND_CHANNEL,
+            queued.enqueued_at.elapsed(),
+        );
+        crate::observability::record_channel_queue_depth(
+            WORLD_SESSION_OUTBOUND_CHANNEL,
+            outbound_rx.len(),
+        );
         crate::observability::record_world_packet_outbound_queue_latency(
             queued.packet.opcode,
             queued.enqueued_at.elapsed(),
         );
+
         let write_started_at = Instant::now();
         match timeout(
             WORLD_SESSION_WRITE_TIMEOUT,
@@ -800,9 +821,13 @@ pub(in crate::world) async fn world_session_writer(
                     queued.packet.opcode,
                     write_started_at.elapsed(),
                 );
+                crate::observability::record_world_packet_write_bytes(
+                    queued.packet.opcode,
+                    queued.packet.body.len() + 4,
+                );
             }
             Ok(Err(error)) => {
-                let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteError);
+                send_disconnect_reason(&disconnect_tx, WorldSessionDisconnectReason::WriteError);
                 warn!(
                     ?session_id,
                     opcode = format_args!("0x{:04X}", queued.packet.opcode),
@@ -812,7 +837,7 @@ pub(in crate::world) async fn world_session_writer(
                 break;
             }
             Err(_) => {
-                let _ = disconnect_tx.try_send(WorldSessionDisconnectReason::WriteTimeout);
+                send_disconnect_reason(&disconnect_tx, WorldSessionDisconnectReason::WriteTimeout);
                 warn!(
                     ?session_id,
                     opcode = format_args!("0x{:04X}", queued.packet.opcode),
@@ -823,6 +848,27 @@ pub(in crate::world) async fn world_session_writer(
             }
         }
     }
+}
+
+fn send_disconnect_reason(
+    disconnect_tx: &mpsc::Sender<QueuedWorldSessionDisconnect>,
+    reason: WorldSessionDisconnectReason,
+) {
+    let send_started_at = Instant::now();
+    let _ = disconnect_tx.try_send(QueuedWorldSessionDisconnect {
+        reason,
+        enqueued_at: Instant::now(),
+    });
+    crate::observability::record_channel_send_wait(
+        WORLD_SESSION_DISCONNECT_CHANNEL,
+        send_started_at.elapsed(),
+    );
+    crate::observability::record_channel_queue_depth(
+        WORLD_SESSION_DISCONNECT_CHANNEL,
+        disconnect_tx
+            .max_capacity()
+            .saturating_sub(disconnect_tx.capacity()),
+    );
 }
 
 pub(in crate::world) fn world_tick_timeout_duration(

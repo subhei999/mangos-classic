@@ -103,6 +103,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     if config.observability.enabled {
+        wow_network::observability::start_tokio_runtime_metrics_monitor(
+            tokio::runtime::Handle::current(),
+            Duration::from_secs(1),
+        );
         let metrics_bind: std::net::SocketAddr = format!(
             "{}:{}",
             config.observability.bind_address, config.observability.bind_port

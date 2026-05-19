@@ -717,9 +717,7 @@ float vmapHeightLoaded(const char* dataDir, unsigned int mapId, unsigned int til
         return VMAP_INVALID_HEIGHT_VALUE;
 
     const std::string basePath = vmapBasePath(dataDir);
-    const VMAP::VMAPLoadResult loadResult =
-        manager->loadMap(basePath.c_str(), mapId, static_cast<int>(tileX), static_cast<int>(tileY));
-    if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
+    if (!wow_vmap_ensure_tile_loaded(manager, basePath, mapId, tileX, tileY))
         return VMAP_INVALID_HEIGHT_VALUE;
     return manager->getHeight(mapId, x, y, z, search);
 }
@@ -762,9 +760,7 @@ NativeLiquidResult vmapLiquidStatusLoaded(
         return result;
 
     const std::string basePath = vmapBasePath(dataDir);
-    const VMAP::VMAPLoadResult loadResult =
-        manager->loadMap(basePath.c_str(), mapId, static_cast<int>(tileX), static_cast<int>(tileY));
-    if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
+    if (!wow_vmap_ensure_tile_loaded(manager, basePath, mapId, tileX, tileY))
         return result;
 
     float level = INVALID_HEIGHT_VALUE;
@@ -831,9 +827,7 @@ NativeAreaInfoResult terrainAreaInfo(
         return result;
 
     const std::string basePath = vmapBasePath(dataDir);
-    const VMAP::VMAPLoadResult loadResult =
-        manager->loadMap(basePath.c_str(), mapId, static_cast<int>(tileX), static_cast<int>(tileY));
-    if (loadResult == VMAP::VMAP_LOAD_RESULT_ERROR)
+    if (!wow_vmap_ensure_tile_loaded(manager, basePath, mapId, tileX, tileY))
         return result;
 
     float vmapZ = z;

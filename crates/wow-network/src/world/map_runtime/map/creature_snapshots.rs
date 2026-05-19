@@ -337,6 +337,22 @@ impl MapRuntime {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(in crate::world) fn db_creature_return_home_guids(
+        &self,
+        creature_guids: &[u64],
+    ) -> Vec<u64> {
+        creature_guids
+            .iter()
+            .copied()
+            .filter(|guid| {
+                self.creatures.get(guid).is_some_and(|creature| {
+                    matches!(creature.motion, CreatureMotionState::ReturnHome(_))
+                })
+            })
+            .collect()
+    }
+
     pub(in crate::world) fn db_creature_snapshot(
         &self,
         creature_guid: ObjectGuid,

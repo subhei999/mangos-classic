@@ -564,16 +564,15 @@ impl MapRuntimeManager {
         disconnected
     }
 
-    pub(in crate::world) async fn expire_disconnected_players(
+    pub(in crate::world) async fn expire_all_disconnected_players(
         &self,
-        map_id: u32,
         now: Instant,
     ) -> Vec<ExpiredDisconnectedPlayer> {
-        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
-        let Some(map) = map else {
-            return Vec::new();
-        };
-        let expired = map.lock().await.expire_disconnected_players(now);
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
+        let mut expired = Vec::new();
+        for map in maps {
+            expired.extend(map.lock().await.expire_disconnected_players(now));
+        }
         expired
     }
 
@@ -775,6 +774,20 @@ impl MapRuntimeManager {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
         let snapshot = map.lock().await.player_runtime_snapshot(character_guid);
+        snapshot
+    }
+
+    pub(in crate::world) async fn player_runtime_session_snapshot(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<PlayerRuntimeSessionSnapshot> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let snapshot = map
+            .lock()
+            .await
+            .player_runtime_session_snapshot(character_guid);
         snapshot
     }
 
@@ -2355,6 +2368,23 @@ impl MapRuntimeManager {
         let map = self.get_or_create_map(map_id, 0).await;
         let snapshots = map.lock().await.db_creature_snapshots(creature_guids);
         snapshots
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) async fn db_creature_return_home_guids(
+        &self,
+        map_id: u32,
+        creature_guids: &[u64],
+    ) -> Vec<u64> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let guids = map
+            .lock()
+            .await
+            .db_creature_return_home_guids(creature_guids);
+        guids
     }
 
     pub(in crate::world) async fn db_gameobject_snapshots(

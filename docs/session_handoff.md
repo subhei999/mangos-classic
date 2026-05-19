@@ -9,11 +9,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Current state is intentionally dirty with uncommitted movement-path work plus
-  earlier combat/OOC perf investigation changes.
+- Latest RCA/perf work touches `crates/wow-network`, `crates/wow-db`,
+  `bins/world-load-test`, `scripts/start-thin-client-load.ps1`, and this
+  handoff; `logs/` remains untracked from RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
-- OOC EventAI is temporarily disabled again in
-  `crates/wow-network/src/world/server/map_update.rs` for testing isolation.
+- OOC EventAI is enabled again in
+  `crates/wow-network/src/world/server/map_update.rs`; future RCA controls
+  should include its map-owned tick cost.
 
 ## Current Goal
 
@@ -29,8 +31,8 @@ Complete a root cause analysis for simulated-player action latency:
 
 The important live observation is:
 
-- even with OOC EventAI disabled, `1000` scattered clients moving every `50 ms`
-  still cause unacceptable lag
+- earlier controls showed that even with OOC EventAI disabled, `1000`
+  scattered clients moving every `50 ms` still caused unacceptable lag
 - slowing the harness movement interval dramatically improves feel
 
 Earlier controls pointed at the movement packet path itself, not creature idle
@@ -38,6 +40,92 @@ motion. The latest WPR/WPA evidence narrows the leading root-cause class
 further: movement load creates enough outbound replication/write fanout that
 per-session socket writers consume major runtime/CPU capacity and delay
 unrelated actions such as spell casts.
+
+Latest measurement caveat/fix:
+
+- A 10-second live WPA capture during the `500` same-grid real-client playtest
+  found the observability endpoint itself hot:
+  `run_metrics_endpoint -> render_prometheus -> Histogram::rolling_stats`.
+- `Histogram::rolling_stats` now reads maintained one-second rolling buckets
+  instead of scanning the full five-minute sample deque on every scrape.
+- `/metrics` now serves a cached Prometheus render for `5s`, and the embedded
+  dashboard refresh interval is also `5s`, so the dashboard should no longer
+  meaningfully perturb the load test.
+
+Latest load-harness change:
+
+- `bins/world-load-test` now supports `--stream-clients`, exposed through
+  `scripts/start-thin-client-load.ps1 -StreamClients`.
+- In streaming mode, the harness seeds one account/character and immediately
+  starts that client thread before seeding the next one. This avoids the old
+  behavior where the first visible client had to wait for every load-test
+  account to be prepared first.
+- Streaming mode also bypasses the all-clients movement start gate by using a
+  per-client-open gate, so early clients do not time out waiting for a large
+  `2000`-client ramp to finish.
+- First use was a live `2000` `creature_grid_scatter` map-0 run with
+  `50 ms` movement, `5` stationary mage sentinels, `512 KiB` client thread
+  stacks, and `1800s` hold:
+  `logs/perf-rca/20260519-101331-2000-creature-grid-scatter-50ms-stream-clients-full-load.summary.prom`.
+  At full ramp it reached `2001` connected/active players including the real
+  client, `22141` active creatures, `2129` tracked idle-motion creatures, map
+  tick avg/max `181.591/256.183 ms`, tick lag avg/max `132.652/253.714 ms`,
+  idle-motion avg/max `34.159/90.344 ms`, movement actor queue age avg/max
+  `10.014/88.331 ms`, and `CMSG_CAST_SPELL` dispatch max stayed below
+  `100 ms` in the captured summary.
+- A laggy 10-second WPR/WPA capture from that same live run is:
+  `logs/perf-rca/20260519-101815-2000-creature-grid-scatter-50ms-stream-clients-laggy-quick10-wpa.etl`.
+  The next hot branch pasted from WPA was:
+  `MapRuntime::db_creature_snapshots -> Vec::from_iter -> Creature::clone`.
+- The confirmed cause was session combat tick polling for return-home creature
+  motions by cloning full visible `DbCreatureRuntime` snapshots only to filter
+  `CreatureMotionState::ReturnHome`.
+- The local fix adds a map-owned `db_creature_return_home_guids(...)` query and
+  makes `advance_db_creature_return_home_motions(...)` fetch only matching
+  GUIDs, avoiding the full creature clone path in this hot loop.
+- Follow-up WPA expansion on the same `2000` spread run showed no single new
+  giant offender. The largest named app work in the top Tokio task was
+  `sync_player_gameplay_state`, `expire_disconnected_players`,
+  `select_db_creature_sight_aggro_targets`, and the new
+  `db_creature_return_home_guids`. This points to distributed per-session
+  map interaction pressure rather than one remaining smoking gun.
+- Two local fixes were added from that branch:
+  - disconnected-player expiry is now map-loop-owned via
+    `MapRuntimeManager::expire_all_disconnected_players(...)` and a new
+    `disconnected_player_expiration` map phase, instead of scanning a map's
+    players from every session combat tick
+  - `MapRuntime::sync_player_gameplay_state(...)` now only clones session
+    active spells, inventory, and quest-status collections into map state when
+    those collections actually changed; `CharacterInventoryItem` and
+    `CharacterQuestStatus` now derive `PartialEq/Eq` to support that cheap
+    comparison
+- Follow-up quick WPA after those changes showed the same top Tokio task shape,
+  but smaller:
+  `sync_player_gameplay_state` around `288 ms`,
+  `select_db_creature_sight_aggro_targets` around `217 ms`,
+  `batch_semaphore::add_permits_locked` around `188 ms`, and
+  `db_creature_return_home_guids` around `132 ms`; disconnected-player expiry
+  disappeared from that hot path.
+- A second local pressure-source pass moves return-home motion fully into the
+  map-owned creature motion tick and removes runtime session polling for
+  `advance_db_creature_return_home_motions(...)`. Return-home creatures now use
+  the same active motion advancement queue as random/confused/waypoint motion.
+- Sight aggro selection is now map-owned throttled/dirty-gated per player:
+  steady players check at most every `250 ms`, while players that move at least
+  `2 yd` can check immediately. The selector also sorts candidate
+  `(distance, guid)` pairs before cloning final target snapshots, avoiding
+  clone work for ordering.
+- A rebuilt `1000` `creature_grid_scatter` run with OOC EventAI enabled
+  produced a quick WPA hot path in
+  `MapRuntime::player_runtime_snapshot -> Vec::clone`. The pressure source was
+  high-frequency movement/session tick code asking the map for a full gameplay
+  snapshot, including inventory, quest statuses, auras, cooldown maps, and
+  active spells, when it only needed position/death/vitals/combat flags.
+- The local fix adds `PlayerRuntimeSessionSnapshot` and
+  `MapRuntimeManager::player_runtime_session_snapshot(...)`; movement handling,
+  character position persistence, and the idle session tick refresh now use the
+  narrow snapshot. Full `PlayerRuntimeSnapshot` remains for non-movement
+  packet pre-refresh and gameplay handlers that need rich state.
 
 ## What Is Proven
 
@@ -766,6 +854,23 @@ Player visibility relocation threshold:
   - `cargo build --release -p authserver -p worldserver -p world-load-test`
   - active-polled `500`-client stationary-sentinel control captured with
     `-EnableTokioUnstableMetrics`
+- 2000-player RCA pressure-source fixes:
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network map_runtime_disconnect_in_combat_lingers_before_removal --lib`
+  - `cargo test -p wow-network db_creature_return_home_motion_advances_without_active_combat --lib`
+  - `cargo test -p wow-network dashboard_renders_live_metrics_page --lib`
+- Return-home / sight-aggro pressure-source fixes:
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network map_runtime_sight_aggro_uses_cell_buckets_and_detection_range --lib`
+  - `cargo test -p wow-network map_runtime_sight_aggro_is_throttled_until_player_moves_enough --lib`
+  - `cargo test -p wow-network map_runtime_tick_advances_return_home_motion_without_session_polling --lib`
+  - `cargo test -p wow-network db_creature_return_home_motion_advances_without_active_combat --lib`
+- OOC EventAI re-enabled:
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network ooc_event_ai --lib`
 
 ## Current Confidence
 
@@ -787,6 +892,20 @@ Player visibility relocation threshold:
   capture: the second-largest resolved branch goes through
   `WorldGeometry::area_entry`, native `wow_map_area_info`, and
   `VMapManager2::loadMap`.
+- High that, after the VMap/cache and observability fixes, there is no single
+  remaining WPA smoking gun in the `2000` spread capture. The current pressure
+  source is distributed per-session map work.
+- High that disconnected-player expiration belonged in the map runtime loop,
+  not in each session combat tick; this was fixed locally and should remove a
+  redundant map-wide player scan under high connected-player counts.
+- Medium that conditional `sync_player_gameplay_state(...)` collection updates
+  will reduce allocator churn in repeated non-movement/session tick syncs; it
+  is low risk but still needs another live `2000` run to quantify.
+- High that return-home motion should not be polled from each session; this is
+  now map motion tick work.
+- Medium-high that sight aggro throttling/dirty gating should reduce repeated
+  nearby-cell scans for stationary or tiny-jitter players without delaying
+  meaningful movement-triggered aggro by more than the `250 ms` fallback.
 - High that repeated native vmap tile loading was a real root-cause
   contributor and is now fixed by the cache guard. The post-fix control reduced
   sentinel spell average from the prior comparable `948.112 ms` to
@@ -808,6 +927,9 @@ Player visibility relocation threshold:
 - Medium-high that same-grid AOI contributes to the `500` average, but is not
   the whole root cause because spread movement still has degraded averages and
   multi-second tails.
+- OOC EventAI is enabled again after the return-home/sight-aggro ownership
+  pass; the next comparison run should measure its map phase instead of
+  excluding it.
 - High that slower movement intervals alone do not eliminate the lag at `500`
   same-grid players; `250 ms` and `500 ms` movement still averaged
   `676-738 ms` spell responses.
@@ -821,8 +943,9 @@ Player visibility relocation threshold:
 
 ## Known Blockers / Unproven Areas
 
-- OOC EventAI remains disabled for isolation, so current live perf runs are not
-  exercising that subsystem.
+- The currently running live server, if still up from before this change, does
+  not include the latest return-home/sight-aggro/OOC EventAI changes until the
+  release stack is rebuilt and restarted.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted
@@ -855,33 +978,36 @@ Player visibility relocation threshold:
 ## Recommended Next Task
 
 1. Read `docs/performance_rca_runbook.md`.
-2. Keep OOC EventAI disabled for the next comparison run.
-3. Treat repeated native vmap tile loading as a confirmed contributor that is
+2. Rebuild/restart the release stack so the return-home/sight-aggro/OOC EventAI
+   changes are actually in the running `worldserver`.
+3. Rerun the same `500` same-grid real-client playtest/control after the
+   metrics cheapening and only then trust a fresh WPA hot-path ranking.
+4. Treat repeated native vmap tile loading as a confirmed contributor that is
    fixed by the current cache guard.
-4. Treat `player_visibility_refresh` update-object churn as fixed by the
+5. Treat `player_visibility_refresh` update-object churn as fixed by the
    relocation threshold. Keep `player_add_visibility` separate because the
    source metrics show it is mostly startup/login visibility cost.
-5. Treat remaining `movement_apply` movement-broadcast volume as the next
+6. Treat remaining `movement_apply` movement-broadcast volume as the next
    leading RCA hypothesis, especially `0x00EE`.
-6. Add finer `CMSG_CAST_SPELL` handler timing before another broad
+7. Add finer `CMSG_CAST_SPELL` handler timing before another broad
    optimization: separate map lock wait, spell validation, map mutation,
    response build, and observer broadcast. The average is much better after
    the vmap fix, but the packet service max still reached about `1.1 s`.
-7. Reduce area lookup frequency with a CMaNGOS-shaped rule: recompute on
+8. Reduce area lookup frequency with a CMaNGOS-shaped rule: recompute on
    meaningful cell/tile/area transitions or cache invalidation, preserving
    exploration and WMO override correctness.
-8. Add native vmap/map load/cache hit/miss counts if the bridge can expose
+9. Add native vmap/map load/cache hit/miss counts if the bridge can expose
    them cheaply; the guard fixed the repeated-load bug, but counters would make
    future regressions obvious.
-9. During each steady-state window, run:
+10. During each steady-state window, run:
    - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capture-rca-metrics.ps1 -Scenario "<scenario-name>"`
    Use `-EnableTokioUnstableMetrics` on `scripts/start-thin-client-load.ps1`
    when collecting runtime scheduler metrics.
-10. If a smaller profile artifact is needed, start `worldserver.exe` under
+11. If a smaller profile artifact is needed, start `worldserver.exe` under
    elevated `flamegraph`, install/enable Windows DTrace for
    `flamegraph --pid`, or move the same run to Linux and use
    `perf`/`cargo flamegraph`.
-11. Keep same-grid AOI/visibility on the suspect list, but the current data now
+12. Keep same-grid AOI/visibility on the suspect list, but the current data now
    says the concrete producer to attack first is `movement_apply`, followed by
    `player_visibility_refresh`.
 

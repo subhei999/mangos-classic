@@ -167,7 +167,7 @@ pub struct CharacterQuestRewardResult {
     pub reputations: Vec<CharacterReputationChange>,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, FromRow, Serialize, Deserialize)]
 pub struct CharacterInventoryItem {
     pub bag: u32,
     pub slot: u8,
@@ -336,7 +336,7 @@ pub struct CharacterSkill {
     pub max: u16,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, FromRow, Serialize, Deserialize)]
 pub struct CharacterQuestStatus {
     pub quest: u32,
     pub status: u32,

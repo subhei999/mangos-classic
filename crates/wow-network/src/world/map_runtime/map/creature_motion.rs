@@ -3,6 +3,8 @@ use std::cmp::Reverse;
 use super::*;
 
 // Shared DB-creature motion and AI-transition authority.
+const DB_CREATURE_SIGHT_AGGRO_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const DB_CREATURE_SIGHT_AGGRO_RELOCATION_YARDS: f32 = 2.0;
 
 #[derive(Debug)]
 pub(in crate::world) struct DbCreatureIdleMotionTick {
@@ -79,6 +81,7 @@ impl MapRuntime {
             {
                 motion_advance_time += metrics.runtime_time;
                 spatial_update_time += metrics.spatial_update_time;
+                self.sync_db_creature_idle_motion_tracking(guid);
                 for script_id in script_ids {
                     let script_schedule_started_at = Instant::now();
                     self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
@@ -939,7 +942,7 @@ impl MapRuntime {
     }
 
     pub(in crate::world) fn select_db_creature_sight_aggro_targets(
-        &self,
+        &mut self,
         faction_templates: &FactionTemplateStore,
         character: &ActiveCharacter,
         now: Instant,
@@ -947,11 +950,7 @@ impl MapRuntime {
         if character.position.map_id != self.map_id {
             return Vec::new();
         }
-        if self
-            .players
-            .get(&character.guid)
-            .is_some_and(|player| player.flags & PLAYER_FLAGS_GM != 0)
-        {
+        if !self.player_sight_aggro_check_is_due(character, now) {
             return Vec::new();
         }
         let mut guids = HashSet::new();
@@ -975,20 +974,51 @@ impl MapRuntime {
                     creature.spawn.template.detection_range,
                 );
                 (distance_sq <= attack_distance * attack_distance)
-                    .then(|| (distance_sq, creature.guid(), creature.clone()))
+                    .then(|| (distance_sq, creature.guid()))
             })
             .collect::<Vec<_>>();
-        targets.sort_by(
-            |(left_distance, left_guid, _), (right_distance, right_guid, _)| {
-                left_distance
-                    .total_cmp(right_distance)
-                    .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
-            },
-        );
+        targets.sort_by(|(left_distance, left_guid), (right_distance, right_guid)| {
+            left_distance
+                .total_cmp(right_distance)
+                .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
+        });
         targets
             .into_iter()
-            .map(|(_, _, creature)| creature)
+            .filter_map(|(_, creature_guid)| self.creatures.get(&creature_guid.raw()).cloned())
             .collect()
+    }
+
+    fn player_sight_aggro_check_is_due(
+        &mut self,
+        character: &ActiveCharacter,
+        now: Instant,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character.guid) else {
+            return true;
+        };
+        if player.flags & PLAYER_FLAGS_GM != 0 {
+            return false;
+        }
+        let moved_enough = player
+            .last_sight_aggro_check_position
+            .is_some_and(|last_position| {
+                distance_2d(
+                    last_position.x,
+                    last_position.y,
+                    character.position.x,
+                    character.position.y,
+                ) >= DB_CREATURE_SIGHT_AGGRO_RELOCATION_YARDS
+            });
+        if moved_enough
+            || player
+                .next_sight_aggro_check_at
+                .is_none_or(|next| now >= next)
+        {
+            player.last_sight_aggro_check_position = Some(character.position);
+            player.next_sight_aggro_check_at = Some(now + DB_CREATURE_SIGHT_AGGRO_CHECK_INTERVAL);
+            return true;
+        }
+        false
     }
 
     pub(in crate::world) fn select_db_creature_assist_targets(
@@ -1271,6 +1301,7 @@ impl MapRuntime {
                 CreatureMotionState::Random(_)
                     | CreatureMotionState::Confused(_)
                     | CreatureMotionState::Waypoint(_)
+                    | CreatureMotionState::ReturnHome(_)
             )
     }
 

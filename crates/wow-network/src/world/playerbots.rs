@@ -149,6 +149,8 @@ pub(in crate::world) fn build_playerbot_runtime(
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(config.position),
         visible_objects: HashSet::new(),
+        next_sight_aggro_check_at: None,
+        last_sight_aggro_check_position: None,
         last_player_visibility_refresh_position: None,
         last_creature_visibility_position: None,
         last_gameobject_visibility_position: None,

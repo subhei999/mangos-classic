@@ -32,7 +32,8 @@ param(
     [switch]$EnableTokioUnstableMetrics,
     [int]$MovementActorQueueCapacity = 1024,
     [int]$MovementActorMaxBatchSize = 64,
-    [switch]$SeedOnly
+    [switch]$SeedOnly,
+    [switch]$StreamClients
 )
 
 $ErrorActionPreference = "Stop"
@@ -154,6 +155,10 @@ if ($SeedOnly) {
     $cargoArgs += "--seed-only"
 }
 
+if ($StreamClients) {
+    $cargoArgs += "--stream-clients"
+}
+
 if ($DisableMovement) {
     $cargoArgs += "--disable-movement"
 }
@@ -162,5 +167,5 @@ if ($DisableSentinelMovement) {
     $cargoArgs += "--disable-sentinel-movement"
 }
 
-Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms phase_jitter=${MovePhaseJitterMs}ms stagger=${LoginStaggerMs}ms sentinel_cast_clients=$SentinelCastClients sentinel_spell=$SentinelCastSpellId sentinel_phase_jitter=${SentinelCastPhaseJitterMs}ms client_thread_stack_kb=$ClientThreadStackKb disable_movement=$DisableMovement disable_sentinel_movement=$DisableSentinelMovement tokio_unstable_metrics=$EnableTokioUnstableMetrics"
+Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms phase_jitter=${MovePhaseJitterMs}ms stagger=${LoginStaggerMs}ms sentinel_cast_clients=$SentinelCastClients sentinel_spell=$SentinelCastSpellId sentinel_phase_jitter=${SentinelCastPhaseJitterMs}ms client_thread_stack_kb=$ClientThreadStackKb disable_movement=$DisableMovement disable_sentinel_movement=$DisableSentinelMovement stream_clients=$StreamClients tokio_unstable_metrics=$EnableTokioUnstableMetrics"
 & cargo @cargoArgs

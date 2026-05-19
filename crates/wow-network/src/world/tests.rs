@@ -8424,6 +8424,8 @@ async fn map_runtime_gameobject_consume_is_shared_and_broadcasts_destroy() {
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(center),
         visible_objects: HashSet::new(),
+        next_sight_aggro_check_at: None,
+        last_sight_aggro_check_position: None,
         last_player_visibility_refresh_position: None,
         last_creature_visibility_position: None,
         last_gameobject_visibility_position: None,
@@ -8768,6 +8770,77 @@ fn map_runtime_sight_aggro_uses_cell_buckets_and_detection_range() {
     let targets =
         map.select_db_creature_sight_aggro_targets(&faction_templates, &character, Instant::now());
 
+    assert_eq!(
+        targets
+            .into_iter()
+            .map(|creature| creature.guid())
+            .collect::<Vec<_>>(),
+        vec![near_guid]
+    );
+}
+
+#[test]
+fn map_runtime_sight_aggro_is_throttled_until_player_moves_enough() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut character = ActiveCharacter {
+        guid: 7,
+        name: "Ada".to_string(),
+        race: 1,
+        class: 1,
+        level: 1,
+        xp: 0,
+        position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+        movement_flags: 0,
+        client_time: 0,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    map.add_player(test_player_runtime(
+        character.guid,
+        SessionId(7),
+        character.position,
+    ))
+    .expect("player should enter map");
+
+    let mut near_hostile = test_creature_spawn(38);
+    near_hostile.guid = 45;
+    near_hostile.position_x = character.position.x + 8.0;
+    near_hostile.template.faction = 17;
+    near_hostile.template.npc_flags = 0;
+    near_hostile.template.creature_type = 7;
+    near_hostile.template.min_level = 1;
+    near_hostile.template.detection_range = 20;
+    let near_guid = creature_spawn_guid(&near_hostile);
+    map.insert_loaded_creature_grid(
+        grid_coord_for_position(character.position),
+        vec![DbCreatureRuntime::new(near_hostile)],
+    );
+
+    let faction_templates = FactionTemplateStore::fallback_bridge();
+    let now = Instant::now();
+    let targets = map.select_db_creature_sight_aggro_targets(&faction_templates, &character, now);
+    assert_eq!(
+        targets
+            .into_iter()
+            .map(|creature| creature.guid())
+            .collect::<Vec<_>>(),
+        vec![near_guid]
+    );
+
+    assert!(map
+        .select_db_creature_sight_aggro_targets(
+            &faction_templates,
+            &character,
+            now + Duration::from_millis(50),
+        )
+        .is_empty());
+
+    character.position.x += 3.0;
+    let targets = map.select_db_creature_sight_aggro_targets(
+        &faction_templates,
+        &character,
+        now + Duration::from_millis(60),
+    );
     assert_eq!(
         targets
             .into_iter()
@@ -16549,6 +16622,8 @@ fn test_player_runtime_with_controller(
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(position),
         visible_objects: HashSet::new(),
+        next_sight_aggro_check_at: None,
+        last_sight_aggro_check_position: None,
         last_player_visibility_refresh_position: None,
         last_creature_visibility_position: None,
         last_gameobject_visibility_position: None,
@@ -23793,6 +23868,50 @@ async fn db_creature_return_home_motion_advances_without_active_combat() {
         .db_creatures
         .get(&attacker.raw())
         .unwrap();
+    assert_eq!(runtime.current_position.x, runtime.home_position.x);
+    assert!(matches!(runtime.motion, CreatureMotionState::Idle));
+}
+
+#[tokio::test]
+async fn map_runtime_tick_advances_return_home_motion_without_session_polling() {
+    let now = Instant::now();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let player_position = WorldPosition::new(0, 9.0, 0.0, 0.0, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .expect("player should activate creature grid");
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.current_position.x = 9.0;
+    maps.share_db_creature_snapshots(0, vec![runtime]).await;
+
+    let (_, motion) = maps
+        .start_db_creature_return_home_motion(
+            0,
+            &DbCreatureNavigationGuardrail::default(),
+            attacker,
+            now,
+        )
+        .await
+        .expect("away creature should start return-home motion");
+
+    maps.advance_all_active_db_creature_idle_motions_with_interval(
+        &DbCreatureNavigationGuardrail::default(),
+        now + motion.duration,
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("map motion tick should advance return-home creature");
+
+    let runtime = maps
+        .db_creature_snapshot(0, attacker)
+        .await
+        .expect("creature should remain in map");
     assert_eq!(runtime.current_position.x, runtime.home_position.x);
     assert!(matches!(runtime.motion, CreatureMotionState::Idle));
 }

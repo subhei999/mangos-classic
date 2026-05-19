@@ -29,8 +29,6 @@ pub(in crate::world) async fn handle_combat_tick(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
-    expire_disconnected_players(deps.character_db_pool, deps.shared_world, session, now).await?;
-    advance_db_creature_return_home_motions(deps.shared_world, session, now).await;
     if session.death.player_death_state != PlayerDeathState::Alive {
         return Ok(());
     }
@@ -90,29 +88,6 @@ pub(in crate::world) async fn handle_combat_tick(
         header_crypto,
     )
     .await
-}
-
-pub(in crate::world) async fn expire_disconnected_players(
-    character_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
-    session: &WorldSessionState,
-    now: Instant,
-) -> anyhow::Result<()> {
-    let Some(character) = session.character.active_character.as_ref() else {
-        return Ok(());
-    };
-    let expired = shared_world
-        .maps
-        .expire_disconnected_players(character.position.map_id, now)
-        .await;
-    for expired in expired {
-        persist_expired_disconnected_player(character_db_pool, &expired.player).await?;
-        shared_world
-            .sessions
-            .dispatch(expired.observer_packets)
-            .await;
-    }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -211,6 +186,7 @@ pub(in crate::world) async fn sync_session_db_creatures_from_map(
     }
 }
 
+#[cfg(test)]
 pub(in crate::world) async fn advance_db_creature_return_home_motions(
     shared_world: SharedWorldDeps<'_>,
     session: &mut WorldSessionState,
@@ -232,14 +208,8 @@ pub(in crate::world) async fn advance_db_creature_return_home_motions(
     };
     let return_home_guids = shared_world
         .maps
-        .db_creature_snapshots(map_id, &visible_guids)
-        .await
-        .into_iter()
-        .filter_map(|creature| {
-            matches!(creature.motion, CreatureMotionState::ReturnHome(_))
-                .then_some(creature.guid().raw())
-        })
-        .collect::<Vec<_>>();
+        .db_creature_return_home_guids(map_id, &visible_guids)
+        .await;
     for guid in return_home_guids {
         let advanced = shared_world
             .maps

@@ -122,6 +122,7 @@ struct Config {
     class: u8,
     gender: u8,
     seed_only: bool,
+    stream_clients: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,7 @@ impl Default for Config {
             class: 1,
             gender: 0,
             seed_only: false,
+            stream_clients: false,
         }
     }
 }
@@ -384,6 +386,10 @@ async fn main() -> anyhow::Result<()> {
     let character_pool = connect_pool(&config.character_database_url, 8).await?;
     let world_pool = connect_pool(&config.world_database_url, 4).await?;
 
+    if config.stream_clients {
+        return run_streaming_clients(&config, &login_pool, &character_pool, &world_pool).await;
+    }
+
     let specs = seed_accounts_and_characters(&config, &login_pool, &character_pool, &world_pool)
         .await
         .context("seed thin-client accounts and characters")?;
@@ -407,55 +413,87 @@ async fn main() -> anyhow::Result<()> {
         .checked_mul(1024)
         .context("client thread stack size overflowed")?;
     for spec in specs {
-        let auth_addr = config.auth_addr.clone();
-        let world_addr = config.world_addr.clone();
-        let move_interval = Duration::from_millis(config.move_interval_ms);
-        let move_phase_jitter = Duration::from_millis(config.move_phase_jitter_ms);
-        let stagger =
-            Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
-        let hold_duration = Duration::from_secs(config.hold_seconds);
-        let login_bootstrap_timeout = Duration::from_secs(config.login_bootstrap_timeout_secs);
-        let login_ready_timeout = Duration::from_secs(config.login_ready_timeout_secs);
-        let drain_timeout = Duration::from_millis(config.drain_timeout_ms);
-        let move_radius = config.move_radius;
-        let sentinel_cast_enabled = spec.index < config.sentinel_cast_clients;
-        let movement_enabled =
-            config.movement_enabled && (config.sentinel_movement_enabled || !sentinel_cast_enabled);
-        let max_attempts = config.max_attempts.max(1);
-        let sentinel_cast = sentinel_cast_enabled.then_some(SpellCastProbeConfig {
-            spell_id: config.sentinel_cast_spell_id,
-            interval: Duration::from_millis(config.sentinel_cast_interval_ms),
-            phase_jitter: Duration::from_millis(config.sentinel_cast_phase_jitter_ms),
-        });
-        let movement_start_gate = Arc::clone(&movement_start_gate);
-        let username = spec.username.clone();
-        let thread_name = format!("thin-client-{:04}", spec.index + 1);
-        let handle = thread::Builder::new()
-            .stack_size(client_thread_stack_size_bytes)
-            .name(thread_name)
-            .spawn(move || {
-                thread::sleep(stagger);
-                run_client_with_retries(
-                    &spec,
-                    &auth_addr,
-                    &world_addr,
-                    hold_duration,
-                    login_bootstrap_timeout,
-                    login_ready_timeout,
-                    move_interval,
-                    move_phase_jitter,
-                    drain_timeout,
-                    move_radius,
-                    movement_enabled,
-                    sentinel_cast,
-                    max_attempts,
-                    movement_start_gate,
-                )
-            })
-            .with_context(|| format!("spawn thin-client thread {username}"))?;
-        handles.push(handle);
+        handles.push(spawn_client_thread(
+            &config,
+            spec,
+            Arc::clone(&movement_start_gate),
+            client_thread_stack_size_bytes,
+        )?);
     }
 
+    finish_client_handles(&config, started_at, handles)
+}
+
+async fn run_streaming_clients(
+    config: &Config,
+    login_pool: &MySqlPool,
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+) -> anyhow::Result<()> {
+    let spawn_positions = seed_spawn_positions(config, world_pool)
+        .await
+        .context("prepare thin-client spawn positions")?;
+    let started_at = Instant::now();
+    let client_thread_stack_size_bytes = config
+        .client_thread_stack_kb
+        .checked_mul(1024)
+        .context("client thread stack size overflowed")?;
+    let movement_start_gate = Arc::new(MovementStartGate::new(1));
+    let mut handles = Vec::with_capacity(if config.seed_only {
+        0
+    } else {
+        config.client_count
+    });
+
+    for (index, spawn_position) in spawn_positions
+        .into_iter()
+        .enumerate()
+        .take(config.client_count)
+    {
+        let spec = seed_client_spec(
+            config,
+            login_pool,
+            character_pool,
+            world_pool,
+            index,
+            spawn_position,
+        )
+        .await?;
+        let seeded = index + 1;
+        if seeded == 1 || seeded % 50 == 0 || seeded == config.client_count {
+            println!(
+                "stream-client setup progress: seeded {} / {}",
+                seeded, config.client_count
+            );
+        }
+
+        if !config.seed_only {
+            handles.push(spawn_client_thread(
+                config,
+                spec,
+                Arc::clone(&movement_start_gate),
+                client_thread_stack_size_bytes,
+            )?);
+        }
+    }
+
+    println!(
+        "Seeded {} dedicated load-test accounts and characters with prefix {} / {}",
+        config.client_count, config.account_prefix, config.character_prefix
+    );
+
+    if config.seed_only {
+        return Ok(());
+    }
+
+    finish_client_handles(config, started_at, handles)
+}
+
+fn finish_client_handles(
+    config: &Config,
+    started_at: Instant,
+    handles: Vec<thread::JoinHandle<anyhow::Result<ClientRunResult>>>,
+) -> anyhow::Result<()> {
     let mut total_movements = 0u64;
     let mut total_packets_drained = 0u64;
     let mut total_spell_casts = 0u64;
@@ -519,6 +557,58 @@ async fn main() -> anyhow::Result<()> {
     anyhow::bail!("{} client(s) failed during world-load-test", failures.len());
 }
 
+fn spawn_client_thread(
+    config: &Config,
+    spec: ClientSpec,
+    movement_start_gate: Arc<MovementStartGate>,
+    client_thread_stack_size_bytes: usize,
+) -> anyhow::Result<thread::JoinHandle<anyhow::Result<ClientRunResult>>> {
+    let auth_addr = config.auth_addr.clone();
+    let world_addr = config.world_addr.clone();
+    let move_interval = Duration::from_millis(config.move_interval_ms);
+    let move_phase_jitter = Duration::from_millis(config.move_phase_jitter_ms);
+    let stagger = Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
+    let hold_duration = Duration::from_secs(config.hold_seconds);
+    let login_bootstrap_timeout = Duration::from_secs(config.login_bootstrap_timeout_secs);
+    let login_ready_timeout = Duration::from_secs(config.login_ready_timeout_secs);
+    let drain_timeout = Duration::from_millis(config.drain_timeout_ms);
+    let move_radius = config.move_radius;
+    let sentinel_cast_enabled = spec.index < config.sentinel_cast_clients;
+    let movement_enabled =
+        config.movement_enabled && (config.sentinel_movement_enabled || !sentinel_cast_enabled);
+    let max_attempts = config.max_attempts.max(1);
+    let sentinel_cast = sentinel_cast_enabled.then_some(SpellCastProbeConfig {
+        spell_id: config.sentinel_cast_spell_id,
+        interval: Duration::from_millis(config.sentinel_cast_interval_ms),
+        phase_jitter: Duration::from_millis(config.sentinel_cast_phase_jitter_ms),
+    });
+    let username = spec.username.clone();
+    let thread_name = format!("thin-client-{:04}", spec.index + 1);
+    thread::Builder::new()
+        .stack_size(client_thread_stack_size_bytes)
+        .name(thread_name)
+        .spawn(move || {
+            thread::sleep(stagger);
+            run_client_with_retries(
+                &spec,
+                &auth_addr,
+                &world_addr,
+                hold_duration,
+                login_bootstrap_timeout,
+                login_ready_timeout,
+                move_interval,
+                move_phase_jitter,
+                drain_timeout,
+                move_radius,
+                movement_enabled,
+                sentinel_cast,
+                max_attempts,
+                movement_start_gate,
+            )
+        })
+        .with_context(|| format!("spawn thin-client thread {username}"))
+}
+
 async fn connect_pool(url: &str, max_connections: u32) -> anyhow::Result<MySqlPool> {
     MySqlPoolOptions::new()
         .max_connections(max_connections)
@@ -542,46 +632,67 @@ async fn seed_accounts_and_characters(
         .enumerate()
         .take(config.client_count)
     {
-        let username = format!("{}{:04}", config.account_prefix, index + 1);
-        let account_id = seed_account(login_pool, &username, &config.password).await?;
-        cleanup_account(login_pool, character_pool, account_id).await?;
-
-        let character_name = format!(
-            "{}{}",
-            config.character_prefix,
-            alphabetic_suffix(index as u32)
+        specs.push(
+            seed_client_spec(
+                config,
+                login_pool,
+                character_pool,
+                world_pool,
+                index,
+                spawn_position,
+            )
+            .await?,
         );
-        let created = wow_db::create_character(
-            character_pool,
-            world_pool,
-            wow_db::NewCharacter {
-                account_id,
-                name: character_name.clone(),
-                race: config.race,
-                class: config.class,
-                gender: config.gender,
-                skin: 0,
-                face: 0,
-                hair_style: 0,
-                hair_color: 0,
-                facial_hair: 0,
-            },
-        )
-        .await?;
-        wow_db::update_character_position(character_pool, account_id, created.guid, spawn_position)
-            .await?;
-        wow_db::refresh_realm_character_count(login_pool, character_pool, account_id, 1).await?;
-
-        specs.push(ClientSpec {
-            index,
-            username,
-            password: config.password.clone(),
-            character_name,
-            character_guid: created.guid,
-            spawn_position,
-        });
     }
     Ok(specs)
+}
+
+async fn seed_client_spec(
+    config: &Config,
+    login_pool: &MySqlPool,
+    character_pool: &MySqlPool,
+    world_pool: &MySqlPool,
+    index: usize,
+    spawn_position: WorldPosition,
+) -> anyhow::Result<ClientSpec> {
+    let username = format!("{}{:04}", config.account_prefix, index + 1);
+    let account_id = seed_account(login_pool, &username, &config.password).await?;
+    cleanup_account(login_pool, character_pool, account_id).await?;
+
+    let character_name = format!(
+        "{}{}",
+        config.character_prefix,
+        alphabetic_suffix(index as u32)
+    );
+    let created = wow_db::create_character(
+        character_pool,
+        world_pool,
+        wow_db::NewCharacter {
+            account_id,
+            name: character_name.clone(),
+            race: config.race,
+            class: config.class,
+            gender: config.gender,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await?;
+    wow_db::update_character_position(character_pool, account_id, created.guid, spawn_position)
+        .await?;
+    wow_db::refresh_realm_character_count(login_pool, character_pool, account_id, 1).await?;
+
+    Ok(ClientSpec {
+        index,
+        username,
+        password: config.password.clone(),
+        character_name,
+        character_guid: created.guid,
+        spawn_position,
+    })
 }
 
 async fn seed_spawn_positions(
@@ -1791,6 +1902,9 @@ fn parse_args() -> anyhow::Result<Config> {
             "--seed-only" => {
                 config.seed_only = true;
             }
+            "--stream-clients" => {
+                config.stream_clients = true;
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -1859,6 +1973,7 @@ fn print_usage() {
     println!("  --class <id>                Default: 1");
     println!("  --gender <id>               Default: 0");
     println!("  --seed-only                 Seed accounts and characters but do not log in");
+    println!("  --stream-clients            Start each client as soon as its account is seeded");
 }
 
 #[cfg(test)]

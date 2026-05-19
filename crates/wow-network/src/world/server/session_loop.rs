@@ -295,7 +295,7 @@ pub(in crate::world) async fn handle_client(
                     let timeout_branch_started_at = Instant::now();
                     let refresh_started_at = Instant::now();
                     let map_player_died =
-                        refresh_active_player_session_cache(&runtime_state.maps, &mut session)
+                        refresh_active_player_session_tick_cache(&runtime_state.maps, &mut session)
                             .await;
                     crate::observability::record_world_session_loop_phase_duration(
                         crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
@@ -946,6 +946,47 @@ pub(in crate::world) async fn refresh_active_player_session_cache(
     session.inventory.items = snapshot.inventory;
     session.quests.quest_statuses = snapshot.quest_statuses;
     session.auras.active_auras = snapshot.active_auras;
+    session.character.player_flags = snapshot.flags;
+    if let Some(character) = session.character.active_character.as_mut() {
+        character.position = snapshot.position;
+        character.movement_flags = snapshot.movement_flags;
+        character.client_time = snapshot.client_time;
+        character.fall_time = snapshot.fall_time;
+        character.jump = snapshot.jump;
+        character.level = snapshot.level;
+        character.xp = snapshot.xp;
+    }
+    map_player_died
+}
+
+pub(in crate::world) async fn refresh_active_player_session_tick_cache(
+    maps: &Arc<MapRuntimeManager>,
+    session: &mut WorldSessionState,
+) -> bool {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return false;
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(snapshot) = maps
+        .player_runtime_session_snapshot(map_id, character_guid)
+        .await
+    else {
+        return false;
+    };
+
+    let map_player_died = session.death.player_death_state == PlayerDeathState::Alive
+        && snapshot.death_state != PlayerDeathState::Alive
+        && snapshot.health == 0;
+    session.character.player_health = snapshot.health;
+    session.death.player_death_state = snapshot.death_state;
+    session.death.player_death_presentation_pending =
+        snapshot.death_state == PlayerDeathState::JustDied;
+    session.character.player_stand_state = snapshot.stand_state;
+    session.character.player_mana = snapshot.power1;
+    session.character.player_rage = snapshot.power2;
+    session.character.player_energy = snapshot.power4;
+    session.combat.player_in_combat = snapshot.in_combat;
     session.character.player_flags = snapshot.flags;
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;

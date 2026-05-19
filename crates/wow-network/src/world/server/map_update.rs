@@ -1,7 +1,7 @@
 use super::*;
 
 // CMaNGOS reference: src/game/Maps/Map.cpp map-owned object update loop.
-const ENABLE_DB_CREATURE_OOC_EVENT_AI_TICK: bool = false;
+const ENABLE_DB_CREATURE_OOC_EVENT_AI_TICK: bool = true;
 
 pub(in crate::world) async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
     let navigation = DbCreatureNavigationGuardrail {
@@ -166,6 +166,40 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime player visibility refresh tick failed: {error}");
             }
+        }
+        let phase_started_at = Instant::now();
+        let expired_players = runtime_state
+            .maps
+            .expire_all_disconnected_players(now)
+            .await;
+        crate::observability::record_map_phase_duration(
+            crate::observability::MapTickPhase::DisconnectedPlayerExpiration,
+            phase_started_at.elapsed(),
+        );
+        if !expired_players.is_empty() {
+            let dispatch_started_at = Instant::now();
+            for expired in expired_players {
+                if let Err(error) = persist_expired_disconnected_player(
+                    &runtime_state.character_db_pool,
+                    &expired.player,
+                )
+                .await
+                {
+                    crate::observability::record_map_tick_error();
+                    warn!(
+                        guid = expired.player.guid,
+                        "Map runtime disconnected-player persistence failed: {error}"
+                    );
+                }
+                runtime_state
+                    .sessions
+                    .dispatch(expired.observer_packets)
+                    .await;
+            }
+            crate::observability::record_map_phase_duration(
+                crate::observability::MapTickPhase::DisconnectedPlayerExpirationDispatch,
+                dispatch_started_at.elapsed(),
+            );
         }
         let phase_started_at = Instant::now();
         match runtime_state

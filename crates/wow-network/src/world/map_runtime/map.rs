@@ -171,6 +171,8 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) jump: JumpInfo,
     pub(in crate::world) cell: CellCoord,
     pub(in crate::world) visible_objects: HashSet<ObjectGuid>,
+    pub(in crate::world) next_sight_aggro_check_at: Option<Instant>,
+    pub(in crate::world) last_sight_aggro_check_position: Option<WorldPosition>,
     pub(in crate::world) last_player_visibility_refresh_position: Option<WorldPosition>,
     pub(in crate::world) last_creature_visibility_position: Option<WorldPosition>,
     pub(in crate::world) last_gameobject_visibility_position: Option<WorldPosition>,
@@ -289,6 +291,27 @@ pub(in crate::world) struct PlayerRuntimeSnapshot {
     pub(in crate::world) active_combat_target: Option<ObjectGuid>,
     pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(in crate::world) struct PlayerRuntimeSessionSnapshot {
+    pub(in crate::world) position: WorldPosition,
+    pub(in crate::world) movement_flags: u32,
+    pub(in crate::world) client_time: u32,
+    pub(in crate::world) fall_time: u32,
+    pub(in crate::world) jump: JumpInfo,
+    pub(in crate::world) flags: u32,
+    pub(in crate::world) death_state: PlayerDeathState,
+    pub(in crate::world) stand_state: u8,
+    pub(in crate::world) level: u8,
+    pub(in crate::world) xp: u32,
+    pub(in crate::world) health: u32,
+    pub(in crate::world) max_health: u32,
+    pub(in crate::world) power1: u32,
+    pub(in crate::world) power2: u32,
+    pub(in crate::world) power4: u32,
+    pub(in crate::world) in_combat: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

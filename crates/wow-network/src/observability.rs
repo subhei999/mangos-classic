@@ -13,8 +13,11 @@ const MAP_TICK_BUCKETS_SECONDS: [f64; 10] = [
 ];
 const ROLLING_ONE_MINUTE: Duration = Duration::from_secs(60);
 const ROLLING_FIVE_MINUTES: Duration = Duration::from_secs(300);
+const ROLLING_BUCKET: Duration = Duration::from_secs(1);
+const PROMETHEUS_RENDER_CACHE_TTL: Duration = Duration::from_secs(5);
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
+static PROMETHEUS_RENDER_CACHE: OnceLock<Mutex<PrometheusRenderCache>> = OnceLock::new();
 
 fn registry() -> &'static MetricsRegistry {
     REGISTRY.get_or_init(MetricsRegistry::default)
@@ -438,6 +441,8 @@ pub enum MapTickPhase {
     DbCreatureLifecycleDispatch,
     PlayerVisibilityRefresh,
     PlayerVisibilityRefreshDispatch,
+    DisconnectedPlayerExpiration,
+    DisconnectedPlayerExpirationDispatch,
     DbCreatureOocEventAi,
     DbCreatureOocEventAiDispatch,
     IdleMotion,
@@ -473,6 +478,8 @@ impl MapTickPhase {
             Self::DbCreatureLifecycleDispatch => "db_creature_lifecycle_dispatch",
             Self::PlayerVisibilityRefresh => "player_visibility_refresh",
             Self::PlayerVisibilityRefreshDispatch => "player_visibility_refresh_dispatch",
+            Self::DisconnectedPlayerExpiration => "disconnected_player_expiration",
+            Self::DisconnectedPlayerExpirationDispatch => "disconnected_player_expiration_dispatch",
             Self::DbCreatureOocEventAi => "db_creature_ooc_event_ai",
             Self::DbCreatureOocEventAiDispatch => "db_creature_ooc_event_ai_dispatch",
             Self::IdleMotion => "idle_motion",
@@ -542,13 +549,15 @@ const WORLD_SESSION_LOOP_PHASES: [WorldSessionLoopPhase; 9] = [
     WorldSessionLoopPhase::TimeoutBranchTotal,
 ];
 
-const MAP_TICK_PHASES: [MapTickPhase; 30] = [
+const MAP_TICK_PHASES: [MapTickPhase; 32] = [
     MapTickPhase::StaticGameEventRefresh,
     MapTickPhase::StaticGameEventRefreshDispatch,
     MapTickPhase::DbCreatureLifecycle,
     MapTickPhase::DbCreatureLifecycleDispatch,
     MapTickPhase::PlayerVisibilityRefresh,
     MapTickPhase::PlayerVisibilityRefreshDispatch,
+    MapTickPhase::DisconnectedPlayerExpiration,
+    MapTickPhase::DisconnectedPlayerExpirationDispatch,
     MapTickPhase::DbCreatureOocEventAi,
     MapTickPhase::DbCreatureOocEventAiDispatch,
     MapTickPhase::IdleMotion,
@@ -583,6 +592,8 @@ struct MapPhaseDurations {
     db_creature_lifecycle_dispatch: Histogram,
     player_visibility_refresh: Histogram,
     player_visibility_refresh_dispatch: Histogram,
+    disconnected_player_expiration: Histogram,
+    disconnected_player_expiration_dispatch: Histogram,
     db_creature_ooc_event_ai: Histogram,
     db_creature_ooc_event_ai_dispatch: Histogram,
     idle_motion: Histogram,
@@ -651,6 +662,10 @@ impl MapPhaseDurations {
             MapTickPhase::PlayerVisibilityRefreshDispatch => {
                 &self.player_visibility_refresh_dispatch
             }
+            MapTickPhase::DisconnectedPlayerExpiration => &self.disconnected_player_expiration,
+            MapTickPhase::DisconnectedPlayerExpirationDispatch => {
+                &self.disconnected_player_expiration_dispatch
+            }
             MapTickPhase::DbCreatureOocEventAi => &self.db_creature_ooc_event_ai,
             MapTickPhase::DbCreatureOocEventAiDispatch => &self.db_creature_ooc_event_ai_dispatch,
             MapTickPhase::IdleMotion => &self.idle_motion,
@@ -689,13 +704,118 @@ struct Histogram {
     sum_micros: AtomicU64,
     latest_micros: AtomicU64,
     max_micros: AtomicU64,
-    recent: Mutex<VecDeque<TimedSample>>,
+    recent: Mutex<RollingWindows>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct TimedSample {
-    at: Instant,
-    micros: u64,
+struct TimedBucket {
+    started_at: Instant,
+    count: u64,
+    sum_micros: u64,
+    max_micros: u64,
+}
+
+struct RollingWindows {
+    one_minute: RollingWindow,
+    five_minutes: RollingWindow,
+}
+
+struct RollingWindow {
+    window: Duration,
+    buckets: VecDeque<TimedBucket>,
+    count: u64,
+    sum_micros: u64,
+    max_micros: u64,
+}
+
+impl Default for RollingWindows {
+    fn default() -> Self {
+        Self {
+            one_minute: RollingWindow::new(ROLLING_ONE_MINUTE),
+            five_minutes: RollingWindow::new(ROLLING_FIVE_MINUTES),
+        }
+    }
+}
+
+impl RollingWindows {
+    fn record(&mut self, now: Instant, micros: u64) {
+        self.one_minute.record(now, micros);
+        self.five_minutes.record(now, micros);
+    }
+
+    fn stats(&mut self, now: Instant, window: Duration) -> RollingStats {
+        self.one_minute.prune(now);
+        self.five_minutes.prune(now);
+        if window <= ROLLING_ONE_MINUTE {
+            self.one_minute.stats()
+        } else {
+            self.five_minutes.stats()
+        }
+    }
+}
+
+impl RollingWindow {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            buckets: VecDeque::new(),
+            count: 0,
+            sum_micros: 0,
+            max_micros: 0,
+        }
+    }
+
+    fn record(&mut self, now: Instant, micros: u64) {
+        match self.buckets.back_mut() {
+            Some(bucket) if now.saturating_duration_since(bucket.started_at) < ROLLING_BUCKET => {
+                bucket.count = bucket.count.saturating_add(1);
+                bucket.sum_micros = bucket.sum_micros.saturating_add(micros);
+                bucket.max_micros = bucket.max_micros.max(micros);
+            }
+            _ => self.buckets.push_back(TimedBucket {
+                started_at: now,
+                count: 1,
+                sum_micros: micros,
+                max_micros: micros,
+            }),
+        }
+        self.count = self.count.saturating_add(1);
+        self.sum_micros = self.sum_micros.saturating_add(micros);
+        self.max_micros = self.max_micros.max(micros);
+        self.prune(now);
+    }
+
+    fn prune(&mut self, now: Instant) {
+        let mut removed_max = false;
+        while self
+            .buckets
+            .front()
+            .is_some_and(|bucket| now.saturating_duration_since(bucket.started_at) > self.window)
+        {
+            let Some(bucket) = self.buckets.pop_front() else {
+                break;
+            };
+            self.count = self.count.saturating_sub(bucket.count);
+            self.sum_micros = self.sum_micros.saturating_sub(bucket.sum_micros);
+            removed_max |= bucket.max_micros >= self.max_micros;
+        }
+        if removed_max {
+            self.max_micros = self
+                .buckets
+                .iter()
+                .map(|bucket| bucket.max_micros)
+                .max()
+                .unwrap_or(0);
+        }
+    }
+
+    fn stats(&self) -> RollingStats {
+        RollingStats {
+            count: self.count,
+            sum_micros: self.sum_micros,
+            max_micros: self.max_micros,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -739,8 +859,7 @@ impl Histogram {
             .recent
             .lock()
             .expect("metrics rolling sample window poisoned");
-        recent.push_back(TimedSample { at: now, micros });
-        prune_samples(&mut recent, now, ROLLING_FIVE_MINUTES);
+        recent.record(now, micros);
     }
 
     fn average_milliseconds(&self) -> f64 {
@@ -767,26 +886,14 @@ impl Histogram {
             .recent
             .lock()
             .expect("metrics rolling sample window poisoned");
-        prune_samples(&mut recent, now, ROLLING_FIVE_MINUTES);
-        recent
-            .iter()
-            .filter(|sample| now.saturating_duration_since(sample.at) <= window)
-            .fold(RollingStats::default(), |mut stats, sample| {
-                stats.count += 1;
-                stats.sum_micros += sample.micros;
-                stats.max_micros = stats.max_micros.max(sample.micros);
-                stats
-            })
+        recent.stats(now, window)
     }
 }
 
-fn prune_samples(samples: &mut VecDeque<TimedSample>, now: Instant, window: Duration) {
-    while samples
-        .front()
-        .is_some_and(|sample| now.saturating_duration_since(sample.at) > window)
-    {
-        samples.pop_front();
-    }
+#[derive(Default)]
+struct PrometheusRenderCache {
+    rendered_at: Option<Instant>,
+    body: String,
 }
 
 pub fn record_world_session_registered() {
@@ -1546,6 +1653,7 @@ pub fn mark_monitoring_session() -> u64 {
     metrics
         .monitoring_session_marks_total
         .fetch_add(1, Ordering::Relaxed);
+    invalidate_prometheus_render_cache();
     started_at
 }
 
@@ -2182,6 +2290,39 @@ pub fn render_prometheus() -> String {
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
     body
+}
+
+pub fn render_prometheus_cached() -> String {
+    let now = Instant::now();
+    {
+        let cache = PROMETHEUS_RENDER_CACHE
+            .get_or_init(Mutex::default)
+            .lock()
+            .expect("prometheus render cache poisoned");
+        if cache.rendered_at.is_some_and(|rendered_at| {
+            now.saturating_duration_since(rendered_at) < PROMETHEUS_RENDER_CACHE_TTL
+        }) {
+            return cache.body.clone();
+        }
+    }
+
+    let body = render_prometheus();
+    let mut cache = PROMETHEUS_RENDER_CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("prometheus render cache poisoned");
+    cache.rendered_at = Some(Instant::now());
+    cache.body = body.clone();
+    body
+}
+
+fn invalidate_prometheus_render_cache() {
+    let Some(cache) = PROMETHEUS_RENDER_CACHE.get() else {
+        return;
+    };
+    let mut cache = cache.lock().expect("prometheus render cache poisoned");
+    cache.rendered_at = None;
+    cache.body.clear();
 }
 
 fn write_label_counter(
@@ -5176,7 +5317,7 @@ $("resetButton").addEventListener("click", async () => {
 });
 
 refresh();
-setInterval(refresh, 1000);
+setInterval(refresh, 5000);
 </script>
 </body>
 </html>"##;
@@ -5202,7 +5343,7 @@ pub async fn run_metrics_endpoint(bind_addr: SocketAddr) -> anyhow::Result<()> {
                 (
                     "200 OK",
                     "text/plain; version=0.0.4; charset=utf-8",
-                    render_prometheus(),
+                    render_prometheus_cached(),
                 )
             } else if first_line.starts_with("GET /playerbots")
                 || first_line.starts_with("GET /playerbot")
@@ -5249,6 +5390,22 @@ pub async fn run_metrics_endpoint(bind_addr: SocketAddr) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rolling_window_keeps_stats_incremental_after_prune() {
+        let now = Instant::now();
+        let mut window = RollingWindow::new(Duration::from_secs(1));
+
+        window.record(now - Duration::from_millis(1500), 10_000);
+        window.record(now - Duration::from_millis(500), 30_000);
+        window.prune(now);
+
+        let stats = window.stats();
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.sum_micros, 30_000);
+        assert_eq!(stats.max_micros, 30_000);
+        assert_eq!(stats.average_milliseconds(), 30.0);
+    }
 
     #[test]
     fn prometheus_render_includes_histogram_and_opcode_labels() {
@@ -5595,6 +5752,7 @@ mod tests {
         assert!(rendered.contains("Packet Latency"));
         assert!(rendered.contains("Movement Pipeline"));
         assert!(rendered.contains("Session Loop"));
+        assert!(rendered.contains("setInterval(refresh, 5000);"));
         assert!(rendered.contains("movementPipelineTable"));
         assert!(rendered.contains("sessionLoopTable"));
         assert!(rendered.contains("wow_map_tick_duration_average_milliseconds"));

@@ -33,7 +33,7 @@ pub(in crate::world) async fn persist_active_character_position(
         return Ok(());
     };
     let snapshot = maps
-        .player_runtime_snapshot(character.position.map_id, character.guid)
+        .player_runtime_session_snapshot(character.position.map_id, character.guid)
         .await;
     let position = snapshot
         .as_ref()
@@ -99,7 +99,7 @@ pub(in crate::world) async fn handle_movement(
     }
     let map_death_state = if let Some(character) = session.character.active_character.as_ref() {
         deps.maps
-            .player_runtime_snapshot(character.position.map_id, character.guid)
+            .player_runtime_session_snapshot(character.position.map_id, character.guid)
             .await
             .map(|snapshot| snapshot.death_state)
     } else {
@@ -179,7 +179,7 @@ pub(in crate::world) async fn handle_movement(
                 deps.sessions.dispatch(packets).await;
                 if let Some(snapshot) = deps
                     .maps
-                    .player_runtime_snapshot(character.position.map_id, character.guid)
+                    .player_runtime_session_snapshot(character.position.map_id, character.guid)
                     .await
                 {
                     session.character.player_health = snapshot.health;

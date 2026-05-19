@@ -447,6 +447,8 @@ pub(in crate::world) async fn handle_player_login(
         jump: JumpInfo::default(),
         cell: cell_coord_for_position(login_position),
         visible_objects,
+        next_sight_aggro_check_at: None,
+        last_sight_aggro_check_position: None,
         last_player_visibility_refresh_position: Some(login_position),
         last_creature_visibility_position: Some(login_position),
         last_gameobject_visibility_position: Some(login_position),

@@ -1595,9 +1595,15 @@ impl MapRuntime {
                     session.character.player_stand_state
                 };
         }
-        player.active_spells = session.character.active_spells.clone();
-        player.inventory = session.inventory.items.clone();
-        player.quest_statuses = session.quests.quest_statuses.clone();
+        if player.active_spells != session.character.active_spells {
+            player.active_spells = session.character.active_spells.clone();
+        }
+        if player.inventory != session.inventory.items {
+            player.inventory = session.inventory.items.clone();
+        }
+        if player.quest_statuses != session.quests.quest_statuses {
+            player.quest_statuses = session.quests.quest_statuses.clone();
+        }
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -1671,6 +1677,31 @@ impl MapRuntime {
             active_combat_target: player.active_combat_target,
             active_combat_attack_kind: player.active_combat_attack_kind,
             active_combat_next_swing_at: player.active_combat_next_swing_at,
+        })
+    }
+
+    pub(in crate::world) fn player_runtime_session_snapshot(
+        &self,
+        character_guid: u32,
+    ) -> Option<PlayerRuntimeSessionSnapshot> {
+        let player = self.players.get(&character_guid)?;
+        Some(PlayerRuntimeSessionSnapshot {
+            position: player.position,
+            movement_flags: player.movement_flags,
+            client_time: player.client_time,
+            fall_time: player.fall_time,
+            jump: player.jump.clone(),
+            flags: player.flags,
+            death_state: player.death_state,
+            stand_state: player.stand_state,
+            level: player.level,
+            xp: player.xp,
+            health: player.health,
+            max_health: player.max_health,
+            power1: player.power1,
+            power2: player.power2,
+            power4: player.power4,
+            in_combat: player.in_combat,
         })
     }
 

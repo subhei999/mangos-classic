@@ -931,6 +931,7 @@ impl MapRuntime {
         creature.loot_owner = None;
         creature.triggered_event_ai_scripts.clear();
         creature.event_ai_cooldowns_until.clear();
+        creature.event_ai_update_accum = Duration::ZERO;
         creature.clear_confused_motion();
         self.clear_db_creature_combat(creature_guid);
         self.sync_db_creature_lifecycle_tracking(creature_guid.raw());

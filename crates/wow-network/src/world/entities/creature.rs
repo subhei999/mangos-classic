@@ -59,6 +59,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) unavailable_spell_list_positions: HashSet<u32>,
     pub(in crate::world) triggered_event_ai_scripts: HashSet<i32>,
     pub(in crate::world) event_ai_cooldowns_until: HashMap<i32, Instant>,
+    pub(in crate::world) event_ai_update_accum: Duration,
     pub(in crate::world) native_display: CreatureDisplaySelection,
     pub(in crate::world) display_id_override: Option<u32>,
     pub(in crate::world) aura_display_id_override: Option<u32>,

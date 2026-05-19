@@ -199,6 +199,9 @@ async fn process_movement_batch(map: &Arc<Mutex<MapRuntime>>, batch: Vec<Movemen
     let mutex_hold_started_at = Instant::now();
     let mut replies = Vec::with_capacity(latest.len());
     for command in latest {
+        crate::observability::record_movement_actor_apply_start_latency(
+            command.enqueued_at.elapsed(),
+        );
         let result = map.update_player_position(
             command.character_guid,
             command.opcode,

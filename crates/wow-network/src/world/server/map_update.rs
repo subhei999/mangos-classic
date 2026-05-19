@@ -1,6 +1,7 @@
 use super::*;
 
 // CMaNGOS reference: src/game/Maps/Map.cpp map-owned object update loop.
+const ENABLE_DB_CREATURE_OOC_EVENT_AI_TICK: bool = false;
 
 pub(in crate::world) async fn run_playerbot_planner_loop(runtime_state: WorldRuntimeState) {
     let navigation = DbCreatureNavigationGuardrail {
@@ -134,35 +135,36 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         let phase_started_at = Instant::now();
         match runtime_state
             .maps
-            .advance_all_db_creature_ooc_event_ai_spell_ticks(
-                &runtime_state.world_db_pool,
-                &runtime_state.object_mgr,
-                &navigation,
-                now,
-            )
+            .advance_all_player_visibility_refreshes()
             .await
         {
             Ok(tick) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                    crate::observability::MapTickPhase::PlayerVisibilityRefresh,
                     phase_started_at.elapsed(),
                 );
+                if tick.budget_exhausted {
+                    debug!(
+                        refreshed_players = tick.refreshed_players,
+                        "Player visibility refresh tick reached per-map refresh budget"
+                    );
+                }
                 if !tick.packets.is_empty() {
                     let dispatch_started_at = Instant::now();
                     runtime_state.sessions.dispatch(tick.packets).await;
                     crate::observability::record_map_phase_duration(
-                        crate::observability::MapTickPhase::DbCreatureOocEventAiDispatch,
+                        crate::observability::MapTickPhase::PlayerVisibilityRefreshDispatch,
                         dispatch_started_at.elapsed(),
                     );
                 }
             }
             Err(error) => {
                 crate::observability::record_map_phase_duration(
-                    crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                    crate::observability::MapTickPhase::PlayerVisibilityRefresh,
                     phase_started_at.elapsed(),
                 );
                 crate::observability::record_map_tick_error();
-                warn!("Map runtime DB-creature OOC EventAI tick failed: {error}");
+                warn!("Map runtime player visibility refresh tick failed: {error}");
             }
         }
         let phase_started_at = Instant::now();
@@ -438,6 +440,52 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime DB-creature aura tick failed: {error}");
             }
+        }
+        if ENABLE_DB_CREATURE_OOC_EVENT_AI_TICK {
+            let phase_started_at = Instant::now();
+            match runtime_state
+                .maps
+                .advance_all_db_creature_ooc_event_ai_spell_ticks(
+                    &runtime_state.world_db_pool,
+                    &runtime_state.object_mgr,
+                    &navigation,
+                    now,
+                    tick_budget,
+                )
+                .await
+            {
+                Ok(tick) => {
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                        phase_started_at.elapsed(),
+                    );
+                    if !tick.packets.is_empty() {
+                        let dispatch_started_at = Instant::now();
+                        runtime_state.sessions.dispatch(tick.packets).await;
+                        crate::observability::record_map_phase_duration(
+                            crate::observability::MapTickPhase::DbCreatureOocEventAiDispatch,
+                            dispatch_started_at.elapsed(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                        phase_started_at.elapsed(),
+                    );
+                    crate::observability::record_map_tick_error();
+                    warn!("Map runtime DB-creature OOC EventAI tick failed: {error}");
+                }
+            }
+        } else {
+            crate::observability::record_map_phase_duration(
+                crate::observability::MapTickPhase::DbCreatureOocEventAi,
+                Duration::ZERO,
+            );
+            crate::observability::record_map_phase_duration(
+                crate::observability::MapTickPhase::DbCreatureOocEventAiDispatch,
+                Duration::ZERO,
+            );
         }
         let phase_started_at = Instant::now();
         match runtime_state

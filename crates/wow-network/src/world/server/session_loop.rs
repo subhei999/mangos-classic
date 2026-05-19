@@ -5,6 +5,16 @@ use super::*;
 pub(in crate::world) const WORLD_LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 pub(in crate::world) const WORLD_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(in crate::world) const WORLD_SESSION_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(in crate::world) const WORLD_SESSION_MOVEMENT_COALESCE_WINDOW: Duration =
+    Duration::from_millis(10);
+
+#[derive(Debug, Clone)]
+struct QueuedMovementPacket {
+    opcode: u32,
+    body: Vec<u8>,
+    received_at: Instant,
+    dispatch_due_at: Instant,
+}
 
 pub(in crate::world) async fn handle_client(
     mut stream: TcpStream,
@@ -123,6 +133,7 @@ pub(in crate::world) async fn handle_client(
     let world_tick_interval = runtime_state.world_tick_interval;
     let mut next_world_tick_at = Instant::now() + world_tick_interval;
     let mut last_client_packet_at = Instant::now();
+    let mut pending_movement = None;
 
     let session_result: anyhow::Result<()> = async {
         loop {
@@ -160,6 +171,8 @@ pub(in crate::world) async fn handle_client(
             )
             .await
             .min(WORLD_SESSION_IDLE_TIMEOUT - idle_elapsed);
+            let loop_timeout =
+                pending_movement_timeout_duration(pending_movement.as_ref(), now, loop_timeout);
             tokio::select! {
                 disconnect_reason = disconnect_rx.recv() => {
                     let reason = disconnect_reason.unwrap_or(WorldSessionDisconnectReason::WriteError);
@@ -171,234 +184,57 @@ pub(in crate::world) async fn handle_client(
                     read_client_packet(&mut read_stream, Some(&mut read_header_crypto)),
                 ) => match read_result {
                 Ok(Ok((opcode, body))) => {
-                    let packet_branch_started_at = Instant::now();
-                    let parsed_packet = packets::parse_world_client_packet(opcode, &body)?;
-                    let opcode = parsed_packet.opcode();
                     let packet_received_at = Instant::now();
                     last_client_packet_at = packet_received_at;
-                    let refresh_started_at = Instant::now();
-                    let map_player_died =
-                        refresh_active_player_session_cache(&runtime_state.maps, &mut session)
-                            .await;
-                    crate::observability::record_world_session_loop_phase_duration(
-                        crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
-                        refresh_started_at.elapsed(),
-                    );
-                    let finalize_death_started_at = Instant::now();
-                    finalize_map_owned_player_death_if_needed(
-                        &mut stream,
-                        &character_db_pool,
-                        account.id,
-                        SharedWorldDeps {
-                            object_mgr: runtime_state.object_mgr.as_ref(),
-                            maps: &runtime_state.maps,
-                            sessions: &runtime_state.sessions,
-                        },
-                        &mut session,
-                        &mut header_crypto,
-                        map_player_died,
-                    )
-                    .await?;
-                    crate::observability::record_world_session_loop_phase_duration(
-                        crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
-                        finalize_death_started_at.elapsed(),
-                    );
                     if is_movement_opcode(opcode) {
-                        debug!(
-                            opcode = format_args!("0x{opcode:04X}"),
-                            bytes = body.len(),
-                            "Received movement packet after auth"
-                        );
-                    } else {
-                        debug!(
-                            opcode = format_args!("0x{opcode:04X}"),
-                            bytes = body.len(),
-                            "Received world packet after auth"
-                        );
-                    }
-
-                    if pending_player_spell_cast_is_due(
-                        runtime_state.maps.as_ref(),
-                        &session,
-                        Instant::now(),
-                    )
-                    .await
-                    {
-                        let pending_spell_started_at = Instant::now();
-                        complete_pending_player_spell_cast(
-                            &mut stream,
-                            SpellCastDeps {
-                                character_db_pool: &character_db_pool,
-                                world_db_pool: &world_db_pool,
-                                account_id: account.id,
-                                shared_world: SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
-                                },
-                                parties: runtime_state.parties.as_ref(),
-                            },
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
-                            pending_spell_started_at.elapsed(),
-                        );
-                    }
-
-                    let mut dispatch_context = WorldPacketDispatchContext {
-                        stream: &mut stream,
-                        login_db_pool: &login_db_pool,
-                        character_db_pool: &character_db_pool,
-                        world_db_pool: &world_db_pool,
-                        runtime_state: &runtime_state,
-                        session_id,
-                        account_id: account.id,
-                        account_name: &auth.account,
-                        session: &mut session,
-                        header_crypto: &mut header_crypto,
-                    };
-                    crate::observability::record_world_packet_dispatch_delay(
-                        opcode,
-                        packet_received_at.elapsed(),
-                    );
-                    let packet_handler_started_at = Instant::now();
-                    let dispatch_result =
-                        dispatch_world_packet(&mut dispatch_context, &parsed_packet, &body).await;
-                    crate::observability::record_world_session_loop_phase_duration(
-                        crate::observability::WorldSessionLoopPhase::PacketDispatch,
-                        packet_handler_started_at.elapsed(),
-                    );
-                    crate::observability::record_world_packet_handler_duration(
-                        opcode,
-                        packet_handler_started_at.elapsed(),
-                    );
-                    crate::observability::record_world_packet_service_time(
-                        opcode,
-                        packet_received_at.elapsed(),
-                    );
-                    dispatch_result?;
-
-                    if pending_player_spell_cast_is_due(
-                        runtime_state.maps.as_ref(),
-                        &session,
-                        Instant::now(),
-                    )
-                    .await
-                    {
-                        let pending_spell_started_at = Instant::now();
-                        complete_pending_player_spell_cast(
-                            &mut stream,
-                            SpellCastDeps {
-                                character_db_pool: &character_db_pool,
-                                world_db_pool: &world_db_pool,
-                                account_id: account.id,
-                                shared_world: SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
-                                },
-                                parties: runtime_state.parties.as_ref(),
-                            },
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
-                            pending_spell_started_at.elapsed(),
-                        );
-                    }
-                    if complete_pending_logout_if_due(
-                        &mut stream,
-                        LogoutDeps {
-                            character_db_pool: &character_db_pool,
-                            online_characters: &runtime_state.online_characters,
-                            maps: &runtime_state.maps,
-                            sessions: &runtime_state.sessions,
-                            account_id: account.id,
-                            session_id,
-                        },
-                        &mut header_crypto,
-                        &mut session,
-                        Instant::now(),
-                    )
-                    .await?
-                    {
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
-                            packet_branch_started_at.elapsed(),
+                        if pending_movement_due(pending_movement.as_ref(), packet_received_at) {
+                            if let Some(pending) = pending_movement.take() {
+                                process_authenticated_world_packet(
+                                    &mut stream,
+                                    &login_db_pool,
+                                    &character_db_pool,
+                                    &world_db_pool,
+                                    &runtime_state,
+                                    session_id,
+                                    account.id,
+                                    &auth.account,
+                                    &mut session,
+                                    &mut header_crypto,
+                                    pending.opcode,
+                                    &pending.body,
+                                    pending.received_at,
+                                    &mut next_world_tick_at,
+                                    world_tick_interval,
+                                )
+                                .await?;
+                            }
+                        }
+                        enqueue_pending_movement(
+                            &mut pending_movement,
+                            opcode,
+                            body,
+                            packet_received_at,
                         );
                         continue;
                     }
-                    let sync_started_at = Instant::now();
-                    sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
-                    crate::observability::record_world_session_loop_phase_duration(
-                        crate::observability::WorldSessionLoopPhase::SyncGameplayState,
-                        sync_started_at.elapsed(),
-                    );
-                    if Instant::now() >= next_world_tick_at {
-                        let combat_tick_started_at = Instant::now();
-                        handle_combat_tick(
-                            &mut stream,
-                            CombatTickDeps {
-                                character_db_pool: &character_db_pool,
-                                world_db_pool: &world_db_pool,
-                                shared_world: SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
-                                },
-                                parties: &runtime_state.parties,
-                                session_id,
-                            },
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::CombatTick,
-                            combat_tick_started_at.elapsed(),
-                        );
-                        let loot_timeouts_started_at = Instant::now();
-                        handle_loot_roll_timeouts(
-                            &mut stream,
-                            LootMutationDeps {
-                                character_db_pool: &character_db_pool,
-                                world_db_pool: &world_db_pool,
-                                shared_world: SharedWorldDeps {
-                                    object_mgr: runtime_state.object_mgr.as_ref(),
-                                    maps: &runtime_state.maps,
-                                    sessions: &runtime_state.sessions,
-                                },
-                                parties: &runtime_state.parties,
-                            },
-                            &mut session,
-                            &mut header_crypto,
-                        )
-                        .await?;
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::LootRollTimeouts,
-                            loot_timeouts_started_at.elapsed(),
-                        );
-                        let sync_started_at = Instant::now();
-                        sync_active_player_gameplay_state(&runtime_state.maps, &session).await;
-                        crate::observability::record_world_session_loop_phase_duration(
-                            crate::observability::WorldSessionLoopPhase::SyncGameplayState,
-                            sync_started_at.elapsed(),
-                        );
-                        advance_world_tick_deadline(
-                            &mut next_world_tick_at,
-                            Instant::now(),
-                            world_tick_interval,
-                        );
-                    }
-                    crate::observability::record_world_session_loop_phase_duration(
-                        crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
-                        packet_branch_started_at.elapsed(),
-                    );
+                    process_authenticated_world_packet(
+                        &mut stream,
+                        &login_db_pool,
+                        &character_db_pool,
+                        &world_db_pool,
+                        &runtime_state,
+                        session_id,
+                        account.id,
+                        &auth.account,
+                        &mut session,
+                        &mut header_crypto,
+                        opcode,
+                        &body,
+                        packet_received_at,
+                        &mut next_world_tick_at,
+                        world_tick_interval,
+                    )
+                    .await?;
                 }
                 Ok(Err(e)) => {
                     refresh_active_player_session_cache(&runtime_state.maps, &mut session).await;
@@ -421,6 +257,29 @@ pub(in crate::world) async fn handle_client(
                     break Ok(());
                 }
                 Err(_) => {
+                    if pending_movement_due(pending_movement.as_ref(), Instant::now()) {
+                        if let Some(pending) = pending_movement.take() {
+                            process_authenticated_world_packet(
+                                &mut stream,
+                                &login_db_pool,
+                                &character_db_pool,
+                                &world_db_pool,
+                                &runtime_state,
+                                session_id,
+                                account.id,
+                                &auth.account,
+                                &mut session,
+                                &mut header_crypto,
+                                pending.opcode,
+                                &pending.body,
+                                pending.received_at,
+                                &mut next_world_tick_at,
+                                world_tick_interval,
+                            )
+                            .await?;
+                            continue;
+                        }
+                    }
                     let timeout_branch_started_at = Instant::now();
                     let refresh_started_at = Instant::now();
                     let map_player_died =
@@ -615,6 +474,303 @@ pub(in crate::world) async fn handle_client(
     session_result
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn process_authenticated_world_packet(
+    stream: &mut WorldPacketSink,
+    login_db_pool: &MySqlPool,
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    runtime_state: &WorldRuntimeState,
+    session_id: SessionId,
+    account_id: u32,
+    account_name: &str,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    raw_opcode: u32,
+    body: &[u8],
+    packet_received_at: Instant,
+    next_world_tick_at: &mut Instant,
+    world_tick_interval: Duration,
+) -> anyhow::Result<()> {
+    let packet_branch_started_at = Instant::now();
+    let parsed_packet = packets::parse_world_client_packet(raw_opcode, body)?;
+    let opcode = parsed_packet.opcode();
+    let sync_after_dispatch = packet_requires_immediate_gameplay_sync(opcode);
+    let pre_dispatch_refresh = packet_requires_pre_dispatch_session_refresh(opcode);
+    let refresh_started_at = Instant::now();
+    let map_player_died = if pre_dispatch_refresh {
+        refresh_active_player_session_cache(&runtime_state.maps, session).await
+    } else {
+        false
+    };
+    crate::observability::record_world_session_loop_phase_duration(
+        crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
+        refresh_started_at.elapsed(),
+    );
+    let finalize_death_started_at = Instant::now();
+    if pre_dispatch_refresh {
+        finalize_map_owned_player_death_if_needed(
+            stream,
+            character_db_pool,
+            account_id,
+            SharedWorldDeps {
+                object_mgr: runtime_state.object_mgr.as_ref(),
+                maps: &runtime_state.maps,
+                sessions: &runtime_state.sessions,
+            },
+            session,
+            header_crypto,
+            map_player_died,
+        )
+        .await?;
+    }
+    crate::observability::record_world_session_loop_phase_duration(
+        crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
+        finalize_death_started_at.elapsed(),
+    );
+    if is_movement_opcode(opcode) {
+        debug!(
+            opcode = format_args!("0x{opcode:04X}"),
+            bytes = body.len(),
+            "Received movement packet after auth"
+        );
+    } else {
+        debug!(
+            opcode = format_args!("0x{opcode:04X}"),
+            bytes = body.len(),
+            "Received world packet after auth"
+        );
+    }
+
+    if packet_requires_pre_dispatch_pending_spell_completion(opcode, session)
+        && pending_player_spell_cast_is_due(runtime_state.maps.as_ref(), session, Instant::now())
+            .await
+    {
+        let pending_spell_started_at = Instant::now();
+        complete_pending_player_spell_cast(
+            stream,
+            SpellCastDeps {
+                character_db_pool,
+                world_db_pool,
+                account_id,
+                shared_world: SharedWorldDeps {
+                    object_mgr: runtime_state.object_mgr.as_ref(),
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                },
+                parties: runtime_state.parties.as_ref(),
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
+            pending_spell_started_at.elapsed(),
+        );
+    }
+
+    let mut dispatch_context = WorldPacketDispatchContext {
+        stream,
+        login_db_pool,
+        character_db_pool,
+        world_db_pool,
+        runtime_state,
+        session_id,
+        account_id,
+        account_name,
+        session,
+        header_crypto,
+    };
+    crate::observability::record_world_packet_dispatch_delay(opcode, packet_received_at.elapsed());
+    let packet_handler_started_at = Instant::now();
+    let dispatch_result = dispatch_world_packet(&mut dispatch_context, &parsed_packet, body).await;
+    crate::observability::record_world_session_loop_phase_duration(
+        crate::observability::WorldSessionLoopPhase::PacketDispatch,
+        packet_handler_started_at.elapsed(),
+    );
+    crate::observability::record_world_packet_handler_duration(
+        opcode,
+        packet_handler_started_at.elapsed(),
+    );
+    crate::observability::record_world_packet_service_time(opcode, packet_received_at.elapsed());
+    dispatch_result?;
+
+    if packet_requires_post_dispatch_pending_spell_completion(opcode, session)
+        && pending_player_spell_cast_is_due(runtime_state.maps.as_ref(), session, Instant::now())
+            .await
+    {
+        let pending_spell_started_at = Instant::now();
+        complete_pending_player_spell_cast(
+            stream,
+            SpellCastDeps {
+                character_db_pool,
+                world_db_pool,
+                account_id,
+                shared_world: SharedWorldDeps {
+                    object_mgr: runtime_state.object_mgr.as_ref(),
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                },
+                parties: runtime_state.parties.as_ref(),
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::PendingSpellCompletion,
+            pending_spell_started_at.elapsed(),
+        );
+    }
+    if complete_pending_logout_if_due(
+        stream,
+        LogoutDeps {
+            character_db_pool,
+            online_characters: &runtime_state.online_characters,
+            maps: &runtime_state.maps,
+            sessions: &runtime_state.sessions,
+            account_id,
+            session_id,
+        },
+        header_crypto,
+        session,
+        Instant::now(),
+    )
+    .await?
+    {
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
+            packet_branch_started_at.elapsed(),
+        );
+        return Ok(());
+    }
+    if sync_after_dispatch {
+        let sync_started_at = Instant::now();
+        sync_active_player_gameplay_state(&runtime_state.maps, session).await;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::SyncGameplayState,
+            sync_started_at.elapsed(),
+        );
+    }
+    if Instant::now() >= *next_world_tick_at {
+        let combat_tick_started_at = Instant::now();
+        handle_combat_tick(
+            stream,
+            CombatTickDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world: SharedWorldDeps {
+                    object_mgr: runtime_state.object_mgr.as_ref(),
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                },
+                parties: &runtime_state.parties,
+                session_id,
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::CombatTick,
+            combat_tick_started_at.elapsed(),
+        );
+        let loot_timeouts_started_at = Instant::now();
+        handle_loot_roll_timeouts(
+            stream,
+            LootMutationDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world: SharedWorldDeps {
+                    object_mgr: runtime_state.object_mgr.as_ref(),
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                },
+                parties: &runtime_state.parties,
+            },
+            session,
+            header_crypto,
+        )
+        .await?;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::LootRollTimeouts,
+            loot_timeouts_started_at.elapsed(),
+        );
+        let sync_started_at = Instant::now();
+        sync_active_player_gameplay_state(&runtime_state.maps, session).await;
+        crate::observability::record_world_session_loop_phase_duration(
+            crate::observability::WorldSessionLoopPhase::SyncGameplayState,
+            sync_started_at.elapsed(),
+        );
+        advance_world_tick_deadline(next_world_tick_at, Instant::now(), world_tick_interval);
+    }
+    crate::observability::record_world_session_loop_phase_duration(
+        crate::observability::WorldSessionLoopPhase::PacketBranchTotal,
+        packet_branch_started_at.elapsed(),
+    );
+    Ok(())
+}
+
+fn packet_requires_immediate_gameplay_sync(opcode: u32) -> bool {
+    !is_movement_opcode(opcode)
+}
+
+fn packet_requires_pre_dispatch_session_refresh(opcode: u32) -> bool {
+    !is_movement_opcode(opcode)
+}
+
+fn session_has_pending_player_spell_work(session: &WorldSessionState) -> bool {
+    !session.character.active_spells.is_empty()
+}
+
+fn packet_requires_pre_dispatch_pending_spell_completion(
+    opcode: u32,
+    session: &WorldSessionState,
+) -> bool {
+    !is_movement_opcode(opcode) || session_has_pending_player_spell_work(session)
+}
+
+fn packet_requires_post_dispatch_pending_spell_completion(
+    opcode: u32,
+    session: &WorldSessionState,
+) -> bool {
+    !is_movement_opcode(opcode) || session_has_pending_player_spell_work(session)
+}
+
+fn enqueue_pending_movement(
+    pending: &mut Option<QueuedMovementPacket>,
+    opcode: u32,
+    body: Vec<u8>,
+    received_at: Instant,
+) {
+    *pending = Some(QueuedMovementPacket {
+        opcode,
+        body,
+        received_at,
+        dispatch_due_at: received_at + WORLD_SESSION_MOVEMENT_COALESCE_WINDOW,
+    });
+}
+
+fn pending_movement_due(pending: Option<&QueuedMovementPacket>, now: Instant) -> bool {
+    pending.is_some_and(|pending| now >= pending.dispatch_due_at)
+}
+
+fn pending_movement_timeout_duration(
+    pending: Option<&QueuedMovementPacket>,
+    now: Instant,
+    base_timeout: Duration,
+) -> Duration {
+    pending
+        .map(|pending| {
+            pending
+                .dispatch_due_at
+                .saturating_duration_since(now)
+                .min(base_timeout)
+        })
+        .unwrap_or(base_timeout)
+}
+
 pub(in crate::world) async fn world_session_writer(
     session_id: SessionId,
     mut write_stream: OwnedWriteHalf,
@@ -683,14 +839,18 @@ pub(in crate::world) async fn session_loop_timeout_duration(
     now: Instant,
 ) -> Duration {
     let world_tick_timeout = world_tick_timeout_duration(next_world_tick_at, now);
-    let spell_timeout = next_pending_player_spell_cast_due_at(maps, session)
-        .await
-        .map(|due_at| {
-            due_at
-                .saturating_duration_since(now)
-                .min(world_tick_timeout)
-        })
-        .unwrap_or(world_tick_timeout);
+    let spell_timeout = if session_has_pending_player_spell_work(session) {
+        next_pending_player_spell_cast_due_at(maps, session)
+            .await
+            .map(|due_at| {
+                due_at
+                    .saturating_duration_since(now)
+                    .min(world_tick_timeout)
+            })
+            .unwrap_or(world_tick_timeout)
+    } else {
+        world_tick_timeout
+    };
     pending_logout_due_at(session)
         .map(|due_at| due_at.saturating_duration_since(now).min(spell_timeout))
         .unwrap_or(spell_timeout)
@@ -795,4 +955,116 @@ pub(in crate::world) async fn sync_active_player_gameplay_state(
     };
     maps.sync_player_gameplay_state(character.position.map_id, character.guid, session)
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_pending_movement_replaces_older_packet() {
+        let received_at = Instant::now();
+        let mut pending = None;
+        enqueue_pending_movement(&mut pending, MSG_MOVE_HEARTBEAT, vec![1, 2, 3], received_at);
+        enqueue_pending_movement(
+            &mut pending,
+            MSG_MOVE_START_FORWARD,
+            vec![9, 8, 7],
+            received_at + Duration::from_millis(1),
+        );
+
+        let pending = pending.expect("pending movement");
+        assert_eq!(pending.opcode, MSG_MOVE_START_FORWARD);
+        assert_eq!(pending.body, vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn pending_movement_timeout_uses_coalesce_deadline() {
+        let received_at = Instant::now();
+        let pending = QueuedMovementPacket {
+            opcode: MSG_MOVE_HEARTBEAT,
+            body: Vec::new(),
+            received_at,
+            dispatch_due_at: received_at + Duration::from_millis(10),
+        };
+
+        let timeout = pending_movement_timeout_duration(
+            Some(&pending),
+            received_at + Duration::from_millis(4),
+            Duration::from_millis(50),
+        );
+
+        assert!(timeout <= Duration::from_millis(6));
+    }
+
+    #[test]
+    fn pending_movement_due_only_after_deadline() {
+        let received_at = Instant::now();
+        let pending = QueuedMovementPacket {
+            opcode: MSG_MOVE_HEARTBEAT,
+            body: Vec::new(),
+            received_at,
+            dispatch_due_at: received_at + Duration::from_millis(10),
+        };
+
+        assert!(!pending_movement_due(
+            Some(&pending),
+            received_at + Duration::from_millis(9)
+        ));
+        assert!(pending_movement_due(
+            Some(&pending),
+            received_at + Duration::from_millis(10)
+        ));
+    }
+
+    #[test]
+    fn movement_packets_skip_immediate_gameplay_sync() {
+        assert!(!packet_requires_immediate_gameplay_sync(MSG_MOVE_HEARTBEAT));
+        assert!(!packet_requires_immediate_gameplay_sync(
+            MSG_MOVE_START_FORWARD
+        ));
+        assert!(packet_requires_immediate_gameplay_sync(CMSG_CAST_SPELL));
+    }
+
+    #[test]
+    fn movement_packets_skip_pre_dispatch_session_refresh() {
+        assert!(!packet_requires_pre_dispatch_session_refresh(
+            MSG_MOVE_HEARTBEAT
+        ));
+        assert!(!packet_requires_pre_dispatch_session_refresh(
+            MSG_MOVE_START_FORWARD
+        ));
+        assert!(packet_requires_pre_dispatch_session_refresh(
+            CMSG_CAST_SPELL
+        ));
+    }
+
+    #[test]
+    fn movement_packets_skip_pending_spell_checks_without_active_spells() {
+        let session = WorldSessionState::default();
+        assert!(!session_has_pending_player_spell_work(&session));
+        assert!(!packet_requires_pre_dispatch_pending_spell_completion(
+            MSG_MOVE_HEARTBEAT,
+            &session,
+        ));
+        assert!(!packet_requires_post_dispatch_pending_spell_completion(
+            MSG_MOVE_HEARTBEAT,
+            &session,
+        ));
+    }
+
+    #[test]
+    fn active_spells_keep_pending_spell_checks_enabled_for_movement() {
+        let mut session = WorldSessionState::default();
+        session.character.active_spells.insert(133);
+        assert!(session_has_pending_player_spell_work(&session));
+        assert!(packet_requires_pre_dispatch_pending_spell_completion(
+            MSG_MOVE_HEARTBEAT,
+            &session,
+        ));
+        assert!(packet_requires_post_dispatch_pending_spell_completion(
+            MSG_MOVE_HEARTBEAT,
+            &session,
+        ));
+    }
 }

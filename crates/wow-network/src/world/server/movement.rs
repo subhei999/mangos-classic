@@ -1,6 +1,9 @@
 use super::*;
 // CMaNGOS reference: src/game/Handlers/MovementHandler.cpp movement flow.
 
+pub(in crate::world) const PLAYER_POSITION_STATUS_UPDATE_INTERVAL: Duration =
+    Duration::from_millis(100);
+
 pub(in crate::world) fn current_movement_server_time_millis() -> u32 {
     static MOVEMENT_SERVER_TIME_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     MOVEMENT_SERVER_TIME_START
@@ -227,17 +230,6 @@ pub(in crate::world) async fn handle_movement(
                         header_crypto,
                     )
                     .await?;
-                    try_start_db_creature_aggro(
-                        stream,
-                        SharedWorldDeps {
-                            object_mgr: deps.object_mgr,
-                            maps: deps.maps,
-                            sessions: deps.sessions,
-                        },
-                        session,
-                        header_crypto,
-                    )
-                    .await?;
                 }
             } else {
                 debug!(
@@ -254,7 +246,7 @@ pub(in crate::world) async fn handle_movement(
             "Received movement packet before character login"
         );
     }
-    if !corpse_movement {
+    if !corpse_movement && player_position_status_update_due(session, Instant::now()) {
         handle_player_area_discovery(stream, &deps, session, header_crypto).await?;
     }
     if map_owned_death_detected {
@@ -268,6 +260,22 @@ pub(in crate::world) async fn handle_movement(
         }
     }
     Ok(())
+}
+
+pub(in crate::world) fn player_position_status_update_due(
+    session: &mut WorldSessionState,
+    now: Instant,
+) -> bool {
+    if session
+        .movement
+        .next_position_status_update_at
+        .is_some_and(|due_at| now < due_at)
+    {
+        return false;
+    }
+    session.movement.next_position_status_update_at =
+        Some(now + PLAYER_POSITION_STATUS_UPDATE_INTERVAL);
+    true
 }
 
 async fn handle_player_area_discovery(
@@ -448,4 +456,25 @@ pub(in crate::world) struct MovementDeps<'a> {
     pub(in crate::world) object_mgr: &'a ObjectMgr,
     pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
     pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn player_position_status_update_is_throttled() {
+        let now = Instant::now();
+        let mut session = WorldSessionState::default();
+
+        assert!(player_position_status_update_due(&mut session, now));
+        assert!(!player_position_status_update_due(
+            &mut session,
+            now + Duration::from_millis(99)
+        ));
+        assert!(player_position_status_update_due(
+            &mut session,
+            now + Duration::from_millis(100)
+        ));
+    }
 }

@@ -7,6 +7,7 @@ param(
     [int]$LoginBootstrapTimeoutSeconds = 15,
     [int]$LoginReadyTimeoutSeconds = 30,
     [int]$MoveIntervalMs = 500,
+    [int]$MovePhaseJitterMs = 0,
     [int]$LoginStaggerMs = 25,
     [int]$MaxAttempts = 3,
     [double]$CenterX = -8949.0,
@@ -106,6 +107,7 @@ $cargoArgs = @(
     "--login-bootstrap-timeout-secs", $LoginBootstrapTimeoutSeconds,
     "--login-ready-timeout-secs", $LoginReadyTimeoutSeconds,
     "--move-interval-ms", $MoveIntervalMs,
+    "--move-phase-jitter-ms", $MovePhaseJitterMs,
     "--login-stagger-ms", $LoginStaggerMs,
     "--max-attempts", $MaxAttempts,
     "--auth-addr", "127.0.0.1:$AuthPort",
@@ -122,5 +124,5 @@ if ($SeedOnly) {
     $cargoArgs += "--seed-only"
 }
 
-Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms stagger=${LoginStaggerMs}ms"
+Write-Host "Launching thin-client load test: clients=$ClientCount hold=${HoldSeconds}s move_interval=${MoveIntervalMs}ms phase_jitter=${MovePhaseJitterMs}ms stagger=${LoginStaggerMs}ms"
 & cargo @cargoArgs

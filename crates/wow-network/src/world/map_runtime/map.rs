@@ -370,12 +370,6 @@ pub(in crate::world) struct ScheduledDbCreatureLifecycle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(in crate::world) struct ScheduledDbCreatureOocEventAi {
-    pub(in crate::world) due_at: Instant,
-    pub(in crate::world) guid: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::world) struct ScheduledDbCreatureCombat {
     pub(in crate::world) due_at: Instant,
     pub(in crate::world) guid: u64,
@@ -403,6 +397,13 @@ pub(in crate::world) enum ReadyDbCreatureOocEventAiAction {
 #[derive(Debug, Default)]
 pub(in crate::world) struct DbCreatureOocEventAiTick {
     pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct PlayerVisibilityRefreshTick {
+    pub(in crate::world) packets: Vec<(SessionId, OutboundWorldPacket)>,
+    pub(in crate::world) refreshed_players: u32,
+    pub(in crate::world) budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -441,6 +442,9 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) loaded_gameobject_grids: HashSet<GridCoord>,
     pub(in crate::world) loaded_player_corpse_grids: HashSet<GridCoord>,
     pub(in crate::world) players: HashMap<u32, PlayerRuntime>,
+    pub(in crate::world) pending_player_visibility_refreshes: BTreeSet<u32>,
+    pub(in crate::world) pending_player_visibility_refresh_old_positions:
+        HashMap<u32, WorldPosition>,
     pub(in crate::world) creatures: HashMap<u64, DbCreatureRuntime>,
     pub(in crate::world) creature_looting_by_character: HashMap<u32, u64>,
     pub(in crate::world) gameobjects: HashMap<u64, DbGameObjectRuntime>,
@@ -478,9 +482,6 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) db_creature_respawns: BinaryHeap<Reverse<ScheduledDbCreatureLifecycle>>,
     pub(in crate::world) db_creature_ooc_event_ai_capabilities:
         HashMap<u32, DbCreatureOocEventAiCapability>,
-    pub(in crate::world) db_creature_ooc_event_ai_due_at: HashMap<u64, Instant>,
-    pub(in crate::world) db_creature_ooc_event_ai_due:
-        BinaryHeap<Reverse<ScheduledDbCreatureOocEventAi>>,
     pub(in crate::world) active_player_environment_guids: HashSet<u32>,
     pub(in crate::world) pending_db_scripts: BinaryHeap<Reverse<ScheduledPendingDbScriptAction>>,
     pub(in crate::world) next_pending_db_script_sequence: u64,
@@ -921,6 +922,8 @@ impl MapRuntime {
             loaded_gameobject_grids: HashSet::new(),
             loaded_player_corpse_grids: HashSet::new(),
             players: HashMap::new(),
+            pending_player_visibility_refreshes: BTreeSet::new(),
+            pending_player_visibility_refresh_old_positions: HashMap::new(),
             creatures: HashMap::new(),
             creature_looting_by_character: HashMap::new(),
             gameobjects: HashMap::new(),
@@ -953,8 +956,6 @@ impl MapRuntime {
             db_creature_respawn_due_at: HashMap::new(),
             db_creature_respawns: BinaryHeap::new(),
             db_creature_ooc_event_ai_capabilities: HashMap::new(),
-            db_creature_ooc_event_ai_due_at: HashMap::new(),
-            db_creature_ooc_event_ai_due: BinaryHeap::new(),
             active_player_environment_guids: HashSet::new(),
             pending_db_scripts: BinaryHeap::new(),
             next_pending_db_script_sequence: 0,

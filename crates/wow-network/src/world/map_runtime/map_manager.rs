@@ -2921,7 +2921,8 @@ impl MapRuntimeManager {
             return Ok(false);
         }
 
-        if map.lock().await.db_creature_should_evade(attacker, now) {
+        let should_evade = { map.lock().await.db_creature_should_evade(attacker, now) };
+        if should_evade {
             let mut map_guard = map.lock().await;
             let Some(creature) = map_guard.prepare_db_creature_evade(attacker) else {
                 return Ok(false);
@@ -2992,11 +2993,12 @@ impl MapRuntimeManager {
             return Ok(false);
         }
 
-        if let Some(due_at) = map
-            .lock()
-            .await
-            .active_db_creature_spell_cast_due_at(attacker)
-        {
+        let spell_cast_due_at = {
+            map.lock()
+                .await
+                .active_db_creature_spell_cast_due_at(attacker)
+        };
+        if let Some(due_at) = spell_cast_due_at {
             if now < due_at {
                 return Ok(false);
             }
@@ -3748,12 +3750,29 @@ impl MapRuntimeManager {
         Ok(aggregate)
     }
 
+    pub(in crate::world) async fn advance_all_player_visibility_refreshes(
+        &self,
+    ) -> anyhow::Result<PlayerVisibilityRefreshTick> {
+        let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
+        let mut aggregate = PlayerVisibilityRefreshTick::default();
+        for map in maps {
+            let tick = map.lock().await.advance_player_visibility_refresh_tick()?;
+            aggregate.packets.extend(tick.packets);
+            aggregate.refreshed_players = aggregate
+                .refreshed_players
+                .saturating_add(tick.refreshed_players);
+            aggregate.budget_exhausted |= tick.budget_exhausted;
+        }
+        Ok(aggregate)
+    }
+
     pub(in crate::world) async fn advance_all_db_creature_ooc_event_ai_spell_ticks(
         &self,
         world_db_pool: &MySqlPool,
         object_mgr: &ObjectMgr,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
+        diff: Duration,
     ) -> anyhow::Result<DbCreatureOocEventAiTick> {
         let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut aggregate = DbCreatureOocEventAiTick::default();
@@ -3765,6 +3784,7 @@ impl MapRuntimeManager {
                     object_mgr,
                     navigation,
                     now,
+                    diff,
                 )
                 .await?,
             );
@@ -3779,140 +3799,127 @@ impl MapRuntimeManager {
         object_mgr: &ObjectMgr,
         navigation: &DbCreatureNavigationGuardrail,
         now: Instant,
+        diff: Duration,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
         let mut packets = Vec::new();
-        loop {
-            let due = {
-                let mut map = map.lock().await;
-                let Some(guid) = map.pop_ready_db_creature_ooc_event_ai_guid(now) else {
-                    break;
+        let candidates = { map.lock().await.db_creature_ooc_event_ai_candidate_guids() };
+        if candidates.is_empty() {
+            return Ok(packets);
+        }
+
+        let unknown_entries = {
+            map.lock()
+                .await
+                .db_creature_ooc_event_ai_unknown_entries(&candidates)
+        };
+        if !unknown_entries.is_empty() {
+            let mut classified = Vec::with_capacity(unknown_entries.len());
+            for entry in unknown_entries {
+                let scripts = object_mgr.creature_ai_scripts(world_db_pool, entry).await?;
+                let scripts = scripts
+                    .into_iter()
+                    .filter(|script| {
+                        matches!(
+                            script.event_type,
+                            EVENT_AI_EVENT_TIMER_OOC | EVENT_AI_EVENT_SPAWNED
+                        ) && db_creature_event_ai_actions(script).iter().any(|action| {
+                            action.action_type == EVENT_AI_ACTION_CAST && action.param1 > 0
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let capability = if scripts.is_empty() {
+                    DbCreatureOocEventAiCapability::None
+                } else {
+                    DbCreatureOocEventAiCapability::OocCast(Arc::from(scripts))
                 };
-                let capability = map.creature_ooc_event_ai_capability(guid);
-                let entry = map
-                    .creatures
-                    .get(&guid)
-                    .map(|creature| creature.spawn.entry);
-                entry
-                    .zip(capability)
-                    .map(|(entry, capability)| (guid, entry, capability))
-            };
-            let Some((guid, entry, capability)) = due else {
+                classified.push((entry, capability));
+            }
+
+            let mut map_guard = map.lock().await;
+            for (entry, capability) in classified {
+                map_guard.set_db_creature_ooc_event_ai_capability(entry, capability);
+            }
+        }
+
+        for (guid, _) in candidates {
+            let action = map
+                .lock()
+                .await
+                .prepare_ready_db_creature_ooc_event_ai_action(guid, now, diff);
+            let Some(action) = action else {
                 continue;
             };
-
-            match capability {
-                DbCreatureOocEventAiCapability::Unknown => {
-                    let scripts = object_mgr.creature_ai_scripts(world_db_pool, entry).await?;
-                    let scripts = scripts
-                        .into_iter()
-                        .filter(|script| {
-                            matches!(
-                                script.event_type,
-                                EVENT_AI_EVENT_TIMER_OOC | EVENT_AI_EVENT_SPAWNED
-                            ) && db_creature_event_ai_actions(script).iter().any(|action| {
-                                action.action_type == EVENT_AI_ACTION_CAST && action.param1 > 0
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    let capability = if scripts.is_empty() {
-                        DbCreatureOocEventAiCapability::None
-                    } else {
-                        DbCreatureOocEventAiCapability::OocCast(Arc::from(scripts))
-                    };
-                    map.lock()
-                        .await
-                        .set_db_creature_ooc_event_ai_capability(entry, capability, now);
-                }
-                DbCreatureOocEventAiCapability::None => {}
-                DbCreatureOocEventAiCapability::OocCast(_) => {
-                    let action = map
-                        .lock()
-                        .await
-                        .prepare_ready_db_creature_ooc_event_ai_action(guid, now);
-                    let Some(action) = action else {
+            match action {
+                ReadyDbCreatureOocEventAiAction::Complete { attacker, victim } => {
+                    let mut map_guard = map.lock().await;
+                    let Some(event) = map_guard
+                        .complete_ready_db_creature_spell_cast_with_navigation(
+                            attacker, victim, now, navigation,
+                        )?
+                    else {
                         continue;
                     };
-                    match action {
-                        ReadyDbCreatureOocEventAiAction::Complete { attacker, victim } => {
-                            let mut map = map.lock().await;
-                            let Some(event) = map
-                                .complete_ready_db_creature_spell_cast_with_navigation(
-                                    attacker, victim, now, navigation,
-                                )?
-                            else {
-                                map.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                                continue;
-                            };
-                            packets.extend(
-                                map.materialize_db_creature_completed_spell_cast_packets(
-                                    attacker, victim, event,
-                                ),
-                            );
-                        }
-                        ReadyDbCreatureOocEventAiAction::Start { attacker, ready } => {
-                            let Some(template) = object_mgr
-                                .spell_template(world_db_pool, ready.spell_id)
-                                .await?
-                            else {
-                                map.lock()
-                                    .await
-                                    .sync_db_creature_ooc_event_ai_tracking(guid, now);
-                                continue;
-                            };
-                            let spell_range = self.spell_range(template.range_index);
-                            let spell_duration = self.spell_duration(template.duration_index);
-                            let spell_cast_time = self.spell_cast_time(template.casting_time_index);
-                            let spell_info = SpellInfo::from_template(&template);
-                            let mut map = map.lock().await;
-                            if ready.target != attacker
-                                && map
-                                    .validate_db_creature_spell_against_target(
-                                        attacker,
-                                        ready.target,
-                                        navigation,
-                                        spell_range,
-                                        spell_info.requires_behind_target(),
-                                    )
-                                    .check
-                                    != DbCreatureSpellTargetCheck::Clear
-                            {
-                                map.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                                continue;
-                            }
-                            let Some(cast) = map.prepare_db_creature_spell_cast_from_template(
+                    packets.extend(
+                        map_guard.materialize_db_creature_completed_spell_cast_packets(
+                            attacker, victim, event,
+                        ),
+                    );
+                }
+                ReadyDbCreatureOocEventAiAction::Start { attacker, ready } => {
+                    let Some(template) = object_mgr
+                        .spell_template(world_db_pool, ready.spell_id)
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let spell_range = self.spell_range(template.range_index);
+                    let spell_duration = self.spell_duration(template.duration_index);
+                    let spell_cast_time = self.spell_cast_time(template.casting_time_index);
+                    let spell_info = SpellInfo::from_template(&template);
+                    let mut map_guard = map.lock().await;
+                    if ready.target != attacker
+                        && map_guard
+                            .validate_db_creature_spell_against_target(
                                 attacker,
                                 ready.target,
-                                &template,
-                                spell_duration,
+                                navigation,
                                 spell_range,
-                                spell_cast_time,
-                                now,
-                            ) else {
-                                map.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                                continue;
-                            };
-                            let cast_time_millis = cast.cast_time_millis;
-                            let target = cast.target;
-                            let Some(start_packets) = map.start_db_creature_spell_cast(cast)?
-                            else {
-                                map.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                                continue;
-                            };
-                            map.apply_db_creature_event_ai_spell_cooldown(attacker, &ready, now);
-                            packets.extend(start_packets);
-                            if cast_time_millis == 0 {
-                                if let Some(event) = map
-                                    .complete_ready_db_creature_spell_cast_with_navigation(
-                                        attacker, target, now, navigation,
-                                    )?
-                                {
-                                    packets.extend(
-                                        map.materialize_db_creature_completed_spell_cast_packets(
-                                            attacker, target, event,
-                                        ),
-                                    );
-                                }
-                            }
+                                spell_info.requires_behind_target(),
+                            )
+                            .check
+                            != DbCreatureSpellTargetCheck::Clear
+                    {
+                        continue;
+                    }
+                    let Some(cast) = map_guard.prepare_db_creature_spell_cast_from_template(
+                        attacker,
+                        ready.target,
+                        &template,
+                        spell_duration,
+                        spell_range,
+                        spell_cast_time,
+                        now,
+                    ) else {
+                        continue;
+                    };
+                    let cast_time_millis = cast.cast_time_millis;
+                    let target = cast.target;
+                    let Some(start_packets) = map_guard.start_db_creature_spell_cast(cast)? else {
+                        continue;
+                    };
+                    map_guard.apply_db_creature_event_ai_spell_cooldown(attacker, &ready, now);
+                    packets.extend(start_packets);
+                    if cast_time_millis == 0 {
+                        if let Some(event) = map_guard
+                            .complete_ready_db_creature_spell_cast_with_navigation(
+                                attacker, target, now, navigation,
+                            )?
+                        {
+                            packets.extend(
+                                map_guard.materialize_db_creature_completed_spell_cast_packets(
+                                    attacker, target, event,
+                                ),
+                            );
                         }
                     }
                 }
@@ -3944,7 +3951,8 @@ impl MapRuntimeManager {
         let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut aggregate = PlayerbotMovementTick::default();
         for map in maps {
-            if !map.lock().await.has_playerbots() {
+            let has_playerbots = { map.lock().await.has_playerbots() };
+            if !has_playerbots {
                 continue;
             }
             let tick = map
@@ -4019,7 +4027,8 @@ impl MapRuntimeManager {
         let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut aggregate = PlayerbotCombatTick::default();
         for map in maps {
-            if !map.lock().await.has_playerbots() {
+            let has_playerbots = { map.lock().await.has_playerbots() };
+            if !has_playerbots {
                 continue;
             }
             let tick = map.lock().await.advance_playerbot_combat_tick(

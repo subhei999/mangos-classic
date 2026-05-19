@@ -3,6 +3,8 @@ use super::*;
 // Shared DB-creature combat claim and player-damage authority.
 pub(in crate::world) const DB_CREATURE_DEFAULT_PURSUIT_MILLIS: u32 = 15_000;
 pub(in crate::world) const DB_CREATURE_SPELL_LIST_UPDATE_MILLIS: u64 = 1_200;
+pub(in crate::world) const DB_CREATURE_EVENT_AI_UPDATE_INTERVAL: Duration =
+    Duration::from_millis(500);
 pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_SUPPORT_ACTION: u32 = 0x1;
 pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_RANGED_ACTION: u32 = 0x2;
 pub(in crate::world) const CREATURE_SPELL_LIST_FLAG_CATEGORY_COOLDOWN: u32 = 0x4;
@@ -690,138 +692,35 @@ impl MapRuntime {
     }
 
     pub(in crate::world) fn clear_db_creature_ooc_event_ai_tracking(&mut self, guid: u64) {
-        self.db_creature_ooc_event_ai_due_at.remove(&guid);
+        if let Some(creature) = self.creatures.get_mut(&guid) {
+            creature.event_ai_update_accum = Duration::ZERO;
+        }
     }
 
     pub(in crate::world) fn set_db_creature_ooc_event_ai_capability(
         &mut self,
         creature_entry: u32,
         capability: DbCreatureOocEventAiCapability,
-        now: Instant,
     ) {
         self.db_creature_ooc_event_ai_capabilities
             .insert(creature_entry, capability);
-        let affected = self
-            .creatures
-            .values()
-            .filter(|creature| creature.spawn.entry == creature_entry)
-            .map(|creature| creature.guid().raw())
-            .collect::<Vec<_>>();
-        for guid in affected {
-            self.sync_db_creature_ooc_event_ai_tracking(guid, now);
-        }
     }
 
     pub(in crate::world) fn sync_db_creature_ooc_event_ai_tracking(
         &mut self,
         guid: u64,
-        now: Instant,
+        _now: Instant,
     ) {
-        self.clear_db_creature_ooc_event_ai_tracking(guid);
-        let Some(creature) = self.creatures.get(&guid) else {
+        let in_combat = self.active_creature_combats.contains_key(&guid);
+        let Some(creature) = self.creatures.get_mut(&guid) else {
             return;
         };
-        if !creature.is_alive()
-            || creature.is_evading_home()
-            || creature.is_fleeing()
-            || self.active_creature_combats.contains_key(&guid)
+        if !creature.is_alive() || creature.is_evading_home() || creature.is_fleeing() || in_combat
         {
+            creature.event_ai_update_accum = Duration::ZERO;
             return;
         }
-        let creature_entry = creature.spawn.entry;
-
-        let due_at = if let Some(cast) = self.active_creature_spell_casts.get(&guid) {
-            Some(cast.due_at)
-        } else {
-            match self
-                .db_creature_ooc_event_ai_capabilities
-                .get(&creature_entry)
-                .unwrap_or(&DbCreatureOocEventAiCapability::Unknown)
-            {
-                DbCreatureOocEventAiCapability::Unknown => Some(now),
-                DbCreatureOocEventAiCapability::None => None,
-                DbCreatureOocEventAiCapability::OocCast(scripts) => {
-                    if scripts.iter().any(|script| {
-                        script.event_type == EVENT_AI_EVENT_SPAWNED
-                            && db_creature_event_ai_common_ready(creature, script)
-                            && db_creature_event_ai_spawned_condition(self, creature, script)
-                    }) {
-                        Some(now)
-                    } else {
-                        let Some(creature) = self.creatures.get_mut(&guid) else {
-                            return;
-                        };
-                        let mut next_due_at = None;
-                        for script in scripts.iter() {
-                            if script.event_type != EVENT_AI_EVENT_TIMER_OOC
-                                || !db_creature_event_ai_common_ready(creature, script)
-                            {
-                                continue;
-                            }
-                            let due_at =
-                                match creature.event_ai_cooldowns_until.get(&script.id).copied() {
-                                    Some(due_at) => due_at,
-                                    None => {
-                                        let initial_millis = random_millis_between_i32(
-                                            script.event_param1,
-                                            script.event_param2,
-                                        );
-                                        if initial_millis == 0 {
-                                            now
-                                        } else {
-                                            let due_at =
-                                                now + Duration::from_millis(initial_millis as u64);
-                                            creature
-                                                .event_ai_cooldowns_until
-                                                .insert(script.id, due_at);
-                                            due_at
-                                        }
-                                    }
-                                };
-                            next_due_at = Some(
-                                next_due_at.map_or(due_at, |current: Instant| current.min(due_at)),
-                            );
-                        }
-                        next_due_at
-                    }
-                }
-            }
-        };
-
-        let Some(due_at) = due_at else {
-            return;
-        };
-        self.db_creature_ooc_event_ai_due_at.insert(guid, due_at);
-        self.db_creature_ooc_event_ai_due
-            .push(Reverse(ScheduledDbCreatureOocEventAi { due_at, guid }));
-    }
-
-    pub(in crate::world) fn pop_ready_db_creature_ooc_event_ai_guid(
-        &mut self,
-        now: Instant,
-    ) -> Option<u64> {
-        while self
-            .db_creature_ooc_event_ai_due
-            .peek()
-            .is_some_and(|entry| entry.0.due_at <= now)
-        {
-            let Some(Reverse(entry)) = self.db_creature_ooc_event_ai_due.pop() else {
-                break;
-            };
-            if self
-                .db_creature_ooc_event_ai_due_at
-                .get(&entry.guid)
-                .copied()
-                != Some(entry.due_at)
-            {
-                continue;
-            }
-            self.db_creature_ooc_event_ai_due_at.remove(&entry.guid);
-            if self.creatures.contains_key(&entry.guid) {
-                return Some(entry.guid);
-            }
-        }
-        None
+        creature.event_ai_update_accum = DB_CREATURE_EVENT_AI_UPDATE_INTERVAL;
     }
 
     pub(in crate::world) fn creature_ooc_event_ai_capability(
@@ -837,31 +736,68 @@ impl MapRuntime {
         )
     }
 
+    pub(in crate::world) fn db_creature_ooc_event_ai_candidate_guids(&self) -> Vec<(u64, u32)> {
+        self.db_creatures_in_player_interest_radius()
+            .into_iter()
+            .map(|(guid, creature)| (guid, creature.spawn.entry))
+            .collect()
+    }
+
+    pub(in crate::world) fn db_creature_ooc_event_ai_unknown_entries(
+        &self,
+        candidates: &[(u64, u32)],
+    ) -> BTreeSet<u32> {
+        candidates
+            .iter()
+            .filter_map(|(_, entry)| {
+                self.db_creature_ooc_event_ai_capabilities
+                    .get(entry)
+                    .is_none_or(|capability| {
+                        matches!(capability, DbCreatureOocEventAiCapability::Unknown)
+                    })
+                    .then_some(*entry)
+            })
+            .collect()
+    }
+
     pub(in crate::world) fn prepare_ready_db_creature_ooc_event_ai_action(
         &mut self,
         guid: u64,
         now: Instant,
+        diff: Duration,
     ) -> Option<ReadyDbCreatureOocEventAiAction> {
         let attacker = ObjectGuid::from_raw(guid);
-        match self.creature_ooc_event_ai_capability(guid)? {
-            DbCreatureOocEventAiCapability::Unknown => {
-                self.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                None
+        let capability = self.creature_ooc_event_ai_capability(guid)?;
+        let current_cast = self.active_creature_spell_casts.get(&guid).cloned();
+        let current_victim = self
+            .active_creature_combats
+            .get(&guid)
+            .map(|combat| combat.victim);
+        let creature = self.creatures.get_mut(&guid)?;
+        if !creature.is_alive()
+            || creature.is_evading_home()
+            || creature.is_fleeing()
+            || current_victim.is_some()
+        {
+            creature.event_ai_update_accum = Duration::ZERO;
+            return None;
+        }
+        if let Some(cast) = current_cast {
+            if now < cast.due_at {
+                return None;
             }
+            let victim = cast.target;
+            return Some(ReadyDbCreatureOocEventAiAction::Complete { attacker, victim });
+        }
+        creature.event_ai_update_accum = creature.event_ai_update_accum.saturating_add(diff);
+        if creature.event_ai_update_accum < DB_CREATURE_EVENT_AI_UPDATE_INTERVAL {
+            return None;
+        }
+        creature.event_ai_update_accum = Duration::ZERO;
+        match capability {
+            DbCreatureOocEventAiCapability::Unknown => None,
             DbCreatureOocEventAiCapability::None => None,
             DbCreatureOocEventAiCapability::OocCast(scripts) => {
-                if let Some(cast) = self.active_creature_spell_casts.get(&guid) {
-                    if now < cast.due_at {
-                        self.sync_db_creature_ooc_event_ai_tracking(guid, now);
-                        return None;
-                    }
-                    let victim = self
-                        .active_creature_combats
-                        .get(&guid)
-                        .map(|combat| combat.victim)
-                        .unwrap_or(cast.target);
-                    return Some(ReadyDbCreatureOocEventAiAction::Complete { attacker, victim });
-                }
                 let ready =
                     self.ready_db_creature_event_ai_ooc_spell_cast(attacker, &scripts, now)?;
                 Some(ReadyDbCreatureOocEventAiAction::Start { attacker, ready })

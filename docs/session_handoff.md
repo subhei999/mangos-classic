@@ -2,188 +2,190 @@
 
 Short operating brief for the next Rust migration session. Durable roadmap
 history belongs in `docs/rust_migration_plan.md`, gate status in
-`docs/playable_gate_board.md`, and detailed benchmark history in
+`docs/playable_gate_board.md`, and benchmark chronology in
 `docs/performance_movement_benchmark.md`.
 
 ## Current Branch And State
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- The worktree is intentionally dirty with local perf investigation changes in:
-  - thin-client harness / restart script
-  - idle-motion scheduling and metrics
-  - native mmap timing instrumentation
-  - related tests and benchmark docs
-- Playerbots remain disabled for normal local testing in
-  `config/worldserver.local.toml`.
+- Current state is intentionally dirty with uncommitted movement-path work plus
+  earlier combat/OOC perf investigation changes.
+- Local playerbots remain disabled in `config/worldserver.local.toml`.
+- OOC EventAI is temporarily disabled again in
+  `crates/wow-network/src/world/server/map_update.rs` for testing isolation.
 
 ## Current Goal
 
-Use the thin-client benchmark as the baseline for session-loop starvation work.
+Reduce thin-client movement-flood lag by making authenticated movement packet
+handling more CMaNGOS-shaped.
 
-Immediate next target:
-- continue moving shared combat/world maintenance off the per-session combat
-  tick and into map-owned ticking
-- measure whether the remaining bad `combat_tick` time is concentrated in:
-  - active DB-creature attack processing
-  - disconnected-player expiry
-- keep packet-latency/session-loop observability as the truth source while
-  doing these ownership moves
+The important live observation is:
+
+- even with OOC EventAI disabled, `1000` scattered clients moving every `50 ms`
+  still cause unacceptable lag
+- slowing the harness movement interval dramatically improves feel
+
+That points at the movement packet path itself, especially
+`MapRuntime::update_player_position(...)`, not creature idle motion, as the
+current first-order problem.
 
 ## What Is Proven
 
-- `player_environment` used to be a major bottleneck and is now much cheaper.
-  The movement-owned cached environment path is a real win and should stay.
-- Sparse `1000` proved packet fanout is not the only scaling problem.
-- No-playerbot benchmark tax is removed.
-- Idle-motion breadth was reduced from broad rediscovery scans to tracked
-  active/due sets and due heaps.
-- Native mmap timing is now instrumented and shows the Detour query itself is
-  cheap:
-  - query alloc/init, `findPath`, and `findSmoothPath` are all tiny per call
-  - the remaining cost is above the FFI layer, not Rust->C++ overhead
-- Pending DB movement scripts are not the hidden idle-motion bottleneck:
-  - `motion_script_schedule_time` is about `0.001-0.002 ms`
-  - `pending_script_execution_time` is about `0.014-0.021 ms`
-- Replacing whole idle-motion start-schedule invalidation on player movement
-  with incremental nearby-creature resync was a real win:
-  - `start_schedule_rebuild_time` dropped from roughly `9-13 ms` to under
-    `1 ms`
-  - matched sparse `1000` full-load samples also lowered `idle_motion`
-    materially
-- Remaining dominant idle-motion start cost is still
-  `motion_start_path_build_time`, roughly `14-21 ms` in the live sparse `1000`
-  window
-- The old map-phase view had real blind spots:
-  - `dynamic_objects`, `player_channels`, `db_creature_auras`, and
-    `player_death_presentation` were still being collapsed into the wrong phase
-    buckets
-  - `refresh_static_game_event_spawns` and `record_observability_snapshots`
-    were included in tick time but not labeled as their own phases
-  - authenticated world packet handler latency was not recorded at all, so
-    real-player spell/action stalls could look much worse than the map tick
-    numbers implied
-- The next layer of packet-latency observability is now wired:
-  - `wow_world_packet_dispatch_delay_*{opcode="0x...."}`
-  - `wow_world_packet_handler_duration_*{opcode="0x...."}`
-  - `wow_world_packet_service_time_*{opcode="0x...."}`
-  - `wow_world_packet_outbound_queue_latency_*{opcode="0x...."}`
-  - `wow_world_packet_write_duration_*{opcode="0x...."}`
-- The remaining starvation blind spot is now instrumented in source:
-  - `wow_world_session_loop_phase_duration_*{phase="refresh_active_player_cache|finalize_player_death|pending_spell_completion|packet_dispatch|sync_gameplay_state|combat_tick|loot_roll_timeouts|packet_branch_total|timeout_branch_total"}`
-  - this should reveal whether packets are sitting unread because the session
-    loop is busy in combat ticks / sync work rather than in the cast handler
-  - the live `500` run that showed `3s+` spell feel was still on the older
-    binary and did not expose these new metrics yet
-- Live session-loop metrics now show the real starvation source:
-  - `CMSG_CAST_SPELL` service time is tens of milliseconds, not seconds
-  - outbound queue/write latency is negligible
-  - `combat_tick` and `packet_branch_total` can spike into the multi-hundred
-    millisecond to multi-second range
-- DB-creature lifecycle is now map-owned:
-  - corpse expiry / respawn due work is scheduled in `MapRuntime` via due-at
-  maps and heaps instead of per-session loaded-creature scans
-  - the map update loop now advances lifecycle once per map tick, dispatches
-  lifecycle packets, and persists respawn clears outside the map owner
-  - the session loop no longer drives DB-creature lifecycle from
-    `handle_combat_tick(...)`
-- OOC EventAI spell ticking is now map-owned:
-  - session/viewer-side nearby-creature OOC scans were removed from
-    `handle_combat_tick(...)`
-  - `MapRuntime` now tracks OOC-capable creatures and due times, resolves
-    cached EventAI capabilities by creature entry, advances starts/completions
-    once per map tick, and emits addressed packets outside the map owner
-  - focused tests prove the OOC tick runs without a viewer session and still
-    dispatches `SMSG_SPELL_START` / `SMSG_SPELL_GO` to nearby players
-- Active DB-creature attack processing is now collapsed into one map-manager
-  transaction per victim:
-  - session-side broad victim combat scans were replaced with map-owned victim
-    indexes and due scheduling
-  - the session loop no longer walks the full shared-world creature attack
-    state machine attacker by attacker through repeated `maps.*` calls
-  - the manager path now advances motion, spell completion/start, facing/range
-    checks, melee outcomes, and combat-clear transitions once, then returns a
-    compact event bundle for tiny session-local follow-up
-  - focused tests prove the new path advances active creature combat without
-    the old session-owned per-attacker loop
+- Disabling the map-owned OOC EventAI phase immediately restored:
+  - NPC idle patrol motion
+  - mana / health regen
+  - other timed map systems
+- So OOC EventAI was a real regression source, but it is not the whole
+  `1000`-client movement-flood problem.
+- The earlier session-loop starvation work is already landed:
+  - DB-creature lifecycle is map-owned
+  - OOC EventAI scans were removed from `handle_combat_tick(...)`
+  - active creature attack processing is collapsed into map-owned victim
+    transactions
+- A real-client hostile caster hang was reproduced against Burning Blade
+  Neophyte (`entry=3196`, combat EventAI `348 = Immolate`) and reduced to an
+  async mutex lifetime bug in the manager-owned combat wrapper.
+- That deadlock is fixed, and the same bug class was audited/fixed in the
+  playerbot manager loops.
+- The movement actor only coalesces after a movement packet is already inside
+  the movement path; it does not reduce the session-side per-packet work.
+- Our current movement handler still does far more inline work than CMaNGOS:
+  movement map update, creature/gameobject/corpse visibility rescans, aggro
+  start checks, area discovery, and session-to-map gameplay-state sync.
 
-## Latest Read
+## Latest Change
 
-Most useful recent live evidence came from the restarted `500`-player sparse
-run:
+The movement path is now materially thinner and more map-owned:
 
-- map tick avg `1m`: about `77 ms`
-- `CMSG_CAST_SPELL` service avg `1m`: about `74 ms`
-- outbound queue latency: negligible
-- session-loop `combat_tick` avg `1m`: about `165 ms`
-- session-loop `combat_tick` max `1m`: about `1383 ms`
-- `packet_branch_total` max `1m`: about `1509 ms`
+- authenticated sessions still coalesce same-session movement bursts for `10 ms`
+  in `crates/wow-network/src/world/server/session_loop.rs`
+- pure movement packets no longer force an immediate
+  `sync_active_player_gameplay_state(...)` after dispatch; sync still happens
+  for non-movement packets and on the world-tick path
+- `crates/wow-network/src/world/server/movement.rs` no longer starts
+  DB-creature aggro inline on every successful move; we now rely on the
+  existing once-per-world-tick `handle_combat_tick(...)` aggro path instead
+- player area discovery checks are now throttled to `100 ms` via
+  `MovementSessionState::next_position_status_update_at`, matching the
+  CMaNGOS idea of throttled position-status updates instead of per-packet work
+- player-to-player enter/leave visibility diffing and
+  `sync_db_creature_idle_motion_tracking_for_player_interest_positions(...)`
+  were removed from inline `MapRuntime::update_player_position(...)`
+- movement now only marks a dirty player-visibility refresh
+- the new map-owned `player_visibility_refresh` phase runs once per map tick,
+  batches each player once, updates player-player visibility, and then performs
+  the deferred creature-interest sync before idle motion
+- the thin-client harness now supports `--move-phase-jitter-ms` for a
+  deterministic per-client movement start offset after the shared ready gate;
+  this keeps the same per-client interval but avoids all clients sharing the
+  same movement phase
+- observability now splits the new `player_visibility_refresh` phase into:
+  - `wow_player_visibility_refresh_visibility_diff_broadcast_time_*`
+  - `wow_player_visibility_refresh_creature_interest_sync_time_*`
+  and movement packet ownership already had:
+  - `wow_movement_map_mutex_wait_*`
+  - `wow_movement_map_mutex_hold_*`
+- movement observability now also exposes an explicit pipeline split:
+  - actor enqueue -> apply start latency:
+    `wow_movement_actor_apply_start_latency_*`
+  - per-applied-move counts:
+    `wow_movement_apply_observers_notified_*`
+    `wow_movement_apply_packets_emitted_*`
+  - `MapRuntime::update_player_position(...)` subphases:
+    - `wow_movement_apply_observer_snapshot_time_*`
+    - `wow_movement_apply_movement_broadcast_time_*`
+    - `wow_movement_apply_grid_update_time_*`
+    - `wow_movement_apply_player_state_environment_time_*`
+    - `wow_movement_apply_fall_damage_broadcast_time_*`
+    - `wow_movement_apply_death_presentation_time_*`
+    - `wow_movement_apply_visibility_refresh_mark_time_*`
+    - `wow_movement_apply_total_time_*`
+  - the HTML dashboard now has a **Movement Pipeline** panel for these metrics
+- movement packets now take a more aggressive session-loop fast path:
+  - they skip pre-dispatch `refresh_active_player_session_cache(...)`
+  - they skip pre-dispatch death finalization
+  - they skip pre/post pending player spell completion checks unless the
+    session already has active spells
+  - the main session-loop timeout path also skips map `next_pending_player_spell_cast_due_at(...)`
+    lookups unless the session already has active spells
+  This is an explicit measurement experiment aimed at reducing movement
+  `dispatch/service` cost before we decide whether deeper actor/map-thread
+  ownership work is still needed.
 
-Interpretation:
-- the bad feel is not explained by the measured cast handler or socket writes
-- packets are waiting to be read because the session loop is busy doing shared
-  combat/world work
+Creature/gameobject/corpse visibility streaming from `movement.rs` still
+remains inline and distance-gated, so it is the next likely movement-side
+effect family to revisit if the harness still lags badly.
+
+## Tests Run
+
+- `cargo fmt`
+- `cargo test -p wow-network enqueue_pending_movement_replaces_older_packet --lib`
+- `cargo test -p wow-network pending_movement_timeout_uses_coalesce_deadline --lib`
+- `cargo test -p wow-network pending_movement_due_only_after_deadline --lib`
+- `cargo test -p wow-network player_position_status_update_is_throttled --lib`
+- `cargo test -p wow-network movement_packets_skip_immediate_gameplay_sync --lib`
+- `cargo test -p wow-network map_runtime_defers_player_visibility_enter_until_refresh_phase --lib`
+- `cargo test -p wow-network map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves --lib`
+- `cargo test -p wow-network map_runtime_manager_movement_actor_matches_direct_path_packets --lib`
+- `cargo test -p wow-network map_runtime_player_movement_preserves_db_creature_visibility_set --lib`
+- `cargo test -p wow-network movement_packets_skip_pre_dispatch_session_refresh --lib`
+- `cargo test -p wow-network movement_packets_skip_pending_spell_checks_without_active_spells --lib`
+- `cargo test -p wow-network active_spells_keep_pending_spell_checks_enabled_for_movement --lib`
+- `cargo test -p wow-network dashboard_renders_live_metrics_page --lib`
+- `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
+- `cargo test -p wow-network map_runtime_manager_movement_actor_matches_direct_path_packets --lib`
+- `cargo test -p world-load-test movement_phase_jitter_is_deterministic_and_bounded`
+- `cargo check -p worldserver`
+- `cargo check -p world-load-test`
+- `.\scripts\test-rust.cmd`
+
+## Current Confidence
+
+- High that the old standalone OOC due-queue architecture is no longer the
+  best explanation for the remaining `1000`-client movement lag.
+- High that movement flood currently causes too much per-packet session-side
+  work compared with CMaNGOS.
+- High that `update_player_position(...)` was still a major hot path because it
+  owned player-visibility diffing and creature-interest sync inline.
+- Medium-high that the new map-owned `player_visibility_refresh` phase is a
+  correct architecture move.
+- Medium that this slice alone materially improves the `1000`-client harness;
+  live rerun is still required.
+
+## Known Blockers / Unproven Areas
+
+- OOC EventAI remains disabled for isolation, so current live perf runs are not
+  exercising that subsystem.
+- The new movement coalescing is compile- and test-proven, but not yet
+  benchmark-proven under the thin-client harness.
+- Long thin-client harness runs may still hit the existing
+  `world-load-test.exe` `0xc0000005` issue.
 
 ## Recommended Next Task
 
-Continue the ownership move inside `handle_combat_tick(...)`.
-
-Best next slice:
-1. statically split the remaining session-loop `combat_tick` work into:
-   - disconnected-player expiry
-2. rerun the `500` sparse test and compare:
-   - `wow_world_session_loop_phase_duration_*{phase="combat_tick"}`
-   - `wow_world_packet_dispatch_delay_*{opcode="0x012E"}`
-   - `wow_world_packet_service_time_*{opcode="0x012E"}`
-   - whether the new active-creature attack ownership move materially lowers
-     session starvation
-3. if combat tick is still the dominant session blocker, move
-   disconnected-player expiry off the session loop next
-
-Do not spend the next pass on:
-- native mmap micro-optimizing
-- DB movement script scheduling
-- reworking packet writes or outbound queueing
-
-## Tests And Confidence
-
-Most relevant recent verification:
-- `cargo fmt`
-- `cargo test -p wow-network map_runtime_manager_advances_db_creature_combats_for_victim_without_session_side_loop --lib`
-- `cargo test -p wow-network map_runtime_db_creature_combats_clear_by_victim --lib`
-- `cargo test -p wow-network active_db_creature_combat_snapshot_uses_mapruntime_without_session_cache --lib`
-- `cargo test -p wow-network map_runtime_manager_ooc_event_ai --lib`
-- `cargo test -p wow-network map_runtime_db_creature_lifecycle --lib`
-- `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
-- `cargo check -p worldserver`
-- `.\scripts\test-rust.cmd`
-
-Confidence:
-- high that enemy-spell hot paths are using cached object-manager data rather
-  than live DB loads in the warm run
-- high that session-loop starvation is real and that `combat_tick` is the main
-  remaining blind spot
-- medium-high that moving shared combat/world maintenance off the session loop
-  is the right next architecture direction
-
-## Known Follow-Ups
-
-- long/larger thin-client runs can still end with
-  `world-load-test.exe` `STATUS_ACCESS_VIOLATION (0xc0000005)`
-- idle-motion/path-start cost still matters for sparse `1000`, but it is no
-  longer the best immediate fix for the player-visible spell/action lag
+1. Rebuild and restart release binaries with OOC EventAI still disabled.
+2. Rerun the thin-client harness with OOC EventAI still disabled:
+   - `1000` clients
+   - `creature_grid_scatter`
+   - compare `MoveIntervalMs=50` vs a slower interval
+   - compare `MovePhaseJitterMs=0` vs a nonzero phase jitter such as `50`
+3. Check whether `player_visibility_refresh` materially reduces session-loop
+   and map-tick pressure at `MoveIntervalMs=50`.
+4. If movement flood is still the main limiter, the next architecture-correct
+   move should be to pull the remaining inline `movement.rs` side effects off
+   the packet path, especially:
+   - creature visibility streaming
+   - gameobject visibility streaming
+   - corpse visibility streaming
+   - broader packet-queue / map-thread ownership work if those trims are not
+     enough
 
 ## Key Files
 
-- `crates/wow-network/src/world/combat/motion.rs`
-- `crates/wow-network/src/world/combat/lifecycle.rs`
-- `crates/wow-network/src/world/server/map_update.rs`
 - `crates/wow-network/src/world/server/session_loop.rs`
-- `crates/wow-network/src/world/map_runtime/map/creature_combat.rs`
-- `crates/wow-network/src/world/map_runtime/map/creature_lifecycle.rs`
-- `crates/wow-network/src/world/map_runtime/map/creature_motion.rs`
+- `crates/wow-network/src/world/server/movement.rs`
+- `crates/wow-network/src/world/map_runtime/movement_actor.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager.rs`
 - `crates/wow-network/src/world/map_runtime/map/players.rs`
-- `crates/wow-network/src/world/map_runtime/map.rs`
-- `crates/wow-network/src/observability.rs`
 - `crates/wow-network/src/world/tests.rs`
-- `docs/performance_movement_benchmark.md`

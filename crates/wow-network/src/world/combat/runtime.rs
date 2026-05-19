@@ -61,6 +61,7 @@ impl DbCreatureRuntime {
             unavailable_spell_list_positions: HashSet::new(),
             triggered_event_ai_scripts: HashSet::new(),
             event_ai_cooldowns_until: HashMap::new(),
+            event_ai_update_accum: Duration::ZERO,
             native_display,
             display_id_override: None,
             aura_display_id_override: None,
@@ -128,6 +129,7 @@ impl DbCreatureRuntime {
                 creature.unavailable_spell_list_positions.clear();
                 creature.triggered_event_ai_scripts.clear();
                 creature.event_ai_cooldowns_until.clear();
+                creature.event_ai_update_accum = Duration::ZERO;
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_confused_move_at = None;
@@ -397,6 +399,7 @@ impl DbCreatureRuntime {
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
+        self.event_ai_update_accum = Duration::ZERO;
         self.refresh_move_speeds();
         self.corpse_expires_at =
             Some(now + db_creature_corpse_decay_duration(&self.spawn.template, respawn_delay));
@@ -457,6 +460,7 @@ impl DbCreatureRuntime {
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
+        self.event_ai_update_accum = Duration::ZERO;
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
@@ -507,6 +511,7 @@ impl DbCreatureRuntime {
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
+        self.event_ai_update_accum = Duration::ZERO;
         self.aura_display_id_override = None;
         self.refresh_move_speeds();
         self.corpse_expires_at = None;

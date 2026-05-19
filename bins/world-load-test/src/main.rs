@@ -70,6 +70,7 @@ const DEFAULT_CLIENT_COUNT: usize = 500;
 const DEFAULT_HOLD_SECONDS: u64 = 60;
 const DEFAULT_LOGIN_BOOTSTRAP_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_MOVE_INTERVAL_MS: u64 = 500;
+const DEFAULT_MOVE_PHASE_JITTER_MS: u64 = 0;
 const DEFAULT_LOGIN_STAGGER_MS: u64 = 25;
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5;
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
@@ -83,6 +84,7 @@ struct Config {
     login_bootstrap_timeout_secs: u64,
     login_ready_timeout_secs: u64,
     move_interval_ms: u64,
+    move_phase_jitter_ms: u64,
     login_stagger_ms: u64,
     drain_timeout_ms: u64,
     max_attempts: u32,
@@ -142,6 +144,7 @@ impl Default for Config {
             login_bootstrap_timeout_secs: DEFAULT_LOGIN_BOOTSTRAP_TIMEOUT_SECS,
             login_ready_timeout_secs: DEFAULT_LOGIN_READY_TIMEOUT_SECS,
             move_interval_ms: DEFAULT_MOVE_INTERVAL_MS,
+            move_phase_jitter_ms: DEFAULT_MOVE_PHASE_JITTER_MS,
             login_stagger_ms: DEFAULT_LOGIN_STAGGER_MS,
             drain_timeout_ms: DEFAULT_DRAIN_TIMEOUT_MS,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
@@ -287,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         let auth_addr = config.auth_addr.clone();
         let world_addr = config.world_addr.clone();
         let move_interval = Duration::from_millis(config.move_interval_ms);
+        let move_phase_jitter = Duration::from_millis(config.move_phase_jitter_ms);
         let stagger =
             Duration::from_millis(config.login_stagger_ms.saturating_mul(spec.index as u64));
         let hold_duration = Duration::from_secs(config.hold_seconds);
@@ -314,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
                     login_bootstrap_timeout,
                     login_ready_timeout,
                     move_interval,
+                    move_phase_jitter,
                     drain_timeout,
                     move_radius,
                     max_attempts,
@@ -594,6 +599,7 @@ fn run_client_with_retries(
     login_bootstrap_timeout: Duration,
     login_ready_timeout: Duration,
     move_interval: Duration,
+    move_phase_jitter: Duration,
     drain_timeout: Duration,
     move_radius: f32,
     max_attempts: u32,
@@ -609,6 +615,7 @@ fn run_client_with_retries(
             login_bootstrap_timeout,
             login_ready_timeout,
             move_interval,
+            move_phase_jitter,
             drain_timeout,
             move_radius,
             movement_start_gate.as_ref(),
@@ -642,6 +649,7 @@ fn run_client(
     login_bootstrap_timeout: Duration,
     login_ready_timeout: Duration,
     move_interval: Duration,
+    move_phase_jitter: Duration,
     drain_timeout: Duration,
     move_radius: f32,
     movement_start_gate: &MovementStartGate,
@@ -662,6 +670,10 @@ fn run_client(
     movement_start_gate
         .wait_until_open(login_ready_timeout)
         .with_context(|| format!("movement start gate for {}", spec.username))?;
+    let movement_phase_jitter = movement_phase_jitter_for_index(spec.index, move_phase_jitter);
+    if !movement_phase_jitter.is_zero() {
+        thread::sleep(movement_phase_jitter);
+    }
 
     let run_started_at = Instant::now();
     let mut result = ClientRunResult::default();
@@ -924,6 +936,14 @@ fn should_jump_on_step(index: usize, step: u32, remaining_steps: u32) -> bool {
 fn idle_facing(base_orientation: f32, index: usize, step: u32) -> f32 {
     let offset = ((stable_u32(index, step, 4) % 7) as f32 - 3.0) * 0.35;
     normalize_orientation(base_orientation + offset)
+}
+
+fn movement_phase_jitter_for_index(index: usize, max_jitter: Duration) -> Duration {
+    let max_jitter_ms = max_jitter.as_millis() as u64;
+    if max_jitter_ms == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_millis((stable_u32(index, 0, 5) as u64) % (max_jitter_ms + 1))
 }
 
 fn jump_for_orientation(orientation: f32) -> JumpInfo {
@@ -1390,6 +1410,9 @@ fn parse_args() -> anyhow::Result<Config> {
             "--move-interval-ms" => {
                 config.move_interval_ms = parse_value(&arg, args.next())?;
             }
+            "--move-phase-jitter-ms" => {
+                config.move_phase_jitter_ms = parse_value(&arg, args.next())?;
+            }
             "--login-stagger-ms" => {
                 config.login_stagger_ms = parse_value(&arg, args.next())?;
             }
@@ -1489,6 +1512,7 @@ fn print_usage() {
     );
     println!("  --login-ready-timeout-secs <secs> Default: {DEFAULT_LOGIN_READY_TIMEOUT_SECS}");
     println!("  --move-interval-ms <ms>     Default: {DEFAULT_MOVE_INTERVAL_MS}");
+    println!("  --move-phase-jitter-ms <ms> Default: {DEFAULT_MOVE_PHASE_JITTER_MS}");
     println!("  --login-stagger-ms <ms>     Default: {DEFAULT_LOGIN_STAGGER_MS}");
     println!("  --drain-timeout-ms <ms>     Default: {DEFAULT_DRAIN_TIMEOUT_MS}");
     println!("  --max-attempts <n>          Default: {DEFAULT_MAX_ATTEMPTS}");
@@ -1576,6 +1600,23 @@ mod tests {
                 "movement actor drifted too far from spawn: {distance}"
             );
         }
+    }
+
+    #[test]
+    fn movement_phase_jitter_is_deterministic_and_bounded() {
+        let max = Duration::from_millis(50);
+        let first = movement_phase_jitter_for_index(7, max);
+        let second = movement_phase_jitter_for_index(7, max);
+        let other = movement_phase_jitter_for_index(8, max);
+
+        assert_eq!(first, second);
+        assert!(first <= max);
+        assert!(other <= max);
+        assert_ne!(first, other);
+        assert_eq!(
+            movement_phase_jitter_for_index(7, Duration::ZERO),
+            Duration::ZERO
+        );
     }
 
     #[test]

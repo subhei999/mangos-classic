@@ -343,6 +343,7 @@ pub(in crate::world) struct CharacterSessionState {
 #[derive(Debug, Default)]
 pub(in crate::world) struct MovementSessionState {
     pub(in crate::world) movement_client_time_delay: Option<u32>,
+    pub(in crate::world) next_position_status_update_at: Option<Instant>,
     pub(in crate::world) db_creature_navigation: DbCreatureNavigationGuardrail,
 }
 

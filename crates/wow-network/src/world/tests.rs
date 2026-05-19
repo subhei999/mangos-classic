@@ -11899,6 +11899,242 @@ async fn map_runtime_manager_advances_db_creature_combats_for_victim_without_ses
 }
 
 #[tokio::test]
+async fn map_runtime_manager_advances_3196_event_ai_immolate_with_delayed_completion() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_cast_times.insert(
+        5,
+        SpellCastTimeEntry {
+            cast_time_millis: 2_000,
+            cast_time_per_level_millis: 0,
+            min_cast_time_millis: 2_000,
+        },
+    );
+    world_data.spell_durations.insert(
+        8,
+        SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    object_mgr
+        .prime_creature_ai_scripts_for_test(
+            3196,
+            vec![test_creature_ai_cast_script(
+                319_601,
+                3196,
+                EVENT_AI_EVENT_RANGE,
+                [0, 30, 21_000, 25_000],
+                348,
+                EVENT_AI_TARGET_HOSTILE,
+            )],
+        )
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(348, Some(immolate_spell_template()))
+        .await;
+
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 18_601;
+    spawn.position_x = player_position.x + 8.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let attacker = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    maps.begin_db_creature_combat(0, attacker, victim, now)
+        .await
+        .expect("combat should start");
+
+    let defense = PlayerMeleeDefenseInput {
+        level: 1,
+        defense_skill: 1,
+        armor: 0,
+        block_value: 0,
+        dodge_percent: 0.0,
+        parry_percent: 0.0,
+        block_percent: 0.0,
+    };
+    let start_tick = tokio::time::timeout(
+        Duration::from_secs(1),
+        maps.advance_db_creature_combats_for_victim(
+            &world_db_pool,
+            &object_mgr,
+            0,
+            victim,
+            SessionId(7),
+            defense,
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        ),
+    )
+    .await
+    .expect("start tick should not hang")
+    .unwrap();
+    assert!(start_tick
+        .direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_START));
+
+    let complete_tick = tokio::time::timeout(
+        Duration::from_secs(1),
+        maps.advance_db_creature_combats_for_victim(
+            &world_db_pool,
+            &object_mgr,
+            0,
+            victim,
+            SessionId(7),
+            defense,
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(2_000),
+        ),
+    )
+    .await
+    .expect("completion tick should not hang")
+    .unwrap();
+    assert!(complete_tick
+        .direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELL_GO));
+    assert!(complete_tick
+        .direct_packets
+        .iter()
+        .any(|packet| packet.opcode == SMSG_SPELLNONMELEEDAMAGELOG));
+
+    let map = maps.get_or_create_map(0, 0).await;
+    let mut map = map.lock().await;
+    let player = map.players.get(&7).expect("player");
+    assert_eq!(player.health, 12);
+    assert_eq!(player.active_auras.len(), 1);
+    let tick_at = player.active_auras[0]
+        .periodic_damage
+        .expect("Immolate should install a periodic aura")
+        .next_tick_at;
+    let aura_packets = map.advance_player_aura_expirations(tick_at).unwrap();
+    let player = map.players.get(&7).expect("player");
+    assert_eq!(player.health, 8);
+    assert!(aura_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_PERIODICAURALOG));
+}
+
+#[tokio::test]
+async fn map_runtime_direct_completion_after_manager_started_3196_immolate_does_not_hang() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_cast_times.insert(
+        5,
+        SpellCastTimeEntry {
+            cast_time_millis: 2_000,
+            cast_time_per_level_millis: 0,
+            min_cast_time_millis: 2_000,
+        },
+    );
+    world_data.spell_durations.insert(
+        8,
+        SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let object_mgr = ObjectMgr::default();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    object_mgr
+        .prime_creature_ai_scripts_for_test(
+            3196,
+            vec![test_creature_ai_cast_script(
+                319_601,
+                3196,
+                EVENT_AI_EVENT_RANGE,
+                [0, 30, 21_000, 25_000],
+                348,
+                EVENT_AI_TARGET_HOSTILE,
+            )],
+        )
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(348, Some(immolate_spell_template()))
+        .await;
+
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 18_602;
+    spawn.position_x = player_position.x + 8.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let attacker = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    maps.begin_db_creature_combat(0, attacker, victim, now)
+        .await
+        .expect("combat should start");
+
+    let defense = PlayerMeleeDefenseInput {
+        level: 1,
+        defense_skill: 1,
+        armor: 0,
+        block_value: 0,
+        dodge_percent: 0.0,
+        parry_percent: 0.0,
+        block_percent: 0.0,
+    };
+    let _ = maps
+        .advance_db_creature_combats_for_victim(
+            &world_db_pool,
+            &object_mgr,
+            0,
+            victim,
+            SessionId(7),
+            defense,
+            &DbCreatureNavigationGuardrail::default(),
+            now,
+        )
+        .await
+        .unwrap();
+
+    let map = maps.get_or_create_map(0, 0).await;
+    let completed = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut map = map.lock().await;
+        map.complete_ready_db_creature_spell_cast_with_navigation(
+            attacker,
+            victim,
+            now + Duration::from_millis(2_000),
+            &DbCreatureNavigationGuardrail::default(),
+        )
+    })
+    .await
+    .expect("direct map completion should not hang")
+    .unwrap()
+    .expect("cast should complete");
+    assert!(completed.aura_event.is_some());
+}
+
+#[tokio::test]
 async fn map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots() {
     let maps = MapRuntimeManager::default();
     let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
@@ -11972,6 +12208,43 @@ async fn map_runtime_manager_skips_playerbot_ticks_when_world_has_no_playerbots(
     assert_eq!(combat.advanced_bots, 0);
     assert_eq!(combat.creature_swings, 0);
     assert!(combat.packets.is_empty());
+}
+
+#[tokio::test]
+async fn map_runtime_manager_playerbot_ticks_do_not_deadlock_when_map_has_playerbots() {
+    let maps = MapRuntimeManager::default();
+    let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
+    let mut bot = test_bot_player_runtime(2, BotId(1), bot_position);
+    {
+        let bot_runtime = bot.bot_runtime.as_mut().expect("bot runtime");
+        bot_runtime.force_active = true;
+        bot_runtime.combat_enabled = false;
+    }
+    maps.add_player(bot).await.unwrap();
+
+    let movement = tokio::time::timeout(
+        Duration::from_secs(1),
+        maps.advance_all_playerbot_movement_ticks(
+            &DbCreatureNavigationGuardrail::default(),
+            Instant::now(),
+        ),
+    )
+    .await
+    .expect("playerbot movement tick should not deadlock")
+    .unwrap();
+    assert!(!movement.budget_exhausted);
+
+    let combat = tokio::time::timeout(
+        Duration::from_secs(1),
+        maps.advance_all_playerbot_combat_ticks(
+            &DbCreatureNavigationGuardrail::default(),
+            Instant::now(),
+        ),
+    )
+    .await
+    .expect("playerbot combat tick should not deadlock")
+    .unwrap();
+    assert!(!combat.budget_exhausted);
 }
 
 #[test]
@@ -13444,6 +13717,94 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
     assert!(tick_packets
         .iter()
         .any(|(_, packet)| packet.opcode == SMSG_UPDATE_OBJECT));
+}
+
+#[test]
+fn map_runtime_db_creature_delayed_immolate_applies_player_dot_ticks() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let mut spawn = test_creature_spawn(3196);
+    spawn.guid = 18_600;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    spawn.template.unit_class = 2;
+    spawn.template.min_level_mana = 178;
+    spawn.template.max_level_mana = 191;
+    let creature_guid = creature_spawn_guid(&spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let immolate = immolate_spell_template();
+    let aura = build_active_aura(
+        &immolate,
+        creature_guid,
+        6,
+        test_spell_effect_value_context(&immolate),
+        now,
+        Some(SpellDurationEntry {
+            duration_millis: 9_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 9_000,
+        }),
+    );
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    map.start_db_creature_spell_cast(ActiveDbCreatureSpellCast {
+        caster: creature_guid,
+        target: victim,
+        spell_id: immolate.id,
+        requires_behind: false,
+        effect: ActiveDbCreatureSpellEffect::Damage {
+            amount: 8,
+            school: immolate.school as u8,
+            dmg_class: immolate.dmg_class,
+            attributes_ex2: immolate.attributes_ex2,
+            attributes_ex3: immolate.attributes_ex3,
+        },
+        aura: Some(aura),
+        range: None,
+        mana_cost: immolate.mana_cost,
+        cast_time_millis: 2_000,
+        due_at: now + Duration::from_millis(2_000),
+    })
+    .unwrap()
+    .expect("cast should start");
+
+    assert!(map
+        .complete_ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(1_999)
+        )
+        .unwrap()
+        .is_none());
+
+    let completed = map
+        .complete_ready_db_creature_spell_cast(
+            creature_guid,
+            victim,
+            now + Duration::from_millis(2_000),
+        )
+        .unwrap()
+        .expect("delayed cast should complete once due");
+    assert!(completed.aura_event.is_some());
+    let DbCreatureCompletedSpellEffect::PlayerDamage(damage) = completed.effect else {
+        panic!("Immolate should include direct player damage");
+    };
+    assert_eq!(damage.damage, 8);
+    assert_eq!(damage.victim_health, 12);
+    let player = map.players.get(&1).unwrap();
+    assert_eq!(player.active_auras.len(), 1);
+    assert_eq!(player.active_auras[0].spell_id, 348);
+    let tick_at = player.active_auras[0].periodic_damage.unwrap().next_tick_at;
+    let tick_packets = map.advance_player_aura_expirations(tick_at).unwrap();
+    let player = map.players.get(&1).unwrap();
+    assert_eq!(player.health, 8);
+    assert!(tick_packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == SMSG_PERIODICAURALOG));
 }
 
 #[test]
@@ -15090,6 +15451,7 @@ async fn map_runtime_manager_ooc_event_ai_tick_runs_without_viewer_session() {
             &object_mgr,
             &DbCreatureNavigationGuardrail::default(),
             now,
+            DB_CREATURE_EVENT_AI_UPDATE_INTERVAL,
         )
         .await
         .expect("map-owned OOC EventAI tick should succeed");
@@ -15101,9 +15463,9 @@ async fn map_runtime_manager_ooc_event_ai_tick_runs_without_viewer_session() {
         .creatures
         .get(&creature_guid.raw())
         .expect("creature should remain loaded");
-    assert!(creature.triggered_event_ai_scripts.contains(&681_001));
-    assert!(creature.event_ai_cooldowns_until.contains_key(&681_001));
-    assert!(matches!(
+    assert!(!creature.triggered_event_ai_scripts.contains(&681_001));
+    assert!(!creature.event_ai_cooldowns_until.contains_key(&681_001));
+    assert!(!matches!(
         map.db_creature_ooc_event_ai_capabilities.get(&6810),
         Some(DbCreatureOocEventAiCapability::OocCast(_))
     ));
@@ -15150,6 +15512,7 @@ async fn map_runtime_manager_ooc_event_ai_tick_dispatches_packets_to_nearby_play
             &object_mgr,
             &DbCreatureNavigationGuardrail::default(),
             now,
+            DB_CREATURE_EVENT_AI_UPDATE_INTERVAL,
         )
         .await
         .expect("map-owned OOC EventAI tick should succeed");
@@ -15165,6 +15528,100 @@ async fn map_runtime_manager_ooc_event_ai_tick_dispatches_packets_to_nearby_play
             .any(|(session_id, packet)| *session_id == SessionId(77)
                 && packet.opcode == SMSG_SPELL_GO)
     );
+}
+
+#[tokio::test]
+async fn map_runtime_manager_ooc_event_ai_classification_does_not_requeue_same_entry_siblings() {
+    let mut map = MapRuntime::new(0, 0);
+
+    let mut first = test_creature_spawn(6812);
+    first.guid = 68_120;
+
+    let mut second = first.clone();
+    second.guid = 68_121;
+
+    let first_guid = ObjectGuid::new(HighGuid::Unit, 0, first.guid);
+    let second_guid = ObjectGuid::new(HighGuid::Unit, 0, second.guid);
+    map.creatures
+        .insert(first_guid.raw(), DbCreatureRuntime::new(first));
+    map.creatures
+        .insert(second_guid.raw(), DbCreatureRuntime::new(second));
+    map.set_db_creature_ooc_event_ai_capability(
+        6812,
+        DbCreatureOocEventAiCapability::OocCast(Arc::from(vec![test_creature_ai_cast_script(
+            681_003,
+            6812,
+            EVENT_AI_EVENT_TIMER_OOC,
+            [5_000, 5_000, 5_000, 5_000],
+            12544,
+            EVENT_AI_TARGET_SELF,
+        )])),
+    );
+
+    assert!(matches!(
+        map.db_creature_ooc_event_ai_capabilities.get(&6812),
+        Some(DbCreatureOocEventAiCapability::OocCast(_))
+    ));
+
+    let first_runtime = map
+        .creatures
+        .get(&first_guid.raw())
+        .expect("first creature should remain loaded");
+    assert_eq!(first_runtime.event_ai_update_accum, Duration::ZERO);
+    assert!(!first_runtime
+        .event_ai_cooldowns_until
+        .contains_key(&681_003));
+
+    let second_runtime = map
+        .creatures
+        .get(&second_guid.raw())
+        .expect("second creature should remain loaded");
+    assert_eq!(second_runtime.event_ai_update_accum, Duration::ZERO);
+    assert!(!second_runtime
+        .event_ai_cooldowns_until
+        .contains_key(&681_003));
+    assert!(!second_runtime.triggered_event_ai_scripts.contains(&681_003));
+}
+
+#[test]
+fn map_runtime_ooc_event_ai_prepare_respects_cmangos_update_interval() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut spawn = test_creature_spawn(6813);
+    spawn.guid = 68_130;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.creatures
+        .insert(creature_guid.raw(), DbCreatureRuntime::new(spawn));
+    map.set_db_creature_ooc_event_ai_capability(
+        6813,
+        DbCreatureOocEventAiCapability::OocCast(Arc::from(vec![test_creature_ai_cast_script(
+            681_004,
+            6813,
+            EVENT_AI_EVENT_TIMER_OOC,
+            [0, 0, 5_000, 5_000],
+            12544,
+            EVENT_AI_TARGET_SELF,
+        )])),
+    );
+    let now = Instant::now();
+
+    assert!(map
+        .prepare_ready_db_creature_ooc_event_ai_action(
+            creature_guid.raw(),
+            now,
+            Duration::from_millis(100),
+        )
+        .is_none());
+
+    let Some(ReadyDbCreatureOocEventAiAction::Start { ready, .. }) = map
+        .prepare_ready_db_creature_ooc_event_ai_action(
+            creature_guid.raw(),
+            now + Duration::from_millis(500),
+            Duration::from_millis(400),
+        )
+    else {
+        panic!("interval-complete OOC EventAI tick should prepare a spell start");
+    };
+    assert_eq!(ready.spell_id, 12544);
 }
 
 #[test]
@@ -17811,6 +18268,129 @@ fn map_runtime_broadcasts_stop_with_final_idle_orientation() {
     assert_eq!(late_visible.flags, 0);
     assert_eq!(late_visible.position.orientation, 2.25);
 }
+
+#[test]
+fn map_runtime_defers_player_visibility_enter_until_refresh_phase() {
+    let mut map = MapRuntime::new(0, 0);
+    let mover_start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(
+        0,
+        mover_start.x + PLAYER_VISIBILITY_RADIUS_YARDS + 10.0,
+        mover_start.y,
+        mover_start.z,
+        0.0,
+    );
+    map.add_player(test_player_runtime(1, SessionId(1), mover_start))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let movement = MovementInfo {
+        flags: 0,
+        client_time: 1234,
+        position: WorldPosition::new(
+            0,
+            observer_position.x - (PLAYER_VISIBILITY_RADIUS_YARDS - 1.0),
+            observer_position.y,
+            observer_position.z,
+            0.0,
+        ),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    let packets = map
+        .update_player_position(1, MSG_MOVE_STOP as u16, &movement, 5678)
+        .unwrap();
+
+    assert!(packets
+        .iter()
+        .all(|(_, packet)| packet.opcode != SMSG_UPDATE_OBJECT));
+    assert_eq!(
+        map.pending_player_visibility_refresh_old_positions.get(&1),
+        Some(&mover_start)
+    );
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(!map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
+
+    let tick = map.advance_player_visibility_refresh_tick().unwrap();
+
+    assert_eq!(tick.refreshed_players, 1);
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(2) && packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(tick
+        .packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1) && packet.opcode == SMSG_UPDATE_OBJECT));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
+}
+
+#[test]
+fn map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves() {
+    let mut map = MapRuntime::new(0, 0);
+    let start = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), start))
+        .unwrap();
+
+    let first = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1,
+        position: WorldPosition::new(0, -8948.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &first, 2)
+        .unwrap();
+    assert_eq!(
+        map.pending_player_visibility_refresh_old_positions.get(&1),
+        Some(&start)
+    );
+
+    let second = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 3,
+        position: WorldPosition::new(0, -8946.0, -130.0, 83.5, 0.0),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    map.update_player_position(1, MSG_MOVE_HEARTBEAT as u16, &second, 4)
+        .unwrap();
+
+    assert_eq!(
+        map.pending_player_visibility_refresh_old_positions.get(&1),
+        Some(&start)
+    );
+
+    let tick = map.advance_player_visibility_refresh_tick().unwrap();
+    assert_eq!(tick.refreshed_players, 1);
+    assert!(map
+        .pending_player_visibility_refresh_old_positions
+        .is_empty());
+}
+
 #[tokio::test]
 async fn map_runtime_manager_movement_actor_disabled_keeps_direct_mutex_path() {
     let maps = MapRuntimeManager::default()

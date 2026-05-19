@@ -72,6 +72,8 @@ struct MetricsRegistry {
     player_environment_timer_only_processing_total: AtomicU64,
     idle_motion_subphases: IdleMotionSubphaseMetrics,
     player_environment_subphases: PlayerEnvironmentSubphaseMetrics,
+    player_visibility_refresh_subphases: PlayerVisibilityRefreshSubphaseMetrics,
+    movement_apply_subphases: MovementApplySubphaseMetrics,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -229,6 +231,29 @@ struct PlayerEnvironmentSubphaseMetrics {
 }
 
 #[derive(Default)]
+struct PlayerVisibilityRefreshSubphaseMetrics {
+    players_refreshed: NumericStats,
+    packets_emitted: NumericStats,
+    visibility_diff_broadcast_time: Histogram,
+    creature_interest_sync_time: Histogram,
+}
+
+#[derive(Default)]
+struct MovementApplySubphaseMetrics {
+    observers_notified: NumericStats,
+    packets_emitted: NumericStats,
+    actor_apply_start_latency: Histogram,
+    observer_snapshot_time: Histogram,
+    movement_broadcast_time: Histogram,
+    grid_update_time: Histogram,
+    player_state_environment_time: Histogram,
+    fall_damage_broadcast_time: Histogram,
+    death_presentation_time: Histogram,
+    visibility_refresh_mark_time: Histogram,
+    total_time: Histogram,
+}
+
+#[derive(Default)]
 struct IdleMotionSubphaseMetrics {
     due_creatures: NumericStats,
     started_creatures: NumericStats,
@@ -286,6 +311,8 @@ pub enum MapTickPhase {
     StaticGameEventRefreshDispatch,
     DbCreatureLifecycle,
     DbCreatureLifecycleDispatch,
+    PlayerVisibilityRefresh,
+    PlayerVisibilityRefreshDispatch,
     DbCreatureOocEventAi,
     DbCreatureOocEventAiDispatch,
     IdleMotion,
@@ -319,6 +346,8 @@ impl MapTickPhase {
             Self::StaticGameEventRefreshDispatch => "static_game_event_refresh_dispatch",
             Self::DbCreatureLifecycle => "db_creature_lifecycle",
             Self::DbCreatureLifecycleDispatch => "db_creature_lifecycle_dispatch",
+            Self::PlayerVisibilityRefresh => "player_visibility_refresh",
+            Self::PlayerVisibilityRefreshDispatch => "player_visibility_refresh_dispatch",
             Self::DbCreatureOocEventAi => "db_creature_ooc_event_ai",
             Self::DbCreatureOocEventAiDispatch => "db_creature_ooc_event_ai_dispatch",
             Self::IdleMotion => "idle_motion",
@@ -388,11 +417,13 @@ const WORLD_SESSION_LOOP_PHASES: [WorldSessionLoopPhase; 9] = [
     WorldSessionLoopPhase::TimeoutBranchTotal,
 ];
 
-const MAP_TICK_PHASES: [MapTickPhase; 28] = [
+const MAP_TICK_PHASES: [MapTickPhase; 30] = [
     MapTickPhase::StaticGameEventRefresh,
     MapTickPhase::StaticGameEventRefreshDispatch,
     MapTickPhase::DbCreatureLifecycle,
     MapTickPhase::DbCreatureLifecycleDispatch,
+    MapTickPhase::PlayerVisibilityRefresh,
+    MapTickPhase::PlayerVisibilityRefreshDispatch,
     MapTickPhase::DbCreatureOocEventAi,
     MapTickPhase::DbCreatureOocEventAiDispatch,
     MapTickPhase::IdleMotion,
@@ -425,6 +456,8 @@ struct MapPhaseDurations {
     static_game_event_refresh_dispatch: Histogram,
     db_creature_lifecycle: Histogram,
     db_creature_lifecycle_dispatch: Histogram,
+    player_visibility_refresh: Histogram,
+    player_visibility_refresh_dispatch: Histogram,
     db_creature_ooc_event_ai: Histogram,
     db_creature_ooc_event_ai_dispatch: Histogram,
     idle_motion: Histogram,
@@ -489,6 +522,10 @@ impl MapPhaseDurations {
             }
             MapTickPhase::DbCreatureLifecycle => &self.db_creature_lifecycle,
             MapTickPhase::DbCreatureLifecycleDispatch => &self.db_creature_lifecycle_dispatch,
+            MapTickPhase::PlayerVisibilityRefresh => &self.player_visibility_refresh,
+            MapTickPhase::PlayerVisibilityRefreshDispatch => {
+                &self.player_visibility_refresh_dispatch
+            }
             MapTickPhase::DbCreatureOocEventAi => &self.db_creature_ooc_event_ai,
             MapTickPhase::DbCreatureOocEventAiDispatch => &self.db_creature_ooc_event_ai_dispatch,
             MapTickPhase::IdleMotion => &self.idle_motion,
@@ -1014,6 +1051,111 @@ pub fn record_player_environment_nearby_fanout_time(duration: Duration) {
     registry()
         .player_environment_subphases
         .nearby_fanout_time
+        .record(duration);
+}
+
+pub fn record_player_visibility_refresh_players_refreshed(players_refreshed: usize) {
+    registry()
+        .player_visibility_refresh_subphases
+        .players_refreshed
+        .record(players_refreshed as u64);
+}
+
+pub fn record_player_visibility_refresh_packets_emitted(packet_count: usize) {
+    registry()
+        .player_visibility_refresh_subphases
+        .packets_emitted
+        .record(packet_count as u64);
+}
+
+pub fn record_player_visibility_refresh_visibility_diff_broadcast_time(duration: Duration) {
+    registry()
+        .player_visibility_refresh_subphases
+        .visibility_diff_broadcast_time
+        .record(duration);
+}
+
+pub fn record_player_visibility_refresh_creature_interest_sync_time(duration: Duration) {
+    registry()
+        .player_visibility_refresh_subphases
+        .creature_interest_sync_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_observers_notified(observer_count: usize) {
+    registry()
+        .movement_apply_subphases
+        .observers_notified
+        .record(observer_count as u64);
+}
+
+pub fn record_movement_apply_packets_emitted(packet_count: usize) {
+    registry()
+        .movement_apply_subphases
+        .packets_emitted
+        .record(packet_count as u64);
+}
+
+pub fn record_movement_actor_apply_start_latency(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .actor_apply_start_latency
+        .record(duration);
+}
+
+pub fn record_movement_apply_observer_snapshot_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .observer_snapshot_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_movement_broadcast_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .movement_broadcast_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_grid_update_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .grid_update_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_player_state_environment_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .player_state_environment_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_fall_damage_broadcast_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .fall_damage_broadcast_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_death_presentation_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .death_presentation_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_visibility_refresh_mark_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .visibility_refresh_mark_time
+        .record(duration);
+}
+
+pub fn record_movement_apply_total_time(duration: Duration) {
+    registry()
+        .movement_apply_subphases
+        .total_time
         .record(duration);
 }
 
@@ -1639,6 +1781,11 @@ pub fn render_prometheus() -> String {
     );
     write_idle_motion_subphase_metrics(&mut body, &metrics.idle_motion_subphases);
     write_player_environment_subphase_metrics(&mut body, &metrics.player_environment_subphases);
+    write_player_visibility_refresh_subphase_metrics(
+        &mut body,
+        &metrics.player_visibility_refresh_subphases,
+    );
+    write_movement_apply_subphase_metrics(&mut body, &metrics.movement_apply_subphases);
     body.push_str(&wow_db::render_db_metrics_prometheus());
 
     body
@@ -2325,6 +2472,119 @@ fn write_player_environment_subphase_metrics(
         "wow_player_environment_nearby_fanout_time",
         "time spent broadcasting nearby player-environment updates during one player-environment tick",
         &metrics.nearby_fanout_time,
+    );
+}
+
+fn write_player_visibility_refresh_subphase_metrics(
+    body: &mut String,
+    metrics: &PlayerVisibilityRefreshSubphaseMetrics,
+) {
+    write_numeric_summary(
+        body,
+        "wow_player_visibility_refresh_players_refreshed",
+        "players refreshed per player-visibility refresh tick",
+        &metrics.players_refreshed,
+    );
+    write_numeric_summary(
+        body,
+        "wow_player_visibility_refresh_packets_emitted",
+        "packets emitted per player-visibility refresh tick",
+        &metrics.packets_emitted,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_player_visibility_refresh_visibility_diff_broadcast_time",
+        "time spent diffing player visibility and materializing packets during one player-visibility refresh tick",
+        "Time spent diffing player visibility and materializing packets during one player-visibility refresh tick.",
+        &metrics.visibility_diff_broadcast_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_player_visibility_refresh_creature_interest_sync_time",
+        "time spent syncing creature idle-motion interest during one player-visibility refresh tick",
+        "Time spent syncing creature idle-motion interest during one player-visibility refresh tick.",
+        &metrics.creature_interest_sync_time,
+    );
+}
+
+fn write_movement_apply_subphase_metrics(
+    body: &mut String,
+    metrics: &MovementApplySubphaseMetrics,
+) {
+    write_numeric_summary(
+        body,
+        "wow_movement_apply_observers_notified",
+        "observers notified per applied movement update",
+        &metrics.observers_notified,
+    );
+    write_numeric_summary(
+        body,
+        "wow_movement_apply_packets_emitted",
+        "packets emitted per applied movement update",
+        &metrics.packets_emitted,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_actor_apply_start_latency",
+        "time from movement actor enqueue until an applied movement update begins",
+        "Time from movement actor enqueue until an applied movement update begins.",
+        &metrics.actor_apply_start_latency,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_observer_snapshot_time",
+        "time spent building the current movement observer set for one applied movement update",
+        "Time spent building the current movement observer set for one applied movement update.",
+        &metrics.observer_snapshot_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_movement_broadcast_time",
+        "time spent broadcasting movement packets to current observers for one applied movement update",
+        "Time spent broadcasting movement packets to current observers for one applied movement update.",
+        &metrics.movement_broadcast_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_grid_update_time",
+        "time spent updating player grid and cell membership for one applied movement update",
+        "Time spent updating player grid and cell membership for one applied movement update.",
+        &metrics.grid_update_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_player_state_environment_time",
+        "time spent applying player movement state and environment refresh for one applied movement update",
+        "Time spent applying player movement state and environment refresh for one applied movement update.",
+        &metrics.player_state_environment_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_fall_damage_broadcast_time",
+        "time spent materializing fall damage and related packets for one applied movement update",
+        "Time spent materializing fall damage and related packets for one applied movement update.",
+        &metrics.fall_damage_broadcast_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_death_presentation_time",
+        "time spent presenting deferred player death state for one applied movement update",
+        "Time spent presenting deferred player death state for one applied movement update.",
+        &metrics.death_presentation_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_visibility_refresh_mark_time",
+        "time spent marking deferred player-visibility refresh work for one applied movement update",
+        "Time spent marking deferred player-visibility refresh work for one applied movement update.",
+        &metrics.visibility_refresh_mark_time,
+    );
+    write_histogram_metric_summary(
+        body,
+        "wow_movement_apply_total_time",
+        "time spent inside MapRuntime::update_player_position for one applied movement update",
+        "Time spent inside MapRuntime::update_player_position for one applied movement update.",
+        &metrics.total_time,
     );
 }
 
@@ -3295,6 +3555,16 @@ tr:last-child td { border-bottom: 0; }
   </section>
 
   <section class="section solo-chart">
+    <h2>Player Visibility Refresh</h2>
+    <div id="playerVisibilityRefreshTable"></div>
+  </section>
+
+  <section class="section solo-chart">
+    <h2>Movement Pipeline</h2>
+    <div id="movementPipelineTable"></div>
+  </section>
+
+  <section class="section solo-chart">
     <h2>Session Loop</h2>
     <div id="sessionLoopTable"></div>
   </section>
@@ -3657,6 +3927,155 @@ function renderSessionLoop(metrics) {
     : `<div class="empty">No session loop phase samples yet.</div>`;
 }
 
+function renderPlayerVisibilityRefresh(metrics) {
+  const playersLatest = get(metrics, "wow_player_visibility_refresh_players_refreshed_latest");
+  const playersAvg = get(metrics, "wow_player_visibility_refresh_players_refreshed_average");
+  const playersMax = get(metrics, "wow_player_visibility_refresh_players_refreshed_max");
+  const packetsLatest = get(metrics, "wow_player_visibility_refresh_packets_emitted_latest");
+  const packetsAvg = get(metrics, "wow_player_visibility_refresh_packets_emitted_average");
+  const packetsMax = get(metrics, "wow_player_visibility_refresh_packets_emitted_max");
+  const visibilityAvg = get(metrics, "wow_player_visibility_refresh_visibility_diff_broadcast_time_average_1m_milliseconds")
+    || get(metrics, "wow_player_visibility_refresh_visibility_diff_broadcast_time_average_milliseconds");
+  const visibilityLatest = get(metrics, "wow_player_visibility_refresh_visibility_diff_broadcast_time_latest_milliseconds");
+  const visibilityMax = get(metrics, "wow_player_visibility_refresh_visibility_diff_broadcast_time_max_1m_milliseconds")
+    || get(metrics, "wow_player_visibility_refresh_visibility_diff_broadcast_time_max_milliseconds");
+  const creatureAvg = get(metrics, "wow_player_visibility_refresh_creature_interest_sync_time_average_1m_milliseconds")
+    || get(metrics, "wow_player_visibility_refresh_creature_interest_sync_time_average_milliseconds");
+  const creatureLatest = get(metrics, "wow_player_visibility_refresh_creature_interest_sync_time_latest_milliseconds");
+  const creatureMax = get(metrics, "wow_player_visibility_refresh_creature_interest_sync_time_max_1m_milliseconds")
+    || get(metrics, "wow_player_visibility_refresh_creature_interest_sync_time_max_milliseconds");
+
+  const hasSamples =
+    playersLatest > 0 || packetsLatest > 0 || visibilityLatest > 0 || creatureLatest > 0 ||
+    visibilityAvg > 0 || creatureAvg > 0 || visibilityMax > 0 || creatureMax > 0;
+
+  $("playerVisibilityRefreshTable").innerHTML = hasSamples
+    ? table(
+        ["Metric", "Avg 1m", "Latest", "Max 1m"],
+        [
+          ["Players Refreshed", fmt(playersAvg), fmt(playersLatest), fmt(playersMax)],
+          ["Packets Emitted", fmt(packetsAvg), fmt(packetsLatest), fmt(packetsMax)],
+          ["Visibility Diff/Broadcast ms", fmt(visibilityAvg), fmt(visibilityLatest), fmt(visibilityMax)],
+          ["Creature Interest Sync ms", fmt(creatureAvg), fmt(creatureLatest), fmt(creatureMax)]
+        ]
+      )
+    : `<div class="empty">No player visibility refresh samples yet.</div>`;
+}
+
+function renderMovementPipeline(metrics) {
+  const queueLatest = get(metrics, "wow_movement_actor_queue_depth_latest");
+  const queueMax = get(metrics, "wow_movement_actor_queue_depth_max");
+  const batchAvg = get(metrics, "wow_movement_actor_batch_size_average");
+  const batchLatest = get(metrics, "wow_movement_actor_batch_size_latest");
+  const batchMax = get(metrics, "wow_movement_actor_batch_size_max");
+  const actorEnqueueAvg = get(metrics, "wow_movement_actor_enqueue_latency_average_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_enqueue_latency_average_milliseconds");
+  const actorEnqueueLatest = get(metrics, "wow_movement_actor_enqueue_latency_latest_milliseconds");
+  const actorEnqueueMax = get(metrics, "wow_movement_actor_enqueue_latency_max_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_enqueue_latency_max_milliseconds");
+  const actorApplyStartAvg = get(metrics, "wow_movement_actor_apply_start_latency_average_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_apply_start_latency_average_milliseconds");
+  const actorApplyStartLatest = get(metrics, "wow_movement_actor_apply_start_latency_latest_milliseconds");
+  const actorApplyStartMax = get(metrics, "wow_movement_actor_apply_start_latency_max_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_apply_start_latency_max_milliseconds");
+  const actorProcessingAvg = get(metrics, "wow_movement_actor_processing_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_processing_time_average_milliseconds");
+  const actorProcessingLatest = get(metrics, "wow_movement_actor_processing_time_latest_milliseconds");
+  const actorProcessingMax = get(metrics, "wow_movement_actor_processing_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_processing_time_max_milliseconds");
+  const actorReplyAvg = get(metrics, "wow_movement_actor_reply_latency_average_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_reply_latency_average_milliseconds");
+  const actorReplyLatest = get(metrics, "wow_movement_actor_reply_latency_latest_milliseconds");
+  const actorReplyMax = get(metrics, "wow_movement_actor_reply_latency_max_1m_milliseconds")
+    || get(metrics, "wow_movement_actor_reply_latency_max_milliseconds");
+  const mutexWaitAvg = get(metrics, "wow_movement_map_mutex_wait_average_1m_milliseconds")
+    || get(metrics, "wow_movement_map_mutex_wait_average_milliseconds");
+  const mutexWaitLatest = get(metrics, "wow_movement_map_mutex_wait_latest_milliseconds");
+  const mutexWaitMax = get(metrics, "wow_movement_map_mutex_wait_max_1m_milliseconds")
+    || get(metrics, "wow_movement_map_mutex_wait_max_milliseconds");
+  const mutexHoldAvg = get(metrics, "wow_movement_map_mutex_hold_average_1m_milliseconds")
+    || get(metrics, "wow_movement_map_mutex_hold_average_milliseconds");
+  const mutexHoldLatest = get(metrics, "wow_movement_map_mutex_hold_latest_milliseconds");
+  const mutexHoldMax = get(metrics, "wow_movement_map_mutex_hold_max_1m_milliseconds")
+    || get(metrics, "wow_movement_map_mutex_hold_max_milliseconds");
+  const observersAvg = get(metrics, "wow_movement_apply_observers_notified_average");
+  const observersLatest = get(metrics, "wow_movement_apply_observers_notified_latest");
+  const observersMax = get(metrics, "wow_movement_apply_observers_notified_max");
+  const packetsAvg = get(metrics, "wow_movement_apply_packets_emitted_average");
+  const packetsLatest = get(metrics, "wow_movement_apply_packets_emitted_latest");
+  const packetsMax = get(metrics, "wow_movement_apply_packets_emitted_max");
+  const observerSnapshotAvg = get(metrics, "wow_movement_apply_observer_snapshot_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_observer_snapshot_time_average_milliseconds");
+  const observerSnapshotLatest = get(metrics, "wow_movement_apply_observer_snapshot_time_latest_milliseconds");
+  const observerSnapshotMax = get(metrics, "wow_movement_apply_observer_snapshot_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_observer_snapshot_time_max_milliseconds");
+  const broadcastAvg = get(metrics, "wow_movement_apply_movement_broadcast_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_movement_broadcast_time_average_milliseconds");
+  const broadcastLatest = get(metrics, "wow_movement_apply_movement_broadcast_time_latest_milliseconds");
+  const broadcastMax = get(metrics, "wow_movement_apply_movement_broadcast_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_movement_broadcast_time_max_milliseconds");
+  const gridAvg = get(metrics, "wow_movement_apply_grid_update_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_grid_update_time_average_milliseconds");
+  const gridLatest = get(metrics, "wow_movement_apply_grid_update_time_latest_milliseconds");
+  const gridMax = get(metrics, "wow_movement_apply_grid_update_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_grid_update_time_max_milliseconds");
+  const stateEnvAvg = get(metrics, "wow_movement_apply_player_state_environment_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_player_state_environment_time_average_milliseconds");
+  const stateEnvLatest = get(metrics, "wow_movement_apply_player_state_environment_time_latest_milliseconds");
+  const stateEnvMax = get(metrics, "wow_movement_apply_player_state_environment_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_player_state_environment_time_max_milliseconds");
+  const fallAvg = get(metrics, "wow_movement_apply_fall_damage_broadcast_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_fall_damage_broadcast_time_average_milliseconds");
+  const fallLatest = get(metrics, "wow_movement_apply_fall_damage_broadcast_time_latest_milliseconds");
+  const fallMax = get(metrics, "wow_movement_apply_fall_damage_broadcast_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_fall_damage_broadcast_time_max_milliseconds");
+  const deathAvg = get(metrics, "wow_movement_apply_death_presentation_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_death_presentation_time_average_milliseconds");
+  const deathLatest = get(metrics, "wow_movement_apply_death_presentation_time_latest_milliseconds");
+  const deathMax = get(metrics, "wow_movement_apply_death_presentation_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_death_presentation_time_max_milliseconds");
+  const visibilityMarkAvg = get(metrics, "wow_movement_apply_visibility_refresh_mark_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_visibility_refresh_mark_time_average_milliseconds");
+  const visibilityMarkLatest = get(metrics, "wow_movement_apply_visibility_refresh_mark_time_latest_milliseconds");
+  const visibilityMarkMax = get(metrics, "wow_movement_apply_visibility_refresh_mark_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_visibility_refresh_mark_time_max_milliseconds");
+  const totalAvg = get(metrics, "wow_movement_apply_total_time_average_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_total_time_average_milliseconds");
+  const totalLatest = get(metrics, "wow_movement_apply_total_time_latest_milliseconds");
+  const totalMax = get(metrics, "wow_movement_apply_total_time_max_1m_milliseconds")
+    || get(metrics, "wow_movement_apply_total_time_max_milliseconds");
+
+  const hasSamples =
+    queueLatest > 0 || batchLatest > 0 || actorApplyStartLatest > 0 || actorReplyLatest > 0 ||
+    mutexWaitLatest > 0 || mutexHoldLatest > 0 || totalLatest > 0 || observersLatest > 0 || packetsLatest > 0;
+
+  $("movementPipelineTable").innerHTML = hasSamples
+    ? table(
+        ["Metric", "Avg 1m", "Latest", "Max 1m"],
+        [
+          ["Actor Queue Depth", fmt(queueLatest), fmt(queueLatest), fmt(queueMax)],
+          ["Actor Batch Size", fmt(batchAvg), fmt(batchLatest), fmt(batchMax)],
+          ["Actor Enqueue ms", fmt(actorEnqueueAvg), fmt(actorEnqueueLatest), fmt(actorEnqueueMax)],
+          ["Actor Apply-Start ms", fmt(actorApplyStartAvg), fmt(actorApplyStartLatest), fmt(actorApplyStartMax)],
+          ["Actor Processing ms", fmt(actorProcessingAvg), fmt(actorProcessingLatest), fmt(actorProcessingMax)],
+          ["Actor Reply ms", fmt(actorReplyAvg), fmt(actorReplyLatest), fmt(actorReplyMax)],
+          ["Map Mutex Wait ms", fmt(mutexWaitAvg), fmt(mutexWaitLatest), fmt(mutexWaitMax)],
+          ["Map Mutex Hold ms", fmt(mutexHoldAvg), fmt(mutexHoldLatest), fmt(mutexHoldMax)],
+          ["Observers Notified", fmt(observersAvg), fmt(observersLatest), fmt(observersMax)],
+          ["Packets Emitted", fmt(packetsAvg), fmt(packetsLatest), fmt(packetsMax)],
+          ["Observer Snapshot ms", fmt(observerSnapshotAvg), fmt(observerSnapshotLatest), fmt(observerSnapshotMax)],
+          ["Movement Broadcast ms", fmt(broadcastAvg), fmt(broadcastLatest), fmt(broadcastMax)],
+          ["Grid Update ms", fmt(gridAvg), fmt(gridLatest), fmt(gridMax)],
+          ["Player State/Env ms", fmt(stateEnvAvg), fmt(stateEnvLatest), fmt(stateEnvMax)],
+          ["Fall Damage/Fanout ms", fmt(fallAvg), fmt(fallLatest), fmt(fallMax)],
+          ["Death Presentation ms", fmt(deathAvg), fmt(deathLatest), fmt(deathMax)],
+          ["Visibility Mark ms", fmt(visibilityMarkAvg), fmt(visibilityMarkLatest), fmt(visibilityMarkMax)],
+          ["Total Apply ms", fmt(totalAvg), fmt(totalLatest), fmt(totalMax)]
+        ]
+      )
+    : `<div class="empty">No movement pipeline samples yet.</div>`;
+}
+
 function deltaText(metrics, row) {
   const key = metricKey(row.name, row.labels);
   const previous = state.previous.get(key) ?? row.value;
@@ -3689,6 +4108,8 @@ async function refresh() {
     renderDb(metrics);
     renderPackets(metrics);
     renderPacketLatency(metrics);
+    renderPlayerVisibilityRefresh(metrics);
+    renderMovementPipeline(metrics);
     renderSessionLoop(metrics);
     state.previous = metrics;
     $("statusDot").className = "status-dot good";
@@ -3841,6 +4262,17 @@ mod tests {
         record_movement_actor_batch_size(5);
         record_movement_map_mutex_wait(Duration::from_millis(6));
         record_movement_map_mutex_hold(Duration::from_millis(8));
+        record_movement_actor_apply_start_latency(Duration::from_millis(9));
+        record_movement_apply_observers_notified(6);
+        record_movement_apply_packets_emitted(12);
+        record_movement_apply_observer_snapshot_time(Duration::from_millis(10));
+        record_movement_apply_movement_broadcast_time(Duration::from_millis(11));
+        record_movement_apply_grid_update_time(Duration::from_millis(12));
+        record_movement_apply_player_state_environment_time(Duration::from_millis(13));
+        record_movement_apply_fall_damage_broadcast_time(Duration::from_millis(14));
+        record_movement_apply_death_presentation_time(Duration::from_millis(15));
+        record_movement_apply_visibility_refresh_mark_time(Duration::from_millis(16));
+        record_movement_apply_total_time(Duration::from_millis(17));
         record_native_mmap_query(
             NativeMmapQueryKind::Path,
             NativeMmapQueryTimings {
@@ -3890,6 +4322,10 @@ mod tests {
         record_player_environment_timer_update_time(Duration::from_millis(10));
         record_player_environment_damage_application_time(Duration::from_millis(11));
         record_player_environment_nearby_fanout_time(Duration::from_millis(12));
+        record_player_visibility_refresh_players_refreshed(5);
+        record_player_visibility_refresh_packets_emitted(14);
+        record_player_visibility_refresh_visibility_diff_broadcast_time(Duration::from_millis(26));
+        record_player_visibility_refresh_creature_interest_sync_time(Duration::from_millis(27));
 
         let rendered = render_prometheus();
 
@@ -3951,6 +4387,29 @@ mod tests {
         assert!(rendered.contains("wow_movement_actor_batch_size_latest "));
         assert!(rendered.contains("wow_movement_map_mutex_wait_average_milliseconds "));
         assert!(rendered.contains("wow_movement_map_mutex_hold_average_milliseconds "));
+        assert!(
+            rendered.contains("wow_movement_actor_apply_start_latency_average_milliseconds 9.000")
+        );
+        assert!(rendered.contains("wow_movement_apply_observers_notified_latest 6"));
+        assert!(rendered.contains("wow_movement_apply_packets_emitted_latest 12"));
+        assert!(rendered
+            .contains("wow_movement_apply_observer_snapshot_time_average_milliseconds 10.000"));
+        assert!(rendered
+            .contains("wow_movement_apply_movement_broadcast_time_average_milliseconds 11.000"));
+        assert!(
+            rendered.contains("wow_movement_apply_grid_update_time_average_milliseconds 12.000")
+        );
+        assert!(rendered.contains(
+            "wow_movement_apply_player_state_environment_time_average_milliseconds 13.000"
+        ));
+        assert!(rendered
+            .contains("wow_movement_apply_fall_damage_broadcast_time_average_milliseconds 14.000"));
+        assert!(rendered
+            .contains("wow_movement_apply_death_presentation_time_average_milliseconds 15.000"));
+        assert!(rendered.contains(
+            "wow_movement_apply_visibility_refresh_mark_time_average_milliseconds 16.000"
+        ));
+        assert!(rendered.contains("wow_movement_apply_total_time_average_milliseconds 17.000"));
         assert!(rendered.contains("wow_native_mmap_path_calls_total 1"));
         assert!(rendered.contains("wow_native_mmap_random_path_calls_total 1"));
         assert!(rendered
@@ -4008,6 +4467,14 @@ mod tests {
         ));
         assert!(rendered
             .contains("wow_player_environment_nearby_fanout_time_average_milliseconds 12.000"));
+        assert!(rendered.contains("wow_player_visibility_refresh_players_refreshed_latest 5"));
+        assert!(rendered.contains("wow_player_visibility_refresh_packets_emitted_latest 14"));
+        assert!(rendered.contains(
+            "wow_player_visibility_refresh_visibility_diff_broadcast_time_average_milliseconds 26.000"
+        ));
+        assert!(rendered.contains(
+            "wow_player_visibility_refresh_creature_interest_sync_time_average_milliseconds 27.000"
+        ));
         assert!(rendered.contains(
             "wow_map_phase_duration_average_milliseconds{phase=\"dynamic_objects\"} 0.000"
         ));
@@ -4040,7 +4507,9 @@ mod tests {
         assert!(rendered.contains("Loop Avg 10s"));
         assert!(rendered.contains("loopAvg10sChart"));
         assert!(rendered.contains("Packet Latency"));
+        assert!(rendered.contains("Movement Pipeline"));
         assert!(rendered.contains("Session Loop"));
+        assert!(rendered.contains("movementPipelineTable"));
         assert!(rendered.contains("sessionLoopTable"));
         assert!(rendered.contains("wow_map_tick_duration_average_milliseconds"));
         assert!(rendered.contains("wow_map_tick_duration_average_1m_milliseconds"));

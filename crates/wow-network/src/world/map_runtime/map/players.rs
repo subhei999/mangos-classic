@@ -8,6 +8,7 @@ pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
 pub(in crate::world) const CMANGOS_DISCONNECTED_PLAYER_LINGER: Duration = Duration::from_secs(60);
 pub(in crate::world) const PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL: Duration =
     Duration::from_millis(750);
+pub(in crate::world) const MAX_PLAYER_VISIBILITY_REFRESHES_PER_TICK: usize = 1024;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct PlayerEnvironmentTickMetrics {
@@ -51,6 +52,25 @@ impl MapRuntime {
             .collect::<Vec<_>>();
         guids.sort_unstable();
         guids
+    }
+
+    fn mark_player_visibility_refresh_needed(
+        &mut self,
+        character_guid: u32,
+        old_position: WorldPosition,
+    ) {
+        self.pending_player_visibility_refreshes
+            .insert(character_guid);
+        self.pending_player_visibility_refresh_old_positions
+            .entry(character_guid)
+            .or_insert(old_position);
+    }
+
+    fn clear_player_visibility_refresh(&mut self, character_guid: u32) {
+        self.pending_player_visibility_refreshes
+            .remove(&character_guid);
+        self.pending_player_visibility_refresh_old_positions
+            .remove(&character_guid);
     }
 
     pub(in crate::world) fn advance_player_environment_tick(
@@ -744,6 +764,7 @@ impl MapRuntime {
             player_guid,
             player_environment_needs_tick_processing(&player.environment),
         );
+        self.clear_player_visibility_refresh(player_guid);
         if player.bot_runtime.is_some() {
             self.active_playerbot_count = self.active_playerbot_count.saturating_add(1);
         }
@@ -761,6 +782,7 @@ impl MapRuntime {
         character_guid: u32,
         now: Instant,
     ) -> bool {
+        self.clear_player_visibility_refresh(character_guid);
         let Some(player) = self.players.get_mut(&character_guid) else {
             return false;
         };
@@ -826,6 +848,7 @@ impl MapRuntime {
         movement: &MovementInfo,
         server_time: u32,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let update_started_at = Instant::now();
         let Some(current_player) = self.players.get(&character_guid).cloned() else {
             return Ok(Vec::new());
         };
@@ -837,7 +860,8 @@ impl MapRuntime {
         let fall_update = player_fall_update(&current_player, opcode, movement);
         let mover_is_client_controlled = current_player.is_client_controlled();
 
-        let old_visible = if mover_is_client_controlled {
+        let observer_snapshot_started_at = Instant::now();
+        let current_observers = if mover_is_client_controlled {
             current_player
                 .visible_objects
                 .iter()
@@ -863,101 +887,19 @@ impl MapRuntime {
             })
             .collect::<HashSet<_>>()
         };
-        let retained_non_player_visible = current_player
-            .visible_objects
-            .iter()
-            .filter(|guid| !guid.is_player())
-            .copied()
-            .collect::<HashSet<_>>();
-        let nearby_visible = if mover_is_client_controlled {
-            self.nearby_player_guids(
-                movement.position,
-                PLAYER_VISIBILITY_RADIUS_YARDS,
-                Some(character_guid),
-            )
-        } else {
-            self.nearby_client_player_guids(
-                movement.position,
-                PLAYER_VISIBILITY_RADIUS_YARDS,
-                Some(character_guid),
-            )
-        };
-        let new_visible = nearby_visible.into_iter().collect::<HashSet<_>>();
+        crate::observability::record_movement_apply_observer_snapshot_time(
+            observer_snapshot_started_at.elapsed(),
+        );
+        crate::observability::record_movement_apply_observers_notified(current_observers.len());
 
         let mut packets = Vec::new();
-        for other_guid in old_visible
-            .difference(&new_visible)
-            .copied()
-            .collect::<Vec<_>>()
-        {
-            let Some(other) = self.players.get_mut(&other_guid) else {
-                continue;
-            };
-            other.visible_objects.remove(&player_object);
-            if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
-                opcode: SMSG_DESTROY_OBJECT,
-                body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
-            }) {
-                packets.push(packet);
-            }
-            if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
-                opcode: SMSG_DESTROY_OBJECT,
-                body: build_destroy_guid_body(player_object),
-            }) {
-                packets.push(packet);
-            }
-        }
 
-        let entering = new_visible
-            .difference(&old_visible)
-            .copied()
-            .collect::<Vec<_>>();
-        let mut entering_for_mover = Vec::new();
-        let moving_player_create = {
-            let mut moved_player = current_player.clone();
-            moved_player.position = movement.position;
-            moved_player.movement_flags = movement.flags;
-            moved_player.client_time = movement.client_time;
-            moved_player.server_time = server_time;
-            moved_player.fall_time = movement.fall_time;
-            moved_player.jump = movement.jump.clone();
-            moved_player.cell = new_cell;
-            build_other_player_create_block(&moved_player)?
-        };
-        for other_guid in entering {
-            let Some(other) = self.players.get_mut(&other_guid) else {
-                continue;
-            };
-            other.visible_objects.insert(player_object);
-            entering_for_mover.push(other_guid);
-            if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
-                opcode: SMSG_UPDATE_OBJECT,
-                body: build_update_object_body(std::slice::from_ref(&moving_player_create)),
-            }) {
-                packets.push(packet);
-            }
-        }
-        for other_guid in &entering_for_mover {
-            if let Some(other) = self.players.get(other_guid) {
-                if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
-                    opcode: SMSG_UPDATE_OBJECT,
-                    body: build_update_object_body(&[build_other_player_create_block(other)?]),
-                }) {
-                    packets.push(packet);
-                }
-                if let Some(start_packet) = moving_bot_start_packet(other)? {
-                    if let Some(packet) = current_player.packet_to_client(start_packet) {
-                        packets.push(packet);
-                    }
-                }
-            }
-        }
-
+        let movement_broadcast_started_at = Instant::now();
         let movement_packet = OutboundWorldPacket {
             opcode,
             body: build_player_movement_broadcast_body(character_guid, movement, server_time)?,
         };
-        for other_guid in &new_visible {
+        for other_guid in &current_observers {
             let Some(other) = self.players.get(other_guid) else {
                 continue;
             };
@@ -965,7 +907,11 @@ impl MapRuntime {
                 packets.push(packet);
             }
         }
+        crate::observability::record_movement_apply_movement_broadcast_time(
+            movement_broadcast_started_at.elapsed(),
+        );
 
+        let grid_update_started_at = Instant::now();
         if old_grid != new_grid || old_cell != new_cell {
             if let Some(grid) = self.grids.get_mut(&old_grid) {
                 if old_grid != new_grid && mover_is_client_controlled {
@@ -1004,7 +950,11 @@ impl MapRuntime {
             }
             self.refresh_grid_state(new_grid);
         }
+        crate::observability::record_movement_apply_grid_update_time(
+            grid_update_started_at.elapsed(),
+        );
 
+        let player_state_environment_started_at = Instant::now();
         let mut environment_packets = Vec::new();
         let mut keep_environment_tracked = false;
         let mut fall_applied = None;
@@ -1022,16 +972,6 @@ impl MapRuntime {
                 movement.jump.clone()
             };
             player.cell = new_cell;
-            if mover_is_client_controlled {
-                player.visible_objects = retained_non_player_visible;
-                player.visible_objects.extend(
-                    new_visible
-                        .iter()
-                        .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid)),
-                );
-            } else {
-                player.visible_objects = retained_non_player_visible;
-            }
             let refresh =
                 refresh_player_environment_flags(player, &self.geometry, Instant::now(), true)?;
             if refresh.sampled_geometry {
@@ -1053,7 +993,11 @@ impl MapRuntime {
         }
         self.set_player_environment_tick_tracked(character_guid, keep_environment_tracked);
         packets.extend(environment_packets);
+        crate::observability::record_movement_apply_player_state_environment_time(
+            player_state_environment_started_at.elapsed(),
+        );
 
+        let fall_damage_broadcast_started_at = Instant::now();
         if let Some(applied) = fall_applied.as_mut().filter(|applied| applied.died) {
             if applied.death_presentation_deferred {
                 self.pending_player_death_presentations.insert(
@@ -1134,7 +1078,7 @@ impl MapRuntime {
             if let Some(applied) = fall_applied.as_ref() {
                 packets.extend(applied.observer_packets.clone());
             }
-            for other_guid in &new_visible {
+            for other_guid in &current_observers {
                 let Some(other) = self.players.get(other_guid) else {
                     continue;
                 };
@@ -1154,17 +1098,180 @@ impl MapRuntime {
                 }
             }
         }
+        crate::observability::record_movement_apply_fall_damage_broadcast_time(
+            fall_damage_broadcast_started_at.elapsed(),
+        );
+
+        let death_presentation_started_at = Instant::now();
         packets.extend(self.present_player_death_if_ready(
             character_guid,
             Instant::now(),
             false,
         )?);
-        self.sync_db_creature_idle_motion_tracking_for_player_interest_positions(&[
-            current_player.position,
-            movement.position,
-        ]);
+        crate::observability::record_movement_apply_death_presentation_time(
+            death_presentation_started_at.elapsed(),
+        );
+
+        let visibility_refresh_mark_started_at = Instant::now();
+        self.mark_player_visibility_refresh_needed(character_guid, current_player.position);
+        crate::observability::record_movement_apply_visibility_refresh_mark_time(
+            visibility_refresh_mark_started_at.elapsed(),
+        );
+        crate::observability::record_movement_apply_packets_emitted(packets.len());
+        crate::observability::record_movement_apply_total_time(update_started_at.elapsed());
 
         Ok(packets)
+    }
+
+    pub(in crate::world) fn advance_player_visibility_refresh_tick(
+        &mut self,
+    ) -> anyhow::Result<PlayerVisibilityRefreshTick> {
+        let mut tick = PlayerVisibilityRefreshTick::default();
+        let mut visibility_diff_broadcast_time = Duration::ZERO;
+        let mut creature_interest_sync_time = Duration::ZERO;
+
+        while let Some(character_guid) = self.pending_player_visibility_refreshes.pop_first() {
+            let Some(current_player) = self.players.get(&character_guid).cloned() else {
+                self.pending_player_visibility_refresh_old_positions
+                    .remove(&character_guid);
+                continue;
+            };
+
+            if tick.refreshed_players as usize >= MAX_PLAYER_VISIBILITY_REFRESHES_PER_TICK {
+                self.pending_player_visibility_refreshes
+                    .insert(character_guid);
+                tick.budget_exhausted = true;
+                break;
+            }
+
+            let player_object = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+            let mover_is_client_controlled = current_player.is_client_controlled();
+            let old_position = self
+                .pending_player_visibility_refresh_old_positions
+                .remove(&character_guid)
+                .unwrap_or(current_player.position);
+            let old_visible = if mover_is_client_controlled {
+                current_player
+                    .visible_objects
+                    .iter()
+                    .filter_map(|guid| guid.is_player().then_some(guid.counter()))
+                    .collect::<HashSet<_>>()
+            } else {
+                self.nearby_client_player_guids(
+                    old_position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+                .into_iter()
+                .filter(|observer_guid| {
+                    self.players
+                        .get(observer_guid)
+                        .is_some_and(|observer| observer.visible_objects.contains(&player_object))
+                })
+                .collect::<HashSet<_>>()
+            };
+            let new_visible = if mover_is_client_controlled {
+                self.nearby_player_guids(
+                    current_player.position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+            } else {
+                self.nearby_client_player_guids(
+                    current_player.position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(character_guid),
+                )
+            }
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+            let visibility_started_at = Instant::now();
+            for other_guid in old_visible
+                .difference(&new_visible)
+                .copied()
+                .collect::<Vec<_>>()
+            {
+                let Some(other) = self.players.get_mut(&other_guid) else {
+                    continue;
+                };
+                other.visible_objects.remove(&player_object);
+                if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_DESTROY_OBJECT,
+                    body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
+                }) {
+                    tick.packets.push(packet);
+                }
+                if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_DESTROY_OBJECT,
+                    body: build_destroy_guid_body(player_object),
+                }) {
+                    tick.packets.push(packet);
+                }
+            }
+
+            let moving_player_create = build_other_player_create_block(&current_player)?;
+            let entering = new_visible
+                .difference(&old_visible)
+                .copied()
+                .collect::<Vec<_>>();
+            for other_guid in entering {
+                let Some(other) = self.players.get_mut(&other_guid) else {
+                    continue;
+                };
+                other.visible_objects.insert(player_object);
+                if let Some(packet) = other.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_update_object_body(std::slice::from_ref(&moving_player_create)),
+                }) {
+                    tick.packets.push(packet);
+                }
+                if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
+                    opcode: SMSG_UPDATE_OBJECT,
+                    body: build_update_object_body(&[build_other_player_create_block(other)?]),
+                }) {
+                    tick.packets.push(packet);
+                }
+                if let Some(start_packet) = moving_bot_start_packet(other)? {
+                    if let Some(packet) = current_player.packet_to_client(start_packet) {
+                        tick.packets.push(packet);
+                    }
+                }
+            }
+
+            if mover_is_client_controlled {
+                if let Some(player) = self.players.get_mut(&character_guid) {
+                    player.visible_objects.retain(|guid| !guid.is_player());
+                    player.visible_objects.extend(
+                        new_visible
+                            .iter()
+                            .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid)),
+                    );
+                }
+            }
+            visibility_diff_broadcast_time += visibility_started_at.elapsed();
+
+            let creature_interest_sync_started_at = Instant::now();
+            self.sync_db_creature_idle_motion_tracking_for_player_interest_positions(&[
+                old_position,
+                current_player.position,
+            ]);
+            creature_interest_sync_time += creature_interest_sync_started_at.elapsed();
+            tick.refreshed_players = tick.refreshed_players.saturating_add(1);
+        }
+
+        crate::observability::record_player_visibility_refresh_players_refreshed(
+            tick.refreshed_players as usize,
+        );
+        crate::observability::record_player_visibility_refresh_packets_emitted(tick.packets.len());
+        crate::observability::record_player_visibility_refresh_visibility_diff_broadcast_time(
+            visibility_diff_broadcast_time,
+        );
+        crate::observability::record_player_visibility_refresh_creature_interest_sync_time(
+            creature_interest_sync_time,
+        );
+
+        Ok(tick)
     }
 
     pub(in crate::world) fn discover_player_area(
@@ -2668,6 +2775,7 @@ impl MapRuntime {
         character_guid: u32,
     ) -> Vec<(SessionId, OutboundWorldPacket)> {
         self.set_player_environment_tick_tracked(character_guid, false);
+        self.clear_player_visibility_refresh(character_guid);
         let Some(player) = self.players.remove(&character_guid) else {
             return Vec::new();
         };

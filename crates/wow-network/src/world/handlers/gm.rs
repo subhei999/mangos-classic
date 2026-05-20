@@ -934,6 +934,10 @@ pub(in crate::world) async fn teleport_gm(
         fall_time: 0,
         jump: JumpInfo::default(),
     };
+    let spell_cleanup_packets = deps
+        .maps
+        .clear_player_active_spell_runtime(old_map_id, character_guid)
+        .await?;
     let movement_outcome = deps
         .maps
         .update_player_position(
@@ -954,6 +958,7 @@ pub(in crate::world) async fn teleport_gm(
             return Ok(());
         }
     };
+    deps.sessions.dispatch(spell_cleanup_packets).await;
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = target;
         character.movement_flags = 0;

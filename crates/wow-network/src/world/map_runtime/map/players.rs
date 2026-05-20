@@ -2587,6 +2587,14 @@ impl MapRuntime {
         character_guid: u32,
         position: WorldPosition,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(direct_session_id) = self
+            .players
+            .get(&character_guid)
+            .and_then(PlayerRuntime::client_session_id)
+        else {
+            return Ok(Vec::new());
+        };
+        let spell_cleanup = self.clear_player_active_spell_runtime(character_guid)?;
         let (packets, keep_tracked) = {
             let Some(player) = self.players.get_mut(&character_guid) else {
                 return Ok(Vec::new());
@@ -2604,7 +2612,15 @@ impl MapRuntime {
             )
         };
         self.set_player_environment_tick_tracked(character_guid, keep_tracked);
-        Ok(packets)
+        let mut all_packets = spell_cleanup.observer_packets;
+        all_packets.extend(
+            spell_cleanup
+                .direct_packets
+                .into_iter()
+                .map(|packet| (direct_session_id, packet)),
+        );
+        all_packets.extend(packets);
+        Ok(all_packets)
     }
 
     pub(in crate::world) fn set_player_power2(&mut self, character_guid: u32, power2: u32) {

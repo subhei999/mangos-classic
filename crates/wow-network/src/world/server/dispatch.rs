@@ -59,8 +59,14 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::DestroyItem(_)
         | packets::ParsedWorldClientPacket::ReadItem(_)
         | packets::ParsedWorldClientPacket::SetAmmo(_)
-        | packets::ParsedWorldClientPacket::SplitItem(_) => {
+        | packets::ParsedWorldClientPacket::SplitItem(_)
+        | packets::ParsedWorldClientPacket::AutoBankItem(_)
+        | packets::ParsedWorldClientPacket::AutoStoreBankItem(_) => {
             handlers::inventory::dispatch_inventory_packet(ctx, packet).await
+        }
+        packets::ParsedWorldClientPacket::BankerActivate(_)
+        | packets::ParsedWorldClientPacket::BuyBankSlot(_) => {
+            handlers::bank::dispatch_bank_packet(ctx, packet).await
         }
         packets::ParsedWorldClientPacket::QuestQuery(_)
         | packets::ParsedWorldClientPacket::QuestgiverStatusQuery(_)

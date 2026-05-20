@@ -235,6 +235,24 @@ pub(in crate::world) fn build_player_money_update_body(
     Ok(build_update_object_body(&[block]))
 }
 
+pub(in crate::world) fn build_player_bytes2_update_body(
+    character_guid: u32,
+    player_bytes2: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(
+        &mut values,
+        PLAYER_BYTES_2,
+        player_bytes2_with_rest_state(player_bytes2),
+    )?;
+    write_update_values(&mut block, &values)?;
+    Ok(build_update_object_body(&[block]))
+}
+
 pub(in crate::world) fn build_destroy_object_body(item_guid: u32) -> Vec<u8> {
     ObjectGuid::new(HighGuid::Item, 0, item_guid)
         .raw()
@@ -246,6 +264,12 @@ pub(in crate::world) fn inventory_slot_update_field(slot: u8) -> Option<usize> {
         0..INVENTORY_SLOT_ITEM_START => Some(PLAYER_FIELD_INV_SLOT_HEAD + slot as usize * 2),
         INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END => {
             Some(PLAYER_FIELD_PACK_SLOT_1 + (slot - INVENTORY_SLOT_ITEM_START) as usize * 2)
+        }
+        BANK_SLOT_ITEM_START..BANK_SLOT_ITEM_END => {
+            Some(PLAYER_FIELD_BANK_SLOT_1 + (slot - BANK_SLOT_ITEM_START) as usize * 2)
+        }
+        BANK_SLOT_BAG_START..BANK_SLOT_BAG_END => {
+            Some(PLAYER_FIELD_BANKBAG_SLOT_1 + (slot - BANK_SLOT_BAG_START) as usize * 2)
         }
         _ => None,
     }
@@ -295,7 +319,7 @@ pub(in crate::world) fn login_inventory_position_is_visible(
     inventory: &[CharacterInventoryItem],
 ) -> bool {
     if item.bag == INVENTORY_SLOT_BAG_0 as u32 {
-        return item.slot < INVENTORY_SLOT_ITEM_END;
+        return item.slot < BANK_SLOT_BAG_END;
     }
     let Ok(bag_slot) = u8::try_from(item.bag) else {
         return false;

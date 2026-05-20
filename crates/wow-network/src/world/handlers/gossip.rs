@@ -247,6 +247,18 @@ async fn dispatch_db_gossip_selection(
             )
             .await
         }
+        GOSSIP_OPTION_BANKER => {
+            super::bank::handle_banker_activate(
+                stream,
+                deps.maps,
+                wow_proto::BankerActivateRequest {
+                    banker_raw_guid: guid.raw(),
+                },
+                session,
+                header_crypto,
+            )
+            .await
+        }
         unsupported => {
             warn!(
                 guid = format_args!("0x{:016X}", guid.raw()),

@@ -85,6 +85,42 @@ pub(in crate::world) async fn dispatch_inventory_packet(
             )
             .await
         }
+        packets::ParsedWorldClientPacket::AutoBankItem(_) => {
+            handle_auto_bank_item(
+                &mut *ctx.stream,
+                InventoryDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.auto_bank_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::AutoStoreBankItem(_) => {
+            handle_auto_store_bank_item(
+                &mut *ctx.stream,
+                InventoryDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
+                },
+                packet.auto_store_bank_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
         other => anyhow::bail!("inventory router received opcode 0x{:04X}", other.opcode()),
     }
 }
@@ -230,18 +266,26 @@ pub(in crate::world) async fn handle_inventory_swap(
 
     let equipped_bags =
         load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
-    if !move_request.uses_existing_storage(&equipped_bags) {
+    let bank_bags = load_bank_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    let bank_bag_slot_count = bank_bag_slot_count(session);
+    if !move_request.uses_existing_storage(&equipped_bags, &bank_bags, bank_bag_slot_count) {
         info!(
             opcode = inventory_opcode_name(opcode),
             src_bag = move_request.src_bag,
             src_slot = move_request.src_slot,
             dst_bag = move_request.dst_bag,
             dst_slot = move_request.dst_slot,
-            "Rejected inventory move outside equipped bag capacity"
+            "Rejected inventory move outside existing inventory or bank storage"
         );
         return send_inventory_change_failure(
             stream,
-            EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT,
+            if move_request.references_unpurchased_bank_bag_slot(bank_bag_slot_count) {
+                EQUIP_ERR_MUST_PURCHASE_THAT_BAG_SLOT
+            } else if move_request.references_bank_storage() {
+                EQUIP_ERR_TOO_FAR_AWAY_FROM_BANK
+            } else {
+                EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT
+            },
             None,
             None,
             header_crypto,
@@ -582,6 +626,93 @@ pub(in crate::world) struct InventoryDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
     pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+}
+
+pub(in crate::world) async fn handle_auto_bank_item(
+    stream: &mut WorldPacketSink,
+    deps: InventoryDeps<'_>,
+    request: wow_proto::BankItemRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let src_bag = normalize_client_bag(request.src_bag);
+    let Some(character) = &session.character.active_character else {
+        warn!("Ignoring autobank item before character login");
+        return Ok(());
+    };
+    let Some((dst_bag, dst_slot)) =
+        first_auto_bank_destination(deps.world_db_pool, session, src_bag, request.src_slot).await?
+    else {
+        return send_inventory_change_failure(
+            stream,
+            EQUIP_ERR_BANK_FULL,
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    };
+    debug!(
+        guid = character.guid,
+        src_bag,
+        src_slot = request.src_slot,
+        dst_bag,
+        dst_slot,
+        "Auto-banking item into bank storage"
+    );
+    handle_inventory_swap(
+        stream,
+        deps,
+        wow_proto::InventoryMoveClientRequest::SwapItem {
+            dst_bag: client_bag_id(dst_bag),
+            dst_slot,
+            src_bag: client_bag_id(src_bag),
+            src_slot: request.src_slot,
+        },
+        session,
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn handle_auto_store_bank_item(
+    stream: &mut WorldPacketSink,
+    deps: InventoryDeps<'_>,
+    request: wow_proto::BankItemRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let src_bag = normalize_client_bag(request.src_bag);
+    let Some((dst_bag, dst_slot)) =
+        first_auto_store_bank_destination(deps.world_db_pool, session, src_bag, request.src_slot)
+            .await?
+    else {
+        return send_inventory_change_failure(
+            stream,
+            if is_bank_position(src_bag, request.src_slot) {
+                EQUIP_ERR_INVENTORY_FULL
+            } else {
+                EQUIP_ERR_BANK_FULL
+            },
+            None,
+            None,
+            header_crypto,
+        )
+        .await;
+    };
+    handle_inventory_swap(
+        stream,
+        deps,
+        wow_proto::InventoryMoveClientRequest::SwapItem {
+            dst_bag: client_bag_id(dst_bag),
+            dst_slot,
+            src_bag: client_bag_id(src_bag),
+            src_slot: request.src_slot,
+        },
+        session,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn inventory_move_client_request_opcode(
@@ -1117,9 +1248,35 @@ impl InventoryMoveRequest {
     pub(in crate::world) fn uses_existing_storage(
         &self,
         equipped_bags: &[EquippedBagInfo],
+        bank_bags: &[EquippedBagInfo],
+        bank_bag_slot_count: u8,
     ) -> bool {
-        move_position_exists(self.src_bag, self.src_slot, equipped_bags)
-            && move_position_exists(self.dst_bag, self.dst_slot, equipped_bags)
+        move_position_exists(
+            self.src_bag,
+            self.src_slot,
+            equipped_bags,
+            bank_bags,
+            bank_bag_slot_count,
+        ) && move_position_exists(
+            self.dst_bag,
+            self.dst_slot,
+            equipped_bags,
+            bank_bags,
+            bank_bag_slot_count,
+        )
+    }
+
+    pub(in crate::world) fn references_bank_storage(&self) -> bool {
+        is_bank_position(self.src_bag, self.src_slot)
+            || is_bank_position(self.dst_bag, self.dst_slot)
+    }
+
+    pub(in crate::world) fn references_unpurchased_bank_bag_slot(
+        &self,
+        bank_bag_slot_count: u8,
+    ) -> bool {
+        unpurchased_bank_bag_slot(self.src_bag, self.src_slot, bank_bag_slot_count)
+            || unpurchased_bank_bag_slot(self.dst_bag, self.dst_slot, bank_bag_slot_count)
     }
 
     pub(in crate::world) fn moves_equipped_bag_into_itself(&self) -> bool {
@@ -1204,8 +1361,33 @@ pub(in crate::world) async fn load_equipped_bag_infos(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Vec<EquippedBagInfo>> {
+    load_bag_infos_for_slots(
+        world_db_pool,
+        inventory,
+        INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END,
+    )
+    .await
+}
+
+pub(in crate::world) async fn load_bank_bag_infos(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<Vec<EquippedBagInfo>> {
+    load_bag_infos_for_slots(
+        world_db_pool,
+        inventory,
+        BANK_SLOT_BAG_START..BANK_SLOT_BAG_END,
+    )
+    .await
+}
+
+pub(in crate::world) async fn load_bag_infos_for_slots(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+    slots: std::ops::Range<u8>,
+) -> anyhow::Result<Vec<EquippedBagInfo>> {
     let mut bags = Vec::new();
-    for slot in INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END {
+    for slot in slots {
         let Some(item) = inventory
             .iter()
             .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == slot)
@@ -1248,12 +1430,21 @@ pub(in crate::world) fn move_position_exists(
     bag: u8,
     slot: u8,
     equipped_bags: &[EquippedBagInfo],
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
 ) -> bool {
     if bag == INVENTORY_SLOT_BAG_0 {
-        return slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot);
+        return slot < EQUIPMENT_SLOT_END
+            || is_inventory_bag_slot(slot)
+            || is_backpack_item_slot(slot)
+            || is_bank_item_slot(slot)
+            || (is_bank_bag_slot(slot)
+                && purchased_bank_bag_slot_index(slot)
+                    .is_some_and(|index| index < bank_bag_slot_count));
     }
     equipped_bags
         .iter()
+        .chain(bank_bags.iter())
         .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
 }
 
@@ -1306,6 +1497,41 @@ pub(in crate::world) fn bag_accepts_item(
         .is_some_and(|equipped| item_can_go_into_bag(template, equipped))
 }
 
+pub(in crate::world) fn bank_storage_position_exists(
+    bag: u8,
+    slot: u8,
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
+) -> bool {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return is_bank_item_slot(slot)
+            || (is_bank_bag_slot(slot)
+                && purchased_bank_bag_slot_index(slot)
+                    .is_some_and(|index| index < bank_bag_slot_count));
+    }
+    bank_bags
+        .iter()
+        .any(|equipped| equipped.slot == bag && slot < equipped.container_slots)
+}
+
+pub(in crate::world) fn bank_slot_range(
+    bag: u8,
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
+) -> Option<(u8, u8)> {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return Some((BANK_SLOT_ITEM_START, BANK_SLOT_ITEM_END));
+    }
+    bank_bags
+        .iter()
+        .find(|equipped| {
+            equipped.slot == bag
+                && purchased_bank_bag_slot_index(bag)
+                    .is_some_and(|index| index < bank_bag_slot_count)
+        })
+        .map(|equipped| (0, equipped.container_slots))
+}
+
 pub(in crate::world) fn is_normal_container_bag(bag: &EquippedBagInfo) -> bool {
     bag.class == ITEM_CLASS_CONTAINER && bag.subclass == ITEM_SUBCLASS_CONTAINER
 }
@@ -1347,6 +1573,37 @@ pub(in crate::world) fn inventory_store_bag_order(
     }
     bags.extend(
         equipped_bags
+            .iter()
+            .filter(|bag| is_normal_container_bag(bag) && item_can_go_into_bag(template, bag))
+            .map(|bag| bag.slot),
+    );
+    bags
+}
+
+pub(in crate::world) fn bank_store_bag_order(
+    template: &ItemTemplateQuery,
+    bank_bags: &[EquippedBagInfo],
+    specific_bag: Option<u8>,
+) -> Vec<u8> {
+    if let Some(bag) = specific_bag {
+        return if bag_accepts_item(bag, template, bank_bags) {
+            vec![bag]
+        } else {
+            Vec::new()
+        };
+    }
+
+    let mut bags = vec![INVENTORY_SLOT_BAG_0];
+    if template.bag_family != 0 {
+        bags.extend(
+            bank_bags
+                .iter()
+                .filter(|bag| !is_normal_container_bag(bag) && item_can_go_into_bag(template, bag))
+                .map(|bag| bag.slot),
+        );
+    }
+    bags.extend(
+        bank_bags
             .iter()
             .filter(|bag| is_normal_container_bag(bag) && item_can_go_into_bag(template, bag))
             .map(|bag| bag.slot),
@@ -1425,6 +1682,148 @@ pub(in crate::world) fn plan_store_item(
     None
 }
 
+pub(in crate::world) fn plan_bank_item(
+    inventory: &[CharacterInventoryItem],
+    template: &ItemTemplateQuery,
+    count: u32,
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
+    specific_bag: Option<u8>,
+    skip_item: Option<u32>,
+) -> Option<Vec<StoreSlot>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+
+    let max_stack = template.stackable.max(1);
+    let mut remaining = count;
+    let mut dest = Vec::new();
+    let bags = bank_store_bag_order(template, bank_bags, specific_bag);
+
+    if max_stack > 1 {
+        for bag in &bags {
+            for item in inventory.iter().filter(|item| {
+                item.bag == *bag as u32
+                    && item.item_template == template.entry
+                    && Some(item.item) != skip_item
+                    && item.count < max_stack
+                    && bank_storage_position_exists(*bag, item.slot, bank_bags, bank_bag_slot_count)
+            }) {
+                let move_count = remaining.min(max_stack - item.count);
+                if move_count == 0 {
+                    continue;
+                }
+                dest.push(StoreSlot {
+                    bag: *bag,
+                    slot: item.slot,
+                    count: move_count,
+                    existing_item: Some(item.item),
+                });
+                remaining -= move_count;
+                if remaining == 0 {
+                    return Some(dest);
+                }
+            }
+        }
+    }
+
+    for bag in &bags {
+        let Some((start, end)) = bank_slot_range(*bag, bank_bags, bank_bag_slot_count) else {
+            continue;
+        };
+        for slot in start..end {
+            if inventory.iter().any(|item| {
+                item.bag == *bag as u32 && item.slot == slot && Some(item.item) != skip_item
+            }) {
+                continue;
+            }
+            let move_count = remaining.min(max_stack);
+            dest.push(StoreSlot {
+                bag: *bag,
+                slot,
+                count: move_count,
+                existing_item: None,
+            });
+            remaining -= move_count;
+            if remaining == 0 {
+                return Some(dest);
+            }
+        }
+    }
+
+    None
+}
+
+pub(in crate::world) async fn first_auto_bank_destination(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    src_bag: u8,
+    src_slot: u8,
+) -> anyhow::Result<Option<(u8, u8)>> {
+    let Some(source) = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+    else {
+        return Ok(None);
+    };
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, source.item_template).await?
+    else {
+        return Ok(None);
+    };
+    let bank_bags = load_bank_bag_infos(world_db_pool, &session.inventory.items).await?;
+    Ok(plan_bank_item(
+        &session.inventory.items,
+        &template,
+        source.count,
+        &bank_bags,
+        bank_bag_slot_count(session),
+        None,
+        Some(source.item),
+    )
+    .and_then(|dest| {
+        if dest.len() == 1 {
+            dest.first().map(|slot| (slot.bag, slot.slot))
+        } else {
+            None
+        }
+    }))
+}
+
+pub(in crate::world) async fn first_auto_store_bank_destination(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    src_bag: u8,
+    src_slot: u8,
+) -> anyhow::Result<Option<(u8, u8)>> {
+    let Some(source) = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+    else {
+        return Ok(None);
+    };
+    if !is_bank_position(src_bag, src_slot) {
+        return first_auto_bank_destination(world_db_pool, session, src_bag, src_slot).await;
+    }
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, source.item_template).await?
+    else {
+        return Ok(None);
+    };
+    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
+    Ok(first_autostore_destination(
+        &session.inventory.items,
+        source,
+        &template,
+        &equipped_bags,
+        INVENTORY_SLOT_BAG_0,
+    ))
+}
+
 pub(in crate::world) fn first_autostore_destination(
     inventory: &[CharacterInventoryItem],
     source: &CharacterInventoryItem,
@@ -1457,22 +1856,79 @@ pub(in crate::world) fn normalize_client_bag(bag: u8) -> u8 {
     }
 }
 
+pub(in crate::world) fn client_bag_id(bag: u8) -> u8 {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        CLIENT_INVENTORY_SLOT_BAG_0
+    } else {
+        bag
+    }
+}
+
 pub(in crate::world) fn is_backpack_item_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&slot)
 }
 
-pub(in crate::world) fn is_bag_slot(slot: u8) -> bool {
+pub(in crate::world) fn is_inventory_bag_slot(slot: u8) -> bool {
     (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).contains(&slot)
 }
 
+pub(in crate::world) fn is_bank_item_slot(slot: u8) -> bool {
+    (BANK_SLOT_ITEM_START..BANK_SLOT_ITEM_END).contains(&slot)
+}
+
+pub(in crate::world) fn is_bank_bag_slot(slot: u8) -> bool {
+    (BANK_SLOT_BAG_START..BANK_SLOT_BAG_END).contains(&slot)
+}
+
+pub(in crate::world) fn is_bag_slot(slot: u8) -> bool {
+    is_inventory_bag_slot(slot) || is_bank_bag_slot(slot)
+}
+
+pub(in crate::world) fn is_bank_position(bag: u8, slot: u8) -> bool {
+    (bag == INVENTORY_SLOT_BAG_0 && (is_bank_item_slot(slot) || is_bank_bag_slot(slot)))
+        || is_bank_bag_slot(bag)
+}
+
+pub(in crate::world) fn bank_bag_slot_count(session: &WorldSessionState) -> u8 {
+    session
+        .character
+        .player_visual
+        .as_ref()
+        .map(|visual| ((visual.player_bytes2 >> 16) & 0xFF) as u8)
+        .unwrap_or(0)
+}
+
+pub(in crate::world) fn with_bank_bag_slot_count(player_bytes2: u32, count: u8) -> u32 {
+    (player_bytes2 & !(0xFF << 16)) | (u32::from(count) << 16)
+}
+
+pub(in crate::world) fn purchased_bank_bag_slot_index(slot: u8) -> Option<u8> {
+    is_bank_bag_slot(slot).then_some(slot - BANK_SLOT_BAG_START)
+}
+
+pub(in crate::world) fn unpurchased_bank_bag_slot(
+    bag: u8,
+    slot: u8,
+    bank_bag_slot_count: u8,
+) -> bool {
+    if bag == INVENTORY_SLOT_BAG_0 {
+        return purchased_bank_bag_slot_index(slot)
+            .is_some_and(|index| index >= bank_bag_slot_count);
+    }
+    purchased_bank_bag_slot_index(bag).is_some_and(|index| index >= bank_bag_slot_count)
+}
+
 pub(in crate::world) fn is_supported_storage_position(bag: u8, slot: u8) -> bool {
-    (bag == INVENTORY_SLOT_BAG_0 && slot < INVENTORY_SLOT_ITEM_END)
+    (bag == INVENTORY_SLOT_BAG_0 && (slot < INVENTORY_SLOT_ITEM_END || is_bank_item_slot(slot)))
         || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
 }
 
 pub(in crate::world) fn is_supported_move_position(bag: u8, slot: u8) -> bool {
     (bag == INVENTORY_SLOT_BAG_0
-        && (slot < EQUIPMENT_SLOT_END || is_bag_slot(slot) || is_backpack_item_slot(slot)))
+        && (slot < EQUIPMENT_SLOT_END
+            || is_bag_slot(slot)
+            || is_backpack_item_slot(slot)
+            || is_bank_item_slot(slot)))
         || (is_bag_slot(bag) && slot < MAX_BAG_SIZE)
 }
 

@@ -437,6 +437,53 @@ pub async fn learn_character_spell(
     Ok(Some(new_money))
 }
 
+pub async fn update_character_player_bytes2(
+    pool: &MySqlPool,
+    guid: u32,
+    player_bytes2: u32,
+) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_player_bytes2_update");
+    let result = sqlx::query("UPDATE characters SET playerBytes2 = ? WHERE guid = ?")
+        .bind(player_bytes2)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn purchase_character_bank_slot(
+    pool: &MySqlPool,
+    guid: u32,
+    price: u32,
+    player_bytes2: u32,
+) -> Result<Option<u32>, DbError> {
+    let _query_timer =
+        crate::observability::DbQueryTimer::start("character_bank_slot_purchase");
+    let mut tx = pool.begin().await?;
+    let result = sqlx::query(
+        "UPDATE characters \
+         SET money = money - ?, playerBytes2 = ? \
+         WHERE guid = ? AND money >= ?",
+    )
+    .bind(price)
+    .bind(player_bytes2)
+    .bind(guid)
+    .bind(price)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let money = sqlx::query_scalar("SELECT money FROM characters WHERE guid = ?")
+        .bind(guid)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(money))
+}
+
 pub async fn get_character_actions(
     pool: &MySqlPool,
     guid: u32,

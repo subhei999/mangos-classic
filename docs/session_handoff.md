@@ -46,6 +46,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Existing GitHub issue #75 still tracks remaining non-merchant service actions:
   taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
   scripts/locales, and full npc_text parity.
+- Bank integration: `codex/banking-parity` was preserved as commit
+  `bec18507b` and merged into `codex/rusty-mangos`. The slice adds banker
+  activation, bank-slot purchase backed by `BankBagSlotPrices.dbc`, bank item
+  storage slots and bank bag slots, autobank/autostore bank packets, persistent
+  `playerBytes2` bank-slot count updates, and gossip `GOSSIP_OPTION_BANKER`
+  dispatch into the bank opener. The stack still needs a real-client banker
+  smoke.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1119,6 +1126,20 @@ Player visibility relocation threshold:
     `cargo test -p wow-db --lib`, `cargo test -p wow-network gossip --lib`,
     `cargo check -p worldserver`, and
     `.\scripts\restart-game-stack.cmd --release`.
+- Bank branch integration:
+  - committed `codex/banking-parity` worktree changes as `bec18507b`
+  - merged into `codex/rusty-mangos`
+  - added integration glue so DB gossip banker selections call the same banker
+    access/open-bank path as `CMSG_BANKER_ACTIVATE`
+  - resolved the `UNIT_NPC_FLAG_*` constant conflict by keeping the full
+    dialogue-service flag set plus banker's `0x0000_0100`
+  - `cargo fmt`
+  - `cargo test -p wow-db --lib`
+  - `cargo test -p wow-network bank --lib`
+  - `cargo test -p wow-network inventory --lib`
+  - `cargo test -p wow-network gossip --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
 
 ## Current Confidence
 
@@ -1198,6 +1219,10 @@ Player visibility relocation threshold:
   the latest restart. Watch `world-client-18085.log` for Khelden's menu `4660`
   with `text_id=538`, then `Dispatching DB gossip selection` followed by
   `Sending trainer list`.
+- Bank integration needs a real-client banker smoke after the next release
+  restart: open bank, buy one bank bag slot if DBC prices are available, move
+  an item into a bank main slot, move it back, relog, and confirm bank contents
+  plus purchased slot count persist.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted

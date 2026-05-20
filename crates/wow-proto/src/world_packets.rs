@@ -147,6 +147,10 @@ pub enum WorldOpcode {
     CmsgTrainerBuySpell = 0x01B2,
     SmsgTrainerBuySucceeded = 0x01B3,
     SmsgTrainerBuyFailed = 0x01B4,
+    CmsgBankerActivate = 0x01B7,
+    SmsgShowBank = 0x01B8,
+    CmsgBuyBankSlot = 0x01B9,
+    SmsgBuyBankSlotResult = 0x01BA,
     CmsgQueryTime = 0x01CE,
     SmsgQueryTimeResponse = 0x01CF,
     CmsgReclaimCorpse = 0x01D2,
@@ -178,6 +182,8 @@ pub enum WorldOpcode {
     CmsgCancelAutoRepeatSpell = 0x026D,
     CmsgGroupChangeSubGroup = 0x027E,
     CmsgRequestPartyMemberStats = 0x027F,
+    CmsgAutostoreBankItem = 0x0282,
+    CmsgAutobankItem = 0x0283,
     MsgQueryNextMailTime = 0x0284,
     CmsgGroupRaidConvert = 0x028E,
     CmsgGroupAssistantLeader = 0x028F,
@@ -339,6 +345,10 @@ impl TryFrom<u32> for WorldOpcode {
             0x01B2 => Ok(Self::CmsgTrainerBuySpell),
             0x01B3 => Ok(Self::SmsgTrainerBuySucceeded),
             0x01B4 => Ok(Self::SmsgTrainerBuyFailed),
+            0x01B7 => Ok(Self::CmsgBankerActivate),
+            0x01B8 => Ok(Self::SmsgShowBank),
+            0x01B9 => Ok(Self::CmsgBuyBankSlot),
+            0x01BA => Ok(Self::SmsgBuyBankSlotResult),
             0x01CE => Ok(Self::CmsgQueryTime),
             0x01CF => Ok(Self::SmsgQueryTimeResponse),
             0x01D0 => Ok(Self::SmsgLogXpGain),
@@ -374,6 +384,8 @@ impl TryFrom<u32> for WorldOpcode {
             0x026D => Ok(Self::CmsgCancelAutoRepeatSpell),
             0x027E => Ok(Self::CmsgGroupChangeSubGroup),
             0x027F => Ok(Self::CmsgRequestPartyMemberStats),
+            0x0282 => Ok(Self::CmsgAutostoreBankItem),
+            0x0283 => Ok(Self::CmsgAutobankItem),
             0x0284 => Ok(Self::MsgQueryNextMailTime),
             0x028E => Ok(Self::CmsgGroupRaidConvert),
             0x028F => Ok(Self::CmsgGroupAssistantLeader),
@@ -483,6 +495,8 @@ impl WorldOpcode {
                 | Self::SmsgTrainerList
                 | Self::SmsgTrainerBuySucceeded
                 | Self::SmsgTrainerBuyFailed
+                | Self::SmsgShowBank
+                | Self::SmsgBuyBankSlotResult
                 | Self::SmsgQueryTimeResponse
                 | Self::SmsgPong
                 | Self::SmsgSpellDelayed
@@ -1362,6 +1376,69 @@ impl TrainerBuySpellRequest {
     pub fn write(&self, buf: &mut impl BufMut) {
         buf.put_u64_le(self.trainer_raw_guid);
         buf.put_u32_le(self.spell);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BankerActivateRequest {
+    pub banker_raw_guid: u64,
+}
+
+impl BankerActivateRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        Ok(Self {
+            banker_raw_guid: read_guid_request(buf, "CMSG_BANKER_ACTIVATE")?,
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.banker_raw_guid);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuyBankSlotRequest {
+    pub banker_raw_guid: u64,
+}
+
+impl BuyBankSlotRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        Ok(Self {
+            banker_raw_guid: read_guid_request(buf, "CMSG_BUY_BANK_SLOT")?,
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.banker_raw_guid);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BankItemRequest {
+    pub src_bag: u8,
+    pub src_slot: u8,
+}
+
+impl BankItemRequest {
+    pub fn read_auto_bank(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 2, "CMSG_AUTOBANK_ITEM")?;
+        Ok(Self {
+            src_bag: buf.get_u8(),
+            src_slot: buf.get_u8(),
+        })
+    }
+
+    pub fn read_auto_store_bank(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 2, "CMSG_AUTOSTORE_BANK_ITEM")?;
+        Ok(Self {
+            src_bag: buf.get_u8(),
+            src_slot: buf.get_u8(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.src_bag);
+        buf.put_u8(self.src_slot);
     }
 }
 
@@ -3842,6 +3919,32 @@ impl ServerWorldPacket for SmsgTrainerBuyFailedResponse {
         buf.put_u64_le(self.trainer.raw());
         buf.put_u32_le(self.spell);
         buf.put_u32_le(self.reason);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgShowBankResponse {
+    pub banker: ObjectGuid,
+}
+
+impl ServerWorldPacket for SmsgShowBankResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgShowBank;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.banker.raw());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgBuyBankSlotResultResponse {
+    pub result: u32,
+}
+
+impl ServerWorldPacket for SmsgBuyBankSlotResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgBuyBankSlotResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.result);
     }
 }
 

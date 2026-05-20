@@ -81,6 +81,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   using the default one-hour delay. The next live proof is sending money from
   one `RUSTAUTH` character to another through a mailbox, then logging into the
   recipient and taking the money without manually fast-forwarding the DB row.
+  Live mailbox-open disconnect RCA found `mail.stationery` is signed
+  `tinyint(3)` in `sql/base/characters.sql`; Rust now decodes that column as
+  signed and converts it for packet output instead of ending the session.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1201,6 +1204,13 @@ Player visibility relocation threshold:
   - `cargo fmt`
   - `cargo test -p wow-network mail --lib`
   - `cargo check -p worldserver`
+- Mailbox open disconnect fix:
+  - fixed DB decoding for signed `mail.stationery` rows
+  - `cargo fmt`
+  - `cargo test -p wow-db --lib`
+  - `cargo test -p wow-network mail --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\restart-game-stack.cmd --release`
 
 ## Current Confidence
 

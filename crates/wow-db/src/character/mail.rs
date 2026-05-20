@@ -619,10 +619,11 @@ async fn load_mail_items(
 }
 
 fn row_to_character_mail(row: sqlx::mysql::MySqlRow) -> Result<CharacterMail, DbError> {
+    let stationery: i8 = row.try_get("stationery")?;
     Ok(CharacterMail {
         id: row.try_get("id")?,
         message_type: row.try_get("messageType")?,
-        stationery: row.try_get("stationery")?,
+        stationery: stationery.max(0) as u8,
         mail_template_id: row.try_get("mailTemplateId")?,
         sender: row.try_get("sender")?,
         receiver: row.try_get("receiver")?,

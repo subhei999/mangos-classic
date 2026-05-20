@@ -1584,6 +1584,17 @@ fn test_u32_dbc<const N: usize>(rows: &[[u32; N]]) -> Vec<u8> {
 }
 
 #[test]
+fn bank_bag_slot_price_dbc_parser_reads_cmangos_rows() {
+    let bytes = test_u32_dbc(&[[1, 1_000], [2, 10_000], [6, 250_000]]);
+
+    let prices = parse_bank_bag_slot_prices(&bytes);
+
+    assert_eq!(prices.get(&1), Some(&1_000));
+    assert_eq!(prices.get(&2), Some(&10_000));
+    assert_eq!(prices.get(&6), Some(&250_000));
+}
+
+#[test]
 fn area_table_dbc_parser_indexes_explore_flags_by_map() {
     let bytes = test_u32_dbc(&[
         [
@@ -6389,6 +6400,7 @@ fn test_mmap_navigation_for_positions(
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers,
@@ -6985,6 +6997,7 @@ fn db_creature_player_melee_check_uses_navigation_guardrail() {
                     skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
+                    bank_bag_slot_prices: HashMap::new(),
                     area_tables: AreaTableStore::default(),
                     wmo_area_tables: WmoAreaTableStore::default(),
                     mmap_headers: HashSet::new(),
@@ -7860,6 +7873,7 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
                     skill_race_class_infos_by_skill: HashMap::new(),
                     faction_templates: FactionTemplateStore::fallback_bridge(),
                     item_random_properties: HashMap::new(),
+                    bank_bag_slot_prices: HashMap::new(),
                     area_tables: AreaTableStore::default(),
                     wmo_area_tables: WmoAreaTableStore::default(),
                     mmap_headers: HashSet::new(),
@@ -23005,6 +23019,7 @@ fn db_creature_navigation_uses_mmap_tile_availability_when_loaded() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
@@ -23277,6 +23292,7 @@ fn db_creature_path_does_not_generate_movement_when_mmap_unavailable() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
@@ -23342,6 +23358,7 @@ fn db_creature_random_path_does_not_generate_movement_when_mmap_unavailable() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::from([0]),
@@ -25187,6 +25204,7 @@ fn db_creature_chase_path_skips_los_backed_straight_fast_path() {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::new(),
@@ -28758,6 +28776,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        bank_bag_slot_prices: HashMap::new(),
         area_tables: AreaTableStore::default(),
         wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
@@ -30670,6 +30689,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        bank_bag_slot_prices: HashMap::new(),
         area_tables: AreaTableStore::default(),
         wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
@@ -30926,6 +30946,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        bank_bag_slot_prices: HashMap::new(),
         area_tables: AreaTableStore::default(),
         wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
@@ -31081,6 +31102,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
         skill_race_class_infos_by_skill: HashMap::new(),
         faction_templates: FactionTemplateStore::fallback_bridge(),
         item_random_properties: HashMap::new(),
+        bank_bag_slot_prices: HashMap::new(),
         area_tables: AreaTableStore::default(),
         wmo_area_tables: WmoAreaTableStore::default(),
         mmap_headers: HashSet::new(),
@@ -33603,7 +33625,23 @@ fn maps_inventory_slots_to_player_update_guid_fields() {
         inventory_slot_update_field(19),
         Some(PLAYER_FIELD_INV_SLOT_HEAD + 38)
     );
-    assert_eq!(inventory_slot_update_field(39), None);
+    assert_eq!(
+        inventory_slot_update_field(BANK_SLOT_ITEM_START),
+        Some(PLAYER_FIELD_BANK_SLOT_1)
+    );
+    assert_eq!(
+        inventory_slot_update_field(BANK_SLOT_ITEM_END - 1),
+        Some(PLAYER_FIELD_BANK_SLOT_1 + 46)
+    );
+    assert_eq!(
+        inventory_slot_update_field(BANK_SLOT_BAG_START),
+        Some(PLAYER_FIELD_BANKBAG_SLOT_1)
+    );
+    assert_eq!(
+        inventory_slot_update_field(BANK_SLOT_BAG_END - 1),
+        Some(PLAYER_FIELD_BANKBAG_SLOT_1 + 10)
+    );
+    assert_eq!(inventory_slot_update_field(BANK_SLOT_BAG_END), None);
 }
 
 #[test]
@@ -34194,6 +34232,108 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
         plan,
         vec![StoreSlot {
             bag: INVENTORY_SLOT_BAG_START,
+            slot: 0,
+            count: 5,
+            existing_item: None,
+        }]
+    );
+}
+
+#[test]
+fn bank_bag_slot_count_uses_player_bytes2_byte_2() {
+    let mut session = WorldSessionState::default();
+    session.character.player_visual = Some(PlayerVisualState {
+        gender: 0,
+        player_bytes: 0,
+        player_bytes2: 0xAA00_0000,
+        equipment_cache: None,
+        guildid: None,
+    });
+
+    let updated = with_bank_bag_slot_count(0xAA00_0000, 3);
+    session
+        .character
+        .player_visual
+        .as_mut()
+        .unwrap()
+        .player_bytes2 = updated;
+
+    assert_eq!(updated, 0xAA03_0000);
+    assert_eq!(bank_bag_slot_count(&session), 3);
+}
+
+#[test]
+fn bank_store_plan_merges_bank_main_before_empty_slots() {
+    let mut bread = test_item_template(4540, 0, 0, 0.0, 0.0, 0);
+    bread.stackable = 20;
+    let inventory = [CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: BANK_SLOT_ITEM_START,
+        item: 90,
+        item_template: 4540,
+        count: 5,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    }];
+
+    let plan = plan_bank_item(&inventory, &bread, 5, &[], 0, None, None).unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_0,
+            slot: BANK_SLOT_ITEM_START,
+            count: 5,
+            existing_item: Some(90),
+        }]
+    );
+}
+
+#[test]
+fn bank_store_plan_uses_purchased_bank_bag_capacity() {
+    let mut bread = test_item_template(4540, 0, 0, 0.0, 0.0, 0);
+    bread.stackable = 20;
+    let mut inventory: Vec<_> = (BANK_SLOT_ITEM_START..BANK_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_000 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: BANK_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let bank_bags = [EquippedBagInfo {
+        slot: BANK_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+
+    assert!(plan_bank_item(&inventory, &bread, 5, &bank_bags, 0, None, None).is_none());
+
+    let plan = plan_bank_item(&inventory, &bread, 5, &bank_bags, 1, None, None).unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: BANK_SLOT_BAG_START,
             slot: 0,
             count: 5,
             existing_item: None,
@@ -37467,6 +37607,28 @@ fn recognizes_expected_world_bootstrap_noise() {
             "tutorial opcode 0x{opcode:04X} should be handled, not ignored"
         );
     }
+}
+
+#[test]
+fn parses_bank_packets() {
+    let banker = ObjectGuid::new(HighGuid::Unit, 2456, 99).raw();
+    let parsed =
+        packets::parse_world_client_packet(CMSG_BANKER_ACTIVATE, &banker.to_le_bytes()).unwrap();
+    assert_eq!(parsed.banker_activate().unwrap().banker_raw_guid, banker);
+
+    let parsed =
+        packets::parse_world_client_packet(CMSG_BUY_BANK_SLOT, &banker.to_le_bytes()).unwrap();
+    assert_eq!(parsed.buy_bank_slot().unwrap().banker_raw_guid, banker);
+
+    let parsed = packets::parse_world_client_packet(CMSG_AUTOBANK_ITEM, &[0xFF, 23]).unwrap();
+    let auto_bank = parsed.auto_bank_item().unwrap();
+    assert_eq!(auto_bank.src_bag, CLIENT_INVENTORY_SLOT_BAG_0);
+    assert_eq!(auto_bank.src_slot, 23);
+
+    let parsed = packets::parse_world_client_packet(CMSG_AUTOSTORE_BANK_ITEM, &[63, 0]).unwrap();
+    let auto_store = parsed.auto_store_bank_item().unwrap();
+    assert_eq!(auto_store.src_bag, BANK_SLOT_BAG_START);
+    assert_eq!(auto_store.src_slot, 0);
 }
 
 #[test]

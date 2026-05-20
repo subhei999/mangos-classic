@@ -1,19 +1,19 @@
 use wow_proto::{
-    AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest, BuyItemRequest,
-    BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest,
-    CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
-    CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
-    GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest, GroupAcceptRequest,
-    GroupAssistantLeaderRequest, GroupCancelRequest, GroupChangeSubGroupRequest,
-    GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest, GroupRaidConvertRequest,
-    GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
-    InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, JoinChannelRequest,
-    ListInventoryRequest, LogoutCancelRequest, LogoutRequest, LootMasterGiveRequest,
-    LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest, LootRollRequest,
-    MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest,
-    PageTextQueryRequest, PingRequest, PlayerLoginRequest, PlayerLogoutRequest,
-    QueryNextMailTimeRequest, QueryTimeRequest, QuestLogRemoveQuestRequest, QuestQueryRequest,
-    QuestRewardRequest, QuestgiverHelloRequest, QuestgiverQuestRequest,
+    AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest, BankItemRequest,
+    BankerActivateRequest, BuyBankSlotRequest, BuyItemRequest, BuybackItemRequest,
+    CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest, CharCreateRequest,
+    CharDeleteRequest, CharEnumRequest, CorpseQueryRequest, CreatureQueryRequest,
+    DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest, GmTicketGetTicketRequest,
+    GossipHelloRequest, GossipSelectOptionRequest, GroupAcceptRequest, GroupAssistantLeaderRequest,
+    GroupCancelRequest, GroupChangeSubGroupRequest, GroupDeclineRequest, GroupDisbandRequest,
+    GroupInviteRequest, GroupRaidConvertRequest, GroupSetLeaderRequest, GroupUninviteGuidRequest,
+    GroupUninviteRequest, InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest,
+    JoinChannelRequest, ListInventoryRequest, LogoutCancelRequest, LogoutRequest,
+    LootMasterGiveRequest, LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest,
+    LootRollRequest, MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest,
+    NpcTextQueryRequest, PageTextQueryRequest, PingRequest, PlayerLoginRequest,
+    PlayerLogoutRequest, QueryNextMailTimeRequest, QueryTimeRequest, QuestLogRemoveQuestRequest,
+    QuestQueryRequest, QuestRewardRequest, QuestgiverHelloRequest, QuestgiverQuestRequest,
     QuestgiverStatusQueryRequest, ReadItemRequest, ReclaimCorpseRequest, RepopRequest,
     RequestAccountDataRequest, RequestPartyMemberStatsRequest, SellItemRequest,
     SetActionButtonRequest, SetActiveMoverRequest, SetAmmoRequest, SetSelectionRequest,
@@ -89,6 +89,10 @@ pub(super) enum ParsedWorldClientPacket {
     BuyItem(BuyItemRequest),
     TrainerList(TrainerListRequest),
     TrainerBuySpell(TrainerBuySpellRequest),
+    BankerActivate(BankerActivateRequest),
+    BuyBankSlot(BuyBankSlotRequest),
+    AutoBankItem(BankItemRequest),
+    AutoStoreBankItem(BankItemRequest),
     AttackSwing(AttackSwingRequest),
     AttackStop(AttackStopRequest),
     Repop(RepopRequest),
@@ -208,6 +212,10 @@ impl ParsedWorldClientPacket {
             Self::BuyItem(_) => WorldOpcode::CmsgBuyItem.into(),
             Self::TrainerList(_) => WorldOpcode::CmsgTrainerList.into(),
             Self::TrainerBuySpell(_) => WorldOpcode::CmsgTrainerBuySpell.into(),
+            Self::BankerActivate(_) => WorldOpcode::CmsgBankerActivate.into(),
+            Self::BuyBankSlot(_) => WorldOpcode::CmsgBuyBankSlot.into(),
+            Self::AutoBankItem(_) => WorldOpcode::CmsgAutobankItem.into(),
+            Self::AutoStoreBankItem(_) => WorldOpcode::CmsgAutostoreBankItem.into(),
             Self::AttackSwing(_) => WorldOpcode::CmsgAttackSwing.into(),
             Self::AttackStop(_) => WorldOpcode::CmsgAttackStop.into(),
             Self::Repop(_) => WorldOpcode::CmsgRepopRequest.into(),
@@ -486,6 +494,30 @@ impl ParsedWorldClientPacket {
         TrainerBuySpell,
         TrainerBuySpellRequest,
         "CMSG_TRAINER_BUY_SPELL"
+    );
+    packet_accessor!(
+        banker_activate,
+        BankerActivate,
+        BankerActivateRequest,
+        "CMSG_BANKER_ACTIVATE"
+    );
+    packet_accessor!(
+        buy_bank_slot,
+        BuyBankSlot,
+        BuyBankSlotRequest,
+        "CMSG_BUY_BANK_SLOT"
+    );
+    packet_accessor!(
+        auto_bank_item,
+        AutoBankItem,
+        BankItemRequest,
+        "CMSG_AUTOBANK_ITEM"
+    );
+    packet_accessor!(
+        auto_store_bank_item,
+        AutoStoreBankItem,
+        BankItemRequest,
+        "CMSG_AUTOSTORE_BANK_ITEM"
     );
     packet_accessor!(
         attack_swing,
@@ -971,6 +1003,30 @@ pub(super) fn parse_world_client_packet(
             let mut body = body;
             Ok(ParsedWorldClientPacket::TrainerBuySpell(
                 TrainerBuySpellRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgBankerActivate) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::BankerActivate(
+                BankerActivateRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgBuyBankSlot) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::BuyBankSlot(
+                BuyBankSlotRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAutobankItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AutoBankItem(
+                BankItemRequest::read_auto_bank(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAutostoreBankItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AutoStoreBankItem(
+                BankItemRequest::read_auto_store_bank(&mut body)?,
             ))
         }
         Ok(WorldOpcode::CmsgAttackSwing) => {

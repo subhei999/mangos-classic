@@ -17,6 +17,7 @@ pub(in crate::world) struct WorldDataFiles {
         HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
+    pub(in crate::world) bank_bag_slot_prices: HashMap<u32, u32>,
     pub(in crate::world) area_tables: AreaTableStore,
     pub(in crate::world) wmo_area_tables: WmoAreaTableStore,
     pub(in crate::world) mmap_headers: HashSet<u32>,
@@ -42,6 +43,7 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            bank_bag_slot_prices: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::new(),
@@ -72,6 +74,8 @@ impl WorldDataFiles {
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let item_random_properties =
             load_item_random_properties(&data_dir.join("dbc").join("ItemRandomProperties.dbc"));
+        let bank_bag_slot_prices =
+            load_bank_bag_slot_prices(&data_dir.join("dbc").join("BankBagSlotPrices.dbc"));
         let area_tables = load_area_tables(&data_dir.join("dbc").join("AreaTable.dbc"));
         let wmo_area_tables = load_wmo_area_tables(&data_dir.join("dbc").join("WMOAreaTable.dbc"));
         let mut mmap_headers = HashSet::new();
@@ -132,6 +136,7 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill,
             faction_templates,
             item_random_properties,
+            bank_bag_slot_prices,
             area_tables,
             wmo_area_tables,
             mmap_headers,
@@ -673,6 +678,46 @@ pub(in crate::world) fn parse_item_random_properties(
         );
     }
     properties
+}
+
+pub(in crate::world) fn load_bank_bag_slot_prices(path: &std::path::Path) -> HashMap<u32, u32> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_bank_bag_slot_prices(&bytes)
+}
+
+pub(in crate::world) fn parse_bank_bag_slot_prices(bytes: &[u8]) -> HashMap<u32, u32> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const BANK_BAG_SLOT_PRICE_FIELDS: usize = 2;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count != BANK_BAG_SLOT_PRICE_FIELDS || record_size < BANK_BAG_SLOT_PRICE_FIELDS * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut prices = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let id = u32::from_le_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap());
+        let cost = u32::from_le_bytes(
+            bytes[record_offset + 4..record_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+        if id != 0 {
+            prices.insert(id, cost);
+        }
+    }
+    prices
 }
 
 pub(in crate::world) fn load_area_tables(path: &std::path::Path) -> AreaTableStore {

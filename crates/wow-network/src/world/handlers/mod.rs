@@ -1,5 +1,6 @@
 use super::*;
 
+pub(in crate::world) mod bank;
 pub(in crate::world) mod character;
 pub(in crate::world) mod chat;
 pub(in crate::world) mod combat;

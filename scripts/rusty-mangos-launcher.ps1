@@ -442,9 +442,18 @@ function Ensure-ExtractedMMaps {
         throw "No map ids were provided for mmap extraction."
     }
 
-    New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "mmaps") | Out-Null
-    $workDir = $DataDir.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
-    $args = @(
+    $resolvedDataDir = (Resolve-Path -LiteralPath $DataDir).ProviderPath
+    foreach ($name in @("maps", "vmaps")) {
+        $requiredDir = Join-Path $resolvedDataDir $name
+        if (-not (Test-Path -LiteralPath $requiredDir -PathType Container)) {
+            throw "MMap generation requires $requiredDir, but it does not exist."
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path (Join-Path $resolvedDataDir "mmaps") | Out-Null
+    $workDir = ($resolvedDataDir -replace "\\", "/").TrimEnd("/")
+    $moveMapArgs = @(
+        ($ids -join " "),
         "--silent",
         "--configInputPath", $config,
         "--offMeshInput", $offmesh,
@@ -453,13 +462,13 @@ function Ensure-ExtractedMMaps {
     )
     $threads = [Math]::Max(1, [Environment]::ProcessorCount - 1)
     if ($threads -gt 1) {
-        $args += @("--threads", "$threads")
+        $moveMapArgs += @("--threads", "$threads")
     }
-    $args += $ids
 
     Write-Host "Generating server mmaps for map ids: $($ids -join ', ')"
+    Write-Host "MoveMapGen workdir: $workDir"
     Write-Host "This is the slowest first-run data step. Full-world mmaps can take a long time."
-    Invoke-Checked $moveMapGen $args (Split-Path -Parent $moveMapGen)
+    Invoke-Checked -Command $moveMapGen -Arguments $moveMapArgs -WorkingDirectory (Split-Path -Parent $moveMapGen)
 
     if (-not (Test-ExtractedMMaps $DataDir $MapIds)) {
         throw "MMap generation finished, but $DataDir\mmaps does not contain expected .mmap/.mmtile files."

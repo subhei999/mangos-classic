@@ -87,7 +87,7 @@ Copy-Item -LiteralPath "target\release\worldserver.exe" -Destination (Join-Path 
 
 $commit = (& git rev-parse HEAD).Trim()
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
-$dirty = (& git status --short).Trim()
+$dirty = ((& git status --short) -join "`n").Trim()
 $dirtyState = "clean"
 if (-not [string]::IsNullOrWhiteSpace($dirty)) {
     $dirtyState = "dirty"

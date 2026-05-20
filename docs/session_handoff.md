@@ -16,6 +16,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   local-starter DB tables `unit_condition`, `combat_condition`, and
   `broadcast_text` as empty instead of failing world runtime initialization.
   Full CMaNGOS world DB imports still use the real table data when present.
+- Local stack account fix: `scripts/run-client-stack-18085.ps1` now seeds the
+  documented `RUSTAUTH` / `RUSTPASS` account before seeding/preserving starter
+  characters. The live DB was repaired; `RUSTAUTH` currently has `Rustone` and
+  user-created `Twtowto`.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1033,6 +1037,10 @@ Player visibility relocation threshold:
   - isolated `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib -- --nocapture`
   - `cargo test -p wow-db --lib`
   - `cargo test -p wow-network gossip --lib`
+- Account seed fix:
+  - `cargo run -p auth-flow-test`
+  - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
+  - DB sanity check confirmed `RUSTAUTH` exists and has starter characters.
 
 ## Current Confidence
 

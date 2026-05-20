@@ -5,6 +5,14 @@ use wow_proto::{
 
 // CMaNGOS reference: src/game/Handlers/GossipDef.cpp gossip packet builders.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::world) struct GossipMessageOption {
+    pub(in crate::world) option_index: u32,
+    pub(in crate::world) icon: u8,
+    pub(in crate::world) coded: u8,
+    pub(in crate::world) text: String,
+}
+
 #[cfg(test)]
 pub(in crate::world) fn build_rust_guide_gossip_message() -> Vec<u8> {
     build_gossip_message(
@@ -33,21 +41,47 @@ pub(in crate::world) fn build_gossip_message_with_quests(
     options: &[(u32, u8, &str)],
     quests: &[QuestListItem],
 ) -> Vec<u8> {
+    let options = tuple_gossip_options(options);
+    build_gossip_message_from_options_with_quests(guid, text_id, &options, quests)
+}
+
+pub(in crate::world) fn build_gossip_message_from_options_with_quests(
+    guid: ObjectGuid,
+    text_id: u32,
+    options: &[GossipMessageOption],
+    quests: &[QuestListItem],
+) -> Vec<u8> {
     SmsgGossipMessageResponse {
         guid,
         text_id,
         options: options
             .iter()
-            .map(|(option_index, option_icon, option_text)| GossipOption {
-                option_index: *option_index,
-                icon: *option_icon,
-                coded: 0,
-                text: (*option_text).to_string(),
+            .map(|option| GossipOption {
+                option_index: option.option_index,
+                icon: option.icon,
+                coded: option.coded,
+                text: option.text.clone(),
             })
             .collect(),
         quest_option_count: quests.len() as u32,
     }
     .body_with_gossip_quests(quests)
+}
+
+pub(in crate::world) fn tuple_gossip_options(
+    options: &[(u32, u8, &str)],
+) -> Vec<GossipMessageOption> {
+    options
+        .iter()
+        .map(
+            |(option_index, option_icon, option_text)| GossipMessageOption {
+                option_index: *option_index,
+                icon: *option_icon,
+                coded: 0,
+                text: (*option_text).to_string(),
+            },
+        )
+        .collect()
 }
 
 pub(in crate::world) fn build_npc_text_update(text_id: u32, primary_text: &str) -> Vec<u8> {

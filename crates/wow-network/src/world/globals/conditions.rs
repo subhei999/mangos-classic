@@ -40,6 +40,8 @@ pub(in crate::world) type ConditionFuture<'a> =
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) enum ConditionSource {
+    GossipMenu,
+    GossipOption,
     Quest,
 }
 

@@ -211,6 +211,24 @@ pub struct GossipMenuQuery {
     pub entry: u32,
     #[sqlx(rename = "text_id")]
     pub text_id: u32,
+    pub script_id: u32,
+    pub condition_id: u32,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GossipMenuOptionQuery {
+    pub menu_id: u32,
+    pub id: u32,
+    pub option_icon: u8,
+    pub option_text: Option<String>,
+    pub option_id: u32,
+    pub npc_option_npcflag: u32,
+    pub action_menu_id: i32,
+    pub action_poi_id: u32,
+    pub action_script_id: u32,
+    pub box_coded: u8,
+    pub box_text: Option<String>,
+    pub condition_id: u32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, PartialEq, Eq)]
@@ -1043,7 +1061,7 @@ pub async fn get_creature_gossip_menu_query(
     creature_entry: u32,
 ) -> Result<Option<GossipMenuQuery>, DbError> {
     let row = sqlx::query_as::<_, GossipMenuQuery>(
-        "SELECT gm.entry, gm.text_id \
+        "SELECT gm.entry, gm.text_id, gm.script_id, gm.condition_id \
          FROM creature_template ct \
          JOIN gossip_menu gm ON gm.entry = ct.GossipMenuId \
          WHERE ct.Entry = ? \
@@ -1053,6 +1071,50 @@ pub async fn get_creature_gossip_menu_query(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+pub async fn get_creature_gossip_menu_id(
+    pool: &MySqlPool,
+    creature_entry: u32,
+) -> Result<Option<u32>, DbError> {
+    sqlx::query_scalar("SELECT GossipMenuId FROM creature_template WHERE Entry = ?")
+        .bind(creature_entry)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub async fn get_gossip_menu_queries(
+    pool: &MySqlPool,
+    menu_id: u32,
+) -> Result<Vec<GossipMenuQuery>, DbError> {
+    sqlx::query_as::<_, GossipMenuQuery>(
+        "SELECT entry, text_id, script_id, condition_id \
+         FROM gossip_menu \
+         WHERE entry = ? \
+         ORDER BY condition_id ASC, text_id ASC",
+    )
+    .bind(menu_id)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_gossip_menu_option_queries(
+    pool: &MySqlPool,
+    menu_id: u32,
+) -> Result<Vec<GossipMenuOptionQuery>, DbError> {
+    sqlx::query_as::<_, GossipMenuOptionQuery>(
+        "SELECT menu_id, id, option_icon, option_text, option_id, npc_option_npcflag, \
+                action_menu_id, action_poi_id, action_script_id, box_coded, box_text, condition_id \
+         FROM gossip_menu_option \
+         WHERE menu_id = ? \
+         ORDER BY id ASC",
+    )
+    .bind(menu_id)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_npc_text_query(

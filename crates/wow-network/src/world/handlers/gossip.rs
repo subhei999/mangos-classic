@@ -135,6 +135,14 @@ pub(in crate::world) async fn handle_gossip_select_option(
             return Ok(());
         };
 
+        info!(
+            guid = format_args!("0x{:016X}", selection.guid.raw()),
+            entry = selection.guid.entry(),
+            option = selection.option,
+            option_id = action.option_id,
+            action_menu_id = action.action_menu_id,
+            "Dispatching DB gossip selection"
+        );
         return dispatch_db_gossip_selection(
             stream,
             deps,

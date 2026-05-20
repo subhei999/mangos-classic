@@ -34,6 +34,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `TrainerTemplateId`) with direct rows. This should restore merchants/trainers
   whose gossip flags were visible but whose service backing looked empty in
   Rust. The release stack was restarted after the fix.
+- Trainer follow-up: ClassicDB/CMaNGOS class trainers commonly show a gossip
+  option before opening the trainer list. Rust now logs successful DB gossip
+  selections and trainer-list emission, including raw/listed spell counts and
+  green/red/gray state counts. The release stack was restarted with this
+  diagnostic build; the next real-client click should prove whether trainer
+  selection reaches `SMSG_TRAINER_LIST` or is filtered/ignored earlier.
 - Existing GitHub issue #75 still tracks remaining non-merchant service actions:
   taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
   scripts/locales, and full npc_text parity.
@@ -46,9 +52,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-Immediate user-directed priority is real-client verification of the dialogue
-service regression above. After that, resume spell-system parity work, starting
-with Polymorph and generic hard-control aura behavior.
+Immediate user-directed priority is real-client verification of trainer gossip
+selection after the dialogue service regression. Northshire class trainers
+having an intermediate gossip line is expected CMaNGOS behavior; the open
+question is whether selecting that line sends a populated trainer list to the
+client. After that, resume spell-system parity work, starting with Polymorph
+and generic hard-control aura behavior.
 
 - Polymorph already has transform display, damage break, single-target
   replacement, helper regen, diminishing metadata, combat preservation, and
@@ -1077,6 +1086,16 @@ Player visibility relocation threshold:
   - DB sanity check confirmed representative template-backed vendors/trainers
     such as Corina Steele, Jessara Cordell, Mogwah, and World Mage Trainer have
     service rows through CMaNGOS template tables.
+- Trainer gossip diagnostics:
+  - DB sanity check confirmed nearby Northshire class trainers such as Khelden
+    Bremen and Llane Beshere use gossip-menu trainer options backed by direct
+    `npc_trainer` rows; nearby weapon masters use template rows.
+  - `cargo fmt`
+  - `cargo test -p wow-network gossip --lib`
+  - `cargo test -p wow-network trainer --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\restart-game-stack.cmd --release`
+  - `.\scripts\test-rust.cmd`
 
 ## Current Confidence
 
@@ -1152,6 +1171,9 @@ Player visibility relocation threshold:
 - The currently running live server, if still up from before this change, does
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
+- Trainer gossip needs one more real-client click after the latest restart.
+  Watch `world-client-18085.log` for `Dispatching DB gossip selection` followed
+  by `Sending trainer list` or `Trainer list is empty after class filter`.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted

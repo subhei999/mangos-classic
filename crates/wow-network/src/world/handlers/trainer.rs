@@ -74,6 +74,46 @@ pub(in crate::world) async fn send_trainer_list(
         .filter(|_| trainer_spell_matches_class(&template, character.class))
         .map(|spell| TrainerListSpell::from_query(spell, character, &known_spells))
         .collect();
+    if list_spells.is_empty() {
+        warn!(
+            entry = guid.entry(),
+            trainer_name = template.name.as_str(),
+            trainer_type = template.trainer_type,
+            trainer_class = template.trainer_class,
+            character_guid = character.guid,
+            character_class = character.class,
+            raw_spells = spells.len(),
+            "Trainer list is empty after class filter"
+        );
+    } else {
+        let green_spells = list_spells
+            .iter()
+            .filter(|spell| spell.state == TRAINER_SPELL_GREEN)
+            .count();
+        let red_spells = list_spells
+            .iter()
+            .filter(|spell| spell.state == TRAINER_SPELL_RED)
+            .count();
+        let gray_spells = list_spells
+            .iter()
+            .filter(|spell| spell.state == TRAINER_SPELL_GRAY)
+            .count();
+        info!(
+            entry = guid.entry(),
+            trainer_name = template.name.as_str(),
+            trainer_type = template.trainer_type,
+            trainer_class = template.trainer_class,
+            character_guid = character.guid,
+            character_class = character.class,
+            raw_spells = spells.len(),
+            listed_spells = list_spells.len(),
+            green_spells,
+            red_spells,
+            gray_spells,
+            first_spell = list_spells.first().map(|spell| spell.spell).unwrap_or(0),
+            "Sending trainer list"
+        );
+    }
     let body = build_trainer_list_body(
         guid,
         template.trainer_type.max(0) as u32,

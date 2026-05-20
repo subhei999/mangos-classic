@@ -173,6 +173,18 @@ pub enum WorldOpcode {
     CmsgSpiritHealerActivate = 0x021C,
     SmsgSetRestStart = 0x021E,
     SmsgLoginVerifyWorld = 0x0236,
+    CmsgSendMail = 0x0238,
+    SmsgSendMailResult = 0x0239,
+    CmsgGetMailList = 0x023A,
+    SmsgMailListResult = 0x023B,
+    CmsgItemTextQuery = 0x0243,
+    SmsgItemTextQueryResponse = 0x0244,
+    CmsgMailTakeMoney = 0x0245,
+    CmsgMailTakeItem = 0x0246,
+    CmsgMailMarkAsRead = 0x0247,
+    CmsgMailReturnToSender = 0x0248,
+    CmsgMailDelete = 0x0249,
+    CmsgMailCreateTextItem = 0x024A,
     SmsgSpellLogMiss = 0x024B,
     SmsgPeriodicAuraLog = 0x024E,
     SmsgSpellNonMeleeDamageLog = 0x0250,
@@ -185,6 +197,7 @@ pub enum WorldOpcode {
     CmsgAutostoreBankItem = 0x0282,
     CmsgAutobankItem = 0x0283,
     MsgQueryNextMailTime = 0x0284,
+    SmsgReceivedMail = 0x0285,
     CmsgGroupRaidConvert = 0x028E,
     CmsgGroupAssistantLeader = 0x028F,
     CmsgBuybackItem = 0x0290,
@@ -375,6 +388,18 @@ impl TryFrom<u32> for WorldOpcode {
             0x021C => Ok(Self::CmsgSpiritHealerActivate),
             0x021E => Ok(Self::SmsgSetRestStart),
             0x0236 => Ok(Self::SmsgLoginVerifyWorld),
+            0x0238 => Ok(Self::CmsgSendMail),
+            0x0239 => Ok(Self::SmsgSendMailResult),
+            0x023A => Ok(Self::CmsgGetMailList),
+            0x023B => Ok(Self::SmsgMailListResult),
+            0x0243 => Ok(Self::CmsgItemTextQuery),
+            0x0244 => Ok(Self::SmsgItemTextQueryResponse),
+            0x0245 => Ok(Self::CmsgMailTakeMoney),
+            0x0246 => Ok(Self::CmsgMailTakeItem),
+            0x0247 => Ok(Self::CmsgMailMarkAsRead),
+            0x0248 => Ok(Self::CmsgMailReturnToSender),
+            0x0249 => Ok(Self::CmsgMailDelete),
+            0x024A => Ok(Self::CmsgMailCreateTextItem),
             0x024B => Ok(Self::SmsgSpellLogMiss),
             0x024E => Ok(Self::SmsgPeriodicAuraLog),
             0x0250 => Ok(Self::SmsgSpellNonMeleeDamageLog),
@@ -387,6 +412,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x0282 => Ok(Self::CmsgAutostoreBankItem),
             0x0283 => Ok(Self::CmsgAutobankItem),
             0x0284 => Ok(Self::MsgQueryNextMailTime),
+            0x0285 => Ok(Self::SmsgReceivedMail),
             0x028E => Ok(Self::CmsgGroupRaidConvert),
             0x028F => Ok(Self::CmsgGroupAssistantLeader),
             0x0290 => Ok(Self::CmsgBuybackItem),
@@ -510,6 +536,9 @@ impl WorldOpcode {
                 | Self::SmsgGmTicketGetTicket
                 | Self::SmsgSetRestStart
                 | Self::SmsgLoginVerifyWorld
+                | Self::SmsgSendMailResult
+                | Self::SmsgMailListResult
+                | Self::SmsgItemTextQueryResponse
                 | Self::SmsgSpellLogMiss
                 | Self::SmsgPeriodicAuraLog
                 | Self::SmsgSpellNonMeleeDamageLog
@@ -523,6 +552,7 @@ impl WorldOpcode {
                 | Self::SmsgSpellFailedOther
                 | Self::SmsgInitWorldStates
                 | Self::SmsgPartyMemberStatsFull
+                | Self::SmsgReceivedMail
                 | Self::SmsgSplineSetRunSpeed
                 | Self::SmsgSplineSetRunBackSpeed
                 | Self::SmsgSplineSetSwimSpeed
@@ -688,6 +718,130 @@ empty_request!(CancelAutoRepeatSpellRequest);
 empty_request!(RepopRequest);
 empty_request!(CorpseQueryRequest);
 empty_request!(LootMoneyRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendMailRequest {
+    pub mailbox_raw_guid: u64,
+    pub receiver: String,
+    pub subject: String,
+    pub body: String,
+    pub stationery: u32,
+    pub unknown1: u32,
+    pub item_raw_guid: u64,
+    pub money: u32,
+    pub cod: u32,
+    pub unknown2: u64,
+    pub unknown3: u8,
+}
+
+impl SendMailRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 8, "CMSG_SEND_MAIL")?;
+        let mailbox_raw_guid = buf.get_u64_le();
+        let receiver = read_c_string_request(buf, "CMSG_SEND_MAIL")?;
+        let subject = read_c_string_request(buf, "CMSG_SEND_MAIL")?;
+        let body = read_c_string_request(buf, "CMSG_SEND_MAIL")?;
+        ensure_remaining(buf, 29, "CMSG_SEND_MAIL")?;
+        Ok(Self {
+            mailbox_raw_guid,
+            receiver,
+            subject,
+            body,
+            stationery: buf.get_u32_le(),
+            unknown1: buf.get_u32_le(),
+            item_raw_guid: buf.get_u64_le(),
+            money: buf.get_u32_le(),
+            cod: buf.get_u32_le(),
+            unknown2: buf.get_u64_le(),
+            unknown3: buf.get_u8(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.mailbox_raw_guid);
+        write_c_string(buf, &self.receiver);
+        write_c_string(buf, &self.subject);
+        write_c_string(buf, &self.body);
+        buf.put_u32_le(self.stationery);
+        buf.put_u32_le(self.unknown1);
+        buf.put_u64_le(self.item_raw_guid);
+        buf.put_u32_le(self.money);
+        buf.put_u32_le(self.cod);
+        buf.put_u64_le(self.unknown2);
+        buf.put_u8(self.unknown3);
+    }
+}
+
+guid_request!(GetMailListRequest, "CMSG_GET_MAIL_LIST");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailIdRequest {
+    pub mailbox_raw_guid: u64,
+    pub mail_id: u32,
+}
+
+impl MailIdRequest {
+    pub fn read(buf: &mut impl Buf, packet_name: &str) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 12, packet_name)?;
+        Ok(Self {
+            mailbox_raw_guid: buf.get_u64_le(),
+            mail_id: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.mailbox_raw_guid);
+        buf.put_u32_le(self.mail_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailCreateTextItemRequest {
+    pub mailbox_raw_guid: u64,
+    pub mail_id: u32,
+    pub mail_template_id: u32,
+}
+
+impl MailCreateTextItemRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 16, "CMSG_MAIL_CREATE_TEXT_ITEM")?;
+        Ok(Self {
+            mailbox_raw_guid: buf.get_u64_le(),
+            mail_id: buf.get_u32_le(),
+            mail_template_id: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.mailbox_raw_guid);
+        buf.put_u32_le(self.mail_id);
+        buf.put_u32_le(self.mail_template_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemTextQueryRequest {
+    pub item_text_id: u32,
+    pub mail_id_or_item_guid: u32,
+    pub unknown: u32,
+}
+
+impl ItemTextQueryRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 12, "CMSG_ITEM_TEXT_QUERY")?;
+        Ok(Self {
+            item_text_id: buf.get_u32_le(),
+            mail_id_or_item_guid: buf.get_u32_le(),
+            unknown: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.item_text_id);
+        buf.put_u32_le(self.mail_id_or_item_guid);
+        buf.put_u32_le(self.unknown);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetAmmoRequest {
@@ -3398,6 +3552,124 @@ impl ServerWorldPacket for MsgQueryNextMailTimeResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgSendMailResultResponse {
+    pub mail_id: u32,
+    pub action: u32,
+    pub error: u32,
+    pub equip_error: Option<u32>,
+    pub taken_item: Option<(u32, u32)>,
+}
+
+impl ServerWorldPacket for SmsgSendMailResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgSendMailResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.mail_id);
+        buf.put_u32_le(self.action);
+        buf.put_u32_le(self.error);
+        if let Some(equip_error) = self.equip_error {
+            buf.put_u32_le(equip_error);
+        } else if self.action == 2 {
+            let (item, count) = self.taken_item.unwrap_or((0, 0));
+            buf.put_u32_le(item);
+            buf.put_u32_le(count);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MailListItemResponse {
+    pub mail_id: u32,
+    pub message_type: u8,
+    pub sender_raw_guid: Option<u64>,
+    pub sender_entry: Option<u32>,
+    pub subject: String,
+    pub item_text_id: u32,
+    pub package_id: u32,
+    pub stationery: u32,
+    pub item_entry: u32,
+    pub item_enchantment: u32,
+    pub item_random_property_id: i32,
+    pub item_suffix_factor: u32,
+    pub item_count: u8,
+    pub item_charges: u32,
+    pub item_max_durability: u32,
+    pub item_durability: u32,
+    pub money: u32,
+    pub cod: u32,
+    pub checked: u32,
+    pub expire_delay_days: f32,
+    pub mail_template_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmsgMailListResultResponse {
+    pub mails: Vec<MailListItemResponse>,
+}
+
+impl ServerWorldPacket for SmsgMailListResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgMailListResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.mails.len().min(u8::MAX as usize) as u8);
+        for mail in self.mails.iter().take(u8::MAX as usize) {
+            buf.put_u32_le(mail.mail_id);
+            buf.put_u8(mail.message_type);
+            if let Some(sender_guid) = mail.sender_raw_guid {
+                buf.put_u64_le(sender_guid);
+            } else if let Some(sender_entry) = mail.sender_entry {
+                buf.put_u32_le(sender_entry);
+            }
+            write_c_string(buf, &mail.subject);
+            buf.put_u32_le(mail.item_text_id);
+            buf.put_u32_le(mail.package_id);
+            buf.put_u32_le(mail.stationery);
+            buf.put_u32_le(mail.item_entry);
+            buf.put_u32_le(mail.item_enchantment);
+            buf.put_i32_le(mail.item_random_property_id);
+            buf.put_u32_le(mail.item_suffix_factor);
+            buf.put_u8(mail.item_count);
+            buf.put_u32_le(mail.item_charges);
+            buf.put_u32_le(mail.item_max_durability);
+            buf.put_u32_le(mail.item_durability);
+            buf.put_u32_le(mail.money);
+            buf.put_u32_le(mail.cod);
+            buf.put_u32_le(mail.checked);
+            buf.put_f32_le(mail.expire_delay_days);
+            buf.put_u32_le(mail.mail_template_id);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgItemTextQueryResponse {
+    pub item_text_id: u32,
+    pub text: String,
+}
+
+impl ServerWorldPacket for SmsgItemTextQueryResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgItemTextQueryResponse;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.item_text_id);
+        write_c_string(buf, &self.text);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgReceivedMailResponse {
+    pub delay: u32,
+}
+
+impl ServerWorldPacket for SmsgReceivedMailResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgReceivedMail;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.delay);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SmsgChannelNotifyResponse {
     pub notice: u8,
@@ -4453,6 +4725,88 @@ mod tests {
         expected.extend_from_slice(&12u32.to_le_bytes());
         expected.extend_from_slice(&1u32.to_le_bytes());
         assert_eq!(response.body(), expected);
+    }
+
+    #[test]
+    fn mail_result_response_matches_cmangos_optional_payloads() {
+        let ok = SmsgSendMailResultResponse {
+            mail_id: 7,
+            action: 0,
+            error: 0,
+            equip_error: None,
+            taken_item: None,
+        };
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&7u32.to_le_bytes());
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(ok.body(), expected);
+
+        let item_taken = SmsgSendMailResultResponse {
+            mail_id: 8,
+            action: 2,
+            error: 0,
+            equip_error: None,
+            taken_item: Some((6948, 1)),
+        };
+        expected.clear();
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        expected.extend_from_slice(&6948u32.to_le_bytes());
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(item_taken.body(), expected);
+    }
+
+    #[test]
+    fn mail_list_response_writes_vanilla_single_attachment_layout() {
+        let sender = ObjectGuid::new(wow_common::guid::HighGuid::Player, 0, 55);
+        let response = SmsgMailListResultResponse {
+            mails: vec![MailListItemResponse {
+                mail_id: 9,
+                message_type: 0,
+                sender_raw_guid: Some(sender.raw()),
+                sender_entry: None,
+                subject: "subject".to_string(),
+                item_text_id: 12,
+                package_id: 0,
+                stationery: 41,
+                item_entry: 6948,
+                item_enchantment: 0,
+                item_random_property_id: -7,
+                item_suffix_factor: 0,
+                item_count: 1,
+                item_charges: 0,
+                item_max_durability: 10,
+                item_durability: 8,
+                money: 123,
+                cod: 0,
+                checked: 0x10,
+                expire_delay_days: 29.5,
+                mail_template_id: 0,
+            }],
+        };
+
+        let body = response.body();
+        let mut cursor = 0;
+        assert_eq!(body[cursor], 1);
+        cursor += 1;
+        assert_eq!(
+            u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+            9
+        );
+        cursor += 5;
+        assert_eq!(
+            u64::from_le_bytes(body[cursor..cursor + 8].try_into().unwrap()),
+            sender.raw()
+        );
+        cursor += 8;
+        assert_eq!(&body[cursor..cursor + 8], b"subject\0");
+        cursor += 8 + 4 + 4 + 4;
+        assert_eq!(
+            u32::from_le_bytes(body[cursor..cursor + 4].try_into().unwrap()),
+            6948
+        );
     }
 
     #[test]

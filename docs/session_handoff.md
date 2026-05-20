@@ -70,6 +70,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `CanBankItem(bag, NULL_SLOT, ...)` behavior into the first valid contained
   bank-bag slot, and sends an equip failure when autostore has no destination.
   Release stack was restarted; needs live client retry.
+- Mail integration: `codex/mail-system-parity` was preserved as commit
+  `42e985da2` and merged into `codex/rusty-mangos`. The slice adds mail
+  opcodes/packet parsing, mailbox proximity checks, send mail, list mail,
+  take money, take item, mark read, return/delete, item text query/copy, COD
+  handling, recipient/team/self/cap validation, attachment validation, and DB
+  helpers for `mail`, `mail_items`, `item_text`, `item_instance`, and character
+  money/inventory state. The next live proof is sending money from one
+  `RUSTAUTH` character to another through a mailbox, then logging into the
+  recipient and taking the money.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1174,6 +1183,16 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network bank --lib`
   - `cargo check -p worldserver`
   - `.\scripts\restart-game-stack.cmd --release`
+- Mail branch integration:
+  - committed `codex/mail-system-parity` worktree code as `42e985da2`
+  - resolved merge conflicts in `crates/wow-network/src/world/opcodes.rs` and
+    `crates/wow-network/src/world/packets.rs` by keeping both bank and mail
+    opcode/packet additions
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network mail --lib`
+  - `cargo test -p wow-db --lib`
+  - `cargo test -p wow-network bank --lib`
 
 ## Current Confidence
 

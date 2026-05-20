@@ -202,8 +202,9 @@ $rustAuthVerifier = "171c640a3ed8fa4a187d99ce40b5ca1a62f39bc15dbbe74482edaa9a4ea
 $rustAuthSalt = "49212faef52cbb62fd06a55599e9ed118cd3155ed8766ec1132a39a12acc9681"
 $seedAccountSql = @"
 INSERT INTO account (username, gmlevel, sessionkey, v, s, email, locked, expansion, locale, os)
-VALUES ('RUSTAUTH', 0, '', '$rustAuthVerifier', '$rustAuthSalt', '', 0, 0, '', 'Win')
+VALUES ('RUSTAUTH', 3, '', '$rustAuthVerifier', '$rustAuthSalt', '', 0, 0, '', 'Win')
 ON DUPLICATE KEY UPDATE
+    gmlevel = 3,
     sessionkey = '',
     v = VALUES(v),
     s = VALUES(s),

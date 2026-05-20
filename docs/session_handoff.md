@@ -26,6 +26,8 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `quest_template=0`). Fresh worldserver startup now reports
   `static_creature_spawns=59640`, `static_gameobject_spawns=33372`, and the
   Northshire query window has 108 creatures / 26 gameobjects.
+- `RUSTAUTH` has GM privileges (`realmd.account.gmlevel=3`) in the live DB, and
+  `scripts/run-client-stack-18085.ps1` now preserves/seeds it that way.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1052,6 +1054,9 @@ Player visibility relocation threshold:
   - `.\scripts\restart-game-stack.cmd --release`
   - DB sanity counts for full world tables and Northshire creature/gameobject
     rows
+- GM account enablement:
+  - live DB `UPDATE account SET gmlevel=3 WHERE username='RUSTAUTH'`
+  - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
 
 ## Current Confidence
 

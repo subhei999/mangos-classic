@@ -348,7 +348,7 @@ impl MapRuntime {
             self.invalidate_idle_motion_start_schedule();
             self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
-        let aura_update = DbCreatureAuraUpdateEvent {
+        let mut aura_update = DbCreatureAuraUpdateEvent {
             update_body: update_body.clone(),
             direct_packets: direct_packets.clone(),
             observer_packets: self
@@ -368,6 +368,12 @@ impl MapRuntime {
                 })
                 .collect(),
         };
+        aura_update.observer_packets.extend(
+            self.cancel_player_channels_for_removed_target_auras(
+                creature_guid,
+                &removed_spell_ids,
+            )?,
+        );
         Ok(Some(DbCreatureAuraDispelEvent {
             removed_spell_ids,
             aura_update,
@@ -1073,6 +1079,11 @@ impl MapRuntime {
         } else {
             Vec::new()
         };
+        let player_spell_target_cleanup_packets = if is_dead {
+            self.interrupt_player_spell_work_targeting_unit(creature_guid)?
+        } else {
+            Vec::new()
+        };
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         let update_body = if is_dead {
             build_db_creature_death_update_body(
@@ -1268,6 +1279,7 @@ impl MapRuntime {
             ));
         }
         observer_packets.extend(player_melee_cleanup_packets);
+        observer_packets.extend(player_spell_target_cleanup_packets);
         let death_finalization = if is_dead {
             let combat_flag_packet = OutboundWorldPacket {
                 opcode: SMSG_UPDATE_OBJECT,

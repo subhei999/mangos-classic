@@ -124,7 +124,7 @@ impl MapRuntime {
             opcode: SMSG_DESTROY_OBJECT,
             body: build_destroy_guid_body(guid),
         };
-        let observer_packets = self
+        let mut observer_packets: Vec<(SessionId, OutboundWorldPacket)> = self
             .nearby_player_guids(
                 position,
                 CREATURE_SPAWN_RADIUS_YARDS,
@@ -137,6 +137,7 @@ impl MapRuntime {
                     .and_then(|player| player.packet_to_client(packet.clone()))
             })
             .collect();
+        observer_packets.extend(self.interrupt_player_spell_work_targeting_unit(guid)?);
         Ok(Some(DbCreatureDeleteEvent {
             creature,
             direct_packet: packet,

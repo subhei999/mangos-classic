@@ -44,6 +44,7 @@ impl MapRuntime {
             ActivePlayerChannel {
                 caster,
                 caster_character_guid,
+                spell_id,
                 target,
                 expires_at: now + Duration::from_millis(duration_millis as u64),
                 next_tick_at: now,
@@ -140,6 +141,136 @@ impl MapRuntime {
             return Ok(None);
         }
         self.cancel_player_channel(caster_character_guid)
+    }
+
+    pub(in crate::world) fn cancel_player_channels_for_removed_target_auras(
+        &mut self,
+        target: ObjectGuid,
+        removed_spell_ids: &[u32],
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if removed_spell_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let removed_spell_ids = removed_spell_ids.iter().copied().collect::<HashSet<_>>();
+        let caster_guids = self
+            .active_player_channels
+            .iter()
+            .filter_map(|(caster_guid, channel)| {
+                (channel.target == target && removed_spell_ids.contains(&channel.spell_id))
+                    .then_some(*caster_guid)
+            })
+            .collect::<Vec<_>>();
+        let mut packets = Vec::new();
+        for caster_guid in caster_guids {
+            if let Some(event) = self.cancel_player_channel(caster_guid)? {
+                packets.extend(self.channel_event_packets(event));
+            }
+        }
+        Ok(packets)
+    }
+
+    pub(in crate::world) fn interrupt_player_spell_work_targeting_unit(
+        &mut self,
+        target: ObjectGuid,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let mut packets = Vec::new();
+        let active_casts = self
+            .active_player_spell_casts
+            .iter()
+            .filter(|(_, active_cast)| active_cast.targets.unit_target == Some(target))
+            .map(|(character_guid, active_cast)| (*character_guid, active_cast.clone()))
+            .collect::<Vec<_>>();
+        let mut interrupted_active = HashSet::new();
+        for (character_guid, _active_cast) in active_casts {
+            let Some(active_cast) = self.active_player_spell_casts.remove(&character_guid) else {
+                continue;
+            };
+            self.clear_player_spell_recovery(character_guid, &active_cast.profile);
+            interrupted_active.insert((character_guid, active_cast.spell_id));
+            packets.extend(
+                self.player_spell_interrupt_session_packets(character_guid, active_cast.spell_id)?,
+            );
+        }
+
+        let channel_casters = self
+            .active_player_channels
+            .iter()
+            .filter(|(_, channel)| channel.target == target)
+            .map(|(caster_guid, _)| *caster_guid)
+            .collect::<Vec<_>>();
+        for caster_guid in channel_casters {
+            if let Some(event) = self.cancel_player_channel(caster_guid)? {
+                packets.extend(self.channel_event_packets(event));
+            }
+        }
+
+        let mut retained_events = Vec::with_capacity(self.pending_spell_events.len());
+        let mut interrupted_pending = Vec::new();
+        for event in self.pending_spell_events.drain(..) {
+            if pending_spell_event_targets_unit(&event, target) {
+                if !interrupted_active.contains(&(event.caster_character_guid, event.spell_id)) {
+                    interrupted_pending.push((event.caster_character_guid, event.spell_id));
+                }
+            } else {
+                retained_events.push(event);
+            }
+        }
+        self.pending_spell_events = retained_events;
+        interrupted_pending.sort_unstable();
+        interrupted_pending.dedup();
+        for (character_guid, spell_id) in interrupted_pending {
+            packets.extend(self.player_spell_interrupt_session_packets(character_guid, spell_id)?);
+        }
+
+        self.pending_player_channel_impacts
+            .retain(|impact| impact.target != target);
+
+        Ok(packets)
+    }
+
+    fn player_spell_interrupt_session_packets(
+        &self,
+        character_guid: u32,
+        spell_id: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let cast_result = OutboundWorldPacket {
+            opcode: SMSG_CAST_RESULT,
+            body: build_cast_result_failure_body(spell_id, SPELL_FAILED_INTERRUPTED),
+        };
+        let failure_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILURE,
+            body: build_spell_failure_body(caster, spell_id, SPELL_FAILED_INTERRUPTED)?,
+        };
+        let failed_other_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILED_OTHER,
+            body: build_spell_failed_other_body(caster, spell_id),
+        };
+        let mut packets = Vec::new();
+        if let Some(session_id) = player.client_session_id() {
+            packets.push((session_id, cast_result));
+            packets.push((session_id, failure_packet.clone()));
+            packets.push((session_id, failed_other_packet.clone()));
+        }
+        for observer_guid in self.nearby_player_guids(
+            player.position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(character_guid),
+        ) {
+            let Some(session_id) = self
+                .players
+                .get(&observer_guid)
+                .and_then(PlayerRuntime::client_session_id)
+            else {
+                continue;
+            };
+            packets.push((session_id, failure_packet.clone()));
+            packets.push((session_id, failed_other_packet.clone()));
+        }
+        Ok(packets)
     }
 
     pub(in crate::world) fn advance_player_channels(
@@ -633,4 +764,14 @@ fn channel_tick_count(duration_millis: u32, tick_millis: u32) -> u32 {
         return 0;
     }
     duration_millis.div_ceil(tick_millis).max(1)
+}
+
+fn pending_spell_event_targets_unit(event: &PendingSpellEvent, target: ObjectGuid) -> bool {
+    match &event.kind {
+        PendingSpellEventKind::Spell { targets, .. } => targets.unit_target == Some(target),
+        PendingSpellEventKind::RangedAutoAttack {
+            target: event_target,
+            ..
+        } => *event_target == target,
+    }
 }

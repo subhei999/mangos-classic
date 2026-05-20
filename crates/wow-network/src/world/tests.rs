@@ -39913,6 +39913,258 @@ fn near_teleport_position_set_clears_active_spell_runtime() {
 }
 
 #[test]
+fn removing_channeled_creature_aura_interrupts_player_channel() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let caster_guid = 7;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, caster_guid);
+    let position = WorldPosition::new(0, -8948.0, -131.0, 83.4, 0.0);
+    map.add_player(test_player_runtime(caster_guid, SessionId(7), position))
+        .unwrap();
+    map.add_player(test_player_runtime(
+        8,
+        SessionId(8),
+        WorldPosition::new(0, -8947.0, -131.0, 83.4, 0.0),
+    ))
+    .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 406;
+    spawn.position_x = position.x + 5.0;
+    spawn.position_y = position.y;
+    spawn.position_z = position.z;
+    let target = creature_spawn_guid(&spawn);
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.active_auras.push(ActiveAura {
+        spell_id: 5143,
+        caster,
+        level: 1,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(5_000),
+        expires_at: Some(now + Duration::from_secs(5)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::DispelType { dispel_type: 1 }],
+        proc_triggers: Vec::new(),
+    });
+    map.creatures.insert(target.raw(), creature);
+
+    let fireball = fireball_spell_template();
+    let profile = player_spell_cast_profile(&fireball).unwrap();
+    let damage_effect = player_weapon_damage_effect(&profile);
+    map.start_player_periodic_trigger_channel(
+        caster,
+        caster_guid,
+        5143,
+        target,
+        5_000,
+        1_000,
+        0,
+        0.0,
+        damage_effect,
+        now,
+    )
+    .unwrap()
+    .expect("channel should start");
+    map.pending_player_channel_impacts
+        .push(PendingPlayerChannelImpact {
+            caster,
+            caster_character_guid: caster_guid,
+            target,
+            impact_at: now + Duration::from_millis(500),
+            damage_effect,
+            outcome: SpellDamageOutcome::normal_hit(1),
+        });
+
+    let event = map
+        .remove_db_creature_auras_by_dispel_type(target, caster_guid, 1, 1, now)
+        .unwrap()
+        .expect("aura should be removed");
+
+    assert!(!map.active_player_channels.contains_key(&caster_guid));
+    assert!(map
+        .pending_player_channel_impacts
+        .iter()
+        .all(|impact| impact.caster_character_guid != caster_guid));
+    assert!(event
+        .aura_update
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(7)
+            && packet.opcode == MSG_CHANNEL_UPDATE));
+    assert!(event
+        .aura_update
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(8)
+            && packet.opcode == MSG_CHANNEL_UPDATE));
+}
+
+#[test]
+fn creature_target_death_interrupts_active_player_spell_work_targeting_it() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let caster_guid = 7;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, caster_guid);
+    let position = WorldPosition::new(0, -8948.0, -131.0, 83.4, 0.0);
+    map.add_player(test_player_runtime(caster_guid, SessionId(7), position))
+        .unwrap();
+    map.add_player(test_player_runtime(
+        8,
+        SessionId(8),
+        WorldPosition::new(0, -8947.0, -131.0, 83.4, 0.0),
+    ))
+    .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 407;
+    spawn.position_x = position.x + 5.0;
+    spawn.position_y = position.y;
+    spawn.position_z = position.z;
+    let target = creature_spawn_guid(&spawn);
+    map.creatures
+        .insert(target.raw(), DbCreatureRuntime::new(spawn));
+
+    let targets = PendingSpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+        unit_target: Some(target),
+        gameobject_target: None,
+        source_location: None,
+        destination: None,
+    };
+    let fireball = fireball_spell_template();
+    let profile = player_spell_cast_profile(&fireball).unwrap();
+    map.active_player_spell_casts.insert(
+        caster_guid,
+        ActivePlayerSpellCast {
+            spell_id: fireball.id,
+            source: ActivePlayerSpellCastSource::Player,
+            profile,
+            targets: targets.clone(),
+            due_at: now + Duration::from_secs(2),
+            cast_time_millis: 2_000,
+            interrupt_flags: fireball.interrupt_flags,
+            damage_pushback_count: 0,
+        },
+    );
+    map.pending_spell_events.push(PendingSpellEvent {
+        event_id: 1,
+        caster_character_guid: caster_guid,
+        spell_id: fireball.id,
+        kind: PendingSpellEventKind::Spell {
+            targets,
+            target_outcome: None,
+        },
+        unit_target_generation: map
+            .creatures
+            .get(&target.raw())
+            .map(|creature| (target, creature.life_generation)),
+        due_at: now + Duration::from_secs(3),
+    });
+
+    let event = map
+        .apply_db_creature_damage(DbCreatureDamageRequest {
+            creature_guid: target,
+            killer: caster,
+            damage: 999,
+            melee_outcome: None,
+            spell_damage_outcome: None,
+            spell_id: Some(fireball.id),
+            spell_school: SPELL_SCHOOL_MASK_NORMAL as u8,
+            suppress_attacker_state: true,
+            now,
+            now_epoch_secs: 1_000,
+            exclude_character_guid: None,
+            corpse_loot: None,
+        })
+        .unwrap()
+        .expect("damage should kill creature");
+
+    assert!(event.death_finalization.is_some());
+    assert!(!map.active_player_spell_casts.contains_key(&caster_guid));
+    assert!(map
+        .pending_spell_events
+        .iter()
+        .all(|event| event.caster_character_guid != caster_guid));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(7)
+            && packet.opcode == SMSG_SPELL_FAILURE));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(8)
+            && packet.opcode == SMSG_SPELL_FAILED_OTHER));
+}
+
+#[test]
+fn deleting_creature_target_interrupts_active_player_spell_work_targeting_it() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let caster_guid = 7;
+    let position = WorldPosition::new(0, -8948.0, -131.0, 83.4, 0.0);
+    map.add_player(test_player_runtime(caster_guid, SessionId(7), position))
+        .unwrap();
+    map.add_player(test_player_runtime(
+        8,
+        SessionId(8),
+        WorldPosition::new(0, -8947.0, -131.0, 83.4, 0.0),
+    ))
+    .unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 408;
+    spawn.position_x = position.x + 5.0;
+    spawn.position_y = position.y;
+    spawn.position_z = position.z;
+    let target = creature_spawn_guid(&spawn);
+    map.creatures
+        .insert(target.raw(), DbCreatureRuntime::new(spawn));
+
+    let fireball = fireball_spell_template();
+    let profile = player_spell_cast_profile(&fireball).unwrap();
+    map.active_player_spell_casts.insert(
+        caster_guid,
+        ActivePlayerSpellCast {
+            spell_id: fireball.id,
+            source: ActivePlayerSpellCastSource::Player,
+            profile,
+            targets: PendingSpellCastTargets {
+                target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+                unit_target: Some(target),
+                gameobject_target: None,
+                source_location: None,
+                destination: None,
+            },
+            due_at: now + Duration::from_secs(2),
+            cast_time_millis: 2_000,
+            interrupt_flags: fireball.interrupt_flags,
+            damage_pushback_count: 0,
+        },
+    );
+
+    let event = map
+        .delete_db_creature_runtime(Some(target), None, None)
+        .unwrap()
+        .expect("creature should be deleted");
+
+    assert!(!map.active_player_spell_casts.contains_key(&caster_guid));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(7)
+            && packet.opcode == SMSG_SPELL_FAILURE));
+    assert!(event
+        .observer_packets
+        .iter()
+        .any(|(session_id, packet)| *session_id == SessionId(8)
+            && packet.opcode == SMSG_SPELL_FAILED_OTHER));
+}
+
+#[test]
 fn regular_movement_position_update_preserves_non_movement_interrupt_cast() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();

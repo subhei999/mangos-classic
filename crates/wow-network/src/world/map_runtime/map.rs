@@ -542,6 +542,7 @@ pub(in crate::world) struct ActivePlayerSpellCast {
 pub(in crate::world) struct ActivePlayerChannel {
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) caster_character_guid: u32,
+    pub(in crate::world) spell_id: u32,
     pub(in crate::world) target: ObjectGuid,
     pub(in crate::world) expires_at: Instant,
     pub(in crate::world) next_tick_at: Instant,

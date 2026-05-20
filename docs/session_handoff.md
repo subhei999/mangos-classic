@@ -9,9 +9,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Latest local integration state includes the committed spell-system parity
-  checkpoint `f1c8b47a5` and the clean merge of
-  `codex/c2-gossip-dialogue-parity` as `d9bbe7bce`.
+- Latest local integration state includes the pushed active-spell teleport
+  cleanup checkpoint `02388436c` on `codex/rusty-mangos` and the latest
+  aura/target invalidation spell slice.
 - Startup fix after the dialogue merge: `wow-db` now treats missing optional
   local-starter DB tables `unit_condition`, `combat_condition`, and
   `broadcast_text` as empty instead of failing world runtime initialization.
@@ -206,6 +206,12 @@ and generic hard-control aura behavior.
   the same map-owned active player spell runtime while ordinary movement still
   preserves non-movement-interrupt casts. GM `.go` now also invokes the
   explicit active-spell cleanup before applying its movement update.
+- Latest aura/target invalidation slice: external removal of a DB-creature
+  channeled aura now interrupts the matching player channel, clears queued
+  channel impacts, and sends channel-clear packets to the caster/observers.
+  DB-creature target death or runtime deletion now interrupts active and
+  delayed player spell work targeting that unit, mirroring CMaNGOS'
+  channeled-aura removal and lost/dead unit target cancellation paths.
 
 Recent RCA/perf work is committed at `b58c6ca81` and pushed to
 `origin/codex/rusty-mangos`; keep the detailed benchmark chronology below as
@@ -1081,6 +1087,23 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network movement_interrupt --lib`
   - `cargo test -p wow-network hard_control --lib`
   - `cargo check -p worldserver`
+- Current active-cast aura/target invalidation slice:
+  - test-first failure confirmed
+    `removing_channeled_creature_aura_interrupts_player_channel` left the
+    channel alive before implementation
+  - test-first failure confirmed
+    `creature_target_death_interrupts_active_player_spell_work_targeting_it`
+    left active spell work alive before implementation
+  - `cargo fmt`
+  - `cargo test -p wow-network removing_channeled_creature_aura_interrupts_player_channel --lib`
+  - `cargo test -p wow-network creature_target_death_interrupts_active_player_spell_work_targeting_it --lib`
+  - `cargo test -p wow-network deleting_creature_target_interrupts_active_player_spell_work_targeting_it --lib`
+  - `cargo test -p wow-network active_cast --lib`
+  - `cargo test -p wow-network channel --lib`
+  - `cargo test -p wow-network death --lib`
+  - `cargo test -p wow-network movement_interrupt --lib`
+  - `cargo test -p wow-network hard_control --lib`
+  - `cargo check -p worldserver`
 - Heartbeat coalescing:
   - `cargo test -p wow-network map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers --lib`
   - `cargo check -p worldserver`
@@ -1356,15 +1379,14 @@ Player visibility relocation threshold:
 
 ## Recommended Next Task
 
-1. Continue active-player cast interrupt/cancel parity by covering active-cast
-   invalidation from aura removal and target invalidation. Death,
-   logout/removal, combat-disconnect linger, and near-teleport/set-position now
-   have focused map-owned cleanup coverage. Cross-map transfer is still not
-   wired, so revisit transfer cleanup when that path exists.
-2. Then extend damage interrupt coverage to periodic/damage-shield/split-damage
+1. Extend damage interrupt coverage to periodic/damage-shield/split-damage
    distinctions if/when those player-damage paths are wired, matching CMaNGOS
    `Unit::InterruptOrDelaySpell` dot and no-damage exclusions.
-3. After interrupt/cancel parity is stable, continue the broader spell roadmap:
+2. Revisit cross-map transfer active-spell cleanup when that path exists; death,
+   logout/removal, combat-disconnect linger, near-teleport/set-position,
+   channeled-aura removal, DB-creature target death, and DB-creature runtime
+   deletion now have focused map-owned coverage.
+3. Continue the broader spell roadmap:
    target outcomes for immune/evade/reflect/player/PvP/AoE, Polymorph edge
    polish, triggered spells, aura procs, and class spell parity.
 

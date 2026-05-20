@@ -252,6 +252,62 @@ function Test-ExtractedServerData {
     return $true
 }
 
+function Resolve-ServerDataDir {
+    param(
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$LauncherDir
+    )
+
+    if ($Settings.PSObject.Properties.Name -contains "dataDir" -and -not [string]::IsNullOrWhiteSpace($Settings.dataDir)) {
+        return $Settings.dataDir
+    }
+
+    return (Join-Path $LauncherDir "data")
+}
+
+function Get-AdExtractorPath {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $packaged = Join-Path $RepoRoot "tools\extractors\ad.exe"
+    if (Test-Path -LiteralPath $packaged -PathType Leaf) {
+        return $packaged
+    }
+
+    $localBuild = Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors\ad.exe"
+    if (Test-Path -LiteralPath $localBuild -PathType Leaf) {
+        return $localBuild
+    }
+
+    return $null
+}
+
+function Ensure-ExtractedServerData {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientRoot,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    if (Test-ExtractedServerData $DataDir) {
+        Write-Host "Server data is already extracted: $DataDir"
+        return
+    }
+
+    $ad = Get-AdExtractorPath $RepoRoot
+    if (-not $ad) {
+        throw "The packaged CMaNGOS map/DBC extractor was not found. Expected tools\extractors\ad.exe under $RepoRoot."
+    }
+
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    Write-Host "Extracting server dbc/maps from $ClientRoot to $DataDir"
+    Write-Host "This may take a few minutes on first run."
+    Invoke-Checked $ad @("-i", $ClientRoot, "-o", $DataDir) $DataDir
+
+    if (-not (Test-ExtractedServerData $DataDir)) {
+        throw "DBC/map extraction finished, but $DataDir still does not contain both 'dbc' and 'maps'."
+    }
+}
+
 function Convert-ToTomlPath {
     param([Parameter(Mandatory = $true)][string]$Path)
     return (($Path -replace "\\", "/") -replace '"', '\"')
@@ -357,7 +413,8 @@ function Write-GeneratedConfigs {
         [Parameter(Mandatory = $true)][string]$LauncherDir
     )
 
-    $clientTomlPath = Convert-ToTomlPath $Settings.clientDir
+    $dataDir = Resolve-ServerDataDir $Settings $LauncherDir
+    $dataTomlPath = Convert-ToTomlPath $dataDir
     $authConfig = @"
 bind_address = "127.0.0.1"
 bind_port = $($Settings.authPort)
@@ -373,7 +430,7 @@ database = "realmd"
     $worldConfig = @"
 bind_address = "127.0.0.1"
 bind_port = $($Settings.worldPort)
-data_dir = "$clientTomlPath"
+data_dir = "$dataTomlPath"
 
 [login_database]
 host = "127.0.0.1"
@@ -1146,10 +1203,7 @@ if ($needsConfigure) {
     }
 
     $clientRoot = Resolve-WowClientDir $ClientDir
-    if (-not (Test-ExtractedServerData $clientRoot)) {
-        Write-Warning "The selected client folder does not contain extracted server data folders 'dbc' and 'maps'."
-        Write-Warning "The server can start, but DBC/map/vmap/mmap parity will be limited until extracted CMaNGOS data is placed there."
-    }
+    $dataRoot = Join-Path $launcherDir "data"
 
     $debug = $false
     if ($DebugBuild) {
@@ -1160,6 +1214,7 @@ if ($needsConfigure) {
         databaseMode = "Native"
         clientDir = $clientRoot
         classicDbPath = $ClassicDbPath
+        dataDir = $dataRoot
         dbPort = $DbPort
         worldPort = $WorldPort
         authPort = $AuthPort
@@ -1185,6 +1240,15 @@ if ($needsConfigure) {
 else {
     Write-GeneratedConfigs $settings $launcherDir
 }
+
+Write-Step "Preparing client data"
+$serverDataDir = Resolve-ServerDataDir $settings $launcherDir
+Ensure-ExtractedServerData $settings.clientDir $serverDataDir $repoRoot
+if ($settings.PSObject.Properties.Name -notcontains "dataDir" -or $settings.dataDir -ne $serverDataDir) {
+    $settings | Add-Member -NotePropertyName dataDir -NotePropertyValue $serverDataDir -Force
+    Write-Settings $settingsPath $settings
+}
+Write-GeneratedConfigs $settings $launcherDir
 
 Write-Step "Preparing native MariaDB"
 $mariaRoot = Ensure-NativeMariaDb $settings $launcherDir

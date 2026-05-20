@@ -63,6 +63,43 @@ function Get-InnoCompiler {
     return $localCompiler
 }
 
+function Get-ExtractorSource {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $existing = Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors"
+    if (Test-Path -LiteralPath (Join-Path $existing "ad.exe") -PathType Leaf) {
+        return $existing
+    }
+
+    $buildRoot = Join-Path $RepoRoot "target\launcher-extractor-build"
+    $binaryRoot = Join-Path $buildRoot "bin\x64_Release\Extractors"
+    if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {
+        Invoke-Checked cmake @(
+            "-S", $RepoRoot,
+            "-B", $buildRoot,
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DBUILD_GAME_SERVER=OFF",
+            "-DBUILD_LOGIN_SERVER=OFF",
+            "-DBUILD_SCRIPTDEV=OFF",
+            "-DBUILD_EXTRACTORS=ON",
+            "-DPCH=OFF",
+            "-DDEV_BINARY_DIR=$buildRoot\bin"
+        )
+        Invoke-Checked cmake @(
+            "--build", $buildRoot,
+            "--config", "Release",
+            "--target", "ad"
+        )
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {
+        throw "CMaNGOS ad.exe extractor was not found or built at $binaryRoot"
+    }
+
+    return $binaryRoot
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 Set-Location $repoRoot
 
@@ -110,6 +147,13 @@ Set-Content -LiteralPath (Join-Path $appRoot "BUILD_INFO.txt") -Value $buildInfo
 New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "scripts") | Out-Null
 Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.ps1" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.ps1") -Force
 Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.cmd" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.cmd") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "tools\extractors") | Out-Null
+$extractorSource = Get-ExtractorSource $repoRoot
+Copy-Item -LiteralPath (Join-Path $extractorSource "ad.exe") -Destination (Join-Path $appRoot "tools\extractors\ad.exe") -Force
+if (Test-Path -LiteralPath (Join-Path $extractorSource "zlib.dll") -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $extractorSource "zlib.dll") -Destination (Join-Path $appRoot "tools\extractors\zlib.dll") -Force
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "docs") | Out-Null
 Copy-Item -LiteralPath "docs\rusty_mangos_launcher.md" -Destination (Join-Path $appRoot "docs\rusty_mangos_launcher.md") -Force

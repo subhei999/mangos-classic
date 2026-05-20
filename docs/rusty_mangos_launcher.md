@@ -31,6 +31,8 @@ cargo run -p rusty-mangos-launcher
 The launcher will:
 
 - ask for the World of Warcraft 1.12.1 client folder;
+- extract required server-side `dbc` and `maps` data from that client into
+  `target\launcher\data`;
 - download and unpack portable MariaDB under `target\launcher\mariadb`;
 - initialize a local MariaDB data directory under `target\launcher\mariadb-data`;
 - clone/import ClassicDB into the local `mangos` world database when needed;
@@ -60,8 +62,8 @@ The launcher is styled like a dark game launcher:
 - large server card with database/auth/world status pills;
 - primary **Install / Start** or **Restart** action;
 - quick **Start**, **Stop**, **Dashboard**, and app-data shortcuts;
-- setup page for choosing the WoW client folder;
-- logs page with backend output;
+- setup page for choosing or auto-detecting the WoW client folder;
+- logs page with launcher, authserver, worldserver, and MariaDB log tabs;
 - advanced page for ports, ClassicDB path, and import/realmlist options.
 
 ## Start And Stop

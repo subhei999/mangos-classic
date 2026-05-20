@@ -9,17 +9,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Current tracked dirty state is the resumed spell-system work in
-  `crates/wow-network/src/world/spells.rs`,
-  `crates/wow-network/src/world/spells/effects.rs`,
-  `crates/wow-network/src/world/opcodes.rs`,
-  `crates/wow-network/src/world/combat/runtime.rs`,
-  `crates/wow-network/src/world/combat/motion.rs`,
-  `crates/wow-network/src/world/map_runtime/map/players.rs`,
-  `crates/wow-network/src/world/map_runtime/map/creature_combat.rs`,
-  `crates/wow-network/src/world/map_runtime/map/creature_damage.rs`,
-  `crates/wow-network/src/world/tests.rs`, and this handoff; `logs/` remains
-  untracked from RCA captures.
+- Latest local integration state includes the committed spell-system parity
+  checkpoint `f1c8b47a5` and the clean merge of
+  `codex/c2-gossip-dialogue-parity` as `d9bbe7bce`.
+- The worktree should be clean after this handoff refresh except for untracked
+  `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
 - OOC EventAI is enabled again in
   `crates/wow-network/src/world/server/map_update.rs`; future RCA controls
@@ -1021,6 +1015,10 @@ Player visibility relocation threshold:
   - `cargo fmt`
   - `cargo check -p worldserver`
   - `cargo test -p wow-network ooc_event_ai --lib`
+- Dialogue branch merge:
+  - `cargo test -p wow-network gossip --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
 
 ## Current Confidence
 

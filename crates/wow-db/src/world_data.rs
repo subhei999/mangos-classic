@@ -1952,20 +1952,32 @@ pub async fn get_vendor_items(
 ) -> Result<Vec<VendorItemQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("vendor_items_load");
     let rows = sqlx::query_as::<_, VendorItemRow>(
-        "SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.slot, \
+        "SELECT vendor_items.item, vendor_items.max_count, vendor_items.slot, \
                 item_template.displayid AS display_id, item_template.BuyPrice AS buy_price, \
                 item_template.MaxDurability AS max_durability, \
                 item_template.BuyCount AS buy_count, \
                 item_template.ContainerSlots AS container_slots \
-         FROM npc_vendor \
-         JOIN item_template ON npc_vendor.item = item_template.entry \
-         WHERE npc_vendor.entry = ? \
-           AND npc_vendor.condition_id = 0 \
-           AND item_template.ContainerSlots = 0 \
-         ORDER BY CASE WHEN npc_vendor.slot = 0 THEN 255 ELSE npc_vendor.slot END, \
-                  npc_vendor.item \
+         FROM ( \
+             SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.slot \
+             FROM npc_vendor \
+             WHERE npc_vendor.entry = ? \
+               AND npc_vendor.condition_id = 0 \
+             UNION ALL \
+             SELECT npc_vendor_template.item, npc_vendor_template.maxcount AS max_count, \
+                    npc_vendor_template.slot \
+             FROM creature_template \
+             JOIN npc_vendor_template \
+               ON npc_vendor_template.entry = creature_template.VendorTemplateId \
+             WHERE creature_template.Entry = ? \
+               AND npc_vendor_template.condition_id = 0 \
+         ) AS vendor_items \
+         JOIN item_template ON vendor_items.item = item_template.entry \
+         AND item_template.ContainerSlots = 0 \
+         ORDER BY CASE WHEN vendor_items.slot = 0 THEN 255 ELSE vendor_items.slot END, \
+                  vendor_items.item \
          LIMIT 128",
     )
+    .bind(creature_entry)
     .bind(creature_entry)
     .fetch_all(pool)
     .await?;
@@ -2001,7 +2013,7 @@ pub async fn get_trainer_spells(
 ) -> Result<Vec<TrainerSpellQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("trainer_spells_load");
     let rows = sqlx::query_as::<_, TrainerSpellQuery>(
-        "SELECT npc_trainer.spell, \
+        "SELECT trainer_spells.spell, \
                 CAST(COALESCE( \
                     CASE \
                         WHEN spell_template.Effect1 = 36 \
@@ -2016,18 +2028,38 @@ pub async fn get_trainer_spells(
                          AND spell_template.EffectTriggerSpell3 <> 0 \
                          AND spell_template.EffectImplicitTargetA3 IN (0, 1) \
                             THEN spell_template.EffectTriggerSpell3 \
-                        ELSE npc_trainer.spell \
-                    END, npc_trainer.spell) AS UNSIGNED) AS learned_spell, \
-                spellcost AS spell_cost, \
-                reqskill AS req_skill, reqskillvalue AS req_skill_value, \
-                reqlevel AS req_level, ReqAbility1 AS req_ability1, \
-                ReqAbility2 AS req_ability2, ReqAbility3 AS req_ability3 \
-         FROM npc_trainer \
-         LEFT JOIN spell_template ON spell_template.Id = npc_trainer.spell \
-         WHERE entry = ? AND condition_id = 0 \
+                        ELSE trainer_spells.spell \
+                    END, trainer_spells.spell) AS UNSIGNED) AS learned_spell, \
+                trainer_spells.spellcost AS spell_cost, \
+                trainer_spells.reqskill AS req_skill, \
+                trainer_spells.reqskillvalue AS req_skill_value, \
+                trainer_spells.reqlevel AS req_level, \
+                trainer_spells.ReqAbility1 AS req_ability1, \
+                trainer_spells.ReqAbility2 AS req_ability2, \
+                trainer_spells.ReqAbility3 AS req_ability3 \
+         FROM ( \
+             SELECT npc_trainer.spell, npc_trainer.spellcost, npc_trainer.reqskill, \
+                    npc_trainer.reqskillvalue, npc_trainer.reqlevel, \
+                    npc_trainer.ReqAbility1, npc_trainer.ReqAbility2, npc_trainer.ReqAbility3 \
+             FROM npc_trainer \
+             WHERE npc_trainer.entry = ? \
+               AND npc_trainer.condition_id = 0 \
+             UNION ALL \
+             SELECT npc_trainer_template.spell, npc_trainer_template.spellcost, \
+                    npc_trainer_template.reqskill, npc_trainer_template.reqskillvalue, \
+                    npc_trainer_template.reqlevel, npc_trainer_template.ReqAbility1, \
+                    npc_trainer_template.ReqAbility2, npc_trainer_template.ReqAbility3 \
+             FROM creature_template \
+             JOIN npc_trainer_template \
+               ON npc_trainer_template.entry = creature_template.TrainerTemplateId \
+             WHERE creature_template.Entry = ? \
+               AND npc_trainer_template.condition_id = 0 \
+         ) AS trainer_spells \
+         LEFT JOIN spell_template ON spell_template.Id = trainer_spells.spell \
          ORDER BY reqlevel, spell \
          LIMIT 128",
     )
+    .bind(creature_entry)
     .bind(creature_entry)
     .fetch_all(pool)
     .await?;

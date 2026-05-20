@@ -28,6 +28,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   Northshire query window has 108 creatures / 26 gameobjects.
 - `RUSTAUTH` has GM privileges (`realmd.account.gmlevel=3`) in the live DB, and
   `scripts/run-client-stack-18085.ps1` now preserves/seeds it that way.
+- Dialogue regression follow-up: `wow-db::get_vendor_items` and
+  `wow-db::get_trainer_spells` now merge CMaNGOS template-backed service rows
+  (`npc_vendor_template` via `VendorTemplateId`, `npc_trainer_template` via
+  `TrainerTemplateId`) with direct rows. This should restore merchants/trainers
+  whose gossip flags were visible but whose service backing looked empty in
+  Rust. The release stack was restarted after the fix.
+- Existing GitHub issue #75 still tracks remaining non-merchant service actions:
+  taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
+  scripts/locales, and full npc_text parity.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -37,8 +46,9 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-Resume spell-system parity work, starting with Polymorph and generic
-hard-control aura behavior.
+Immediate user-directed priority is real-client verification of the dialogue
+service regression above. After that, resume spell-system parity work, starting
+with Polymorph and generic hard-control aura behavior.
 
 - Polymorph already has transform display, damage break, single-target
   replacement, helper regen, diminishing metadata, combat preservation, and
@@ -1057,6 +1067,16 @@ Player visibility relocation threshold:
 - GM account enablement:
   - live DB `UPDATE account SET gmlevel=3 WHERE username='RUSTAUTH'`
   - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
+- Dialogue template service backing:
+  - `cargo fmt`
+  - `cargo test -p wow-db --lib`
+  - `cargo test -p wow-network gossip --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+  - `.\scripts\restart-game-stack.cmd --release`
+  - DB sanity check confirmed representative template-backed vendors/trainers
+    such as Corina Steele, Jessara Cordell, Mogwah, and World Mage Trainer have
+    service rows through CMaNGOS template tables.
 
 ## Current Confidence
 

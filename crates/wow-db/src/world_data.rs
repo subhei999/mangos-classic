@@ -1370,6 +1370,18 @@ struct CreatureCooldownRow {
     cooldown_max: u32,
 }
 
+async fn world_table_exists(pool: &MySqlPool, table_name: &str) -> Result<bool, DbError> {
+    let table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) \
+         FROM information_schema.tables \
+         WHERE table_schema = DATABASE() AND table_name = ?",
+    )
+    .bind(table_name)
+    .fetch_one(pool)
+    .await?;
+    Ok(table_count != 0)
+}
+
 pub async fn get_exploration_base_xp_rows(
     pool: &MySqlPool,
 ) -> Result<Vec<ExplorationBaseXpQuery>, DbError> {
@@ -2116,6 +2128,10 @@ pub async fn get_condition(
 
 pub async fn get_unit_conditions(pool: &MySqlPool) -> Result<Vec<UnitConditionQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("unit_condition_load");
+    if !world_table_exists(pool, "unit_condition").await? {
+        return Ok(Vec::new());
+    }
+
     sqlx::query_as::<_, UnitConditionQuery>(
         "SELECT Id AS id, CAST(Flags AS UNSIGNED) AS flags, \
                 CAST(Variable_0 AS UNSIGNED) AS variable_0, \
@@ -2151,6 +2167,10 @@ pub async fn get_unit_condition(
     id: i32,
 ) -> Result<Option<UnitConditionQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("unit_condition_single_load");
+    if !world_table_exists(pool, "unit_condition").await? {
+        return Ok(None);
+    }
+
     sqlx::query_as::<_, UnitConditionQuery>(
         "SELECT Id AS id, CAST(Flags AS UNSIGNED) AS flags, \
                 CAST(Variable_0 AS UNSIGNED) AS variable_0, \
@@ -2184,6 +2204,10 @@ pub async fn get_unit_condition(
 
 pub async fn get_combat_conditions(pool: &MySqlPool) -> Result<Vec<CombatConditionQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("combat_condition_load");
+    if !world_table_exists(pool, "combat_condition").await? {
+        return Ok(Vec::new());
+    }
+
     sqlx::query_as::<_, CombatConditionQuery>(
         "SELECT Id AS id, WorldStateExpressionID AS world_state_expression_id, \
                 SelfConditionID AS self_condition_id, \
@@ -2215,6 +2239,10 @@ pub async fn get_combat_condition(
     id: i32,
 ) -> Result<Option<CombatConditionQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("combat_condition_single_load");
+    if !world_table_exists(pool, "combat_condition").await? {
+        return Ok(None);
+    }
+
     sqlx::query_as::<_, CombatConditionQuery>(
         "SELECT Id AS id, WorldStateExpressionID AS world_state_expression_id, \
                 SelfConditionID AS self_condition_id, \
@@ -2273,6 +2301,10 @@ pub async fn get_script_texts(pool: &MySqlPool) -> Result<Vec<ScriptTextQuery>, 
 
 pub async fn get_broadcast_texts(pool: &MySqlPool) -> Result<Vec<BroadcastTextQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("broadcast_texts_load");
+    if !world_table_exists(pool, "broadcast_text").await? {
+        return Ok(Vec::new());
+    }
+
     sqlx::query_as::<_, BroadcastTextQuery>(
         "SELECT Id AS id, Text AS text, Text1 AS text1, \
                 CAST(ChatTypeID AS UNSIGNED) AS chat_type, \

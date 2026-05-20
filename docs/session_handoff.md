@@ -12,6 +12,10 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Latest local integration state includes the committed spell-system parity
   checkpoint `f1c8b47a5` and the clean merge of
   `codex/c2-gossip-dialogue-parity` as `d9bbe7bce`.
+- Startup fix after the dialogue merge: `wow-db` now treats missing optional
+  local-starter DB tables `unit_condition`, `combat_condition`, and
+  `broadcast_text` as empty instead of failing world runtime initialization.
+  Full CMaNGOS world DB imports still use the real table data when present.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1019,6 +1023,16 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network gossip --lib`
   - `cargo check -p worldserver`
   - `.\scripts\test-rust.cmd`
+- Local starter DB startup fix:
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `.\scripts\restart-game-stack.cmd --release`
+  - `.\scripts\test-rust.cmd` hit the known parallel
+    `prometheus_render_includes_histogram_and_opcode_labels` observability
+    counter-order failure
+  - isolated `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib -- --nocapture`
+  - `cargo test -p wow-db --lib`
+  - `cargo test -p wow-network gossip --lib`
 
 ## Current Confidence
 

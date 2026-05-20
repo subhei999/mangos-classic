@@ -1,0 +1,110 @@
+param(
+    [switch]$SkipRustBuild,
+    [switch]$SkipInstaller,
+    [string]$InnoSetupUrl = "https://jrsoftware.org/download.php/is.exe"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [string[]]$Arguments
+    )
+
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Command $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Get-InnoCompiler {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $pathCompiler = Get-Command iscc -ErrorAction SilentlyContinue
+    if ($pathCompiler) {
+        return $pathCompiler.Source
+    }
+
+    $toolRoot = Join-Path $RepoRoot "target\tooling"
+    $innoRoot = Join-Path $toolRoot "inno-setup"
+    $localCompiler = Join-Path $innoRoot "ISCC.exe"
+    if (Test-Path -LiteralPath $localCompiler -PathType Leaf) {
+        return $localCompiler
+    }
+
+    New-Item -ItemType Directory -Force -Path $toolRoot, $innoRoot | Out-Null
+    $downloadPath = Join-Path $toolRoot "innosetup.exe"
+
+    if (-not (Test-Path -LiteralPath $downloadPath -PathType Leaf)) {
+        Write-Host "Downloading Inno Setup compiler from $InnoSetupUrl"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $InnoSetupUrl -OutFile $downloadPath
+    }
+
+    Write-Host "Installing Inno Setup compiler into $innoRoot"
+    $arguments = @(
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/CURRENTUSER",
+        "/NOICONS",
+        "/NORESTART",
+        "/DIR=`"$innoRoot`""
+    )
+    $process = Start-Process -FilePath $downloadPath -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Inno Setup installer failed with exit code $($process.ExitCode)"
+    }
+
+    if (-not (Test-Path -LiteralPath $localCompiler -PathType Leaf)) {
+        throw "Inno Setup installed, but ISCC.exe was not found at $localCompiler"
+    }
+
+    return $localCompiler
+}
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+Set-Location $repoRoot
+
+$packageRoot = Join-Path $repoRoot "target\launcher-package"
+$appRoot = Join-Path $packageRoot "app"
+
+Remove-Item -LiteralPath $appRoot -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
+
+if (-not $SkipRustBuild) {
+    Invoke-Checked cargo @("build", "--release", "-p", "authserver")
+    Invoke-Checked cargo @("build", "--release", "-p", "worldserver")
+}
+
+Invoke-Checked cargo @("build", "--release", "-p", "rusty-mangos-launcher")
+
+Copy-Item -LiteralPath "target\release\rusty-mangos-launcher.exe" -Destination (Join-Path $appRoot "RustyMangosLauncher.exe") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "server") | Out-Null
+Copy-Item -LiteralPath "target\release\authserver.exe" -Destination (Join-Path $appRoot "server\authserver.exe") -Force
+Copy-Item -LiteralPath "target\release\worldserver.exe" -Destination (Join-Path $appRoot "server\worldserver.exe") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "scripts") | Out-Null
+Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.ps1" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.ps1") -Force
+Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.cmd" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.cmd") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "docs") | Out-Null
+Copy-Item -LiteralPath "docs\rusty_mangos_launcher.md" -Destination (Join-Path $appRoot "docs\rusty_mangos_launcher.md") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "sql\base") | Out-Null
+Copy-Item -LiteralPath "sql\base\realmd.sql" -Destination (Join-Path $appRoot "sql\base\realmd.sql") -Force
+Copy-Item -LiteralPath "sql\base\characters.sql" -Destination (Join-Path $appRoot "sql\base\characters.sql") -Force
+Copy-Item -LiteralPath "sql\base\mangos.sql" -Destination (Join-Path $appRoot "sql\base\mangos.sql") -Force
+
+New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "sql\updates\mangos") | Out-Null
+Copy-Item -Path "sql\updates\mangos\*.sql" -Destination (Join-Path $appRoot "sql\updates\mangos") -Force
+
+if ($SkipInstaller) {
+    Write-Host "Packaged app folder: $appRoot"
+    exit 0
+}
+
+$iscc = Get-InnoCompiler $repoRoot
+Invoke-Checked $iscc @("installer\RustyMangos.iss")
+Write-Host "Installer output: $(Join-Path $packageRoot 'installer\RustyMangosSetup.exe')"

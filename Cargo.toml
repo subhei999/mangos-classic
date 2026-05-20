@@ -6,6 +6,7 @@ members = [
     "bins/starter-zone-flow-test",
     "bins/world-load-test",
     "bins/world-flow-test",
+    "bins/rusty-mangos-launcher",
     "bins/authserver",
     "bins/worldserver",
     "crates/wow-common",

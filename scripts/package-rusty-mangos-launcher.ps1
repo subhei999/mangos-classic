@@ -1,6 +1,7 @@
 param(
     [switch]$SkipRustBuild,
     [switch]$SkipInstaller,
+    [string]$ExtractorSourcePath,
     [string]$InnoSetupUrl = "https://jrsoftware.org/download.php/is.exe"
 )
 
@@ -63,106 +64,73 @@ function Get-InnoCompiler {
     return $localCompiler
 }
 
+function Test-ExtractorSourceHasLauncherTools {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    foreach ($file in @(
+            "ad.exe",
+            "vmap_extractor.exe",
+            "vmap_assembler.exe",
+            "MoveMapGen.exe",
+            "config.json",
+            "offmesh.txt"
+        )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $file) -PathType Leaf)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Get-ExtractorSource {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$OverridePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($OverridePath)) {
+        $resolved = Resolve-Path -LiteralPath $OverridePath -ErrorAction SilentlyContinue
+        if (-not $resolved) {
+            throw "Extractor source path does not exist: $OverridePath"
+        }
+        if (-not (Test-ExtractorSourceHasLauncherTools $resolved.ProviderPath)) {
+            throw "Extractor source path does not contain the required launcher extractor tools: $($resolved.ProviderPath)"
+        }
+        return $resolved.ProviderPath
+    }
 
     $existing = Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors"
-    if (Test-Path -LiteralPath (Join-Path $existing "ad.exe") -PathType Leaf) {
+    if (Test-ExtractorSourceHasLauncherTools $existing) {
         return $existing
     }
 
     $buildRoot = Join-Path $RepoRoot "target\launcher-extractor-build"
     $binaryRoot = Join-Path $buildRoot "bin\x64_Release\Extractors"
-    if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {
-        $extractorProject = Join-Path $buildRoot "ad-project"
-        New-Item -ItemType Directory -Force -Path $extractorProject | Out-Null
-
-        $repoRootForCmake = ($RepoRoot -replace "\\", "/")
-        $buildRootForCmake = ($buildRoot -replace "\\", "/")
-        $cmakeLists = @"
-cmake_minimum_required(VERSION 3.16)
-project(rusty_mangos_ad_extractor LANGUAGES C CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(REPO_ROOT "$repoRootForCmake")
-set(DEV_BIN_DIR "$buildRootForCmake/bin/x64_`$<CONFIG>")
-
-include(FetchContent)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  zlib
-  URL https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip
-)
-FetchContent_MakeAvailable(zlib)
-if(TARGET zlibstatic)
-  set(AD_ZLIB_TARGET zlibstatic)
-else()
-  set(AD_ZLIB_TARGET zlib)
-endif()
-target_include_directories(`${AD_ZLIB_TARGET} PUBLIC `${zlib_SOURCE_DIR} `${zlib_BINARY_DIR})
-
-set(BZIP2_ROOT "`${REPO_ROOT}/dep/src/bzip2")
-add_library(bzip2 STATIC
-  "`${BZIP2_ROOT}/compress.c"
-  "`${BZIP2_ROOT}/crctable.c"
-  "`${BZIP2_ROOT}/decompress.c"
-  "`${BZIP2_ROOT}/huffman.c"
-  "`${BZIP2_ROOT}/randtable.c"
-  "`${BZIP2_ROOT}/blocksort.c"
-  "`${BZIP2_ROOT}/bzlib.c"
-)
-target_include_directories(bzip2 PUBLIC "`${REPO_ROOT}/dep/include/bzip2" "`${BZIP2_ROOT}")
-
-file(GLOB MPQ_SOURCES
-  "`${REPO_ROOT}/dep/libmpq/libmpq/*.c"
-  "`${REPO_ROOT}/dep/libmpq/libmpq/*.h"
-  "`${REPO_ROOT}/dep/libmpq/*.h"
-)
-add_library(mpqlib STATIC `${MPQ_SOURCES})
-target_include_directories(mpqlib PUBLIC "`${REPO_ROOT}/dep/libmpq" "`${REPO_ROOT}/dep/libmpq/win")
-target_link_libraries(mpqlib PRIVATE `${AD_ZLIB_TARGET} bzip2)
-if(MSVC)
-  target_compile_options(mpqlib PRIVATE /wd4103)
-endif()
-
-set(AD_ROOT "`${REPO_ROOT}/contrib/extractor")
-add_executable(ad
-  "`${AD_ROOT}/loadlib/loadlib.cpp"
-  "`${AD_ROOT}/loadlib/adt.cpp"
-  "`${AD_ROOT}/loadlib/wdt.cpp"
-  "`${AD_ROOT}/dbcfile.cpp"
-  "`${AD_ROOT}/mpq_libmpq.cpp"
-  "`${AD_ROOT}/System.cpp"
-)
-target_include_directories(ad PRIVATE "`${AD_ROOT}" "`${REPO_ROOT}/src/game")
-target_link_libraries(ad PRIVATE mpqlib)
-if(MSVC)
-  set_target_properties(ad PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "`${DEV_BIN_DIR}/Extractors"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "`${DEV_BIN_DIR}/Extractors"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "`${DEV_BIN_DIR}/Extractors"
-  )
-endif()
-"@
-        Set-Content -LiteralPath (Join-Path $extractorProject "CMakeLists.txt") -Value $cmakeLists -Encoding ASCII
-
+    if (-not (Test-ExtractorSourceHasLauncherTools $binaryRoot)) {
         Invoke-Checked cmake @(
-            "-S", $extractorProject,
+            "-S", $RepoRoot,
             "-B", $buildRoot,
             "-G", "Visual Studio 17 2022",
-            "-A", "x64"
+            "-A", "x64",
+            "-DBUILD_GAME_SERVER=OFF",
+            "-DBUILD_LOGIN_SERVER=OFF",
+            "-DBUILD_EXTRACTORS=ON",
+            "-DBUILD_SCRIPTDEV=OFF",
+            "-DBUILD_PLAYERBOTS=OFF",
+            "-DBUILD_DEPRECATED_PLAYERBOT=OFF",
+            "-DPCH=OFF",
+            "-DDEV_BINARY_DIR=$buildRoot"
         ) | Out-Host
         Invoke-Checked cmake @(
             "--build", $buildRoot,
             "--config", "Release",
-            "--target", "ad"
+            "--target", "ad", "vmap_extractor", "vmap_assembler", "MoveMapGen"
         ) | Out-Host
     }
 
-    if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {
-        throw "CMaNGOS ad.exe extractor was not found or built at $binaryRoot"
+    if (-not (Test-ExtractorSourceHasLauncherTools $binaryRoot)) {
+        throw "CMaNGOS extractor tools were not found or built at $binaryRoot"
     }
 
     return $binaryRoot
@@ -217,10 +185,27 @@ Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.ps1" -Destination (Join-Pa
 Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.cmd" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.cmd") -Force
 
 New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "tools\extractors") | Out-Null
-$extractorSource = Get-ExtractorSource $repoRoot
-Copy-Item -LiteralPath (Join-Path $extractorSource "ad.exe") -Destination (Join-Path $appRoot "tools\extractors\ad.exe") -Force
-if (Test-Path -LiteralPath (Join-Path $extractorSource "zlib.dll") -PathType Leaf) {
-    Copy-Item -LiteralPath (Join-Path $extractorSource "zlib.dll") -Destination (Join-Path $appRoot "tools\extractors\zlib.dll") -Force
+$extractorSource = Get-ExtractorSource $repoRoot $ExtractorSourcePath
+$requiredExtractorFiles = @(
+    "ad.exe",
+    "vmap_extractor.exe",
+    "vmap_assembler.exe",
+    "MoveMapGen.exe",
+    "config.json",
+    "offmesh.txt"
+)
+foreach ($file in $requiredExtractorFiles) {
+    $source = Join-Path $extractorSource $file
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "Extractor source is missing required first-run tool: $source"
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot "tools\extractors\$file") -Force
+}
+foreach ($file in @("zlib.dll", "MoveMapGen.sh", "ExtractResources.sh")) {
+    $source = Join-Path $extractorSource $file
+    if (Test-Path -LiteralPath $source -PathType Leaf) {
+        Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot "tools\extractors\$file") -Force
+    }
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "docs") | Out-Null

@@ -229,7 +229,7 @@ impl LauncherApp {
             .unwrap_or_default();
         let build_id = paths
             .as_ref()
-            .map(|paths| read_build_id(paths))
+            .map(read_build_id)
             .unwrap_or_else(|_| "local".to_string());
         let realm_label = format!("Pre-alpha Test Realm {build_id}");
         let mut settings = settings;

@@ -9,6 +9,7 @@ param(
     [int]$WorldPort = 18085,
     [int]$AuthPort = 13724,
     [int]$ReadyTimeoutSeconds = 120,
+    [string]$MMapMaps = "0 1",
     [string]$MariaDbVersion = "11.4.8",
     [string]$MariaDbZipUrl,
     [switch]$SkipWorldImport,
@@ -40,6 +41,7 @@ function Show-Usage {
     Write-Host "  -DbPort <port>             Local MariaDB port. Default: 3307"
     Write-Host "  -WorldPort <port>          Worldserver port. Default: 18085"
     Write-Host "  -AuthPort <port>           Authserver port. Default: 13724"
+    Write-Host "  -MMapMaps <ids>            Space/comma separated map ids for mmap build. Default: 0 1"
     Write-Host "  -SkipWorldImport           Do not clone/import ClassicDB."
     Write-Host "  -ForceWorldImport          Re-import ClassicDB even when world data exists."
     Write-Host "  -NoClassicDbClone          Require ClassicDB to already exist locally."
@@ -252,6 +254,58 @@ function Test-ExtractedServerData {
     return $true
 }
 
+function Test-ExtractedVMaps {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $vmapDir = Join-Path $Path "vmaps"
+    if (-not (Test-Path -LiteralPath $vmapDir -PathType Container)) {
+        return $false
+    }
+
+    $tree = Get-ChildItem -LiteralPath $vmapDir -Filter "*.vmtree" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    $tile = Get-ChildItem -LiteralPath $vmapDir -Filter "*.vmtile" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    return ($null -ne $tree -and $null -ne $tile)
+}
+
+function Test-ExtractedMMaps {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$MapIds
+    )
+
+    $mmapDir = Join-Path $Path "mmaps"
+    if (-not (Test-Path -LiteralPath $mmapDir -PathType Container)) {
+        return $false
+    }
+
+    $ids = @()
+    if (-not [string]::IsNullOrWhiteSpace($MapIds)) {
+        $ids = @($MapIds -split "[,\s]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    if ($ids.Count -eq 0) {
+        $map = Get-ChildItem -LiteralPath $mmapDir -Filter "*.mmap" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        $tile = Get-ChildItem -LiteralPath $mmapDir -Filter "*.mmtile" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        return ($null -ne $map -and $null -ne $tile)
+    }
+
+    foreach ($id in $ids) {
+        $mapId = 0
+        if (-not [int]::TryParse($id, [ref]$mapId)) {
+            return $false
+        }
+        $prefix = "{0:D3}" -f $mapId
+        if (-not (Test-Path -LiteralPath (Join-Path $mmapDir "$prefix.mmap") -PathType Leaf)) {
+            return $false
+        }
+        $tile = Get-ChildItem -LiteralPath $mmapDir -Filter "$prefix*.mmtile" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $tile) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Resolve-ServerDataDir {
     param(
         [Parameter(Mandatory = $true)]$Settings,
@@ -265,15 +319,18 @@ function Resolve-ServerDataDir {
     return (Join-Path $LauncherDir "data")
 }
 
-function Get-AdExtractorPath {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+function Get-ExtractorPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$FileName
+    )
 
-    $packaged = Join-Path $RepoRoot "tools\extractors\ad.exe"
+    $packaged = Join-Path $RepoRoot "tools\extractors\$FileName"
     if (Test-Path -LiteralPath $packaged -PathType Leaf) {
         return $packaged
     }
 
-    $localBuild = Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors\ad.exe"
+    $localBuild = Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors\$FileName"
     if (Test-Path -LiteralPath $localBuild -PathType Leaf) {
         return $localBuild
     }
@@ -281,7 +338,38 @@ function Get-AdExtractorPath {
     return $null
 }
 
-function Ensure-ExtractedServerData {
+function Get-RequiredExtractorPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$FileName
+    )
+
+    $path = Get-ExtractorPath $RepoRoot $FileName
+    if (-not $path) {
+        throw "The packaged CMaNGOS extractor '$FileName' was not found. Expected tools\extractors\$FileName under $RepoRoot."
+    }
+    return $path
+}
+
+function Get-ExtractorSupportFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$FileName
+    )
+
+    foreach ($candidate in @(
+            (Join-Path $RepoRoot "tools\extractors\$FileName"),
+            (Join-Path $RepoRoot "build-cmangos-tools\bin\x64_Release\Extractors\$FileName")
+        )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    throw "The packaged CMaNGOS extractor support file '$FileName' was not found. Expected tools\extractors\$FileName under $RepoRoot."
+}
+
+function Ensure-ExtractedDbcAndMaps {
     param(
         [Parameter(Mandatory = $true)][string]$ClientRoot,
         [Parameter(Mandatory = $true)][string]$DataDir,
@@ -289,15 +377,11 @@ function Ensure-ExtractedServerData {
     )
 
     if (Test-ExtractedServerData $DataDir) {
-        Write-Host "Server data is already extracted: $DataDir"
+        Write-Host "Server dbc/maps are already extracted: $DataDir"
         return
     }
 
-    $ad = Get-AdExtractorPath $RepoRoot
-    if (-not $ad) {
-        throw "The packaged CMaNGOS map/DBC extractor was not found. Expected tools\extractors\ad.exe under $RepoRoot."
-    }
-
+    $ad = Get-RequiredExtractorPath $RepoRoot "ad.exe"
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     Write-Host "Extracting server dbc/maps from $ClientRoot to $DataDir"
     Write-Host "This may take a few minutes on first run."
@@ -306,6 +390,93 @@ function Ensure-ExtractedServerData {
     if (-not (Test-ExtractedServerData $DataDir)) {
         throw "DBC/map extraction finished, but $DataDir still does not contain both 'dbc' and 'maps'."
     }
+}
+
+function Ensure-ExtractedVMaps {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientRoot,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    if (Test-ExtractedVMaps $DataDir) {
+        Write-Host "Server vmaps are already extracted: $DataDir\vmaps"
+        return
+    }
+
+    $vmapExtractor = Get-RequiredExtractorPath $RepoRoot "vmap_extractor.exe"
+    $vmapAssembler = Get-RequiredExtractorPath $RepoRoot "vmap_assembler.exe"
+    $clientData = Join-Path $ClientRoot "Data"
+    $buildingsDir = Join-Path $DataDir "Buildings"
+    $vmapDir = Join-Path $DataDir "vmaps"
+
+    New-Item -ItemType Directory -Force -Path $DataDir, $vmapDir | Out-Null
+    Write-Host "Extracting server vmaps from $clientData"
+    Invoke-Checked $vmapExtractor @("-d", $clientData, "-o", $DataDir) $DataDir
+
+    Write-Host "Assembling server vmaps into $vmapDir"
+    Invoke-Checked $vmapAssembler @($buildingsDir, $vmapDir) $DataDir
+
+    if (-not (Test-ExtractedVMaps $DataDir)) {
+        throw "VMap extraction finished, but $vmapDir does not contain expected .vmtree/.vmtile files."
+    }
+}
+
+function Ensure-ExtractedMMaps {
+    param(
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$MapIds
+    )
+
+    if (Test-ExtractedMMaps $DataDir $MapIds) {
+        Write-Host "Server mmaps are already extracted: $DataDir\mmaps"
+        return
+    }
+
+    $moveMapGen = Get-RequiredExtractorPath $RepoRoot "MoveMapGen.exe"
+    $config = Get-ExtractorSupportFilePath $RepoRoot "config.json"
+    $offmesh = Get-ExtractorSupportFilePath $RepoRoot "offmesh.txt"
+    $ids = @($MapIds -split "[,\s]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($ids.Count -eq 0) {
+        throw "No map ids were provided for mmap extraction."
+    }
+
+    New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "mmaps") | Out-Null
+    $workDir = $DataDir.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+    $args = @(
+        "--silent",
+        "--configInputPath", $config,
+        "--offMeshInput", $offmesh,
+        "--workdir", $workDir,
+        "--buildGameObjects"
+    )
+    $threads = [Math]::Max(1, [Environment]::ProcessorCount - 1)
+    if ($threads -gt 1) {
+        $args += @("--threads", "$threads")
+    }
+    $args += $ids
+
+    Write-Host "Generating server mmaps for map ids: $($ids -join ', ')"
+    Write-Host "This is the slowest first-run data step. Full-world mmaps can take a long time."
+    Invoke-Checked $moveMapGen $args (Split-Path -Parent $moveMapGen)
+
+    if (-not (Test-ExtractedMMaps $DataDir $MapIds)) {
+        throw "MMap generation finished, but $DataDir\mmaps does not contain expected .mmap/.mmtile files."
+    }
+}
+
+function Ensure-ExtractedServerData {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientRoot,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$MapIds
+    )
+
+    Ensure-ExtractedDbcAndMaps $ClientRoot $DataDir $RepoRoot
+    Ensure-ExtractedVMaps $ClientRoot $DataDir $RepoRoot
+    Ensure-ExtractedMMaps $DataDir $RepoRoot $MapIds
 }
 
 function Convert-ToTomlPath {
@@ -647,6 +818,36 @@ function Start-NativeMariaDb {
     $process = Start-Process -FilePath $server -ArgumentList (Join-ProcessArguments $args) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Set-Content -LiteralPath $PidPath -Value $process.Id -Encoding ASCII
     Wait-ForTcpPort "MariaDB" $Port 60 -Process $process -ErrorLogPath $stderr
+}
+
+function Repair-MariaDbTables {
+    param(
+        [Parameter(Mandatory = $true)][string]$MariaRoot,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+
+    $check = Join-Path $MariaRoot "bin\mariadb-check.exe"
+    if (-not (Test-Path -LiteralPath $check -PathType Leaf)) {
+        $check = Join-Path $MariaRoot "bin\mysqlcheck.exe"
+    }
+    if (-not (Test-Path -LiteralPath $check -PathType Leaf)) {
+        Write-Warning "Could not find mariadb-check.exe or mysqlcheck.exe under $MariaRoot\bin; skipping table repair check."
+        return
+    }
+
+    Write-Host "Checking launcher MariaDB tables for crash recovery."
+    Invoke-Checked $check @(
+        "--protocol=tcp",
+        "-h127.0.0.1",
+        "-P$Port",
+        "-uroot",
+        "-proot",
+        "--auto-repair",
+        "--databases",
+        "realmd",
+        "characters",
+        "mangos"
+    )
 }
 
 function Invoke-MariaDbSql {
@@ -1220,6 +1421,7 @@ if ($needsConfigure) {
         authPort = $AuthPort
         debugBuild = $debug
         mariaDbVersion = $MariaDbVersion
+        mmapMaps = $MMapMaps
     }
 
     Write-Settings $settingsPath $settings
@@ -1243,9 +1445,17 @@ else {
 
 Write-Step "Preparing client data"
 $serverDataDir = Resolve-ServerDataDir $settings $launcherDir
-Ensure-ExtractedServerData $settings.clientDir $serverDataDir $repoRoot
+$mmapMapsForRun = $MMapMaps
+if ($settings.PSObject.Properties.Name -contains "mmapMaps" -and -not [string]::IsNullOrWhiteSpace($settings.mmapMaps)) {
+    $mmapMapsForRun = $settings.mmapMaps
+}
+Ensure-ExtractedServerData $settings.clientDir $serverDataDir $repoRoot $mmapMapsForRun
 if ($settings.PSObject.Properties.Name -notcontains "dataDir" -or $settings.dataDir -ne $serverDataDir) {
     $settings | Add-Member -NotePropertyName dataDir -NotePropertyValue $serverDataDir -Force
+    Write-Settings $settingsPath $settings
+}
+if ($settings.PSObject.Properties.Name -notcontains "mmapMaps" -or $settings.mmapMaps -ne $mmapMapsForRun) {
+    $settings | Add-Member -NotePropertyName mmapMaps -NotePropertyValue $mmapMapsForRun -Force
     Write-Settings $settingsPath $settings
 }
 Write-GeneratedConfigs $settings $launcherDir
@@ -1258,6 +1468,7 @@ Start-NativeMariaDb $mariaRoot $mariaData (Join-Path $pidDir "mariadb.pid") $log
 
 Write-Step "Preparing databases"
 Ensure-BaseDatabases $mariaRoot $settings.dbPort $repoRoot
+Repair-MariaDbTables $mariaRoot $settings.dbPort
 
 if (-not $SkipWorldImport) {
     $contentCount = Get-WorldContentCount $mariaRoot $settings.dbPort

@@ -31,8 +31,8 @@ cargo run -p rusty-mangos-launcher
 The launcher will:
 
 - ask for the World of Warcraft 1.12.1 client folder;
-- extract required server-side `dbc` and `maps` data from that client into
-  `target\launcher\data`;
+- extract required server-side `dbc`, `maps`, `vmaps`, and starter `mmaps`
+  data from that client into `target\launcher\data`;
 - download and unpack portable MariaDB under `target\launcher\mariadb`;
 - initialize a local MariaDB data directory under `target\launcher\mariadb-data`;
 - clone/import ClassicDB into the local `mangos` world database when needed;
@@ -120,8 +120,13 @@ run `RustyMangosSetup.exe`.
 .\scripts\rusty-mangos-launcher.cmd Install -ClientDir "C:\Games\World of Warcraft"
 .\scripts\rusty-mangos-launcher.cmd Install -SkipWorldImport
 .\scripts\rusty-mangos-launcher.cmd Install -ForceWorldImport
+.\scripts\rusty-mangos-launcher.cmd Install -MMapMaps "0 1"
 .\scripts\rusty-mangos-launcher.cmd Configure
 ```
+
+`-MMapMaps` controls which map ids the launcher generates movement meshes for
+on first run. The default `0 1` covers the two Vanilla outdoor continents and is
+much faster than a full-world mmap build.
 
 Default ports:
 

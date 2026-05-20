@@ -74,23 +74,91 @@ function Get-ExtractorSource {
     $buildRoot = Join-Path $RepoRoot "target\launcher-extractor-build"
     $binaryRoot = Join-Path $buildRoot "bin\x64_Release\Extractors"
     if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {
+        $extractorProject = Join-Path $buildRoot "ad-project"
+        New-Item -ItemType Directory -Force -Path $extractorProject | Out-Null
+
+        $repoRootForCmake = ($RepoRoot -replace "\\", "/")
+        $buildRootForCmake = ($buildRoot -replace "\\", "/")
+        $cmakeLists = @"
+cmake_minimum_required(VERSION 3.16)
+project(rusty_mangos_ad_extractor LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(REPO_ROOT "$repoRootForCmake")
+set(DEV_BIN_DIR "$buildRootForCmake/bin/x64_`$<CONFIG>")
+
+include(FetchContent)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  zlib
+  URL https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip
+)
+FetchContent_MakeAvailable(zlib)
+if(TARGET zlibstatic)
+  set(AD_ZLIB_TARGET zlibstatic)
+else()
+  set(AD_ZLIB_TARGET zlib)
+endif()
+target_include_directories(`${AD_ZLIB_TARGET} PUBLIC `${zlib_SOURCE_DIR} `${zlib_BINARY_DIR})
+
+set(BZIP2_ROOT "`${REPO_ROOT}/dep/src/bzip2")
+add_library(bzip2 STATIC
+  "`${BZIP2_ROOT}/compress.c"
+  "`${BZIP2_ROOT}/crctable.c"
+  "`${BZIP2_ROOT}/decompress.c"
+  "`${BZIP2_ROOT}/huffman.c"
+  "`${BZIP2_ROOT}/randtable.c"
+  "`${BZIP2_ROOT}/blocksort.c"
+  "`${BZIP2_ROOT}/bzlib.c"
+)
+target_include_directories(bzip2 PUBLIC "`${REPO_ROOT}/dep/include/bzip2" "`${BZIP2_ROOT}")
+
+file(GLOB MPQ_SOURCES
+  "`${REPO_ROOT}/dep/libmpq/libmpq/*.c"
+  "`${REPO_ROOT}/dep/libmpq/libmpq/*.h"
+  "`${REPO_ROOT}/dep/libmpq/*.h"
+)
+add_library(mpqlib STATIC `${MPQ_SOURCES})
+target_include_directories(mpqlib PUBLIC "`${REPO_ROOT}/dep/libmpq" "`${REPO_ROOT}/dep/libmpq/win")
+target_link_libraries(mpqlib PRIVATE `${AD_ZLIB_TARGET} bzip2)
+if(MSVC)
+  target_compile_options(mpqlib PRIVATE /wd4103)
+endif()
+
+set(AD_ROOT "`${REPO_ROOT}/contrib/extractor")
+add_executable(ad
+  "`${AD_ROOT}/loadlib/loadlib.cpp"
+  "`${AD_ROOT}/loadlib/adt.cpp"
+  "`${AD_ROOT}/loadlib/wdt.cpp"
+  "`${AD_ROOT}/dbcfile.cpp"
+  "`${AD_ROOT}/mpq_libmpq.cpp"
+  "`${AD_ROOT}/System.cpp"
+)
+target_include_directories(ad PRIVATE "`${AD_ROOT}" "`${REPO_ROOT}/src/game")
+target_link_libraries(ad PRIVATE mpqlib)
+if(MSVC)
+  set_target_properties(ad PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "`${DEV_BIN_DIR}/Extractors"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "`${DEV_BIN_DIR}/Extractors"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "`${DEV_BIN_DIR}/Extractors"
+  )
+endif()
+"@
+        Set-Content -LiteralPath (Join-Path $extractorProject "CMakeLists.txt") -Value $cmakeLists -Encoding ASCII
+
         Invoke-Checked cmake @(
-            "-S", $RepoRoot,
+            "-S", $extractorProject,
             "-B", $buildRoot,
             "-G", "Visual Studio 17 2022",
-            "-A", "x64",
-            "-DBUILD_GAME_SERVER=OFF",
-            "-DBUILD_LOGIN_SERVER=OFF",
-            "-DBUILD_SCRIPTDEV=OFF",
-            "-DBUILD_EXTRACTORS=ON",
-            "-DPCH=OFF",
-            "-DDEV_BINARY_DIR=$buildRoot\bin"
-        )
+            "-A", "x64"
+        ) | Out-Host
         Invoke-Checked cmake @(
             "--build", $buildRoot,
             "--config", "Release",
             "--target", "ad"
-        )
+        ) | Out-Host
     }
 
     if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot "ad.exe") -PathType Leaf)) {

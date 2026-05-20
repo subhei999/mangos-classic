@@ -85,6 +85,28 @@ New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "server") | Out-Nu
 Copy-Item -LiteralPath "target\release\authserver.exe" -Destination (Join-Path $appRoot "server\authserver.exe") -Force
 Copy-Item -LiteralPath "target\release\worldserver.exe" -Destination (Join-Path $appRoot "server\worldserver.exe") -Force
 
+$commit = (& git rev-parse HEAD).Trim()
+$branch = (& git rev-parse --abbrev-ref HEAD).Trim()
+$dirty = (& git status --short).Trim()
+$dirtyState = "clean"
+if (-not [string]::IsNullOrWhiteSpace($dirty)) {
+    $dirtyState = "dirty"
+}
+$buildInfo = @"
+Rusty MaNGOS launcher package
+
+Source branch: $branch
+Source commit: $commit
+Working tree: $dirtyState
+Built at UTC: $((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))
+
+Included binaries:
+- server\authserver.exe
+- server\worldserver.exe
+- RustyMangosLauncher.exe
+"@
+Set-Content -LiteralPath (Join-Path $appRoot "BUILD_INFO.txt") -Value $buildInfo -Encoding ASCII
+
 New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "scripts") | Out-Null
 Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.ps1" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.ps1") -Force
 Copy-Item -LiteralPath "scripts\rusty-mangos-launcher.cmd" -Destination (Join-Path $appRoot "scripts\rusty-mangos-launcher.cmd") -Force

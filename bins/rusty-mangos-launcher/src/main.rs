@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use eframe::egui::{
     self, Align, Button, CentralPanel, Color32, Context, CornerRadius, Frame, Layout, Margin,
     RichText, ScrollArea, SidePanel, Stroke, TextEdit, TopBottomPanel, Ui, Vec2, Visuals,
@@ -11,6 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn main() -> eframe::Result {
     let options = NativeOptions {
@@ -34,6 +42,7 @@ struct LauncherPaths {
     script: PathBuf,
     settings: PathBuf,
     app_data: PathBuf,
+    build_info: PathBuf,
 }
 
 impl LauncherPaths {
@@ -48,11 +57,13 @@ impl LauncherPaths {
             let script = current.join("scripts").join("rusty-mangos-launcher.ps1");
             if script.is_file() {
                 let app_data = current.join("target").join("launcher");
+                let build_info = current.join("BUILD_INFO.txt");
                 return Ok(Self {
                     root: current,
                     script,
                     settings: app_data.join("rusty-mangos.settings.json"),
                     app_data,
+                    build_info,
                 });
             }
 
@@ -137,6 +148,14 @@ enum Page {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum LogView {
+    Launcher,
+    Auth,
+    World,
+    MariaDb,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum OperationState {
     Idle,
     Running,
@@ -187,6 +206,10 @@ struct LauncherApp {
     state: OperationState,
     output: Option<OperationOutput>,
     log: String,
+    server_log: String,
+    selected_log: LogView,
+    last_log_file_refresh: Instant,
+    realm_label: String,
     last_status_check: Instant,
     ports: PortStatus,
     skip_world_import: bool,
@@ -204,10 +227,28 @@ impl LauncherApp {
             .as_ref()
             .map(|paths| LauncherSettings::load(&paths.settings))
             .unwrap_or_default();
+        let build_id = paths
+            .as_ref()
+            .map(|paths| read_build_id(paths))
+            .unwrap_or_else(|_| "local".to_string());
+        let realm_label = format!("Pre-alpha Test Realm {build_id}");
+        let mut settings = settings;
+        let autodetected_client = if settings.client_dir.trim().is_empty() {
+            discover_wow_client_dir().map(|path| path.display().to_string())
+        } else {
+            None
+        };
+        if let Some(path) = &autodetected_client {
+            settings.client_dir = path.clone();
+        }
         let mut log = String::new();
         match &paths {
             Ok(paths) => {
                 log.push_str(&format!("Launcher root: {}\n", paths.root.display()));
+                log.push_str(&format!("Realm: {realm_label}\n"));
+                if let Some(path) = &autodetected_client {
+                    log.push_str(&format!("Auto-detected WoW client: {path}\n"));
+                }
             }
             Err(error) => {
                 log.push_str(error);
@@ -222,6 +263,10 @@ impl LauncherApp {
             state: OperationState::Idle,
             output: None,
             log,
+            server_log: String::new(),
+            selected_log: LogView::Launcher,
+            last_log_file_refresh: Instant::now() - Duration::from_secs(10),
+            realm_label,
             last_status_check: Instant::now() - Duration::from_secs(10),
             ports: PortStatus::default(),
             skip_world_import: false,
@@ -258,13 +303,15 @@ impl LauncherApp {
         self.append_log(&format!("> rusty-mangos-launcher {action}\n"));
 
         std::thread::spawn(move || {
-            let mut child = match Command::new("powershell.exe")
+            let mut command = Command::new("powershell.exe");
+            command
                 .args(args)
                 .current_dir(&paths.root)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
+                .stderr(Stdio::piped());
+            hide_process_window(&mut command);
+
+            let mut child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
                     let _ = tx.send(ProcessEvent::Line(format!(
@@ -379,6 +426,34 @@ impl LauncherApp {
         self.last_status_check = Instant::now();
     }
 
+    fn refresh_file_log(&mut self) {
+        if let Ok(paths) = &self.paths {
+            let log_dir = paths.app_data.join("logs");
+            self.server_log = match self.selected_log {
+                LogView::Launcher => self.log.clone(),
+                LogView::Auth => read_log_group(
+                    "Authserver",
+                    &[
+                        log_dir.join("authserver.log"),
+                        log_dir.join("authserver.err.log"),
+                    ],
+                ),
+                LogView::World => read_log_group(
+                    "Worldserver",
+                    &[
+                        log_dir.join("worldserver.log"),
+                        log_dir.join("worldserver.err.log"),
+                    ],
+                ),
+                LogView::MariaDb => read_log_group(
+                    "MariaDB",
+                    &[log_dir.join("mariadb.log"), log_dir.join("mariadb.err.log")],
+                ),
+            };
+        }
+        self.last_log_file_refresh = Instant::now();
+    }
+
     fn append_log(&mut self, text: &str) {
         self.log.push_str(text);
         if self.log.len() > 160_000 {
@@ -393,6 +468,45 @@ impl LauncherApp {
             .pick_folder()
         {
             self.settings.client_dir = path.display().to_string();
+        }
+    }
+
+    fn auto_detect_client(&mut self) {
+        if let Some(path) = discover_wow_client_dir() {
+            self.settings.client_dir = path.display().to_string();
+            self.status_message = "WoW client detected".to_string();
+            self.append_log(&format!(
+                "Auto-detected WoW client: {}\n",
+                self.settings.client_dir
+            ));
+        } else {
+            self.status_message = "No WoW client found".to_string();
+            self.append_log("Could not auto-detect a WoW client folder.\n");
+        }
+    }
+
+    fn launch_client(&mut self) {
+        let client_dir = PathBuf::from(self.settings.client_dir.trim());
+        let wow_exe = client_dir.join("WoW.exe");
+        if !wow_exe.is_file() {
+            self.status_message = "WoW.exe not found".to_string();
+            self.append_log("Cannot launch client: select a folder containing WoW.exe first.\n");
+            self.page = Page::Setup;
+            return;
+        }
+
+        match Command::new(&wow_exe).current_dir(&client_dir).spawn() {
+            Ok(_) => {
+                self.status_message = "WoW client launched".to_string();
+                self.append_log(&format!("Launched {}\n", wow_exe.display()));
+            }
+            Err(error) => {
+                self.status_message = "Client launch failed".to_string();
+                self.append_log(&format!(
+                    "Failed to launch {}: {error}\n",
+                    wow_exe.display()
+                ));
+            }
         }
     }
 
@@ -473,7 +587,7 @@ impl LauncherApp {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(
-                                RichText::new("Northshire local realm")
+                                RichText::new(self.realm_label.clone())
                                     .size(28.0)
                                     .strong()
                                     .color(Color32::from_rgb(244, 248, 255)),
@@ -558,9 +672,23 @@ impl LauncherApp {
                     );
                 }
                 ui.add_space(10.0);
-                if ui.button("Choose Folder").clicked() {
-                    self.open_client_picker();
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Choose Folder").clicked() {
+                        self.open_client_picker();
+                    }
+                    if ui.button("Auto-detect").clicked() {
+                        self.auto_detect_client();
+                    }
+                    if ui
+                        .add(enabled_button(
+                            !self.settings.client_dir.trim().is_empty(),
+                            "Launch WoW",
+                        ))
+                        .clicked()
+                    {
+                        self.launch_client();
+                    }
+                });
             });
 
             panel(&mut columns[1], "Quick Access", |ui| {
@@ -589,6 +717,9 @@ impl LauncherApp {
                 if ui.button("Browse").clicked() {
                     self.open_client_picker();
                 }
+                if ui.button("Auto-detect").clicked() {
+                    self.auto_detect_client();
+                }
             });
             ui.add_space(14.0);
             ui.horizontal(|ui| {
@@ -616,9 +747,17 @@ impl LauncherApp {
     }
 
     fn draw_logs(&mut self, ui: &mut Ui) {
-        panel(ui, "Launcher Log", |ui| {
+        panel(ui, "Logs", |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Clear").clicked() {
+                log_tab(ui, &mut self.selected_log, LogView::Launcher, "Launcher");
+                log_tab(ui, &mut self.selected_log, LogView::Auth, "Auth");
+                log_tab(ui, &mut self.selected_log, LogView::World, "World");
+                log_tab(ui, &mut self.selected_log, LogView::MariaDb, "MariaDB");
+                ui.separator();
+                if ui.button("Refresh").clicked() {
+                    self.refresh_file_log();
+                }
+                if self.selected_log == LogView::Launcher && ui.button("Clear").clicked() {
                     self.log.clear();
                 }
                 if ui.button("Status").clicked() {
@@ -626,18 +765,34 @@ impl LauncherApp {
                 }
             });
             ui.add_space(8.0);
-            ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add(
-                        TextEdit::multiline(&mut self.log)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(24)
-                            .interactive(false),
-                    );
-                });
+            let rows = 24;
+            if self.selected_log == LogView::Launcher {
+                ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut self.log)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(rows)
+                                .interactive(false),
+                        );
+                    });
+            } else {
+                ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut self.server_log)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(rows)
+                                .interactive(false),
+                        );
+                    });
+            }
         });
     }
 
@@ -669,6 +824,10 @@ impl App for LauncherApp {
             && self.last_status_check.elapsed() >= Duration::from_secs(3)
         {
             self.refresh_status();
+        }
+        if self.page == Page::Logs && self.last_log_file_refresh.elapsed() >= Duration::from_secs(1)
+        {
+            self.refresh_file_log();
         }
 
         SidePanel::left("sidebar")
@@ -732,6 +891,24 @@ fn nav_button(ui: &mut Ui, page: &mut Page, target: Page, text: &str) {
         *page = target;
     }
     ui.add_space(6.0);
+}
+
+fn log_tab(ui: &mut Ui, selected: &mut LogView, target: LogView, text: &str) {
+    let is_selected = *selected == target;
+    if ui
+        .add(
+            Button::new(RichText::new(text).strong())
+                .fill(if is_selected {
+                    Color32::from_rgb(24, 82, 145)
+                } else {
+                    Color32::from_rgb(34, 45, 60)
+                })
+                .corner_radius(CornerRadius::same(5)),
+        )
+        .clicked()
+    {
+        *selected = target;
+    }
 }
 
 fn panel(ui: &mut Ui, title: &str, content: impl FnOnce(&mut Ui)) {
@@ -814,6 +991,125 @@ fn muted() -> Color32 {
     Color32::from_rgb(157, 170, 190)
 }
 
+fn read_build_id(paths: &LauncherPaths) -> String {
+    if let Ok(text) = fs::read_to_string(&paths.build_info) {
+        for line in text.lines() {
+            if let Some(commit) = line.strip_prefix("Source commit:") {
+                let commit = commit.trim();
+                if commit.len() >= 8 {
+                    return commit[..8].to_string();
+                }
+            }
+        }
+    }
+
+    "local".to_string()
+}
+
+fn is_wow_client_dir(path: &Path) -> bool {
+    path.join("WoW.exe").is_file() && path.join("Data").is_dir()
+}
+
+fn discover_wow_client_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    for key in [
+        "RUSTY_MANGOS_WOW_DIR",
+        "WOW_CLIENT_DIR",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "USERPROFILE",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            candidates.push(PathBuf::from(value));
+        }
+    }
+
+    for base in candidates.clone() {
+        candidates.extend([
+            base.join("World of Warcraft"),
+            base.join("World of Warcraft 1.12.1"),
+            base.join("WoW"),
+            base.join("Vanilla WoW"),
+            base.join("Games").join("World of Warcraft"),
+            base.join("Downloads").join("World of Warcraft"),
+            base.join("Desktop").join("World of Warcraft"),
+            base.join("Documents").join("World of Warcraft"),
+        ]);
+    }
+
+    candidates.extend([
+        PathBuf::from(r"C:\Games\World of Warcraft"),
+        PathBuf::from(r"C:\Games\WoW"),
+        PathBuf::from(r"C:\WoW"),
+        PathBuf::from(r"C:\Vanilla WoW"),
+        PathBuf::from(r"C:\World of Warcraft"),
+    ]);
+
+    for candidate in &candidates {
+        if is_wow_client_dir(candidate) {
+            return Some(candidate.clone());
+        }
+    }
+
+    for root in candidates {
+        if let Some(found) = find_wow_client_under(&root, 3, &mut 0) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn find_wow_client_under(path: &Path, depth: usize, visited: &mut usize) -> Option<PathBuf> {
+    if *visited > 4_000 || depth == 0 || !path.is_dir() {
+        return None;
+    }
+    *visited += 1;
+
+    if is_wow_client_dir(path) {
+        return Some(path.to_path_buf());
+    }
+
+    let entries = fs::read_dir(path).ok()?;
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if child.is_dir() {
+            if let Some(found) = find_wow_client_under(&child, depth - 1, visited) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn read_log_group(title: &str, paths: &[PathBuf]) -> String {
+    let mut output = format!("{title} logs\n");
+    for path in paths {
+        output.push_str("\n== ");
+        output.push_str(&path.display().to_string());
+        output.push_str(" ==\n");
+        let text = read_text_tail(path, 120_000);
+        if text.trim().is_empty() {
+            output.push_str("(no log output yet)\n");
+        } else {
+            output.push_str(&text);
+            if !text.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+    }
+    output
+}
+
+fn read_text_tail(path: &Path, max_bytes: usize) -> String {
+    let Ok(bytes) = fs::read(path) else {
+        return String::new();
+    };
+    let start = bytes.len().saturating_sub(max_bytes);
+    String::from_utf8_lossy(&bytes[start..]).to_string()
+}
+
 fn is_port_open(port: u16) -> bool {
     let Ok(mut addrs) = ("127.0.0.1", port).to_socket_addrs() else {
         return false;
@@ -825,11 +1121,22 @@ fn is_port_open(port: u16) -> bool {
 }
 
 fn open_path(path: &Path) {
-    let _ = Command::new("explorer.exe").arg(path).spawn();
+    let mut command = Command::new("explorer.exe");
+    command.arg(path);
+    hide_process_window(&mut command);
+    let _ = command.spawn();
 }
 
 fn open_url(url: &str) {
-    let _ = Command::new("cmd.exe")
-        .args(["/C", "start", "", url])
-        .spawn();
+    let mut command = Command::new("cmd.exe");
+    command.args(["/C", "start", "", url]);
+    hide_process_window(&mut command);
+    let _ = command.spawn();
+}
+
+fn hide_process_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }

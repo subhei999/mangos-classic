@@ -125,8 +125,100 @@ function Select-FolderWithDialog {
     return $null
 }
 
+function Test-WowClientDir {
+    param([string]$Path)
+
+    return (-not [string]::IsNullOrWhiteSpace($Path)) -and
+        (Test-Path -LiteralPath (Join-Path $Path "WoW.exe") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Path "Data") -PathType Container)
+}
+
+function Find-WowClientUnder {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Depth = 3,
+        [ref]$Visited
+    )
+
+    if ($Visited.Value -gt 4000 -or $Depth -le 0 -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $null
+    }
+    $Visited.Value++
+
+    if (Test-WowClientDir $Path) {
+        return $Path
+    }
+
+    foreach ($child in Get-ChildItem -LiteralPath $Path -Directory -ErrorAction SilentlyContinue) {
+        $found = Find-WowClientUnder $child.FullName ($Depth - 1) $Visited
+        if ($found) {
+            return $found
+        }
+    }
+
+    return $null
+}
+
+function Find-WowClientDir {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @("RUSTY_MANGOS_WOW_DIR", "WOW_CLIENT_DIR", "ProgramFiles", "ProgramFiles(x86)", "USERPROFILE")) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $candidates.Add($value)
+        }
+    }
+
+    foreach ($base in @($candidates)) {
+        foreach ($suffix in @(
+                "World of Warcraft",
+                "World of Warcraft 1.12.1",
+                "WoW",
+                "Vanilla WoW",
+                "Games\World of Warcraft",
+                "Downloads\World of Warcraft",
+                "Desktop\World of Warcraft",
+                "Documents\World of Warcraft"
+            )) {
+            $candidates.Add((Join-Path $base $suffix))
+        }
+    }
+
+    foreach ($path in @(
+            "C:\Games\World of Warcraft",
+            "C:\Games\WoW",
+            "C:\WoW",
+            "C:\Vanilla WoW",
+            "C:\World of Warcraft"
+        )) {
+        $candidates.Add($path)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-WowClientDir $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).ProviderPath
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        $visited = 0
+        $found = Find-WowClientUnder $candidate 3 ([ref]$visited)
+        if ($found) {
+            return (Resolve-Path -LiteralPath $found).ProviderPath
+        }
+    }
+
+    return $null
+}
+
 function Resolve-WowClientDir {
     param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $Path = Find-WowClientDir
+        if (-not [string]::IsNullOrWhiteSpace($Path)) {
+            Write-Host "Auto-detected WoW client: $Path"
+        }
+    }
 
     while ([string]::IsNullOrWhiteSpace($Path)) {
         $Path = Select-FolderWithDialog "Select your World of Warcraft 1.12.1 client folder"
@@ -141,11 +233,8 @@ function Resolve-WowClientDir {
     }
 
     $clientRoot = $resolved.ProviderPath
-    if (-not (Test-Path -LiteralPath (Join-Path $clientRoot "WoW.exe") -PathType Leaf)) {
-        throw "Could not find WoW.exe in $clientRoot. Pick the WoW 1.12.1 client root folder."
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $clientRoot "Data") -PathType Container)) {
-        throw "Could not find a Data folder in $clientRoot. Pick the WoW 1.12.1 client root folder."
+    if (-not (Test-WowClientDir $clientRoot)) {
+        throw "Could not find WoW.exe and Data folder in $clientRoot. Pick the WoW 1.12.1 client root folder."
     }
 
     return $clientRoot
@@ -703,15 +792,44 @@ function Import-ClassicDbWorld {
     }
 }
 
+function Get-LauncherBuildId {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $buildInfoPath = Join-Path $RepoRoot "BUILD_INFO.txt"
+    if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
+        $line = Get-Content -LiteralPath $buildInfoPath |
+            Where-Object { $_ -match '^Source commit:\s*([0-9a-fA-F]{8,})' } |
+            Select-Object -First 1
+        if ($line -and $line -match '^Source commit:\s*([0-9a-fA-F]{8,})') {
+            return $Matches[1].Substring(0, 8)
+        }
+    }
+
+    try {
+        $commit = ((& git -C $RepoRoot rev-parse --short=8 HEAD 2>$null) -join "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($commit)) {
+            return $commit
+        }
+    }
+    catch {
+    }
+
+    return "local"
+}
+
 function Seed-PlayAccount {
     param(
         [Parameter(Mandatory = $true)][string]$MariaRoot,
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][int]$WorldPort,
         [bool]$Reset
     )
 
-    Invoke-MariaDbSql $MariaRoot $Port "realmd" "UPDATE realmlist SET address='127.0.0.1', port=$WorldPort WHERE id=1;"
+    $buildId = Get-LauncherBuildId $RepoRoot
+    $realmName = "Pre-alpha Test Realm $buildId"
+    Invoke-MariaDbSql $MariaRoot $Port "realmd" "UPDATE realmlist SET name='$realmName', address='127.0.0.1', port=$WorldPort WHERE id=1;"
+    Write-Host "Realm name: $realmName"
 
     $rustAuthVerifier = "171c640a3ed8fa4a187d99ce40b5ca1a62f39bc15dbbe74482edaa9a4eafc42f"
     $rustAuthSalt = "49212faef52cbb62fd06a55599e9ed118cd3155ed8766ec1132a39a12acc9681"
@@ -1088,7 +1206,7 @@ if (-not $SkipWorldImport) {
     }
 }
 
-Seed-PlayAccount $mariaRoot $settings.dbPort $settings.worldPort $ResetCharacters
+Seed-PlayAccount $mariaRoot $repoRoot $settings.dbPort $settings.worldPort $ResetCharacters
 
 if ($Action -eq "Install") {
     Write-Host ""

@@ -318,23 +318,33 @@ pub(in crate::world) async fn send_active_db_creature_attack(
                                 .await?;
                             }
                         }
-                        if let Some(delay_millis) = context
-                            .shared_world
-                            .maps
-                            .delay_active_player_spell_cast_for_damage(
-                                map_id,
-                                character_guid,
-                                Instant::now(),
-                            )
-                            .await
+                        if !interrupt_player_spell_cast_for_damage(
+                            stream,
+                            context.shared_world.maps,
+                            context.shared_world.sessions,
+                            session,
+                            header_crypto,
+                        )
+                        .await?
                         {
-                            send_packet(
-                                stream,
-                                SMSG_SPELL_DELAYED,
-                                &build_spell_delayed_body(player, delay_millis)?,
-                                Some(&mut *header_crypto),
-                            )
-                            .await?;
+                            if let Some(delay_millis) = context
+                                .shared_world
+                                .maps
+                                .delay_active_player_spell_cast_for_damage(
+                                    map_id,
+                                    character_guid,
+                                    Instant::now(),
+                                )
+                                .await
+                            {
+                                send_packet(
+                                    stream,
+                                    SMSG_SPELL_DELAYED,
+                                    &build_spell_delayed_body(player, delay_millis)?,
+                                    Some(&mut *header_crypto),
+                                )
+                                .await?;
+                            }
                         }
                     }
                 }
@@ -664,18 +674,28 @@ pub(in crate::world) async fn send_single_active_db_creature_attack(
                     .await?;
                 }
             }
-            if let Some(delay_millis) = shared_world
-                .maps
-                .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
-                .await
+            if !interrupt_player_spell_cast_for_damage(
+                stream,
+                shared_world.maps,
+                shared_world.sessions,
+                session,
+                header_crypto,
+            )
+            .await?
             {
-                send_packet(
-                    stream,
-                    SMSG_SPELL_DELAYED,
-                    &build_spell_delayed_body(player, delay_millis)?,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
+                if let Some(delay_millis) = shared_world
+                    .maps
+                    .delay_active_player_spell_cast_for_damage(map_id, character_snapshot.guid, now)
+                    .await
+                {
+                    send_packet(
+                        stream,
+                        SMSG_SPELL_DELAYED,
+                        &build_spell_delayed_body(player, delay_millis)?,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                }
             }
         }
     }

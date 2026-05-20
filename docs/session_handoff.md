@@ -9,9 +9,17 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Latest RCA/perf work touches `crates/wow-network`, `crates/wow-db`,
-  `bins/world-load-test`, `scripts/start-thin-client-load.ps1`, and this
-  handoff; `logs/` remains untracked from RCA captures.
+- Current tracked dirty state is the resumed spell-system work in
+  `crates/wow-network/src/world/spells.rs`,
+  `crates/wow-network/src/world/spells/effects.rs`,
+  `crates/wow-network/src/world/opcodes.rs`,
+  `crates/wow-network/src/world/combat/runtime.rs`,
+  `crates/wow-network/src/world/combat/motion.rs`,
+  `crates/wow-network/src/world/map_runtime/map/players.rs`,
+  `crates/wow-network/src/world/map_runtime/map/creature_combat.rs`,
+  `crates/wow-network/src/world/map_runtime/map/creature_damage.rs`,
+  `crates/wow-network/src/world/tests.rs`, and this handoff; `logs/` remains
+  untracked from RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
 - OOC EventAI is enabled again in
   `crates/wow-network/src/world/server/map_update.rs`; future RCA controls
@@ -19,27 +27,109 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-Complete a root cause analysis for simulated-player action latency:
+Resume spell-system parity work, starting with Polymorph and generic
+hard-control aura behavior.
 
-- corrected problem statement: at roughly `500` simulated players, player
-  actions take multiple seconds to execute
-- RCA target: find where action latency accumulates, not just whether CPU is
-  high
-- first pass should separate session dispatch delay, movement actor/mailbox
-  delay, map mutex wait/hold, movement apply cost, map tick lag, visibility /
-  idle-motion phases, outbound queue latency, and socket write time
+- Polymorph already has transform display, damage break, single-target
+  replacement, helper regen, diminishing metadata, combat preservation, and
+  confused-motion coverage.
+- CMaNGOS check for the real-client Polymorph smoke issues:
+  `Aura::HandleModConfuse` calls `SetConfused(...)` and
+  `HostileRefManager::HandleSuppressed(...)`; it does not call `CombatStop` or
+  erase threat. The Rust slice now follows that: hostile aura application still
+  starts/keeps combat, while confuse/fear/damage-break stun suppress sight aggro,
+  normal/chase movement starts, and creature reaction until control ends.
+- Root/stun movement blocking must still win over confuse motion. A rooted
+  Polymorph target keeps the pending confused-wander due time but does not start
+  or advance confused splines until the movement-blocking aura ends.
+- The current dirty implementation slice makes natural aura expiration follow the
+  same map-owned control cleanup expectations as damage-break/manual removal:
+  expired Polymorph leaves confused motion, clears transform display, reconciles
+  single-target aura trackers, and retires active diminishing aura bookkeeping.
+- The same slice now adds CMaNGOS-shaped hard-control action gates:
+  player spell-cast failure returns stun/confuse/fear/silence/pacify results,
+  player auto attacks pause under hard control, creature spell-list/EventAI
+  casts do not schedule while controlled, and in-flight creature casts
+  interrupt if hard control lands before completion.
+- Latest Polymorph smoke fix:
+  CMaNGOS `EnterEvadeMode` removes normal negative auras through
+  `RemoveAllAurasOnEvade`, so Rust evade now clears DB-creature active auras,
+  sheep display override, active confused motion, single-target aura trackers,
+  and active diminishing bookkeeping before return-home motion starts. The
+  evade sender also immediately broadcasts aura/display updates so a client
+  cannot keep rendering the mob as sheep after the map owner cleared it.
+- CMaNGOS classifies Polymorph as `DRTYPE_PLAYER`; ordinary PvE DB creatures do
+  not get player-style Polymorph diminishing levels. Rust now uses no
+  DB-creature PvE diminishing group for Polymorph, which also removes the
+  "re-sheep after evade is still DR immune" symptom for normal mobs.
+- Hostile aura casts that fail due aura rank/bounce now still begin
+  DB-creature retaliation before sending the spell failure. This covers failed
+  sheep-style hostile aura applications instead of only successful applications.
+- Confirmed CMaNGOS expectation: Polymorph can be resisted as a hostile magic
+  spell. Rust now resolves hostile DB-creature aura-only miss/resist before
+  building `SMSG_SPELL_GO`; resisted Polymorph-style casts encode the miss
+  target in `SMSG_SPELL_GO`, do not send an extra `SMSG_SPELLLOGMISS`, do not
+  apply the aura, and still start creature retaliation.
+- Target outcome resolution has started moving toward the CMaNGOS
+  `Spell::AddUnitTarget` / `TargetInfo::missCondition` shape. Player-cast
+  hostile DB-creature unit-target school damage and hostile aura spells now
+  resolve one pre-GO `PlayerSpellTargetOutcome`; `SMSG_SPELL_GO` consumes that
+  miss list, missed targets skip all damage/aura effects, and delayed pending
+  spell impacts carry the resolved hit outcome so impact code does not reroll a
+  second full resist.
+- Latest target-outcome extension: item-cast hostile DB-creature unit-target
+  school damage now uses the same CMaNGOS-shaped pre-GO outcome. On-use hostile
+  school-damage spells prepare as item casts; resisted item casts encode the
+  miss target in `SMSG_SPELL_GO`, do not send an extra `SMSG_SPELLLOGMISS`, do
+  not apply damage, and still begin DB-creature retaliation. Hit item casts use
+  the normal player spell impact path with the item GUID preserved as the packet
+  source.
+- The "damage log appears but floating damage over the head does not" report is
+  still unproven. Rust uses `SMSG_SPELLNONMELEEDAMAGELOG` for spell damage,
+  which matches the existing CMaNGOS-shaped packet path; next step is a packet
+  capture/settings comparison before adding `SMSG_ATTACKERSTATEUPDATE` for
+  spell damage.
+- Tentative spell parity roadmap:
+  1. active cast interrupt/cancel parity
+  2. target outcome generalization for immune/evade/reflect/player/PvP/AoE
+     target lists
+  3. Polymorph edge polish from real-client smoke and CMaNGOS packet comparison
+  4. triggered spell source/outcome/proc architecture
+  5. aura interrupt/proc behavior
+  6. class spell parity slices for Mage, Warrior, and creature/EventAI spells
+- Current next spell slice: active cast interrupt/cancel parity. We are not
+  starting from zero: movement opcodes already cancel active player casts,
+  explicit cancel opcodes share the same helper, map-owned active casts already
+  support damage pushback, channels support damage interrupt/pushback, and
+  opening casts have their own cancel path. The first parity gap is that Rust
+  currently cancels on movement opcodes without consulting the active spell's
+  `SPELL_INTERRUPT_FLAG_MOVEMENT`; CMaNGOS cancels normal non-triggered
+  non-auto-repeat casts on movement only when that interrupt flag is present,
+  and cancels channels through `ChannelInterruptFlags & AURA_INTERRUPT_FLAG_MOVING`.
+- First active-cast interrupt/cancel parity slice is now implemented locally:
+  movement-triggered cancellation uses a dedicated helper instead of the
+  explicit cancel helper. Active player casts only cancel on movement when their
+  `interrupt_flags` include `SPELL_INTERRUPT_FLAG_MOVEMENT`, while player
+  channels and dynamic-object channels only cancel on movement when their
+  channel interrupt flags include `AURA_INTERRUPT_FLAG_MOVING`. Explicit cancel
+  opcodes still use the unconditional cancel path.
+- Damage interrupt/pushback parity slice is now implemented locally for the
+  player damage paths Rust currently wires: direct creature damage first
+  interrupts active player casts with `SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS`;
+  otherwise it applies CMaNGOS-style cast delay only when
+  `SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK` is present. Channel damage handling
+  still uses channel interrupt flags: `AURA_INTERRUPT_FLAG_DAMAGE` cancels and
+  `AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION` shortens channel duration.
+- Hard-control active-cast invalidation is now implemented locally for player
+  aura application. Applying stun/confuse/fear follows CMaNGOS `CastStop` shape
+  and interrupts active player casts; applying silence interrupts only
+  silence-prevented active casts; pacify blocks new melee-prevented casts but
+  does not retroactively interrupt an existing cast, matching
+  `HandleAuraModPacify`.
 
-The important live observation is:
-
-- earlier controls showed that even with OOC EventAI disabled, `1000`
-  scattered clients moving every `50 ms` still caused unacceptable lag
-- slowing the harness movement interval dramatically improves feel
-
-Earlier controls pointed at the movement packet path itself, not creature idle
-motion. The latest WPR/WPA evidence narrows the leading root-cause class
-further: movement load creates enough outbound replication/write fanout that
-per-session socket writers consume major runtime/CPU capacity and delay
-unrelated actions such as spell casts.
+Recent RCA/perf work is committed at `b58c6ca81` and pushed to
+`origin/codex/rusty-mangos`; keep the detailed benchmark chronology below as
+reference, but feature work is now back on spells.
 
 Latest measurement caveat/fix:
 
@@ -744,6 +834,24 @@ Player visibility relocation threshold:
 
 ## Tests Run
 
+- Current spell/control slice:
+  - `cargo test -p wow-network hard_control --lib`
+  - `cargo test -p wow-network polymorph --lib`
+  - `cargo test -p wow-network confused_creature --lib`
+  - `cargo test -p wow-network db_creature_polymorph_uses_no_pve_diminishing_group --lib`
+  - `cargo test -p wow-network db_creature_evade_removes_polymorph_aura_display_and_diminishing_tracker --lib`
+  - `cargo test -p wow-network failed_hostile_aura_rank_cast_still_pulls_db_creature_aggro --lib`
+  - `cargo test -p wow-network resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_aggro --lib`
+  - `cargo test -p wow-network resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_miss_log --lib`
+  - `cargo test -p wow-network resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_outcome --lib`
+  - `cargo test -p wow-network item_hostile_damage_spell --lib`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network polymorphed_creature_keeps_confused_wandering_while_in_combat --lib`
+  - `cargo test -p wow-network rooted_polymorph_does_not_start_confused_wandering_until_root_ends --lib`
+  - `cargo test -p wow-network db_creature_random_motion_is_blocked_by_root --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
 - `cargo fmt`
 - `cargo test -p wow-network enqueue_pending_movement_replaces_older_packet --lib`
 - `cargo test -p wow-network pending_movement_timeout_uses_coalesce_deadline --lib`
@@ -830,6 +938,48 @@ Player visibility relocation threshold:
     `cargo check -p worldserver` and
     `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
   - final `.\scripts\test-rust.cmd`
+- Current item target-outcome slice:
+  - `cargo fmt`
+  - `cargo test -p wow-network item_hostile_damage_spell --lib`
+  - `cargo test -p wow-network resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_aggro --lib`
+  - `cargo test -p wow-network resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_miss_log --lib`
+  - `cargo test -p wow-network resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_outcome --lib`
+  - `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib -- --nocapture`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd` was attempted; it failed in the parallel
+    `wow-network` lib run on
+    `observability::tests::prometheus_render_includes_histogram_and_opcode_labels`
+    because the rendered global counter did not contain
+    `wow_player_environment_geometry_checks_total 1`. The same test passed
+    when isolated, and the full `wow-network` lib suite passed serially, so
+    this is currently classified as global observability test-order sensitivity
+    rather than a spell regression.
+- Current active-cast movement-interrupt slice:
+  - `cargo fmt`
+  - `cargo test -p wow-network movement_interrupt --lib`
+  - `cargo test -p wow-network movement_does_not_interrupt --lib`
+  - `cargo test -p wow-network moving_during_cast_time_interrupts_spell_before_damage_or_power_spend --lib`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `.\scripts\test-rust.cmd`
+- Current active-cast damage interrupt/pushback slice:
+  - `cargo test -p wow-network map_owned_active_cast_damage --lib`
+  - `cargo test -p wow-network map_owned_active_cast_without_damage_flags_ignores_damage_interrupt --lib`
+  - `cargo test -p wow-network damage_pushback --lib`
+  - `cargo test -p wow-network damage_cancels --lib`
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `.\scripts\test-rust.cmd`
+- Current active-cast hard-control invalidation slice:
+  - `cargo test -p wow-network applying_hard_control_aura_interrupts_active_player_cast --lib`
+  - `cargo test -p wow-network applying_silence_and_pacify_only_interrupt_matching_existing_casts --lib`
+  - `cargo test -p wow-network hard_control --lib`
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `.\scripts\test-rust.cmd`
 - Heartbeat coalescing:
   - `cargo test -p wow-network map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers --lib`
   - `cargo check -p worldserver`
@@ -977,39 +1127,17 @@ Player visibility relocation threshold:
 
 ## Recommended Next Task
 
-1. Read `docs/performance_rca_runbook.md`.
-2. Rebuild/restart the release stack so the return-home/sight-aggro/OOC EventAI
-   changes are actually in the running `worldserver`.
-3. Rerun the same `500` same-grid real-client playtest/control after the
-   metrics cheapening and only then trust a fresh WPA hot-path ranking.
-4. Treat repeated native vmap tile loading as a confirmed contributor that is
-   fixed by the current cache guard.
-5. Treat `player_visibility_refresh` update-object churn as fixed by the
-   relocation threshold. Keep `player_add_visibility` separate because the
-   source metrics show it is mostly startup/login visibility cost.
-6. Treat remaining `movement_apply` movement-broadcast volume as the next
-   leading RCA hypothesis, especially `0x00EE`.
-7. Add finer `CMSG_CAST_SPELL` handler timing before another broad
-   optimization: separate map lock wait, spell validation, map mutation,
-   response build, and observer broadcast. The average is much better after
-   the vmap fix, but the packet service max still reached about `1.1 s`.
-8. Reduce area lookup frequency with a CMaNGOS-shaped rule: recompute on
-   meaningful cell/tile/area transitions or cache invalidation, preserving
-   exploration and WMO override correctness.
-9. Add native vmap/map load/cache hit/miss counts if the bridge can expose
-   them cheaply; the guard fixed the repeated-load bug, but counters would make
-   future regressions obvious.
-10. During each steady-state window, run:
-   - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capture-rca-metrics.ps1 -Scenario "<scenario-name>"`
-   Use `-EnableTokioUnstableMetrics` on `scripts/start-thin-client-load.ps1`
-   when collecting runtime scheduler metrics.
-11. If a smaller profile artifact is needed, start `worldserver.exe` under
-   elevated `flamegraph`, install/enable Windows DTrace for
-   `flamegraph --pid`, or move the same run to Linux and use
-   `perf`/`cargo flamegraph`.
-12. Keep same-grid AOI/visibility on the suspect list, but the current data now
-   says the concrete producer to attack first is `movement_apply`, followed by
-   `player_visibility_refresh`.
+1. Continue active-player cast interrupt/cancel parity by covering active-cast
+   invalidation from death, logout, teleport/map removal, aura removal, and
+   target invalidation. Death and logout already remove some map-owned active
+   cast state; prove the exact cleanup behavior with focused tests before
+   changing it.
+2. Then extend damage interrupt coverage to periodic/damage-shield/split-damage
+   distinctions if/when those player-damage paths are wired, matching CMaNGOS
+   `Unit::InterruptOrDelaySpell` dot and no-damage exclusions.
+3. After interrupt/cancel parity is stable, continue the broader spell roadmap:
+   target outcomes for immune/evade/reflect/player/PvP/AoE, Polymorph edge
+   polish, triggered spells, aura procs, and class spell parity.
 
 ## Key Files
 
@@ -1018,6 +1146,11 @@ Player visibility relocation threshold:
 - `crates/wow-network/src/world/map_runtime/movement_actor.rs`
 - `crates/wow-network/src/world/map_runtime/map_manager.rs`
 - `crates/wow-network/src/world/map_runtime/map/players.rs`
+- `crates/wow-network/src/world/spells.rs`
+- `crates/wow-network/src/world/spells/effects.rs`
+- `crates/wow-network/src/world/spells/spell_mgr.rs`
+- `crates/wow-network/src/world/map_runtime/map/creature_motion.rs`
+- `crates/wow-network/src/world/combat/evade.rs`
 - `crates/wow-network/src/world/tests.rs`
 - `docs/performance_rca_runbook.md`
 - `scripts/capture-rca-metrics.ps1`

@@ -131,6 +131,18 @@ pub(in crate::world) async fn handle_cast_spell(
     )
     .await?
     {
+        begin_failed_hostile_db_creature_spell_retaliation(
+            stream,
+            deps.shared_world,
+            session,
+            caster,
+            map_id,
+            &spell_template,
+            &spell_profile,
+            &targets,
+            header_crypto,
+        )
+        .await?;
         return send_spell_cast_failure(stream, caster, packet.spell_id, failure, header_crypto)
             .await;
     }
@@ -619,7 +631,18 @@ pub(in crate::world) async fn complete_item_use_spell_cast(
         return Ok(());
     };
     let character_guid = character.guid;
+    let character_level = character.level;
     let map_id = character.position.map_id;
+    let target_outcome = player_db_creature_spell_target_outcome(
+        deps.shared_world,
+        session,
+        character_guid,
+        map_id,
+        &spell_template,
+        &item_spell_profile,
+        &targets,
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -627,7 +650,12 @@ pub(in crate::world) async fn complete_item_use_spell_cast(
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = prepared_spell.spell_go_body(caster, &targets)?;
+    let spell_go_body =
+        if let Some(miss_info) = target_outcome.and_then(|outcome| outcome.miss_info) {
+            prepared_spell.spell_go_body_with_miss(caster, &targets, miss_info)?
+        } else {
+            prepared_spell.spell_go_body(caster, &targets)?
+        };
     send_packet(
         stream,
         SMSG_SPELL_GO,
@@ -653,17 +681,49 @@ pub(in crate::world) async fn complete_item_use_spell_cast(
         )
         .await;
 
-    apply_item_use_spell_effects(
-        stream,
-        deps,
-        session,
-        caster,
-        &spell_template,
-        &item_spell_profile,
-        now,
-        header_crypto,
-    )
-    .await?;
+    if target_outcome.is_some_and(|outcome| outcome.miss_info.is_some()) {
+        begin_failed_hostile_db_creature_spell_retaliation(
+            stream,
+            deps.shared_world,
+            session,
+            caster,
+            map_id,
+            &spell_template,
+            &item_spell_profile,
+            &targets,
+            header_crypto,
+        )
+        .await?;
+    } else if target_outcome.is_some() {
+        apply_player_spell_impact(
+            stream,
+            deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            &spell_template,
+            &item_spell_profile,
+            &targets,
+            target_outcome,
+            now,
+            header_crypto,
+        )
+        .await?;
+    } else {
+        apply_item_use_spell_effects(
+            stream,
+            deps,
+            session,
+            caster,
+            &spell_template,
+            &item_spell_profile,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
     if spell_charges < 0 {
         consume_used_item(
             stream,
@@ -773,13 +833,17 @@ pub(in crate::world) async fn complete_pending_player_spell_cast(
         .await
     {
         return match event.kind {
-            PendingSpellEventKind::Spell { targets } => {
+            PendingSpellEventKind::Spell {
+                targets,
+                target_outcome,
+            } => {
                 apply_player_spell_impact_by_id(
                     stream,
                     deps,
                     session,
                     event.spell_id,
                     targets.into_spell_targets(),
+                    target_outcome,
                     now,
                     header_crypto,
                 )
@@ -928,6 +992,18 @@ pub(in crate::world) async fn complete_player_spell_cast(
     )
     .await?
     {
+        begin_failed_hostile_db_creature_spell_retaliation(
+            stream,
+            deps.shared_world,
+            session,
+            caster,
+            map_id,
+            &spell_template,
+            &spell_profile,
+            &targets,
+            header_crypto,
+        )
+        .await?;
         return send_spell_cast_failure(
             stream,
             caster,
@@ -969,6 +1045,16 @@ pub(in crate::world) async fn complete_player_spell_cast(
     sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid)
         .await;
     send_player_spell_power_update(stream, caster, &spell_profile, session, header_crypto).await?;
+    let target_outcome = player_db_creature_spell_target_outcome(
+        deps.shared_world,
+        session,
+        character_guid,
+        map_id,
+        &spell_template,
+        &spell_profile,
+        &targets,
+    )
+    .await?;
     send_packet(
         stream,
         SMSG_CAST_RESULT,
@@ -976,7 +1062,12 @@ pub(in crate::world) async fn complete_player_spell_cast(
         Some(&mut *header_crypto),
     )
     .await?;
-    let spell_go_body = prepared_spell.spell_go_body(caster, &targets)?;
+    let spell_go_body =
+        if let Some(miss_info) = target_outcome.and_then(|outcome| outcome.miss_info) {
+            prepared_spell.spell_go_body_with_miss(caster, &targets, miss_info)?
+        } else {
+            prepared_spell.spell_go_body(caster, &targets)?
+        };
     send_packet(
         stream,
         SMSG_SPELL_GO,
@@ -1008,6 +1099,22 @@ pub(in crate::world) async fn complete_player_spell_cast(
         now,
     )
     .await?;
+    if target_outcome.is_some_and(|outcome| outcome.miss_info.is_some()) {
+        begin_failed_hostile_db_creature_spell_retaliation(
+            stream,
+            deps.shared_world,
+            session,
+            caster,
+            map_id,
+            &spell_template,
+            &spell_profile,
+            &targets,
+            header_crypto,
+        )
+        .await?;
+        prepared_spell.finish();
+        return Ok(());
+    }
     let travel_delay =
         spell_travel_delay_millis(deps.shared_world, session, &spell_template, &targets).await;
     if travel_delay > 0 {
@@ -1018,6 +1125,7 @@ pub(in crate::world) async fn complete_player_spell_cast(
                 character_guid,
                 prepared_spell.spell_id,
                 PendingSpellCastTargets::from_spell_targets(&targets),
+                target_outcome,
                 now + Duration::from_millis(travel_delay as u64),
             )
             .await;
@@ -1035,6 +1143,7 @@ pub(in crate::world) async fn complete_player_spell_cast(
         &spell_template,
         &spell_profile,
         &targets,
+        target_outcome,
         now,
         header_crypto,
     )
@@ -1050,6 +1159,7 @@ pub(in crate::world) async fn apply_player_spell_impact_by_id(
     session: &mut WorldSessionState,
     spell_id: u32,
     targets: SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1090,6 +1200,7 @@ pub(in crate::world) async fn apply_player_spell_impact_by_id(
         &spell_template,
         &spell_profile,
         &targets,
+        target_outcome,
         now,
         header_crypto,
     )
@@ -1108,6 +1219,7 @@ pub(in crate::world) async fn apply_player_spell_impact(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -1122,6 +1234,7 @@ pub(in crate::world) async fn apply_player_spell_impact(
         spell_template,
         spell_profile,
         targets,
+        target_outcome,
         now,
         header_crypto,
     )
@@ -1309,6 +1422,104 @@ pub(in crate::world) async fn cancel_pending_player_spell_cast(
         caster,
         active_cast.spell_id,
         failure,
+    )
+    .await?;
+    Ok(true)
+}
+
+pub(in crate::world) async fn cancel_movement_interrupted_player_spell_cast(
+    stream: &mut WorldPacketSink,
+    maps: &MapRuntimeManager,
+    sessions: &SessionRegistry,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(active_cast) = maps
+        .cancel_movement_interrupted_player_spell_cast(map_id, character_guid)
+        .await
+    else {
+        let Some(channel_event) = maps
+            .cancel_movement_interrupted_player_channel(map_id, character_guid)
+            .await?
+        else {
+            return Ok(false);
+        };
+        for packet in channel_event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        sessions.dispatch(channel_event.observer_packets).await;
+        return Ok(true);
+    };
+    maps.clear_player_spell_recovery(map_id, character_guid, &active_cast.profile)
+        .await;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    send_spell_cast_failure(
+        stream,
+        caster,
+        active_cast.spell_id,
+        SPELL_FAILED_INTERRUPTED,
+        header_crypto,
+    )
+    .await?;
+    broadcast_spell_interrupt_to_observers(
+        maps,
+        sessions,
+        session,
+        caster,
+        active_cast.spell_id,
+        SPELL_FAILED_INTERRUPTED,
+    )
+    .await?;
+    Ok(true)
+}
+
+pub(in crate::world) async fn interrupt_player_spell_cast_for_damage(
+    stream: &mut WorldPacketSink,
+    maps: &MapRuntimeManager,
+    sessions: &SessionRegistry,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(false);
+    };
+    let map_id = character.position.map_id;
+    let character_guid = character.guid;
+    let Some(active_cast) = maps
+        .cancel_active_player_spell_cast_for_damage(map_id, character_guid)
+        .await
+    else {
+        return Ok(false);
+    };
+    maps.clear_player_spell_recovery(map_id, character_guid, &active_cast.profile)
+        .await;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    send_spell_cast_failure(
+        stream,
+        caster,
+        active_cast.spell_id,
+        SPELL_FAILED_INTERRUPTED,
+        header_crypto,
+    )
+    .await?;
+    broadcast_spell_interrupt_to_observers(
+        maps,
+        sessions,
+        session,
+        caster,
+        active_cast.spell_id,
+        SPELL_FAILED_INTERRUPTED,
     )
     .await?;
     Ok(true)
@@ -2048,6 +2259,142 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn begin_failed_hostile_db_creature_spell_retaliation(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let has_hostile_unit_aura = matches!(spell_profile.aura_target, SpellAuraTarget::UnitTarget)
+        && spell_template_has_hostile_unit_aura(spell_template);
+    if !has_hostile_unit_aura && !spell_template_has_hostile_unit_school_damage(spell_template) {
+        return Ok(());
+    }
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(());
+    };
+    begin_db_creature_retaliation_if_needed(
+        stream,
+        shared_world,
+        map_id,
+        session,
+        target,
+        caster,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn player_db_creature_spell_target_outcome(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<Option<PlayerSpellTargetOutcome>> {
+    if !spell_uses_db_creature_unit_target_outcome(spell_template, spell_profile) {
+        return Ok(None);
+    }
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(None);
+    };
+    let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
+        return Ok(None);
+    };
+    let combat_stats = shared_world
+        .maps
+        .player_combat_stats(map_id, character_guid)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "map-owned player combat stats missing for character {}",
+                character_guid
+            )
+        })?;
+    let character = session.character.active_character.as_ref();
+    let (school, dmg_class) = spell_target_outcome_school_and_damage_class(spell_template);
+    let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
+        1,
+        school,
+        dmg_class,
+        spell_template.attributes_ex2,
+        spell_template.attributes_ex3,
+        player_spell_snapshot(
+            character.map(|character| character.level).unwrap_or(1),
+            character.map(|character| character.class).unwrap_or(1),
+            &combat_stats,
+        ),
+        db_creature_spell_snapshot(&target_creature),
+    ));
+    Ok(Some(PlayerSpellTargetOutcome {
+        target,
+        miss_info: outcome.miss_info,
+    }))
+}
+
+fn spell_uses_db_creature_unit_target_outcome(
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+) -> bool {
+    let has_hostile_unit_school_damage =
+        spell_template_has_hostile_unit_school_damage(spell_template);
+    let has_hostile_unit_aura = matches!(spell_profile.aura_target, SpellAuraTarget::UnitTarget)
+        && spell_template_has_hostile_unit_aura(spell_template);
+    matches!(
+        spell_profile.kind,
+        SpellCastKind::InstantDamage | SpellCastKind::AuraApplication
+    ) && (has_hostile_unit_school_damage || has_hostile_unit_aura)
+}
+
+fn spell_template_has_hostile_unit_school_damage(
+    spell_template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    SpellInfo::from_template(spell_template)
+        .effects
+        .iter()
+        .any(|effect| {
+            effect.dispatch == SpellEffectDispatch::SchoolDamage
+                && [effect.implicit_target_a, effect.implicit_target_b]
+                    .into_iter()
+                    .any(|target| target == TARGET_UNIT_ENEMY)
+        })
+}
+
+fn spell_target_outcome_school_and_damage_class(
+    spell_template: &wow_db::SpellTemplateQuery,
+) -> (u8, u32) {
+    let school = spell_template.school as u8;
+    let dmg_class = if spell_template.dmg_class == SPELL_DAMAGE_CLASS_NONE
+        && is_resistable_spell_school(school)
+    {
+        SPELL_DAMAGE_CLASS_MAGIC
+    } else {
+        spell_template.dmg_class
+    };
+    (school, dmg_class)
+}
+
+fn spell_template_has_hostile_unit_aura(spell_template: &wow_db::SpellTemplateQuery) -> bool {
+    SpellInfo::from_template(spell_template)
+        .effects
+        .iter()
+        .any(|effect| {
+            matches!(effect.dispatch, SpellEffectDispatch::ApplyAura)
+                && [effect.implicit_target_a, effect.implicit_target_b]
+                    .into_iter()
+                    .any(|target| target == TARGET_UNIT_ENEMY)
+        })
+}
+
 pub(in crate::world) async fn spell_combo_point_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     session: &WorldSessionState,
@@ -2323,6 +2670,12 @@ pub(in crate::world) struct SpellCastProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct PlayerSpellTargetOutcome {
+    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) miss_info: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum SpellCastKind {
     InstantDamage,
     DirectHeal,
@@ -2372,7 +2725,9 @@ pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004
 pub(in crate::world) const SPELL_ATTR_USES_RANGED_SLOT: u32 = 0x0000_0002;
 pub(in crate::world) const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+pub(in crate::world) const SPELL_INTERRUPT_FLAG_MOVEMENT: u32 = 0x01;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
+pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS: u32 = 0x10;
 pub(in crate::world) const SPELL_ATTR_EX_IS_CHANNELED: u32 = 0x0000_0004;
 pub(in crate::world) const SPELL_ATTR_EX_IS_SELF_CHANNELED: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
@@ -3181,6 +3536,18 @@ pub(in crate::world) fn spell_diminishing_group(
     (template.mechanic == MECHANIC_POLYMORPH).then_some(DiminishingGroupRuntime::Polymorph)
 }
 
+pub(in crate::world) fn db_creature_spell_diminishing_group(
+    template: &wow_db::SpellTemplateQuery,
+) -> Option<DiminishingGroupRuntime> {
+    // CMaNGOS classifies Polymorph as DRTYPE_PLAYER, so ordinary DB creatures
+    // are not diminished through PvP DR levels.
+    if template.mechanic == MECHANIC_POLYMORPH {
+        None
+    } else {
+        spell_diminishing_group(template)
+    }
+}
+
 pub(in crate::world) fn diminishing_duration_millis(
     duration_millis: Option<u32>,
     level: DiminishingLevelRuntime,
@@ -3504,6 +3871,122 @@ pub(in crate::world) fn active_aura_has_hard_control(active_auras: &[ActiveAura]
         })
 }
 
+pub(in crate::world) fn active_aura_player_spell_cast_failure(
+    active_auras: &[ActiveAura],
+    spell_profile: &SpellCastProfile,
+) -> Option<u8> {
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Stun) {
+        return Some(SPELL_FAILED_STUNNED);
+    }
+    if spell_cast_is_silence_prevented(spell_profile)
+        && active_aura_has_modifier(active_auras, |modifier| {
+            matches!(
+                modifier,
+                AuraStatModifier::Silence | AuraStatModifier::PacifySilence
+            )
+        })
+    {
+        return Some(SPELL_FAILED_SILENCED);
+    }
+    if spell_cast_is_pacify_prevented(spell_profile)
+        && active_aura_has_modifier(active_auras, |modifier| {
+            matches!(
+                modifier,
+                AuraStatModifier::Pacify | AuraStatModifier::PacifySilence
+            )
+        })
+    {
+        return Some(SPELL_FAILED_PACIFIED);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Fear) {
+        return Some(SPELL_FAILED_FLEEING);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| {
+        *modifier == AuraStatModifier::Confuse
+    }) {
+        return Some(SPELL_FAILED_CONFUSED);
+    }
+    None
+}
+
+pub(in crate::world) fn active_aura_existing_player_spell_interrupt_failure(
+    active_auras: &[ActiveAura],
+    spell_profile: &SpellCastProfile,
+) -> Option<u8> {
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Stun) {
+        return Some(SPELL_FAILED_STUNNED);
+    }
+    if spell_cast_is_silence_prevented(spell_profile)
+        && active_aura_has_modifier(active_auras, |modifier| {
+            matches!(
+                modifier,
+                AuraStatModifier::Silence | AuraStatModifier::PacifySilence
+            )
+        })
+    {
+        return Some(SPELL_FAILED_SILENCED);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Fear) {
+        return Some(SPELL_FAILED_FLEEING);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| {
+        *modifier == AuraStatModifier::Confuse
+    }) {
+        return Some(SPELL_FAILED_CONFUSED);
+    }
+    None
+}
+
+pub(in crate::world) fn active_aura_creature_spell_cast_failure(
+    active_auras: &[ActiveAura],
+) -> Option<u8> {
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Stun) {
+        return Some(SPELL_FAILED_STUNNED);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| {
+        matches!(
+            modifier,
+            AuraStatModifier::Silence | AuraStatModifier::PacifySilence
+        )
+    }) {
+        return Some(SPELL_FAILED_SILENCED);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| *modifier == AuraStatModifier::Fear) {
+        return Some(SPELL_FAILED_FLEEING);
+    }
+    if active_aura_has_modifier(active_auras, |modifier| {
+        *modifier == AuraStatModifier::Confuse
+    }) {
+        return Some(SPELL_FAILED_CONFUSED);
+    }
+    None
+}
+
+fn active_aura_has_modifier(
+    active_auras: &[ActiveAura],
+    predicate: impl Fn(&AuraStatModifier) -> bool,
+) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(predicate)
+}
+
+fn spell_cast_is_silence_prevented(spell_profile: &SpellCastProfile) -> bool {
+    !matches!(
+        spell_profile.kind,
+        SpellCastKind::AutoRepeatRanged | SpellCastKind::Charge | SpellCastKind::NextMeleeSwing
+    )
+}
+
+fn spell_cast_is_pacify_prevented(spell_profile: &SpellCastProfile) -> bool {
+    spell_profile.requires_melee
+        || matches!(
+            spell_profile.kind,
+            SpellCastKind::AutoRepeatRanged | SpellCastKind::Charge | SpellCastKind::NextMeleeSwing
+        )
+}
+
 pub(in crate::world) fn active_aura_dispel_type(active_aura: &ActiveAura) -> Option<u32> {
     active_aura
         .stat_modifiers
@@ -3559,6 +4042,15 @@ pub(in crate::world) fn active_aura_suppresses_hostile_refs(active_aura: &Active
         .stat_modifiers
         .iter()
         .any(|modifier| matches!(modifier, AuraStatModifier::Confuse | AuraStatModifier::Fear))
+        || (active_aura_breaks_on_damage(active_aura)
+            && active_aura
+                .stat_modifiers
+                .iter()
+                .any(|modifier| matches!(modifier, AuraStatModifier::Stun)))
+}
+
+pub(in crate::world) fn active_auras_suppress_hostile_refs(active_auras: &[ActiveAura]) -> bool {
+    active_auras.iter().any(active_aura_suppresses_hostile_refs)
 }
 
 pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {

@@ -244,6 +244,25 @@ impl MapRuntimeManager {
         active_cast
     }
 
+    pub(in crate::world) async fn cancel_movement_interrupted_player_spell_cast(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ActivePlayerSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        if !map
+            .active_player_spell_casts
+            .get(&character_guid)
+            .is_some_and(|active_cast| {
+                active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_MOVEMENT != 0
+            })
+        {
+            return None;
+        }
+        map.active_player_spell_casts.remove(&character_guid)
+    }
+
     pub(in crate::world) async fn cancel_active_player_channel(
         &self,
         map_id: u32,
@@ -257,6 +276,23 @@ impl MapRuntimeManager {
             Some(event)
         } else {
             map.cancel_player_dynamic_object_channel(character_guid)?
+        };
+        Ok(event)
+    }
+
+    pub(in crate::world) async fn cancel_movement_interrupted_player_channel(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let Some(map) = self.maps.lock().await.get(&(map_id, 0)).cloned() else {
+            return Ok(None);
+        };
+        let mut map = map.lock().await;
+        let event = if let Some(event) = map.cancel_player_channel_for_movement(character_guid)? {
+            Some(event)
+        } else {
+            map.cancel_player_dynamic_object_channel_for_movement(character_guid)?
         };
         Ok(event)
     }
@@ -342,6 +378,9 @@ impl MapRuntimeManager {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
         let mut map = map.lock().await;
         let active_cast = map.active_player_spell_casts.get_mut(&character_guid)?;
+        if active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS != 0 {
+            return None;
+        }
         if active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK == 0 {
             return None;
         }
@@ -364,19 +403,42 @@ impl MapRuntimeManager {
         Some(delay)
     }
 
+    pub(in crate::world) async fn cancel_active_player_spell_cast_for_damage(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<ActivePlayerSpellCast> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() }?;
+        let mut map = map.lock().await;
+        if !map
+            .active_player_spell_casts
+            .get(&character_guid)
+            .is_some_and(|active_cast| {
+                active_cast.interrupt_flags & SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS != 0
+            })
+        {
+            return None;
+        }
+        map.active_player_spell_casts.remove(&character_guid)
+    }
+
     pub(in crate::world) async fn push_pending_spell_event(
         &self,
         map_id: u32,
         caster_character_guid: u32,
         spell_id: u32,
         targets: PendingSpellCastTargets,
+        target_outcome: Option<PlayerSpellTargetOutcome>,
         due_at: Instant,
     ) {
         let map = self.get_or_create_map(map_id, 0).await;
         let mut map = map.lock().await;
         let event_id = map.next_spell_event_id;
         map.next_spell_event_id = map.next_spell_event_id.saturating_add(1).max(1);
-        let kind = PendingSpellEventKind::Spell { targets };
+        let kind = PendingSpellEventKind::Spell {
+            targets,
+            target_outcome,
+        };
         let unit_target_generation = pending_spell_event_unit_target_generation(&map, &kind);
         map.pending_spell_events.push(PendingSpellEvent {
             event_id,
@@ -4397,7 +4459,7 @@ fn pending_spell_event_unit_target_generation(
     kind: &PendingSpellEventKind,
 ) -> Option<(ObjectGuid, u64)> {
     let target = match kind {
-        PendingSpellEventKind::Spell { targets } => targets.unit_target?,
+        PendingSpellEventKind::Spell { targets, .. } => targets.unit_target?,
         PendingSpellEventKind::RangedAutoAttack { target, .. } => *target,
     };
     target.is_creature().then_some(target).and_then(|target| {

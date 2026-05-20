@@ -108,6 +108,39 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
         creature_flags_body,
     )
     .await;
+    let aura_body = build_db_creature_aura_update_body(attacker, &creature.active_auras)?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &aura_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    broadcast_db_creature_snapshot_packet(
+        broadcast,
+        creature.clone(),
+        SMSG_UPDATE_OBJECT,
+        aura_body,
+    )
+    .await;
+    let display_body = build_db_creature_display_update_body(
+        attacker,
+        db_creature_effective_display_id(&creature),
+    )?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &display_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    broadcast_db_creature_snapshot_packet(
+        broadcast,
+        creature.clone(),
+        SMSG_UPDATE_OBJECT,
+        display_body,
+    )
+    .await;
     let health = creature.health;
     let state_body = build_db_creature_state_update_body(attacker, health, 0)?;
     send_packet(

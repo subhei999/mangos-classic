@@ -86,10 +86,9 @@ impl MapRuntime {
             position,
             direct_packets,
             update_body,
-            clear_combat_for_confuse,
             confused_changed,
         ) = {
-            let mut in_combat = self
+            let in_combat = self
                 .active_creature_combats
                 .contains_key(&creature_guid.raw());
             let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
@@ -108,10 +107,6 @@ impl MapRuntime {
             let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
             let is_stunned = active_aura_has_stun(&creature.active_auras);
             let is_confused = active_aura_has_confuse(&creature.active_auras);
-            let clear_combat_for_confuse = !was_confused && is_confused && in_combat;
-            if clear_combat_for_confuse {
-                in_combat = false;
-            }
             refresh_db_creature_aura_display_override(creature);
             sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
             let previous_speeds = creature.refresh_move_speeds();
@@ -185,13 +180,9 @@ impl MapRuntime {
                 position,
                 direct_packets,
                 update_body,
-                clear_combat_for_confuse,
                 was_confused != is_confused,
             )
         };
-        if clear_combat_for_confuse {
-            self.clear_db_creature_combat(creature_guid);
-        }
         if confused_changed {
             self.invalidate_idle_motion_start_schedule();
             self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
@@ -664,7 +655,6 @@ impl MapRuntime {
                 let old_speeds = creature.move_speeds;
                 let old_attack_duration = creature.base_attack_duration();
                 let old_display_id = db_creature_effective_display_id(creature);
-                let before = creature.active_auras.len();
                 let mut aura_changed = false;
                 let target_snapshot = db_creature_spell_snapshot(creature);
 
@@ -793,10 +783,49 @@ impl MapRuntime {
                         break;
                     }
                 }
+                let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+                let was_stunned = active_aura_has_stun(&creature.active_auras);
+                let was_confused = active_aura_has_confuse(&creature.active_auras);
+                let before_expiration = creature.active_auras.len();
                 creature
                     .active_auras
                     .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
-                aura_changed |= creature.active_auras.len() != before;
+                let expired_auras = creature.active_auras.len() != before_expiration;
+                aura_changed |= expired_auras;
+                let mut expiration_control_packets = Vec::new();
+                if expired_auras {
+                    let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+                    let is_stunned = active_aura_has_stun(&creature.active_auras);
+                    let is_confused = active_aura_has_confuse(&creature.active_auras);
+                    sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+                    if ((was_confused && !is_confused)
+                        || (!was_movement_blocked && is_movement_blocked))
+                        && !matches!(creature.motion, CreatureMotionState::Idle)
+                    {
+                        let stop = stop_db_creature_motion_runtime(creature);
+                        expiration_control_packets.push(OutboundWorldPacket {
+                            opcode: SMSG_MONSTER_MOVE,
+                            body: build_monster_move_stop_body(
+                                creature_guid,
+                                stop.position,
+                                stop.spline_id,
+                            )?,
+                        });
+                    }
+                    if was_stunned != is_stunned || was_confused != is_confused {
+                        expiration_control_packets.push(OutboundWorldPacket {
+                            opcode: SMSG_UPDATE_OBJECT,
+                            body: build_unit_flags_update_body(
+                                creature_guid,
+                                db_creature_unit_flags(creature, in_combat),
+                            )?,
+                        });
+                    }
+                    if was_confused != is_confused || was_movement_blocked != is_movement_blocked {
+                        invalidated_motion_schedule = true;
+                    }
+                    tracking_active_auras = Some(creature.active_auras.clone());
+                }
                 if aura_changed {
                     refresh_db_creature_aura_display_override(creature);
                 }
@@ -827,6 +856,7 @@ impl MapRuntime {
                         });
                     }
                 }
+                runtime_packets.extend(expiration_control_packets);
 
                 let observer_update = if aura_changed || !tick_packets.is_empty() {
                     let update_body = if creature.health == 0 {

@@ -818,6 +818,10 @@ impl MapRuntime {
         {
             return None;
         }
+        let creature = self.creatures.get(&attacker.raw())?;
+        if active_aura_creature_spell_cast_failure(&creature.active_auras).is_some() {
+            return None;
+        }
         match victim {
             Some(victim) => {
                 let combat = self.active_creature_combats.get(&attacker.raw()).copied()?;
@@ -890,6 +894,9 @@ impl MapRuntime {
     ) -> Option<ActiveDbCreatureSpellCast> {
         let creature = self.creatures.get(&caster.raw())?;
         if !creature.is_alive() || creature.is_evading_home() {
+            return None;
+        }
+        if active_aura_creature_spell_cast_failure(&creature.active_auras).is_some() {
             return None;
         }
         if (template.attributes_ex & SPELL_ATTR_EX_NO_AUTOCAST_AI) != 0
@@ -1113,6 +1120,9 @@ impl MapRuntime {
             if !creature.is_alive() || creature.is_evading_home() {
                 return None;
             }
+            if active_aura_creature_spell_cast_failure(&creature.active_auras).is_some() {
+                return None;
+            }
             refresh_db_creature_spell_list_availability(creature, spell_list);
             if creature.next_spell_list_update_at.is_none() {
                 creature.next_spell_list_update_at =
@@ -1230,6 +1240,9 @@ impl MapRuntime {
         if !creature.is_alive() || creature.is_evading_home() {
             return Ok(None);
         }
+        if active_aura_creature_spell_cast_failure(&creature.active_auras).is_some() {
+            return Ok(None);
+        }
         if creature.power1 < cast.mana_cost {
             return Ok(None);
         }
@@ -1335,6 +1348,26 @@ impl MapRuntime {
         };
         if now < cast.due_at {
             return Ok(None);
+        }
+        if let Some(failure) = self
+            .creatures
+            .get(&attacker.raw())
+            .and_then(|creature| active_aura_creature_spell_cast_failure(&creature.active_auras))
+        {
+            self.active_creature_spell_casts.remove(&attacker.raw());
+            self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
+            return Ok(Some(DbCreatureCompletedSpellCastEvent {
+                spell_go_body: Vec::new(),
+                effect: DbCreatureCompletedSpellEffect::Interrupted(
+                    self.db_creature_interrupted_spell_cast_event(
+                        attacker,
+                        cast.spell_id,
+                        failure,
+                    )?,
+                ),
+                aura_event: None,
+                creature_aura_event: None,
+            }));
         }
         match self.active_creature_combats.get(&attacker.raw()) {
             Some(combat) if combat.victim != victim => return Ok(None),

@@ -389,6 +389,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -466,6 +467,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                         map_id,
                         damage_effect,
                         targets,
+                        target_outcome,
                         header_crypto,
                     )
                     .await?;
@@ -486,6 +488,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     map_id,
                     player_weapon_damage_effect(spell_profile),
                     targets,
+                    None,
                     header_crypto,
                 )
                 .await?;
@@ -1151,6 +1154,7 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
     map_id: u32,
     damage_effect: PlayerDirectDamageEffect,
     targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
     if damage_effect.caster_centered_hostile_area {
@@ -1191,6 +1195,7 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
                 map_id,
                 damage_effect,
                 &area_targets,
+                None,
                 header_crypto,
             )
             .await?;
@@ -1247,6 +1252,7 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
                 map_id,
                 damage_effect,
                 &area_targets,
+                None,
                 header_crypto,
             )
             .await?;
@@ -1262,6 +1268,7 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
         map_id,
         damage_effect,
         targets,
+        target_outcome,
         header_crypto,
     )
     .await
@@ -1557,6 +1564,7 @@ pub(in crate::world) async fn apply_player_trigger_spell_effect(
                         map_id,
                         damage_effect,
                         targets,
+                        None,
                         header_crypto,
                     )
                     .await?;
@@ -1797,11 +1805,18 @@ pub(in crate::world) async fn apply_db_creature_spell_damage(
     map_id: u32,
     damage_effect: PlayerDirectDamageEffect,
     targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<bool> {
     let Some(target) = targets.unit_target else {
         return Ok(false);
     };
+    if target_outcome
+        .filter(|outcome| outcome.target == target)
+        .is_some_and(|outcome| outcome.miss_info.is_some())
+    {
+        return Ok(false);
+    }
     let can_apply_damage = if damage_effect.requires_melee {
         db_creature_player_melee_check_from_map(deps.shared_world, session, target).await
             == PlayerMeleeCheck::Clear
@@ -1874,12 +1889,20 @@ pub(in crate::world) async fn apply_db_creature_spell_damage(
                 )
             })?;
         let character = session.character.active_character.as_ref();
+        let attributes_ex3 = if target_outcome
+            .filter(|outcome| outcome.target == target)
+            .is_some_and(|outcome| outcome.miss_info.is_none())
+        {
+            damage_effect.attributes_ex3 | SPELL_ATTR_EX3_ALWAYS_HIT
+        } else {
+            damage_effect.attributes_ex3
+        };
         Some(roll_spell_damage_outcome(spell_damage_outcome_input(
             damage_effect.damage,
             damage_effect.school,
             damage_effect.dmg_class,
             damage_effect.attributes_ex2,
-            damage_effect.attributes_ex3,
+            attributes_ex3,
             player_spell_snapshot(
                 character.map(|character| character.level).unwrap_or(1),
                 character.map(|character| character.class).unwrap_or(1),
@@ -2130,7 +2153,6 @@ pub(in crate::world) async fn apply_player_spell_aura(
         &mut aura,
     )
     .await?;
-    let suppress_hostile_refs = active_aura_suppresses_hostile_refs(&aura);
     match spell_profile.aura_target {
         SpellAuraTarget::Caster => {
             let resolution = aura_rank_conflict_resolution(
@@ -2257,7 +2279,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         spell_template,
                     )
                     .await?;
-                    let diminishing_group = spell_diminishing_group(spell_template);
+                    let diminishing_group = db_creature_spell_diminishing_group(spell_template);
                     if let Some(group) = diminishing_group {
                         let level = deps
                             .shared_world
@@ -2268,6 +2290,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         let adjusted_duration =
                             diminishing_duration_millis(aura.duration_millis, level).unwrap_or(0);
                         if adjusted_duration == 0 {
+                            begin_db_creature_retaliation_if_needed(
+                                stream,
+                                deps.shared_world,
+                                map_id,
+                                session,
+                                target,
+                                caster,
+                                header_crypto,
+                            )
+                            .await?;
                             return Ok(());
                         }
                         aura.duration_millis = Some(adjusted_duration);
@@ -2283,6 +2315,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     )
                     .await?;
                     if resolution.failure.is_some() {
+                        begin_db_creature_retaliation_if_needed(
+                            stream,
+                            deps.shared_world,
+                            map_id,
+                            session,
+                            target,
+                            caster,
+                            header_crypto,
+                        )
+                        .await?;
                         return Ok(());
                     }
                     if let Some(event) = deps
@@ -2321,18 +2363,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             .dispatch(event.observer_packets)
                             .await;
                     }
-                    if !suppress_hostile_refs {
-                        begin_db_creature_retaliation_if_needed(
-                            stream,
-                            deps.shared_world,
-                            map_id,
-                            session,
-                            target,
-                            caster,
-                            header_crypto,
-                        )
-                        .await?;
-                    }
+                    begin_db_creature_retaliation_if_needed(
+                        stream,
+                        deps.shared_world,
+                        map_id,
+                        session,
+                        target,
+                        caster,
+                        header_crypto,
+                    )
+                    .await?;
                 }
             }
         }
@@ -2417,18 +2457,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         .dispatch(event.observer_packets)
                         .await;
                 }
-                if !suppress_hostile_refs {
-                    begin_db_creature_retaliation_if_needed(
-                        stream,
-                        deps.shared_world,
-                        map_id,
-                        session,
-                        target,
-                        caster,
-                        header_crypto,
-                    )
-                    .await?;
-                }
+                begin_db_creature_retaliation_if_needed(
+                    stream,
+                    deps.shared_world,
+                    map_id,
+                    session,
+                    target,
+                    caster,
+                    header_crypto,
+                )
+                .await?;
             }
         }
         SpellAuraTarget::DestinationAreaEnemy => {
@@ -2520,18 +2558,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         .dispatch(event.observer_packets)
                         .await;
                 }
-                if !suppress_hostile_refs {
-                    begin_db_creature_retaliation_if_needed(
-                        stream,
-                        deps.shared_world,
-                        map_id,
-                        session,
-                        target,
-                        caster,
-                        header_crypto,
-                    )
-                    .await?;
-                }
+                begin_db_creature_retaliation_if_needed(
+                    stream,
+                    deps.shared_world,
+                    map_id,
+                    session,
+                    target,
+                    caster,
+                    header_crypto,
+                )
+                .await?;
             }
         }
     }

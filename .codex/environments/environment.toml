@@ -9,3 +9,8 @@ script = ""
 name = "Run"
 icon = "run"
 command = "scripts\\restart-game-stack.cmd"
+
+[[actions]]
+name = "Run server -release"
+icon = "run"
+command = ".\\scripts\\restart-game-stack.cmd --release"

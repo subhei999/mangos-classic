@@ -81,6 +81,23 @@ impl PreparedSpellCast {
         )
     }
 
+    pub(in crate::world) fn spell_go_body_with_miss(
+        &mut self,
+        caster: ObjectGuid,
+        targets: &SpellCastTargets,
+        miss_info: u8,
+    ) -> anyhow::Result<Vec<u8>> {
+        let source = self.packet_source(caster);
+        build_spell_go_body_with_source(
+            source,
+            caster,
+            self.spell_id,
+            self.go_cast_flags(),
+            targets,
+            Some(miss_info),
+        )
+    }
+
     pub(in crate::world) fn packet_source(&self, caster: ObjectGuid) -> ObjectGuid {
         match self.source {
             SpellCastSource::Player | SpellCastSource::Triggered => caster,

@@ -260,7 +260,9 @@ pub(in crate::world) fn start_db_creature_random_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_blocks_movement(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras)
+        || active_auras_suppress_hostile_refs(&creature.active_auras)
+    {
         return None;
     }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
@@ -312,7 +314,9 @@ pub(in crate::world) fn start_db_creature_confused_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if !active_aura_has_confuse(&creature.active_auras) {
+    if !active_aura_has_confuse(&creature.active_auras)
+        || active_aura_blocks_movement(&creature.active_auras)
+    {
         return None;
     }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
@@ -384,7 +388,9 @@ pub(in crate::world) fn start_db_creature_waypoint_motion_runtime(
     creature: &mut DbCreatureRuntime,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_blocks_movement(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras)
+        || active_auras_suppress_hostile_refs(&creature.active_auras)
+    {
         return None;
     }
     if !matches!(creature.motion, CreatureMotionState::Idle) {
@@ -552,7 +558,9 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     chase_destination: Option<WorldPosition>,
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
-    if active_aura_blocks_movement(&creature.active_auras) {
+    if active_aura_blocks_movement(&creature.active_auras)
+        || active_auras_suppress_hostile_refs(&creature.active_auras)
+    {
         return None;
     }
     let start = creature.current_position;

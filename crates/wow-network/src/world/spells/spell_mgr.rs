@@ -253,7 +253,9 @@ impl<'a> SpellInfo<'a> {
         self.effects.iter().any(|effect| {
             matches!(
                 effect.dispatch,
-                SpellEffectDispatch::Heal | SpellEffectDispatch::Energize
+                SpellEffectDispatch::Heal
+                    | SpellEffectDispatch::Energize
+                    | SpellEffectDispatch::SchoolDamage
             ) && spell_effect_simple_value(effect.base_points).is_some()
         })
     }

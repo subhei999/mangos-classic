@@ -2004,7 +2004,77 @@ impl MapRuntime {
         {
             event.direct_packets.push(packet);
         }
+        if let Some((active_cast, failure)) =
+            self.cancel_active_player_spell_cast_blocked_by_auras(character_guid)
+        {
+            self.append_player_spell_interrupt_packets(
+                character_guid,
+                &active_cast,
+                failure,
+                &mut event,
+            )?;
+        }
         Ok(Some(event))
+    }
+
+    fn cancel_active_player_spell_cast_blocked_by_auras(
+        &mut self,
+        character_guid: u32,
+    ) -> Option<(ActivePlayerSpellCast, u8)> {
+        let failure = {
+            let active_cast = self.active_player_spell_casts.get(&character_guid)?;
+            let player = self.players.get(&character_guid)?;
+            active_aura_existing_player_spell_interrupt_failure(
+                &player.active_auras,
+                &active_cast.profile,
+            )?
+        };
+        let active_cast = self.active_player_spell_casts.remove(&character_guid)?;
+        self.clear_player_spell_recovery(character_guid, &active_cast.profile);
+        Some((active_cast, failure))
+    }
+
+    fn append_player_spell_interrupt_packets(
+        &self,
+        character_guid: u32,
+        active_cast: &ActivePlayerSpellCast,
+        failure: u8,
+        event: &mut PlayerAuraUpdateEvent,
+    ) -> anyhow::Result<()> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Ok(());
+        };
+        let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let failure_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILURE,
+            body: build_spell_failure_body(caster, active_cast.spell_id, failure)?,
+        };
+        let failed_other_packet = OutboundWorldPacket {
+            opcode: SMSG_SPELL_FAILED_OTHER,
+            body: build_spell_failed_other_body(caster, active_cast.spell_id),
+        };
+        event.direct_packets.push(OutboundWorldPacket {
+            opcode: SMSG_CAST_RESULT,
+            body: build_cast_result_failure_body(active_cast.spell_id, failure),
+        });
+        event.direct_packets.push(failure_packet.clone());
+        event.direct_packets.push(failed_other_packet.clone());
+        for observer_guid in self.nearby_player_guids(
+            player.position,
+            PLAYER_VISIBILITY_RADIUS_YARDS,
+            Some(character_guid),
+        ) {
+            let Some(observer) = self.players.get(&observer_guid) else {
+                continue;
+            };
+            if let Some(packet) = observer.packet_to_client(failure_packet.clone()) {
+                event.observer_packets.push(packet);
+            }
+            if let Some(packet) = observer.packet_to_client(failed_other_packet.clone()) {
+                event.observer_packets.push(packet);
+            }
+        }
+        Ok(())
     }
 
     pub(in crate::world) fn advance_player_aura_expirations(
@@ -2371,6 +2441,9 @@ impl MapRuntime {
             return None;
         }
         let player = self.players.get_mut(&character_guid)?;
+        if active_aura_has_hard_control(&player.active_auras) {
+            return None;
+        }
         let target = player.active_combat_target?;
         let spell_moving = player_is_spell_moving(player);
         if let PlayerAutoAttackKind::Ranged { spell_id, phase } =
@@ -2541,6 +2614,11 @@ impl MapRuntime {
         let player = self.players.get(&character_guid)?;
         if self.active_player_spell_casts.contains_key(&character_guid) {
             return Some(SPELL_FAILED_SPELL_IN_PROGRESS);
+        }
+        if let Some(failure) =
+            active_aura_player_spell_cast_failure(&player.active_auras, spell_profile)
+        {
+            return Some(failure);
         }
         if player
             .spell_cooldowns_until

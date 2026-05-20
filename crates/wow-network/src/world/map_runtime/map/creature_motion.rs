@@ -751,16 +751,6 @@ impl MapRuntime {
     ) -> DbCreatureMotionStartAttempt {
         let mut metrics = DbCreatureMotionStartMetrics::default();
         let path_build_started_at = Instant::now();
-        if self
-            .active_creature_combats
-            .contains_key(&creature_guid.raw())
-        {
-            metrics.path_build_time = path_build_started_at.elapsed();
-            return DbCreatureMotionStartAttempt {
-                outcome: None,
-                metrics,
-            };
-        }
         let geometry = self.geometry.clone();
         let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
             metrics.path_build_time = path_build_started_at.elapsed();
@@ -917,25 +907,35 @@ impl MapRuntime {
         &mut self,
         creature_guid: ObjectGuid,
     ) -> Option<DbCreatureRuntime> {
-        let creature = self.creatures.get_mut(&creature_guid.raw())?;
-        creature.health = creature.max_health();
-        creature.power1 = creature_mana(&creature.spawn.template);
-        creature.life_state = DbCreatureLifeState::Alive;
-        creature.corpse_expires_at = None;
-        creature.respawn_at = None;
-        creature.respawn_epoch_secs = None;
-        creature.lootable = false;
-        creature.looting = false;
-        creature.loot_money = 0;
-        creature.loot_money_available = false;
-        creature.loot_items.clear();
-        creature.loot_roll_released_slots.clear();
-        creature.loot_current_looter_pass_slots.clear();
-        creature.loot_owner = None;
-        creature.triggered_event_ai_scripts.clear();
-        creature.event_ai_cooldowns_until.clear();
-        creature.event_ai_update_accum = Duration::ZERO;
-        creature.clear_confused_motion();
+        let active_auras = {
+            let creature = self.creatures.get_mut(&creature_guid.raw())?;
+            creature.active_auras.clear();
+            creature.aura_display_id_override = None;
+            creature.refresh_move_speeds();
+            creature.health = creature.max_health();
+            creature.power1 = creature_mana(&creature.spawn.template);
+            creature.life_state = DbCreatureLifeState::Alive;
+            creature.corpse_expires_at = None;
+            creature.respawn_at = None;
+            creature.respawn_epoch_secs = None;
+            creature.lootable = false;
+            creature.looting = false;
+            creature.loot_money = 0;
+            creature.loot_money_available = false;
+            creature.loot_items.clear();
+            creature.loot_roll_released_slots.clear();
+            creature.loot_current_looter_pass_slots.clear();
+            creature.loot_owner = None;
+            creature.triggered_event_ai_scripts.clear();
+            creature.event_ai_cooldowns_until.clear();
+            creature.event_ai_update_accum = Duration::ZERO;
+            creature.clear_confused_motion();
+            if matches!(creature.motion, CreatureMotionState::Confused(_)) {
+                creature.motion = CreatureMotionState::Idle;
+            }
+            creature.active_auras.clone()
+        };
+        self.reconcile_target_aura_trackers(creature_guid, &active_auras, Instant::now());
         self.clear_db_creature_combat(creature_guid);
         self.sync_db_creature_lifecycle_tracking(creature_guid.raw());
         self.creatures.get(&creature_guid.raw()).cloned()
@@ -1293,8 +1293,10 @@ impl MapRuntime {
         creature_guid: u64,
         creature: &DbCreatureRuntime,
     ) -> bool {
+        let is_confused_motion = matches!(creature.motion, CreatureMotionState::Confused(_));
         creature.is_alive()
-            && !self.active_creature_combats.contains_key(&creature_guid)
+            && !active_aura_blocks_movement(&creature.active_auras)
+            && (is_confused_motion || !self.active_creature_combats.contains_key(&creature_guid))
             && self.db_creature_is_in_active_or_blocked_grid(creature.current_position)
             && matches!(
                 creature.motion,
@@ -1307,11 +1309,11 @@ impl MapRuntime {
 
     fn db_creature_confused_motion_due_at(
         &self,
-        creature_guid: u64,
+        _creature_guid: u64,
         creature: &DbCreatureRuntime,
     ) -> Option<Instant> {
         (creature.is_alive()
-            && !self.active_creature_combats.contains_key(&creature_guid)
+            && !active_aura_blocks_movement(&creature.active_auras)
             && matches!(creature.motion, CreatureMotionState::Idle)
             && active_aura_has_confuse(&creature.active_auras))
         .then_some(creature.next_confused_move_at)

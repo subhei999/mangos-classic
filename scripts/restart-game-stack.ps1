@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 
 function Show-Usage {
     Write-Host "usage: .\scripts\restart-game-stack.cmd [options]"
+    Write-Host "       .\scripts\restart-game-stack.cmd -Release"
     Write-Host ""
     Write-Host "Restarts the local Rust authserver, worldserver, and worldserver observability dashboard."
     Write-Host ""
@@ -30,7 +31,62 @@ function Show-Usage {
     Write-Host "  -EnablePlayerbots             Opt into configured local playerbots"
     Write-Host "  -PlayerbotRandomCount <count> Enable generated random playerbots with this count"
     Write-Host "  -Release                      Build and launch target\\release binaries"
+    Write-Host "                                cmd aliases: release, --release, /release"
     Write-Host "  -Help                         Show this help"
+}
+
+function Stop-GameStackProcesses {
+    $processes = @(Get-Process authserver,worldserver -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) {
+        return
+    }
+
+    Write-Host "Stopping existing authserver/worldserver processes before build."
+    $processes | Stop-Process -Force
+    foreach ($process in $processes) {
+        try {
+            Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
+        }
+        catch {
+            Write-Warning "Timed out waiting for process $($process.Id) to exit."
+        }
+    }
+}
+
+function Wait-ForFileUnlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$TimeoutSeconds = 30
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $stream = [System.IO.File]::Open($Path, "Open", "ReadWrite", "None")
+            $stream.Close()
+            return
+        }
+        catch {
+            Start-Sleep -Milliseconds 250
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timed out waiting for $Path to be released. Close any terminal still running that binary and retry."
+}
+
+function Wait-ForStackBinaryUnlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Profile
+    )
+
+    Wait-ForFileUnlock (Join-Path $repoRoot "target\$Profile\authserver.exe")
+    Wait-ForFileUnlock (Join-Path $repoRoot "target\$Profile\worldserver.exe")
 }
 
 function Test-TcpPort {
@@ -87,6 +143,10 @@ if ($Help) {
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $stackScript = Join-Path $PSScriptRoot "run-client-stack-18085.ps1"
+$buildProfile = if ($Release) { "release" } else { "debug" }
+
+Stop-GameStackProcesses
+Wait-ForStackBinaryUnlock $buildProfile
 
 $stackArgs = @(
     "-WorldPort", $WorldPort,

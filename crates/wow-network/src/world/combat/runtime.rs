@@ -553,6 +553,7 @@ impl DbCreatureRuntime {
             && self
                 .aggro_enabled_at
                 .is_none_or(|enabled_at| now >= enabled_at)
+            && !active_auras_suppress_hostile_refs(&self.active_auras)
             && !self.is_evading_home()
             && self.spawn.map == character.position.map_id
             && self.spawn.template.civilian == 0

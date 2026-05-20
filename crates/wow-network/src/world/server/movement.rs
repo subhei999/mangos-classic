@@ -116,12 +116,11 @@ pub(in crate::world) async fn handle_movement(
         return Ok(());
     }
     if !corpse_movement && movement_opcode_interrupts_spell_cast(opcode) {
-        cancel_pending_player_spell_cast(
+        cancel_movement_interrupted_player_spell_cast(
             stream,
             deps.maps,
             deps.sessions,
             session,
-            SPELL_FAILED_INTERRUPTED,
             header_crypto,
         )
         .await?;

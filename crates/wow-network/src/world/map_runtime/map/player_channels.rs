@@ -100,6 +100,22 @@ impl MapRuntime {
         self.player_channel_clear_event(channel)
     }
 
+    pub(in crate::world) fn cancel_player_channel_for_movement(
+        &mut self,
+        caster_character_guid: u32,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        if !self
+            .active_player_channels
+            .get(&caster_character_guid)
+            .is_some_and(|channel| {
+                channel.channel_interrupt_flags & AURA_INTERRUPT_FLAG_MOVING != 0
+            })
+        {
+            return Ok(None);
+        }
+        self.cancel_player_channel(caster_character_guid)
+    }
+
     pub(in crate::world) fn advance_player_channels(
         &mut self,
         now: Instant,

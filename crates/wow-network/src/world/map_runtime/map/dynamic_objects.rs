@@ -167,6 +167,28 @@ impl MapRuntime {
         self.destroy_dynamic_object_channel_event(dynamic_object)
     }
 
+    pub(in crate::world) fn cancel_player_dynamic_object_channel_for_movement(
+        &mut self,
+        caster_character_guid: u32,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let Some(raw_guid) = self
+            .dynamic_objects
+            .iter()
+            .find(|(_, dynamic_object)| {
+                dynamic_object.caster_character_guid == caster_character_guid
+                    && dynamic_object.channeled
+                    && dynamic_object.channel_interrupt_flags & AURA_INTERRUPT_FLAG_MOVING != 0
+            })
+            .map(|(raw_guid, _)| *raw_guid)
+        else {
+            return Ok(None);
+        };
+        let Some(dynamic_object) = self.dynamic_objects.remove(&raw_guid) else {
+            return Ok(None);
+        };
+        self.destroy_dynamic_object_channel_event(dynamic_object)
+    }
+
     fn apply_dynamic_object_periodic_damage(
         &mut self,
         faction_templates: &FactionTemplateStore,

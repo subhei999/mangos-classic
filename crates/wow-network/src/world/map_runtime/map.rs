@@ -618,6 +618,7 @@ pub(in crate::world) enum ActivePlayerSpellCastSource {
 pub(in crate::world) enum PendingSpellEventKind {
     Spell {
         targets: PendingSpellCastTargets,
+        target_outcome: Option<PlayerSpellTargetOutcome>,
     },
     RangedAutoAttack {
         target: ObjectGuid,

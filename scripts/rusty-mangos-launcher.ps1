@@ -79,6 +79,22 @@ function Invoke-Checked {
     }
 }
 
+function Quote-ProcessArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Argument)
+
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    return '"' + ($Argument.Replace('"', '\"')) + '"'
+}
+
+function Join-ProcessArguments {
+    param([string[]]$Arguments)
+
+    return (($Arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " ")
+}
+
 function Require-Command {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -175,11 +191,26 @@ function Test-TcpPort {
     }
 }
 
+function Get-LogTail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$LineCount = 40
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ""
+    }
+
+    return ((Get-Content -LiteralPath $Path -Tail $LineCount -ErrorAction SilentlyContinue) -join "`n").Trim()
+}
+
 function Wait-ForTcpPort {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Port,
-        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [System.Diagnostics.Process]$Process,
+        [string]$ErrorLogPath
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -188,10 +219,29 @@ function Wait-ForTcpPort {
             Write-Host "$Name is listening on 127.0.0.1:$Port"
             return
         }
+        if ($Process -and $Process.HasExited) {
+            $message = "$Name exited before listening on 127.0.0.1:$Port. Exit code: $($Process.ExitCode)."
+            $tail = ""
+            if ($ErrorLogPath) {
+                $tail = Get-LogTail $ErrorLogPath
+            }
+            if (-not [string]::IsNullOrWhiteSpace($tail)) {
+                $message += "`n`nLast lines from ${ErrorLogPath}:`n$tail"
+            }
+            throw $message
+        }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
 
-    throw "$Name did not start listening on 127.0.0.1:$Port within $TimeoutSeconds second(s)."
+    $message = "$Name did not start listening on 127.0.0.1:$Port within $TimeoutSeconds second(s)."
+    $tail = ""
+    if ($ErrorLogPath) {
+        $tail = Get-LogTail $ErrorLogPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($tail)) {
+        $message += "`n`nLast lines from ${ErrorLogPath}:`n$tail"
+    }
+    throw $message
 }
 
 function Read-Settings {
@@ -448,9 +498,9 @@ function Start-NativeMariaDb {
         "--console"
     )
 
-    $process = Start-Process -FilePath $server -ArgumentList $args -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $process = Start-Process -FilePath $server -ArgumentList (Join-ProcessArguments $args) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Set-Content -LiteralPath $PidPath -Value $process.Id -Encoding ASCII
-    Wait-ForTcpPort "MariaDB" $Port 60
+    Wait-ForTcpPort "MariaDB" $Port 60 -Process $process -ErrorLogPath $stderr
 }
 
 function Invoke-MariaDbSql {
@@ -841,14 +891,14 @@ function Start-RustServers {
     $authConfig = Join-Path $LauncherDir "authserver.launcher.toml"
     $worldConfig = Join-Path $LauncherDir "worldserver.launcher.toml"
 
-    $auth = Start-Process -FilePath $authExe -ArgumentList @("--config", $authConfig) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $authLog -RedirectStandardError $authErr
+    $auth = Start-Process -FilePath $authExe -ArgumentList (Join-ProcessArguments @("--config", $authConfig)) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $authLog -RedirectStandardError $authErr
     Set-Content -LiteralPath (Join-Path $PidDir "authserver.pid") -Value $auth.Id -Encoding ASCII
 
-    $world = Start-Process -FilePath $worldExe -ArgumentList @("--config", $worldConfig) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $worldLog -RedirectStandardError $worldErr
+    $world = Start-Process -FilePath $worldExe -ArgumentList (Join-ProcessArguments @("--config", $worldConfig)) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $worldLog -RedirectStandardError $worldErr
     Set-Content -LiteralPath (Join-Path $PidDir "worldserver.pid") -Value $world.Id -Encoding ASCII
 
-    Wait-ForTcpPort "Authserver" $Settings.authPort $ReadyTimeoutSeconds
-    Wait-ForTcpPort "Worldserver" $Settings.worldPort $ReadyTimeoutSeconds
+    Wait-ForTcpPort "Authserver" $Settings.authPort $ReadyTimeoutSeconds -Process $auth -ErrorLogPath $authErr
+    Wait-ForTcpPort "Worldserver" $Settings.worldPort $ReadyTimeoutSeconds -Process $world -ErrorLogPath $worldErr
     Wait-ForTcpPort "Observability dashboard" 9091 $ReadyTimeoutSeconds
 }
 

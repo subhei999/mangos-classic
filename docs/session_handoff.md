@@ -196,6 +196,12 @@ and generic hard-control aura behavior.
   silence-prevented active casts; pacify blocks new melee-prevented casts but
   does not retroactively interrupt an existing cast, matching
   `HandleAuraModPacify`.
+- Latest active-cast lifecycle slice: map-owned player death, logout/removal,
+  and combat-disconnect linger now clear the full active player spell runtime,
+  not only cast timers. Cleanup removes active casts, pending spell events,
+  active player channels, queued channel impacts, and caster-owned dynamic
+  objects, while sending channel/dynamic-object clear packets to observers when
+  the caster leaves the map or dies.
 
 Recent RCA/perf work is committed at `b58c6ca81` and pushed to
 `origin/codex/rusty-mangos`; keep the detailed benchmark chronology below as
@@ -1050,6 +1056,15 @@ Player visibility relocation threshold:
   - `cargo check -p worldserver`
   - `cargo test -p wow-network --lib -- --test-threads=1`
   - `.\scripts\test-rust.cmd`
+- Current active-cast lifecycle cleanup slice:
+  - `cargo fmt`
+  - `cargo test -p wow-network player_death_clears_active_spell_channels_and_dynamic_objects --lib`
+  - `cargo test -p wow-network removing_player_clears_spell_channels_and_notifies_observers --lib`
+  - `cargo test -p wow-network disconnect_in_combat --lib`
+  - `cargo test -p wow-network active_cast --lib`
+  - `cargo test -p wow-network movement_interrupt --lib`
+  - `cargo test -p wow-network hard_control --lib`
+  - `cargo check -p worldserver`
 - Heartbeat coalescing:
   - `cargo test -p wow-network map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers --lib`
   - `cargo check -p worldserver`
@@ -1326,10 +1341,9 @@ Player visibility relocation threshold:
 ## Recommended Next Task
 
 1. Continue active-player cast interrupt/cancel parity by covering active-cast
-   invalidation from death, logout, teleport/map removal, aura removal, and
-   target invalidation. Death and logout already remove some map-owned active
-   cast state; prove the exact cleanup behavior with focused tests before
-   changing it.
+   invalidation from teleport/map-transfer, aura removal, and target
+   invalidation. Death, logout/removal, and combat-disconnect linger now have
+   focused map-owned cleanup coverage.
 2. Then extend damage interrupt coverage to periodic/damage-shield/split-damage
    distinctions if/when those player-damage paths are wired, matching CMaNGOS
    `Unit::InterruptOrDelaySpell` dot and no-damage exclusions.

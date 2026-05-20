@@ -854,18 +854,16 @@ impl MapRuntime {
         &mut self,
         character_guid: u32,
         now: Instant,
-    ) -> bool {
+    ) -> Option<Vec<(SessionId, OutboundWorldPacket)>> {
         self.clear_player_visibility_refresh(character_guid);
         self.player_movement_heartbeat_broadcast_server_time
             .remove(&character_guid);
-        let Some(player) = self.players.get_mut(&character_guid) else {
-            return false;
-        };
+        let player = self.players.get(&character_guid)?;
         if matches!(player.controller, PlayerController::Disconnected { .. }) {
-            return true;
+            return Some(Vec::new());
         }
         if !player.is_client_controlled() {
-            return false;
+            return None;
         }
 
         let player_grid = grid_coord_for_position(player.position);
@@ -876,15 +874,25 @@ impl MapRuntime {
                 cell.client_players.remove(&character_guid);
             }
         }
-        player.controller = PlayerController::Disconnected {
-            remove_at: now + CMANGOS_DISCONNECTED_PLAYER_LINGER,
+        let observer_packets = match self.clear_player_active_spell_runtime(character_guid) {
+            Ok(cleanup) => cleanup.observer_packets,
+            Err(error) => {
+                warn!(
+                    guid = character_guid,
+                    ?error,
+                    "Failed to clear active spell runtime for disconnected player"
+                );
+                Vec::new()
+            }
         };
-        player.visible_objects.clear();
-        self.active_player_spell_casts.remove(&character_guid);
-        self.pending_spell_events
-            .retain(|event| event.caster_character_guid != character_guid);
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.controller = PlayerController::Disconnected {
+                remove_at: now + CMANGOS_DISCONNECTED_PLAYER_LINGER,
+            };
+            player.visible_objects.clear();
+        }
         self.refresh_grid_state(player_grid);
-        true
+        Some(observer_packets)
     }
 
     pub(in crate::world) fn expire_disconnected_players(
@@ -2983,16 +2991,28 @@ impl MapRuntime {
         self.clear_player_visibility_refresh(character_guid);
         self.player_movement_heartbeat_broadcast_server_time
             .remove(&character_guid);
-        let Some(player) = self.players.remove(&character_guid) else {
+        let Some(player) = self.players.get(&character_guid) else {
             return Vec::new();
         };
-        if player.bot_runtime.is_some() {
+        let removed_is_playerbot = player.bot_runtime.is_some();
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let spell_cleanup = match self.clear_player_active_spell_runtime(character_guid) {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                warn!(
+                    guid = character_guid,
+                    ?error,
+                    "Failed to clear active spell runtime while removing player"
+                );
+                PlayerSpellRuntimeCleanupPackets::default()
+            }
+        };
+        let Some(player) = self.players.remove(&character_guid) else {
+            return spell_cleanup.observer_packets;
+        };
+        if removed_is_playerbot {
             self.active_playerbot_count = self.active_playerbot_count.saturating_sub(1);
         }
-        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-        self.active_player_spell_casts.remove(&character_guid);
-        self.pending_spell_events
-            .retain(|event| event.caster_character_guid != character_guid);
 
         let player_grid = grid_coord_for_position(player.position);
         if let Some(grid) = self.grids.get_mut(&player_grid) {
@@ -3014,18 +3034,21 @@ impl MapRuntime {
             opcode: SMSG_DESTROY_OBJECT,
             body: build_destroy_guid_body(player_guid),
         };
-        self.nearby_player_guids(
-            player.position,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            Some(character_guid),
-        )
-        .into_iter()
-        .filter_map(|other_guid| {
-            self.players
-                .get(&other_guid)
-                .and_then(|other| other.packet_to_client(destroy.clone()))
-        })
-        .collect()
+        let mut packets = spell_cleanup.observer_packets;
+        packets.extend(
+            self.nearby_player_guids(
+                player.position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(destroy.clone()))
+            }),
+        );
+        packets
     }
 
     pub(in crate::world) fn broadcast_nearby_player_packet(

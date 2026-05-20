@@ -614,16 +614,14 @@ impl MapRuntimeManager {
         map_id: u32,
         character_guid: u32,
         now: Instant,
-    ) -> bool {
+    ) -> Option<Vec<(SessionId, OutboundWorldPacket)>> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
-        let Some(map) = map else {
-            return false;
-        };
-        let disconnected = map
+        let map = map?;
+        let packets = map
             .lock()
             .await
             .disconnect_player_for_linger(character_guid, now);
-        disconnected
+        packets
     }
 
     pub(in crate::world) async fn expire_all_disconnected_players(

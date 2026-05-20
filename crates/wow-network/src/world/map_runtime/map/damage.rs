@@ -109,9 +109,7 @@ impl MapRuntime {
         now: Instant,
     ) -> anyhow::Result<PlayerDeathCleanupPackets> {
         let character_guid = player_guid.counter();
-        self.active_player_spell_casts.remove(&character_guid);
-        self.pending_spell_events
-            .retain(|event| event.caster_character_guid != character_guid);
+        let spell_cleanup = self.clear_player_active_spell_runtime(character_guid)?;
         self.active_creature_spell_casts
             .retain(|_, cast| cast.target != player_guid);
 
@@ -132,6 +130,8 @@ impl MapRuntime {
 
         let mut direct_packets = Vec::new();
         let mut observer_packets = Vec::new();
+        direct_packets.extend(spell_cleanup.direct_packets);
+        observer_packets.extend(spell_cleanup.observer_packets);
         let player_combat_flags = OutboundWorldPacket {
             opcode: SMSG_UPDATE_OBJECT,
             body: build_unit_flags_update_body(player_guid, player_unit_flags(false))?,

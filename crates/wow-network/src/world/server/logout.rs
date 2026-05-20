@@ -395,13 +395,15 @@ pub(in crate::world) async fn unregister_active_character_after_disconnect(
     if let Some(character) = session.character.active_character.take() {
         online_characters.lock().await.remove(&character.guid);
         sessions.set_active_character(session_id, None, None).await;
-        let left_lingering = if session.combat.player_in_combat {
+        let linger_packets = if session.combat.player_in_combat {
             maps.disconnect_player_for_linger(character.position.map_id, character.guid, now)
                 .await
         } else {
-            false
+            None
         };
-        if !left_lingering {
+        if let Some(packets) = linger_packets {
+            sessions.dispatch(packets).await;
+        } else {
             let packets = maps
                 .remove_player(character.position.map_id, character.guid)
                 .await;

@@ -97,7 +97,33 @@ impl MapRuntime {
         let Some(channel) = self.active_player_channels.remove(&caster_character_guid) else {
             return Ok(None);
         };
+        self.pending_player_channel_impacts
+            .retain(|impact| impact.caster_character_guid != caster_character_guid);
         self.player_channel_clear_event(channel)
+    }
+
+    pub(in crate::world) fn clear_player_active_spell_runtime(
+        &mut self,
+        character_guid: u32,
+    ) -> anyhow::Result<PlayerSpellRuntimeCleanupPackets> {
+        self.active_player_spell_casts.remove(&character_guid);
+        self.pending_spell_events
+            .retain(|event| event.caster_character_guid != character_guid);
+
+        let mut cleanup = PlayerSpellRuntimeCleanupPackets::default();
+        if let Some(event) = self.cancel_player_channel(character_guid)? {
+            cleanup.direct_packets.extend(event.direct_packets);
+            cleanup.observer_packets.extend(event.observer_packets);
+        }
+
+        let dynamic_cleanup = self.remove_player_dynamic_objects(character_guid)?;
+        cleanup
+            .direct_packets
+            .extend(dynamic_cleanup.direct_packets);
+        cleanup
+            .observer_packets
+            .extend(dynamic_cleanup.observer_packets);
+        Ok(cleanup)
     }
 
     pub(in crate::world) fn cancel_player_channel_for_movement(

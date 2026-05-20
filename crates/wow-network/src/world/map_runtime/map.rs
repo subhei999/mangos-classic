@@ -553,6 +553,12 @@ pub(in crate::world) struct ActivePlayerChannel {
     pub(in crate::world) damage_effect: PlayerDirectDamageEffect,
 }
 
+#[derive(Debug, Default)]
+pub(in crate::world) struct PlayerSpellRuntimeCleanupPackets {
+    pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
+    pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::world) struct PendingPlayerChannelImpact {
     pub(in crate::world) caster: ObjectGuid,

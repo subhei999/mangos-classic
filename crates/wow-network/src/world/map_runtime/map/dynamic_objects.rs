@@ -167,6 +167,37 @@ impl MapRuntime {
         self.destroy_dynamic_object_channel_event(dynamic_object)
     }
 
+    pub(in crate::world) fn remove_player_dynamic_objects(
+        &mut self,
+        caster_character_guid: u32,
+    ) -> anyhow::Result<PlayerSpellRuntimeCleanupPackets> {
+        let direct_session_id = self
+            .players
+            .get(&caster_character_guid)
+            .and_then(PlayerRuntime::client_session_id);
+        let raw_guids = self
+            .dynamic_objects
+            .iter()
+            .filter_map(|(raw_guid, dynamic_object)| {
+                (dynamic_object.caster_character_guid == caster_character_guid).then_some(*raw_guid)
+            })
+            .collect::<Vec<_>>();
+        let mut cleanup = PlayerSpellRuntimeCleanupPackets::default();
+        for raw_guid in raw_guids {
+            let Some(dynamic_object) = self.dynamic_objects.remove(&raw_guid) else {
+                continue;
+            };
+            for (session_id, packet) in self.destroy_dynamic_object_packets(dynamic_object)? {
+                if Some(session_id) == direct_session_id {
+                    cleanup.direct_packets.push(packet);
+                } else {
+                    cleanup.observer_packets.push((session_id, packet));
+                }
+            }
+        }
+        Ok(cleanup)
+    }
+
     pub(in crate::world) fn cancel_player_dynamic_object_channel_for_movement(
         &mut self,
         caster_character_guid: u32,

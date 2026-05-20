@@ -31,6 +31,11 @@ pub(in crate::world) async fn handle_gossip_hello(
 ) -> anyhow::Result<()> {
     let guid = ObjectGuid::from_raw(request.raw_guid);
     session.gossip = GossipSessionState::default();
+    info!(
+        guid = format_args!("0x{:016X}", guid.raw()),
+        entry = guid.entry(),
+        "Received gossip hello"
+    );
 
     if guid == rust_guide_guid() {
         let text_update = build_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID, RUST_GUIDE_GOSSIP_TEXT);
@@ -300,6 +305,21 @@ async fn send_prepared_gossip_menu(
         }
     }
 
+    info!(
+        guid = format_args!("0x{:016X}", guid.raw()),
+        entry = guid.entry(),
+        menu_id = prepared.menu_id,
+        text_id = prepared.text_id,
+        options = prepared.options.len(),
+        quests = prepared.quests.len(),
+        npc_flags = prepared.npc_flags,
+        first_option = prepared
+            .options
+            .first()
+            .map(|option| option.text.as_str())
+            .unwrap_or(""),
+        "Sending prepared gossip menu"
+    );
     session.gossip.active_guid = Some(guid);
     session.gossip.active_menu_id = prepared.menu_id;
     session.gossip.active_options = prepared.option_actions.clone();

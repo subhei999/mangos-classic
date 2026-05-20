@@ -40,6 +40,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   green/red/gray state counts. The release stack was restarted with this
   diagnostic build; the next real-client click should prove whether trainer
   selection reaches `SMSG_TRAINER_LIST` or is filtered/ignored earlier.
+- Additional live-trainer diagnostic: metrics from the first live attempt showed
+  many `CMSG_GOSSIP_HELLO` / `SMSG_GOSSIP_MESSAGE` packets but no
+  `CMSG_GOSSIP_SELECT_OPTION`, so the failure is likely the prepared gossip
+  menu shape/contents rather than trainer-list dispatch. Rust now also logs
+  gossip hello and prepared menu entry/menu/text/option counts. After the latest
+  restart, no authenticated world session was connected yet; the next proof
+  requires a fresh real-client login and one trainer right-click.
 - Existing GitHub issue #75 still tracks remaining non-merchant service actions:
   taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
   scripts/locales, and full npc_text parity.
@@ -1090,12 +1097,18 @@ Player visibility relocation threshold:
   - DB sanity check confirmed nearby Northshire class trainers such as Khelden
     Bremen and Llane Beshere use gossip-menu trainer options backed by direct
     `npc_trainer` rows; nearby weapon masters use template rows.
+  - Live metrics before the second diagnostic restart showed
+    `CMSG_GOSSIP_HELLO=52`, `SMSG_GOSSIP_MESSAGE=52`, and no
+    `CMSG_GOSSIP_SELECT_OPTION`, pointing at the menu presented to the client.
   - `cargo fmt`
   - `cargo test -p wow-network gossip --lib`
   - `cargo test -p wow-network trainer --lib`
   - `cargo check -p worldserver`
   - `.\scripts\restart-game-stack.cmd --release`
   - `.\scripts\test-rust.cmd`
+  - Added gossip hello / prepared-menu logging, then reran `cargo fmt`,
+    `cargo test -p wow-network gossip --lib`, `cargo check -p worldserver`, and
+    `.\scripts\restart-game-stack.cmd --release`.
 
 ## Current Confidence
 
@@ -1171,9 +1184,12 @@ Player visibility relocation threshold:
 - The currently running live server, if still up from before this change, does
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
-- Trainer gossip needs one more real-client click after the latest restart.
-  Watch `world-client-18085.log` for `Dispatching DB gossip selection` followed
-  by `Sending trainer list` or `Trainer list is empty after class filter`.
+- Trainer gossip needs one more real-client login and click after the latest
+  restart. Current metrics after that restart showed zero connected world
+  sessions. Watch `world-client-18085.log` for `Received gossip hello`,
+  `Sending prepared gossip menu`, and then either `Dispatching DB gossip
+  selection` followed by `Sending trainer list` or `Trainer list is empty after
+  class filter`.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted

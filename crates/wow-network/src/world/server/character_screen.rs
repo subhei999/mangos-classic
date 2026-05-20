@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     ServerWorldPacket, SmsgAuthResponse, SmsgCharCreateResponse, SmsgCharDeleteResponse,
 };
@@ -46,7 +47,7 @@ pub(in crate::world) async fn send_auth_response(
 ) -> anyhow::Result<()> {
     send_packet_direct(
         stream,
-        SMSG_AUTH_RESPONSE,
+        WorldOpcode::SmsgAuthResponse as u16,
         &SmsgAuthResponse {
             result: response,
             billing_time_remaining: 0,
@@ -65,7 +66,13 @@ pub(in crate::world) async fn send_auth_ok(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = SmsgAuthResponse::ok().body();
-    send_packet(stream, SMSG_AUTH_RESPONSE, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgAuthResponse as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn send_char_enum(
@@ -74,7 +81,13 @@ pub(in crate::world) async fn send_char_enum(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_char_enum_body(characters)?;
-    send_packet(stream, SMSG_CHAR_ENUM, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgCharEnum as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_char_delete(
@@ -127,7 +140,7 @@ pub(in crate::world) async fn send_char_delete_result(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_CHAR_DELETE,
+        WorldOpcode::SmsgCharDelete as u16,
         &SmsgCharDeleteResponse { result }.body(),
         header_crypto,
     )
@@ -220,7 +233,7 @@ pub(in crate::world) async fn send_char_create_result(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_CHAR_CREATE,
+        WorldOpcode::SmsgCharCreate as u16,
         &SmsgCharCreateResponse { result }.body(),
         header_crypto,
     )

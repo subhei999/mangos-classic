@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 // CMaNGOS reference: src/game/Handlers/MovementHandler.cpp movement flow.
 
 pub(in crate::world) const PLAYER_POSITION_STATUS_UPDATE_INTERVAL: Duration =
@@ -330,12 +331,12 @@ async fn handle_player_area_discovery(
     }
     crate::observability::record_world_outbound_source_packet(
         "area_discovery",
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         discovery.update_body.len() + 4,
     );
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &discovery.update_body,
         Some(&mut *header_crypto),
     )
@@ -364,7 +365,7 @@ async fn handle_player_area_discovery(
     .await?;
     send_packet(
         stream,
-        SMSG_EXPLORATION_EXPERIENCE,
+        WorldOpcode::SmsgExplorationExperience as u16,
         &build_exploration_experience_body(area_entry.id, xp),
         Some(header_crypto),
     )
@@ -415,17 +416,23 @@ pub(in crate::world) async fn clear_player_state_emote_on_movement(
     let body = build_emote_state_update_body(&character, 0)?;
     crate::observability::record_world_outbound_source_packet(
         "movement_clear_emote_direct",
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         body.len() + 4,
     );
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
     let packets = maps
         .broadcast_nearby_player_packet(
             character.position.map_id,
             character.guid,
             CHAT_EMOTE_RADIUS_YARDS,
             OutboundWorldPacket {
-                opcode: SMSG_UPDATE_OBJECT,
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
                 body,
             },
         )
@@ -438,7 +445,7 @@ pub(in crate::world) fn corpse_falling_movement_allowed(
     opcode: u32,
     movement: &MovementInfo,
 ) -> bool {
-    if opcode == MSG_MOVE_FALL_LAND {
+    if opcode == WorldOpcode::MsgMoveFallLand as u32 {
         return true;
     }
 
@@ -447,13 +454,17 @@ pub(in crate::world) fn corpse_falling_movement_allowed(
     }
 
     matches!(
-        opcode,
-        MSG_MOVE_FALL_LAND | MSG_MOVE_START_SWIM | MSG_MOVE_HEARTBEAT
+        WorldOpcode::try_from(opcode).ok(),
+        Some(
+            WorldOpcode::MsgMoveFallLand
+                | WorldOpcode::MsgMoveStartSwim
+                | WorldOpcode::MsgMoveHeartbeat
+        )
     ) && movement.fall_time > 0
 }
 
 pub(in crate::world) fn tracked_session_fall_time(opcode: u32, movement: &MovementInfo) -> u32 {
-    if opcode == MSG_MOVE_FALL_LAND || movement.flags & MOVEFLAG_JUMPING == 0 {
+    if opcode == WorldOpcode::MsgMoveFallLand as u32 || movement.flags & MOVEFLAG_JUMPING == 0 {
         0
     } else {
         movement.fall_time
@@ -462,13 +473,15 @@ pub(in crate::world) fn tracked_session_fall_time(opcode: u32, movement: &Moveme
 
 pub(in crate::world) fn movement_opcode_interrupts_spell_cast(opcode: u32) -> bool {
     matches!(
-        opcode,
-        MSG_MOVE_START_FORWARD
-            | MSG_MOVE_START_BACKWARD
-            | MSG_MOVE_START_STRAFE_LEFT
-            | MSG_MOVE_START_STRAFE_RIGHT
-            | MSG_MOVE_JUMP
-            | MSG_MOVE_START_SWIM
+        WorldOpcode::try_from(opcode).ok(),
+        Some(
+            WorldOpcode::MsgMoveStartForward
+                | WorldOpcode::MsgMoveStartBackward
+                | WorldOpcode::MsgMoveStartStrafeLeft
+                | WorldOpcode::MsgMoveStartStrafeRight
+                | WorldOpcode::MsgMoveJump
+                | WorldOpcode::MsgMoveStartSwim
+        )
     )
 }
 

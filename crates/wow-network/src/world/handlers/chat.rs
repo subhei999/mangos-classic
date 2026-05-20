@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     ServerWorldPacket, SmsgEmoteResponse, SmsgMessageChatResponse, SmsgNameQueryResponse,
     SmsgTextEmoteResponse,
@@ -77,7 +78,7 @@ pub(in crate::world) async fn handle_ping(
     let pong = wow_proto::PongResponse::from(ping);
     send_packet(
         stream,
-        u32::from(wow_proto::WorldOpcode::SmsgPong) as u16,
+        u32::from(WorldOpcode::SmsgPong) as u16,
         &pong.to_body(),
         header_crypto,
     )
@@ -107,7 +108,7 @@ pub(in crate::world) async fn handle_name_query(
     };
     send_packet(
         stream,
-        SMSG_NAME_QUERY_RESPONSE,
+        WorldOpcode::SmsgNameQueryResponse as u16,
         &response,
         Some(header_crypto),
     )
@@ -175,7 +176,13 @@ pub(in crate::world) async fn handle_message_chat(
     }
 
     let body = build_message_chat_body(chat.chat_type, chat.language, &chat.message, &character);
-    send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMessageChat as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
 
     if chat.chat_type == CHAT_MSG_PARTY {
         let party_members = deps.parties.party_members(character.guid).await;
@@ -188,7 +195,7 @@ pub(in crate::world) async fn handle_message_chat(
                 packets.push((
                     session_id,
                     OutboundWorldPacket {
-                        opcode: SMSG_MESSAGECHAT,
+                        opcode: WorldOpcode::SmsgMessageChat as u16,
                         body: body.clone(),
                     },
                 ));
@@ -207,7 +214,7 @@ pub(in crate::world) async fn handle_message_chat(
                 character.guid,
                 radius,
                 OutboundWorldPacket {
-                    opcode: SMSG_MESSAGECHAT,
+                    opcode: WorldOpcode::SmsgMessageChat as u16,
                     body,
                 },
             )
@@ -291,12 +298,31 @@ pub(in crate::world) async fn handle_text_emote(
         if matches!(emote.text_emote, TEXTEMOTE_DANCE | TEXTEMOTE_SLEEP) {
             session.character.player_emote_state = animation;
             let body = build_emote_state_update_body(character, animation)?;
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
-            dispatch_nearby_text_emote_packet(deps, character, SMSG_UPDATE_OBJECT, body).await;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgUpdateObject as u16,
+                &body,
+                Some(header_crypto),
+            )
+            .await?;
+            dispatch_nearby_text_emote_packet(
+                deps,
+                character,
+                WorldOpcode::SmsgUpdateObject as u16,
+                body,
+            )
+            .await;
         } else {
             let body = build_emote_body(character, animation);
-            send_packet(stream, SMSG_EMOTE, &body, Some(header_crypto)).await?;
-            dispatch_nearby_text_emote_packet(deps, character, SMSG_EMOTE, body).await;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgEmote as u16,
+                &body,
+                Some(header_crypto),
+            )
+            .await?;
+            dispatch_nearby_text_emote_packet(deps, character, WorldOpcode::SmsgEmote as u16, body)
+                .await;
         }
     }
     let body = build_text_emote_body(
@@ -305,8 +331,15 @@ pub(in crate::world) async fn handle_text_emote(
         emote.emote_num,
         (!target_name.is_empty()).then_some(target_name.as_str()),
     );
-    send_packet(stream, SMSG_TEXT_EMOTE, &body, Some(header_crypto)).await?;
-    dispatch_nearby_text_emote_packet(deps, character, SMSG_TEXT_EMOTE, body).await;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgTextEmote as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
+    dispatch_nearby_text_emote_packet(deps, character, WorldOpcode::SmsgTextEmote as u16, body)
+        .await;
     Ok(())
 }
 

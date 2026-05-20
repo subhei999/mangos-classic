@@ -33,33 +33,32 @@ use wow_db::{
 use wow_proto::SpellCastTargets;
 
 mod combat;
+mod constants;
 mod entities;
-mod fixtures;
 mod game_events;
 mod globals;
 mod handlers;
 mod map_runtime;
 mod motion;
-mod opcodes;
 mod packet_builders;
 mod packets;
 mod playerbots;
 mod scripts;
 mod server;
 mod session;
+mod session_runtime;
 mod social;
 mod spells;
 mod wire;
 
 use self::combat::*;
+use self::constants::*;
 use self::entities::*;
-use self::fixtures::*;
 use self::game_events::*;
 use self::globals::*;
 use self::handlers::*;
 use self::map_runtime::*;
 use self::motion::*;
-use self::opcodes::*;
 use self::packet_builders::*;
 #[cfg(test)]
 use self::playerbots::PlayerbotRosterEntry;
@@ -68,6 +67,7 @@ use self::playerbots::{initialize_playerbots, PlayerbotRoster};
 use self::scripts::*;
 use self::server::*;
 use self::session::*;
+use self::session_runtime::*;
 use self::social::*;
 use self::spells::*;
 use self::wire::*;

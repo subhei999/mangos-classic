@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{ServerWorldPacket, SmsgLogoutCompleteResponse, SmsgLogoutResponse};
 
 // CMaNGOS reference: src/game/Handlers/CharacterHandler.cpp logout flow.
@@ -14,7 +15,13 @@ pub(in crate::world) async fn handle_logout_request(
 ) -> anyhow::Result<()> {
     if logout_is_blocked_by_combat(session) {
         let body = build_logout_response_body(LOGOUT_FAILURE_CANT_LOGOUT_NOW, false);
-        send_packet(stream, SMSG_LOGOUT_RESPONSE, &body, Some(header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgLogoutResponse as u16,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
         cancel_pending_logout(session);
         return Ok(());
     }
@@ -23,7 +30,7 @@ pub(in crate::world) async fn handle_logout_request(
         let body = build_logout_response_body(LOGOUT_FAILURE_NONE, false);
         send_packet(
             stream,
-            SMSG_LOGOUT_RESPONSE,
+            WorldOpcode::SmsgLogoutResponse as u16,
             &body,
             Some(&mut *header_crypto),
         )
@@ -81,7 +88,7 @@ pub(in crate::world) async fn handle_logout_cancel(
     }
     send_packet(
         stream,
-        SMSG_LOGOUT_CANCEL_ACK,
+        WorldOpcode::SmsgLogoutCancelAck as u16,
         &wow_proto::SmsgLogoutCancelAckResponse.body(),
         Some(header_crypto),
     )
@@ -114,7 +121,7 @@ async fn complete_logout_to_character_selection(
         let body = build_logout_response_body(LOGOUT_FAILURE_NONE, true);
         send_packet(
             stream,
-            SMSG_LOGOUT_RESPONSE,
+            WorldOpcode::SmsgLogoutResponse as u16,
             &body,
             Some(&mut *header_crypto),
         )
@@ -122,7 +129,7 @@ async fn complete_logout_to_character_selection(
     }
     send_packet(
         stream,
-        SMSG_LOGOUT_COMPLETE,
+        WorldOpcode::SmsgLogoutComplete as u16,
         &SmsgLogoutCompleteResponse.body(),
         Some(header_crypto),
     )
@@ -188,7 +195,7 @@ async fn apply_logout_timer_stun(
     session.character.player_stand_state = PLAYER_STAND_STATE_SIT;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_stand_state_update_body(character, PLAYER_STAND_STATE_SIT)?,
         Some(&mut *header_crypto),
     )
@@ -196,14 +203,14 @@ async fn apply_logout_timer_stun(
     let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     send_packet(
         stream,
-        SMSG_FORCE_MOVE_ROOT,
+        WorldOpcode::SmsgForceMoveRoot as u16,
         &build_force_move_root_body(player, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_unit_flags_update_body(
             player,
             player_unit_flags_with_looting(session.combat.player_in_combat, false)
@@ -237,7 +244,7 @@ async fn clear_logout_timer_stun(
         session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_stand_state_update_body(character, PLAYER_STAND_STATE_STAND)?,
             Some(&mut *header_crypto),
         )
@@ -254,14 +261,14 @@ async fn clear_logout_timer_stun(
     let player = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     send_packet(
         stream,
-        SMSG_FORCE_MOVE_UNROOT,
+        WorldOpcode::SmsgForceMoveUnroot as u16,
         &build_force_move_unroot_body(player, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_unit_flags_update_body(
             player,
             player_unit_flags_with_looting(session.combat.player_in_combat, false),

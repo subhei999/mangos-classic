@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{ServerWorldPacket, SmsgUpdateAuraDurationResponse};
 
 #[allow(dead_code)]
@@ -55,7 +56,7 @@ pub(in crate::world) fn build_player_aura_duration_update_packets(
         .filter_map(|(slot, aura)| {
             aura.remaining_duration_millis(now)
                 .map(|remaining_millis| OutboundWorldPacket {
-                    opcode: SMSG_UPDATE_AURA_DURATION,
+                    opcode: WorldOpcode::SmsgUpdateAuraDuration as u16,
                     body: build_aura_duration_update_body(slot as u8, remaining_millis),
                 })
         })

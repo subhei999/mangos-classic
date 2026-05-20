@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     MailListItemResponse, ServerWorldPacket, SmsgItemTextQueryResponse, SmsgMailListResultResponse,
     SmsgSendMailResultResponse,
@@ -390,7 +391,7 @@ pub(in crate::world) async fn handle_send_mail(
     send_mail_result(stream, 0, MAIL_SEND, MAIL_OK, None, None, header_crypto).await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character_guid, result.sender_money)?,
         Some(&mut *header_crypto),
     )
@@ -433,7 +434,13 @@ pub(in crate::world) async fn handle_get_mail_list(
     )
     .await?;
     let body = build_mail_list_body(deps.world_db_pool, &mails).await?;
-    send_packet(stream, SMSG_MAIL_LIST_RESULT, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMailListResult as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_mail_take_money(
@@ -463,7 +470,7 @@ pub(in crate::world) async fn handle_mail_take_money(
             .await?;
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_money_update_body(character.guid, new_money)?,
                 Some(header_crypto),
             )
@@ -639,7 +646,7 @@ pub(in crate::world) async fn handle_mail_take_item(
             .await?;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_money_update_body(character_guid, money)?,
             Some(&mut *header_crypto),
         )
@@ -871,7 +878,7 @@ pub(in crate::world) async fn handle_item_text_query(
     .body();
     send_packet(
         stream,
-        SMSG_ITEM_TEXT_QUERY_RESPONSE,
+        WorldOpcode::SmsgItemTextQueryResponse as u16,
         &body,
         Some(header_crypto),
     )
@@ -1021,7 +1028,7 @@ pub(in crate::world) async fn refresh_inventory_after_mail_change(
             if old.bag != INVENTORY_SLOT_BAG_0 as u32 {
                 send_packet(
                     stream,
-                    SMSG_DESTROY_OBJECT,
+                    WorldOpcode::SmsgDestroyObject as u16,
                     &build_destroy_object_body(removed_item),
                     Some(&mut *header_crypto),
                 )
@@ -1032,7 +1039,7 @@ pub(in crate::world) async fn refresh_inventory_after_mail_change(
     if !blocks.is_empty() {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_update_object_body(&blocks),
             Some(header_crypto),
         )
@@ -1058,7 +1065,13 @@ pub(in crate::world) async fn send_mail_result(
         taken_item,
     }
     .body();
-    send_packet(stream, SMSG_SEND_MAIL_RESULT, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgSendMailResult as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 #[cfg(test)]

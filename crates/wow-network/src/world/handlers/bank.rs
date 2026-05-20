@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::ServerWorldPacket;
 
 pub(in crate::world) const BANKER_INTERACTION_DISTANCE_YARDS: f32 = 5.0;
@@ -51,7 +52,7 @@ pub(in crate::world) async fn handle_banker_activate(
     }
     send_packet(
         stream,
-        SMSG_SHOW_BANK,
+        WorldOpcode::SmsgShowBank as u16,
         &wow_proto::SmsgShowBankResponse { banker }.body(),
         Some(header_crypto),
     )
@@ -112,14 +113,14 @@ pub(in crate::world) async fn handle_buy_bank_slot(
     send_buy_bank_slot_result(stream, ERR_BANKSLOT_OK, &mut *header_crypto).await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character_guid, new_money)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_bytes2_update_body(character_guid, new_player_bytes2)?,
         Some(header_crypto),
     )
@@ -133,7 +134,7 @@ pub(in crate::world) async fn send_buy_bank_slot_result(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_BUY_BANK_SLOT_RESULT,
+        WorldOpcode::SmsgBuyBankSlotResult as u16,
         &wow_proto::SmsgBuyBankSlotResultResponse { result }.body(),
         Some(header_crypto),
     )

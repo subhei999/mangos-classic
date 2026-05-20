@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn handle_creature_query(
     stream: &mut WorldPacketSink,
@@ -11,13 +12,13 @@ pub(in crate::world) async fn handle_creature_query(
     info!(
         entry = query.entry,
         guid = format_args!("0x{:016X}", guid.raw()),
-        found = db_template.is_some() || query.entry == RUST_GUIDE_ENTRY,
+        found = db_template.is_some(),
         "Answering creature template query"
     );
     let response = build_creature_query_response(query.entry, db_template.as_ref());
     send_packet(
         stream,
-        SMSG_CREATURE_QUERY_RESPONSE,
+        WorldOpcode::SmsgCreatureQueryResponse as u16,
         &response,
         Some(header_crypto),
     )
@@ -28,7 +29,7 @@ pub(in crate::world) fn build_creature_query_response(
     entry: u32,
     db_template: Option<&CreatureTemplateQuery>,
 ) -> Vec<u8> {
-    let Some(template) = creature_query_template(entry, db_template) else {
+    let Some(template) = creature_query_template(db_template) else {
         return (entry | 0x8000_0000).to_le_bytes().to_vec();
     };
 
@@ -50,12 +51,6 @@ pub(in crate::world) fn build_creature_query_response(
     body
 }
 
-pub(in crate::world) struct FixtureCreatureTemplate {
-    pub(in crate::world) name: &'static str,
-    pub(in crate::world) subname: &'static str,
-    pub(in crate::world) display_id: u32,
-}
-
 pub(in crate::world) struct CreatureQueryTemplate<'a> {
     pub(in crate::world) name: &'a str,
     pub(in crate::world) subname: &'a str,
@@ -68,10 +63,9 @@ pub(in crate::world) struct CreatureQueryTemplate<'a> {
     pub(in crate::world) civilian: u8,
 }
 
-pub(in crate::world) fn creature_query_template<'a>(
-    entry: u32,
-    db_template: Option<&'a CreatureTemplateQuery>,
-) -> Option<CreatureQueryTemplate<'a>> {
+pub(in crate::world) fn creature_query_template(
+    db_template: Option<&CreatureTemplateQuery>,
+) -> Option<CreatureQueryTemplate<'_>> {
     if let Some(template) = db_template {
         return Some(CreatureQueryTemplate {
             name: &template.name,
@@ -86,27 +80,5 @@ pub(in crate::world) fn creature_query_template<'a>(
         });
     }
 
-    let template = fixture_creature_template(entry)?;
-    Some(CreatureQueryTemplate {
-        name: template.name,
-        subname: template.subname,
-        creature_type_flags: 0,
-        creature_type: 7,
-        family: 0,
-        rank: 0,
-        pet_spell_data_id: 0,
-        display_id: template.display_id,
-        civilian: 0,
-    })
-}
-
-pub(in crate::world) fn fixture_creature_template(entry: u32) -> Option<FixtureCreatureTemplate> {
-    match entry {
-        RUST_GUIDE_ENTRY => Some(FixtureCreatureTemplate {
-            name: RUST_GUIDE_NAME,
-            subname: RUST_GUIDE_SUBNAME,
-            display_id: RUST_GUIDE_DISPLAY_ID,
-        }),
-        _ => None,
-    }
+    None
 }

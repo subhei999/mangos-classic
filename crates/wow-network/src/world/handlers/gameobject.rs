@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 // CMaNGOS reference: src/game/Entities/QueryHandler.cpp and SpellHandler.cpp
 // gameobject query/use flow.
@@ -13,7 +14,7 @@ pub(in crate::world) async fn handle_gameobject_query(
     let response = build_gameobject_query_response(query.entry, template.as_ref());
     send_packet(
         stream,
-        SMSG_GAMEOBJECT_QUERY_RESPONSE,
+        WorldOpcode::SmsgGameObjectQueryResponse as u16,
         &response,
         Some(header_crypto),
     )
@@ -131,7 +132,7 @@ pub(in crate::world) async fn handle_gameobject_use(
         }
         send_packet(
             stream,
-            SMSG_DESTROY_OBJECT,
+            WorldOpcode::SmsgDestroyObject as u16,
             &guid.raw().to_le_bytes(),
             Some(header_crypto),
         )
@@ -192,7 +193,7 @@ pub(in crate::world) async fn open_gameobject_loot_from_use(
     .await?;
     send_packet(
         stream,
-        SMSG_LOOT_RESPONSE,
+        WorldOpcode::SmsgLootResponse as u16,
         &build_gameobject_loot_response_body(guid, &loot_items),
         Some(header_crypto),
     )
@@ -262,7 +263,7 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
     for guid in updates.destroy_guids {
         send_packet(
             stream,
-            SMSG_DESTROY_OBJECT,
+            WorldOpcode::SmsgDestroyObject as u16,
             &guid.raw().to_le_bytes(),
             Some(&mut *header_crypto),
         )
@@ -284,7 +285,7 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
     for chunk in create_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_update_object_body(chunk),
             Some(&mut *header_crypto),
         )
@@ -540,7 +541,7 @@ pub(in crate::world) async fn handle_gameobject_questgiver_use(
         let response = build_quest_offer_reward_body(guid, &quest, &displays);
         send_packet(
             stream,
-            SMSG_QUESTGIVER_OFFER_REWARD,
+            WorldOpcode::SmsgQuestgiverOfferReward as u16,
             &response,
             Some(header_crypto),
         )
@@ -555,7 +556,7 @@ pub(in crate::world) async fn handle_gameobject_questgiver_use(
     let response = build_questgiver_quest_list_body(guid, &quests);
     send_packet(
         stream,
-        SMSG_QUESTGIVER_QUEST_LIST,
+        WorldOpcode::SmsgQuestgiverQuestList as u16,
         &response,
         Some(header_crypto),
     )
@@ -660,14 +661,14 @@ pub(in crate::world) async fn grant_gameobject_use_credit(
         };
         send_packet(
             stream,
-            SMSG_QUESTUPDATE_ADD_KILL,
+            WorldOpcode::SmsgQuestUpdateAddKill as u16,
             &build_quest_update_add_kill_body(&quest, gameobject_guid, index, new_count),
             Some(&mut *header_crypto),
         )
         .await?;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_quest_log_update_body(character.guid, slot, &updated_status)?,
             Some(&mut *header_crypto),
         )
@@ -675,7 +676,7 @@ pub(in crate::world) async fn grant_gameobject_use_credit(
         if complete {
             send_packet(
                 stream,
-                SMSG_QUESTUPDATE_COMPLETE,
+                WorldOpcode::SmsgQuestUpdateComplete as u16,
                 &quest_id.to_le_bytes(),
                 Some(&mut *header_crypto),
             )

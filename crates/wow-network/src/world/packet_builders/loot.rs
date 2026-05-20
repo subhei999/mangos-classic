@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     LootItemResponse, ServerWorldPacket, SmsgLootErrorResponse, SmsgLootMasterListResponse,
     SmsgLootReleaseResponse, SmsgLootResponse,
@@ -168,7 +169,7 @@ pub(in crate::world) async fn autostore_loot_item(
 
     send_packet(
         stream,
-        SMSG_LOOT_REMOVED,
+        WorldOpcode::SmsgLootRemoved as u16,
         &[loot_slot],
         Some(&mut *header_crypto),
     )
@@ -178,7 +179,7 @@ pub(in crate::world) async fn autostore_loot_item(
         let body = build_item_push_result_body(character_guid, item, loot.count, true, false, true);
         send_packet(
             stream,
-            SMSG_ITEM_PUSH_RESULT,
+            WorldOpcode::SmsgItemPushResult as u16,
             &body,
             Some(&mut *header_crypto),
         )
@@ -187,7 +188,13 @@ pub(in crate::world) async fn autostore_loot_item(
 
     let body = build_update_object_body(&update_blocks);
 
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
 
     complete_inventory_item_quests(
         stream,

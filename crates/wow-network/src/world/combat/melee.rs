@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum PlayerMeleeCheck {
@@ -23,10 +24,10 @@ pub(in crate::world) enum PlayerMeleeSwingError {
 impl PlayerMeleeSwingError {
     pub(in crate::world) fn opcode(self) -> u16 {
         match self {
-            Self::NotInRange => SMSG_ATTACKSWING_NOTINRANGE,
-            Self::BadFacing => SMSG_ATTACKSWING_BADFACING,
-            Self::DeadTarget => SMSG_ATTACKSWING_DEADTARGET,
-            Self::CantAttack => SMSG_ATTACKSWING_CANT_ATTACK,
+            Self::NotInRange => WorldOpcode::SmsgAttackSwingNotInRange as u16,
+            Self::BadFacing => WorldOpcode::SmsgAttackSwingBadFacing as u16,
+            Self::DeadTarget => WorldOpcode::SmsgAttackSwingDeadTarget as u16,
+            Self::CantAttack => WorldOpcode::SmsgAttackSwingCantAttack as u16,
         }
     }
 
@@ -305,8 +306,21 @@ pub(in crate::world) async fn send_db_creature_face_target(
         1,
         broadcast.player,
     )?;
-    send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
-    broadcast_db_creature_packet(broadcast, session, attacker, SMSG_MONSTER_MOVE, body).await;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMonsterMove as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
+    broadcast_db_creature_packet(
+        broadcast,
+        session,
+        attacker,
+        WorldOpcode::SmsgMonsterMove as u16,
+        body,
+    )
+    .await;
     Ok(())
 }
 
@@ -327,8 +341,20 @@ pub(in crate::world) async fn send_db_creature_motion_stop(
     };
     mirror_session_db_creature(session, creature_guid.raw(), creature.clone());
     let body = build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?;
-    send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(&mut *header_crypto)).await?;
-    broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMonsterMove as u16,
+        &body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    broadcast_db_creature_snapshot_packet(
+        broadcast,
+        creature,
+        WorldOpcode::SmsgMonsterMove as u16,
+        body,
+    )
+    .await;
     Ok(())
 }
 

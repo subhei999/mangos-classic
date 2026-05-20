@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn handle_attack_stop(
     stream: &mut WorldPacketSink,
@@ -28,7 +29,7 @@ pub(in crate::world) async fn handle_attack_stop(
     let attack_stop_body = build_attack_stop_body(attacker, victim, false)?;
     send_packet(
         stream,
-        SMSG_ATTACKSTOP,
+        WorldOpcode::SmsgAttackStop as u16,
         &attack_stop_body,
         Some(header_crypto),
     )
@@ -40,7 +41,7 @@ pub(in crate::world) async fn handle_attack_stop(
             character_guid,
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
-                opcode: SMSG_ATTACKSTOP,
+                opcode: WorldOpcode::SmsgAttackStop as u16,
                 body: attack_stop_body,
             },
         )

@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn dispatch_quest_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
@@ -130,7 +131,7 @@ pub(in crate::world) async fn handle_quest_query(
     let response = build_quest_query_response_body(&quest);
     send_packet(
         stream,
-        SMSG_QUEST_QUERY_RESPONSE,
+        WorldOpcode::SmsgQuestQueryResponse as u16,
         &response,
         Some(header_crypto),
     )
@@ -149,7 +150,7 @@ pub(in crate::world) async fn handle_questgiver_status_query(
     let status = questgiver_dialog_status(object_mgr, world_db_pool, guid, session).await?;
     send_packet(
         stream,
-        SMSG_QUESTGIVER_STATUS,
+        WorldOpcode::SmsgQuestgiverStatus as u16,
         &build_questgiver_status_body(guid, status),
         Some(header_crypto),
     )
@@ -172,7 +173,7 @@ pub(in crate::world) async fn handle_questgiver_hello(
         let response = build_quest_offer_reward_body(guid, &quest, &displays);
         return send_packet(
             stream,
-            SMSG_QUESTGIVER_OFFER_REWARD,
+            WorldOpcode::SmsgQuestgiverOfferReward as u16,
             &response,
             Some(header_crypto),
         )
@@ -190,7 +191,7 @@ pub(in crate::world) async fn handle_questgiver_hello(
     let response = build_questgiver_quest_list_body(guid, &quests);
     send_packet(
         stream,
-        SMSG_QUESTGIVER_QUEST_LIST,
+        WorldOpcode::SmsgQuestgiverQuestList as u16,
         &response,
         Some(header_crypto),
     )
@@ -225,7 +226,7 @@ pub(in crate::world) async fn handle_questgiver_query_quest(
     let response = build_quest_details_body(request.guid, &quest, &displays);
     send_packet(
         stream,
-        SMSG_QUESTGIVER_QUEST_DETAILS,
+        WorldOpcode::SmsgQuestgiverQuestDetails as u16,
         &response,
         Some(header_crypto),
     )
@@ -323,7 +324,13 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
         return Ok(());
     }
     if !quest_log_has_free_slot(session) {
-        send_packet(stream, SMSG_QUESTLOG_FULL, &[], Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgQuestlogFull as u16,
+            &[],
+            Some(&mut *header_crypto),
+        )
+        .await?;
         return Ok(());
     }
     let source_item_storage =
@@ -370,7 +377,7 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_quest_log_update_body(character_guid, slot, &status)?,
         Some(&mut *header_crypto),
     )
@@ -405,7 +412,7 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
         let create_body = build_update_object_body(&update_blocks);
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &create_body,
             Some(&mut *header_crypto),
         )
@@ -421,7 +428,7 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
             );
             send_packet(
                 stream,
-                SMSG_ITEM_PUSH_RESULT,
+                WorldOpcode::SmsgItemPushResult as u16,
                 &push_body,
                 Some(&mut *header_crypto),
             )
@@ -431,7 +438,7 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
     if status.status == QUEST_STATUS_COMPLETE {
         send_packet(
             stream,
-            SMSG_QUESTUPDATE_COMPLETE,
+            WorldOpcode::SmsgQuestUpdateComplete as u16,
             &request.quest.to_le_bytes(),
             Some(&mut *header_crypto),
         )
@@ -496,7 +503,7 @@ pub(in crate::world) async fn handle_questgiver_complete_quest(
         if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_quest_log_update_body(character_guid, slot, &updated)?,
                 Some(&mut *header_crypto),
             )
@@ -504,7 +511,7 @@ pub(in crate::world) async fn handle_questgiver_complete_quest(
         }
         send_packet(
             stream,
-            SMSG_QUESTUPDATE_COMPLETE,
+            WorldOpcode::SmsgQuestUpdateComplete as u16,
             &request.quest.to_le_bytes(),
             Some(&mut *header_crypto),
         )
@@ -525,7 +532,7 @@ pub(in crate::world) async fn handle_questgiver_complete_quest(
             if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
                 send_packet(
                     stream,
-                    SMSG_UPDATE_OBJECT,
+                    WorldOpcode::SmsgUpdateObject as u16,
                     &build_player_quest_log_update_body(character_guid, slot, &updated)?,
                     Some(&mut *header_crypto),
                 )
@@ -569,7 +576,7 @@ pub(in crate::world) async fn send_questgiver_completion_response(
     if quest_request_items_skips_to_offer_reward(quest, complete) {
         send_packet(
             stream,
-            SMSG_QUESTGIVER_OFFER_REWARD,
+            WorldOpcode::SmsgQuestgiverOfferReward as u16,
             &build_quest_offer_reward_body(guid, quest, &displays),
             Some(header_crypto),
         )
@@ -577,7 +584,7 @@ pub(in crate::world) async fn send_questgiver_completion_response(
     } else {
         send_packet(
             stream,
-            SMSG_QUESTGIVER_REQUEST_ITEMS,
+            WorldOpcode::SmsgQuestgiverRequestItems as u16,
             &build_quest_request_items_body(guid, quest, &displays, complete),
             Some(header_crypto),
         )
@@ -658,7 +665,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
             if let Some(slot) = slot {
                 send_packet(
                     stream,
-                    SMSG_UPDATE_OBJECT,
+                    WorldOpcode::SmsgUpdateObject as u16,
                     &build_player_quest_log_update_body(character_guid, slot, &updated)?,
                     Some(&mut *header_crypto),
                 )
@@ -680,7 +687,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         if let Some(slot) = slot {
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_quest_log_update_body(character_guid, slot, &updated)?,
                 Some(&mut *header_crypto),
             )
@@ -756,7 +763,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character_guid, reward_result.money)?,
         Some(&mut *header_crypto),
     )
@@ -764,7 +771,13 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
     send_quest_reputation_updates(stream, &reward_result.reputations, header_crypto).await?;
     if !reward_update_blocks.is_empty() {
         let body = build_update_object_body(&reward_update_blocks);
-        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
     }
     award_character_xp(
         stream,
@@ -781,7 +794,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         clear_quest_log_slot(session, request.quest);
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_quest_log_clear_body(character_guid, slot)?,
             Some(&mut *header_crypto),
         )
@@ -799,7 +812,7 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
     .await?;
     send_packet(
         stream,
-        SMSG_QUESTGIVER_QUEST_COMPLETE,
+        WorldOpcode::SmsgQuestgiverQuestComplete as u16,
         &build_questgiver_quest_complete_body_with_xp(&quest, reward_xp, reward_money),
         Some(header_crypto),
     )
@@ -822,7 +835,7 @@ pub(in crate::world) async fn send_quest_reputation_updates(
         if let Some(body) = build_set_faction_visible_body(reputation.faction) {
             send_packet(
                 stream,
-                SMSG_SET_FACTION_VISIBLE,
+                WorldOpcode::SmsgSetFactionVisible as u16,
                 &body,
                 Some(&mut *header_crypto),
             )
@@ -834,7 +847,7 @@ pub(in crate::world) async fn send_quest_reputation_updates(
     if body.len() > 4 {
         send_packet(
             stream,
-            SMSG_SET_FACTION_STANDING,
+            WorldOpcode::SmsgSetFactionStanding as u16,
             &body,
             Some(header_crypto),
         )
@@ -843,7 +856,13 @@ pub(in crate::world) async fn send_quest_reputation_updates(
     for change in reputations {
         if let Some(message) = reputation_gain_system_message(change) {
             let body = build_system_message_chat_body(&message);
-            send_packet(stream, SMSG_MESSAGECHAT, &body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgMessageChat as u16,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
         }
     }
     Ok(())
@@ -895,7 +914,7 @@ pub(in crate::world) async fn handle_questlog_remove_quest(
         session.quests.quest_log_slots[slot] = 0;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_quest_log_clear_body(character_guid, slot)?,
             Some(&mut *header_crypto),
         )
@@ -1041,7 +1060,7 @@ pub(in crate::world) async fn send_visible_questgiver_status_updates(
         let status = questgiver_dialog_status(object_mgr, world_db_pool, guid, session).await?;
         send_packet(
             stream,
-            SMSG_QUESTGIVER_STATUS,
+            WorldOpcode::SmsgQuestgiverStatus as u16,
             &build_questgiver_status_body(guid, status),
             Some(&mut *header_crypto),
         )
@@ -1100,7 +1119,7 @@ pub(in crate::world) async fn send_visible_quest_gameobject_dynamic_updates(
     for chunk in update_blocks.chunks(CREATURE_UPDATE_CHUNK_SIZE) {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_update_object_body(chunk),
             Some(&mut *header_crypto),
         )
@@ -1927,12 +1946,18 @@ pub(in crate::world) async fn consume_quest_required_items(
     }
     if !update_blocks.is_empty() {
         let body = build_update_object_body(&update_blocks);
-        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
     }
     for item in removed_non_backpack_items {
         send_packet(
             stream,
-            SMSG_DESTROY_OBJECT,
+            WorldOpcode::SmsgDestroyObject as u16,
             &build_destroy_object_body(item),
             Some(&mut *header_crypto),
         )
@@ -2090,14 +2115,14 @@ pub(in crate::world) async fn complete_inventory_item_quests(
         };
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_quest_log_update_body(character_guid, slot, &status)?,
             Some(&mut *header_crypto),
         )
         .await?;
         send_packet(
             stream,
-            SMSG_QUESTUPDATE_COMPLETE,
+            WorldOpcode::SmsgQuestUpdateComplete as u16,
             &quest_id.to_le_bytes(),
             Some(&mut *header_crypto),
         )
@@ -2149,7 +2174,7 @@ pub(in crate::world) async fn revalidate_completed_item_quests_after_inventory_c
         if let Some(slot) = quest_log_slot_for_quest(session, quest_id) {
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_quest_log_update_body(character_guid, slot, &updated)?,
                 Some(&mut *header_crypto),
             )
@@ -2776,14 +2801,14 @@ pub(in crate::world) async fn grant_db_creature_kill_credit(
         };
         send_packet(
             stream,
-            SMSG_QUESTUPDATE_ADD_KILL,
+            WorldOpcode::SmsgQuestUpdateAddKill as u16,
             &build_quest_update_add_kill_body(&quest, killed_guid, index, new_count),
             Some(&mut *header_crypto),
         )
         .await?;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_quest_log_update_body(character.guid, slot, &status)?,
             Some(&mut *header_crypto),
         )
@@ -2791,7 +2816,7 @@ pub(in crate::world) async fn grant_db_creature_kill_credit(
         if complete {
             send_packet(
                 stream,
-                SMSG_QUESTUPDATE_COMPLETE,
+                WorldOpcode::SmsgQuestUpdateComplete as u16,
                 &quest_id.to_le_bytes(),
                 Some(&mut *header_crypto),
             )

@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[derive(Debug, Clone)]
 pub(in crate::world) struct StartedCreatureMotion {
@@ -842,7 +843,7 @@ pub(in crate::world) fn retime_db_creature_motion_for_speed_change(
         )?,
     };
     Ok(Some(OutboundWorldPacket {
-        opcode: SMSG_MONSTER_MOVE,
+        opcode: WorldOpcode::SmsgMonsterMove as u16,
         body,
     }))
 }

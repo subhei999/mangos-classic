@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn dispatch_death_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
@@ -134,7 +135,7 @@ pub(in crate::world) async fn handle_repop_request(
     let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_death_update_body(
             player,
             session.character.player_health,
@@ -149,28 +150,28 @@ pub(in crate::world) async fn handle_repop_request(
     .await?;
     send_packet(
         stream,
-        SMSG_FORCE_MOVE_UNROOT,
+        WorldOpcode::SmsgForceMoveUnroot as u16,
         &build_force_move_unroot_body(player, 0)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_update_object_body(&[build_player_corpse_create_block(&corpse)?]),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_CORPSE_RECLAIM_DELAY,
+        WorldOpcode::SmsgCorpseReclaimDelay as u16,
         &build_corpse_reclaim_delay_body(CORPSE_RECLAIM_DELAY_MILLIS),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        MSG_MOVE_TELEPORT_ACK,
+        WorldOpcode::MsgMoveTeleportAck as u16,
         &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )
@@ -288,7 +289,7 @@ pub(in crate::world) async fn handle_corpse_query(
         .flatten();
     send_packet(
         stream,
-        MSG_CORPSE_QUERY as u16,
+        WorldOpcode::MsgCorpseQuery as u16,
         &build_corpse_query_body(corpse_position),
         Some(header_crypto),
     )
@@ -440,7 +441,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
         .await;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_death_update_body(
             player,
             session.character.player_health,
@@ -455,7 +456,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
     .await?;
     send_packet(
         stream,
-        SMSG_FORCE_MOVE_UNROOT,
+        WorldOpcode::SmsgForceMoveUnroot as u16,
         &build_force_move_unroot_body(player, 0)?,
         Some(&mut *header_crypto),
     )
@@ -468,7 +469,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
             .await;
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_corpse_bones_update_body(&bones)?,
             Some(&mut *header_crypto),
         )
@@ -476,7 +477,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
     }
     send_packet(
         stream,
-        MSG_MOVE_TELEPORT_ACK,
+        WorldOpcode::MsgMoveTeleportAck as u16,
         &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )

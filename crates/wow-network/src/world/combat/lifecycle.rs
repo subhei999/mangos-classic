@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[cfg(test)]
 pub(in crate::world) fn apply_db_creature_damage(
@@ -116,21 +117,21 @@ pub(in crate::world) async fn send_queued_next_melee_spell_cast_failure(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_CAST_RESULT,
+        WorldOpcode::SmsgCastResult as u16,
         &build_cast_result_failure_body(queued.spell_id, failure),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_SPELL_FAILURE,
+        WorldOpcode::SmsgSpellFailure as u16,
         &build_spell_failure_body(caster, queued.spell_id, failure)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_SPELL_FAILED_OTHER,
+        WorldOpcode::SmsgSpellFailedOther as u16,
         &build_spell_failed_other_body(caster, queued.spell_id),
         Some(header_crypto),
     )
@@ -144,7 +145,7 @@ pub(in crate::world) async fn send_queued_next_melee_spell_cast_success(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_CAST_RESULT,
+        WorldOpcode::SmsgCastResult as u16,
         &build_cast_result_ok_body(queued.spell_id),
         Some(header_crypto),
     )
@@ -351,7 +352,7 @@ pub(in crate::world) async fn send_db_creature_swing(
                 .await;
             send_packet(
                 stream,
-                SMSG_ATTACKERSTATEUPDATE,
+                WorldOpcode::SmsgAttackerStateUpdate as u16,
                 &build_attacker_state_update_body_for_outcome(
                     attacker,
                     target,
@@ -560,7 +561,7 @@ pub(in crate::world) async fn send_db_creature_swing(
             }
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_rage_update_body(attacker, session.character.player_rage)?,
                 Some(&mut *header_crypto),
             )
@@ -663,7 +664,7 @@ pub(in crate::world) async fn send_db_creature_swing(
         send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
         send_packet(
             stream,
-            SMSG_SPELL_GO,
+            WorldOpcode::SmsgSpellGo as u16,
             &spell_go_body,
             Some(&mut *header_crypto),
         )
@@ -675,7 +676,7 @@ pub(in crate::world) async fn send_db_creature_swing(
                 character_snapshot.guid,
                 PLAYER_VISIBILITY_RADIUS_YARDS,
                 OutboundWorldPacket {
-                    opcode: SMSG_SPELL_GO,
+                    opcode: WorldOpcode::SmsgSpellGo as u16,
                     body: spell_go_body,
                 },
             )
@@ -684,7 +685,7 @@ pub(in crate::world) async fn send_db_creature_swing(
         if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
             send_packet(
                 stream,
-                SMSG_SPELLNONMELEEDAMAGELOG,
+                WorldOpcode::SmsgSpellNonMeleeDamageLog as u16,
                 spell_non_melee_log_body,
                 Some(&mut *header_crypto),
             )
@@ -693,7 +694,7 @@ pub(in crate::world) async fn send_db_creature_swing(
         if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
             send_packet(
                 stream,
-                SMSG_SPELLLOGMISS,
+                WorldOpcode::SmsgSpellLogMiss as u16,
                 spell_miss_log_body,
                 Some(&mut *header_crypto),
             )
@@ -702,7 +703,7 @@ pub(in crate::world) async fn send_db_creature_swing(
     } else if let Some(attacker_state_body) = &event.attacker_state_body {
         send_packet(
             stream,
-            SMSG_ATTACKERSTATEUPDATE,
+            WorldOpcode::SmsgAttackerStateUpdate as u16,
             attacker_state_body,
             Some(&mut *header_crypto),
         )
@@ -711,7 +712,7 @@ pub(in crate::world) async fn send_db_creature_swing(
     let creature_update_body = event.update_body.clone();
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &creature_update_body,
         Some(&mut *header_crypto),
     )
@@ -751,7 +752,7 @@ pub(in crate::world) async fn send_db_creature_swing(
     if !queued_rage_update_sent {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_rage_update_body(attacker, session.character.player_rage)?,
             Some(&mut *header_crypto),
         )
@@ -760,7 +761,7 @@ pub(in crate::world) async fn send_db_creature_swing(
     if let Some(updated) = advanced_skill {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_skill_update_body(
                 character_snapshot.guid,
                 updated,
@@ -917,7 +918,7 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
         build_spell_start_body_with_ammo(attacker, spell_id, 0, &targets, ammo_visual)?;
     send_packet(
         stream,
-        SMSG_SPELL_START,
+        WorldOpcode::SmsgSpellStart as u16,
         &spell_start_body,
         Some(&mut *header_crypto),
     )
@@ -929,7 +930,7 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
             character.guid,
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
-                opcode: SMSG_SPELL_START,
+                opcode: WorldOpcode::SmsgSpellStart as u16,
                 body: spell_start_body,
             },
         )
@@ -937,7 +938,7 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
     shared_world.sessions.dispatch(observer_start).await;
     send_packet(
         stream,
-        SMSG_CAST_RESULT,
+        WorldOpcode::SmsgCastResult as u16,
         &build_cast_result_ok_body(spell_id),
         Some(&mut *header_crypto),
     )
@@ -955,7 +956,7 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
     };
     send_packet(
         stream,
-        SMSG_SPELL_GO,
+        WorldOpcode::SmsgSpellGo as u16,
         &spell_go_body,
         Some(&mut *header_crypto),
     )
@@ -967,7 +968,7 @@ pub(in crate::world) async fn send_db_creature_ranged_swing(
             character.guid,
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
-                opcode: SMSG_SPELL_GO,
+                opcode: WorldOpcode::SmsgSpellGo as u16,
                 body: spell_go_body,
             },
         )
@@ -1103,7 +1104,7 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
     if let Some(spell_non_melee_log_body) = &event.spell_non_melee_log_body {
         send_packet(
             stream,
-            SMSG_SPELLNONMELEEDAMAGELOG,
+            WorldOpcode::SmsgSpellNonMeleeDamageLog as u16,
             spell_non_melee_log_body,
             Some(&mut *header_crypto),
         )
@@ -1112,7 +1113,7 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
     if let Some(attacker_state_body) = &event.attacker_state_body {
         send_packet(
             stream,
-            SMSG_ATTACKERSTATEUPDATE,
+            WorldOpcode::SmsgAttackerStateUpdate as u16,
             attacker_state_body,
             Some(&mut *header_crypto),
         )
@@ -1121,7 +1122,7 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
     if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
         send_packet(
             stream,
-            SMSG_SPELLLOGMISS,
+            WorldOpcode::SmsgSpellLogMiss as u16,
             spell_miss_log_body,
             Some(&mut *header_crypto),
         )
@@ -1129,7 +1130,7 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &event.update_body,
         Some(&mut *header_crypto),
     )
@@ -1174,7 +1175,7 @@ pub(in crate::world) async fn apply_player_ranged_auto_attack_impact(
             .await?;
             send_packet(
                 stream,
-                SMSG_UPDATE_OBJECT,
+                WorldOpcode::SmsgUpdateObject as u16,
                 &build_player_skill_update_body(
                     character.guid,
                     updated,
@@ -1242,21 +1243,21 @@ pub(in crate::world) async fn send_auto_repeat_spell_failure(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_CAST_RESULT,
+        WorldOpcode::SmsgCastResult as u16,
         &build_cast_result_failure_body(spell_id, failure),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_SPELL_FAILURE,
+        WorldOpcode::SmsgSpellFailure as u16,
         &build_spell_failure_body(caster, spell_id, failure)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_SPELL_FAILED_OTHER,
+        WorldOpcode::SmsgSpellFailedOther as u16,
         &build_spell_failed_other_body(caster, spell_id),
         Some(header_crypto),
     )
@@ -1728,7 +1729,7 @@ pub(in crate::world) async fn try_transition_ranged_auto_repeat_to_melee(
 
     send_packet(
         stream,
-        SMSG_ATTACKSTART,
+        WorldOpcode::SmsgAttackStart as u16,
         &build_attack_start_body(attacker, target),
         Some(&mut *header_crypto),
     )
@@ -2230,16 +2231,16 @@ pub(in crate::world) async fn grant_db_creature_kill_credit_to_member(
             continue;
         };
         packets.push(OutboundWorldPacket {
-            opcode: SMSG_QUESTUPDATE_ADD_KILL,
+            opcode: WorldOpcode::SmsgQuestUpdateAddKill as u16,
             body: build_quest_update_add_kill_body(&quest, killed_guid, index, new_count),
         });
         packets.push(OutboundWorldPacket {
-            opcode: SMSG_UPDATE_OBJECT,
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: build_player_quest_log_update_body(character_guid, slot, &status)?,
         });
         if complete {
             packets.push(OutboundWorldPacket {
-                opcode: SMSG_QUESTUPDATE_COMPLETE,
+                opcode: WorldOpcode::SmsgQuestUpdateComplete as u16,
                 body: quest_id.to_le_bytes().to_vec(),
             });
         }
@@ -2327,17 +2328,17 @@ pub(in crate::world) async fn award_character_xp_to_member(
     .await?;
 
     let mut packets = vec![OutboundWorldPacket {
-        opcode: SMSG_LOG_XPGAIN,
+        opcode: WorldOpcode::SmsgLogXpGain as u16,
         body: build_log_xp_gain_body(source, xp),
     }];
     if leveled {
         packets.push(OutboundWorldPacket {
-            opcode: SMSG_LEVELUP_INFO,
+            opcode: WorldOpcode::SmsgLevelupInfo as u16,
             body: build_levelup_info_body(new_level, &previous_stats, &new_stats),
         });
     }
     packets.push(OutboundWorldPacket {
-        opcode: SMSG_UPDATE_OBJECT,
+        opcode: WorldOpcode::SmsgUpdateObject as u16,
         body: build_player_progression_update_body(PlayerProgressionUpdate {
             character_guid,
             level: new_level,
@@ -2521,7 +2522,7 @@ pub(in crate::world) async fn award_character_xp(
 
     send_packet(
         stream,
-        SMSG_LOG_XPGAIN,
+        WorldOpcode::SmsgLogXpGain as u16,
         &build_log_xp_gain_body(source, xp),
         Some(&mut *header_crypto),
     )
@@ -2529,7 +2530,7 @@ pub(in crate::world) async fn award_character_xp(
     if leveled {
         send_packet(
             stream,
-            SMSG_LEVELUP_INFO,
+            WorldOpcode::SmsgLevelupInfo as u16,
             &build_levelup_info_body(new_level, &previous_stats, &new_stats),
             Some(&mut *header_crypto),
         )
@@ -2537,7 +2538,7 @@ pub(in crate::world) async fn award_character_xp(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_progression_update_body(PlayerProgressionUpdate {
             character_guid: guid,
             level: new_level,
@@ -2556,7 +2557,7 @@ pub(in crate::world) async fn award_character_xp(
     if !skill_cap_updates.is_empty() {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_skill_updates_body(
                 guid,
                 &skill_cap_updates,

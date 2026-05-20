@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     CharEnumEntryResponse, CharEnumEquipmentResponse, MsgQueryNextMailTimeResponse,
     ServerWorldPacket, SmsgChannelNotifyResponse, SmsgCharEnumResponse,
@@ -14,7 +15,13 @@ pub(in crate::world) async fn handle_query_time(
         .map(|duration| duration.as_secs() as u32)
         .unwrap_or(0);
     let body = SmsgQueryTimeResponse { unix_time }.body();
-    send_packet(stream, SMSG_QUERY_TIME_RESPONSE, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgQueryTimeResponse as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_request_account_data(
@@ -50,7 +57,7 @@ pub(in crate::world) async fn handle_request_account_data(
     .body();
     send_packet(
         stream,
-        SMSG_UPDATE_ACCOUNT_DATA,
+        WorldOpcode::SmsgUpdateAccountData as u16,
         &response,
         Some(header_crypto),
     )
@@ -219,7 +226,7 @@ pub(in crate::world) async fn handle_gmticket_getticket(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_GMTICKET_GETTICKET,
+        WorldOpcode::SmsgGmTicketGetTicket as u16,
         &SmsgGmTicketGetTicketResponse { status: 0 }.body(),
         Some(header_crypto),
     )
@@ -236,7 +243,13 @@ pub(in crate::world) async fn handle_join_channel(
     }
 
     let response = build_channel_notify_you_joined_body(&request.channel_name);
-    send_packet(stream, SMSG_CHANNEL_NOTIFY, &response, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgChannelNotify as u16,
+        &response,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) fn handle_set_active_mover(
@@ -361,7 +374,7 @@ pub(in crate::world) async fn handle_query_next_mail_time(
     let body = build_query_next_mail_time_body(has_unread);
     send_packet(
         stream,
-        MSG_QUERY_NEXT_MAIL_TIME as u16,
+        WorldOpcode::MsgQueryNextMailTime as u16,
         &body,
         Some(header_crypto),
     )
@@ -582,91 +595,95 @@ pub(in crate::world) fn ensure_available(body: &[u8], end: usize) -> anyhow::Res
 
 pub(in crate::world) fn is_movement_opcode(opcode: u32) -> bool {
     matches!(
-        opcode,
-        MSG_MOVE_START_FORWARD
-            | MSG_MOVE_START_BACKWARD
-            | MSG_MOVE_STOP
-            | MSG_MOVE_START_STRAFE_LEFT
-            | MSG_MOVE_START_STRAFE_RIGHT
-            | MSG_MOVE_STOP_STRAFE
-            | MSG_MOVE_JUMP
-            | MSG_MOVE_START_TURN_LEFT
-            | MSG_MOVE_START_TURN_RIGHT
-            | MSG_MOVE_STOP_TURN
-            | MSG_MOVE_START_PITCH_UP
-            | MSG_MOVE_START_PITCH_DOWN
-            | MSG_MOVE_STOP_PITCH
-            | MSG_MOVE_SET_RUN_MODE
-            | MSG_MOVE_SET_WALK_MODE
-            | MSG_MOVE_FALL_LAND
-            | MSG_MOVE_START_SWIM
-            | MSG_MOVE_STOP_SWIM
-            | MSG_MOVE_SET_FACING
-            | MSG_MOVE_SET_PITCH
-            | MSG_MOVE_HEARTBEAT
-            | CMSG_MOVE_FALL_RESET
+        WorldOpcode::try_from(opcode).ok(),
+        Some(
+            WorldOpcode::MsgMoveStartForward
+                | WorldOpcode::MsgMoveStartBackward
+                | WorldOpcode::MsgMoveStop
+                | WorldOpcode::MsgMoveStartStrafeLeft
+                | WorldOpcode::MsgMoveStartStrafeRight
+                | WorldOpcode::MsgMoveStopStrafe
+                | WorldOpcode::MsgMoveJump
+                | WorldOpcode::MsgMoveStartTurnLeft
+                | WorldOpcode::MsgMoveStartTurnRight
+                | WorldOpcode::MsgMoveStopTurn
+                | WorldOpcode::MsgMoveStartPitchUp
+                | WorldOpcode::MsgMoveStartPitchDown
+                | WorldOpcode::MsgMoveStopPitch
+                | WorldOpcode::MsgMoveSetRunMode
+                | WorldOpcode::MsgMoveSetWalkMode
+                | WorldOpcode::MsgMoveFallLand
+                | WorldOpcode::MsgMoveStartSwim
+                | WorldOpcode::MsgMoveStopSwim
+                | WorldOpcode::MsgMoveSetFacing
+                | WorldOpcode::MsgMoveSetPitch
+                | WorldOpcode::MsgMoveHeartbeat
+                | WorldOpcode::CmsgMoveFallReset
+        )
     )
 }
 
 pub(in crate::world) fn is_expected_noop_opcode(opcode: u32) -> bool {
     matches!(
-        opcode,
-        CMSG_CANCEL_TRADE
-            | CMSG_ZONEUPDATE
-            | CMSG_MEETINGSTONE_INFO
-            | CMSG_REQUEST_RAID_INFO
-            | CMSG_MOVE_TIME_SKIPPED
-            | CMSG_FORCE_RUN_SPEED_CHANGE_ACK
-            | CMSG_FORCE_MOVE_ROOT_ACK
-            | CMSG_FORCE_MOVE_UNROOT_ACK
-            | CMSG_BATTLEFIELD_STATUS
+        WorldOpcode::try_from(opcode).ok(),
+        Some(
+            WorldOpcode::CmsgCancelTrade
+                | WorldOpcode::CmsgZoneUpdate
+                | WorldOpcode::CmsgMeetingStoneInfo
+                | WorldOpcode::CmsgRequestRaidInfo
+                | WorldOpcode::CmsgMoveTimeSkipped
+                | WorldOpcode::CmsgForceRunSpeedChangeAck
+                | WorldOpcode::CmsgForceMoveRootAck
+                | WorldOpcode::CmsgForceMoveUnrootAck
+                | WorldOpcode::CmsgBattlefieldStatus
+        )
     )
 }
 
 pub(in crate::world) fn expected_noop_opcode_name(opcode: u32) -> &'static str {
-    match opcode {
-        CMSG_CANCEL_TRADE => "CMSG_CANCEL_TRADE",
-        CMSG_CANCEL_CAST => "CMSG_CANCEL_CAST",
-        CMSG_SET_AMMO => "CMSG_SET_AMMO",
-        CMSG_CANCEL_AUTO_REPEAT_SPELL => "CMSG_CANCEL_AUTO_REPEAT_SPELL",
-        CMSG_ZONEUPDATE => "CMSG_ZONEUPDATE",
-        CMSG_SET_ACTIVE_MOVER => "CMSG_SET_ACTIVE_MOVER",
-        MSG_QUERY_NEXT_MAIL_TIME => "MSG_QUERY_NEXT_MAIL_TIME",
-        CMSG_MEETINGSTONE_INFO => "CMSG_MEETINGSTONE_INFO",
-        CMSG_REQUEST_RAID_INFO => "CMSG_REQUEST_RAID_INFO",
-        CMSG_MOVE_TIME_SKIPPED => "CMSG_MOVE_TIME_SKIPPED",
-        CMSG_FORCE_RUN_SPEED_CHANGE_ACK => "CMSG_FORCE_RUN_SPEED_CHANGE_ACK",
-        CMSG_FORCE_MOVE_ROOT_ACK => "CMSG_FORCE_MOVE_ROOT_ACK",
-        CMSG_FORCE_MOVE_UNROOT_ACK => "CMSG_FORCE_MOVE_UNROOT_ACK",
-        CMSG_BATTLEFIELD_STATUS => "CMSG_BATTLEFIELD_STATUS",
+    match WorldOpcode::try_from(opcode).ok() {
+        Some(WorldOpcode::CmsgCancelTrade) => "CMSG_CANCEL_TRADE",
+        Some(WorldOpcode::CmsgCancelCast) => "CMSG_CANCEL_CAST",
+        Some(WorldOpcode::CmsgSetAmmo) => "CMSG_SET_AMMO",
+        Some(WorldOpcode::CmsgCancelAutoRepeatSpell) => "CMSG_CANCEL_AUTO_REPEAT_SPELL",
+        Some(WorldOpcode::CmsgZoneUpdate) => "CMSG_ZONEUPDATE",
+        Some(WorldOpcode::CmsgSetActiveMover) => "CMSG_SET_ACTIVE_MOVER",
+        Some(WorldOpcode::MsgQueryNextMailTime) => "MSG_QUERY_NEXT_MAIL_TIME",
+        Some(WorldOpcode::CmsgMeetingStoneInfo) => "CMSG_MEETINGSTONE_INFO",
+        Some(WorldOpcode::CmsgRequestRaidInfo) => "CMSG_REQUEST_RAID_INFO",
+        Some(WorldOpcode::CmsgMoveTimeSkipped) => "CMSG_MOVE_TIME_SKIPPED",
+        Some(WorldOpcode::CmsgForceRunSpeedChangeAck) => "CMSG_FORCE_RUN_SPEED_CHANGE_ACK",
+        Some(WorldOpcode::CmsgForceMoveRootAck) => "CMSG_FORCE_MOVE_ROOT_ACK",
+        Some(WorldOpcode::CmsgForceMoveUnrootAck) => "CMSG_FORCE_MOVE_UNROOT_ACK",
+        Some(WorldOpcode::CmsgBattlefieldStatus) => "CMSG_BATTLEFIELD_STATUS",
         _ => "EXPECTED_NOOP",
     }
 }
 
 pub(in crate::world) fn movement_opcode_name(opcode: u32) -> &'static str {
-    match opcode {
-        MSG_MOVE_START_FORWARD => "MSG_MOVE_START_FORWARD",
-        MSG_MOVE_START_BACKWARD => "MSG_MOVE_START_BACKWARD",
-        MSG_MOVE_STOP => "MSG_MOVE_STOP",
-        MSG_MOVE_START_STRAFE_LEFT => "MSG_MOVE_START_STRAFE_LEFT",
-        MSG_MOVE_START_STRAFE_RIGHT => "MSG_MOVE_START_STRAFE_RIGHT",
-        MSG_MOVE_STOP_STRAFE => "MSG_MOVE_STOP_STRAFE",
-        MSG_MOVE_JUMP => "MSG_MOVE_JUMP",
-        MSG_MOVE_START_TURN_LEFT => "MSG_MOVE_START_TURN_LEFT",
-        MSG_MOVE_START_TURN_RIGHT => "MSG_MOVE_START_TURN_RIGHT",
-        MSG_MOVE_STOP_TURN => "MSG_MOVE_STOP_TURN",
-        MSG_MOVE_START_PITCH_UP => "MSG_MOVE_START_PITCH_UP",
-        MSG_MOVE_START_PITCH_DOWN => "MSG_MOVE_START_PITCH_DOWN",
-        MSG_MOVE_STOP_PITCH => "MSG_MOVE_STOP_PITCH",
-        MSG_MOVE_SET_RUN_MODE => "MSG_MOVE_SET_RUN_MODE",
-        MSG_MOVE_SET_WALK_MODE => "MSG_MOVE_SET_WALK_MODE",
-        MSG_MOVE_FALL_LAND => "MSG_MOVE_FALL_LAND",
-        MSG_MOVE_START_SWIM => "MSG_MOVE_START_SWIM",
-        MSG_MOVE_STOP_SWIM => "MSG_MOVE_STOP_SWIM",
-        MSG_MOVE_SET_FACING => "MSG_MOVE_SET_FACING",
-        MSG_MOVE_SET_PITCH => "MSG_MOVE_SET_PITCH",
-        MSG_MOVE_HEARTBEAT => "MSG_MOVE_HEARTBEAT",
-        CMSG_MOVE_FALL_RESET => "CMSG_MOVE_FALL_RESET",
+    match WorldOpcode::try_from(opcode).ok() {
+        Some(WorldOpcode::MsgMoveStartForward) => "MSG_MOVE_START_FORWARD",
+        Some(WorldOpcode::MsgMoveStartBackward) => "MSG_MOVE_START_BACKWARD",
+        Some(WorldOpcode::MsgMoveStop) => "MSG_MOVE_STOP",
+        Some(WorldOpcode::MsgMoveStartStrafeLeft) => "MSG_MOVE_START_STRAFE_LEFT",
+        Some(WorldOpcode::MsgMoveStartStrafeRight) => "MSG_MOVE_START_STRAFE_RIGHT",
+        Some(WorldOpcode::MsgMoveStopStrafe) => "MSG_MOVE_STOP_STRAFE",
+        Some(WorldOpcode::MsgMoveJump) => "MSG_MOVE_JUMP",
+        Some(WorldOpcode::MsgMoveStartTurnLeft) => "MSG_MOVE_START_TURN_LEFT",
+        Some(WorldOpcode::MsgMoveStartTurnRight) => "MSG_MOVE_START_TURN_RIGHT",
+        Some(WorldOpcode::MsgMoveStopTurn) => "MSG_MOVE_STOP_TURN",
+        Some(WorldOpcode::MsgMoveStartPitchUp) => "MSG_MOVE_START_PITCH_UP",
+        Some(WorldOpcode::MsgMoveStartPitchDown) => "MSG_MOVE_START_PITCH_DOWN",
+        Some(WorldOpcode::MsgMoveStopPitch) => "MSG_MOVE_STOP_PITCH",
+        Some(WorldOpcode::MsgMoveSetRunMode) => "MSG_MOVE_SET_RUN_MODE",
+        Some(WorldOpcode::MsgMoveSetWalkMode) => "MSG_MOVE_SET_WALK_MODE",
+        Some(WorldOpcode::MsgMoveFallLand) => "MSG_MOVE_FALL_LAND",
+        Some(WorldOpcode::MsgMoveStartSwim) => "MSG_MOVE_START_SWIM",
+        Some(WorldOpcode::MsgMoveStopSwim) => "MSG_MOVE_STOP_SWIM",
+        Some(WorldOpcode::MsgMoveSetFacing) => "MSG_MOVE_SET_FACING",
+        Some(WorldOpcode::MsgMoveSetPitch) => "MSG_MOVE_SET_PITCH",
+        Some(WorldOpcode::MsgMoveHeartbeat) => "MSG_MOVE_HEARTBEAT",
+        Some(WorldOpcode::CmsgMoveFallReset) => "CMSG_MOVE_FALL_RESET",
         _ => "UNKNOWN_MOVEMENT",
     }
 }

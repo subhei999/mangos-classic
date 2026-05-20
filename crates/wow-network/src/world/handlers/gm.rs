@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::world) enum GmDotCommand {
@@ -464,7 +465,7 @@ pub(in crate::world) async fn set_gm_mode(
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_gm_mode_update_body(
             player_guid,
             character.race,
@@ -532,7 +533,7 @@ pub(in crate::world) async fn spawn_gm_creature_from_template(
         build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &create_body,
         Some(&mut *header_crypto),
     )
@@ -688,14 +689,14 @@ pub(in crate::world) async fn change_gm_character_level(
 
     send_packet(
         stream,
-        SMSG_LEVELUP_INFO,
+        WorldOpcode::SmsgLevelupInfo as u16,
         &build_levelup_info_body(new_level, &previous_stats, &new_stats),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_progression_update_body(PlayerProgressionUpdate {
             character_guid: character.guid,
             level: new_level,
@@ -713,7 +714,7 @@ pub(in crate::world) async fn change_gm_character_level(
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_combat_stats_update_body(character.guid, &combat_stats)?,
         Some(&mut *header_crypto),
     )
@@ -721,7 +722,7 @@ pub(in crate::world) async fn change_gm_character_level(
     if !skill_cap_updates.is_empty() {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_skill_updates_body(
                 character.guid,
                 &skill_cap_updates,
@@ -833,7 +834,7 @@ pub(in crate::world) async fn kill_selected_db_creature(
     if let Some(body) = attacker_state_body.as_ref() {
         send_packet(
             stream,
-            SMSG_ATTACKERSTATEUPDATE,
+            WorldOpcode::SmsgAttackerStateUpdate as u16,
             body,
             Some(&mut *header_crypto),
         )
@@ -841,7 +842,7 @@ pub(in crate::world) async fn kill_selected_db_creature(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &update_body,
         Some(&mut *header_crypto),
     )
@@ -943,7 +944,7 @@ pub(in crate::world) async fn teleport_gm(
         .update_player_position(
             old_map_id,
             character_guid,
-            MSG_MOVE_HEARTBEAT as u16,
+            WorldOpcode::MsgMoveHeartbeat as u16,
             &movement,
             movement.client_time,
         )
@@ -976,7 +977,7 @@ pub(in crate::world) async fn teleport_gm(
         .await?;
     send_packet(
         stream,
-        MSG_MOVE_TELEPORT_ACK,
+        WorldOpcode::MsgMoveTeleportAck as u16,
         &build_near_teleport_ack_body(session.character.active_character.as_ref().unwrap(), 0)?,
         Some(&mut *header_crypto),
     )
@@ -1023,7 +1024,7 @@ pub(in crate::world) async fn modify_gm_run_speed(
     let speed = PLAYER_BASE_RUN_SPEED_YARDS_PER_SEC * speed_rate;
     send_packet(
         stream,
-        SMSG_FORCE_RUN_SPEED_CHANGE,
+        WorldOpcode::SmsgForceRunSpeedChange as u16,
         &build_force_run_speed_change_body(player, 0, speed)?,
         Some(&mut *header_crypto),
     )
@@ -1049,7 +1050,7 @@ pub(in crate::world) async fn modify_gm_money(
     let money = wow_db::add_character_money(deps.character_db_pool, character.guid, amount).await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character.guid, money)?,
         Some(&mut *header_crypto),
     )
@@ -1127,5 +1128,11 @@ pub(in crate::world) async fn send_system_message(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let body = build_system_message_chat_body(message);
-    send_packet(stream, SMSG_MESSAGECHAT, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMessageChat as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }

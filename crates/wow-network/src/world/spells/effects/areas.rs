@@ -1,0 +1,347 @@
+use super::*;
+
+pub(in crate::world) fn spell_effect_radius_yards(
+    maps: &MapRuntimeManager,
+
+    effect: SpellInfoEffect,
+) -> Option<f32> {
+    maps.spell_radius(effect.radius_index)
+        .map(|entry| entry.radius)
+        .filter(|radius| *radius > 0.0)
+}
+
+pub(in crate::world) fn spell_direct_heal(
+    spell_info: &SpellInfo<'_>,
+
+    value_context: SpellEffectValueContext,
+) -> u32 {
+    spell_info
+        .effects
+        .into_iter()
+        .filter(|effect| effect.dispatch == SpellEffectDispatch::Heal)
+        .filter_map(|effect| spell_effect_calculated_u32(effect, value_context))
+        .sum()
+}
+
+pub(in crate::world) fn spell_direct_energize(
+    spell_info: &SpellInfo<'_>,
+
+    value_context: SpellEffectValueContext,
+) -> u32 {
+    spell_info
+        .effects
+        .into_iter()
+        .filter(|effect| effect.dispatch == SpellEffectDispatch::Energize)
+        .filter_map(|effect| spell_effect_calculated_u32(effect, value_context))
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
+    stream: &mut WorldPacketSink,
+
+    deps: SpellCastDeps<'_>,
+
+    _session: &mut WorldSessionState,
+
+    caster: ObjectGuid,
+
+    character_guid: u32,
+
+    character_level: u8,
+
+    map_id: u32,
+
+    spell_template: &wow_db::SpellTemplateQuery,
+
+    effect_index: usize,
+
+    effect: SpellInfoEffect,
+
+    value_context: SpellEffectValueContext,
+
+    targets: &SpellCastTargets,
+
+    now: Instant,
+
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(destination) = spell_target_destination_position(map_id, targets) else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping persistent area aura with missing target destination"
+        );
+
+        return Ok(());
+    };
+
+    let Some(radius) = spell_effect_radius_yards(deps.shared_world.maps, effect) else {
+        warn!(
+            spell_id = spell_template.id,
+            radius_index = effect.radius_index,
+            "Skipping persistent area aura with missing SpellRadius.dbc row"
+        );
+
+        return Ok(());
+    };
+
+    let Some(duration) = deps
+        .shared_world
+        .maps
+        .spell_duration(spell_template.duration_index)
+        .map(|duration| duration.duration_millis)
+        .filter(|duration| *duration > 0)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index = spell_template.duration_index,
+            "Skipping persistent area aura with missing positive SpellDuration.dbc row"
+        );
+
+        return Ok(());
+    };
+
+    let periodic_damage = persistent_area_periodic_damage(
+        spell_template,
+        effect,
+        character_level,
+        value_context,
+        now,
+    );
+
+    let channeled = (spell_template.attributes_ex
+        & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
+        != 0;
+
+    let Some(event) = deps
+        .shared_world
+        .maps
+        .create_persistent_area_dynamic_object(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            effect_index,
+            destination,
+            radius,
+            duration as u32,
+            periodic_damage,
+            channeled,
+            spell_template.channel_interrupt_flags,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+
+    deps.shared_world
+        .sessions
+        .dispatch(event.observer_packets)
+        .await;
+
+    Ok(())
+}
+
+pub(in crate::world) fn persistent_area_periodic_damage(
+    spell_template: &wow_db::SpellTemplateQuery,
+
+    effect: SpellInfoEffect,
+
+    caster_level: u8,
+
+    value_context: SpellEffectValueContext,
+
+    now: Instant,
+) -> Option<PeriodicDamageAura> {
+    if effect.aura_name != SPELL_AURA_PERIODIC_DAMAGE || effect.amplitude == 0 {
+        return None;
+    }
+
+    let damage = spell_effect_calculated_u32(effect, value_context)?;
+
+    Some(PeriodicDamageAura {
+        aura_name: effect.aura_name,
+
+        school: spell_template.school,
+
+        damage_class: spell_template.dmg_class,
+
+        attributes_ex2: spell_template.attributes_ex2,
+
+        attributes_ex3: spell_template.attributes_ex3,
+
+        caster_snapshot: spell_periodic_damage_fallback_caster_snapshot(caster_level),
+
+        amount: damage,
+
+        tick_millis: effect.amplitude,
+
+        next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
+    stream: &mut WorldPacketSink,
+
+    deps: SpellCastDeps<'_>,
+
+    caster: ObjectGuid,
+
+    character_guid: u32,
+
+    character_level: u8,
+
+    map_id: u32,
+
+    spell_template: &wow_db::SpellTemplateQuery,
+
+    effect: SpellInfoEffect,
+
+    _value_context: SpellEffectValueContext,
+
+    targets: &SpellCastTargets,
+
+    now: Instant,
+
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping periodic trigger channel with missing unit target"
+        );
+
+        return Ok(());
+    };
+
+    if effect.trigger_spell == 0 || effect.amplitude == 0 {
+        warn!(
+            spell_id = spell_template.id,
+            effect_trigger_spell = effect.trigger_spell,
+            effect_amplitude = effect.amplitude,
+            "Skipping periodic trigger channel with incomplete trigger data"
+        );
+
+        return Ok(());
+    }
+
+    let Some(duration) = deps
+        .shared_world
+        .maps
+        .spell_duration(spell_template.duration_index)
+        .map(|duration| duration.duration_millis)
+        .filter(|duration| *duration > 0)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index = spell_template.duration_index,
+            "Skipping periodic trigger channel with missing positive SpellDuration.dbc row"
+        );
+
+        return Ok(());
+    };
+
+    let Some(triggered_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, effect.trigger_spell)
+        .await?
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel with missing triggered spell_template row"
+        );
+
+        return Ok(());
+    };
+
+    let triggered_info = SpellInfo::from_template(&triggered_template);
+
+    let Some(triggered_profile) = triggered_info.player_cast_profile() else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel with unsupported triggered spell shape"
+        );
+
+        return Ok(());
+    };
+
+    let triggered_value_context = SpellEffectValueContext::with_spell_rank_level(
+        &triggered_template,
+        character_level as i32,
+        0,
+    );
+
+    let Some(damage_effect) = triggered_info
+        .effects
+        .into_iter()
+        .find_map(|triggered_effect| {
+            player_direct_damage_effect(
+                &triggered_template,
+                &triggered_profile,
+                triggered_effect,
+                triggered_value_context,
+            )
+        })
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            triggered_spell_id = effect.trigger_spell,
+            "Skipping periodic trigger channel whose triggered spell has no direct damage effect"
+        );
+
+        return Ok(());
+    };
+
+    let Some(event) = deps
+        .shared_world
+        .maps
+        .start_player_periodic_trigger_channel(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            target,
+            duration as u32,
+            effect.amplitude,
+            damage_effect,
+            spell_template.channel_interrupt_flags,
+            triggered_template.speed,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+
+    deps.shared_world
+        .sessions
+        .dispatch(event.observer_packets)
+        .await;
+
+    Ok(())
+}

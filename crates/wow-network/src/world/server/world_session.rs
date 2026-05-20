@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     FactionStandingResponse, ServerWorldPacket, SmsgAccountDataTimesResponse,
     SmsgActionButtonsResponse, SmsgBindpointUpdateResponse, SmsgInitWorldStatesResponse,
@@ -109,7 +110,7 @@ pub(in crate::world) async fn send_set_rest_start(
 ) -> anyhow::Result<()> {
     send_packet(
         stream,
-        SMSG_SET_REST_START,
+        WorldOpcode::SmsgSetRestStart as u16,
         &build_set_rest_start_body(),
         header_crypto,
     )
@@ -126,7 +127,13 @@ pub(in crate::world) async fn send_login_verify_world(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_login_verify_world_body(character);
-    send_packet(stream, SMSG_LOGIN_VERIFY_WORLD, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgLoginVerifyWorld as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn send_account_data_times(
@@ -135,7 +142,13 @@ pub(in crate::world) async fn send_account_data_times(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_account_data_times_body(account_data);
-    send_packet(stream, SMSG_ACCOUNT_DATA_TIMES, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgAccountDataTimes as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn send_bindpoint_update(
@@ -144,7 +157,13 @@ pub(in crate::world) async fn send_bindpoint_update(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_bindpoint_update_body(character);
-    send_packet(stream, SMSG_BINDPOINTUPDATE, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgBindpointUpdate as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_login_verify_world_body(character: &CharacterEnumEntry) -> Vec<u8> {
@@ -197,7 +216,13 @@ pub(in crate::world) async fn send_tutorial_flags(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_tutorial_flags_body(tutorial_flags);
-    send_packet(stream, SMSG_TUTORIAL_FLAGS, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgTutorialFlags as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_tutorial_flags_body(tutorial_flags: &[u32; 8]) -> Vec<u8> {
@@ -265,7 +290,13 @@ pub(in crate::world) async fn send_initial_spells(
         spell_cooldown_item_ids,
         spell_global_cooldowns_until,
     );
-    send_packet(stream, SMSG_INITIAL_SPELLS, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgInitialSpells as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) async fn send_known_proficiencies(
@@ -278,7 +309,7 @@ pub(in crate::world) async fn send_known_proficiencies(
     if weapon_mask != 0 {
         send_packet(
             stream,
-            SMSG_SET_PROFICIENCY,
+            WorldOpcode::SmsgSetProficiency as u16,
             &build_set_proficiency_body(ITEM_CLASS_WEAPON, weapon_mask),
             reborrow_header_crypto(&mut header_crypto),
         )
@@ -287,7 +318,7 @@ pub(in crate::world) async fn send_known_proficiencies(
     if armor_mask != 0 {
         send_packet(
             stream,
-            SMSG_SET_PROFICIENCY,
+            WorldOpcode::SmsgSetProficiency as u16,
             &build_set_proficiency_body(ITEM_CLASS_ARMOR, armor_mask),
             reborrow_header_crypto(&mut header_crypto),
         )
@@ -432,7 +463,13 @@ pub(in crate::world) async fn send_action_buttons(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_action_buttons_body(actions);
-    send_packet(stream, SMSG_ACTION_BUTTONS, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgActionButtons as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_action_buttons_body(actions: &[CharacterAction]) -> Vec<u8> {
@@ -456,7 +493,13 @@ pub(in crate::world) async fn send_initial_reputations(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_initial_reputations_body(reputations);
-    send_packet(stream, SMSG_INITIALIZE_FACTIONS, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgInitializeFactions as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_initial_reputations_body(
@@ -487,7 +530,13 @@ pub(in crate::world) async fn send_trigger_cinematic(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_trigger_cinematic_body(sequence);
-    send_packet(stream, SMSG_TRIGGER_CINEMATIC, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgTriggerCinematic as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_trigger_cinematic_body(sequence: u32) -> Vec<u8> {
@@ -513,7 +562,13 @@ pub(in crate::world) async fn send_login_set_time_speed(
     header_crypto: Option<&mut HeaderCrypto>,
 ) -> anyhow::Result<()> {
     let body = build_login_set_time_speed_body();
-    send_packet(stream, SMSG_LOGIN_SETTIMESPEED, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgLoginSetTimeSpeed as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }
 
 pub(in crate::world) fn build_login_set_time_speed_body() -> Vec<u8> {
@@ -679,5 +734,11 @@ pub(in crate::world) async fn send_init_world_states(
         states: Vec::new(),
     }
     .body();
-    send_packet(stream, SMSG_INIT_WORLD_STATES, &body, header_crypto).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgInitWorldStates as u16,
+        &body,
+        header_crypto,
+    )
+    .await
 }

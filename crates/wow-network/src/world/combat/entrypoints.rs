@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn handle_attack_swing(
     stream: &mut WorldPacketSink,
@@ -78,7 +79,7 @@ pub(in crate::world) async fn handle_attack_swing(
     let attacker = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     send_packet(
         stream,
-        SMSG_ATTACKSTART,
+        WorldOpcode::SmsgAttackStart as u16,
         &build_attack_start_body(attacker, target),
         Some(&mut *header_crypto),
     )
@@ -145,7 +146,7 @@ pub(in crate::world) async fn broadcast_player_attack_start(
             character.guid,
             PLAYER_VISIBILITY_RADIUS_YARDS,
             OutboundWorldPacket {
-                opcode: SMSG_ATTACKSTART,
+                opcode: WorldOpcode::SmsgAttackStart as u16,
                 body: build_attack_start_body(attacker, target),
             },
         )

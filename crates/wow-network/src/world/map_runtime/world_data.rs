@@ -445,8 +445,8 @@ impl FactionTemplateStore {
                 0,
             ]),
             faction_template_from_fields([
-                RUST_GUIDE_FACTION_TEMPLATE,
-                RUST_GUIDE_FACTION_TEMPLATE,
+                GM_FRIENDLY_FACTION_TEMPLATE,
+                GM_FRIENDLY_FACTION_TEMPLATE,
                 0,
                 FACTION_GROUP_MASK_ALLIANCE,
                 FACTION_GROUP_MASK_PLAYER | FACTION_GROUP_MASK_ALLIANCE,

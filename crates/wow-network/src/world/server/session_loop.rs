@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 // CMaNGOS reference: src/game/WorldSocket.cpp and WorldSession opcode dispatch.
 
@@ -27,7 +28,7 @@ pub(in crate::world) async fn handle_client(
         WORLD_SESSION_WRITE_TIMEOUT,
         send_packet_direct(
             &mut stream,
-            SMSG_AUTH_CHALLENGE,
+            WorldOpcode::SmsgAuthChallenge as u16,
             &SERVER_SEED.to_le_bytes(),
             None,
         ),
@@ -44,7 +45,7 @@ pub(in crate::world) async fn handle_client(
                 anyhow::bail!("world auth session timed out waiting for CMSG_AUTH_SESSION");
             }
         };
-    if opcode != CMSG_AUTH_SESSION {
+    if opcode != WorldOpcode::CmsgAuthSession as u32 {
         anyhow::bail!("expected CMSG_AUTH_SESSION, got 0x{opcode:04X}");
     }
 
@@ -1052,16 +1053,21 @@ mod tests {
     fn enqueue_pending_movement_replaces_older_packet() {
         let received_at = Instant::now();
         let mut pending = None;
-        enqueue_pending_movement(&mut pending, MSG_MOVE_HEARTBEAT, vec![1, 2, 3], received_at);
         enqueue_pending_movement(
             &mut pending,
-            MSG_MOVE_START_FORWARD,
+            WorldOpcode::MsgMoveHeartbeat as u32,
+            vec![1, 2, 3],
+            received_at,
+        );
+        enqueue_pending_movement(
+            &mut pending,
+            WorldOpcode::MsgMoveStartForward as u32,
             vec![9, 8, 7],
             received_at + Duration::from_millis(1),
         );
 
         let pending = pending.expect("pending movement");
-        assert_eq!(pending.opcode, MSG_MOVE_START_FORWARD);
+        assert_eq!(pending.opcode, WorldOpcode::MsgMoveStartForward as u32);
         assert_eq!(pending.body, vec![9, 8, 7]);
     }
 
@@ -1069,7 +1075,7 @@ mod tests {
     fn pending_movement_timeout_uses_coalesce_deadline() {
         let received_at = Instant::now();
         let pending = QueuedMovementPacket {
-            opcode: MSG_MOVE_HEARTBEAT,
+            opcode: WorldOpcode::MsgMoveHeartbeat as u32,
             body: Vec::new(),
             received_at,
             dispatch_due_at: received_at + Duration::from_millis(10),
@@ -1088,7 +1094,7 @@ mod tests {
     fn pending_movement_due_only_after_deadline() {
         let received_at = Instant::now();
         let pending = QueuedMovementPacket {
-            opcode: MSG_MOVE_HEARTBEAT,
+            opcode: WorldOpcode::MsgMoveHeartbeat as u32,
             body: Vec::new(),
             received_at,
             dispatch_due_at: received_at + Duration::from_millis(10),
@@ -1106,23 +1112,27 @@ mod tests {
 
     #[test]
     fn movement_packets_skip_immediate_gameplay_sync() {
-        assert!(!packet_requires_immediate_gameplay_sync(MSG_MOVE_HEARTBEAT));
         assert!(!packet_requires_immediate_gameplay_sync(
-            MSG_MOVE_START_FORWARD
+            WorldOpcode::MsgMoveHeartbeat as u32
         ));
-        assert!(packet_requires_immediate_gameplay_sync(CMSG_CAST_SPELL));
+        assert!(!packet_requires_immediate_gameplay_sync(
+            WorldOpcode::MsgMoveStartForward as u32
+        ));
+        assert!(packet_requires_immediate_gameplay_sync(
+            WorldOpcode::CmsgCastSpell as u32
+        ));
     }
 
     #[test]
     fn movement_packets_skip_pre_dispatch_session_refresh() {
         assert!(!packet_requires_pre_dispatch_session_refresh(
-            MSG_MOVE_HEARTBEAT
+            WorldOpcode::MsgMoveHeartbeat as u32
         ));
         assert!(!packet_requires_pre_dispatch_session_refresh(
-            MSG_MOVE_START_FORWARD
+            WorldOpcode::MsgMoveStartForward as u32
         ));
         assert!(packet_requires_pre_dispatch_session_refresh(
-            CMSG_CAST_SPELL
+            WorldOpcode::CmsgCastSpell as u32
         ));
     }
 
@@ -1131,11 +1141,11 @@ mod tests {
         let session = WorldSessionState::default();
         assert!(!session_has_pending_player_spell_work(&session));
         assert!(!packet_requires_pre_dispatch_pending_spell_completion(
-            MSG_MOVE_HEARTBEAT,
+            WorldOpcode::MsgMoveHeartbeat as u32,
             &session,
         ));
         assert!(!packet_requires_post_dispatch_pending_spell_completion(
-            MSG_MOVE_HEARTBEAT,
+            WorldOpcode::MsgMoveHeartbeat as u32,
             &session,
         ));
     }
@@ -1146,11 +1156,11 @@ mod tests {
         session.character.active_spells.insert(133);
         assert!(session_has_pending_player_spell_work(&session));
         assert!(packet_requires_pre_dispatch_pending_spell_completion(
-            MSG_MOVE_HEARTBEAT,
+            WorldOpcode::MsgMoveHeartbeat as u32,
             &session,
         ));
         assert!(packet_requires_post_dispatch_pending_spell_completion(
-            MSG_MOVE_HEARTBEAT,
+            WorldOpcode::MsgMoveHeartbeat as u32,
             &session,
         ));
     }

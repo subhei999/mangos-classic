@@ -28,12 +28,15 @@ pub enum WorldOpcode {
     CmsgNameQuery = 0x0050,
     SmsgNameQueryResponse = 0x0051,
     CmsgItemQuerySingle = 0x0056,
+    SmsgItemQuerySingleResponse = 0x0058,
     CmsgPageTextQuery = 0x005A,
     SmsgPageTextQueryResponse = 0x005B,
     CmsgQuestQuery = 0x005C,
     SmsgQuestQueryResponse = 0x005D,
     CmsgGameObjectQuery = 0x005E,
+    SmsgGameObjectQueryResponse = 0x005F,
     CmsgCreatureQuery = 0x0060,
+    SmsgCreatureQueryResponse = 0x0061,
     CmsgGroupInvite = 0x006E,
     SmsgGroupInvite = 0x006F,
     CmsgGroupCancel = 0x0070,
@@ -61,10 +64,35 @@ pub enum WorldOpcode {
     SmsgReadItemOk = 0x00AE,
     SmsgReadItemFailed = 0x00AF,
     CmsgGameObjUse = 0x00B1,
+    MsgMoveStartForward = 0x00B5,
+    MsgMoveStartBackward = 0x00B6,
+    MsgMoveStop = 0x00B7,
+    MsgMoveStartStrafeLeft = 0x00B8,
+    MsgMoveStartStrafeRight = 0x00B9,
+    MsgMoveStopStrafe = 0x00BA,
+    MsgMoveJump = 0x00BB,
+    MsgMoveStartTurnLeft = 0x00BC,
+    MsgMoveStartTurnRight = 0x00BD,
+    MsgMoveStopTurn = 0x00BE,
+    MsgMoveStartPitchUp = 0x00BF,
+    MsgMoveStartPitchDown = 0x00C0,
+    MsgMoveStopPitch = 0x00C1,
+    MsgMoveSetRunMode = 0x00C2,
+    MsgMoveSetWalkMode = 0x00C3,
     MsgMoveTeleportAck = 0x00C7,
+    MsgMoveFallLand = 0x00C9,
+    MsgMoveStartSwim = 0x00CA,
+    MsgMoveStopSwim = 0x00CB,
+    MsgMoveSetFacing = 0x00DA,
+    MsgMoveSetPitch = 0x00DB,
     SmsgMonsterMove = 0x00DD,
+    SmsgForceRunSpeedChange = 0x00E2,
+    CmsgForceRunSpeedChangeAck = 0x00E3,
     SmsgForceMoveRoot = 0x00E8,
+    CmsgForceMoveRootAck = 0x00E9,
     SmsgForceMoveUnroot = 0x00EA,
+    CmsgForceMoveUnrootAck = 0x00EB,
+    MsgMoveHeartbeat = 0x00EE,
     SmsgTriggerCinematic = 0x00FA,
     SmsgTutorialFlags = 0x00FD,
     CmsgTutorialFlag = 0x00FE,
@@ -82,7 +110,10 @@ pub enum WorldOpcode {
     CmsgSplitItem = 0x010E,
     CmsgDestroyItem = 0x0111,
     SmsgInventoryChangeFailure = 0x0112,
+    CmsgCancelTrade = 0x011C,
     SmsgInitializeFactions = 0x0122,
+    SmsgSetFactionVisible = 0x0123,
+    SmsgSetFactionStanding = 0x0124,
     SmsgSetProficiency = 0x0127,
     CmsgSetActionButton = 0x0128,
     SmsgActionButtons = 0x0129,
@@ -95,12 +126,18 @@ pub enum WorldOpcode {
     SmsgSpellGo = 0x0132,
     SmsgSpellFailure = 0x0133,
     SmsgUpdateAuraDuration = 0x0137,
+    MsgChannelStart = 0x0139,
+    MsgChannelUpdate = 0x013A,
     CmsgSetSelection = 0x013D,
     CmsgSetTargetObsolete = 0x013E,
     CmsgAttackSwing = 0x0141,
     CmsgAttackStop = 0x0142,
     SmsgAttackStart = 0x0143,
     SmsgAttackStop = 0x0144,
+    SmsgAttackSwingNotInRange = 0x0145,
+    SmsgAttackSwingBadFacing = 0x0146,
+    SmsgAttackSwingDeadTarget = 0x0148,
+    SmsgAttackSwingCantAttack = 0x0149,
     SmsgAttackerStateUpdate = 0x014A,
     SmsgSpellHealLog = 0x0150,
     SmsgSpellEnergizeLog = 0x0151,
@@ -111,13 +148,14 @@ pub enum WorldOpcode {
     CmsgLootRelease = 0x015F,
     SmsgLootResponse = 0x0160,
     SmsgLootReleaseResponse = 0x0161,
-    SmsgLogXpGain = 0x01D0,
-    SmsgLevelupInfo = 0x01D4,
-    SmsgStartMirrorTimer = 0x01D9,
-    SmsgStopMirrorTimer = 0x01DB,
+    SmsgLootRemoved = 0x0162,
+    SmsgLootMoneyNotify = 0x0163,
+    SmsgLootClearMoney = 0x0165,
+    SmsgItemPushResult = 0x0166,
     CmsgGossipHello = 0x017B,
     CmsgGossipSelectOption = 0x017C,
     SmsgGossipMessage = 0x017D,
+    SmsgGossipComplete = 0x017E,
     CmsgNpcTextQuery = 0x017F,
     SmsgNpcTextUpdate = 0x0180,
     CmsgQuestgiverStatusQuery = 0x0182,
@@ -134,6 +172,8 @@ pub enum WorldOpcode {
     CmsgQuestgiverChooseReward = 0x018E,
     SmsgQuestgiverQuestComplete = 0x0191,
     CmsgQuestlogRemoveQuest = 0x0194,
+    SmsgQuestlogFull = 0x0195,
+    SmsgQuestUpdateComplete = 0x0198,
     SmsgQuestUpdateAddKill = 0x0199,
     CmsgListInventory = 0x019E,
     SmsgListInventory = 0x019F,
@@ -153,15 +193,21 @@ pub enum WorldOpcode {
     SmsgBuyBankSlotResult = 0x01BA,
     CmsgQueryTime = 0x01CE,
     SmsgQueryTimeResponse = 0x01CF,
+    SmsgLogXpGain = 0x01D0,
     CmsgReclaimCorpse = 0x01D2,
-    CmsgAuthSession = 0x01ED,
-    SmsgAuthResponse = 0x01EE,
+    SmsgLevelupInfo = 0x01D4,
+    SmsgStartMirrorTimer = 0x01D9,
+    SmsgStopMirrorTimer = 0x01DB,
     CmsgPing = 0x01DC,
     SmsgPong = 0x01DD,
     SmsgSpellDelayed = 0x01E2,
+    SmsgAuthChallenge = 0x01EC,
+    CmsgAuthSession = 0x01ED,
+    SmsgAuthResponse = 0x01EE,
     SmsgPlaySpellVisual = 0x01F3,
-    SmsgExplorationExperience = 0x01F8,
+    CmsgZoneUpdate = 0x01F4,
     SmsgPlaySpellImpact = 0x01F7,
+    SmsgExplorationExperience = 0x01F8,
     SmsgEnvironmentalDamageLog = 0x01FC,
     SmsgAccountDataTimes = 0x0209,
     CmsgRequestAccountData = 0x020A,
@@ -188,10 +234,12 @@ pub enum WorldOpcode {
     SmsgSpellLogMiss = 0x024B,
     SmsgPeriodicAuraLog = 0x024E,
     SmsgSpellNonMeleeDamageLog = 0x0250,
+    SmsgDispelFailed = 0x0262,
     CmsgSetAmmo = 0x0268,
     SmsgCorpseReclaimDelay = 0x0269,
     CmsgSetActiveMover = 0x026A,
     CmsgCancelAutoRepeatSpell = 0x026D,
+    SmsgSpellDispelLog = 0x027B,
     CmsgGroupChangeSubGroup = 0x027E,
     CmsgRequestPartyMemberStats = 0x027F,
     CmsgAutostoreBankItem = 0x0282,
@@ -201,6 +249,7 @@ pub enum WorldOpcode {
     CmsgGroupRaidConvert = 0x028E,
     CmsgGroupAssistantLeader = 0x028F,
     CmsgBuybackItem = 0x0290,
+    CmsgMeetingStoneInfo = 0x0296,
     SmsgStandStateUpdate = 0x029D,
     SmsgLootAllPassed = 0x029E,
     SmsgLootRollWon = 0x029F,
@@ -212,6 +261,11 @@ pub enum WorldOpcode {
     SmsgSpellFailedOther = 0x02A6,
     SmsgInitWorldStates = 0x02C2,
     CmsgItemNameQuery = 0x02C4,
+    SmsgItemNameQueryResponse = 0x02C5,
+    CmsgMoveFallReset = 0x02CA,
+    CmsgRequestRaidInfo = 0x02CD,
+    CmsgMoveTimeSkipped = 0x02CE,
+    CmsgBattlefieldStatus = 0x02D3,
     SmsgPartyMemberStatsFull = 0x02F2,
     SmsgSplineSetRunSpeed = 0x02FE,
     SmsgSplineSetRunBackSpeed = 0x02FF,
@@ -243,12 +297,15 @@ impl TryFrom<u32> for WorldOpcode {
             0x0050 => Ok(Self::CmsgNameQuery),
             0x0051 => Ok(Self::SmsgNameQueryResponse),
             0x0056 => Ok(Self::CmsgItemQuerySingle),
+            0x0058 => Ok(Self::SmsgItemQuerySingleResponse),
             0x005A => Ok(Self::CmsgPageTextQuery),
             0x005B => Ok(Self::SmsgPageTextQueryResponse),
             0x005C => Ok(Self::CmsgQuestQuery),
             0x005D => Ok(Self::SmsgQuestQueryResponse),
             0x005E => Ok(Self::CmsgGameObjectQuery),
+            0x005F => Ok(Self::SmsgGameObjectQueryResponse),
             0x0060 => Ok(Self::CmsgCreatureQuery),
+            0x0061 => Ok(Self::SmsgCreatureQueryResponse),
             0x006E => Ok(Self::CmsgGroupInvite),
             0x006F => Ok(Self::SmsgGroupInvite),
             0x0070 => Ok(Self::CmsgGroupCancel),
@@ -276,10 +333,35 @@ impl TryFrom<u32> for WorldOpcode {
             0x00AE => Ok(Self::SmsgReadItemOk),
             0x00AF => Ok(Self::SmsgReadItemFailed),
             0x00B1 => Ok(Self::CmsgGameObjUse),
+            0x00B5 => Ok(Self::MsgMoveStartForward),
+            0x00B6 => Ok(Self::MsgMoveStartBackward),
+            0x00B7 => Ok(Self::MsgMoveStop),
+            0x00B8 => Ok(Self::MsgMoveStartStrafeLeft),
+            0x00B9 => Ok(Self::MsgMoveStartStrafeRight),
+            0x00BA => Ok(Self::MsgMoveStopStrafe),
+            0x00BB => Ok(Self::MsgMoveJump),
+            0x00BC => Ok(Self::MsgMoveStartTurnLeft),
+            0x00BD => Ok(Self::MsgMoveStartTurnRight),
+            0x00BE => Ok(Self::MsgMoveStopTurn),
+            0x00BF => Ok(Self::MsgMoveStartPitchUp),
+            0x00C0 => Ok(Self::MsgMoveStartPitchDown),
+            0x00C1 => Ok(Self::MsgMoveStopPitch),
+            0x00C2 => Ok(Self::MsgMoveSetRunMode),
+            0x00C3 => Ok(Self::MsgMoveSetWalkMode),
             0x00C7 => Ok(Self::MsgMoveTeleportAck),
+            0x00C9 => Ok(Self::MsgMoveFallLand),
+            0x00CA => Ok(Self::MsgMoveStartSwim),
+            0x00CB => Ok(Self::MsgMoveStopSwim),
+            0x00DA => Ok(Self::MsgMoveSetFacing),
+            0x00DB => Ok(Self::MsgMoveSetPitch),
             0x00DD => Ok(Self::SmsgMonsterMove),
+            0x00E2 => Ok(Self::SmsgForceRunSpeedChange),
+            0x00E3 => Ok(Self::CmsgForceRunSpeedChangeAck),
             0x00E8 => Ok(Self::SmsgForceMoveRoot),
+            0x00E9 => Ok(Self::CmsgForceMoveRootAck),
             0x00EA => Ok(Self::SmsgForceMoveUnroot),
+            0x00EB => Ok(Self::CmsgForceMoveUnrootAck),
+            0x00EE => Ok(Self::MsgMoveHeartbeat),
             0x00FA => Ok(Self::SmsgTriggerCinematic),
             0x00FD => Ok(Self::SmsgTutorialFlags),
             0x00FE => Ok(Self::CmsgTutorialFlag),
@@ -297,7 +379,10 @@ impl TryFrom<u32> for WorldOpcode {
             0x010E => Ok(Self::CmsgSplitItem),
             0x0111 => Ok(Self::CmsgDestroyItem),
             0x0112 => Ok(Self::SmsgInventoryChangeFailure),
+            0x011C => Ok(Self::CmsgCancelTrade),
             0x0122 => Ok(Self::SmsgInitializeFactions),
+            0x0123 => Ok(Self::SmsgSetFactionVisible),
+            0x0124 => Ok(Self::SmsgSetFactionStanding),
             0x0127 => Ok(Self::SmsgSetProficiency),
             0x0128 => Ok(Self::CmsgSetActionButton),
             0x0129 => Ok(Self::SmsgActionButtons),
@@ -310,12 +395,18 @@ impl TryFrom<u32> for WorldOpcode {
             0x0132 => Ok(Self::SmsgSpellGo),
             0x0133 => Ok(Self::SmsgSpellFailure),
             0x0137 => Ok(Self::SmsgUpdateAuraDuration),
+            0x0139 => Ok(Self::MsgChannelStart),
+            0x013A => Ok(Self::MsgChannelUpdate),
             0x013D => Ok(Self::CmsgSetSelection),
             0x013E => Ok(Self::CmsgSetTargetObsolete),
             0x0141 => Ok(Self::CmsgAttackSwing),
             0x0142 => Ok(Self::CmsgAttackStop),
             0x0143 => Ok(Self::SmsgAttackStart),
             0x0144 => Ok(Self::SmsgAttackStop),
+            0x0145 => Ok(Self::SmsgAttackSwingNotInRange),
+            0x0146 => Ok(Self::SmsgAttackSwingBadFacing),
+            0x0148 => Ok(Self::SmsgAttackSwingDeadTarget),
+            0x0149 => Ok(Self::SmsgAttackSwingCantAttack),
             0x014A => Ok(Self::SmsgAttackerStateUpdate),
             0x0150 => Ok(Self::SmsgSpellHealLog),
             0x0151 => Ok(Self::SmsgSpellEnergizeLog),
@@ -326,9 +417,14 @@ impl TryFrom<u32> for WorldOpcode {
             0x015F => Ok(Self::CmsgLootRelease),
             0x0160 => Ok(Self::SmsgLootResponse),
             0x0161 => Ok(Self::SmsgLootReleaseResponse),
+            0x0162 => Ok(Self::SmsgLootRemoved),
+            0x0163 => Ok(Self::SmsgLootMoneyNotify),
+            0x0165 => Ok(Self::SmsgLootClearMoney),
+            0x0166 => Ok(Self::SmsgItemPushResult),
             0x017B => Ok(Self::CmsgGossipHello),
             0x017C => Ok(Self::CmsgGossipSelectOption),
             0x017D => Ok(Self::SmsgGossipMessage),
+            0x017E => Ok(Self::SmsgGossipComplete),
             0x017F => Ok(Self::CmsgNpcTextQuery),
             0x0180 => Ok(Self::SmsgNpcTextUpdate),
             0x0182 => Ok(Self::CmsgQuestgiverStatusQuery),
@@ -345,6 +441,8 @@ impl TryFrom<u32> for WorldOpcode {
             0x018E => Ok(Self::CmsgQuestgiverChooseReward),
             0x0191 => Ok(Self::SmsgQuestgiverQuestComplete),
             0x0194 => Ok(Self::CmsgQuestlogRemoveQuest),
+            0x0195 => Ok(Self::SmsgQuestlogFull),
+            0x0198 => Ok(Self::SmsgQuestUpdateComplete),
             0x0199 => Ok(Self::SmsgQuestUpdateAddKill),
             0x019E => Ok(Self::CmsgListInventory),
             0x019F => Ok(Self::SmsgListInventory),
@@ -372,9 +470,11 @@ impl TryFrom<u32> for WorldOpcode {
             0x01DC => Ok(Self::CmsgPing),
             0x01DD => Ok(Self::SmsgPong),
             0x01E2 => Ok(Self::SmsgSpellDelayed),
+            0x01EC => Ok(Self::SmsgAuthChallenge),
             0x01ED => Ok(Self::CmsgAuthSession),
             0x01EE => Ok(Self::SmsgAuthResponse),
             0x01F3 => Ok(Self::SmsgPlaySpellVisual),
+            0x01F4 => Ok(Self::CmsgZoneUpdate),
             0x01F7 => Ok(Self::SmsgPlaySpellImpact),
             0x01F8 => Ok(Self::SmsgExplorationExperience),
             0x01FC => Ok(Self::SmsgEnvironmentalDamageLog),
@@ -403,10 +503,12 @@ impl TryFrom<u32> for WorldOpcode {
             0x024B => Ok(Self::SmsgSpellLogMiss),
             0x024E => Ok(Self::SmsgPeriodicAuraLog),
             0x0250 => Ok(Self::SmsgSpellNonMeleeDamageLog),
+            0x0262 => Ok(Self::SmsgDispelFailed),
             0x0268 => Ok(Self::CmsgSetAmmo),
             0x0269 => Ok(Self::SmsgCorpseReclaimDelay),
             0x026A => Ok(Self::CmsgSetActiveMover),
             0x026D => Ok(Self::CmsgCancelAutoRepeatSpell),
+            0x027B => Ok(Self::SmsgSpellDispelLog),
             0x027E => Ok(Self::CmsgGroupChangeSubGroup),
             0x027F => Ok(Self::CmsgRequestPartyMemberStats),
             0x0282 => Ok(Self::CmsgAutostoreBankItem),
@@ -416,6 +518,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x028E => Ok(Self::CmsgGroupRaidConvert),
             0x028F => Ok(Self::CmsgGroupAssistantLeader),
             0x0290 => Ok(Self::CmsgBuybackItem),
+            0x0296 => Ok(Self::CmsgMeetingStoneInfo),
             0x029D => Ok(Self::SmsgStandStateUpdate),
             0x029E => Ok(Self::SmsgLootAllPassed),
             0x029F => Ok(Self::SmsgLootRollWon),
@@ -427,6 +530,11 @@ impl TryFrom<u32> for WorldOpcode {
             0x02A6 => Ok(Self::SmsgSpellFailedOther),
             0x02C2 => Ok(Self::SmsgInitWorldStates),
             0x02C4 => Ok(Self::CmsgItemNameQuery),
+            0x02C5 => Ok(Self::SmsgItemNameQueryResponse),
+            0x02CA => Ok(Self::CmsgMoveFallReset),
+            0x02CD => Ok(Self::CmsgRequestRaidInfo),
+            0x02CE => Ok(Self::CmsgMoveTimeSkipped),
+            0x02D3 => Ok(Self::CmsgBattlefieldStatus),
             0x02F2 => Ok(Self::SmsgPartyMemberStatsFull),
             0x02FE => Ok(Self::SmsgSplineSetRunSpeed),
             0x02FF => Ok(Self::SmsgSplineSetRunBackSpeed),
@@ -460,7 +568,11 @@ impl WorldOpcode {
                 | Self::SmsgLogoutComplete
                 | Self::SmsgLogoutCancelAck
                 | Self::SmsgNameQueryResponse
+                | Self::SmsgItemQuerySingleResponse
                 | Self::SmsgPageTextQueryResponse
+                | Self::SmsgQuestQueryResponse
+                | Self::SmsgGameObjectQueryResponse
+                | Self::SmsgCreatureQueryResponse
                 | Self::SmsgGroupInvite
                 | Self::SmsgGroupDecline
                 | Self::SmsgGroupUninvite
@@ -475,6 +587,7 @@ impl WorldOpcode {
                 | Self::SmsgReadItemOk
                 | Self::SmsgReadItemFailed
                 | Self::SmsgMonsterMove
+                | Self::SmsgForceRunSpeedChange
                 | Self::SmsgForceMoveRoot
                 | Self::SmsgForceMoveUnroot
                 | Self::SmsgTriggerCinematic
@@ -483,6 +596,8 @@ impl WorldOpcode {
                 | Self::SmsgTextEmote
                 | Self::SmsgInventoryChangeFailure
                 | Self::SmsgInitializeFactions
+                | Self::SmsgSetFactionVisible
+                | Self::SmsgSetFactionStanding
                 | Self::SmsgSetProficiency
                 | Self::SmsgActionButtons
                 | Self::SmsgInitialSpells
@@ -492,20 +607,26 @@ impl WorldOpcode {
                 | Self::SmsgSpellGo
                 | Self::SmsgSpellFailure
                 | Self::SmsgUpdateAuraDuration
+                | Self::MsgChannelStart
+                | Self::MsgChannelUpdate
                 | Self::SmsgAttackStart
                 | Self::SmsgAttackStop
+                | Self::SmsgAttackSwingNotInRange
+                | Self::SmsgAttackSwingBadFacing
+                | Self::SmsgAttackSwingDeadTarget
+                | Self::SmsgAttackSwingCantAttack
                 | Self::SmsgAttackerStateUpdate
                 | Self::SmsgSpellHealLog
                 | Self::SmsgSpellEnergizeLog
                 | Self::SmsgBindpointUpdate
                 | Self::SmsgLootResponse
                 | Self::SmsgLootReleaseResponse
-                | Self::SmsgLogXpGain
-                | Self::SmsgLevelupInfo
-                | Self::SmsgStartMirrorTimer
-                | Self::SmsgStopMirrorTimer
-                | Self::SmsgQuestQueryResponse
+                | Self::SmsgLootRemoved
+                | Self::SmsgLootMoneyNotify
+                | Self::SmsgLootClearMoney
+                | Self::SmsgItemPushResult
                 | Self::SmsgGossipMessage
+                | Self::SmsgGossipComplete
                 | Self::SmsgNpcTextUpdate
                 | Self::SmsgQuestgiverStatus
                 | Self::SmsgQuestgiverQuestList
@@ -513,6 +634,8 @@ impl WorldOpcode {
                 | Self::SmsgQuestgiverRequestItems
                 | Self::SmsgQuestgiverOfferReward
                 | Self::SmsgQuestgiverQuestComplete
+                | Self::SmsgQuestlogFull
+                | Self::SmsgQuestUpdateComplete
                 | Self::SmsgQuestUpdateAddKill
                 | Self::SmsgListInventory
                 | Self::SmsgSellItem
@@ -524,8 +647,13 @@ impl WorldOpcode {
                 | Self::SmsgShowBank
                 | Self::SmsgBuyBankSlotResult
                 | Self::SmsgQueryTimeResponse
+                | Self::SmsgLogXpGain
+                | Self::SmsgLevelupInfo
+                | Self::SmsgStartMirrorTimer
+                | Self::SmsgStopMirrorTimer
                 | Self::SmsgPong
                 | Self::SmsgSpellDelayed
+                | Self::SmsgAuthChallenge
                 | Self::SmsgAuthResponse
                 | Self::SmsgPlaySpellVisual
                 | Self::SmsgPlaySpellImpact
@@ -542,7 +670,10 @@ impl WorldOpcode {
                 | Self::SmsgSpellLogMiss
                 | Self::SmsgPeriodicAuraLog
                 | Self::SmsgSpellNonMeleeDamageLog
+                | Self::SmsgDispelFailed
                 | Self::SmsgCorpseReclaimDelay
+                | Self::SmsgSpellDispelLog
+                | Self::SmsgReceivedMail
                 | Self::SmsgStandStateUpdate
                 | Self::SmsgLootAllPassed
                 | Self::SmsgLootRollWon
@@ -551,8 +682,8 @@ impl WorldOpcode {
                 | Self::SmsgLootMasterList
                 | Self::SmsgSpellFailedOther
                 | Self::SmsgInitWorldStates
+                | Self::SmsgItemNameQueryResponse
                 | Self::SmsgPartyMemberStatsFull
-                | Self::SmsgReceivedMail
                 | Self::SmsgSplineSetRunSpeed
                 | Self::SmsgSplineSetRunBackSpeed
                 | Self::SmsgSplineSetSwimSpeed

@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     ServerWorldPacket, SmsgLearnedSpellResponse, SmsgPlaySpellImpactResponse,
     SmsgPlaySpellVisualResponse, SmsgTrainerBuyFailedResponse, SmsgTrainerBuySucceededResponse,
@@ -123,7 +124,13 @@ pub(in crate::world) async fn send_trainer_list(
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| DB_TRAINER_GREETING.to_string()),
     );
-    send_packet(stream, SMSG_TRAINER_LIST, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgTrainerList as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_trainer_buy_spell(
@@ -169,7 +176,7 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
     else {
         return send_packet(
             stream,
-            SMSG_TRAINER_BUY_FAILED,
+            WorldOpcode::SmsgTrainerBuyFailed as u16,
             &build_trainer_buy_failed_body(request.trainer_guid, request.spell, 0),
             Some(header_crypto),
         )
@@ -181,28 +188,28 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
         .insert(list_spell.learned_spell);
     send_packet(
         stream,
-        SMSG_PLAY_SPELL_VISUAL,
+        WorldOpcode::SmsgPlaySpellVisual as u16,
         &build_play_spell_visual_body(request.trainer_guid, 0xB3),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_PLAY_SPELL_IMPACT,
+        WorldOpcode::SmsgPlaySpellImpact as u16,
         &build_play_spell_impact_body(character.guid, 0x016A),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_TRAINER_BUY_SUCCEEDED,
+        WorldOpcode::SmsgTrainerBuySucceeded as u16,
         &build_trainer_buy_succeeded_body(request.trainer_guid, request.spell),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_LEARNED_SPELL,
+        WorldOpcode::SmsgLearnedSpell as u16,
         &build_learned_spell_body(list_spell.learned_spell),
         Some(&mut *header_crypto),
     )
@@ -217,7 +224,7 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
     .await?;
     send_packet(
         stream,
-        SMSG_INITIAL_SPELLS,
+        WorldOpcode::SmsgInitialSpells as u16,
         &build_initial_spells_body(&known_spells),
         Some(&mut *header_crypto),
     )
@@ -225,7 +232,7 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
     if spell.spell_cost > 0 {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_money_update_body(character.guid, new_money)?,
             Some(header_crypto),
         )

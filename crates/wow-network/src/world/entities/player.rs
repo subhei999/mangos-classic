@@ -1468,7 +1468,7 @@ pub(in crate::world) fn faction_for_race(race: u8) -> u32 {
 
 pub(in crate::world) fn player_faction_template(race: u8, player_flags: u32) -> u32 {
     if player_flags & PLAYER_FLAGS_GM != 0 {
-        RUST_GUIDE_FACTION_TEMPLATE
+        GM_FRIENDLY_FACTION_TEMPLATE
     } else {
         faction_for_race(race)
     }

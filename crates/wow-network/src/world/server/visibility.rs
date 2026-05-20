@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 // CMaNGOS reference: src/game/Maps/Map.cpp object visibility streaming.
 
@@ -69,14 +70,20 @@ pub(in crate::world) async fn stream_newly_visible_db_creatures(
         let body = build_destroy_guid_body(destroy_guid);
         send_packet(
             stream,
-            SMSG_DESTROY_OBJECT,
+            WorldOpcode::SmsgDestroyObject as u16,
             &body,
             Some(&mut *header_crypto),
         )
         .await?;
     }
     for body in visibility_updates.create_bodies {
-        send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -132,7 +139,7 @@ pub(in crate::world) async fn stream_nearby_player_corpses(
     for guid in stage.destroy_guids {
         send_packet(
             stream,
-            SMSG_DESTROY_OBJECT,
+            WorldOpcode::SmsgDestroyObject as u16,
             &build_destroy_guid_body(guid),
             Some(&mut *header_crypto),
         )
@@ -141,7 +148,7 @@ pub(in crate::world) async fn stream_nearby_player_corpses(
     if !create_blocks.is_empty() {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_update_object_body(&create_blocks),
             Some(header_crypto),
         )

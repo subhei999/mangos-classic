@@ -37,7 +37,7 @@ The current performance hot-path files are:
 - `crates/wow-network/src/world/server/movement.rs`
 - `crates/wow-network/src/world/map_runtime/movement_actor.rs`
 - `crates/wow-network/src/world/map_runtime/map_manager.rs`
-- `crates/wow-network/src/world/map_runtime/map/players.rs`
+- `crates/wow-network/src/world/map_runtime/systems/players.rs`
 - `crates/wow-network/src/world/server/map_update.rs`
 - `crates/wow-network/src/observability.rs`
 - `bins/world-load-test/src/main.rs`

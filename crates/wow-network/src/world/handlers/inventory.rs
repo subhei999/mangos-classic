@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     ServerWorldPacket, SmsgBuyFailedResponse, SmsgBuyItemResponse,
     SmsgInventoryChangeFailureResponse, SmsgListInventoryResponse, SmsgSellItemResponse,
@@ -152,12 +153,18 @@ pub(in crate::world) async fn handle_read_item(
         .is_some_and(|template| template.page_text != 0);
     if readable {
         let response = wow_proto::SmsgReadItemOkResponse { item: item_guid }.body();
-        send_packet(stream, SMSG_READ_ITEM_OK, &response, Some(header_crypto)).await
+        send_packet(
+            stream,
+            WorldOpcode::SmsgReadItemOk as u16,
+            &response,
+            Some(header_crypto),
+        )
+        .await
     } else {
         let response = wow_proto::SmsgReadItemFailedResponse { item: item_guid }.body();
         send_packet(
             stream,
-            SMSG_READ_ITEM_FAILED,
+            WorldOpcode::SmsgReadItemFailed as u16,
             &response,
             Some(header_crypto),
         )
@@ -576,9 +583,21 @@ pub(in crate::world) async fn handle_inventory_swap(
                 &move_request,
             )?;
             let body = build_update_object_body(&blocks);
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgUpdateObject as u16,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
             if let Some(body) = combat_stats_update_body {
-                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgUpdateObject as u16,
+                    &body,
+                    Some(header_crypto),
+                )
+                .await?;
             }
             Ok(())
         }
@@ -607,9 +626,21 @@ pub(in crate::world) async fn handle_inventory_swap(
                 destination_count,
             )?);
             let body = build_update_object_body(&blocks);
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgUpdateObject as u16,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
             if let Some(body) = combat_stats_update_body {
-                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await?;
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgUpdateObject as u16,
+                    &body,
+                    Some(header_crypto),
+                )
+                .await?;
             }
             Ok(())
         }
@@ -789,10 +820,16 @@ pub(in crate::world) fn inventory_move_client_request_opcode(
     request: wow_proto::InventoryMoveClientRequest,
 ) -> u32 {
     match request {
-        wow_proto::InventoryMoveClientRequest::AutoEquip { .. } => CMSG_AUTOEQUIP_ITEM,
-        wow_proto::InventoryMoveClientRequest::AutoStoreBag { .. } => CMSG_AUTOSTORE_BAG_ITEM,
-        wow_proto::InventoryMoveClientRequest::SwapItem { .. } => CMSG_SWAP_ITEM,
-        wow_proto::InventoryMoveClientRequest::SwapInvItem { .. } => CMSG_SWAP_INV_ITEM,
+        wow_proto::InventoryMoveClientRequest::AutoEquip { .. } => {
+            WorldOpcode::CmsgAutoequipItem as u32
+        }
+        wow_proto::InventoryMoveClientRequest::AutoStoreBag { .. } => {
+            WorldOpcode::CmsgAutostoreBagItem as u32
+        }
+        wow_proto::InventoryMoveClientRequest::SwapItem { .. } => WorldOpcode::CmsgSwapItem as u32,
+        wow_proto::InventoryMoveClientRequest::SwapInvItem { .. } => {
+            WorldOpcode::CmsgSwapInvItem as u32
+        }
     }
 }
 
@@ -886,7 +923,13 @@ pub(in crate::world) async fn handle_destroy_item(
     match destroyed {
         wow_db::InventoryDestroyResult::CountChanged { item, count } => {
             let body = build_item_stack_count_update_body(item, count)?;
-            send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgUpdateObject as u16,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
         }
         wow_db::InventoryDestroyResult::Removed { item } => {
             let update_blocks = build_inventory_position_update_blocks(
@@ -897,13 +940,19 @@ pub(in crate::world) async fn handle_destroy_item(
             )?;
             if !update_blocks.is_empty() {
                 let body = build_update_object_body(&update_blocks);
-                send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgUpdateObject as u16,
+                    &body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
             }
             if request.bag != INVENTORY_SLOT_BAG_0 {
                 let body = build_destroy_object_body(item);
                 send_packet(
                     stream,
-                    SMSG_DESTROY_OBJECT,
+                    WorldOpcode::SmsgDestroyObject as u16,
                     &body,
                     Some(&mut *header_crypto),
                 )
@@ -1006,7 +1055,13 @@ pub(in crate::world) async fn handle_split_item(
         )?);
     }
     let body = build_update_object_body(&blocks);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_set_ammo(
@@ -1145,14 +1200,14 @@ pub(in crate::world) async fn apply_player_ammo_selection(
 
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_ammo_update_body(character.guid, ammo_id)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_combat_stats_update_body(character.guid, &combat_stats)?,
         Some(header_crypto),
     )
@@ -1198,11 +1253,13 @@ impl InventoryMoveRequest {
     #[cfg(test)]
     pub(in crate::world) fn read(opcode: u32, body: &[u8]) -> anyhow::Result<Self> {
         let mut body = body;
-        let request = match opcode {
-            CMSG_SWAP_INV_ITEM => {
+        let request = match WorldOpcode::try_from(opcode).ok() {
+            Some(WorldOpcode::CmsgSwapInvItem) => {
                 wow_proto::InventoryMoveClientRequest::read_swap_inv_item(&mut body)?
             }
-            CMSG_SWAP_ITEM => wow_proto::InventoryMoveClientRequest::read_swap_item(&mut body)?,
+            Some(WorldOpcode::CmsgSwapItem) => {
+                wow_proto::InventoryMoveClientRequest::read_swap_item(&mut body)?
+            }
             _ => anyhow::bail!("unsupported inventory opcode 0x{opcode:04X}"),
         };
         Self::from_client_request(request)
@@ -2164,20 +2221,6 @@ pub(in crate::world) fn build_container_position_update_blocks(
     Ok(blocks)
 }
 
-pub(in crate::world) fn build_rust_guide_vendor_inventory() -> Vec<u8> {
-    build_vendor_inventory_body(
-        rust_guide_guid(),
-        &[VendorListItem {
-            item: RUST_VENDOR_BAG_ITEM,
-            display: RUST_VENDOR_BAG_DISPLAY,
-            max_count: 0,
-            price: 0,
-            durability: 0,
-            buy_count: 1,
-        }],
-    )
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct VendorListItem {
     pub(in crate::world) item: u32,
@@ -2259,13 +2302,6 @@ pub(in crate::world) fn build_sell_item_error_body(
         result,
     }
     .body()
-}
-
-pub(in crate::world) fn rust_guide_vendor_slot(item: u32) -> Option<u32> {
-    match item {
-        RUST_VENDOR_BAG_ITEM => Some(1),
-        _ => None,
-    }
 }
 
 pub(in crate::world) fn preferred_equipment_slot(inventory_type: u32) -> Option<u8> {
@@ -2456,13 +2492,13 @@ pub(in crate::world) fn item_proficiency_skill(template: &ItemTemplateQuery) -> 
 }
 
 pub(in crate::world) fn inventory_opcode_name(opcode: u32) -> &'static str {
-    match opcode {
-        CMSG_AUTOEQUIP_ITEM => "CMSG_AUTOEQUIP_ITEM",
-        CMSG_AUTOSTORE_BAG_ITEM => "CMSG_AUTOSTORE_BAG_ITEM",
-        CMSG_SWAP_INV_ITEM => "CMSG_SWAP_INV_ITEM",
-        CMSG_SWAP_ITEM => "CMSG_SWAP_ITEM",
-        CMSG_SPLIT_ITEM => "CMSG_SPLIT_ITEM",
-        CMSG_DESTROYITEM => "CMSG_DESTROYITEM",
+    match WorldOpcode::try_from(opcode).ok() {
+        Some(WorldOpcode::CmsgAutoequipItem) => "CMSG_AUTOEQUIP_ITEM",
+        Some(WorldOpcode::CmsgAutostoreBagItem) => "CMSG_AUTOSTORE_BAG_ITEM",
+        Some(WorldOpcode::CmsgSwapInvItem) => "CMSG_SWAP_INV_ITEM",
+        Some(WorldOpcode::CmsgSwapItem) => "CMSG_SWAP_ITEM",
+        Some(WorldOpcode::CmsgSplitItem) => "CMSG_SPLIT_ITEM",
+        Some(WorldOpcode::CmsgDestroyItem) => "CMSG_DESTROYITEM",
         _ => "UNKNOWN_INVENTORY_OPCODE",
     }
 }
@@ -2496,7 +2532,7 @@ pub(in crate::world) async fn send_inventory_change_failure_with_required_level(
     let body = build_inventory_change_failure_body(result, item, item2, required_level);
     send_packet(
         stream,
-        SMSG_INVENTORY_CHANGE_FAILURE,
+        WorldOpcode::SmsgInventoryChangeFailure as u16,
         &body,
         Some(header_crypto),
     )

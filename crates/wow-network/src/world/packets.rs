@@ -1,3 +1,4 @@
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest, BankItemRequest,
     BankerActivateRequest, BuyBankSlotRequest, BuyItemRequest, BuybackItemRequest,
@@ -21,7 +22,7 @@ use wow_proto::{
     SetAmmoRequest, SetSelectionRequest, SetTargetObsoleteRequest, SpiritHealerActivateRequest,
     SplitItemRequest, StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest,
     TrainerListRequest, TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest,
-    UpdateAccountDataRequest, UseItemRequest, WorldAuthSessionRequest, WorldOpcode,
+    UpdateAccountDataRequest, UseItemRequest, WorldAuthSessionRequest,
 };
 
 #[derive(Debug, Clone, PartialEq)]

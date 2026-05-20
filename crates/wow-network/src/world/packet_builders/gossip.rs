@@ -14,19 +14,6 @@ pub(in crate::world) struct GossipMessageOption {
 }
 
 #[cfg(test)]
-pub(in crate::world) fn build_rust_guide_gossip_message() -> Vec<u8> {
-    build_gossip_message(
-        rust_guide_guid(),
-        RUST_GUIDE_GOSSIP_TEXT_ID,
-        &[(0, GOSSIP_ICON_CHAT, RUST_GUIDE_GOSSIP_OPTION)],
-    )
-}
-
-#[cfg(test)]
-pub(in crate::world) fn build_rust_guide_npc_text_update(text_id: u32) -> Vec<u8> {
-    build_npc_text_update(text_id, RUST_GUIDE_GOSSIP_TEXT)
-}
-
 pub(in crate::world) fn build_gossip_message(
     guid: ObjectGuid,
     text_id: u32,
@@ -35,6 +22,7 @@ pub(in crate::world) fn build_gossip_message(
     build_gossip_message_with_quests(guid, text_id, options, &[])
 }
 
+#[cfg(test)]
 pub(in crate::world) fn build_gossip_message_with_quests(
     guid: ObjectGuid,
     text_id: u32,
@@ -68,6 +56,7 @@ pub(in crate::world) fn build_gossip_message_from_options_with_quests(
     .body_with_gossip_quests(quests)
 }
 
+#[cfg(test)]
 pub(in crate::world) fn tuple_gossip_options(
     options: &[(u32, u8, &str)],
 ) -> Vec<GossipMessageOption> {

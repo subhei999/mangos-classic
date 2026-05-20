@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[allow(dead_code)]
 pub(in crate::world) async fn db_creature_should_evade_from_map(
@@ -71,7 +72,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     let attack_stop_body = build_attack_stop_body(attacker, broadcast.player, false)?;
     send_packet(
         stream,
-        SMSG_ATTACKSTOP,
+        WorldOpcode::SmsgAttackStop as u16,
         &attack_stop_body,
         Some(&mut *header_crypto),
     )
@@ -79,7 +80,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     broadcast_db_creature_snapshot_packet(
         broadcast,
         creature.clone(),
-        SMSG_ATTACKSTOP,
+        WorldOpcode::SmsgAttackStop as u16,
         attack_stop_body,
     )
     .await;
@@ -96,7 +97,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
         build_unit_flags_update_body(attacker, db_creature_unit_flags(&creature, false))?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &creature_flags_body,
         Some(&mut *header_crypto),
     )
@@ -104,14 +105,14 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     broadcast_db_creature_snapshot_packet(
         broadcast,
         creature.clone(),
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         creature_flags_body,
     )
     .await;
     let aura_body = build_db_creature_aura_update_body(attacker, &creature.active_auras)?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &aura_body,
         Some(&mut *header_crypto),
     )
@@ -119,7 +120,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     broadcast_db_creature_snapshot_packet(
         broadcast,
         creature.clone(),
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         aura_body,
     )
     .await;
@@ -129,7 +130,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     )?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &display_body,
         Some(&mut *header_crypto),
     )
@@ -137,7 +138,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     broadcast_db_creature_snapshot_packet(
         broadcast,
         creature.clone(),
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         display_body,
     )
     .await;
@@ -145,7 +146,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     let state_body = build_db_creature_state_update_body(attacker, health, 0)?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &state_body,
         Some(&mut *header_crypto),
     )
@@ -153,7 +154,7 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
     broadcast_db_creature_snapshot_packet(
         broadcast,
         creature.clone(),
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         state_body,
     )
     .await;
@@ -178,8 +179,20 @@ pub(in crate::world) async fn send_db_creature_evade_and_return_home(
             None,
             true,
         )?;
-        send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
-        broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgMonsterMove as u16,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
+        broadcast_db_creature_snapshot_packet(
+            broadcast,
+            creature,
+            WorldOpcode::SmsgMonsterMove as u16,
+            body,
+        )
+        .await;
     }
     Ok(())
 }
@@ -273,7 +286,19 @@ pub(in crate::world) async fn send_db_creature_chase_if_needed(
         broadcast.player,
         motion.run,
     )?;
-    send_packet(stream, SMSG_MONSTER_MOVE, &body, Some(header_crypto)).await?;
-    broadcast_db_creature_snapshot_packet(broadcast, creature, SMSG_MONSTER_MOVE, body).await;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgMonsterMove as u16,
+        &body,
+        Some(header_crypto),
+    )
+    .await?;
+    broadcast_db_creature_snapshot_packet(
+        broadcast,
+        creature,
+        WorldOpcode::SmsgMonsterMove as u16,
+        body,
+    )
+    .await;
     Ok(())
 }

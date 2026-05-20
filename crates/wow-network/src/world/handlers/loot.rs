@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn dispatch_loot_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
@@ -167,7 +168,13 @@ pub(in crate::world) async fn handle_loot(
         send_player_looting_state_update(stream, shared_world, session, true, &mut *header_crypto)
             .await?;
         let response = build_gameobject_loot_response_body(target, &loot_items);
-        return send_packet(stream, SMSG_LOOT_RESPONSE, &response, Some(header_crypto)).await;
+        return send_packet(
+            stream,
+            WorldOpcode::SmsgLootResponse as u16,
+            &response,
+            Some(header_crypto),
+        )
+        .await;
     }
     let Some(creature) = shared_world
         .maps
@@ -192,7 +199,7 @@ pub(in crate::world) async fn handle_loot(
         );
         return send_packet(
             stream,
-            SMSG_LOOT_RESPONSE,
+            WorldOpcode::SmsgLootResponse as u16,
             &build_loot_error_response_body(target, LOOT_ERROR_DIDNT_KILL),
             Some(header_crypto),
         )
@@ -239,7 +246,7 @@ pub(in crate::world) async fn handle_loot(
         );
         return send_packet(
             stream,
-            SMSG_LOOT_RESPONSE,
+            WorldOpcode::SmsgLootResponse as u16,
             &build_loot_error_response_body(target, LOOT_ERROR_DIDNT_KILL),
             Some(header_crypto),
         )
@@ -255,7 +262,7 @@ pub(in crate::world) async fn handle_loot(
     );
     send_packet(
         stream,
-        SMSG_LOOT_RESPONSE,
+        WorldOpcode::SmsgLootResponse as u16,
         &response,
         Some(&mut *header_crypto),
     )
@@ -279,7 +286,13 @@ pub(in crate::world) async fn handle_loot(
             .collect::<Vec<_>>();
         members.sort_unstable();
         let body = build_loot_master_list_body(&members);
-        send_packet(stream, SMSG_LOOT_MASTER_LIST, &body, Some(header_crypto)).await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgLootMasterList as u16,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -298,7 +311,7 @@ pub(in crate::world) async fn send_player_looting_state_update(
     let flags = player_unit_flags_with_looting(session.combat.player_in_combat, looting);
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_unit_flags_update_body(player, flags)?,
         Some(&mut *header_crypto),
     )
@@ -1066,7 +1079,7 @@ pub(in crate::world) async fn handle_autostore_loot_item(
             }
             send_packet(
                 stream,
-                SMSG_DESTROY_OBJECT,
+                WorldOpcode::SmsgDestroyObject as u16,
                 &gameobject_guid.to_le_bytes(),
                 Some(&mut *header_crypto),
             )
@@ -1527,17 +1540,17 @@ pub(in crate::world) async fn grant_loot_item_to_character(
         .await;
 
     let mut packets = vec![OutboundWorldPacket {
-        opcode: SMSG_LOOT_REMOVED,
+        opcode: WorldOpcode::SmsgLootRemoved as u16,
         body: vec![loot_slot],
     }];
     if let Some(item) = pushed_item.as_ref() {
         packets.push(OutboundWorldPacket {
-            opcode: SMSG_ITEM_PUSH_RESULT,
+            opcode: WorldOpcode::SmsgItemPushResult as u16,
             body: build_item_push_result_body(target_guid, item, loot.count, true, false, true),
         });
     }
     packets.push(OutboundWorldPacket {
-        opcode: SMSG_UPDATE_OBJECT,
+        opcode: WorldOpcode::SmsgUpdateObject as u16,
         body: build_update_object_body(&update_blocks),
     });
 
@@ -1611,7 +1624,7 @@ pub(in crate::world) async fn handle_loot_money(
         };
         send_packet(
             stream,
-            SMSG_LOOT_CLEAR_MONEY,
+            WorldOpcode::SmsgLootClearMoney as u16,
             &[],
             Some(&mut *header_crypto),
         )
@@ -1668,11 +1681,11 @@ pub(in crate::world) async fn grant_creature_loot_money(
         let money = wow_db::add_character_money(character_db_pool, recipient_guid, share).await?;
         let packets = vec![
             OutboundWorldPacket {
-                opcode: SMSG_LOOT_MONEY_NOTIFY,
+                opcode: WorldOpcode::SmsgLootMoneyNotify as u16,
                 body: share.to_le_bytes().to_vec(),
             },
             OutboundWorldPacket {
-                opcode: SMSG_UPDATE_OBJECT,
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
                 body: build_player_money_update_body(recipient_guid, money)?,
             },
         ];
@@ -1758,7 +1771,7 @@ pub(in crate::world) async fn dispatch_creature_loot_removed_to_other_open_loote
             (
                 character_guid,
                 OutboundWorldPacket {
-                    opcode: SMSG_LOOT_REMOVED,
+                    opcode: WorldOpcode::SmsgLootRemoved as u16,
                     body: vec![loot_slot],
                 },
             )
@@ -1783,7 +1796,7 @@ pub(in crate::world) async fn dispatch_creature_loot_clear_money_to_other_open_l
             (
                 character_guid,
                 OutboundWorldPacket {
-                    opcode: SMSG_LOOT_CLEAR_MONEY,
+                    opcode: WorldOpcode::SmsgLootClearMoney as u16,
                     body: Vec::new(),
                 },
             )
@@ -1817,7 +1830,7 @@ pub(in crate::world) async fn handle_loot_release(
         }
         return send_packet(
             stream,
-            SMSG_LOOT_RELEASE_RESPONSE,
+            WorldOpcode::SmsgLootReleaseResponse as u16,
             &build_loot_release_response_body(target, true),
             Some(header_crypto),
         )
@@ -1848,7 +1861,7 @@ pub(in crate::world) async fn handle_loot_release(
         .await?;
     send_packet(
         stream,
-        SMSG_LOOT_RELEASE_RESPONSE,
+        WorldOpcode::SmsgLootReleaseResponse as u16,
         &build_loot_release_response_body(target, true),
         Some(&mut *header_crypto),
     )

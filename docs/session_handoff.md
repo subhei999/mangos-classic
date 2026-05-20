@@ -84,8 +84,21 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   Live mailbox-open disconnect RCA found `mail.stationery` is signed
   `tinyint(3)` in `sql/base/characters.sql`; Rust now decodes that column as
   signed and converts it for packet output instead of ending the session.
-- The worktree should be clean after this handoff refresh except for untracked
-  `logs/` RCA captures.
+- Current protocol cleanup is uncommitted: `wow-proto` is now the single owner
+  for world opcode numeric values via `wow_proto::world::WorldOpcode`.
+  `wow-network` no longer has `world/opcodes.rs` or parallel `CMSG_`/`SMSG_`/
+  `MSG_` constants; the old file was renamed to `world/constants.rs` because it
+  now only carries non-opcode constants. Do not reintroduce network-owned
+  opcode numbers when resolving older branch conflicts.
+- Local world layout cleanup is uncommitted: `map_runtime/map.rs` was renamed
+  to `map_runtime/state.rs`, and the nested `map_runtime/map/*` extension
+  modules were renamed to `map_runtime/systems/*`. `world/README.md` now
+  distinguishes live runtime areas from CMaNGOS parity scaffolds. The same
+  cleanup removed the legacy synthetic `Rust Guide` NPC fixture path and old
+  session-owned DB-creature combat/spell shims; DB creature queries, gossip,
+  vendor inventory, and creature combat now rely on DB/map-owned paths only.
+- The worktree is intentionally dirty with the opcode-ownership cleanup plus
+  untracked `logs/` RCA captures until that cleanup is reviewed/landed.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
 - OOC EventAI is enabled again in
   `crates/wow-network/src/world/server/map_update.rs`; future RCA controls
@@ -1265,6 +1278,48 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network mail --lib`
   - `cargo check -p worldserver`
   - `.\scripts\restart-game-stack.cmd --release`
+- World layout cleanup:
+  - renamed `map_runtime/map.rs` to `map_runtime/state.rs`
+  - renamed `map_runtime/map/*` extension modules to `map_runtime/systems/*`
+  - added `crates/wow-network/src/world/README.md`
+  - split the former giant `crates/wow-network/src/world/tests.rs` into
+    topic-oriented files under `crates/wow-network/src/world/tests/`, with
+    shared helpers in `support.rs`
+  - split spell cast orchestration, shared spell definitions, effect-value
+    scaling, and skill-backed spell helpers out of
+    `crates/wow-network/src/world/spells.rs` into focused
+    `crates/wow-network/src/world/spells/{casting,definitions,values,skills}.rs`
+  - removed empty top-level CMaNGOS scaffold husks `world/maps/` and
+    `world/movement/`, and collapsed the half-real `world/motion/` folder into
+    live `world/motion.rs`; future CMaNGOS mappings now live in
+    `world/PARITY_LAYOUT.md` instead of empty source files
+  - split the former giant
+    `crates/wow-network/src/world/map_runtime/map_manager.rs` into
+    `crates/wow-network/src/world/map_runtime/map_manager/{mod,spells,players,grids,creatures,ticks}.rs`
+    while preserving the existing `MapRuntimeManager` facade and behavior
+  - split the remaining large creature manager facade into nested
+    `crates/wow-network/src/world/map_runtime/map_manager/creatures/{combat,gameobjects,loot,motion,snapshots,spells}.rs`
+  - split the remaining giant spell effect implementation into nested
+    `crates/wow-network/src/world/spells/effects/{areas,auras,coverage,damage,dispatch,healing,items,movement,utility}.rs`
+    while keeping `spells/effects.rs` as the effect facade
+  - moved shared world runtime dependencies out of `world/session.rs` into
+    `world/session_runtime.rs`; `world/session.rs` now stays focused on
+    per-session mutable state
+  - removed the legacy synthetic `Rust Guide` NPC fixture module, constants,
+    query/gossip/vendor branches, and fixture-only tests
+  - removed the dead session-owned DB-creature combat/spell shim functions from
+    `world/combat/aggro.rs`; live creature combat continues through
+    map-owned `advance_db_creature_combats_for_victim`
+  - `cargo fmt`
+  - `cargo check -p worldserver`
+  - `cargo test -p wow-network query --lib`
+  - `cargo test -p wow-network gossip --lib`
+  - `cargo test -p wow-network vendor --lib`
+  - `cargo test -p wow-network map_runtime --lib`
+  - `cargo test -p wow-network spell --lib`
+  - `cargo test -p wow-network motion --lib`
+  - `cargo test -p wow-network --lib -- --test-threads=1`
+  - `.\scripts\test-rust.cmd`
 
 ## Current Confidence
 
@@ -1395,13 +1450,26 @@ Player visibility relocation threshold:
 - `crates/wow-network/src/world/server/session_loop.rs`
 - `crates/wow-network/src/world/server/movement.rs`
 - `crates/wow-network/src/world/map_runtime/movement_actor.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager.rs`
-- `crates/wow-network/src/world/map_runtime/map/players.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/mod.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/creatures.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/creatures/combat.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/creatures/motion.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/creatures/spells.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/players.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/spells.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/grids.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/ticks.rs`
+- `crates/wow-network/src/world/map_runtime/state.rs`
+- `crates/wow-network/src/world/map_runtime/systems/players.rs`
 - `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/spells/effects.rs`
+- `crates/wow-network/src/world/spells/effects/damage.rs`
+- `crates/wow-network/src/world/spells/effects/auras.rs`
+- `crates/wow-network/src/world/spells/effects/items.rs`
 - `crates/wow-network/src/world/spells/spell_mgr.rs`
-- `crates/wow-network/src/world/map_runtime/map/creature_motion.rs`
+- `crates/wow-network/src/world/session_runtime.rs`
+- `crates/wow-network/src/world/map_runtime/systems/creature_motion.rs`
 - `crates/wow-network/src/world/combat/evade.rs`
-- `crates/wow-network/src/world/tests.rs`
+- `crates/wow-network/src/world/tests/mod.rs`
 - `docs/performance_rca_runbook.md`
 - `scripts/capture-rca-metrics.ps1`

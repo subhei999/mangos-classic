@@ -5,8 +5,6 @@ use super::*;
 // table with the DBC loader once broader reputation/faction work lands.
 
 pub(in crate::world) const FACTION_FLAG_VISIBLE: i32 = 0x01;
-pub(in crate::world) const SMSG_SET_FACTION_VISIBLE: u16 = 0x0123;
-pub(in crate::world) const SMSG_SET_FACTION_STANDING: u16 = 0x0124;
 pub(in crate::world) const REPUTATION_GAIN_RATE: f32 = 1.0;
 pub(in crate::world) const REPUTATION_LOWLEVEL_QUEST_RATE: f32 = 0.2;
 

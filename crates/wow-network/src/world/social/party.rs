@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{
     GroupListMemberResponse, LootRollItemResponse, PartyMemberStatsResponse, ServerWorldPacket,
     SmsgEmptyGroupListResponse, SmsgGroupInviteResponse, SmsgGroupListResponse,
@@ -190,7 +191,7 @@ impl PartyManager {
         let parties = self.parties.lock().await;
         let party = parties.get(&party_id)?;
         Some(OutboundWorldPacket {
-            opcode: SMSG_GROUP_LIST,
+            opcode: WorldOpcode::SmsgGroupList as u16,
             body: build_group_list_body(party, character_guid),
         })
     }
@@ -293,7 +294,7 @@ impl PartyManager {
             },
         );
         let packet = OutboundWorldPacket {
-            opcode: SMSG_LOOT_START_ROLL,
+            opcode: WorldOpcode::SmsgLootStartRoll as u16,
             body: build_loot_start_roll_body(loot_guid, loot_slot, &loot),
         };
         Some(LootRollStart {
@@ -334,7 +335,7 @@ impl PartyManager {
                 (
                     *guid,
                     OutboundWorldPacket {
-                        opcode: SMSG_LOOT_ROLL,
+                        opcode: WorldOpcode::SmsgLootRoll as u16,
                         body: build_loot_roll_body(
                             loot_guid,
                             loot_slot,
@@ -391,7 +392,7 @@ impl PartyManager {
                     },
                 );
                 let pass_packet = OutboundWorldPacket {
-                    opcode: SMSG_LOOT_ROLL,
+                    opcode: WorldOpcode::SmsgLootRoll as u16,
                     body: build_loot_roll_body(
                         finished.loot_guid,
                         finished.loot_slot,
@@ -481,7 +482,7 @@ impl PartyManager {
             result: PartyResult::Ok,
             invitee_session: Some(invitee_session),
             invite_packet: Some(OutboundWorldPacket {
-                opcode: SMSG_GROUP_INVITE,
+                opcode: WorldOpcode::SmsgGroupInvite as u16,
                 body: build_group_invite_body(&inviter.name),
             }),
         }
@@ -548,7 +549,7 @@ impl PartyManager {
         Some((
             invite.inviter.guid,
             OutboundWorldPacket {
-                opcode: SMSG_GROUP_DECLINE,
+                opcode: WorldOpcode::SmsgGroupDecline as u16,
                 body: build_group_invite_body(&invite.invitee.name),
             },
         ))
@@ -647,7 +648,7 @@ impl PartyManager {
             .unwrap_or_default();
         let mut packets = party_notification_packets(
             party,
-            SMSG_GROUP_SET_LEADER,
+            WorldOpcode::SmsgGroupSetLeader as u16,
             build_group_set_leader_body(&new_leader_name),
         );
         packets.extend(party_update_packets(party));
@@ -888,7 +889,7 @@ impl PartyManager {
             packets.push((
                 character_guid,
                 OutboundWorldPacket {
-                    opcode: SMSG_GROUP_UNINVITE,
+                    opcode: WorldOpcode::SmsgGroupUninvite as u16,
                     body: Vec::new(),
                 },
             ));
@@ -896,7 +897,7 @@ impl PartyManager {
         packets.push((
             character_guid,
             OutboundWorldPacket {
-                opcode: SMSG_GROUP_LIST,
+                opcode: WorldOpcode::SmsgGroupList as u16,
                 body: build_empty_group_list_body(),
             },
         ));
@@ -906,14 +907,14 @@ impl PartyManager {
                 packets.push((
                     member.guid,
                     OutboundWorldPacket {
-                        opcode: SMSG_GROUP_DESTROYED,
+                        opcode: WorldOpcode::SmsgGroupDestroyed as u16,
                         body: Vec::new(),
                     },
                 ));
                 packets.push((
                     member.guid,
                     OutboundWorldPacket {
-                        opcode: SMSG_GROUP_LIST,
+                        opcode: WorldOpcode::SmsgGroupList as u16,
                         body: build_empty_group_list_body(),
                     },
                 ));
@@ -933,7 +934,7 @@ impl PartyManager {
             let new_leader_name = party.members[0].name.clone();
             packets.extend(party_notification_packets(
                 &party,
-                SMSG_GROUP_SET_LEADER,
+                WorldOpcode::SmsgGroupSetLeader as u16,
                 build_group_set_leader_body(&new_leader_name),
             ));
         }
@@ -977,7 +978,7 @@ pub(in crate::world) fn party_update_packets(party: &Party) -> Vec<(u32, Outboun
             (
                 member.guid,
                 OutboundWorldPacket {
-                    opcode: SMSG_GROUP_LIST,
+                    opcode: WorldOpcode::SmsgGroupList as u16,
                     body: build_group_list_body(party, member.guid),
                 },
             )
@@ -1105,7 +1106,7 @@ pub(in crate::world) async fn handle_group_invite(
     else {
         send_packet(
             stream,
-            SMSG_PARTY_COMMAND_RESULT,
+            WorldOpcode::SmsgPartyCommandResult as u16,
             &build_party_command_result_body(0, &member_name, PartyResult::BadPlayerName),
             Some(header_crypto),
         )
@@ -1130,7 +1131,7 @@ pub(in crate::world) async fn handle_group_invite(
     }
     send_packet(
         stream,
-        SMSG_PARTY_COMMAND_RESULT,
+        WorldOpcode::SmsgPartyCommandResult as u16,
         &build_party_command_result_body(0, &member_name, outcome.result),
         Some(header_crypto),
     )
@@ -1152,7 +1153,7 @@ pub(in crate::world) async fn handle_group_accept(
     if outcome.result != PartyResult::Ok {
         send_packet(
             stream,
-            SMSG_PARTY_COMMAND_RESULT,
+            WorldOpcode::SmsgPartyCommandResult as u16,
             &build_party_command_result_body(0, "", outcome.result),
             Some(header_crypto),
         )
@@ -1191,7 +1192,7 @@ pub(in crate::world) async fn handle_group_disband(
     dispatch_party_member_packets(sessions, outcome.packets).await;
     send_packet(
         stream,
-        SMSG_PARTY_COMMAND_RESULT,
+        WorldOpcode::SmsgPartyCommandResult as u16,
         &build_party_command_result_body(2, &character.name, outcome.result),
         Some(header_crypto),
     )
@@ -1227,7 +1228,7 @@ pub(in crate::world) async fn handle_group_uninvite(
     dispatch_party_member_packets(sessions, outcome.packets).await;
     send_packet(
         stream,
-        SMSG_PARTY_COMMAND_RESULT,
+        WorldOpcode::SmsgPartyCommandResult as u16,
         &build_party_command_result_body(2, &member_name, outcome.result),
         Some(header_crypto),
     )
@@ -1250,7 +1251,7 @@ pub(in crate::world) async fn handle_group_uninvite_guid(
     dispatch_party_member_packets(sessions, outcome.packets).await;
     send_packet(
         stream,
-        SMSG_PARTY_COMMAND_RESULT,
+        WorldOpcode::SmsgPartyCommandResult as u16,
         &build_party_command_result_body(2, "", outcome.result),
         Some(header_crypto),
     )
@@ -1288,7 +1289,7 @@ pub(in crate::world) async fn handle_group_raid_convert(
     if outcome.result == PartyResult::Ok {
         send_packet(
             stream,
-            SMSG_PARTY_COMMAND_RESULT,
+            WorldOpcode::SmsgPartyCommandResult as u16,
             &build_party_command_result_body(0, "", PartyResult::Ok),
             Some(&mut *header_crypto),
         )
@@ -1370,7 +1371,7 @@ pub(in crate::world) async fn handle_request_party_member_stats(
     let body = build_party_member_stats_full_body(requested, snapshot.as_ref())?;
     send_packet(
         stream,
-        SMSG_PARTY_MEMBER_STATS_FULL,
+        WorldOpcode::SmsgPartyMemberStatsFull as u16,
         &body,
         Some(header_crypto),
     )
@@ -1563,7 +1564,7 @@ pub(in crate::world) fn finish_loot_roll(
     if let Some((winner_guid, winner_vote, winner_number)) = winner {
         packets.extend(final_loot_roll_packets(&finished, winner_vote));
         let won_packet = OutboundWorldPacket {
-            opcode: SMSG_LOOT_ROLL_WON,
+            opcode: WorldOpcode::SmsgLootRollWon as u16,
             body: build_loot_roll_won_body(
                 finished.loot_guid,
                 finished.loot_slot,
@@ -1589,7 +1590,7 @@ pub(in crate::world) fn finish_loot_roll(
         }
     } else {
         let passed_packet = OutboundWorldPacket {
-            opcode: SMSG_LOOT_ALL_PASSED,
+            opcode: WorldOpcode::SmsgLootAllPassed as u16,
             body: build_loot_all_passed_body(
                 finished.loot_guid,
                 finished.loot_slot,
@@ -1625,7 +1626,7 @@ pub(in crate::world) fn final_loot_roll_packets(
             LootRollVote::Need | LootRollVote::Greed => {}
         }
         let roll_packet = OutboundWorldPacket {
-            opcode: SMSG_LOOT_ROLL,
+            opcode: WorldOpcode::SmsgLootRoll as u16,
             body: build_loot_roll_body(
                 finished.loot_guid,
                 finished.loot_slot,

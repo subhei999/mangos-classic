@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{ServerWorldPacket, SmsgCharacterLoginFailedResponse};
 
 // CMaNGOS reference: src/game/WorldSession.cpp PlayerLogin and enter-world flow.
@@ -26,7 +27,7 @@ pub(in crate::world) async fn handle_player_login(
         );
         send_packet(
             stream,
-            SMSG_CHARACTER_LOGIN_FAILED,
+            WorldOpcode::SmsgCharacterLoginFailed as u16,
             &SmsgCharacterLoginFailedResponse {
                 result: CHAR_LOGIN_NO_CHARACTER,
             }
@@ -50,7 +51,7 @@ pub(in crate::world) async fn handle_player_login(
         );
         send_packet(
             stream,
-            SMSG_CHARACTER_LOGIN_FAILED,
+            WorldOpcode::SmsgCharacterLoginFailed as u16,
             &SmsgCharacterLoginFailedResponse {
                 result: CHAR_LOGIN_NO_CHARACTER,
             }

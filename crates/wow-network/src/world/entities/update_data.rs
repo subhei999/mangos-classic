@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 use wow_proto::{ServerWorldPacket, SmsgUpdateObjectResponse};
 
 // CMaNGOS reference: src/game/Entities/UpdateData.* and object update builders.
@@ -20,7 +21,7 @@ pub(in crate::world) async fn send_self_spawn_update(
     for body in bodies {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &body,
             header_crypto.as_deref_mut(),
         )
@@ -71,8 +72,7 @@ pub(in crate::world) fn build_self_spawn_update_bodies(
     update: &SelfSpawnUpdate<'_>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut blocks = build_self_spawn_update_blocks(update)?;
-    let leading_block_count = 1 + if legacy_fixture_npcs_enabled() { 2 } else { 0 };
-    let creature_start = leading_block_count;
+    let creature_start = 1;
     let item_start = creature_start
         + update.nearby_creatures.len()
         + update.nearby_gameobjects.len()
@@ -175,18 +175,13 @@ pub(in crate::world) fn build_self_spawn_update_blocks(
         update.inventory,
         update.inventory_container_slots,
     )?;
-    let legacy_fixture_count = if legacy_fixture_npcs_enabled() { 1 } else { 0 };
     let mut blocks = Vec::with_capacity(
-        1 + legacy_fixture_count
-            + creature_blocks.len()
+        1 + creature_blocks.len()
             + gameobject_blocks.len()
             + corpse_blocks.len()
             + item_blocks.len(),
     );
     blocks.push(block);
-    if legacy_fixture_npcs_enabled() {
-        blocks.push(build_rust_guide_create_block(character)?);
-    }
     blocks.extend(creature_blocks);
     blocks.extend(gameobject_blocks);
     blocks.extend(corpse_blocks);

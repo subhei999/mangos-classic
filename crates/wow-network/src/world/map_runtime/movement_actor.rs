@@ -1,5 +1,7 @@
 use super::*;
 use tokio::sync::{mpsc, oneshot};
+#[cfg(test)]
+use wow_proto::world::WorldOpcode;
 
 const DEFAULT_MOVEMENT_ACTOR_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_MOVEMENT_ACTOR_MAX_BATCH_SIZE: usize = 64;
@@ -257,7 +259,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
             character_guid,
-            opcode: MSG_MOVE_STOP as u16,
+            opcode: WorldOpcode::MsgMoveStop as u16,
             movement: MovementInfo {
                 flags: 0,
                 client_time: character_guid,
@@ -296,7 +298,7 @@ mod tests {
         let batch = vec![
             MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
                 character_guid: 7,
-                opcode: MSG_MOVE_STOP as u16,
+                opcode: WorldOpcode::MsgMoveStop as u16,
                 movement: MovementInfo {
                     flags: 0,
                     client_time: 1,
@@ -310,7 +312,7 @@ mod tests {
             }),
             MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
                 character_guid: 7,
-                opcode: MSG_MOVE_STOP as u16,
+                opcode: WorldOpcode::MsgMoveStop as u16,
                 movement: MovementInfo {
                     flags: 0,
                     client_time: 2,

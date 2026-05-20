@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn handle_npc_text_query(
     stream: &mut WorldPacketSink,
@@ -14,14 +15,13 @@ pub(in crate::world) async fn handle_npc_text_query(
         "Answering NPC text query"
     );
     let text = match text_id {
-        RUST_GUIDE_GOSSIP_TEXT_ID => RUST_GUIDE_GOSSIP_TEXT,
         DB_VENDOR_GOSSIP_TEXT_ID => DB_VENDOR_GOSSIP_TEXT,
         DB_TRAINER_GOSSIP_TEXT_ID => DB_TRAINER_GOSSIP_TEXT,
         _ => "",
     };
     let text = if matches!(
         text_id,
-        RUST_GUIDE_GOSSIP_TEXT_ID | DB_VENDOR_GOSSIP_TEXT_ID | DB_TRAINER_GOSSIP_TEXT_ID
+        DB_VENDOR_GOSSIP_TEXT_ID | DB_TRAINER_GOSSIP_TEXT_ID
     ) {
         text.to_string()
     } else {
@@ -30,7 +30,13 @@ pub(in crate::world) async fn handle_npc_text_query(
             .unwrap_or_else(|| "Greetings $N".to_string())
     };
     let response = build_npc_text_update(text_id, text.as_str());
-    send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgNpcTextUpdate as u16,
+        &response,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_list_inventory(
@@ -40,9 +46,7 @@ pub(in crate::world) async fn handle_list_inventory(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let guid = ObjectGuid::from_raw(request.raw_guid);
-    let response = if guid == rust_guide_guid() {
-        build_rust_guide_vendor_inventory()
-    } else if guid.is_creature() {
+    let response = if guid.is_creature() {
         let vendor_items = wow_db::get_vendor_items(world_db_pool, guid.entry()).await?;
         let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
         info!(
@@ -59,7 +63,13 @@ pub(in crate::world) async fn handle_list_inventory(
         );
         return Ok(());
     };
-    send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgListInventory as u16,
+        &response,
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_buy_item(
@@ -118,7 +128,7 @@ pub(in crate::world) async fn handle_buy_item(
             None => {
                 return send_packet(
                     stream,
-                    SMSG_BUY_FAILED,
+                    WorldOpcode::SmsgBuyFailed as u16,
                     &build_buy_failed_body(buy.vendor_guid, buy.item, BUY_ERR_NOT_ENOUGHT_MONEY),
                     Some(header_crypto),
                 )
@@ -169,7 +179,7 @@ pub(in crate::world) async fn handle_buy_item(
 
     send_packet(
         stream,
-        SMSG_BUY_ITEM,
+        WorldOpcode::SmsgBuyItem as u16,
         &build_buy_item_body(buy.vendor_guid, vendor_item.slot, count),
         Some(&mut *header_crypto),
     )
@@ -218,11 +228,17 @@ pub(in crate::world) async fn handle_buy_item(
         }
     }
     let body = build_update_object_body(&update_blocks);
-    send_packet(stream, SMSG_UPDATE_OBJECT, &body, Some(&mut *header_crypto)).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
     if let Some(money) = money {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_player_money_update_body(character_guid, money)?,
             Some(header_crypto),
         )
@@ -292,19 +308,6 @@ pub(in crate::world) async fn vendor_buy_item(
     world_db_pool: &MySqlPool,
     buy: BuyItemRequest,
 ) -> anyhow::Result<Option<VendorBuyItem>> {
-    if buy.vendor_guid == rust_guide_guid() {
-        return Ok(rust_guide_vendor_slot(buy.item).map(|slot| VendorBuyItem {
-            slot,
-            container_slots: if buy.item == RUST_VENDOR_BAG_ITEM {
-                6
-            } else {
-                0
-            },
-            buy_count: 1,
-            price: 0,
-        }));
-    }
-
     if !buy.vendor_guid.is_creature() {
         return Ok(None);
     }
@@ -442,9 +445,7 @@ pub(in crate::world) async fn handle_sell_item(
     };
     let character_guid = character.guid;
     let request = SellItemRequest::from(request);
-    let vendor_valid = if request.vendor_guid == rust_guide_guid() {
-        true
-    } else if request.vendor_guid.is_creature() {
+    let vendor_valid = if request.vendor_guid.is_creature() {
         !wow_db::get_vendor_items(world_db_pool, request.vendor_guid.entry())
             .await?
             .is_empty()
@@ -454,7 +455,7 @@ pub(in crate::world) async fn handle_sell_item(
     if !vendor_valid {
         return send_packet(
             stream,
-            SMSG_SELL_ITEM,
+            WorldOpcode::SmsgSellItem as u16,
             &build_sell_item_error_body(
                 request.vendor_guid,
                 request.item_guid,
@@ -479,7 +480,7 @@ pub(in crate::world) async fn handle_sell_item(
     else {
         return send_packet(
             stream,
-            SMSG_SELL_ITEM,
+            WorldOpcode::SmsgSellItem as u16,
             &build_sell_item_error_body(
                 request.vendor_guid,
                 request.item_guid,
@@ -506,7 +507,7 @@ pub(in crate::world) async fn handle_sell_item(
     {
         return send_packet(
             stream,
-            SMSG_SELL_ITEM,
+            WorldOpcode::SmsgSellItem as u16,
             &build_sell_item_error_body(
                 request.vendor_guid,
                 request.item_guid,
@@ -606,7 +607,7 @@ pub(in crate::world) async fn handle_sell_item(
     if !update_blocks.is_empty() {
         send_packet(
             stream,
-            SMSG_UPDATE_OBJECT,
+            WorldOpcode::SmsgUpdateObject as u16,
             &build_update_object_body(&update_blocks),
             Some(&mut *header_crypto),
         )
@@ -614,14 +615,14 @@ pub(in crate::world) async fn handle_sell_item(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_buyback_slot_update_body(character_guid, Some(buyback_entry), buyback_slot)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character_guid, money)?,
         Some(&mut *header_crypto),
     )
@@ -652,9 +653,7 @@ pub(in crate::world) async fn handle_buyback_item(
     };
     let character_guid = character.guid;
     let request = BuybackItemRequest::from(request);
-    let vendor_valid = if request.vendor_guid == rust_guide_guid() {
-        true
-    } else if request.vendor_guid.is_creature() {
+    let vendor_valid = if request.vendor_guid.is_creature() {
         !wow_db::get_vendor_items(world_db_pool, request.vendor_guid.entry())
             .await?
             .is_empty()
@@ -664,7 +663,7 @@ pub(in crate::world) async fn handle_buyback_item(
     if !vendor_valid {
         return send_packet(
             stream,
-            SMSG_SELL_ITEM,
+            WorldOpcode::SmsgSellItem as u16,
             &build_sell_item_error_body(
                 request.vendor_guid,
                 ObjectGuid::from_raw(0),
@@ -683,7 +682,7 @@ pub(in crate::world) async fn handle_buyback_item(
     else {
         return send_packet(
             stream,
-            SMSG_BUY_FAILED,
+            WorldOpcode::SmsgBuyFailed as u16,
             &build_buy_failed_body(request.vendor_guid, 0, BUY_ERR_CANT_FIND_ITEM),
             Some(header_crypto),
         )
@@ -704,7 +703,7 @@ pub(in crate::world) async fn handle_buyback_item(
         session.inventory.buyback_items.remove(entry_index);
         return send_packet(
             stream,
-            SMSG_BUY_FAILED,
+            WorldOpcode::SmsgBuyFailed as u16,
             &build_buy_failed_body(request.vendor_guid, 0, BUY_ERR_CANT_FIND_ITEM),
             Some(header_crypto),
         )
@@ -715,7 +714,7 @@ pub(in crate::world) async fn handle_buyback_item(
     else {
         return send_packet(
             stream,
-            SMSG_BUY_FAILED,
+            WorldOpcode::SmsgBuyFailed as u16,
             &build_buy_failed_body(
                 request.vendor_guid,
                 source_item.item_template,
@@ -748,7 +747,7 @@ pub(in crate::world) async fn handle_buyback_item(
     else {
         return send_packet(
             stream,
-            SMSG_BUY_FAILED,
+            WorldOpcode::SmsgBuyFailed as u16,
             &build_buy_failed_body(
                 request.vendor_guid,
                 source_item.item_template,
@@ -840,21 +839,21 @@ pub(in crate::world) async fn handle_buyback_item(
     }
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_update_object_body(&update_blocks),
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_buyback_slot_update_body(character_guid, None, request.slot)?,
         Some(&mut *header_crypto),
     )
     .await?;
     send_packet(
         stream,
-        SMSG_UPDATE_OBJECT,
+        WorldOpcode::SmsgUpdateObject as u16,
         &build_player_money_update_body(character_guid, money)?,
         Some(&mut *header_crypto),
     )

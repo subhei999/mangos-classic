@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 #[derive(Clone, Copy)]
 pub(in crate::world) struct GossipSelectDeps<'a> {
@@ -37,30 +38,6 @@ pub(in crate::world) async fn handle_gossip_hello(
         "Received gossip hello"
     );
 
-    if guid == rust_guide_guid() {
-        let text_update = build_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID, RUST_GUIDE_GOSSIP_TEXT);
-        send_packet(
-            stream,
-            SMSG_NPC_TEXT_UPDATE,
-            &text_update,
-            Some(&mut *header_crypto),
-        )
-        .await?;
-        let response = build_gossip_message(
-            guid,
-            RUST_GUIDE_GOSSIP_TEXT_ID,
-            &[(0, GOSSIP_ICON_CHAT, RUST_GUIDE_GOSSIP_OPTION)],
-        );
-        session.gossip.active_guid = Some(guid);
-        session.gossip.active_options = vec![GossipSessionOption {
-            option_id: GOSSIP_OPTION_GOSSIP,
-            action_menu_id: -1,
-            action_poi_id: 0,
-            action_script_id: 0,
-        }];
-        return send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await;
-    }
-
     if guid.is_creature() {
         if let Some(quest) =
             questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
@@ -69,7 +46,7 @@ pub(in crate::world) async fn handle_gossip_hello(
             let response = build_quest_offer_reward_body(guid, &quest, &displays);
             return send_packet(
                 stream,
-                SMSG_QUESTGIVER_OFFER_REWARD,
+                WorldOpcode::SmsgQuestgiverOfferReward as u16,
                 &response,
                 Some(header_crypto),
             )
@@ -107,18 +84,6 @@ pub(in crate::world) async fn handle_gossip_select_option(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let selection = GossipSelectOption::from(request);
-    if selection.guid == rust_guide_guid() {
-        if selection.is_supported_browse_option() {
-            session.gossip = GossipSessionState::default();
-            return send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await;
-        }
-        warn!(
-            option = selection.option,
-            "Ignoring unsupported Rust Guide gossip option"
-        );
-        return Ok(());
-    }
-
     if selection.guid.is_creature() {
         let Some(action) = session
             .gossip
@@ -209,13 +174,25 @@ async fn dispatch_db_gossip_selection(
                 return Ok(());
             }
             session.gossip = GossipSessionState::default();
-            send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await
+            send_packet(
+                stream,
+                WorldOpcode::SmsgGossipComplete as u16,
+                &[],
+                Some(header_crypto),
+            )
+            .await
         }
         GOSSIP_OPTION_VENDOR | GOSSIP_OPTION_ARMORER => {
             let vendor_items = wow_db::get_vendor_items(deps.world_db_pool, guid.entry()).await?;
             let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
             let response = build_vendor_inventory_body(guid, &list_items);
-            send_packet(stream, SMSG_LIST_INVENTORY, &response, Some(header_crypto)).await
+            send_packet(
+                stream,
+                WorldOpcode::SmsgListInventory as u16,
+                &response,
+                Some(header_crypto),
+            )
+            .await
         }
         GOSSIP_OPTION_TRAINER => {
             send_trainer_list(
@@ -229,7 +206,13 @@ async fn dispatch_db_gossip_selection(
             .await
         }
         GOSSIP_OPTION_SPIRITHEALER => {
-            send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(&mut *header_crypto)).await?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgGossipComplete as u16,
+                &[],
+                Some(&mut *header_crypto),
+            )
+            .await?;
             handle_spirit_healer_activate(
                 stream,
                 PlayerDeathDeps {
@@ -266,7 +249,13 @@ async fn dispatch_db_gossip_selection(
                 "Closing unsupported DB gossip service option"
             );
             session.gossip = GossipSessionState::default();
-            send_packet(stream, SMSG_GOSSIP_COMPLETE, &[], Some(header_crypto)).await
+            send_packet(
+                stream,
+                WorldOpcode::SmsgGossipComplete as u16,
+                &[],
+                Some(header_crypto),
+            )
+            .await
         }
     }?;
 
@@ -297,7 +286,7 @@ async fn send_prepared_gossip_menu(
         let response = build_questgiver_quest_list_body(guid, &prepared.quests);
         return send_packet(
             stream,
-            SMSG_QUESTGIVER_QUEST_LIST,
+            WorldOpcode::SmsgQuestgiverQuestList as u16,
             &response,
             Some(header_crypto),
         )
@@ -309,7 +298,7 @@ async fn send_prepared_gossip_menu(
             let text_update = build_npc_text_update(prepared.text_id, text.as_str());
             send_packet(
                 stream,
-                SMSG_NPC_TEXT_UPDATE,
+                WorldOpcode::SmsgNpcTextUpdate as u16,
                 &text_update,
                 Some(&mut *header_crypto),
             )
@@ -341,7 +330,13 @@ async fn send_prepared_gossip_menu(
         &prepared.options,
         &prepared.quests,
     );
-    send_packet(stream, SMSG_GOSSIP_MESSAGE, &response, Some(header_crypto)).await
+    send_packet(
+        stream,
+        WorldOpcode::SmsgGossipMessage as u16,
+        &response,
+        Some(header_crypto),
+    )
+    .await
 }
 
 async fn prepare_db_creature_gossip_menu(
@@ -618,12 +613,6 @@ fn gossip_icon_or_default(icon: u8) -> u8 {
 pub(in crate::world) struct GossipSelectOption {
     pub(in crate::world) guid: ObjectGuid,
     pub(in crate::world) option: u32,
-}
-
-impl GossipSelectOption {
-    pub(in crate::world) fn is_supported_browse_option(&self) -> bool {
-        self.option == 0
-    }
 }
 
 async fn db_npc_text_primary(

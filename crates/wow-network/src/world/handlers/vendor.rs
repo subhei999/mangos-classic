@@ -14,13 +14,14 @@ pub(in crate::world) async fn handle_npc_text_query(
         "Answering NPC text query"
     );
     let text = match text_id {
+        RUST_GUIDE_GOSSIP_TEXT_ID => RUST_GUIDE_GOSSIP_TEXT,
         DB_VENDOR_GOSSIP_TEXT_ID => DB_VENDOR_GOSSIP_TEXT,
         DB_TRAINER_GOSSIP_TEXT_ID => DB_TRAINER_GOSSIP_TEXT,
-        _ => RUST_GUIDE_GOSSIP_TEXT,
+        _ => "",
     };
     let text = if matches!(
         text_id,
-        DB_VENDOR_GOSSIP_TEXT_ID | DB_TRAINER_GOSSIP_TEXT_ID
+        RUST_GUIDE_GOSSIP_TEXT_ID | DB_VENDOR_GOSSIP_TEXT_ID | DB_TRAINER_GOSSIP_TEXT_ID
     ) {
         text.to_string()
     } else {

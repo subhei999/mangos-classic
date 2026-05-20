@@ -346,11 +346,27 @@ pub(in crate::world) struct WorldSessionState {
     pub(in crate::world) auras: AuraSessionState,
     pub(in crate::world) inventory: InventorySessionState,
     pub(in crate::world) quests: QuestSessionState,
+    pub(in crate::world) gossip: GossipSessionState,
     pub(in crate::world) death: DeathSessionState,
     #[allow(dead_code)]
     pub(in crate::world) social: SocialSessionState,
     #[allow(dead_code)]
     pub(in crate::world) visibility: VisibilitySessionState,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct GossipSessionState {
+    pub(in crate::world) active_guid: Option<ObjectGuid>,
+    pub(in crate::world) active_menu_id: u32,
+    pub(in crate::world) active_options: Vec<GossipSessionOption>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct GossipSessionOption {
+    pub(in crate::world) option_id: u32,
+    pub(in crate::world) action_menu_id: i32,
+    pub(in crate::world) action_poi_id: u32,
+    pub(in crate::world) action_script_id: u32,
 }
 
 #[derive(Debug, Default)]

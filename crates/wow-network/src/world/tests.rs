@@ -1245,6 +1245,152 @@ fn invalid_db_vendor_gossip_option_is_not_the_supported_browse_option() {
     assert!(!invalid_selection.is_supported_browse_option());
 }
 
+fn test_gossip_menu_option(
+    option_id: u32,
+    npc_option_npcflag: u32,
+) -> wow_db::GossipMenuOptionQuery {
+    wow_db::GossipMenuOptionQuery {
+        menu_id: 7,
+        id: 0,
+        option_icon: GOSSIP_ICON_CHAT,
+        option_text: Some("DB option".to_string()),
+        option_id,
+        npc_option_npcflag,
+        action_menu_id: 0,
+        action_poi_id: 0,
+        action_script_id: 0,
+        box_coded: 0,
+        box_text: None,
+        condition_id: 0,
+    }
+}
+
+#[tokio::test]
+async fn db_gossip_option_visibility_requires_matching_npc_flag() {
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let object_mgr = ObjectMgr::default();
+    let row = test_gossip_menu_option(GOSSIP_OPTION_VENDOR, UNIT_NPC_FLAG_VENDOR);
+    let session = WorldSessionState::default();
+    let service_state = GossipServiceState {
+        npc_flags: UNIT_NPC_FLAG_GOSSIP,
+        has_vendor_items: true,
+        has_trainer_spells: false,
+        is_spirit_healer: false,
+        is_dead: false,
+    };
+
+    assert_eq!(
+        gossip_option_visibility(&object_mgr, &pool, &row, &service_state, &session)
+            .await
+            .unwrap(),
+        GossipOptionVisibility::Hide
+    );
+
+    let service_state = GossipServiceState {
+        npc_flags: UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_VENDOR,
+        ..service_state
+    };
+    assert_eq!(
+        gossip_option_visibility(&object_mgr, &pool, &row, &service_state, &session)
+            .await
+            .unwrap(),
+        GossipOptionVisibility::Show
+    );
+}
+
+#[tokio::test]
+async fn db_gossip_option_visibility_requires_service_backing() {
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let object_mgr = ObjectMgr::default();
+    let session = WorldSessionState::default();
+    let service_state = GossipServiceState {
+        npc_flags: UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_TRAINER,
+        has_vendor_items: false,
+        has_trainer_spells: false,
+        is_spirit_healer: false,
+        is_dead: false,
+    };
+
+    assert_eq!(
+        gossip_option_visibility(
+            &object_mgr,
+            &pool,
+            &test_gossip_menu_option(GOSSIP_OPTION_VENDOR, UNIT_NPC_FLAG_VENDOR),
+            &service_state,
+            &session,
+        )
+        .await
+        .unwrap(),
+        GossipOptionVisibility::Hide
+    );
+    assert_eq!(
+        gossip_option_visibility(
+            &object_mgr,
+            &pool,
+            &test_gossip_menu_option(GOSSIP_OPTION_TRAINER, UNIT_NPC_FLAG_TRAINER),
+            &service_state,
+            &session,
+        )
+        .await
+        .unwrap(),
+        GossipOptionVisibility::Hide
+    );
+}
+
+#[test]
+fn db_gossip_message_preserves_prepared_option_actions_shape() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_003);
+    let body = build_gossip_message_from_options_with_quests(
+        guid,
+        1234,
+        &[GossipMessageOption {
+            option_index: 0,
+            icon: GOSSIP_ICON_TAXI,
+            coded: 1,
+            text: "Show me where to fly.".to_string(),
+        }],
+        &[],
+    );
+
+    assert_eq!(&body[0..8], &guid.raw().to_le_bytes());
+    assert_eq!(&body[8..12], &1234u32.to_le_bytes());
+    assert_eq!(&body[12..16], &1u32.to_le_bytes());
+    assert_eq!(&body[16..20], &0u32.to_le_bytes());
+    assert_eq!(body[20], GOSSIP_ICON_TAXI);
+    assert_eq!(body[21], 1);
+    assert_eq!(&body[22..44], b"Show me where to fly.\0");
+    assert_eq!(&body[44..48], &0u32.to_le_bytes());
+}
+
+#[test]
+fn session_gossip_state_maps_selection_to_db_option_action() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 42, 96_004);
+    let mut session = WorldSessionState::default();
+    session.gossip.active_guid = Some(guid);
+    session.gossip.active_menu_id = 10;
+    session.gossip.active_options = vec![
+        GossipSessionOption {
+            option_id: GOSSIP_OPTION_GOSSIP,
+            action_menu_id: 20,
+            action_poi_id: 0,
+            action_script_id: 0,
+        },
+        GossipSessionOption {
+            option_id: GOSSIP_OPTION_TRAINER,
+            action_menu_id: 0,
+            action_poi_id: 0,
+            action_script_id: 0,
+        },
+    ];
+
+    assert_eq!(
+        session.gossip.active_options[1].option_id,
+        GOSSIP_OPTION_TRAINER
+    );
+    assert_eq!(session.gossip.active_options[0].action_menu_id, 20);
+    assert_eq!(session.gossip.active_guid, Some(guid));
+}
+
 #[test]
 fn rust_guide_npc_text_update_matches_cmangos_eight_option_shape() {
     let body = build_rust_guide_npc_text_update(RUST_GUIDE_GOSSIP_TEXT_ID);

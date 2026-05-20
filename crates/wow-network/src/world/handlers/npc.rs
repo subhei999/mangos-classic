@@ -30,7 +30,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
                 ctx.world_db_pool,
                 &ctx.runtime_state.maps,
                 packet.gossip_hello()?,
-                &*ctx.session,
+                &mut *ctx.session,
                 &mut *ctx.header_crypto,
             )
             .await
@@ -41,6 +41,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
                 GossipSelectDeps {
                     character_db_pool: ctx.character_db_pool,
                     world_db_pool: ctx.world_db_pool,
+                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
                     maps: &ctx.runtime_state.maps,
                     sessions: &ctx.runtime_state.sessions,
                     account_id: ctx.account_id,

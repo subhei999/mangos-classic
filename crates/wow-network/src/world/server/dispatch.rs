@@ -122,6 +122,17 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::PlayerLogout(_) => {
             handlers::misc::dispatch_misc_packet(ctx, packet).await
         }
+        packets::ParsedWorldClientPacket::SendMail(_)
+        | packets::ParsedWorldClientPacket::GetMailList(_)
+        | packets::ParsedWorldClientPacket::MailTakeMoney(_)
+        | packets::ParsedWorldClientPacket::MailTakeItem(_)
+        | packets::ParsedWorldClientPacket::MailMarkAsRead(_)
+        | packets::ParsedWorldClientPacket::MailReturnToSender(_)
+        | packets::ParsedWorldClientPacket::MailDelete(_)
+        | packets::ParsedWorldClientPacket::MailCreateTextItem(_)
+        | packets::ParsedWorldClientPacket::ItemTextQuery(_) => {
+            handlers::mail::dispatch_mail_packet(ctx, packet).await
+        }
         packets::ParsedWorldClientPacket::ItemQuerySingle(_)
         | packets::ParsedWorldClientPacket::ItemNameQuery(_)
         | packets::ParsedWorldClientPacket::PageTextQuery(_) => {

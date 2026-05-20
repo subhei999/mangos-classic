@@ -3,24 +3,24 @@ use wow_proto::{
     BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest,
     CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
     CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
-    GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest, GroupAcceptRequest,
-    GroupAssistantLeaderRequest, GroupCancelRequest, GroupChangeSubGroupRequest,
-    GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest, GroupRaidConvertRequest,
-    GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
-    InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, JoinChannelRequest,
-    ListInventoryRequest, LogoutCancelRequest, LogoutRequest, LootMasterGiveRequest,
-    LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest, LootRollRequest,
-    MessageChatRequest, MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest,
-    PageTextQueryRequest, PingRequest, PlayerLoginRequest, PlayerLogoutRequest,
-    QueryNextMailTimeRequest, QueryTimeRequest, QuestLogRemoveQuestRequest, QuestQueryRequest,
-    QuestRewardRequest, QuestgiverHelloRequest, QuestgiverQuestRequest,
-    QuestgiverStatusQueryRequest, ReadItemRequest, ReclaimCorpseRequest, RepopRequest,
-    RequestAccountDataRequest, RequestPartyMemberStatsRequest, SellItemRequest,
-    SetActionButtonRequest, SetActiveMoverRequest, SetAmmoRequest, SetSelectionRequest,
-    SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
-    StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest, TrainerListRequest,
-    TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest, UpdateAccountDataRequest,
-    UseItemRequest, WorldAuthSessionRequest, WorldOpcode,
+    GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest,
+    GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
+    GroupChangeSubGroupRequest, GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest,
+    GroupRaidConvertRequest, GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
+    InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, ItemTextQueryRequest,
+    JoinChannelRequest, ListInventoryRequest, LogoutCancelRequest, LogoutRequest,
+    LootMasterGiveRequest, LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest,
+    LootRollRequest, MailCreateTextItemRequest, MailIdRequest, MessageChatRequest,
+    MoveTeleportAckRequest, NameQueryRequest, NpcTextQueryRequest, PageTextQueryRequest,
+    PingRequest, PlayerLoginRequest, PlayerLogoutRequest, QueryNextMailTimeRequest,
+    QueryTimeRequest, QuestLogRemoveQuestRequest, QuestQueryRequest, QuestRewardRequest,
+    QuestgiverHelloRequest, QuestgiverQuestRequest, QuestgiverStatusQueryRequest, ReadItemRequest,
+    ReclaimCorpseRequest, RepopRequest, RequestAccountDataRequest, RequestPartyMemberStatsRequest,
+    SellItemRequest, SendMailRequest, SetActionButtonRequest, SetActiveMoverRequest,
+    SetAmmoRequest, SetSelectionRequest, SetTargetObsoleteRequest, SpiritHealerActivateRequest,
+    SplitItemRequest, StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest,
+    TrainerListRequest, TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest,
+    UpdateAccountDataRequest, UseItemRequest, WorldAuthSessionRequest, WorldOpcode,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +105,15 @@ pub(super) enum ParsedWorldClientPacket {
     GroupChangeSubGroup(GroupChangeSubGroupRequest),
     RequestPartyMemberStats(RequestPartyMemberStatsRequest),
     QueryNextMailTime(QueryNextMailTimeRequest),
+    SendMail(SendMailRequest),
+    GetMailList(GetMailListRequest),
+    MailTakeMoney(MailIdRequest),
+    MailTakeItem(MailIdRequest),
+    MailMarkAsRead(MailIdRequest),
+    MailReturnToSender(MailIdRequest),
+    MailDelete(MailIdRequest),
+    MailCreateTextItem(MailCreateTextItemRequest),
+    ItemTextQuery(ItemTextQueryRequest),
     GroupRaidConvert(GroupRaidConvertRequest),
     GroupAssistantLeader(GroupAssistantLeaderRequest),
     LogoutRequest(LogoutRequest),
@@ -224,6 +233,15 @@ impl ParsedWorldClientPacket {
             Self::GroupChangeSubGroup(_) => WorldOpcode::CmsgGroupChangeSubGroup.into(),
             Self::RequestPartyMemberStats(_) => WorldOpcode::CmsgRequestPartyMemberStats.into(),
             Self::QueryNextMailTime(_) => WorldOpcode::MsgQueryNextMailTime.into(),
+            Self::SendMail(_) => WorldOpcode::CmsgSendMail.into(),
+            Self::GetMailList(_) => WorldOpcode::CmsgGetMailList.into(),
+            Self::MailTakeMoney(_) => WorldOpcode::CmsgMailTakeMoney.into(),
+            Self::MailTakeItem(_) => WorldOpcode::CmsgMailTakeItem.into(),
+            Self::MailMarkAsRead(_) => WorldOpcode::CmsgMailMarkAsRead.into(),
+            Self::MailReturnToSender(_) => WorldOpcode::CmsgMailReturnToSender.into(),
+            Self::MailDelete(_) => WorldOpcode::CmsgMailDelete.into(),
+            Self::MailCreateTextItem(_) => WorldOpcode::CmsgMailCreateTextItem.into(),
+            Self::ItemTextQuery(_) => WorldOpcode::CmsgItemTextQuery.into(),
             Self::GroupRaidConvert(_) => WorldOpcode::CmsgGroupRaidConvert.into(),
             Self::GroupAssistantLeader(_) => WorldOpcode::CmsgGroupAssistantLeader.into(),
             Self::LogoutRequest(_) => WorldOpcode::CmsgLogoutRequest.into(),
@@ -556,6 +574,35 @@ impl ParsedWorldClientPacket {
         RequestPartyMemberStatsRequest,
         "CMSG_REQUEST_PARTY_MEMBER_STATS"
     );
+    packet_accessor!(send_mail, SendMail, SendMailRequest, "CMSG_SEND_MAIL");
+    packet_accessor!(
+        get_mail_list,
+        GetMailList,
+        GetMailListRequest,
+        "CMSG_GET_MAIL_LIST"
+    );
+    packet_accessor!(
+        mail_create_text_item,
+        MailCreateTextItem,
+        MailCreateTextItemRequest,
+        "CMSG_MAIL_CREATE_TEXT_ITEM"
+    );
+    packet_accessor!(
+        item_text_query,
+        ItemTextQuery,
+        ItemTextQueryRequest,
+        "CMSG_ITEM_TEXT_QUERY"
+    );
+    pub(super) fn mail_id_request(&self) -> anyhow::Result<MailIdRequest> {
+        match self {
+            Self::MailTakeMoney(request)
+            | Self::MailTakeItem(request)
+            | Self::MailMarkAsRead(request)
+            | Self::MailReturnToSender(request)
+            | Self::MailDelete(request) => Ok(*request),
+            other => anyhow::bail!("expected CMSG_MAIL_*, got opcode 0x{:04X}", other.opcode()),
+        }
+    }
     packet_accessor!(
         group_assistant_leader,
         GroupAssistantLeader,
@@ -1067,6 +1114,63 @@ pub(super) fn parse_world_client_packet(
                 QueryNextMailTimeRequest::read(&mut body)?,
             ))
         }
+        Ok(WorldOpcode::CmsgSendMail) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::SendMail(SendMailRequest::read(
+                &mut body,
+            )?))
+        }
+        Ok(WorldOpcode::CmsgGetMailList) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::GetMailList(
+                GetMailListRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgMailTakeMoney) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailTakeMoney(MailIdRequest::read(
+                &mut body,
+                "CMSG_MAIL_TAKE_MONEY",
+            )?))
+        }
+        Ok(WorldOpcode::CmsgMailTakeItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailTakeItem(MailIdRequest::read(
+                &mut body,
+                "CMSG_MAIL_TAKE_ITEM",
+            )?))
+        }
+        Ok(WorldOpcode::CmsgMailMarkAsRead) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailMarkAsRead(
+                MailIdRequest::read(&mut body, "CMSG_MAIL_MARK_AS_READ")?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgMailReturnToSender) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailReturnToSender(
+                MailIdRequest::read(&mut body, "CMSG_MAIL_RETURN_TO_SENDER")?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgMailDelete) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailDelete(MailIdRequest::read(
+                &mut body,
+                "CMSG_MAIL_DELETE",
+            )?))
+        }
+        Ok(WorldOpcode::CmsgMailCreateTextItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::MailCreateTextItem(
+                MailCreateTextItemRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgItemTextQuery) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::ItemTextQuery(
+                ItemTextQueryRequest::read(&mut body)?,
+            ))
+        }
         Ok(WorldOpcode::CmsgGroupRaidConvert) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::GroupRaidConvert(
@@ -1401,6 +1505,41 @@ mod packet_dispatch_tests {
         assert_eq!(loot_method.loot_method, 2);
         assert_eq!(loot_method.master_looter_raw_guid, 0xF130_0000_0000_0037);
         assert_eq!(loot_method.loot_threshold, 3);
+    }
+
+    #[test]
+    pub(in crate::world) fn parse_world_client_packet_decodes_mail_requests() {
+        let mailbox = 0x0102_0304_0506_0708u64;
+        let mut send_body = Vec::new();
+        send_body.extend_from_slice(&mailbox.to_le_bytes());
+        send_body.extend_from_slice(b"Receiver\0Subject\0Body\0");
+        send_body.extend_from_slice(&41u32.to_le_bytes());
+        send_body.extend_from_slice(&0u32.to_le_bytes());
+        send_body.extend_from_slice(&0u64.to_le_bytes());
+        send_body.extend_from_slice(&123u32.to_le_bytes());
+        send_body.extend_from_slice(&0u32.to_le_bytes());
+        send_body.extend_from_slice(&0u64.to_le_bytes());
+        send_body.push(0);
+        let parsed = parse_world_client_packet(0x0238, &send_body).unwrap();
+        let send = parsed.send_mail().unwrap();
+        assert_eq!(send.mailbox_raw_guid, mailbox);
+        assert_eq!(send.receiver, "Receiver");
+        assert_eq!(send.subject, "Subject");
+        assert_eq!(send.body, "Body");
+        assert_eq!(send.money, 123);
+
+        let mut mail_id_body = Vec::new();
+        mail_id_body.extend_from_slice(&mailbox.to_le_bytes());
+        mail_id_body.extend_from_slice(&42u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0246, &mail_id_body).unwrap();
+        assert_eq!(parsed.mail_id_request().unwrap().mail_id, 42);
+
+        let mut text_body = Vec::new();
+        text_body.extend_from_slice(&5u32.to_le_bytes());
+        text_body.extend_from_slice(&42u32.to_le_bytes());
+        text_body.extend_from_slice(&0x7000_0000u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0243, &text_body).unwrap();
+        assert_eq!(parsed.item_text_query().unwrap().item_text_id, 5);
     }
 
     #[test]

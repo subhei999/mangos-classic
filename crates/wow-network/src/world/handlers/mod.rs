@@ -10,6 +10,7 @@ pub(in crate::world) mod gm;
 pub(in crate::world) mod gossip;
 pub(in crate::world) mod inventory;
 pub(in crate::world) mod loot;
+pub(in crate::world) mod mail;
 pub(in crate::world) mod misc;
 mod mmap_path;
 pub(in crate::world) mod movement;

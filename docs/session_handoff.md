@@ -34,19 +34,14 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `TrainerTemplateId`) with direct rows. This should restore merchants/trainers
   whose gossip flags were visible but whose service backing looked empty in
   Rust. The release stack was restarted after the fix.
-- Trainer follow-up: ClassicDB/CMaNGOS class trainers commonly show a gossip
-  option before opening the trainer list. Rust now logs successful DB gossip
-  selections and trainer-list emission, including raw/listed spell counts and
-  green/red/gray state counts. The release stack was restarted with this
-  diagnostic build; the next real-client click should prove whether trainer
-  selection reaches `SMSG_TRAINER_LIST` or is filtered/ignored earlier.
-- Additional live-trainer diagnostic: metrics from the first live attempt showed
-  many `CMSG_GOSSIP_HELLO` / `SMSG_GOSSIP_MESSAGE` packets but no
-  `CMSG_GOSSIP_SELECT_OPTION`, so the failure is likely the prepared gossip
-  menu shape/contents rather than trainer-list dispatch. Rust now also logs
-  gossip hello and prepared menu entry/menu/text/option counts. After the latest
-  restart, no authenticated world session was connected yet; the next proof
-  requires a fresh real-client login and one trainer right-click.
+- Trainer gossip live RCA: the mage attempt against Khelden Bremen reached
+  Rust as `CMSG_GOSSIP_HELLO` and Rust sent a two-option menu, but the client
+  never sent `CMSG_GOSSIP_SELECT_OPTION`. CMaNGOS skips `gossip_menu` rows whose
+  `text_id` is absent from `npc_text`; the local ClassicDB import has Khelden's
+  `538/539` menu text rows missing. Rust now applies the same skip and falls
+  back to generic menu `0` service options, plus the CMaNGOS `"Greetings $N"`
+  fallback for missing `CMSG_NPC_TEXT_QUERY` ids. Release stack was restarted;
+  the next real-client mage trainer click is the live proof.
 - Existing GitHub issue #75 still tracks remaining non-merchant service actions:
   taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
   scripts/locales, and full npc_text parity.
@@ -1100,6 +1095,11 @@ Player visibility relocation threshold:
   - Live metrics before the second diagnostic restart showed
     `CMSG_GOSSIP_HELLO=52`, `SMSG_GOSSIP_MESSAGE=52`, and no
     `CMSG_GOSSIP_SELECT_OPTION`, pointing at the menu presented to the client.
+  - Live mage attempt against Khelden Bremen showed Rust sending menu `4660`,
+    `text_id=538`, `options=2`, but still no `CMSG_GOSSIP_SELECT_OPTION`.
+    CMaNGOS `ObjectMgr::LoadGossipMenu` skips gossip-menu rows with missing
+    `npc_text`; the local DB has no rows for `538/539`, so Rust now skips those
+    rows and falls back to generic menu `0` trainer options.
   - `cargo fmt`
   - `cargo test -p wow-network gossip --lib`
   - `cargo test -p wow-network trainer --lib`
@@ -1109,6 +1109,10 @@ Player visibility relocation threshold:
   - Added gossip hello / prepared-menu logging, then reran `cargo fmt`,
     `cargo test -p wow-network gossip --lib`, `cargo check -p worldserver`, and
     `.\scripts\restart-game-stack.cmd --release`.
+  - Missing-gossip-text fix validation: `cargo fmt`,
+    `cargo test -p wow-network gossip --lib`,
+    `cargo test -p wow-network trainer --lib`, `cargo check -p worldserver`,
+    and `.\scripts\restart-game-stack.cmd --release`.
 
 ## Current Confidence
 
@@ -1184,12 +1188,11 @@ Player visibility relocation threshold:
 - The currently running live server, if still up from before this change, does
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
-- Trainer gossip needs one more real-client login and click after the latest
-  restart. Current metrics after that restart showed zero connected world
-  sessions. Watch `world-client-18085.log` for `Received gossip hello`,
-  `Sending prepared gossip menu`, and then either `Dispatching DB gossip
-  selection` followed by `Sending trainer list` or `Trainer list is empty after
-  class filter`.
+- Trainer gossip needs one more real-client login and mage trainer click after
+  the latest restart. Watch `world-client-18085.log` for
+  `Skipping DB gossip_menu row with missing npc_text`, then a generic
+  `Train me.` prepared option, and then `Dispatching DB gossip selection`
+  followed by `Sending trainer list`.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted

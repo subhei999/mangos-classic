@@ -348,8 +348,14 @@ async fn prepare_db_creature_gossip_menu(
         .await?
         .unwrap_or(0);
     let menu_id = menu_id_override.unwrap_or(default_menu_id);
+    let menu_rows = db_gossip_menu_rows_with_existing_text(world_db_pool, menu_id).await?;
+    let has_loaded_menu = menu_id == 0 || !menu_rows.is_empty();
     let mut can_see_quests = menu_id == default_menu_id || menu_id_override.is_none();
-    let mut option_rows = wow_db::get_gossip_menu_option_queries(world_db_pool, menu_id).await?;
+    let mut option_rows = if has_loaded_menu {
+        wow_db::get_gossip_menu_option_queries(world_db_pool, menu_id).await?
+    } else {
+        Vec::new()
+    };
     if option_rows.is_empty() && can_see_quests {
         option_rows = wow_db::get_gossip_menu_option_queries(world_db_pool, 0).await?;
     }
@@ -392,7 +398,7 @@ async fn prepare_db_creature_gossip_menu(
 
     Ok(Some(PreparedGossipMenu {
         menu_id,
-        text_id: db_gossip_text_id(object_mgr, world_db_pool, menu_id, session).await?,
+        text_id: db_gossip_text_id(object_mgr, world_db_pool, &menu_rows, session).await?,
         options,
         option_actions,
         quests,
@@ -530,15 +536,12 @@ pub(in crate::world) async fn gossip_option_visibility(
 async fn db_gossip_text_id(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
-    menu_id: u32,
+    menu_rows: &[wow_db::GossipMenuQuery],
     session: &WorldSessionState,
 ) -> anyhow::Result<u32> {
-    if menu_id == 0 {
-        return Ok(DEFAULT_GOSSIP_MESSAGE);
-    }
     let mut text_id = DEFAULT_GOSSIP_MESSAGE;
     let mut last_condition_id = 0;
-    for row in wow_db::get_gossip_menu_queries(world_db_pool, menu_id).await? {
+    for row in menu_rows {
         let condition_matches = if row.condition_id == 0 {
             last_condition_id == 0
         } else if row.condition_id > last_condition_id {
@@ -558,7 +561,7 @@ async fn db_gossip_text_id(
             text_id = row.text_id;
             if row.script_id != 0 {
                 debug!(
-                    menu_id,
+                    menu_id = row.entry,
                     script_id = row.script_id,
                     "Gossip menu hello script is not implemented yet"
                 );
@@ -566,6 +569,32 @@ async fn db_gossip_text_id(
         }
     }
     Ok(text_id)
+}
+
+async fn db_gossip_menu_rows_with_existing_text(
+    world_db_pool: &MySqlPool,
+    menu_id: u32,
+) -> anyhow::Result<Vec<wow_db::GossipMenuQuery>> {
+    if menu_id == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut valid_rows = Vec::new();
+    for row in wow_db::get_gossip_menu_queries(world_db_pool, menu_id).await? {
+        if wow_db::get_npc_text_query(world_db_pool, row.text_id)
+            .await?
+            .is_some()
+        {
+            valid_rows.push(row);
+        } else {
+            warn!(
+                menu_id,
+                text_id = row.text_id,
+                "Skipping DB gossip_menu row with missing npc_text"
+            );
+        }
+    }
+    Ok(valid_rows)
 }
 
 fn gossip_icon_or_default(icon: u8) -> u8 {

@@ -35,7 +35,7 @@ pub(in crate::world) async fn handle_npc_text_query(
                 }
             })
             .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| text.to_string())
+            .unwrap_or_else(|| "Greetings $N".to_string())
     };
     let response = build_npc_text_update(text_id, text.as_str());
     send_packet(stream, SMSG_NPC_TEXT_UPDATE, &response, Some(header_crypto)).await

@@ -1,0 +1,60 @@
+name: Rusty MaNGOS Launcher Installer
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Build a fresh Windows launcher installer every Sunday at 07:30 UTC.
+    - cron: "30 7 * * 0"
+  push:
+    branches:
+      - codex/rusty-mangos
+    paths:
+      - ".github/workflows/rusty-mangos-launcher.yml"
+      - "bins/rusty-mangos-launcher/**"
+      - "bins/authserver/**"
+      - "bins/worldserver/**"
+      - "crates/**"
+      - "docs/rusty_mangos_launcher.md"
+      - "installer/**"
+      - "scripts/package-rusty-mangos-launcher.ps1"
+      - "scripts/rusty-mangos-launcher.*"
+      - "sql/base/**"
+      - "sql/updates/mangos/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    name: Build Windows installer
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build launcher installer
+        shell: pwsh
+        run: .\scripts\package-rusty-mangos-launcher.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: RustyMangosSetup
+          path: target\launcher-package\installer\RustyMangosSetup.exe
+          if-no-files-found: error
+
+      - name: Upload packaged app folder
+        uses: actions/upload-artifact@v6
+        with:
+          name: RustyMangosApp
+          path: target\launcher-package\app
+          if-no-files-found: error

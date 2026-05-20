@@ -581,10 +581,7 @@ async fn db_gossip_menu_rows_with_existing_text(
 
     let mut valid_rows = Vec::new();
     for row in wow_db::get_gossip_menu_queries(world_db_pool, menu_id).await? {
-        if wow_db::get_npc_text_query(world_db_pool, row.text_id)
-            .await?
-            .is_some()
-        {
+        if wow_db::has_npc_text_query(world_db_pool, row.text_id).await? {
             valid_rows.push(row);
         } else {
             warn!(
@@ -621,17 +618,7 @@ async fn db_npc_text_primary(
     world_db_pool: &MySqlPool,
     text_id: u32,
 ) -> anyhow::Result<Option<String>> {
-    let text = wow_db::get_npc_text_query(world_db_pool, text_id)
-        .await?
-        .map(|row| {
-            if row.text0_0.is_empty() {
-                row.text0_1
-            } else {
-                row.text0_0
-            }
-        })
-        .filter(|text| !text.is_empty());
-    Ok(text)
+    Ok(wow_db::get_npc_text_primary_query(world_db_pool, text_id).await?)
 }
 
 impl From<wow_proto::GossipSelectOptionRequest> for GossipSelectOption {

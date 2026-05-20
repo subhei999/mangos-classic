@@ -25,16 +25,8 @@ pub(in crate::world) async fn handle_npc_text_query(
     ) {
         text.to_string()
     } else {
-        wow_db::get_npc_text_query(world_db_pool, text_id)
+        wow_db::get_npc_text_primary_query(world_db_pool, text_id)
             .await?
-            .map(|row| {
-                if row.text0_0.is_empty() {
-                    row.text0_1
-                } else {
-                    row.text0_0
-                }
-            })
-            .filter(|text| !text.is_empty())
             .unwrap_or_else(|| "Greetings $N".to_string())
     };
     let response = build_npc_text_update(text_id, text.as_str());

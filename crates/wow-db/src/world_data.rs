@@ -1129,6 +1129,55 @@ pub async fn get_npc_text_query(
     Ok(row)
 }
 
+pub async fn has_npc_text_query(pool: &MySqlPool, text_id: u32) -> Result<bool, DbError> {
+    if get_npc_text_query(pool, text_id).await?.is_some() {
+        return Ok(true);
+    }
+    if !world_table_exists(pool, "npc_text_broadcast_text").await? {
+        return Ok(false);
+    }
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM npc_text_broadcast_text WHERE Id = ?")
+            .bind(text_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(count > 0)
+}
+
+pub async fn get_npc_text_primary_query(
+    pool: &MySqlPool,
+    text_id: u32,
+) -> Result<Option<String>, DbError> {
+    if let Some(row) = get_npc_text_query(pool, text_id).await? {
+        let text = if row.text0_0.is_empty() {
+            row.text0_1
+        } else {
+            row.text0_0
+        };
+        return Ok((!text.is_empty()).then_some(text));
+    }
+
+    if !world_table_exists(pool, "npc_text_broadcast_text").await?
+        || !world_table_exists(pool, "broadcast_text").await?
+    {
+        return Ok(None);
+    }
+
+    let text: Option<String> = sqlx::query_scalar(
+        "SELECT COALESCE(NULLIF(bt.Text, ''), bt.Text1) \
+         FROM npc_text_broadcast_text nt \
+         JOIN broadcast_text bt ON bt.Id = nt.BroadcastTextId0 \
+         WHERE nt.Id = ? AND nt.BroadcastTextId0 <> 0 \
+         LIMIT 1",
+    )
+    .bind(text_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    Ok(text.filter(|text| !text.is_empty()))
+}
+
 pub async fn get_spell_chain_query(
     pool: &MySqlPool,
     spell: u32,

@@ -36,12 +36,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   Rust. The release stack was restarted after the fix.
 - Trainer gossip live RCA: the mage attempt against Khelden Bremen reached
   Rust as `CMSG_GOSSIP_HELLO` and Rust sent a two-option menu, but the client
-  never sent `CMSG_GOSSIP_SELECT_OPTION`. CMaNGOS skips `gossip_menu` rows whose
-  `text_id` is absent from `npc_text`; the local ClassicDB import has Khelden's
-  `538/539` menu text rows missing. Rust now applies the same skip and falls
-  back to generic menu `0` service options, plus the CMaNGOS `"Greetings $N"`
-  fallback for missing `CMSG_NPC_TEXT_QUERY` ids. Release stack was restarted;
-  the next real-client mage trainer click is the live proof.
+  never sent `CMSG_GOSSIP_SELECT_OPTION`. The data was not missing:
+  Khelden's text ids `538/539` live in CMaNGOS' `npc_text_broadcast_text`
+  overlay and point to `broadcast_text` rows `2502/2503`. Rust now recognizes
+  `npc_text_broadcast_text` as valid gossip text backing and resolves primary
+  text through `broadcast_text`; missing `CMSG_NPC_TEXT_QUERY` ids still use
+  CMaNGOS' `"Greetings $N"` fallback. Release stack was restarted; the next
+  real-client mage trainer click is the live proof.
 - Existing GitHub issue #75 still tracks remaining non-merchant service actions:
   taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
   scripts/locales, and full npc_text parity.
@@ -1097,9 +1098,10 @@ Player visibility relocation threshold:
     `CMSG_GOSSIP_SELECT_OPTION`, pointing at the menu presented to the client.
   - Live mage attempt against Khelden Bremen showed Rust sending menu `4660`,
     `text_id=538`, `options=2`, but still no `CMSG_GOSSIP_SELECT_OPTION`.
-    CMaNGOS `ObjectMgr::LoadGossipMenu` skips gossip-menu rows with missing
-    `npc_text`; the local DB has no rows for `538/539`, so Rust now skips those
-    rows and falls back to generic menu `0` trainer options.
+    Follow-up DB RCA showed `538/539` are in `npc_text_broadcast_text`, not
+    `npc_text`, and point to `broadcast_text` rows `2502/2503`. Rust now treats
+    that overlay as CMaNGOS gossip text backing instead of classifying the rows
+    as missing.
   - `cargo fmt`
   - `cargo test -p wow-network gossip --lib`
   - `cargo test -p wow-network trainer --lib`
@@ -1113,6 +1115,10 @@ Player visibility relocation threshold:
     `cargo test -p wow-network gossip --lib`,
     `cargo test -p wow-network trainer --lib`, `cargo check -p worldserver`,
     and `.\scripts\restart-game-stack.cmd --release`.
+  - Broadcast-backed gossip text correction: `cargo fmt`,
+    `cargo test -p wow-db --lib`, `cargo test -p wow-network gossip --lib`,
+    `cargo check -p worldserver`, and
+    `.\scripts\restart-game-stack.cmd --release`.
 
 ## Current Confidence
 
@@ -1189,10 +1195,9 @@ Player visibility relocation threshold:
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
 - Trainer gossip needs one more real-client login and mage trainer click after
-  the latest restart. Watch `world-client-18085.log` for
-  `Skipping DB gossip_menu row with missing npc_text`, then a generic
-  `Train me.` prepared option, and then `Dispatching DB gossip selection`
-  followed by `Sending trainer list`.
+  the latest restart. Watch `world-client-18085.log` for Khelden's menu `4660`
+  with `text_id=538`, then `Dispatching DB gossip selection` followed by
+  `Sending trainer list`.
 - The new movement coalescing is compile- and test-proven, but not yet
   benchmark-proven under the thin-client harness.
 - The first `500`-client control was not perfectly clean: two clients exhausted

@@ -9,6 +9,7 @@ pub(in crate::world) enum GmDotCommand {
     NpcDelete(Option<u32>),
     Die,
     Go(GmGoDestination),
+    ModifyMoney(u32),
     ModifySpeed(f32),
 }
 
@@ -210,6 +211,15 @@ pub(in crate::world) async fn handle_gm_dot_command(
             }
             modify_gm_run_speed(stream, session, speed_rate, header_crypto).await?;
         }
+        GmDotCommand::ModifyMoney(amount) => {
+            if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
+            modify_gm_money(stream, deps, session, amount, header_crypto).await?;
+        }
     }
     Ok(())
 }
@@ -239,6 +249,12 @@ pub(in crate::world) fn parse_gm_dot_command(
         return Some(match first_f32(args) {
             Some(speed) => Ok(GmDotCommand::ModifySpeed(speed)),
             None => Err("Syntax: .modify speed #rate".to_string()),
+        });
+    }
+    if let Some(args) = normalized.strip_prefix("modify money ") {
+        return Some(match first_u32(args) {
+            Some(amount) => Ok(GmDotCommand::ModifyMoney(amount)),
+            None => Err("Syntax: .modify money #copper".to_string()),
         });
     }
     if normalized == "gm" {
@@ -1010,6 +1026,32 @@ pub(in crate::world) async fn modify_gm_run_speed(
     send_system_message(
         stream,
         &format!("Run speed set to {speed_rate:.2}x."),
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn modify_gm_money(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &WorldSessionState,
+    amount: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let money = wow_db::add_character_money(deps.character_db_pool, character.guid, amount).await?;
+    send_packet(
+        stream,
+        SMSG_UPDATE_OBJECT,
+        &build_player_money_update_body(character.guid, money)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_system_message(
+        stream,
+        &format!("Added {amount} copper. Current money: {money} copper."),
         header_crypto,
     )
     .await

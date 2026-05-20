@@ -53,6 +53,23 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   `playerBytes2` bank-slot count updates, and gossip `GOSSIP_OPTION_BANKER`
   dispatch into the bank opener. The stack still needs a real-client banker
   smoke.
+- Live vendor RCA: Brog Hamfist's ClassicDB data is correct (`VendorTemplateId`
+  `1100` includes `Small Brown Pouch` and `Brown Leather Satchel`), but Rust
+  was filtering `item_template.ContainerSlots != 0` out of
+  `wow_db::get_vendor_items`, hiding all bags from vendor lists. That filter is
+  removed locally and the release stack was restarted; Brog in Goldshire should
+  now list bags.
+- Local GM convenience command is uncommitted: `.modify money #copper` adds
+  copper to the active character, persists `characters.money`, and sends a live
+  `PLAYER_FIELD_COINAGE` update. It requires GM security 3 and `.gm on`.
+- Live bank-bag drag RCA/fix is uncommitted: dropping an item onto a bank bag
+  icon can arrive as `CMSG_AUTOSTORE_BAG_ITEM` with a bank bag destination, or
+  as a `CMSG_SWAP_ITEM` targeting `bag0/slot63..68`. Rust only resolved normal
+  inventory bag icons, so bank-bag icon drops could no-op and leave the client
+  item gray. Rust now resolves bank bag icons through the CMaNGOS-shaped
+  `CanBankItem(bag, NULL_SLOT, ...)` behavior into the first valid contained
+  bank-bag slot, and sends an equip failure when autostore has no destination.
+  Release stack was restarted; needs live client retry.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1140,6 +1157,23 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network gossip --lib`
   - `cargo check -p worldserver`
   - `.\scripts\test-rust.cmd`
+- GM money / bag vendor hotfix:
+  - `cargo fmt`
+  - `cargo test -p wow-network parses_gm_dot_commands_for_creature_spawn_and_die --lib`
+  - `cargo test -p wow-network db_vendor_inventory_uses_cmangos_list_shape --lib`
+  - `cargo test -p wow-network vendor --lib`
+  - `cargo test -p wow-db --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\restart-game-stack.cmd --release`
+- Bank-bag icon drag hotfix:
+  - `cargo fmt`
+  - `cargo test -p wow-network bank_bag --lib`
+  - `cargo test -p wow-network autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag --lib`
+  - `cargo test -p wow-network swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage --lib`
+  - `cargo test -p wow-network inventory --lib`
+  - `cargo test -p wow-network bank --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\restart-game-stack.cmd --release`
 
 ## Current Confidence
 

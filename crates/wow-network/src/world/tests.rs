@@ -36842,6 +36842,134 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
 }
 
 #[test]
+fn autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag() {
+    let chest = test_item_template(38, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 12);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: BANK_SLOT_BAG_START,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: BANK_SLOT_BAG_START as u32,
+            slot: 0,
+            item: 88,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_ITEM_START,
+            item: 99,
+            item_template: 38,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+    ];
+    let bank_bags = [EquippedBagInfo {
+        slot: BANK_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+
+    assert_eq!(
+        first_bank_store_destination(
+            &inventory,
+            &inventory[2],
+            &chest,
+            &bank_bags,
+            1,
+            Some(BANK_SLOT_BAG_START)
+        ),
+        Some((BANK_SLOT_BAG_START, 1))
+    );
+}
+
+#[test]
+fn swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage() {
+    let chest = test_item_template(38, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 12);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: BANK_SLOT_BAG_START,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: BANK_SLOT_BAG_START as u32,
+            slot: 0,
+            item: 88,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_ITEM_START,
+            item: 99,
+            item_template: 38,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+    ];
+    let bank_bags = [EquippedBagInfo {
+        slot: BANK_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+    let request = InventoryMoveRequest {
+        src_bag: INVENTORY_SLOT_BAG_0,
+        src_slot: INVENTORY_SLOT_ITEM_START,
+        dst_bag: INVENTORY_SLOT_BAG_0,
+        dst_slot: BANK_SLOT_BAG_START,
+    };
+
+    assert_eq!(
+        resolve_bag_icon_move_destination(
+            &inventory,
+            &inventory[2],
+            &chest,
+            &[],
+            &bank_bags,
+            1,
+            &request
+        ),
+        Some(InventoryMoveRequest {
+            src_bag: INVENTORY_SLOT_BAG_0,
+            src_slot: INVENTORY_SLOT_ITEM_START,
+            dst_bag: BANK_SLOT_BAG_START,
+            dst_slot: 1,
+        })
+    );
+}
+
+#[test]
 fn parses_backpack_inventory_destroy_packets() {
     let destroy = DestroyItemRequest::read(&[CLIENT_INVENTORY_SLOT_BAG_0, 24, 0, 0, 0, 0]).unwrap();
     assert_eq!(
@@ -37970,6 +38098,14 @@ fn parses_gm_dot_commands_for_creature_spawn_and_die() {
     assert_eq!(
         parse_gm_dot_command(".modify speed 5"),
         Some(Ok(GmDotCommand::ModifySpeed(5.0)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".modify money 12345"),
+        Some(Ok(GmDotCommand::ModifyMoney(12345)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".modify money #54321"),
+        Some(Ok(GmDotCommand::ModifyMoney(54321)))
     );
     assert!(find_gm_waypoint("Northshire Abbey").is_some());
     assert_eq!(gm_relative_level(58, 5), DEFAULT_MAX_PLAYER_LEVEL);

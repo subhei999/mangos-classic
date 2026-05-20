@@ -234,14 +234,28 @@ pub(in crate::world) async fn handle_inventory_swap(
             src_slot,
             dst_bag,
         } => {
-            InventoryMoveRequest::read_auto_store_bag(
+            let auto_store = InventoryMoveRequest::read_auto_store_bag(
                 src_bag,
                 src_slot,
                 dst_bag,
                 deps.world_db_pool,
                 session,
             )
-            .await?
+            .await?;
+            if auto_store.is_none() {
+                send_auto_store_bag_failure_if_known(
+                    stream,
+                    src_bag,
+                    src_slot,
+                    dst_bag,
+                    deps.world_db_pool,
+                    session,
+                    header_crypto,
+                )
+                .await?;
+                return Ok(());
+            }
+            auto_store
         }
         _ => Some(InventoryMoveRequest::from_client_request(request)?),
     }) else {
@@ -316,6 +330,32 @@ pub(in crate::world) async fn handle_inventory_swap(
         return Ok(());
     };
 
+    let Some(src_template) =
+        wow_db::get_item_template_query(deps.world_db_pool, src_item.item_template).await?
+    else {
+        warn!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            item_template = src_item.item_template,
+            "Rejected inventory move for missing source item template"
+        );
+        return Ok(());
+    };
+
+    let move_request = if let Some(resolved) = resolve_bag_icon_move_destination(
+        &session.inventory.items,
+        src_item,
+        &src_template,
+        &equipped_bags,
+        &bank_bags,
+        bank_bag_slot_count,
+        &move_request,
+    ) {
+        resolved
+    } else {
+        move_request
+    };
+
     let dst_item =
         session.inventory.items.iter().find(|item| {
             item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot
@@ -344,28 +384,17 @@ pub(in crate::world) async fn handle_inventory_swap(
     if move_request.dst_bag == INVENTORY_SLOT_BAG_0
         && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot))
     {
-        let Some(template) =
-            wow_db::get_item_template_query(deps.world_db_pool, src_item.item_template).await?
-        else {
-            warn!(
-                opcode = inventory_opcode_name(opcode),
-                guid = character_guid,
-                item_template = src_item.item_template,
-                "Rejected equip move for missing item template"
-            );
-            return Ok(());
-        };
         let fits_destination = if move_request.dst_slot < EQUIPMENT_SLOT_END {
-            item_fits_equipment_slot(template.inventory_type, move_request.dst_slot)
+            item_fits_equipment_slot(src_template.inventory_type, move_request.dst_slot)
         } else {
-            template.container_slots > 0
+            src_template.container_slots > 0
         };
         if !fits_destination {
             info!(
                 opcode = inventory_opcode_name(opcode),
                 guid = character_guid,
                 item_template = src_item.item_template,
-                inventory_type = template.inventory_type,
+                inventory_type = src_template.inventory_type,
                 dst_slot = move_request.dst_slot,
                 "Rejected inventory move for incompatible equipment/bag slot"
             );
@@ -385,7 +414,7 @@ pub(in crate::world) async fn handle_inventory_swap(
                 character.level,
                 character.race,
                 character.class,
-                &template,
+                &src_template,
                 &skills,
                 &session.character.active_spells,
                 &session.character.character_reputations,
@@ -397,8 +426,8 @@ pub(in crate::world) async fn handle_inventory_swap(
                     item_template = src_item.item_template,
                     class = character.class,
                     race = character.race,
-                    item_class = template.class,
-                    item_subclass = template.subclass,
+                    item_class = src_template.class,
+                    item_subclass = src_template.subclass,
                     "Rejected inventory move due to class/race/proficiency requirements"
                 );
                 return send_inventory_change_failure_with_required_level(
@@ -407,7 +436,7 @@ pub(in crate::world) async fn handle_inventory_swap(
                     Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
                     None,
                     (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
-                        .then_some(template.required_level),
+                        .then_some(src_template.required_level),
                     header_crypto,
                 )
                 .await;
@@ -609,6 +638,47 @@ pub(in crate::world) async fn send_auto_equip_failure_if_known(
         .is_some()
     {
         EQUIP_ERR_ITEM_CANT_BE_EQUIPPED
+    } else {
+        EQUIP_ERR_ITEM_NOT_FOUND
+    };
+    send_inventory_change_failure(
+        stream,
+        result,
+        Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+        None,
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn send_auto_store_bag_failure_if_known(
+    stream: &mut WorldPacketSink,
+    src_bag: u8,
+    src_slot: u8,
+    dst_bag: u8,
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let src_bag = normalize_client_bag(src_bag);
+    let dst_bag = normalize_client_bag(dst_bag);
+    let Some(src_item) = session
+        .inventory
+        .items
+        .iter()
+        .find(|item| item.bag == src_bag as u32 && item.slot == src_slot)
+    else {
+        return Ok(());
+    };
+    let result = if wow_db::get_item_template_query(world_db_pool, src_item.item_template)
+        .await?
+        .is_some()
+    {
+        if is_bank_bag_slot(dst_bag) {
+            EQUIP_ERR_BANK_FULL
+        } else {
+            EQUIP_ERR_INVENTORY_FULL
+        }
     } else {
         EQUIP_ERR_ITEM_NOT_FOUND
     };
@@ -1221,6 +1291,23 @@ impl InventoryMoveRequest {
         else {
             return Ok(None);
         };
+        if is_bank_bag_slot(dst_bag) {
+            let bank_bags = load_bank_bag_infos(world_db_pool, &session.inventory.items).await?;
+            return Ok(first_bank_store_destination(
+                &session.inventory.items,
+                src_item,
+                &template,
+                &bank_bags,
+                bank_bag_slot_count(session),
+                Some(dst_bag),
+            )
+            .map(|(dst_bag, dst_slot)| Self {
+                src_bag,
+                src_slot,
+                dst_bag,
+                dst_slot,
+            }));
+        }
         let equipped_bags =
             load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
         let Some((dst_bag, dst_slot)) = first_autostore_destination(
@@ -1845,6 +1932,67 @@ pub(in crate::world) fn first_autostore_destination(
         } else {
             None
         }
+    })
+}
+
+pub(in crate::world) fn first_bank_store_destination(
+    inventory: &[CharacterInventoryItem],
+    source: &CharacterInventoryItem,
+    template: &ItemTemplateQuery,
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
+    specific_bag: Option<u8>,
+) -> Option<(u8, u8)> {
+    plan_bank_item(
+        inventory,
+        template,
+        source.count,
+        bank_bags,
+        bank_bag_slot_count,
+        specific_bag,
+        Some(source.item),
+    )
+    .and_then(|dest| {
+        if dest.len() == 1 {
+            dest.first().map(|slot| (slot.bag, slot.slot))
+        } else {
+            None
+        }
+    })
+}
+
+pub(in crate::world) fn resolve_bag_icon_move_destination(
+    inventory: &[CharacterInventoryItem],
+    source: &CharacterInventoryItem,
+    template: &ItemTemplateQuery,
+    equipped_bags: &[EquippedBagInfo],
+    bank_bags: &[EquippedBagInfo],
+    bank_bag_slot_count: u8,
+    request: &InventoryMoveRequest,
+) -> Option<InventoryMoveRequest> {
+    if request.dst_bag != INVENTORY_SLOT_BAG_0 || !is_bag_slot(request.dst_slot) {
+        return None;
+    }
+    if template.inventory_type == INVTYPE_BAG && template.container_slots > 0 {
+        return None;
+    }
+    let destination = if is_bank_bag_slot(request.dst_slot) {
+        first_bank_store_destination(
+            inventory,
+            source,
+            template,
+            bank_bags,
+            bank_bag_slot_count,
+            Some(request.dst_slot),
+        )
+    } else {
+        first_autostore_destination(inventory, source, template, equipped_bags, request.dst_slot)
+    }?;
+    Some(InventoryMoveRequest {
+        src_bag: request.src_bag,
+        src_slot: request.src_slot,
+        dst_bag: destination.0,
+        dst_slot: destination.1,
     })
 }
 

@@ -2021,7 +2021,6 @@ pub async fn get_vendor_items(
                AND npc_vendor_template.condition_id = 0 \
          ) AS vendor_items \
          JOIN item_template ON vendor_items.item = item_template.entry \
-         AND item_template.ContainerSlots = 0 \
          ORDER BY CASE WHEN vendor_items.slot = 0 THEN 255 ELSE vendor_items.slot END, \
                   vendor_items.item \
          LIMIT 128",

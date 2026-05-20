@@ -20,6 +20,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   documented `RUSTAUTH` / `RUSTPASS` account before seeding/preserving starter
   characters. The live DB was repaired; `RUSTAUTH` currently has `Rustone` and
   user-created `Twtowto`.
+- Live local `mangos` DB was re-imported from ClassicDB using
+  `scripts/import-classic-db-world.ps1` after the user saw an empty world. The
+  previous local DB had schema only (`creature=0`, `gameobject=0`,
+  `quest_template=0`). Fresh worldserver startup now reports
+  `static_creature_spawns=59640`, `static_gameobject_spawns=33372`, and the
+  Northshire query window has 108 creatures / 26 gameobjects.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1041,6 +1047,11 @@ Player visibility relocation threshold:
   - `cargo run -p auth-flow-test`
   - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
   - DB sanity check confirmed `RUSTAUTH` exists and has starter characters.
+- Empty-world live DB repair:
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import-classic-db-world.ps1`
+  - `.\scripts\restart-game-stack.cmd --release`
+  - DB sanity counts for full world tables and Northshire creature/gameobject
+    rows
 
 ## Current Confidence
 

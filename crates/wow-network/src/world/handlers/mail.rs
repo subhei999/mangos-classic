@@ -10,6 +10,7 @@ const MAIL_STATIONERY_DEFAULT: u8 = 41;
 const MAIL_CHECK_MASK_COPIED: u8 = 0x04;
 const MAIL_CHECK_MASK_HAS_BODY: u8 = 0x10;
 const MAIL_DELIVERY_DELAY_SECS: u64 = 60 * 60;
+const MAIL_MONEY_DELIVERY_DELAY_SECS: u64 = 0;
 const MAIL_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
 const MAIL_COD_EXPIRY_SECS: u64 = 3 * 24 * 60 * 60;
 const MAIL_POSTAGE_COPPER: u32 = 30;
@@ -330,6 +331,7 @@ pub(in crate::world) async fn handle_send_mail(
 
     let item_text_id = wow_db::create_item_text(deps.character_db_pool, &request.body).await?;
     let charge = MAIL_POSTAGE_COPPER.saturating_add(request.money);
+    let deliver_delay_secs = send_mail_delivery_delay_secs(&request, attached_item_guid);
     let result = wow_db::send_character_mail(
         deps.character_db_pool,
         wow_db::SendCharacterMailRequest {
@@ -344,7 +346,7 @@ pub(in crate::world) async fn handle_send_mail(
             } else {
                 MAIL_CHECK_MASK_HAS_BODY
             },
-            deliver_delay_secs: MAIL_DELIVERY_DELAY_SECS,
+            deliver_delay_secs,
             expire_delay_secs: if request.cod != 0 {
                 MAIL_COD_EXPIRY_SECS
             } else {
@@ -398,6 +400,17 @@ pub(in crate::world) async fn handle_send_mail(
             .await?;
     }
     Ok(())
+}
+
+fn send_mail_delivery_delay_secs(
+    request: &wow_proto::SendMailRequest,
+    attached_item_guid: Option<u32>,
+) -> u64 {
+    if request.money != 0 && request.cod == 0 && attached_item_guid.is_none() {
+        MAIL_MONEY_DELIVERY_DELAY_SECS
+    } else {
+        MAIL_DELIVERY_DELAY_SECS
+    }
 }
 
 pub(in crate::world) async fn handle_get_mail_list(
@@ -1046,4 +1059,49 @@ pub(in crate::world) async fn send_mail_result(
     }
     .body();
     send_packet(stream, SMSG_SEND_MAIL_RESULT, &body, Some(header_crypto)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn send_mail_request(money: u32, cod: u32) -> wow_proto::SendMailRequest {
+        wow_proto::SendMailRequest {
+            mailbox_raw_guid: 0,
+            receiver: "Rustone".to_string(),
+            subject: "coin".to_string(),
+            body: String::new(),
+            stationery: MAIL_STATIONERY_DEFAULT as u32,
+            unknown1: 0,
+            item_raw_guid: 0,
+            money,
+            cod,
+            unknown2: 0,
+            unknown3: 0,
+        }
+    }
+
+    #[test]
+    fn money_only_player_mail_delivers_immediately() {
+        assert_eq!(
+            send_mail_delivery_delay_secs(&send_mail_request(123, 0), None),
+            0
+        );
+    }
+
+    #[test]
+    fn non_money_player_mail_keeps_default_delivery_delay() {
+        assert_eq!(
+            send_mail_delivery_delay_secs(&send_mail_request(0, 0), None),
+            MAIL_DELIVERY_DELAY_SECS
+        );
+        assert_eq!(
+            send_mail_delivery_delay_secs(&send_mail_request(123, 0), Some(99)),
+            MAIL_DELIVERY_DELAY_SECS
+        );
+        assert_eq!(
+            send_mail_delivery_delay_secs(&send_mail_request(0, 123), Some(99)),
+            MAIL_DELIVERY_DELAY_SECS
+        );
+    }
 }

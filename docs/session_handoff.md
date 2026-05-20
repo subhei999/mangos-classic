@@ -76,9 +76,11 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   take money, take item, mark read, return/delete, item text query/copy, COD
   handling, recipient/team/self/cap validation, attachment validation, and DB
   helpers for `mail`, `mail_items`, `item_text`, `item_instance`, and character
-  money/inventory state. The next live proof is sending money from one
-  `RUSTAUTH` character to another through a mailbox, then logging into the
-  recipient and taking the money.
+  money/inventory state. Follow-up hotfix: money-only player mail now delivers
+  immediately (`deliver_time = now`) while item/COD/other player mail continues
+  using the default one-hour delay. The next live proof is sending money from
+  one `RUSTAUTH` character to another through a mailbox, then logging into the
+  recipient and taking the money without manually fast-forwarding the DB row.
 - The worktree should be clean after this handoff refresh except for untracked
   `logs/` RCA captures.
 - Local playerbots remain disabled in `config/worldserver.local.toml`.
@@ -1193,6 +1195,12 @@ Player visibility relocation threshold:
   - `cargo test -p wow-network mail --lib`
   - `cargo test -p wow-db --lib`
   - `cargo test -p wow-network bank --lib`
+- Mail money delivery hotfix:
+  - money-only player mail now uses zero delivery delay; item/COD/other player
+    mail keeps the default one-hour delay
+  - `cargo fmt`
+  - `cargo test -p wow-network mail --lib`
+  - `cargo check -p worldserver`
 
 ## Current Confidence
 

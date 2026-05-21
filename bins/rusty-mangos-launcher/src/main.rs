@@ -2,7 +2,8 @@
 
 use eframe::egui::{
     self, Align, Button, CentralPanel, Color32, Context, CornerRadius, Frame, Layout, Margin,
-    RichText, ScrollArea, SidePanel, Stroke, TextEdit, TopBottomPanel, Ui, Vec2, Visuals,
+    ProgressBar, RichText, ScrollArea, SidePanel, Stroke, TextEdit, TopBottomPanel, Ui, Vec2,
+    Visuals,
 };
 use eframe::{App, CreationContext, NativeOptions};
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,10 @@ struct LauncherSettings {
     client_dir: String,
     #[serde(default)]
     classic_db_path: String,
+    #[serde(default)]
+    data_dir: String,
+    #[serde(default = "default_mmap_maps")]
+    mmap_maps: String,
     #[serde(default = "default_db_port")]
     db_port: u16,
     #[serde(default = "default_world_port")]
@@ -101,6 +106,8 @@ impl Default for LauncherSettings {
             database_mode: default_database_mode(),
             client_dir: String::new(),
             classic_db_path: String::new(),
+            data_dir: String::new(),
+            mmap_maps: default_mmap_maps(),
             db_port: default_db_port(),
             world_port: default_world_port(),
             auth_port: default_auth_port(),
@@ -127,6 +134,10 @@ fn default_mariadb_version() -> String {
     "11.4.8".to_string()
 }
 
+fn default_mmap_maps() -> String {
+    "0 1".to_string()
+}
+
 fn default_db_port() -> u16 {
     3307
 }
@@ -143,7 +154,9 @@ fn default_world_port() -> u16 {
 enum Page {
     Home,
     Setup,
+    Health,
     Logs,
+    Repair,
     Advanced,
 }
 
@@ -199,12 +212,56 @@ enum ProcessEvent {
     Finished(i32),
 }
 
+#[derive(Clone)]
+struct OperationProgress {
+    action: String,
+    phase: String,
+    detail: String,
+    index: usize,
+    total: usize,
+    started: Instant,
+}
+
+impl OperationProgress {
+    fn new(action: &str) -> Self {
+        Self {
+            action: action.to_string(),
+            phase: "Starting".to_string(),
+            detail: "Preparing launcher command".to_string(),
+            index: 0,
+            total: progress_total_for_action(action),
+            started: Instant::now(),
+        }
+    }
+
+    fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        (self.index as f32 / self.total as f32).clamp(0.04, 0.98)
+    }
+}
+
+#[derive(Default, Clone)]
+struct HealthSnapshot {
+    client_ok: bool,
+    maps_ok: bool,
+    vmaps_ok: bool,
+    mmaps_ok: bool,
+    mariadb_data_ok: bool,
+    realmlist_ok: bool,
+    build_id: String,
+    data_dir: PathBuf,
+    checked_at: String,
+}
+
 struct LauncherApp {
     paths: Result<LauncherPaths, String>,
     settings: LauncherSettings,
     page: Page,
     state: OperationState,
     output: Option<OperationOutput>,
+    progress: Option<OperationProgress>,
     log: String,
     server_log: String,
     selected_log: LogView,
@@ -212,6 +269,8 @@ struct LauncherApp {
     realm_label: String,
     last_status_check: Instant,
     ports: PortStatus,
+    health: HealthSnapshot,
+    last_health_refresh: Instant,
     skip_world_import: bool,
     force_world_import: bool,
     no_realmlist_update: bool,
@@ -262,6 +321,7 @@ impl LauncherApp {
             page: Page::Home,
             state: OperationState::Idle,
             output: None,
+            progress: None,
             log,
             server_log: String::new(),
             selected_log: LogView::Launcher,
@@ -269,6 +329,8 @@ impl LauncherApp {
             realm_label,
             last_status_check: Instant::now() - Duration::from_secs(10),
             ports: PortStatus::default(),
+            health: HealthSnapshot::default(),
+            last_health_refresh: Instant::now() - Duration::from_secs(10),
             skip_world_import: false,
             force_world_import: false,
             no_realmlist_update: false,
@@ -299,6 +361,7 @@ impl LauncherApp {
         let (tx, rx) = mpsc::channel();
         self.output = Some(OperationOutput { receiver: rx });
         self.state = OperationState::Running;
+        self.progress = Some(OperationProgress::new(action));
         self.status_message = format!("{action} running");
         self.append_log(&format!("> rusty-mangos-launcher {action}\n"));
 
@@ -384,6 +447,10 @@ impl LauncherApp {
         if self.no_realmlist_update {
             args.push("-NoRealmlistUpdate".to_string());
         }
+        if !self.settings.mmap_maps.trim().is_empty() {
+            args.push("-MMapMaps".to_string());
+            args.push(self.settings.mmap_maps.trim().to_string());
+        }
 
         args
     }
@@ -393,7 +460,10 @@ impl LauncherApp {
             let mut finished = None;
             while let Ok(event) = output.receiver.try_recv() {
                 match event {
-                    ProcessEvent::Line(line) => self.append_log(&line),
+                    ProcessEvent::Line(line) => {
+                        self.update_progress_from_line(&line);
+                        self.append_log(&line);
+                    }
                     ProcessEvent::Finished(code) => finished = Some(code),
                 }
             }
@@ -401,6 +471,14 @@ impl LauncherApp {
             if let Some(code) = finished {
                 self.append_log(&format!("> exited with code {code}\n"));
                 self.state = OperationState::Idle;
+                if let Some(progress) = &mut self.progress {
+                    progress.index = progress.total;
+                    progress.detail = if code == 0 {
+                        "Completed".to_string()
+                    } else {
+                        format!("Failed with exit code {code}")
+                    };
+                }
                 self.status_message = if code == 0 {
                     "Ready".to_string()
                 } else {
@@ -410,9 +488,46 @@ impl LauncherApp {
                     self.settings = LauncherSettings::load(&paths.settings);
                 }
                 self.refresh_status();
+                self.refresh_health();
             } else {
                 self.output = Some(output);
                 ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
+    }
+
+    fn update_progress_from_line(&mut self, line: &str) {
+        let Some(progress) = &mut self.progress else {
+            return;
+        };
+        let clean = line.trim();
+        if clean.is_empty() {
+            return;
+        }
+
+        progress.detail = clean.to_string();
+        if let Some(phase) = clean.strip_prefix("==> ") {
+            progress.phase = phase.to_string();
+            progress.index = progress_index_for_phase(&progress.action, phase);
+            return;
+        }
+
+        for (needle, phase) in [
+            ("Extracting server dbc/maps", "Extracting maps"),
+            ("Extracting server vmaps", "Extracting vmaps"),
+            ("Assembling server vmaps", "Assembling vmaps"),
+            ("Generating server mmaps", "Generating mmaps"),
+            ("Checking launcher MariaDB tables", "Repairing databases"),
+            ("Importing ClassicDB", "Importing ClassicDB"),
+            ("World database already has content", "World database ready"),
+            ("Authserver is listening", "Starting servers"),
+            ("Worldserver is listening", "Starting servers"),
+            ("Rusty MaNGOS is ready", "Ready"),
+        ] {
+            if clean.contains(needle) {
+                progress.phase = phase.to_string();
+                progress.index = progress_index_for_phase(&progress.action, phase);
+                break;
             }
         }
     }
@@ -424,6 +539,11 @@ impl LauncherApp {
             world: is_port_open(self.settings.world_port),
         };
         self.last_status_check = Instant::now();
+    }
+
+    fn refresh_health(&mut self) {
+        self.health = build_health_snapshot(&self.paths, &self.settings, self.ports);
+        self.last_health_refresh = Instant::now();
     }
 
     fn refresh_file_log(&mut self) {
@@ -538,7 +658,9 @@ impl LauncherApp {
 
         nav_button(ui, &mut self.page, Page::Home, "SERVER");
         nav_button(ui, &mut self.page, Page::Setup, "SETUP");
+        nav_button(ui, &mut self.page, Page::Health, "HEALTH");
         nav_button(ui, &mut self.page, Page::Logs, "LOGS");
+        nav_button(ui, &mut self.page, Page::Repair, "REPAIR");
         nav_button(ui, &mut self.page, Page::Advanced, "ADVANCED");
 
         ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
@@ -657,6 +779,8 @@ impl LauncherApp {
                 });
         });
 
+        self.draw_progress(ui);
+
         ui.add_space(18.0);
         ui.columns(2, |columns| {
             panel(&mut columns[0], "Client", |ui| {
@@ -746,6 +870,72 @@ impl LauncherApp {
         });
     }
 
+    fn draw_progress(&mut self, ui: &mut Ui) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+
+        ui.add_space(14.0);
+        panel(ui, "Progress", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(progress.phase.clone())
+                        .strong()
+                        .color(Color32::from_rgb(235, 241, 250)),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{}s", progress.started.elapsed().as_secs()))
+                            .color(muted()),
+                    );
+                });
+            });
+            ui.add_space(8.0);
+            ui.add(
+                ProgressBar::new(progress.fraction())
+                    .desired_width(f32::INFINITY)
+                    .show_percentage(),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new(progress.detail.clone()).color(muted()));
+        });
+    }
+
+    fn draw_health(&mut self, ui: &mut Ui) {
+        panel(ui, "Server Health", |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Refresh").clicked() {
+                    self.refresh_status();
+                    self.refresh_health();
+                }
+                ui.label(
+                    RichText::new(format!("Last check: {}", self.health.checked_at)).color(muted()),
+                );
+            });
+            ui.add_space(12.0);
+            ui.columns(2, |columns| {
+                health_row(&mut columns[0], "WoW client", self.health.client_ok);
+                health_row(&mut columns[0], "DBC and maps", self.health.maps_ok);
+                health_row(&mut columns[0], "VMaps", self.health.vmaps_ok);
+                health_row(&mut columns[0], "MMaps", self.health.mmaps_ok);
+                health_row(&mut columns[1], "MariaDB data", self.health.mariadb_data_ok);
+                health_row(&mut columns[1], "MariaDB port", self.ports.db);
+                health_row(&mut columns[1], "Auth port", self.ports.auth);
+                health_row(&mut columns[1], "World port", self.ports.world);
+                health_row(
+                    &mut columns[1],
+                    "Client realmlist",
+                    self.health.realmlist_ok,
+                );
+            });
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new(format!("Data: {}", self.health.data_dir.display())).color(muted()),
+            );
+            ui.label(RichText::new(format!("Build: {}", self.health.build_id)).color(muted()));
+        });
+    }
+
     fn draw_logs(&mut self, ui: &mut Ui) {
         panel(ui, "Logs", |ui| {
             ui.horizontal(|ui| {
@@ -796,6 +986,72 @@ impl LauncherApp {
         });
     }
 
+    fn draw_repair(&mut self, ui: &mut Ui) {
+        panel(ui, "Repair", |ui| {
+            ui.label(
+                RichText::new(
+                    "Use these when a smoke test leaves part of the local stack in a bad state.",
+                )
+                .color(muted()),
+            );
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle,
+                        "Repair Database",
+                    ))
+                    .clicked()
+                {
+                    self.run_action("RepairDatabase");
+                }
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle,
+                        "Re-extract VMaps",
+                    ))
+                    .clicked()
+                {
+                    self.run_action("ReextractVMaps");
+                }
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle,
+                        "Rebuild MMaps",
+                    ))
+                    .clicked()
+                {
+                    self.run_action("RebuildMMaps");
+                }
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle,
+                        "Reset Seeded Characters",
+                    ))
+                    .clicked()
+                {
+                    self.run_action("ResetSeededCharacters");
+                }
+            });
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(14.0);
+            ui.label(RichText::new("World database").color(muted()));
+            ui.horizontal(|ui| {
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle,
+                        "Reimport ClassicDB World",
+                    ))
+                    .clicked()
+                {
+                    self.run_action("ReimportWorld");
+                }
+                ui.checkbox(&mut self.no_realmlist_update, "Preserve realmlist");
+            });
+        });
+    }
+
     fn draw_advanced(&mut self, ui: &mut Ui) {
         panel(ui, "Advanced", |ui| {
             ui.horizontal(|ui| {
@@ -824,6 +1080,10 @@ impl App for LauncherApp {
             && self.last_status_check.elapsed() >= Duration::from_secs(3)
         {
             self.refresh_status();
+            self.refresh_health();
+        }
+        if self.last_health_refresh.elapsed() >= Duration::from_secs(5) {
+            self.refresh_health();
         }
         if self.page == Page::Logs && self.last_log_file_refresh.elapsed() >= Duration::from_secs(1)
         {
@@ -859,7 +1119,9 @@ impl App for LauncherApp {
             .show(ctx, |ui| match self.page {
                 Page::Home => self.draw_home(ui),
                 Page::Setup => self.draw_setup(ui),
+                Page::Health => self.draw_health(ui),
                 Page::Logs => self.draw_logs(ui),
+                Page::Repair => self.draw_repair(ui),
                 Page::Advanced => self.draw_advanced(ui),
             });
     }
@@ -972,6 +1234,62 @@ fn status_pill(ui: &mut Ui, label: &str, online: bool) {
         });
 }
 
+fn health_row(ui: &mut Ui, label: &str, ok: bool) {
+    let color = if ok {
+        Color32::from_rgb(32, 196, 130)
+    } else {
+        Color32::from_rgb(239, 178, 72)
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(if ok { "OK" } else { "CHECK" })
+                .strong()
+                .color(color),
+        );
+        ui.label(RichText::new(label).color(Color32::from_rgb(220, 229, 242)));
+    });
+}
+
+fn progress_total_for_action(action: &str) -> usize {
+    match action {
+        "InstallStart" => 8,
+        "Install" => 7,
+        "Start" | "Restart" => 4,
+        "RepairDatabase" => 3,
+        "ReextractVMaps" | "RebuildMMaps" => 3,
+        "ReimportWorld" => 3,
+        "ResetSeededCharacters" => 3,
+        _ => 2,
+    }
+}
+
+fn progress_index_for_phase(action: &str, phase: &str) -> usize {
+    let normalized = phase.to_ascii_lowercase();
+    let index = if normalized.contains("configuring") {
+        1
+    } else if normalized.contains("client data")
+        || normalized.contains("maps")
+        || normalized.contains("vmaps")
+        || normalized.contains("mmaps")
+    {
+        2
+    } else if normalized.contains("mariadb") {
+        3
+    } else if normalized.contains("database")
+        || normalized.contains("classicdb")
+        || normalized.contains("seeded")
+    {
+        4
+    } else if normalized.contains("starting") {
+        6
+    } else if normalized.contains("ready") {
+        progress_total_for_action(action)
+    } else {
+        1
+    };
+    index.min(progress_total_for_action(action).saturating_sub(1))
+}
+
 fn port_field(ui: &mut Ui, label: &str, value: &mut u16) {
     let mut text = value.to_string();
     ui.vertical(|ui| {
@@ -1004,6 +1322,124 @@ fn read_build_id(paths: &LauncherPaths) -> String {
     }
 
     "local".to_string()
+}
+
+fn build_health_snapshot(
+    paths: &Result<LauncherPaths, String>,
+    settings: &LauncherSettings,
+    _ports: PortStatus,
+) -> HealthSnapshot {
+    let build_id = paths
+        .as_ref()
+        .map(read_build_id)
+        .unwrap_or_else(|_| "local".to_string());
+    let data_dir = paths
+        .as_ref()
+        .map(|paths| server_data_dir(paths, settings))
+        .unwrap_or_default();
+    let client_path = PathBuf::from(settings.client_dir.trim());
+    let client_ok = is_wow_client_dir(&client_path);
+    let maps_ok =
+        data_dir.join("dbc").is_dir() && has_files_with_extension(&data_dir.join("maps"), "map");
+    let vmaps_ok = has_files_with_extension(&data_dir.join("vmaps"), "vmtree")
+        && has_files_with_extension(&data_dir.join("vmaps"), "vmtile");
+    let mmaps_ok = mmap_maps_ok(&data_dir, &settings.mmap_maps);
+    let mariadb_data_ok = paths
+        .as_ref()
+        .map(|paths| paths.app_data.join("mariadb-data").join("mysql").is_dir())
+        .unwrap_or(false);
+    let realmlist_ok = client_ok && realmlist_points_to_auth(&client_path, settings.auth_port);
+
+    HealthSnapshot {
+        client_ok,
+        maps_ok,
+        vmaps_ok,
+        mmaps_ok,
+        mariadb_data_ok,
+        realmlist_ok,
+        build_id,
+        data_dir,
+        checked_at: "now".to_string(),
+    }
+}
+
+fn server_data_dir(paths: &LauncherPaths, settings: &LauncherSettings) -> PathBuf {
+    if settings.data_dir.trim().is_empty() {
+        paths.app_data.join("data")
+    } else {
+        PathBuf::from(settings.data_dir.trim())
+    }
+}
+
+fn has_files_with_extension(path: &Path, extension: &str) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .path()
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+    })
+}
+
+fn mmap_maps_ok(data_dir: &Path, map_ids: &str) -> bool {
+    let mmap_dir = data_dir.join("mmaps");
+    let ids: Vec<_> = map_ids
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|value| !value.trim().is_empty())
+        .collect();
+    if ids.is_empty() {
+        return has_files_with_extension(&mmap_dir, "mmap")
+            && has_files_with_extension(&mmap_dir, "mmtile");
+    }
+
+    ids.into_iter().all(|id| {
+        let Ok(map_id) = id.parse::<u32>() else {
+            return false;
+        };
+        let prefix = format!("{map_id:03}");
+        mmap_dir.join(format!("{prefix}.mmap")).is_file()
+            && has_file_with_prefix(&mmap_dir, &prefix, "mmtile")
+    })
+}
+
+fn has_file_with_prefix(path: &Path, prefix: &str, extension: &str) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with(prefix))
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+    })
+}
+
+fn realmlist_points_to_auth(client_path: &Path, auth_port: u16) -> bool {
+    realmlist_paths(client_path).into_iter().any(|path| {
+        fs::read_to_string(path).is_ok_and(|text| {
+            let expected = format!("127.0.0.1:{auth_port}");
+            text.to_ascii_lowercase().contains("set realmlist") && text.contains(&expected)
+        })
+    })
+}
+
+fn realmlist_paths(client_path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![client_path.join("realmlist.wtf")];
+    let data_root = client_path.join("Data");
+    if let Ok(entries) = fs::read_dir(data_root) {
+        paths.extend(entries.flatten().filter_map(|entry| {
+            let path = entry.path().join("realmlist.wtf");
+            path.is_file().then_some(path)
+        }));
+    }
+    paths
 }
 
 fn is_wow_client_dir(path: &Path) -> bool {
@@ -1093,8 +1529,9 @@ fn read_log_group(title: &str, paths: &[PathBuf]) -> String {
         if text.trim().is_empty() {
             output.push_str("(no log output yet)\n");
         } else {
-            output.push_str(&text);
-            if !text.ends_with('\n') {
+            let cleaned = clean_log_text(&text);
+            output.push_str(&cleaned);
+            if !cleaned.ends_with('\n') {
                 output.push('\n');
             }
         }
@@ -1108,6 +1545,60 @@ fn read_text_tail(path: &Path, max_bytes: usize) -> String {
     };
     let start = bytes.len().saturating_sub(max_bytes);
     String::from_utf8_lossy(&bytes[start..]).to_string()
+}
+
+fn clean_log_text(text: &str) -> String {
+    let mut output = String::new();
+    let mut vmap_load_count = 0usize;
+    for raw_line in text.lines() {
+        let line = strip_ansi(raw_line);
+        if line.contains("VMapManager2: loading file") {
+            vmap_load_count += 1;
+            continue;
+        }
+        if vmap_load_count > 0 {
+            output.push_str(&format!(
+                "(collapsed {vmap_load_count} VMap model load lines)\n"
+            ));
+            vmap_load_count = 0;
+        }
+        output.push_str(&trim_long_log_line(&line));
+        output.push('\n');
+    }
+    if vmap_load_count > 0 {
+        output.push_str(&format!(
+            "(collapsed {vmap_load_count} VMap model load lines)\n"
+        ));
+    }
+    output
+}
+
+fn trim_long_log_line(line: &str) -> String {
+    const MAX_CHARS: usize = 1_200;
+    if line.chars().count() <= MAX_CHARS {
+        return line.to_string();
+    }
+    let mut trimmed: String = line.chars().take(MAX_CHARS).collect();
+    trimmed.push_str(" ... [line trimmed]");
+    trimmed
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }
 
 fn is_port_open(port: u16) -> bool {

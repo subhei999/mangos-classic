@@ -60,10 +60,15 @@ The launcher is styled like a dark game launcher:
 
 - left navigation rail for **Server**, **Setup**, **Logs**, and **Advanced**;
 - large server card with database/auth/world status pills;
+- install/start progress panel with current phase, elapsed time, and command
+  detail;
 - primary **Install / Start** or **Restart** action;
 - quick **Start**, **Stop**, **Dashboard**, and app-data shortcuts;
 - setup page for choosing or auto-detecting the WoW client folder;
+- health page for client data, ports, MariaDB data, and realmlist status;
 - logs page with launcher, authserver, worldserver, and MariaDB log tabs;
+- repair page for database repair, vmap/mmap rebuilds, world reimport, and
+  seeded character reset;
 - advanced page for ports, ClassicDB path, and import/realmlist options.
 
 ## Start And Stop

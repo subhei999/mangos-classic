@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status")]
+    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status", "RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters")]
     [string]$Action = "InstallStart",
     [ValidateSet("Native", "Docker")]
     [string]$DatabaseMode = "Native",
@@ -34,6 +34,11 @@ function Show-Usage {
     Write-Host "  Stop           Stop launcher-managed MariaDB/auth/world processes."
     Write-Host "  Restart        Stop, then start."
     Write-Host "  Status         Print process and port status."
+    Write-Host "  RepairDatabase Check and repair launcher MariaDB tables."
+    Write-Host "  ReextractVMaps Rebuild vmaps from the configured WoW client."
+    Write-Host "  RebuildMMaps   Rebuild starter movement maps from existing maps/vmaps."
+    Write-Host "  ReimportWorld  Re-import the ClassicDB world database."
+    Write-Host "  ResetSeededCharacters Reset the seeded RUSTAUTH characters."
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -ClientDir <path>          WoW 1.12.1 client folder. Prompts when omitted."
@@ -1393,6 +1398,69 @@ if ($Action -eq "Status") {
     }
     Show-Status $settings $pidDir
     exit 0
+}
+
+if ($Action -in @("RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters")) {
+    if (-not $settings) {
+        throw "Rusty MaNGOS is not configured yet. Run .\scripts\rusty-mangos-launcher.cmd Install first."
+    }
+
+    $serverDataDir = Resolve-ServerDataDir $settings $launcherDir
+    $mmapMapsForRun = $MMapMaps
+    if ($settings.PSObject.Properties.Name -contains "mmapMaps" -and -not [string]::IsNullOrWhiteSpace($settings.mmapMaps)) {
+        $mmapMapsForRun = $settings.mmapMaps
+    }
+
+    if ($Action -eq "ReextractVMaps") {
+        Write-Step "Rebuilding vmaps"
+        Remove-Item -LiteralPath (Join-Path $serverDataDir "vmaps") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $serverDataDir "Buildings") -Recurse -Force -ErrorAction SilentlyContinue
+        Ensure-ExtractedDbcAndMaps $settings.clientDir $serverDataDir $repoRoot
+        Ensure-ExtractedVMaps $settings.clientDir $serverDataDir $repoRoot
+        Write-Host "VMaps were rebuilt."
+        exit 0
+    }
+
+    if ($Action -eq "RebuildMMaps") {
+        Write-Step "Rebuilding mmaps"
+        Remove-Item -LiteralPath (Join-Path $serverDataDir "mmaps") -Recurse -Force -ErrorAction SilentlyContinue
+        Ensure-ExtractedDbcAndMaps $settings.clientDir $serverDataDir $repoRoot
+        Ensure-ExtractedVMaps $settings.clientDir $serverDataDir $repoRoot
+        Ensure-ExtractedMMaps $serverDataDir $repoRoot $mmapMapsForRun
+        Write-Host "MMaps were rebuilt."
+        exit 0
+    }
+
+    Write-Step "Preparing native MariaDB"
+    $mariaRoot = Ensure-NativeMariaDb $settings $launcherDir
+    $mariaData = Join-Path $launcherDir "mariadb-data"
+    Initialize-NativeMariaDbData $mariaRoot $mariaData
+    Start-NativeMariaDb $mariaRoot $mariaData (Join-Path $pidDir "mariadb.pid") $logDir $settings.dbPort
+
+    if ($Action -eq "RepairDatabase") {
+        Write-Step "Repairing databases"
+        Ensure-BaseDatabases $mariaRoot $settings.dbPort $repoRoot
+        Repair-MariaDbTables $mariaRoot $settings.dbPort
+        Write-Host "Database repair check completed."
+        exit 0
+    }
+
+    if ($Action -eq "ReimportWorld") {
+        Write-Step "Reimporting ClassicDB world"
+        Ensure-BaseDatabases $mariaRoot $settings.dbPort $repoRoot
+        Ensure-ClassicDbCheckout $settings.classicDbPath (-not $NoClassicDbClone)
+        Import-ClassicDbWorld $mariaRoot $settings.dbPort $repoRoot $settings.classicDbPath
+        Write-Host "World database was re-imported."
+        exit 0
+    }
+
+    if ($Action -eq "ResetSeededCharacters") {
+        Write-Step "Resetting seeded characters"
+        Ensure-BaseDatabases $mariaRoot $settings.dbPort $repoRoot
+        Seed-PlayAccount $mariaRoot $repoRoot $settings.dbPort $settings.worldPort $true
+        Write-Host "Seeded RUSTAUTH characters were reset."
+        exit 0
+    }
 }
 
 $needsConfigure = $false

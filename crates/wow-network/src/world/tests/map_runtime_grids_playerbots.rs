@@ -1426,6 +1426,48 @@ fn map_runtime_playerbot_far_melee_rejects_before_navigation() {
 }
 
 #[test]
+fn map_runtime_player_melee_rejects_far_evading_target_before_evade_feedback() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(77), player_position))
+        .unwrap();
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 7011;
+    spawn.position_x = 4.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let target = creature_spawn_guid(&spawn);
+    let mut runtime = DbCreatureRuntime::new(spawn);
+    runtime.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
+        start: runtime.current_position,
+        destination: runtime.home_position,
+        path: vec![runtime.current_position, runtime.home_position],
+        started_at: Instant::now(),
+        duration: Duration::from_secs(1),
+    });
+    map.share_db_creature_snapshots(vec![runtime]);
+
+    let in_range = map.validate_player_melee_against_db_creature(
+        1,
+        target,
+        &DbCreatureNavigationGuardrail::default(),
+    );
+    assert_eq!(in_range.check, PlayerMeleeCheck::TargetEvading);
+
+    map.creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 8.0;
+    let far = map.validate_player_melee_against_db_creature(
+        1,
+        target,
+        &DbCreatureNavigationGuardrail::default(),
+    );
+    assert_eq!(far.check, PlayerMeleeCheck::OutOfRange);
+}
+
+#[test]
 fn map_runtime_playerbot_combat_budgets_idle_thinks_without_starving_active_swings() {
     let mut map = MapRuntime::new(0, 0);
     let now = Instant::now();

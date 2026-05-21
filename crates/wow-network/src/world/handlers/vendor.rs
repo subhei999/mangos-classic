@@ -191,6 +191,7 @@ pub(in crate::world) async fn handle_buy_item(
         None
     };
     let mut update_blocks = Vec::new();
+    let mut push_results = Vec::new();
     for slot in &store_plan {
         if let Some(item_guid) = slot.existing_item {
             if let Some(item) = session
@@ -200,6 +201,14 @@ pub(in crate::world) async fn handle_buy_item(
                 .find(|item| item.item == item_guid)
             {
                 update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                push_results.push(build_item_push_result_body(
+                    character_guid,
+                    item,
+                    slot.count,
+                    true,
+                    false,
+                    true,
+                ));
             }
             continue;
         }
@@ -225,7 +234,24 @@ pub(in crate::world) async fn handle_buy_item(
                 slot.bag,
                 slot.slot,
             )?);
+            push_results.push(build_item_push_result_body(
+                character_guid,
+                new_item,
+                slot.count,
+                true,
+                false,
+                true,
+            ));
         }
+    }
+    for body in push_results {
+        send_packet(
+            stream,
+            WorldOpcode::SmsgItemPushResult as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
     }
     let body = build_update_object_body(&update_blocks);
     send_packet(

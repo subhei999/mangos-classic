@@ -1522,6 +1522,39 @@ impl MapRuntime {
             .collect())
     }
 
+    pub(in crate::world) fn update_player_power1(
+        &mut self,
+        character_guid: u32,
+        power1: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(Vec::new());
+        };
+        player.power1 = power1.min(player.max_power1);
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_player_mana_update_body(
+                ObjectGuid::new(HighGuid::Player, 0, character_guid),
+                player.power1,
+            )?,
+        };
+
+        Ok(self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|other_guid| {
+                self.players
+                    .get(&other_guid)
+                    .and_then(|other| other.packet_to_client(packet.clone()))
+            })
+            .collect())
+    }
+
     pub(in crate::world) fn apply_player_heal(
         &mut self,
         target_character_guid: u32,
@@ -2708,6 +2741,14 @@ impl MapRuntime {
         {
             return Some(SPELL_FAILED_NOT_READY);
         }
+        if spell_profile.cooldown_category > 0
+            && player
+                .spell_global_cooldowns_until
+                .get(&spell_profile.cooldown_category)
+                .is_some_and(|until| now < *until)
+        {
+            return Some(SPELL_FAILED_NOT_READY);
+        }
         match spell_profile.power {
             SpellPowerCost::Rage { cost } if player.power2 < cost => {
                 return Some(SPELL_FAILED_NO_POWER);
@@ -2785,7 +2826,19 @@ impl MapRuntime {
                 now + Duration::from_millis(spell_profile.global_cooldown_millis),
             );
         }
-        if !skip_spell_cooldown && spell_profile.cooldown_millis > 0 {
+        let cooldown_category = if category > 0 {
+            category
+        } else {
+            spell_profile.cooldown_category
+        };
+        let category_cooldown_millis = if category_cooldown_millis > 0 {
+            category_cooldown_millis
+        } else {
+            spell_profile.category_cooldown_millis
+        };
+        let has_spell_cooldown = spell_profile.cooldown_millis > 0;
+        let has_category_cooldown = cooldown_category > 0 && category_cooldown_millis > 0;
+        if !skip_spell_cooldown && (has_spell_cooldown || has_category_cooldown) {
             player.spell_cooldowns_until.insert(
                 spell_profile.spell_id,
                 now + Duration::from_millis(spell_profile.cooldown_millis),
@@ -2799,12 +2852,12 @@ impl MapRuntime {
                     .spell_cooldown_item_ids
                     .remove(&spell_profile.spell_id);
             }
-            if category > 0 && category_cooldown_millis > 0 {
+            if has_category_cooldown {
                 player
                     .spell_cooldown_categories
-                    .insert(spell_profile.spell_id, category);
+                    .insert(spell_profile.spell_id, cooldown_category);
                 player.spell_global_cooldowns_until.insert(
-                    category,
+                    cooldown_category,
                     now + Duration::from_millis(category_cooldown_millis),
                 );
             } else {
@@ -2867,6 +2920,14 @@ impl MapRuntime {
                 .remove(&spell_profile.spell_id);
             player
                 .spell_cooldown_item_ids
+                .remove(&spell_profile.spell_id);
+        }
+        if spell_profile.category_cooldown_millis > 0 {
+            player
+                .spell_global_cooldowns_until
+                .remove(&spell_profile.cooldown_category);
+            player
+                .spell_cooldown_categories
                 .remove(&spell_profile.spell_id);
         }
     }

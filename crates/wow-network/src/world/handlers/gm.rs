@@ -10,6 +10,7 @@ pub(in crate::world) enum GmDotCommand {
     NpcDelete(Option<u32>),
     Die,
     Go(GmGoDestination),
+    AddItem { item: u32, count: u32 },
     ModifyMoney(u32),
     ModifySpeed(f32),
 }
@@ -203,6 +204,15 @@ pub(in crate::world) async fn handle_gm_dot_command(
             }
             teleport_gm(stream, deps, session, destination, header_crypto).await?;
         }
+        GmDotCommand::AddItem { item, count } => {
+            if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
+            add_gm_item(stream, deps, session, item, count, header_crypto).await?;
+        }
         GmDotCommand::ModifySpeed(speed_rate) => {
             if !require_gm_security(stream, session, 1, header_crypto).await? {
                 return Ok(());
@@ -245,6 +255,12 @@ pub(in crate::world) fn parse_gm_dot_command(
         return Some(Err(
             "Syntax: .go #x #y [#z [#mapid]] or .go #waypoint".to_string()
         ));
+    }
+    if normalized == "additem" {
+        return Some(Err("Syntax: .additem #itemid [#count]".to_string()));
+    }
+    if let Some(args) = normalized.strip_prefix("additem ") {
+        return Some(parse_add_item_command(args));
     }
     if let Some(args) = normalized.strip_prefix("modify speed ") {
         return Some(match first_f32(args) {
@@ -304,6 +320,21 @@ pub(in crate::world) fn parse_gm_dot_command(
     None
 }
 
+pub(in crate::world) fn parse_add_item_command(input: &str) -> Result<GmDotCommand, String> {
+    let item = first_u32(input).ok_or_else(|| "Syntax: .additem #itemid [#count]".to_string())?;
+    let numeric_tokens = standalone_u32_tokens(input);
+    let count = if numeric_tokens.first().copied() == Some(item) {
+        numeric_tokens.get(1).copied()
+    } else {
+        numeric_tokens.first().copied()
+    }
+    .unwrap_or(1);
+    if count == 0 {
+        return Err("Syntax: .additem #itemid [#count]".to_string());
+    }
+    Ok(GmDotCommand::AddItem { item, count })
+}
+
 pub(in crate::world) fn parse_go_destination(input: &str) -> Result<GmDotCommand, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -349,6 +380,20 @@ pub(in crate::world) fn coordinate_numbers(input: &str) -> Vec<f32> {
     input
         .split_whitespace()
         .filter_map(|token| token.parse::<f32>().ok())
+        .collect()
+}
+
+pub(in crate::world) fn standalone_u32_tokens(input: &str) -> Vec<u32> {
+    input
+        .split_whitespace()
+        .filter_map(|token| {
+            let trimmed = token
+                .trim_start_matches('#')
+                .trim_matches(|ch: char| matches!(ch, ',' | ';' | '.'));
+            (!trimmed.is_empty() && trimmed.chars().all(|ch| ch.is_ascii_digit()))
+                .then(|| trimmed.parse().ok())
+                .flatten()
+        })
         .collect()
 }
 
@@ -1003,6 +1048,199 @@ pub(in crate::world) async fn modify_gm_run_speed(
     send_system_message(
         stream,
         &format!("Run speed set to {speed_rate:.2}x."),
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn add_gm_item(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    item_template: u32,
+    count: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let map_id = character.position.map_id;
+    let Some(template) = wow_db::get_item_template_query(deps.world_db_pool, item_template).await?
+    else {
+        send_system_message(
+            stream,
+            &format!("Item template {item_template} was not found."),
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    };
+    let equipped_bags =
+        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    let Some(store_plan) = plan_store_item(
+        &session.inventory.items,
+        &template,
+        count,
+        &equipped_bags,
+        None,
+        None,
+    ) else {
+        send_inventory_change_failure(stream, EQUIP_ERR_INVENTORY_FULL, None, None, header_crypto)
+            .await?;
+        send_system_message(stream, "Inventory is full.", header_crypto).await?;
+        return Ok(());
+    };
+
+    let random_properties = generate_item_instance_random_properties_for_template(
+        deps.world_db_pool,
+        &session.movement.db_creature_navigation.world_data_files,
+        &template,
+    )
+    .await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
+                deps.character_db_pool,
+                character_guid,
+                item_guid,
+                existing_count.saturating_add(slot.count),
+            )
+            .await?;
+        } else {
+            wow_db::add_character_inventory_item_with_random_properties(
+                deps.character_db_pool,
+                wow_db::AddCharacterInventoryItemRequest {
+                    guid: character_guid,
+                    bag: slot.bag as u32,
+                    slot: slot.slot,
+                    item_template: template.entry,
+                    count: slot.count,
+                    durability: template.max_durability,
+                    random_properties: random_properties.as_ref(),
+                },
+            )
+            .await?;
+        }
+    }
+
+    let old_inventory = std::mem::take(&mut session.inventory.items);
+    let new_inventory =
+        wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
+    session.inventory.items = new_inventory;
+
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut update_blocks = Vec::new();
+    let mut push_results = Vec::new();
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = session
+                .inventory
+                .items
+                .iter()
+                .find(|item| item.item == item_guid)
+            {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                push_results.push(build_item_push_result_body(
+                    character_guid,
+                    item,
+                    slot.count,
+                    false,
+                    true,
+                    true,
+                ));
+            }
+            continue;
+        }
+        if let Some(item) = session
+            .inventory
+            .items
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            let contained_guid = item_contained_guid(owner_guid, &session.inventory.items, item);
+            update_blocks.push(build_item_create_update_block(
+                owner_guid,
+                contained_guid,
+                item,
+                (template.container_slots > 0).then_some(template.container_slots),
+            )?);
+            update_blocks.extend(build_inventory_position_update_blocks(
+                character_guid,
+                &session.inventory.items,
+                slot.bag,
+                slot.slot,
+            )?);
+            push_results.push(build_item_push_result_body(
+                character_guid,
+                item,
+                slot.count,
+                false,
+                true,
+                true,
+            ));
+        }
+    }
+    deps.maps
+        .update_player_inventory(map_id, character_guid, session.inventory.items.clone())
+        .await;
+
+    for body in push_results {
+        send_packet(
+            stream,
+            WorldOpcode::SmsgItemPushResult as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    if !update_blocks.is_empty() {
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &build_update_object_body(&update_blocks),
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    complete_inventory_item_quests(
+        stream,
+        deps.character_db_pool,
+        deps.object_mgr,
+        deps.world_db_pool,
+        session,
+        character_guid,
+        header_crypto,
+    )
+    .await?;
+
+    let actually_added = session
+        .inventory
+        .items
+        .iter()
+        .filter(|item| item.item_template == item_template)
+        .map(|item| item.count)
+        .sum::<u32>()
+        .saturating_sub(
+            old_inventory
+                .iter()
+                .filter(|item| item.item_template == item_template)
+                .map(|item| item.count)
+                .sum::<u32>(),
+        );
+    send_system_message(
+        stream,
+        &format!(
+            "Added {actually_added} x {} ({item_template}).",
+            template.name
+        ),
         header_crypto,
     )
     .await

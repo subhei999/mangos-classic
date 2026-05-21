@@ -372,6 +372,13 @@ fn polymorph_transform_updates_creature_display_and_breaks_on_damage() {
         .direct_packets
         .iter()
         .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        event
+            .direct_packets
+            .iter()
+            .all(|packet| packet.opcode != WorldOpcode::SmsgUpdateAuraDuration as u16),
+        "CMaNGOS only sends SMSG_UPDATE_AURA_DURATION to the aura target when that target is a player"
+    );
 
     let damage = map
         .apply_db_creature_damage(DbCreatureDamageRequest {
@@ -1182,6 +1189,11 @@ fn creature_dot_death_clears_auras_before_respawn() {
         proc_triggers: Vec::new(),
     });
     map.creatures.insert(creature_guid.raw(), creature);
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    assert!(map
+        .begin_db_creature_combat(creature_guid, player_guid, now)
+        .is_some());
+    assert!(map.player_runtime_snapshot(7).unwrap().in_combat);
 
     let packets = map.advance_db_creature_auras(now, 1_000).unwrap();
     let creature = map.creatures.get(&creature_guid.raw()).unwrap();
@@ -1189,12 +1201,21 @@ fn creature_dot_death_clears_auras_before_respawn() {
     assert_eq!(creature.life_state, DbCreatureLifeState::Corpse);
     assert!(matches!(creature.motion, CreatureMotionState::Idle));
     assert!(creature.active_auras.is_empty());
+    assert!(!map.active_creature_combats.contains_key(&creature_guid.raw()));
+    assert!(!map.player_runtime_snapshot(7).unwrap().in_combat);
     assert!(packets
         .iter()
         .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16));
     assert!(packets
         .iter()
         .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgMonsterMove as u16));
+    let player_combat_clear_body =
+        build_unit_flags_update_body(player_guid, UNIT_FLAG_PLAYER_CONTROLLED).unwrap();
+    assert!(packets.iter().any(|(session_id, packet)| {
+        *session_id == SessionId(7)
+            && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+            && packet.body == player_combat_clear_body
+    }));
 
     let generation_after_death = creature.life_generation;
     let creature = map.creatures.get_mut(&creature_guid.raw()).unwrap();
@@ -3589,6 +3610,87 @@ fn map_runtime_player_health_update_refreshes_shared_state_and_observers() {
     let (values, trailing) = decode_values_update_block(&packets[0].1.body[5..], player);
     assert!(trailing.is_empty());
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(10));
+}
+
+#[test]
+fn map_runtime_player_power1_update_refreshes_shared_state_and_observers() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), player_position);
+    player.max_power1 = 100;
+    player.power1 = 20;
+    map.add_player(player).unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let packets = map.update_player_power1(1, 75).unwrap();
+
+    assert_eq!(map.players.get(&1).unwrap().power1, 75);
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].0, SessionId(2));
+    assert_eq!(packets[0].1.opcode, WorldOpcode::SmsgUpdateObject as u16);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let (values, trailing) = decode_values_update_block(&packets[0].1.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_POWER1], Some(75));
+}
+
+#[test]
+fn map_owned_consumable_resource_updates_survive_later_session_sync() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    let world_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 80,
+        stats: [20, 20, 20, 20, 20],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = world_stats;
+    player.effective_world_stats = world_stats;
+    player.health = 20;
+    player.max_health = world_stats.max_health();
+    player.power1 = 30;
+    player.max_power1 = world_stats.max_mana();
+    map.add_player(player).unwrap();
+
+    map.apply_player_heal(7, 45).unwrap().unwrap();
+    map.update_player_power1(7, 80).unwrap();
+
+    let session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 20,
+            player_mana: 30,
+            player_stand_state: PLAYER_STAND_STATE_STAND,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    map.sync_player_gameplay_state(7, &session);
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(
+        snapshot.health, 65,
+        "alive session sync must not rewind a map-owned item heal"
+    );
+    assert_eq!(
+        snapshot.power1, 80,
+        "alive session sync must not rewind a map-owned item energize"
+    );
 }
 
 #[test]

@@ -309,7 +309,6 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
     .await?;
     let effective_world_stats =
         player_world_stats_with_active_auras(world_stats, &session.auras.active_auras);
-    let max_health = effective_world_stats.max_health().max(1);
     let max_mana = effective_world_stats.max_mana();
 
     let mut direct_heal_applied = false;
@@ -326,19 +325,18 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
             SpellEffectDispatch::Heal if !direct_heal_applied => {
                 let heal = spell_direct_heal(&spell_info, value_context);
                 if heal != 0 {
-                    let old_health = session.character.player_health;
-                    session.character.player_health = session
-                        .character
-                        .player_health
-                        .saturating_add(heal)
-                        .min(max_health);
-                    let amount_healed = session.character.player_health.saturating_sub(old_health);
-                    if amount_healed > 0 {
+                    let event = deps
+                        .shared_world
+                        .maps
+                        .apply_player_heal(map_id, character_guid, heal)
+                        .await?;
+                    if let Some(event) = event {
+                        session.character.player_health = event.health;
                         let log = build_spell_heal_log_body(
                             caster,
                             caster,
                             spell_template.id,
-                            amount_healed,
+                            event.amount_healed,
                             false,
                         )?;
                         send_packet(
@@ -348,11 +346,20 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
                             Some(&mut *header_crypto),
                         )
                         .await?;
+                        for packet in event.direct_packets {
+                            send_packet(
+                                stream,
+                                packet.opcode,
+                                &packet.body,
+                                Some(&mut *header_crypto),
+                            )
+                            .await?;
+                        }
+                        deps.shared_world
+                            .sessions
+                            .dispatch(event.observer_packets)
+                            .await;
                     }
-                    update_bodies.push(build_player_health_update_body(
-                        caster,
-                        session.character.player_health,
-                    )?);
                 }
                 direct_heal_applied = true;
             }
@@ -382,6 +389,12 @@ pub(in crate::world) async fn apply_item_use_spell_effects(
                         )
                         .await?;
                     }
+                    let observer_packets = deps
+                        .shared_world
+                        .maps
+                        .update_player_power1(map_id, character_guid, session.character.player_mana)
+                        .await?;
+                    deps.shared_world.sessions.dispatch(observer_packets).await;
                     update_bodies.push(build_player_mana_update_body(
                         caster,
                         session.character.player_mana,

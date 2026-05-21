@@ -215,10 +215,9 @@ impl<'a> SpellInfo<'a> {
             needs_combo_points: self.needs_combo_points(),
             global_cooldown_category: self.template.start_recovery_category,
             global_cooldown_millis: self.template.start_recovery_time as u64,
-            cooldown_millis: self
-                .template
-                .recovery_time
-                .max(self.template.category_recovery_time) as u64,
+            cooldown_category: self.template.category,
+            category_cooldown_millis: self.template.category_recovery_time as u64,
+            cooldown_millis: self.template.recovery_time as u64,
         }
     }
 

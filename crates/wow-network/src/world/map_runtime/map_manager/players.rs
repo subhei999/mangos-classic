@@ -250,6 +250,23 @@ impl MapRuntimeManager {
         packets
     }
 
+    pub(in crate::world) async fn update_player_power1(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        power1: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map
+            .lock()
+            .await
+            .update_player_power1(character_guid, power1);
+        packets
+    }
+
     pub(in crate::world) async fn apply_player_heal(
         &self,
         map_id: u32,

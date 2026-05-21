@@ -135,6 +135,8 @@ pub(in crate::world) fn build_quest_request_items_body(
     displays: &QuestRewardItemDisplays,
 
     complete: bool,
+
+    close_on_cancel: bool,
 ) -> Vec<u8> {
     let (delay, emote) = if complete {
         (quest.complete_emote_delay, quest.complete_emote)
@@ -149,7 +151,7 @@ pub(in crate::world) fn build_quest_request_items_body(
         request_items_text: quest.request_items_text.clone(),
         emote_delay: delay,
         emote,
-        close_on_cancel: 0,
+        close_on_cancel: close_on_cancel as u32,
         required_money: quest.rew_or_req_money.min(0).unsigned_abs(),
         required_items: quest_reward_items(
             &quest.req_item_id,

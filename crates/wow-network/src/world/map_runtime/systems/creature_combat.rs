@@ -308,11 +308,6 @@ impl MapRuntime {
                 check: PlayerMeleeCheck::TargetNotAlive,
             };
         }
-        if creature.is_evading_home() {
-            return DbCreaturePlayerMeleeValidation {
-                check: PlayerMeleeCheck::TargetEvading,
-            };
-        }
         let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, creature.combat_reach());
         let dx = player.position.x - creature.current_position.x;
         let dy = player.position.y - creature.current_position.y;
@@ -336,6 +331,11 @@ impl MapRuntime {
         ) {
             return DbCreaturePlayerMeleeValidation {
                 check: PlayerMeleeCheck::BadFacing,
+            };
+        }
+        if creature.is_evading_home() {
+            return DbCreaturePlayerMeleeValidation {
+                check: PlayerMeleeCheck::TargetEvading,
             };
         }
         DbCreaturePlayerMeleeValidation {
@@ -1760,6 +1760,43 @@ impl MapRuntime {
         }
         self.sync_db_creature_idle_motion_tracking(attacker.raw());
         self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), Instant::now());
+    }
+
+    pub(in crate::world) fn clear_db_creature_combat_with_player_flag_packets(
+        &mut self,
+        attacker: ObjectGuid,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let old_victim = self
+            .active_creature_combats
+            .get(&attacker.raw())
+            .map(|combat| combat.victim);
+        self.clear_db_creature_combat(attacker);
+        let Some(victim) = old_victim.filter(|victim| victim.is_player()) else {
+            return Ok(Vec::new());
+        };
+        let Some(player) = self.players.get(&victim.counter()) else {
+            return Ok(Vec::new());
+        };
+        if player.in_combat {
+            return Ok(Vec::new());
+        }
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_unit_flags_update_body(
+                victim,
+                player_unit_flags_with_looting(false, player.looting),
+            )?,
+        };
+        Ok(self
+            .nearby_player_guids(position, PLAYER_VISIBILITY_RADIUS_YARDS, None)
+            .into_iter()
+            .filter_map(|recipient_guid| {
+                self.players
+                    .get(&recipient_guid)
+                    .and_then(|recipient| recipient.packet_to_client(packet.clone()))
+            })
+            .collect())
     }
 
     pub(in crate::world) fn clear_db_creature_combats_for_victim(&mut self, victim: ObjectGuid) {

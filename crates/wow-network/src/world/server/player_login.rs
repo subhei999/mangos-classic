@@ -532,12 +532,20 @@ pub(in crate::world) async fn load_character_spell_cooldowns_into_session(
                 cooldown.spell_id,
                 now + Duration::from_secs(cooldown.spell_expire_time - now_epoch_secs),
             );
-            if cooldown.item_id > 0 {
-                session
-                    .character
-                    .spell_cooldown_item_ids
-                    .insert(cooldown.spell_id, cooldown.item_id);
-            }
+        } else if cooldown.category != 0 && cooldown.category_expire_time > now_epoch_secs {
+            session
+                .character
+                .spell_cooldowns_until
+                .insert(cooldown.spell_id, now);
+        }
+        if cooldown.item_id > 0
+            && (cooldown.spell_expire_time > now_epoch_secs
+                || cooldown.category_expire_time > now_epoch_secs)
+        {
+            session
+                .character
+                .spell_cooldown_item_ids
+                .insert(cooldown.spell_id, cooldown.item_id);
         }
         if cooldown.category != 0 && cooldown.category_expire_time > now_epoch_secs {
             session

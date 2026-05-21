@@ -1546,14 +1546,13 @@ pub(in crate::world) async fn grant_loot_item_to_character(
     if let Some(item) = pushed_item.as_ref() {
         packets.push(OutboundWorldPacket {
             opcode: WorldOpcode::SmsgItemPushResult as u16,
-            body: build_item_push_result_body(target_guid, item, loot.count, true, false, true),
+            body: build_item_push_result_body(target_guid, item, loot.count, false, false, true),
         });
     }
     packets.push(OutboundWorldPacket {
         opcode: WorldOpcode::SmsgUpdateObject as u16,
         body: build_update_object_body(&update_blocks),
     });
-
     if target_is_current {
         for packet in packets {
             send_packet(

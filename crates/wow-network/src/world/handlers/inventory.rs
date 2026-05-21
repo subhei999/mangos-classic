@@ -190,6 +190,8 @@ pub(in crate::world) const ITEM_SUBCLASS_BULLET: u32 = 3;
 pub(in crate::world) const ITEM_SUBCLASS_WEAPON_BOW: u32 = 2;
 pub(in crate::world) const ITEM_SUBCLASS_WEAPON_GUN: u32 = 3;
 pub(in crate::world) const ITEM_SUBCLASS_WEAPON_CROSSBOW: u32 = 18;
+pub(in crate::world) const INVTYPE_HOLDABLE: u32 = 23;
+pub(in crate::world) const INVTYPE_RELIC: u32 = 28;
 pub(in crate::world) const BAG_FAMILY_ARROWS: i32 = 1;
 pub(in crate::world) const BAG_FAMILY_BULLETS: i32 = 2;
 pub(in crate::world) const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
@@ -367,6 +369,22 @@ pub(in crate::world) async fn handle_inventory_swap(
         session.inventory.items.iter().find(|item| {
             item.bag == move_request.dst_bag as u32 && item.slot == move_request.dst_slot
         });
+    let dst_template = if let Some(dst_item) = dst_item {
+        let Some(template) =
+            wow_db::get_item_template_query(deps.world_db_pool, dst_item.item_template).await?
+        else {
+            warn!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                item_template = dst_item.item_template,
+                "Rejected inventory move for missing destination item template"
+            );
+            return Ok(());
+        };
+        Some(template)
+    } else {
+        None
+    };
 
     if move_request.moves_equipped_bag_into_itself() {
         info!(
@@ -388,66 +406,130 @@ pub(in crate::world) async fn handle_inventory_swap(
         .await;
     }
 
-    if move_request.dst_bag == INVENTORY_SLOT_BAG_0
-        && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot))
-    {
-        let fits_destination = if move_request.dst_slot < EQUIPMENT_SLOT_END {
-            item_fits_equipment_slot(src_template.inventory_type, move_request.dst_slot)
-        } else {
-            src_template.container_slots > 0
-        };
-        if !fits_destination {
+    if move_request.src_bag == INVENTORY_SLOT_BAG_0 {
+        if let Some(error) = item_can_leave_bag0_equipment_or_bag_slot(
+            move_request.src_slot,
+            &src_template,
+            session.combat.player_in_combat,
+        ) {
             info!(
                 opcode = inventory_opcode_name(opcode),
                 guid = character_guid,
                 item_template = src_item.item_template,
-                inventory_type = src_template.inventory_type,
-                dst_slot = move_request.dst_slot,
-                "Rejected inventory move for incompatible equipment/bag slot"
+                src_slot = move_request.src_slot,
+                "Rejected inventory move because equipped item cannot be removed now"
             );
             return send_inventory_change_failure(
                 stream,
-                EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT,
+                error,
                 Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
                 None,
                 header_crypto,
             )
             .await;
         }
-        if move_request.dst_slot < EQUIPMENT_SLOT_END {
-            let skills =
-                wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
-            let equip_result = character_can_equip_item_template(
-                character.level,
-                character.race,
-                character.class,
-                &src_template,
-                &skills,
-                &session.character.active_spells,
-                &session.character.character_reputations,
+    }
+
+    if move_request.dst_bag == INVENTORY_SLOT_BAG_0 {
+        if let Some(error) = dst_template.as_ref().and_then(|template| {
+            item_can_leave_bag0_equipment_or_bag_slot(
+                move_request.dst_slot,
+                template,
+                session.combat.player_in_combat,
+            )
+        }) {
+            info!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                dst_slot = move_request.dst_slot,
+                "Rejected inventory move because destination equipped item cannot be removed now"
             );
-            if equip_result != 0 {
-                info!(
-                    opcode = inventory_opcode_name(opcode),
-                    guid = character_guid,
-                    item_template = src_item.item_template,
-                    class = character.class,
-                    race = character.race,
-                    item_class = src_template.class,
-                    item_subclass = src_template.subclass,
-                    "Rejected inventory move due to class/race/proficiency requirements"
-                );
-                return send_inventory_change_failure_with_required_level(
-                    stream,
-                    equip_result,
-                    Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
-                    None,
-                    (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
-                        .then_some(src_template.required_level),
-                    header_crypto,
+            return send_inventory_change_failure(
+                stream,
+                error,
+                dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+                Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+                header_crypto,
+            )
+            .await;
+        }
+    }
+
+    let moves_src_into_bag0_equip_or_bag = move_request.dst_bag == INVENTORY_SLOT_BAG_0
+        && (move_request.dst_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.dst_slot));
+    let moves_dst_into_bag0_equip_or_bag = dst_item.is_some()
+        && move_request.src_bag == INVENTORY_SLOT_BAG_0
+        && (move_request.src_slot < EQUIPMENT_SLOT_END || is_bag_slot(move_request.src_slot));
+    if moves_src_into_bag0_equip_or_bag || moves_dst_into_bag0_equip_or_bag {
+        let skills = wow_db::get_character_skills(deps.character_db_pool, character_guid).await?;
+        if let Some((equip_result, required_level)) = item_can_enter_bag0_equipment_or_bag_slot(
+            move_request.dst_slot,
+            &src_template,
+            CharacterEquipValidationContext {
+                level: character.level,
+                race: character.race,
+                class: character.class,
+                skills: &skills,
+                active_spells: &session.character.active_spells,
+                reputations: &session.character.character_reputations,
+                in_combat: session.combat.player_in_combat,
+            },
+        )
+        .filter(|_| moves_src_into_bag0_equip_or_bag)
+        {
+            info!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                item_template = src_item.item_template,
+                inventory_type = src_template.inventory_type,
+                dst_slot = move_request.dst_slot,
+                "Rejected inventory move for incompatible equipment/bag destination"
+            );
+            return send_inventory_change_failure_with_required_level(
+                stream,
+                equip_result,
+                Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+                dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+                required_level,
+                header_crypto,
+            )
+            .await;
+        }
+        if let Some((equip_result, required_level)) = dst_item
+            .zip(dst_template.as_ref())
+            .filter(|_| moves_dst_into_bag0_equip_or_bag)
+            .and_then(|(_, template)| {
+                item_can_enter_bag0_equipment_or_bag_slot(
+                    move_request.src_slot,
+                    template,
+                    CharacterEquipValidationContext {
+                        level: character.level,
+                        race: character.race,
+                        class: character.class,
+                        skills: &skills,
+                        active_spells: &session.character.active_spells,
+                        reputations: &session.character.character_reputations,
+                        in_combat: session.combat.player_in_combat,
+                    },
                 )
-                .await;
-            }
+            })
+        {
+            info!(
+                opcode = inventory_opcode_name(opcode),
+                guid = character_guid,
+                dst_slot = move_request.dst_slot,
+                src_slot = move_request.src_slot,
+                "Rejected inventory move because displaced item cannot occupy source slot"
+            );
+            return send_inventory_change_failure_with_required_level(
+                stream,
+                equip_result,
+                dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+                Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+                required_level,
+                header_crypto,
+            )
+            .await;
         }
     }
 
@@ -511,16 +593,38 @@ pub(in crate::world) async fn handle_inventory_swap(
         );
         return Ok(());
     };
+    let moved_is_swap = matches!(moved, wow_db::InventoryMoveResult::Swapped);
 
     session.inventory.items =
         wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
+    if let Some(character) = session.character.active_character.as_ref() {
+        deps.shared_world
+            .maps
+            .update_player_inventory(
+                character.position.map_id,
+                character_guid,
+                session.inventory.items.clone(),
+            )
+            .await;
+    }
     let changed_equipment_slots = bag0_changed_slots(&move_request)
         .into_iter()
         .filter(|slot| *slot < EQUIPMENT_SLOT_END)
         .collect::<Vec<_>>();
     let mut combat_stats_update_body = None;
     if !changed_equipment_slots.is_empty() {
-        if let Some(character) = session.character.active_character.as_ref() {
+        if let Some(character) = session.character.active_character.clone() {
+            let in_combat = session.combat.player_in_combat;
+            let should_interrupt_spell_cast = moved_is_swap
+                && combat_equipment_slot_change_interrupts_active_spell_cast(
+                    &changed_equipment_slots,
+                    in_combat,
+                );
+            let should_reset_main_hand_swing = moved_is_swap
+                && combat_equipment_slot_change_resets_main_hand_swing(
+                    &changed_equipment_slots,
+                    in_combat,
+                );
             let world_stats = wow_db::get_player_world_stats(
                 deps.world_db_pool,
                 character.race,
@@ -536,23 +640,52 @@ pub(in crate::world) async fn handle_inventory_swap(
                 session.character.player_ammo_id,
             )
             .await?;
-            let combat_stats = player_combat_stats_for_values_with_ammo(
+            let (base_combat_stats, combat_stats) = inventory_recomputed_combat_stats(
                 character.class,
                 character.level,
-                &world_stats,
+                world_stats,
                 &equipped_templates,
                 ammo_template.as_ref(),
+                &session.auras.active_auras,
             );
             combat_stats_update_body = Some(build_player_combat_stats_update_body(
                 character_guid,
                 &combat_stats,
             )?);
+            let next_main_hand_swing_at = should_reset_main_hand_swing
+                .then(|| player_main_hand_next_swing_at(Instant::now(), &combat_stats));
             let packets = deps
                 .shared_world
                 .maps
-                .update_player_combat_stats(character.position.map_id, character_guid, combat_stats)
+                .update_player_combat_stats(
+                    character.position.map_id,
+                    character_guid,
+                    base_combat_stats,
+                )
                 .await?;
             deps.shared_world.sessions.dispatch(packets).await;
+            if let Some(next_swing_at) = next_main_hand_swing_at {
+                mirror_session_player_next_swing_at(session, Some(next_swing_at));
+                deps.shared_world
+                    .maps
+                    .set_player_next_swing_at(
+                        character.position.map_id,
+                        character_guid,
+                        Some(next_swing_at),
+                    )
+                    .await;
+            }
+            if should_interrupt_spell_cast {
+                cancel_pending_player_spell_cast(
+                    stream,
+                    deps.shared_world.maps,
+                    deps.shared_world.sessions,
+                    session,
+                    SPELL_FAILED_INTERRUPTED,
+                    header_crypto,
+                )
+                .await?;
+            }
 
             let visible_equipment = visible_equipment_for_inventory(
                 session
@@ -1184,17 +1317,18 @@ pub(in crate::world) async fn apply_player_ammo_selection(
         load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
     let ammo_template =
         load_selected_ammo_template(deps.world_db_pool, &session.inventory.items, ammo_id).await?;
-    let combat_stats = player_combat_stats_for_values_with_ammo(
+    let (base_combat_stats, combat_stats) = inventory_recomputed_combat_stats(
         character.class,
         character.level,
-        &world_stats,
+        world_stats,
         &equipped_templates,
         ammo_template.as_ref(),
+        &session.auras.active_auras,
     );
     let observer_packets = deps
         .shared_world
         .maps
-        .update_player_combat_stats(character.position.map_id, character.guid, combat_stats)
+        .update_player_combat_stats(character.position.map_id, character.guid, base_combat_stats)
         .await?;
     deps.shared_world.sessions.dispatch(observer_packets).await;
 
@@ -2148,6 +2282,46 @@ pub(in crate::world) fn bag0_changed_slots(request: &InventoryMoveRequest) -> Ve
     slots
 }
 
+pub(in crate::world) fn inventory_recomputed_combat_stats(
+    class: u8,
+    level: u8,
+    world_stats: PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+    ammo_template: Option<&ItemTemplateQuery>,
+    active_auras: &[ActiveAura],
+) -> (PlayerCombatStats, PlayerCombatStats) {
+    let effective_world_stats = player_world_stats_with_active_auras(world_stats, active_auras);
+    let base_combat_stats = player_combat_stats_for_values_with_ammo(
+        class,
+        level,
+        &effective_world_stats,
+        equipped_templates,
+        ammo_template,
+    );
+    let effective_combat_stats = combat_stats_with_active_auras(base_combat_stats, active_auras);
+    (base_combat_stats, effective_combat_stats)
+}
+
+pub(in crate::world) fn combat_equipment_slot_change_interrupts_active_spell_cast(
+    changed_equipment_slots: &[u8],
+    in_combat: bool,
+) -> bool {
+    in_combat
+        && changed_equipment_slots.iter().any(|slot| {
+            matches!(
+                *slot,
+                EQUIPMENT_SLOT_MAINHAND | EQUIPMENT_SLOT_OFFHAND | EQUIPMENT_SLOT_RANGED
+            )
+        })
+}
+
+pub(in crate::world) fn combat_equipment_slot_change_resets_main_hand_swing(
+    changed_equipment_slots: &[u8],
+    in_combat: bool,
+) -> bool {
+    in_combat && changed_equipment_slots.contains(&EQUIPMENT_SLOT_MAINHAND)
+}
+
 pub(in crate::world) fn build_inventory_move_update_blocks(
     character_guid: u32,
     inventory: &[CharacterInventoryItem],
@@ -2350,6 +2524,77 @@ pub(in crate::world) fn item_fits_equipment_slot(inventory_type: u32, slot: u8) 
         19..=22 => inventory_type == INVTYPE_BAG,
         _ => false,
     }
+}
+
+pub(in crate::world) fn item_can_change_equip_state_in_combat(
+    template: &ItemTemplateQuery,
+) -> bool {
+    matches!(
+        template.inventory_type,
+        INVTYPE_RELIC | INVTYPE_SHIELD | INVTYPE_HOLDABLE
+    ) || matches!(template.class, ITEM_CLASS_WEAPON | ITEM_CLASS_PROJECTILE)
+}
+
+pub(in crate::world) fn item_can_leave_bag0_equipment_or_bag_slot(
+    slot: u8,
+    template: &ItemTemplateQuery,
+    in_combat: bool,
+) -> Option<u8> {
+    if !(slot < EQUIPMENT_SLOT_END || is_bag_slot(slot)) {
+        return None;
+    }
+    (in_combat && !item_can_change_equip_state_in_combat(template))
+        .then_some(EQUIP_ERR_NOT_IN_COMBAT)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct CharacterEquipValidationContext<'a> {
+    pub(in crate::world) level: u8,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) skills: &'a [CharacterSkill],
+    pub(in crate::world) active_spells: &'a HashSet<u32>,
+    pub(in crate::world) reputations: &'a [CharacterReputation],
+    pub(in crate::world) in_combat: bool,
+}
+
+pub(in crate::world) fn item_can_enter_bag0_equipment_or_bag_slot(
+    slot: u8,
+    template: &ItemTemplateQuery,
+    context: CharacterEquipValidationContext<'_>,
+) -> Option<(u8, Option<u32>)> {
+    if !(slot < EQUIPMENT_SLOT_END || is_bag_slot(slot)) {
+        return None;
+    }
+    if context.in_combat && !item_can_change_equip_state_in_combat(template) {
+        return Some((EQUIP_ERR_NOT_IN_COMBAT, None));
+    }
+    let fits_destination = if slot < EQUIPMENT_SLOT_END {
+        item_fits_equipment_slot(template.inventory_type, slot)
+    } else {
+        template.container_slots > 0
+    };
+    if !fits_destination {
+        return Some((EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT, None));
+    }
+    if slot < EQUIPMENT_SLOT_END {
+        let equip_result = character_can_equip_item_template(
+            context.level,
+            context.race,
+            context.class,
+            template,
+            context.skills,
+            context.active_spells,
+            context.reputations,
+        );
+        if equip_result != 0 {
+            return Some((
+                equip_result,
+                (equip_result == EQUIP_ERR_CANT_EQUIP_LEVEL_I).then_some(template.required_level),
+            ));
+        }
+    }
+    None
 }
 
 pub(in crate::world) fn character_can_equip_item_template(

@@ -87,6 +87,37 @@ fn map_runtime_db_creature_loot_money_is_claimed_once() {
 }
 
 #[test]
+fn map_runtime_open_db_creature_loot_extends_corpse_decay_while_looting() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 45;
+    spawn.spawn_time_secs_min = 15;
+    spawn.spawn_time_secs_max = 15;
+    let guid = creature_spawn_guid(&spawn).raw();
+    let mut creature = DbCreatureRuntime::new(spawn);
+    let death_at = Instant::now();
+    creature.begin_corpse(death_at, 1_000);
+    let original_expiry = creature.corpse_expires_at.expect("corpse expiry");
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![creature]);
+
+    let before_open = Instant::now();
+    let opened = map
+        .open_db_creature_loot(guid, 1, CreatureLootOwner::Player(1), None, Vec::new())
+        .expect("loot should open");
+    let after_open = Instant::now();
+
+    let extended_expiry = opened.corpse_expires_at.expect("extended corpse expiry");
+    assert!(extended_expiry > original_expiry);
+    assert!(extended_expiry >= before_open + Duration::from_secs(120));
+    assert!(extended_expiry <= after_open + Duration::from_secs(120));
+    assert!(
+        map.loaded_db_creature_lifecycle_guids(after_open + Duration::from_secs(20))
+            .is_empty(),
+        "open loot should requeue corpse expiry past the old short respawn-driven deadline"
+    );
+}
+
+#[test]
 fn map_runtime_db_creature_loot_owner_blocks_unrelated_players() {
     let mut spawn = test_creature_spawn(6);
     spawn.guid = 46;
@@ -3786,17 +3817,22 @@ fn map_runtime_db_creature_damage_owns_death_and_respawn_state() {
         .active_db_creature_combats_for_victim(ObjectGuid::new(HighGuid::Player, 0, 1))
         .iter()
         .any(|combat| combat.attacker == creature_guid));
-    assert_eq!(event.observer_packets.len(), 2);
-    assert_eq!(event.observer_packets[0].0, SessionId(2));
-    assert_eq!(
-        event.observer_packets[0].1.opcode,
-        WorldOpcode::SmsgAttackerStateUpdate as u16
-    );
-    assert_eq!(event.observer_packets[1].0, SessionId(2));
-    assert_eq!(
-        event.observer_packets[1].1.opcode,
-        WorldOpcode::SmsgUpdateObject as u16
-    );
+    assert!(event.observer_packets.iter().any(|(session_id, packet)| {
+        *session_id == SessionId(2) && packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16
+    }));
+    assert!(event.observer_packets.iter().any(|(session_id, packet)| {
+        *session_id == SessionId(2) && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+    }));
+    let player_combat_clear_body = build_unit_flags_update_body(
+        ObjectGuid::new(HighGuid::Player, 0, 1),
+        UNIT_FLAG_PLAYER_CONTROLLED,
+    )
+    .unwrap();
+    assert!(event.observer_packets.iter().any(|(session_id, packet)| {
+        *session_id == SessionId(1)
+            && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+            && packet.body == player_combat_clear_body
+    }));
     assert!(map
         .apply_db_creature_damage(DbCreatureDamageRequest {
             creature_guid,
@@ -4073,27 +4109,26 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
             now + Duration::from_secs(1),
         )
         .unwrap();
+    assert!(corpse_events.is_empty());
+    let corpse_events = map
+        .advance_db_creature_lifecycle(
+            &[creature_guid.raw()],
+            player_a_position,
+            Some(1),
+            now + Duration::from_secs(120),
+        )
+        .unwrap();
     assert_eq!(corpse_events.len(), 1);
     assert_eq!(
         corpse_events[0].creature.life_state,
         DbCreatureLifeState::Dead
     );
-    assert!(map
+    let respawn_events = map
         .advance_db_creature_lifecycle(
             &[creature_guid.raw()],
             player_b_position,
             Some(2),
-            now + Duration::from_secs(1),
-        )
-        .unwrap()
-        .is_empty());
-
-    let respawn_events = map
-        .advance_db_creature_lifecycle(
-            &[creature_guid.raw()],
-            player_a_position,
-            Some(1),
-            now + Duration::from_secs(3),
+            now + Duration::from_secs(120),
         )
         .unwrap();
     assert_eq!(respawn_events.len(), 1);
@@ -4104,9 +4139,9 @@ fn map_runtime_same_mob_torture_keeps_lifecycle_authoritative() {
     assert!(map
         .advance_db_creature_lifecycle(
             &[creature_guid.raw()],
-            player_b_position,
-            Some(2),
-            now + Duration::from_secs(3),
+            player_a_position,
+            Some(1),
+            now + Duration::from_secs(120),
         )
         .unwrap()
         .is_empty());

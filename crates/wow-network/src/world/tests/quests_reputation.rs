@@ -851,6 +851,22 @@ fn world_packet_sink_rejects_full_bounded_queue() {
 }
 
 #[tokio::test]
+async fn questgiver_cancel_closes_gossip_like_cmangos() {
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    handle_questgiver_cancel(&mut sink, &mut header_crypto)
+        .await
+        .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, WorldOpcode::SmsgGossipComplete as u16);
+    assert!(packet.body.is_empty());
+    assert!(outbound_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn session_registry_requests_disconnect_when_bounded_queue_is_full() {
     let sessions = SessionRegistry::default();
     let session_id = SessionId(42);
@@ -1521,7 +1537,7 @@ fn quest_request_items_packet_includes_required_items_and_complete_flags() {
     let mut displays = QuestRewardItemDisplays::default();
     displays.required[0] = 6689;
 
-    let body = build_quest_request_items_body(guid, &quest, &displays, true);
+    let body = build_quest_request_items_body(guid, &quest, &displays, true, false);
     let mut cursor = 8;
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 33);
     while body[cursor] != 0 {
@@ -1549,6 +1565,34 @@ fn quest_request_items_packet_includes_required_items_and_complete_flags() {
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 4);
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 8);
     assert_eq!(cursor, body.len());
+}
+
+#[test]
+fn quest_request_items_can_close_on_cancel_for_auto_opened_turnins() {
+    let guid = ObjectGuid::new(HighGuid::Unit, 197, 1);
+    let mut quest = test_quest_template(33);
+    quest.request_items_text = "Have you collected the meat?".to_string();
+    quest.req_item_id[0] = 769;
+    quest.req_item_count[0] = 8;
+    let body = build_quest_request_items_body(
+        guid,
+        &quest,
+        &QuestRewardItemDisplays::default(),
+        true,
+        true,
+    );
+    let mut cursor = 8 + 4;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    while body[cursor] != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    cursor += 8;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
 }
 
 #[test]
@@ -2021,6 +2065,69 @@ fn quest_source_item_push_result_matches_cmangos_shape() {
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
     assert_eq!(cursor, body.len());
+}
+
+#[test]
+fn gm_additem_push_result_matches_cmangos_self_grant_flags() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 929,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, false, true, true);
+    let mut cursor = 8;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+}
+
+#[test]
+fn loot_item_push_result_matches_cmangos_looted_flags() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 929,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, false, false, true);
+    let mut cursor = 8;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+}
+
+#[test]
+fn vendor_buy_item_push_result_matches_cmangos_purchased_flags() {
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 77,
+        item_template: 929,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    };
+    let body = build_item_push_result_body(11, &item, 1, true, false, true);
+    let mut cursor = 8;
+
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 0);
+    assert_eq!(read_u32(&body, &mut cursor).unwrap(), 1);
 }
 
 #[test]

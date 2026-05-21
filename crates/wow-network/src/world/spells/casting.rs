@@ -425,7 +425,9 @@ pub(in crate::world) async fn handle_use_item(
         .await;
     };
     prepared_spell.prepare();
-    let item_spell_profile = prepared_spell.profile;
+    let (item_spell_profile, item_cooldown) =
+        item_spell_cast_profile_with_cooldown(prepared_spell.profile, item_spell, &spell_template);
+    prepared_spell.profile = item_spell_profile;
     let cast_time_ms = spell_cast_time_millis(
         deps.shared_world
             .maps
@@ -485,10 +487,21 @@ pub(in crate::world) async fn handle_use_item(
         &item_spell_profile,
         now,
         refreshable_consumable_regen,
-        spell_template.category,
-        spell_template.category_recovery_time as u64,
+        item_cooldown.category,
+        item_cooldown.category_recovery_millis,
     )
     .await;
+    if let Some(snapshot) = deps
+        .shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+    {
+        session.character.spell_global_cooldowns_until = snapshot.spell_global_cooldowns_until;
+        session.character.spell_cooldowns_until = snapshot.spell_cooldowns_until;
+        session.character.spell_cooldown_categories = snapshot.spell_cooldown_categories;
+        session.character.spell_cooldown_item_ids = snapshot.spell_cooldown_item_ids;
+    }
     let spell_start_body = prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?;
     send_packet(
         stream,
@@ -1884,6 +1897,8 @@ pub(in crate::world) fn opening_spell_cast_profile(spell_id: u32) -> SpellCastPr
         needs_combo_points: false,
         global_cooldown_category: 0,
         global_cooldown_millis: 0,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
         cooldown_millis: 0,
     }
 }

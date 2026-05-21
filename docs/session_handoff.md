@@ -9,13 +9,83 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Local creature corpse/respawn timer fix is uncommitted: the May 14
-  corpse-lifecycle change started capping corpse decay to `90%` of the
-  creature respawn timer inside Rust runtime death handling. That made
-  short-respawn DB creatures such as Northshire `Young Wolf` (`entry 299`,
-  `spawntimesecsmin=max=15`) despawn in roughly `13s` and then respawn almost
-  immediately. Rust now keeps corpse expiration on the template/DB
-  `CorpseDecay` path again instead of collapsing it onto the respawn timer.
+- Creature corpse/respawn timing RCA is in progress: CMaNGOS old static spawn
+  handling really does cap corpse decay to `90%` of the respawn timer on load,
+  so short-respawn DB creatures such as Northshire `Young Wolf` (`entry 299`,
+  `spawntimesecsmin=max=15`) can despawn their corpse in roughly `13s` if
+  nobody opens loot. Active looting was the real Rust mismatch: opening loot
+  did not extend `corpse_expires_at` or requeue the lifecycle deadline the way
+  CMaNGOS `InspectingLoot()` does. Rust now extends an opened corpse to at
+  least the CMaNGOS `2 minute` minimum looting window and reschedules the
+  lifecycle queue so the old short despawn deadline cannot still fire under an
+  open loot window.
+- Current gameplay-test priority moved through P1 into P2 inventory/equipment
+  integrity. P1 combat cleanup is implemented locally: direct spell, channeled
+  spell, dynamic-object periodic, and DB-creature aura/DoT deaths now clear
+  creature combat through the shared map-owned helper and emit player
+  out-of-combat `UNIT_FIELD_FLAGS` packets. P2 inventory cleanup is also
+  implemented locally: swaps now validate both items before DB mutation, armor
+  and ordinary bags follow CMaNGOS in-combat equip/unequip restrictions,
+  post-swap map inventory state refreshes immediately, legal in-combat
+  main-hand/offhand/ranged slot swaps interrupt active casts/channels,
+  main-hand slot changes reset the tracked swing timer, and queued Heroic
+  Strike-style swings recheck main-hand weapon requirements before firing.
+  The Night Elf `+10 Nature Resistance` stat-panel regression was a broader
+  equipment/ammo stat-refresh ownership bug: inventory direct self packets were
+  built from raw base combat stats while the map owner applied active aura
+  modifiers. Inventory/ammo recomputes now split base stats for the map from
+  aura-effective stats for the client packet. The HP potion snap-back was the
+  same owner-boundary class for live resources: direct item heals updated only
+  the session/client while map-owned player health stayed stale. Item heals now
+  use the map-owned player-heal event, and item mana energize effects write
+  through a new map-owned `Power1` update before later gameplay sync can refresh
+  the session cache. A CMaNGOS-style GM smoke helper is also implemented
+  locally: `.additem #itemid [#count]` grants items into normal inventory using
+  the shared store planner, DB persistence, item push/update packets, and
+  map-owned inventory refresh. Consumable cooldown follow-up is implemented
+  locally and has been corrected back toward CMaNGOS parity after live smoke:
+  item-use cooldowns prefer CMaNGOS item-template cooldown/category overrides
+  over spell-template defaults, item-use immediately refreshes the session
+  cooldown cache from map-owned runtime state so logout persistence cannot race
+  stale session state, and item acquisition paths no longer send Rust-only
+  cooldown refresh packets. Like CMaNGOS, new item visibility relies on item
+  query data plus the already-owned spell/category cooldown state; Rust now
+  keeps spell recovery and item category recovery as separate cooldown record
+  fields instead of folding category time into the spell cooldown, including
+  category-only cooldown records for initial-spells/logout parity. Rust item
+  query packets now use the CMaNGOS invalid spell-slot shape and preserve item
+  spell cooldown/category fallback data. Follow-up live smoke showed existing
+  multiple potion stacks now display the shared cooldown correctly, but a newly
+  granted stack still did not. Static CMaNGOS comparison found no acquisition
+  cooldown packet; the concrete mismatch was item-push classification flags.
+  Rust now marks GM self `.additem` grants as `received=false, created=true`,
+  loot acquisitions as `received=false, created=false`, and vendor purchases as
+  `received=true, created=false`, matching `Player::SendNewItem()` call sites.
+  Quest reward and create-item spell push flags remain distinct. Quest UI
+  transition cleanup is implemented locally:
+  Rust now parses `CMSG_QUESTGIVER_CANCEL` and answers it with CMaNGOS'
+  `SMSG_GOSSIP_COMPLETE` close packet, closes the quest pane after successful
+  accepts, and splits `CMSG_QUESTGIVER_COMPLETE_QUEST` from
+  `CMSG_QUESTGIVER_REQUEST_REWARD` so complete opens the request-items/continue
+  screen while request-reward owns the completion mutation and offer-reward
+  packet like CMaNGOS. Completed single-quest hello now goes through the
+  request-items helper with `CloseOnCancel=true` instead of always jumping
+  straight to offer-reward, letting CMaNGOS' request-items-vs-offer decision and
+  cancel semantics drive the UI. Evade melee parity follow-up is implemented
+  locally:
+  player melee validation now checks CMaNGOS-shaped reach, navigation, and
+  facing before treating a returning-home creature as an evade target, so a
+  far-away swing on an evading mob sends the normal not-in-range retry instead
+  of a fake `SMSG_ATTACKERSTATEUPDATE` evade result. Target portrait aura timer
+  follow-up is corrected back toward CMaNGOS parity after deeper source
+  comparison: `SpellAuraHolder::UpdateAuraDuration()` only sends
+  `SMSG_UPDATE_AURA_DURATION` when the aura target itself is a player, not for
+  creature targets, and `HandleSetSelectionOpcode` only sets selection/mover
+  selection plus reputation visibility. Rust no longer sends caster-directed
+  creature aura duration packets or a target-selection aura refresh. Creature
+  debuffs remain exposed through public unit aura fields; hostile spell target
+  serialization now preserves `TARGET_FLAG_UNIT_ENEMY` alongside
+  `TARGET_FLAG_UNIT`, matching CMaNGOS' outbound target-mask shape.
 - Current launcher/updater slice is uncommitted: the flaky global
   `prometheus_render_includes_histogram_and_opcode_labels` test was made
   parallel-safe by checking rendered shared metrics through presence/max bounds,
@@ -168,11 +238,16 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-Immediate user-directed priority in the current thread is creature
-corpse/respawn timing: confirm the latest Rust fix restores corpse despawn to
-the DB/template timer path instead of collapsing short respawn timers into
-near-immediate corpse cleanup and respawn. After that proof, resume launcher
-polish and the parked multiplayer visual-parity smoke.
+Immediate user-directed priority in the current thread is P2
+inventory/equipment integrity from gameplay testing. P0 corpse-looting despawn
+is considered done by user smoke, and P1 general combat lifecycle cleanup is
+implemented locally. The P2 local slice fixes the shared inventory move owner:
+swaps validate the displaced item against the vacated equipment/bag slot,
+CMaNGOS in-combat equip-state rules block armor/ordinary bag changes while
+allowing weapons/shields/offhands/projectiles/relics, map-owned player
+inventory snapshots update immediately after a successful swap, and queued
+next-melee spells with the main-hand requirement fail instead of firing after
+the weapon is removed.
 
 Immediate user-directed priority is multiplayer visual parity around same-map
 teleport plus right-click-turn observation in Northshire. The latest local fixes
@@ -429,6 +504,64 @@ Latest load-harness change:
   start checks, area discovery, and session-to-map gameplay-state sync.
 
 ## Latest Change
+
+Gameplay-test P1 general combat lifecycle cleanup is now implemented locally:
+
+- added `clear_db_creature_combat_with_player_flag_packets(...)` so map-owned
+  death paths can clear creature combat and broadcast the player
+  out-of-combat flags without relying on a per-session finalizer
+- periodic DB-creature aura/DoT deaths no longer remove combat maps by hand;
+  they now clear player melee state, interrupt stale player spell/channel work
+  targeting the dead creature, and use the shared combat cleanup helper
+- direct spell/channel damage deaths now include map-produced player combat
+  flag clear packets in the `DbCreatureDamageEvent`
+- persistent dynamic-object periodic damage deaths use the same cleanup helper
+  instead of only clearing the creature combat entry
+- regression coverage now proves a DoT death clears active creature combat,
+  clears the player `in_combat` state, sends the player unit-flag clear packet,
+  preserves corpse state, stops motion, and keeps old death/respawn ownership
+  tests semantic rather than packet-count fragile
+
+Gameplay-test P2 inventory/equipment integrity cleanup is now implemented
+locally:
+
+- `handle_inventory_swap(...)` now loads and validates the destination item
+  template too, so a swap checks both `src -> dst` and displaced `dst -> src`
+  before writing character inventory rows
+- CMaNGOS `CanChangeEquipStateInCombat()` parity is encoded for equipment
+  moves: weapons, shields, held offhands, relics, and projectiles can change
+  during combat; armor and ordinary bags cannot be equipped or unequipped
+  during combat
+- successful swaps immediately update the map-owned player inventory snapshot,
+  so later map-owned combat/spell/stat code does not keep stale item state
+  until a session sync
+- successful in-combat main-hand/offhand/ranged slot swaps now cancel active
+  player casts/channels, and main-hand slot changes retime the map-owned
+  next-swing timestamp from the newly computed combat stats
+- equipment/ammo-driven combat-stat recomputes now preserve active aura and
+  passive-racial modifiers on the direct self update packet; this fixes the
+  Night Elf `+10 Nature Resistance` stat page disappearing after equipping gear
+- queued next-melee spells now reload their spell template at swing resolution
+  and fail with the CMaNGOS main-hand equipped-item error if the player removed
+  their main-hand weapon after queueing Heroic Strike-style abilities
+- consumable direct heal/energize effects now update the map-owned live
+  resources instead of only the session cache; this fixes HP potions briefly
+  increasing health and then snapping back, and covers mana-style energize item
+  effects with the same ownership rule
+- GM `.additem #itemid [#count]` now grants items to the active GM character,
+  supports raw IDs and pasted item links, merges stacks before empty slots,
+  sends item push/update packets, refreshes map-owned inventory, and rechecks
+  inventory item quest completion
+- consumable cooldowns now follow the CMaNGOS item-template cooldown/category
+  override path, persist through logout via an immediate post-use session cache
+  refresh from map-owned cooldown state, and avoid Rust-only cooldown refresh
+  packets when a matching item template becomes visible from loot/vendor/GM
+  grants; newly visible item cooldown UI is left to CMaNGOS-shaped item query
+  data plus the existing spell/category cooldown state
+- CMaNGOS comparison for target portrait aura timers found that
+  `SMSG_UPDATE_AURA_DURATION` is only sent to player aura targets, not creature
+  targets, and `CMSG_SET_SELECTION` does not push aura updates; Rust no longer
+  sends those creature-target duration/selection packets
 
 The movement path is now materially thinner and more map-owned:
 
@@ -1021,6 +1154,89 @@ Player visibility relocation threshold:
 
 ## Tests Run
 
+- Questgiver complete/cancel UI parity follow-up:
+  - `cargo fmt`
+  - `cargo test -p wow-network questgiver_cancel_closes_gossip_like_cmangos --lib`
+  - `cargo test -p wow-network parse_world_client_packet_keeps_questgiver_intents_distinct --lib`
+  - `cargo test -p wow-network quest_request_items_can_close_on_cancel_for_auto_opened_turnins --lib`
+  - `cargo test -p wow-network quest_request_items_packet_includes_required_items_and_complete_flags --lib`
+  - `cargo test -p wow-network quest --lib`
+  - `cargo test -p wow-proto world_opcode_known_values_are_stable --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- Vendor potion acquisition item-push parity:
+  - `cargo fmt`
+  - `cargo test -p wow-network vendor_buy_item_push_result_matches_cmangos_purchased_flags --lib`
+  - `cargo test -p wow-network vendor --lib`
+  - `cargo test -p wow-network item_push_result --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- P2 inventory/equipment integrity cleanup:
+  - `cargo fmt`
+  - `cargo test -p wow-network inventory_swap_validation_checks_displaced_item_against_source_equipment_slot --lib`
+  - `cargo test -p wow-network inventory_combat_equip_state_rules_match_cmangos_allowlist --lib`
+  - `cargo test -p wow-network inventory_combat_weapon_slot_changes_drive_cast_and_swing_side_effects --lib`
+  - `cargo test -p wow-network inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update --lib`
+  - `cargo test -p wow-network map_runtime_player_power1_update_refreshes_shared_state_and_observers --lib`
+  - `cargo test -p wow-network map_owned_consumable_resource_updates_survive_later_session_sync --lib`
+  - `cargo test -p wow-network map_owned_player_heal_clamps_health_and_notifies_observers --lib`
+  - `cargo test -p wow-network heroic_strike_queue_requires_main_hand_weapon_at_swing_resolution --lib`
+  - `cargo test -p wow-network parses_gm_dot_commands_for_creature_spawn_and_die --lib`
+  - `cargo test -p wow-network malformed_gm_npc_add_returns_syntax_error --lib`
+  - `cargo test -p wow-network gm --lib`
+  - `cargo test -p wow-network item_use_cooldown --lib`
+  - `cargo test -p wow-network item_query_response_writes_cmangos_invalid_spell_slots --lib`
+  - `cargo test -p wow-network item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override --lib`
+  - `cargo test -p wow-network cooldown --lib`
+  - `cargo test -p wow-network item --lib`
+  - `cargo test -p wow-network spell --lib`
+  - `cargo test -p wow-network inventory --lib`
+  - `cargo test -p wow-network loot --lib`
+  - `cargo test -p wow-network heroic_strike --lib`
+  - `cargo test -p wow-network combat --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- Questgiver complete/cancel UI transition cleanup:
+  - `cargo fmt`
+  - `cargo test -p wow-network parse_world_client_packet_keeps_questgiver_intents_distinct --lib`
+  - `cargo test -p wow-network quest_request_items --lib`
+  - `cargo test -p wow-proto world_opcode_known_values_are_stable --lib`
+  - `cargo test -p wow-network quest --lib`
+  - `cargo test -p wow-network reputation --lib`
+  - `cargo test -p wow-network packet_dispatch --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- Evading-target melee reach parity:
+  - `cargo fmt`
+  - `cargo test -p wow-network db_creature_player_melee_check_allows_evade_feedback_for_returning_creature --lib`
+  - `cargo test -p wow-network map_runtime_player_melee_rejects_far_evading_target_before_evade_feedback --lib`
+  - `cargo test -p wow-network combat --lib`
+  - `cargo test -p wow-network --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- Target portrait aura duration timers:
+  - `cargo fmt`
+  - `cargo test -p wow-proto combat_spell_and_loot_responses_write_expected_layouts`
+  - `cargo test -p wow-network item_query_response_writes_cmangos_invalid_spell_slots --lib`
+  - `cargo test -p wow-network item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override --lib`
+  - `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib`
+  - `cargo test -p wow-network polymorph_transform_updates_creature_display_and_breaks_on_damage --lib`
+  - `cargo check -p worldserver`
+  - `.\scripts\test-rust.cmd`
+- P1 general combat lifecycle cleanup:
+  - `cargo fmt`
+  - `cargo test -p wow-network creature_dot_death_clears_auras_before_respawn --lib`
+  - `cargo test -p wow-network arcane_missile_impact_death_stops_target_motion --lib`
+  - `cargo test -p wow-network player_channel --lib`
+  - `cargo test -p wow-network dynamic_object --lib`
+  - `cargo test -p wow-network db_creature_death --lib`
+  - `cargo test -p wow-network spell --lib`
+  - `cargo test -p wow-network combat --lib`
+  - `cargo check -p worldserver`
+  - first `.\scripts\test-rust.cmd` found one packet-count-fragile shared
+    death test, then `map_runtime_db_creature_damage_owns_death_and_respawn_state`
+    was updated to assert the new player combat-flag clear semantics
+  - final `.\scripts\test-rust.cmd` passed
 - Current spell/control slice:
   - `cargo test -p wow-network hard_control --lib`
   - `cargo test -p wow-network polymorph --lib`
@@ -1483,6 +1699,44 @@ Player visibility relocation threshold:
 - The currently running live server, if still up from before this change, does
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
+- P1 general combat lifecycle cleanup is compile- and harness-proven, but still
+  needs a real-client smoke with Arcane Missiles/channel damage and a DoT kill
+  to confirm the player exits combat immediately when the target dies, without
+  needing to open loot or wait for a later refresh.
+- P2 inventory/equipment cleanup is compile- and harness-proven, but still
+  needs a real-client smoke covering weapon-on-backpack-item swaps, armor/bag
+  changes while in combat, legal in-combat weapon/shield swaps cancelling active
+  casts and resetting main-hand swing timing, Night Elf `+10 Nature Resistance`
+  staying visible after equipping/unequipping gear, HP/mana potion resource
+  gains persisting after movement/session refresh, `.additem` grants for test
+  potion setup, potion cooldowns staying active across logout/login, picking up
+  a new potion after consuming the last one showing the existing cooldown icon,
+  and queueing Heroic Strike with a weapon then removing the weapon before the
+  next swing.
+- Questgiver complete/cancel UI cleanup is compile- and harness-proven after
+  the close-packet and completed-hello `CloseOnCancel` parity follow-up, but
+  still needs a real-client smoke covering accept close, complete/continue/
+  reward screen advancement, questgiver cancel, and quest-log abandon behavior.
+- Evading-target melee reach cleanup is compile- and harness-proven, but still
+  needs a real-client smoke: pull a creature into return-home/evade, stand well
+  outside melee reach, swing, and confirm the client gets the normal
+  not-in-range behavior instead of an evade combat result; then step into melee
+  reach and confirm evade feedback still appears while the creature is
+  returning.
+- Item cooldown and target portrait aura timer parity cleanup is compile- and
+  harness-proven, but still needs real-client smoke. For cooldowns: consume the
+  potion from one bag slot while another matching potion stack exists in a
+  different bag slot, and confirm all matching slots show the shared cooldown
+  timer; existing-stack smoke passed after the spell/category cooldown split.
+  Also consume a potion, acquire another matching potion during the active
+  cooldown via `.additem 118`/`.additem 929`, loot, and vendor purchase, and
+  confirm whether the new icon lights after the item-push flag parity fix. For
+  target timers: cast a timed visible debuff such as Rend or Immolate on an
+  enemy, keep/reselect the enemy target, and confirm whether the target
+  portrait icon shows the clock sweep. CMaNGOS source comparison says
+  creature-target auras do not normally get `SMSG_UPDATE_AURA_DURATION`; if
+  this still fails, packet-capture CMaNGOS plus Rust for the same scenario
+  rather than adding more blind duration packets.
 - The teleport/player-visibility fix is unit-test proven but still needs the
   real-client two-player Northshire smoke that originally showed the remote
   pivot/offset symptom.
@@ -1540,21 +1794,40 @@ Player visibility relocation threshold:
 
 ## Recommended Next Task
 
-0. Restart the local release stack and kill a short-respawn starter-zone
-   creature such as `Young Wolf` (`entry 299`) to confirm corpse despawn now
-   follows the template/DB corpse timer instead of vanishing around `10-13s`
-   and respawning immediately.
-1. After the corpse/respawn smoke, continue launcher work from the Updates page
+0. Restart the local release stack and smoke P1 plus P2 together: confirm
+   Arcane Missiles/channel and DoT kills exit combat immediately, then test the
+   inventory cases for invalid weapon/backpack swaps, in-combat armor/bag
+   rejection, legal in-combat weapon/shield changes cancelling active casts and
+   resetting main-hand swing timing, Night Elf `+10 Nature Resistance` staying
+   visible after gear changes, `.additem` granting HP/mana potions, potion
+   gains persisting after movement, potion cooldowns surviving logout/login,
+   using the last potion then acquiring another of the same template while the
+   cooldown is active via `.additem 118`/`.additem 929`, loot, and vendor
+   purchase, and Heroic Strike queued with a weapon then resolved after weapon
+   removal. Also smoke
+   questgiver completion UI: complete should
+   advance to request-items/continue, request-reward should advance to the
+   reward screen, cancel should close cleanly, and quest-log abandon should
+   still clear the quest. Add the evade reach repro: a returning-home/evading
+   creature should show normal not-in-range behavior from outside melee reach
+   and only show evade feedback once the player is actually in melee reach.
+   Also smoke target portrait aura timers by casting a timed debuff such as
+   Rend/Immolate on an enemy, reselecting that enemy, and confirming whether
+   the debuff icon shows the clock sweep while targeted.
+1. If any other stat-page value flickers after gear changes, inspect whether
+   that direct self update is still bypassing the aura-effective stat model
+   rather than treating it as a race-specific passive issue.
+2. After the combat/inventory smokes, continue launcher work from the Updates page
    by adding a safe out-of-process apply/relaunch helper that stops the stack,
    replaces packaged files from the downloaded app zip, preserves launcher
    data, and starts the refreshed launcher.
-2. Then return to the parked two-client Northshire smoke covering `.go`
+3. Then return to the parked two-client Northshire smoke covering `.go`
    away/back plus stationary and moving right-click turn observation from a
    second client.
-3. If the pivot/offset and right-click snap symptoms are gone, update
+4. If the pivot/offset and right-click snap symptoms are gone, update
    `docs/playable_gate_board.md` / multiplayer notes with the real-client proof
    and then return to the trainer-gossip verification.
-4. After the user-directed multiplayer proof, resume the prior spell roadmap:
+5. After the user-directed multiplayer proof, resume the prior spell roadmap:
    damage-interrupt coverage, cross-map transfer active-spell cleanup, then the
    broader target-outcome / Polymorph / triggered-spell parity slices.
 
@@ -1574,6 +1847,12 @@ Player visibility relocation threshold:
 - `crates/wow-network/src/world/map_runtime/map_manager/ticks.rs`
 - `crates/wow-network/src/world/map_runtime/state.rs`
 - `crates/wow-network/src/world/map_runtime/systems/players.rs`
+- `crates/wow-network/src/world/map_runtime/systems/creature_combat.rs`
+- `crates/wow-network/src/world/map_runtime/systems/creature_damage.rs`
+- `crates/wow-network/src/world/map_runtime/systems/dynamic_objects.rs`
+- `crates/wow-network/src/world/handlers/inventory.rs`
+- `crates/wow-network/src/world/combat/lifecycle.rs`
+- `crates/wow-network/src/world/spells/definitions.rs`
 - `crates/wow-network/src/world/spells.rs`
 - `crates/wow-network/src/world/spells/effects.rs`
 - `crates/wow-network/src/world/spells/effects/damage.rs`
@@ -1584,5 +1863,9 @@ Player visibility relocation threshold:
 - `crates/wow-network/src/world/map_runtime/systems/creature_motion.rs`
 - `crates/wow-network/src/world/combat/evade.rs`
 - `crates/wow-network/src/world/tests/mod.rs`
+- `crates/wow-network/src/world/tests/character_inventory_social.rs`
+- `crates/wow-network/src/world/tests/spells.rs`
+- `crates/wow-network/src/world/tests/player_runtime_auras.rs`
+- `crates/wow-network/src/world/tests/map_runtime_creatures.rs`
 - `docs/performance_rca_runbook.md`
 - `scripts/capture-rca-metrics.ps1`

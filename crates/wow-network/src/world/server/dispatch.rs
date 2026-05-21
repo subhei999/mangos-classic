@@ -76,6 +76,7 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::QuestgiverCompleteQuest(_)
         | packets::ParsedWorldClientPacket::QuestgiverRequestReward(_)
         | packets::ParsedWorldClientPacket::QuestReward(_)
+        | packets::ParsedWorldClientPacket::QuestgiverCancel(_)
         | packets::ParsedWorldClientPacket::QuestLogRemoveQuest(_) => {
             handlers::quest::dispatch_quest_packet(ctx, packet).await
         }

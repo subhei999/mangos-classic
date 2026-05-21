@@ -512,26 +512,31 @@ async fn persist_character_spell_cooldowns(
     let cooldowns: Vec<wow_db::CharacterSpellCooldown> = spell_cooldowns_until
         .iter()
         .filter_map(|(spell_id, spell_until)| {
-            if *spell_until <= now {
+            let category = spell_cooldown_categories
+                .get(spell_id)
+                .copied()
+                .unwrap_or_default();
+            let category_expire_time = spell_cooldown_categories
+                .get(spell_id)
+                .and_then(|category| spell_global_cooldowns_until.get(category))
+                .filter(|category_until| **category_until > now)
+                .map(|category_until| {
+                    now_epoch_secs + category_until.duration_since(now).as_secs().max(1)
+                })
+                .unwrap_or_default();
+            if *spell_until <= now && category_expire_time == 0 {
                 return None;
             }
-            let spell_expire_time =
-                now_epoch_secs + spell_until.duration_since(now).as_secs().max(1);
+            let spell_expire_time = if *spell_until > now {
+                now_epoch_secs + spell_until.duration_since(now).as_secs().max(1)
+            } else {
+                now_epoch_secs
+            };
             Some(wow_db::CharacterSpellCooldown {
                 spell_id: *spell_id,
                 spell_expire_time,
-                category: spell_cooldown_categories
-                    .get(spell_id)
-                    .copied()
-                    .unwrap_or_default(),
-                category_expire_time: spell_cooldown_categories
-                    .get(spell_id)
-                    .and_then(|category| spell_global_cooldowns_until.get(category))
-                    .filter(|category_until| **category_until > now)
-                    .map(|category_until| {
-                        now_epoch_secs + category_until.duration_since(now).as_secs().max(1)
-                    })
-                    .unwrap_or_default(),
+                category,
+                category_expire_time,
                 item_id: spell_cooldown_item_ids
                     .get(spell_id)
                     .copied()

@@ -444,6 +444,19 @@ impl DbCreatureRuntime {
         }
     }
 
+    pub(in crate::world) fn extend_corpse_decay_while_looting(&mut self, now: Instant) {
+        if self.life_state != DbCreatureLifeState::Corpse {
+            return;
+        }
+        let inspected_expires_at = now + Duration::from_millis(CMANGOS_MINIMUM_LOOTING_TIME_MILLIS);
+        if self
+            .corpse_expires_at
+            .is_some_and(|expires_at| expires_at < inspected_expires_at)
+        {
+            self.corpse_expires_at = Some(inspected_expires_at);
+        }
+    }
+
     pub(in crate::world) fn is_corpse_expired(&self, now: Instant) -> bool {
         self.life_state == DbCreatureLifeState::Corpse
             && self

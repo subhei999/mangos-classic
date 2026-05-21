@@ -14,6 +14,8 @@ pub(in crate::world) struct SpellCastProfile {
     pub(in crate::world) needs_combo_points: bool,
     pub(in crate::world) global_cooldown_category: u32,
     pub(in crate::world) global_cooldown_millis: u64,
+    pub(in crate::world) cooldown_category: u32,
+    pub(in crate::world) category_cooldown_millis: u64,
     pub(in crate::world) cooldown_millis: u64,
 }
 
@@ -80,6 +82,7 @@ pub(in crate::world) const SPELL_ATTR_EX_IS_CHANNELED: u32 = 0x0000_0004;
 pub(in crate::world) const SPELL_ATTR_EX_IS_SELF_CHANNELED: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DURATION: u32 = 0x0040_0000;
+pub(in crate::world) const SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON: u32 = 0x0000_0400;
 pub(in crate::world) const SPELL_EFFECT_SCHOOL_DAMAGE: u32 = 2;
 pub(in crate::world) const SPELL_EFFECT_PERSISTENT_AREA_AURA: u32 = 27;
 pub(in crate::world) const SPELL_EFFECT_TRIGGER_MISSILE: u32 = 32;

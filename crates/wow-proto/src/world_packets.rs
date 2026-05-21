@@ -63,6 +63,7 @@ pub enum WorldOpcode {
     CmsgReadItem = 0x00AD,
     SmsgReadItemOk = 0x00AE,
     SmsgReadItemFailed = 0x00AF,
+    SmsgItemCooldown = 0x00B0,
     CmsgGameObjUse = 0x00B1,
     MsgMoveStartForward = 0x00B5,
     MsgMoveStartBackward = 0x00B6,
@@ -125,6 +126,8 @@ pub enum WorldOpcode {
     SmsgSpellStart = 0x0131,
     SmsgSpellGo = 0x0132,
     SmsgSpellFailure = 0x0133,
+    SmsgSpellCooldown = 0x0134,
+    SmsgCooldownEvent = 0x0135,
     SmsgUpdateAuraDuration = 0x0137,
     MsgChannelStart = 0x0139,
     MsgChannelUpdate = 0x013A,
@@ -170,6 +173,8 @@ pub enum WorldOpcode {
     CmsgQuestgiverRequestReward = 0x018C,
     SmsgQuestgiverOfferReward = 0x018D,
     CmsgQuestgiverChooseReward = 0x018E,
+    SmsgQuestgiverQuestInvalid = 0x018F,
+    CmsgQuestgiverCancel = 0x0190,
     SmsgQuestgiverQuestComplete = 0x0191,
     CmsgQuestlogRemoveQuest = 0x0194,
     SmsgQuestlogFull = 0x0195,
@@ -332,6 +337,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x00AD => Ok(Self::CmsgReadItem),
             0x00AE => Ok(Self::SmsgReadItemOk),
             0x00AF => Ok(Self::SmsgReadItemFailed),
+            0x00B0 => Ok(Self::SmsgItemCooldown),
             0x00B1 => Ok(Self::CmsgGameObjUse),
             0x00B5 => Ok(Self::MsgMoveStartForward),
             0x00B6 => Ok(Self::MsgMoveStartBackward),
@@ -394,6 +400,8 @@ impl TryFrom<u32> for WorldOpcode {
             0x0131 => Ok(Self::SmsgSpellStart),
             0x0132 => Ok(Self::SmsgSpellGo),
             0x0133 => Ok(Self::SmsgSpellFailure),
+            0x0134 => Ok(Self::SmsgSpellCooldown),
+            0x0135 => Ok(Self::SmsgCooldownEvent),
             0x0137 => Ok(Self::SmsgUpdateAuraDuration),
             0x0139 => Ok(Self::MsgChannelStart),
             0x013A => Ok(Self::MsgChannelUpdate),
@@ -439,6 +447,8 @@ impl TryFrom<u32> for WorldOpcode {
             0x018C => Ok(Self::CmsgQuestgiverRequestReward),
             0x018D => Ok(Self::SmsgQuestgiverOfferReward),
             0x018E => Ok(Self::CmsgQuestgiverChooseReward),
+            0x018F => Ok(Self::SmsgQuestgiverQuestInvalid),
+            0x0190 => Ok(Self::CmsgQuestgiverCancel),
             0x0191 => Ok(Self::SmsgQuestgiverQuestComplete),
             0x0194 => Ok(Self::CmsgQuestlogRemoveQuest),
             0x0195 => Ok(Self::SmsgQuestlogFull),
@@ -586,6 +596,7 @@ impl WorldOpcode {
                 | Self::SmsgDestroyObject
                 | Self::SmsgReadItemOk
                 | Self::SmsgReadItemFailed
+                | Self::SmsgItemCooldown
                 | Self::SmsgMonsterMove
                 | Self::SmsgForceRunSpeedChange
                 | Self::SmsgForceMoveRoot
@@ -606,6 +617,8 @@ impl WorldOpcode {
                 | Self::SmsgSpellStart
                 | Self::SmsgSpellGo
                 | Self::SmsgSpellFailure
+                | Self::SmsgSpellCooldown
+                | Self::SmsgCooldownEvent
                 | Self::SmsgUpdateAuraDuration
                 | Self::MsgChannelStart
                 | Self::MsgChannelUpdate
@@ -633,6 +646,7 @@ impl WorldOpcode {
                 | Self::SmsgQuestgiverQuestDetails
                 | Self::SmsgQuestgiverRequestItems
                 | Self::SmsgQuestgiverOfferReward
+                | Self::SmsgQuestgiverQuestInvalid
                 | Self::SmsgQuestgiverQuestComplete
                 | Self::SmsgQuestlogFull
                 | Self::SmsgQuestUpdateComplete
@@ -846,6 +860,7 @@ empty_request!(CharEnumRequest);
 empty_request!(AttackStopRequest);
 empty_request!(CancelCastRequest);
 empty_request!(CancelAutoRepeatSpellRequest);
+empty_request!(QuestgiverCancelRequest);
 empty_request!(RepopRequest);
 empty_request!(CorpseQueryRequest);
 empty_request!(LootMoneyRequest);
@@ -1280,7 +1295,7 @@ impl SpellCastTargets {
     }
 
     pub fn write(&self, buf: &mut impl BufMut) -> io::Result<()> {
-        let target_mask = self.target_mask & !SPELL_CAST_TARGET_UNIT_ENEMY;
+        let target_mask = normalized_spell_cast_target_mask(self);
         buf.put_u16_le(target_mask);
         if target_mask & SPELL_CAST_TARGET_UNIT != 0 {
             write_packed_guid(buf, self.unit_target.unwrap_or(ObjectGuid::EMPTY))?;
@@ -1309,6 +1324,14 @@ impl SpellCastTargets {
             buf.put_f32_le(location.z);
         }
         Ok(())
+    }
+}
+
+fn normalized_spell_cast_target_mask(targets: &SpellCastTargets) -> u16 {
+    if targets.target_mask & SPELL_CAST_TARGET_UNIT_ENEMY != 0 && targets.unit_target.is_some() {
+        targets.target_mask | SPELL_CAST_TARGET_UNIT
+    } else {
+        targets.target_mask
     }
 }
 
@@ -2631,7 +2654,7 @@ impl ServerWorldPacket for SmsgLevelupInfoResponse {
 }
 
 fn write_spell_cast_targets_body(buf: &mut impl BufMut, targets: &SpellCastTargets) {
-    let target_mask = targets.target_mask & !SPELL_CAST_TARGET_UNIT_ENEMY;
+    let target_mask = normalized_spell_cast_target_mask(targets);
     buf.put_u16_le(target_mask);
     if target_mask & SPELL_CAST_TARGET_UNIT != 0 {
         put_packed_guid(buf, targets.unit_target.unwrap_or(ObjectGuid::EMPTY));
@@ -5319,6 +5342,33 @@ mod tests {
         put_packed_guid(&mut expected_go, target);
         assert_eq!(go.body(), expected_go);
 
+        let hostile_targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT_ENEMY,
+            unit_target: Some(target),
+            gameobject_target: None,
+            source_location: None,
+            destination: None,
+        };
+        let hostile_go = SmsgSpellGoResponse {
+            source: caster,
+            caster,
+            spell_id: 78,
+            cast_flags: 0x0100,
+            targets: hostile_targets,
+            miss_info: None,
+            ammo: None,
+        };
+        let hostile_body = hostile_go.body();
+        let hostile_mask_offset = PackedGuid::packed_size(caster) * 2 + 4 + 2 + 1 + 8 + 1;
+        assert_eq!(
+            u16::from_le_bytes(
+                hostile_body[hostile_mask_offset..hostile_mask_offset + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY
+        );
+
         let loot = SmsgLootResponse {
             target: caster,
             loot_type: 2,
@@ -5369,6 +5419,10 @@ mod tests {
         assert_eq!(
             WorldOpcode::try_from(0x00A9).unwrap(),
             WorldOpcode::SmsgUpdateObject
+        );
+        assert_eq!(
+            WorldOpcode::try_from(0x00B0).unwrap(),
+            WorldOpcode::SmsgItemCooldown
         );
         assert_eq!(
             WorldOpcode::try_from(0x0112).unwrap(),

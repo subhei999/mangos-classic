@@ -127,7 +127,18 @@ pub(in crate::world) fn build_item_query_single_response_with_spell_cooldowns(
     write_f32(&mut body, template.ranged_mod_range);
 
     for (index, spell) in template.spells.into_iter().enumerate() {
-        let cooldown = item_query_spell_cooldown(spell, spell_cooldowns.and_then(|c| c[index]));
+        let spell_template_cooldown = spell_cooldowns.and_then(|c| c[index]);
+        if spell.spell_id == 0 || (spell_cooldowns.is_some() && spell_template_cooldown.is_none()) {
+            write_u32(&mut body, 0);
+            write_u32(&mut body, 0);
+            write_u32(&mut body, 0);
+            write_i32(&mut body, -1);
+            write_u32(&mut body, 0);
+            write_i32(&mut body, -1);
+            continue;
+        }
+
+        let cooldown = item_query_spell_cooldown(spell, spell_template_cooldown);
         write_u32(&mut body, spell.spell_id);
 
         write_u32(&mut body, spell.spell_trigger);

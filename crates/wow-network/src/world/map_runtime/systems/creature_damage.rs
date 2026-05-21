@@ -783,10 +783,6 @@ impl MapRuntime {
                     ));
                     if applied.died {
                         died_from_pending_tick = true;
-                        self.active_creature_combats.remove(&raw_guid);
-                        self.active_creature_spell_casts.remove(&raw_guid);
-                        self.creature_combat_leash.remove(&raw_guid);
-                        self.creature_threats.remove(&raw_guid);
                         break;
                     }
                 }
@@ -936,6 +932,9 @@ impl MapRuntime {
             }
             if died_from_aura {
                 packets.extend(self.clear_player_melee_state_for_dead_target(creature_guid, None)?);
+                packets.extend(self.interrupt_player_spell_work_targeting_unit(creature_guid)?);
+                packets
+                    .extend(self.clear_db_creature_combat_with_player_flag_packets(creature_guid)?);
             }
             if let Some(active_auras) = tracking_active_auras {
                 self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
@@ -1064,11 +1063,10 @@ impl MapRuntime {
         };
         self.sync_db_creature_lifecycle_tracking(creature_guid.raw());
         self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
-        if is_dead {
-            self.clear_db_creature_combat(creature_guid);
-        } else if self
-            .active_creature_combats
-            .contains_key(&creature_guid.raw())
+        if !is_dead
+            && self
+                .active_creature_combats
+                .contains_key(&creature_guid.raw())
         {
             self.refresh_db_creature_combat_leash(creature_guid, request.now);
         }
@@ -1082,6 +1080,11 @@ impl MapRuntime {
         };
         let player_spell_target_cleanup_packets = if is_dead {
             self.interrupt_player_spell_work_targeting_unit(creature_guid)?
+        } else {
+            Vec::new()
+        };
+        let player_combat_flag_packets = if is_dead {
+            self.clear_db_creature_combat_with_player_flag_packets(creature_guid)?
         } else {
             Vec::new()
         };
@@ -1281,6 +1284,7 @@ impl MapRuntime {
         }
         observer_packets.extend(player_melee_cleanup_packets);
         observer_packets.extend(player_spell_target_cleanup_packets);
+        observer_packets.extend(player_combat_flag_packets);
         let death_finalization = if is_dead {
             let combat_flag_packet = OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgUpdateObject as u16,

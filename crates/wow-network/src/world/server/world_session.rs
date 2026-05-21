@@ -420,9 +420,6 @@ pub(in crate::world) fn build_initial_spells_body_with_cooldowns(
     let active_cooldowns: Vec<(u32, u32, u32, u32, u32)> = spell_cooldowns_until
         .iter()
         .filter_map(|(spell_id, until)| {
-            if *until <= now {
-                return None;
-            }
             let category = spell_cooldown_categories
                 .get(spell_id)
                 .copied()
@@ -432,6 +429,13 @@ pub(in crate::world) fn build_initial_spells_body_with_cooldowns(
                 .and_then(|until| until.checked_duration_since(now))
                 .map(|duration| duration.as_millis().min(u32::MAX as u128) as u32)
                 .unwrap_or_default();
+            let spell_duration_ms = until
+                .checked_duration_since(now)
+                .map(|duration| duration.as_millis().min(u32::MAX as u128) as u32)
+                .unwrap_or_default();
+            if spell_duration_ms == 0 && category_duration_ms == 0 {
+                return None;
+            }
             Some((
                 *spell_id,
                 spell_cooldown_item_ids
@@ -439,7 +443,7 @@ pub(in crate::world) fn build_initial_spells_body_with_cooldowns(
                     .copied()
                     .unwrap_or_default(),
                 category,
-                until.duration_since(now).as_millis().min(u32::MAX as u128) as u32,
+                spell_duration_ms,
                 category_duration_ms,
             ))
         })

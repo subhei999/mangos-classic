@@ -118,6 +118,17 @@ fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+#[test]
+fn heroic_strike_queue_requires_main_hand_weapon_at_swing_resolution() {
+    let heroic = heroic_strike_spell_template();
+    let mut no_requirement = heroic.clone();
+    no_requirement.attributes_ex3 &= !SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON;
+
+    assert!(queued_spell_requires_main_hand_weapon(&heroic));
+    assert!(!queued_spell_requires_main_hand_weapon(&no_requirement));
+    assert_eq!(SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND, 0x1A);
+}
+
 fn raptor_strike_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(HUNTER_RAPTOR_STRIKE_RANK_1);
     template.spell_name = "Raptor Strike".to_string();
@@ -832,6 +843,8 @@ async fn item_use_spell_failure_allows_refreshing_existing_aura_during_cooldown(
         needs_combo_points: false,
         global_cooldown_category: 1,
         global_cooldown_millis: 1_500,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
         cooldown_millis: 30_000,
     };
 
@@ -867,6 +880,8 @@ async fn consumable_regen_item_use_does_not_install_duration_cooldown() {
         needs_combo_points: false,
         global_cooldown_category: 1,
         global_cooldown_millis: 1_500,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
         cooldown_millis: 30_000,
     };
 
@@ -904,6 +919,180 @@ async fn consumable_regen_item_use_does_not_install_duration_cooldown() {
         )
         .await,
         None
+    );
+}
+
+#[test]
+fn item_use_cooldown_keeps_spell_and_item_category_recovery_separate() {
+    let mut template = test_spell_template(439);
+    template.recovery_time = 10_000;
+    template.category = 1;
+    template.category_recovery_time = 10_000;
+    let item_spell = wow_db::ItemTemplateSpell {
+        spell_id: template.id,
+        spell_trigger: ITEM_SPELLTRIGGER_ON_USE,
+        spell_charges: -1,
+        spell_cooldown: -1,
+        spell_category: 4,
+        spell_category_cooldown: 120_000,
+    };
+    let profile = SpellCastProfile {
+        spell_id: template.id,
+        kind: SpellCastKind::DirectHeal,
+        aura_target: SpellAuraTarget::Caster,
+        bonus_damage: 0,
+        weapon_damage_percent: 100,
+        damage: 0,
+        power: SpellPowerCost::Mana { cost: 0 },
+        requires_melee: false,
+        requires_behind: false,
+        needs_combo_points: false,
+        global_cooldown_category: 1,
+        global_cooldown_millis: 1_500,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
+        cooldown_millis: 10_000,
+    };
+
+    let (profile, cooldown) =
+        item_spell_cast_profile_with_cooldown(profile, item_spell, &template);
+
+    assert_eq!(profile.cooldown_millis, 10_000);
+    assert_eq!(profile.cooldown_category, 4);
+    assert_eq!(profile.category_cooldown_millis, 120_000);
+    assert_eq!(
+        cooldown,
+        ItemSpellCooldown {
+            recovery_millis: 10_000,
+            category: 4,
+            category_recovery_millis: 120_000,
+        }
+    );
+}
+
+#[tokio::test]
+async fn item_use_cooldown_records_item_id_and_item_category_in_map_state() {
+    let now = Instant::now();
+    let maps = MapRuntimeManager::default();
+    let map_id = 0;
+    let character_guid = 7;
+    maps.add_player(test_player_runtime(
+        character_guid,
+        SessionId::next(),
+        WorldPosition::new(map_id, 0.0, 0.0, 0.0, 0.0),
+    ))
+    .await
+    .unwrap();
+    let item_spell = SpellCastProfile {
+        spell_id: 439,
+        kind: SpellCastKind::DirectHeal,
+        aura_target: SpellAuraTarget::Caster,
+        bonus_damage: 0,
+        weapon_damage_percent: 100,
+        damage: 0,
+        power: SpellPowerCost::Mana { cost: 0 },
+        requires_melee: false,
+        requires_behind: false,
+        needs_combo_points: false,
+        global_cooldown_category: 1,
+        global_cooldown_millis: 1_500,
+        cooldown_category: 4,
+        category_cooldown_millis: 120_000,
+        cooldown_millis: 10_000,
+    };
+
+    apply_item_use_spell_cooldowns(&maps, map_id, character_guid, 929, &item_spell, now, false, 4, 120_000)
+        .await;
+
+    let snapshot = maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.spell_cooldown_item_ids.get(&439), Some(&929));
+    assert_eq!(snapshot.spell_cooldown_categories.get(&439), Some(&4));
+    let spell_until = snapshot.spell_cooldowns_until.get(&439).unwrap();
+    let category_until = snapshot.spell_global_cooldowns_until.get(&4).unwrap();
+    assert!(*spell_until >= now + Duration::from_millis(9_900));
+    assert!(*spell_until <= now + Duration::from_millis(10_100));
+    assert!(*category_until >= now + Duration::from_millis(119_900));
+    assert!(*category_until <= now + Duration::from_millis(120_100));
+    assert_eq!(
+        item_use_spell_failure(
+            &maps,
+            map_id,
+            character_guid,
+            &item_spell,
+            now + Duration::from_secs(11),
+            false,
+        )
+        .await,
+        Some(SPELL_FAILED_NOT_READY)
+    );
+}
+
+#[tokio::test]
+async fn item_use_cooldown_records_category_only_cooldown_like_cmangos() {
+    let now = Instant::now();
+    let maps = MapRuntimeManager::default();
+    let map_id = 0;
+    let character_guid = 7;
+    maps.add_player(test_player_runtime(
+        character_guid,
+        SessionId::next(),
+        WorldPosition::new(map_id, 0.0, 0.0, 0.0, 0.0),
+    ))
+    .await
+    .unwrap();
+    let item_spell = SpellCastProfile {
+        spell_id: 439,
+        kind: SpellCastKind::DirectHeal,
+        aura_target: SpellAuraTarget::Caster,
+        bonus_damage: 0,
+        weapon_damage_percent: 100,
+        damage: 0,
+        power: SpellPowerCost::Mana { cost: 0 },
+        requires_melee: false,
+        requires_behind: false,
+        needs_combo_points: false,
+        global_cooldown_category: 1,
+        global_cooldown_millis: 1_500,
+        cooldown_category: 4,
+        category_cooldown_millis: 120_000,
+        cooldown_millis: 0,
+    };
+
+    apply_item_use_spell_cooldowns(
+        &maps,
+        map_id,
+        character_guid,
+        929,
+        &item_spell,
+        now,
+        false,
+        4,
+        120_000,
+    )
+    .await;
+
+    let snapshot = maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.spell_cooldown_item_ids.get(&439), Some(&929));
+    assert_eq!(snapshot.spell_cooldown_categories.get(&439), Some(&4));
+    assert_eq!(snapshot.spell_cooldowns_until.get(&439), Some(&now));
+    assert!(snapshot.spell_global_cooldowns_until.get(&4).unwrap() > &now);
+    assert_eq!(
+        item_use_spell_failure(
+            &maps,
+            map_id,
+            character_guid,
+            &item_spell,
+            now + Duration::from_secs(11),
+            false,
+        )
+        .await,
+        Some(SPELL_FAILED_NOT_READY)
     );
 }
 
@@ -2666,6 +2855,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 0,
             global_cooldown_millis: 0,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2686,7 +2877,9 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 0,
             global_cooldown_millis: 0,
-            cooldown_millis: 6000,
+            cooldown_category: 0,
+            category_cooldown_millis: 6000,
+            cooldown_millis: 0,
         })
     );
     assert_eq!(
@@ -2704,6 +2897,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 0,
             global_cooldown_millis: 0,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2722,6 +2917,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2740,6 +2937,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2758,6 +2957,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2776,6 +2977,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2794,6 +2997,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2812,6 +3017,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2830,6 +3037,8 @@ fn spell_cast_profiles_are_derived_from_cmangos_spell_template_fields() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -2853,6 +3062,8 @@ fn hearthstone_is_supported_as_item_teleport_spell_not_equip_failure() {
             needs_combo_points: false,
             global_cooldown_category: 133,
             global_cooldown_millis: 1500,
+            cooldown_category: 0,
+            category_cooldown_millis: 0,
             cooldown_millis: 0,
         })
     );
@@ -7027,6 +7238,12 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
         Some(NEGATIVE_AURA_FLAGS)
     );
     assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(4));
+    assert!(
+        packets
+            .iter()
+            .all(|packet| packet.opcode != WorldOpcode::SmsgUpdateAuraDuration as u16),
+        "CMaNGOS exposes creature debuffs through unit aura fields, not a caster-directed duration packet"
+    );
 
     let tick_at = aura.periodic_damage.unwrap().next_tick_at;
     let tick_packets = maps
@@ -7431,6 +7648,8 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
         needs_combo_points: false,
         global_cooldown_category: 133,
         global_cooldown_millis: 1500,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
         cooldown_millis: 0,
     };
     let gcd_template = test_spell_template(999_001);

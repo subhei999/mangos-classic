@@ -36,10 +36,12 @@ impl MapRuntime {
             creature.loot_current_looter_pass_slots.clear();
             creature.loot_items_generated = true;
         }
+        creature.extend_corpse_decay_while_looting(Instant::now());
         creature.looting = true;
         self.creature_looting_by_character
             .insert(character_guid, creature_guid);
         let creature = creature.clone();
+        self.sync_db_creature_lifecycle_tracking(creature_guid);
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         Some(creature)
     }

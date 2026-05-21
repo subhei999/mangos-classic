@@ -176,7 +176,8 @@ pub(in crate::world) async fn autostore_loot_item(
     .await?;
 
     if let Some(item) = pushed_item.as_ref() {
-        let body = build_item_push_result_body(character_guid, item, loot.count, true, false, true);
+        let body =
+            build_item_push_result_body(character_guid, item, loot.count, false, false, true);
         send_packet(
             stream,
             WorldOpcode::SmsgItemPushResult as u16,
@@ -192,10 +193,9 @@ pub(in crate::world) async fn autostore_loot_item(
         stream,
         WorldOpcode::SmsgUpdateObject as u16,
         &body,
-        Some(header_crypto),
+        Some(&mut *header_crypto),
     )
     .await?;
-
     complete_inventory_item_quests(
         stream,
         character_db_pool,

@@ -458,6 +458,30 @@ pub(in crate::world) async fn send_db_creature_swing(
         .queued_player_next_melee_spell(map_id, character_snapshot.guid, target)
         .await;
     if let Some(queued) = queued_spell {
+        let requires_main_hand_weapon = shared_world
+            .object_mgr
+            .spell_template(world_db_pool, queued.spell_id)
+            .await?
+            .is_some_and(|template| queued_spell_requires_main_hand_weapon(&template));
+        if requires_main_hand_weapon
+            && !has_main_hand_weapon_for_attack(world_db_pool, &session.inventory.items).await?
+        {
+            shared_world
+                .maps
+                .clear_player_next_melee_spell(map_id, character_snapshot.guid)
+                .await;
+            send_queued_next_melee_spell_cast_failure(
+                stream,
+                header_crypto,
+                attacker,
+                queued,
+                SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND,
+            )
+            .await?;
+            queued_spell = None;
+        }
+    }
+    if let Some(queued) = queued_spell {
         let has_power = shared_world
             .maps
             .player_runtime_snapshot(map_id, character_snapshot.guid)
@@ -1490,6 +1514,29 @@ pub(in crate::world) async fn main_hand_weapon_skill_id(
         return Ok(None);
     };
     Ok(item_weapon_skill_from_template(&template))
+}
+
+pub(in crate::world) async fn has_main_hand_weapon_for_attack(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+) -> anyhow::Result<bool> {
+    let Some(main_hand) = inventory.iter().find(|item| {
+        item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == EQUIPMENT_SLOT_MAINHAND
+    }) else {
+        return Ok(false);
+    };
+    let Some(template) =
+        wow_db::get_item_template_query(world_db_pool, main_hand.item_template).await?
+    else {
+        return Ok(false);
+    };
+    Ok(template.class == ITEM_CLASS_WEAPON)
+}
+
+pub(in crate::world) fn queued_spell_requires_main_hand_weapon(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    template.attributes_ex3 & SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON != 0
 }
 
 pub(in crate::world) async fn ranged_weapon_skill_id(

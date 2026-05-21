@@ -302,7 +302,9 @@ impl MapRuntime {
                     self.refresh_db_creature_combat_leash(target, now);
                 }
             } else {
-                self.clear_db_creature_combat(target);
+                packets.extend(self.clear_player_melee_state_for_dead_target(target, None)?);
+                packets.extend(self.interrupt_player_spell_work_targeting_unit(target)?);
+                packets.extend(self.clear_db_creature_combat_with_player_flag_packets(target)?);
             }
 
             let Some(creature) = self.creatures.get(&target.raw()) else {
@@ -360,9 +362,6 @@ impl MapRuntime {
                 if let Some(packet) = &motion_stop_packet {
                     packets.push((session_id, packet.clone()));
                 }
-            }
-            if applied.died {
-                packets.extend(self.clear_player_melee_state_for_dead_target(target, None)?);
             }
         }
         Ok(packets)

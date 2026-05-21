@@ -195,6 +195,36 @@ fn initial_spells_include_active_spell_cooldowns() {
 }
 
 #[test]
+fn initial_spells_include_category_only_spell_cooldowns() {
+    let now = Instant::now();
+    let mut cooldowns = HashMap::new();
+    cooldowns.insert(439, now);
+    let mut cooldown_categories = HashMap::new();
+    cooldown_categories.insert(439, 4);
+    let mut cooldown_items = HashMap::new();
+    cooldown_items.insert(439, 929);
+    let mut category_cooldowns = HashMap::new();
+    category_cooldowns.insert(4, now + Duration::from_secs(120));
+
+    let body = build_initial_spells_body_with_cooldowns(
+        &[],
+        &cooldowns,
+        &cooldown_categories,
+        &cooldown_items,
+        &category_cooldowns,
+    );
+
+    assert_eq!(&body[0..3], &[0, 0, 0]);
+    assert_eq!(u16::from_le_bytes([body[3], body[4]]), 1);
+    assert_eq!(u16::from_le_bytes([body[5], body[6]]), 439);
+    assert_eq!(u16::from_le_bytes([body[7], body[8]]), 929);
+    assert_eq!(u16::from_le_bytes([body[9], body[10]]), 4);
+    assert_eq!(u32::from_le_bytes([body[11], body[12], body[13], body[14]]), 0);
+    let category_cooldown_ms = u32::from_le_bytes([body[15], body[16], body[17], body[18]]);
+    assert!((119_000..=120_000).contains(&category_cooldown_ms));
+}
+
+#[test]
 fn set_proficiency_packet_matches_cmangos_class_and_mask_shape() {
     let body = build_set_proficiency_body(ITEM_CLASS_WEAPON, (1 << 7) | (1 << 15));
 
@@ -1092,6 +1122,159 @@ fn parses_equipment_inventory_move_packets() {
     assert_eq!(preferred_equipment_slot(14), Some(16));
     assert_eq!(preferred_equipment_slot(26), Some(17));
     assert!(!item_fits_equipment_slot(4, 15));
+}
+
+#[test]
+fn inventory_swap_validation_checks_displaced_item_against_source_equipment_slot() {
+    let bread = test_item_template(117, 0, 0, 0.0, 0.0, 0);
+    let mut sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    sword.subclass = 7;
+    let skills = vec![test_skill(SKILL_SWORDS, 1, 5)];
+    let active_spells = HashSet::new();
+    let context = CharacterEquipValidationContext {
+        level: 1,
+        race: 1,
+        class: 1,
+        skills: &skills,
+        active_spells: &active_spells,
+        reputations: &[],
+        in_combat: false,
+    };
+
+    assert_eq!(
+        item_can_enter_bag0_equipment_or_bag_slot(
+            EQUIPMENT_SLOT_MAINHAND,
+            &bread,
+            context,
+        ),
+        Some((EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT, None)),
+        "a backpack item displaced by an equipped weapon must still fit the vacated main-hand slot"
+    );
+    assert_eq!(
+        item_can_enter_bag0_equipment_or_bag_slot(
+            EQUIPMENT_SLOT_MAINHAND,
+            &sword,
+            context,
+        ),
+        None
+    );
+}
+
+#[test]
+fn inventory_combat_equip_state_rules_match_cmangos_allowlist() {
+    let chest = test_item_template(38, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 12);
+    let sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    let shield = test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 11);
+    let mut held = test_item_template(2500, ITEM_CLASS_ARMOR, INVTYPE_HOLDABLE, 0.0, 0.0, 0);
+    held.subclass = 0;
+    let mut relic = test_item_template(2501, ITEM_CLASS_ARMOR, INVTYPE_RELIC, 0.0, 0.0, 0);
+    relic.subclass = 0;
+    let projectile = test_item_template(2512, ITEM_CLASS_PROJECTILE, INVTYPE_AMMO, 1.0, 1.5, 0);
+
+    assert_eq!(
+        item_can_leave_bag0_equipment_or_bag_slot(4, &chest, true),
+        Some(EQUIP_ERR_NOT_IN_COMBAT)
+    );
+    assert!(item_can_leave_bag0_equipment_or_bag_slot(
+        EQUIPMENT_SLOT_MAINHAND,
+        &sword,
+        true
+    )
+    .is_none());
+    assert!(item_can_change_equip_state_in_combat(&shield));
+    assert!(item_can_change_equip_state_in_combat(&held));
+    assert!(item_can_change_equip_state_in_combat(&relic));
+    assert!(item_can_change_equip_state_in_combat(&projectile));
+    assert!(!item_can_change_equip_state_in_combat(&chest));
+}
+
+#[test]
+fn inventory_combat_weapon_slot_changes_drive_cast_and_swing_side_effects() {
+    assert!(combat_equipment_slot_change_interrupts_active_spell_cast(
+        &[EQUIPMENT_SLOT_MAINHAND],
+        true
+    ));
+    assert!(combat_equipment_slot_change_interrupts_active_spell_cast(
+        &[EQUIPMENT_SLOT_OFFHAND],
+        true
+    ));
+    assert!(combat_equipment_slot_change_interrupts_active_spell_cast(
+        &[EQUIPMENT_SLOT_RANGED],
+        true
+    ));
+    assert!(!combat_equipment_slot_change_interrupts_active_spell_cast(
+        &[4],
+        true
+    ));
+    assert!(!combat_equipment_slot_change_interrupts_active_spell_cast(
+        &[EQUIPMENT_SLOT_MAINHAND],
+        false
+    ));
+
+    assert!(combat_equipment_slot_change_resets_main_hand_swing(
+        &[EQUIPMENT_SLOT_MAINHAND],
+        true
+    ));
+    assert!(!combat_equipment_slot_change_resets_main_hand_swing(
+        &[EQUIPMENT_SLOT_OFFHAND],
+        true
+    ));
+    assert!(!combat_equipment_slot_change_resets_main_hand_swing(
+        &[EQUIPMENT_SLOT_MAINHAND],
+        false
+    ));
+}
+
+#[test]
+fn inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 100,
+        stats: [17, 25, 19, 24, 22],
+        next_level_xp: 400,
+    };
+    let nature_resistance = ActiveAura {
+        spell_id: 20583,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: 0,
+        positive: true,
+        visible: false,
+        duration_millis: None,
+        expires_at: None,
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Resistance {
+            school_mask: 1 << 3,
+            amount: 10,
+        }],
+        proc_triggers: Vec::new(),
+    };
+
+    let (base_combat_stats, effective_combat_stats) = inventory_recomputed_combat_stats(
+        8,
+        1,
+        world_stats,
+        &[],
+        None,
+        &[nature_resistance],
+    );
+
+    assert_eq!(base_combat_stats.resistances[3], 0);
+    assert_eq!(base_combat_stats.resistance_buff_mod_positive[3], 0);
+    assert_eq!(effective_combat_stats.resistances[3], 10);
+    assert_eq!(effective_combat_stats.resistance_buff_mod_positive[3], 10);
+
+    let body = build_player_combat_stats_update_body(7, &effective_combat_stats).unwrap();
+    let (values, trailing) =
+        decode_values_update_block(&body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_RESISTANCES + 3], Some(10));
+    assert_eq!(
+        values[PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE + 3],
+        Some(10)
+    );
+
 }
 
 #[test]
@@ -3152,6 +3335,27 @@ fn parses_gm_dot_commands_for_creature_spawn_and_die() {
         ))))
     );
     assert_eq!(
+        parse_gm_dot_command(".additem 929"),
+        Some(Ok(GmDotCommand::AddItem {
+            item: 929,
+            count: 1
+        }))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".additem #929 #5"),
+        Some(Ok(GmDotCommand::AddItem {
+            item: 929,
+            count: 5
+        }))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".additem |Hitem:929:0:0:0|h[Healing Potion]|h 5"),
+        Some(Ok(GmDotCommand::AddItem {
+            item: 929,
+            count: 5
+        }))
+    );
+    assert_eq!(
         parse_gm_dot_command(".modify speed 5"),
         Some(Ok(GmDotCommand::ModifySpeed(5.0)))
     );
@@ -3173,6 +3377,14 @@ fn malformed_gm_npc_add_returns_syntax_error() {
     assert_eq!(
         parse_gm_dot_command(".npc add"),
         Some(Err("Syntax: .npc add #creatureid".to_string()))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".additem"),
+        Some(Err("Syntax: .additem #itemid [#count]".to_string()))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".additem 929 0"),
+        Some(Err("Syntax: .additem #itemid [#count]".to_string()))
     );
 }
 
@@ -3952,6 +4164,71 @@ fn item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override()
     );
 }
 
+#[test]
+fn item_query_response_writes_cmangos_invalid_spell_slots() {
+    let template = test_item_template(118, 0, 0, 0.0, 0.0, 0);
+    let spell_cooldowns = [None, None, None, None, None];
+
+    let body = build_item_query_single_response_with_spell_cooldowns(
+        template.entry,
+        Some(&template),
+        Some(&spell_cooldowns),
+    );
+    let mut offset = 12;
+    offset += body[offset..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .expect("name terminator")
+        + 1;
+    offset += 3;
+    let spell_offset = offset + 20 * 4 + 10 * 8 + 5 * 12 + 7 * 4 + 3 * 4;
+
+    assert_eq!(
+        u32::from_le_bytes(body[spell_offset..spell_offset + 4].try_into().unwrap()),
+        0
+    );
+    assert_eq!(
+        u32::from_le_bytes(
+            body[spell_offset + 4..spell_offset + 8]
+                .try_into()
+                .unwrap()
+        ),
+        0
+    );
+    assert_eq!(
+        u32::from_le_bytes(
+            body[spell_offset + 8..spell_offset + 12]
+                .try_into()
+                .unwrap()
+        ),
+        0
+    );
+    assert_eq!(
+        i32::from_le_bytes(
+            body[spell_offset + 12..spell_offset + 16]
+                .try_into()
+                .unwrap()
+        ),
+        -1
+    );
+    assert_eq!(
+        u32::from_le_bytes(
+            body[spell_offset + 16..spell_offset + 20]
+                .try_into()
+                .unwrap()
+        ),
+        0
+    );
+    assert_eq!(
+        i32::from_le_bytes(
+            body[spell_offset + 20..spell_offset + 24]
+                .try_into()
+                .unwrap()
+        ),
+        -1
+    );
+}
+
 #[tokio::test]
 async fn party_master_loot_members_only_for_current_master_looter() {
     let parties = PartyManager::default();
@@ -4503,6 +4780,8 @@ fn prepared_spell_cast_builds_lifecycle_packets_for_player_and_item_sources() {
         needs_combo_points: false,
         global_cooldown_category: 0,
         global_cooldown_millis: 0,
+        cooldown_category: 0,
+        category_cooldown_millis: 0,
         cooldown_millis: 0,
     };
 

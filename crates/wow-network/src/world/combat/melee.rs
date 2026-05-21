@@ -53,9 +53,6 @@ pub(in crate::world) fn db_creature_player_melee_check(
     if !creature.is_alive() {
         return PlayerMeleeCheck::TargetNotAlive;
     }
-    if creature.is_evading_home() {
-        return PlayerMeleeCheck::TargetEvading;
-    }
     let navigation = db_creature_navigation_check(
         &session.movement.db_creature_navigation,
         character.position,
@@ -73,6 +70,9 @@ pub(in crate::world) fn db_creature_player_melee_check(
         PLAYER_MELEE_ARC_RADIANS,
     ) {
         return PlayerMeleeCheck::BadFacing;
+    }
+    if creature.is_evading_home() {
+        return PlayerMeleeCheck::TargetEvading;
     }
     PlayerMeleeCheck::Clear
 }

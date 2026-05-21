@@ -67,9 +67,19 @@ pub(in crate::world) async fn dispatch_quest_packet(
             )
             .await
         }
-        packets::ParsedWorldClientPacket::QuestgiverCompleteQuest(_)
-        | packets::ParsedWorldClientPacket::QuestgiverRequestReward(_) => {
+        packets::ParsedWorldClientPacket::QuestgiverCompleteQuest(_) => {
             handle_questgiver_complete_quest(
+                &mut *ctx.stream,
+                &ctx.runtime_state.object_mgr,
+                ctx.world_db_pool,
+                packet.questgiver_quest()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverRequestReward(_) => {
+            handle_questgiver_request_reward(
                 &mut *ctx.stream,
                 ctx.character_db_pool,
                 &ctx.runtime_state.object_mgr,
@@ -98,6 +108,9 @@ pub(in crate::world) async fn dispatch_quest_packet(
                 &mut *ctx.header_crypto,
             )
             .await
+        }
+        packets::ParsedWorldClientPacket::QuestgiverCancel(_) => {
+            handle_questgiver_cancel(&mut *ctx.stream, &mut *ctx.header_crypto).await
         }
         packets::ParsedWorldClientPacket::QuestLogRemoveQuest(_) => {
             handle_questlog_remove_quest(
@@ -169,13 +182,14 @@ pub(in crate::world) async fn handle_questgiver_hello(
     if let Some(quest) =
         questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
     {
-        let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
-        let response = build_quest_offer_reward_body(guid, &quest, &displays);
-        return send_packet(
+        return send_questgiver_completion_response(
             stream,
-            WorldOpcode::SmsgQuestgiverOfferReward as u16,
-            &response,
-            Some(header_crypto),
+            world_db_pool,
+            guid,
+            &quest,
+            true,
+            true,
+            header_crypto,
         )
         .await;
     }
@@ -454,24 +468,39 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
         header_crypto,
     )
     .await?;
+    close_questgiver_gossip(stream, header_crypto).await?;
     Ok(())
+}
+
+pub(in crate::world) async fn handle_questgiver_cancel(
+    stream: &mut WorldPacketSink,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    close_questgiver_gossip(stream, header_crypto).await
+}
+
+pub(in crate::world) async fn close_questgiver_gossip(
+    stream: &mut WorldPacketSink,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    send_packet(
+        stream,
+        WorldOpcode::SmsgGossipComplete as u16,
+        &[],
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn handle_questgiver_complete_quest(
     stream: &mut WorldPacketSink,
-    character_db_pool: &MySqlPool,
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
     request: wow_proto::QuestgiverQuestRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character_guid) = session
-        .character
-        .active_character
-        .as_ref()
-        .map(|character| character.guid)
-    else {
+    if session.character.active_character.is_none() {
         warn!("Ignoring quest completion before character login");
         return Ok(());
     };
@@ -488,23 +517,72 @@ pub(in crate::world) async fn handle_questgiver_complete_quest(
     else {
         return Ok(());
     };
-    let reward_ready = if status.status == QUEST_STATUS_COMPLETE
-        && quest_status_can_reward_from_inventory(&status, &quest, &session.inventory.items)
-    {
-        true
-    } else if quest_status_can_complete(&status, &quest, &session.inventory.items) {
-        let updated =
+    let complete = if status.status == QUEST_STATUS_COMPLETE {
+        quest_status_can_reward_from_inventory(&status, &quest, &session.inventory.items)
+    } else {
+        quest_status_can_complete(&status, &quest, &session.inventory.items)
+    };
+    send_questgiver_completion_response(
+        stream,
+        world_db_pool,
+        request.guid,
+        &quest,
+        complete,
+        false,
+        header_crypto,
+    )
+    .await
+}
+
+pub(in crate::world) async fn handle_questgiver_request_reward(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    request: wow_proto::QuestgiverQuestRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character_guid) = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.guid)
+    else {
+        warn!("Ignoring quest reward request before character login");
+        return Ok(());
+    };
+    let request = QuestgiverQuestRequest::from(request);
+    if !questgiver_completes_quest(object_mgr, world_db_pool, request.guid, request.quest).await? {
+        return Ok(());
+    }
+    let Some(status) = session.quests.quest_statuses.get(&request.quest).cloned() else {
+        return Ok(());
+    };
+    let Some(quest) = object_mgr
+        .quest_template(world_db_pool, request.quest)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let mut updated_status = status;
+    if updated_status.status != QUEST_STATUS_COMPLETE {
+        if !quest_status_can_complete(&updated_status, &quest, &session.inventory.items) {
+            return Ok(());
+        }
+        updated_status =
             wow_db::complete_character_quest(character_db_pool, character_guid, request.quest)
                 .await?;
         session
             .quests
             .quest_statuses
-            .insert(request.quest, updated.clone());
+            .insert(request.quest, updated_status.clone());
         if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
             send_packet(
                 stream,
                 WorldOpcode::SmsgUpdateObject as u16,
-                &build_player_quest_log_update_body(character_guid, slot, &updated)?,
+                &build_player_quest_log_update_body(character_guid, slot, &updated_status)?,
                 Some(&mut *header_crypto),
             )
             .await?;
@@ -516,52 +594,20 @@ pub(in crate::world) async fn handle_questgiver_complete_quest(
             Some(&mut *header_crypto),
         )
         .await?;
-        true
-    } else {
-        if status.status == QUEST_STATUS_COMPLETE {
-            let updated = wow_db::incomplete_character_quest(
-                character_db_pool,
-                character_guid,
-                request.quest,
-            )
-            .await?;
-            session
-                .quests
-                .quest_statuses
-                .insert(request.quest, updated.clone());
-            if let Some(slot) = quest_log_slot_for_quest(session, request.quest) {
-                send_packet(
-                    stream,
-                    WorldOpcode::SmsgUpdateObject as u16,
-                    &build_player_quest_log_update_body(character_guid, slot, &updated)?,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
-            }
-        }
-        false
-    };
-    if reward_ready {
-        send_questgiver_completion_response(
-            stream,
-            world_db_pool,
-            request.guid,
-            &quest,
-            true,
-            header_crypto,
-        )
-        .await
-    } else {
-        send_questgiver_completion_response(
-            stream,
-            world_db_pool,
-            request.guid,
-            &quest,
-            false,
-            header_crypto,
-        )
-        .await
     }
+
+    if !quest_status_can_reward_from_inventory(&updated_status, &quest, &session.inventory.items) {
+        return Ok(());
+    }
+
+    let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgQuestgiverOfferReward as u16,
+        &build_quest_offer_reward_body(request.guid, &quest, &displays),
+        Some(header_crypto),
+    )
+    .await
 }
 
 pub(in crate::world) async fn send_questgiver_completion_response(
@@ -570,6 +616,7 @@ pub(in crate::world) async fn send_questgiver_completion_response(
     guid: ObjectGuid,
     quest: &QuestTemplateQuery,
     complete: bool,
+    close_on_cancel: bool,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let displays = quest_reward_item_displays(world_db_pool, quest).await?;
@@ -585,7 +632,7 @@ pub(in crate::world) async fn send_questgiver_completion_response(
         send_packet(
             stream,
             WorldOpcode::SmsgQuestgiverRequestItems as u16,
-            &build_quest_request_items_body(guid, quest, &displays, complete),
+            &build_quest_request_items_body(guid, quest, &displays, complete, close_on_cancel),
             Some(header_crypto),
         )
         .await

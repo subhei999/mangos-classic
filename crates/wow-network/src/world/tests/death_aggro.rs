@@ -800,6 +800,20 @@ fn db_creature_player_melee_check_allows_evade_feedback_for_returning_creature()
         db_creature_player_melee_check(&session, target),
         PlayerMeleeCheck::TargetEvading
     );
+
+    session
+        .visibility
+        .db_creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = 8.0;
+    assert_eq!(
+        db_creature_player_melee_check(&session, target),
+        PlayerMeleeCheck::OutOfRange,
+        "CMaNGOS checks melee reach before rolling an evade result"
+    );
+
     assert_eq!(MeleeDamageOutcome::evade().victim_state, VICTIMSTATE_EVADES);
     assert_eq!(
         MeleeDamageOutcome::evade().spell_miss_info(),

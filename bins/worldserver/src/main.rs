@@ -96,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
         movement_actor_enabled = config.world.experimental_movement_actor,
         movement_actor_queue_capacity = config.world.experimental_movement_actor_queue_capacity,
         movement_actor_max_batch_size = config.world.experimental_movement_actor_max_batch_size,
+        movement_trace_enabled = config.world.movement_trace_enabled,
+        movement_trace_log_path = %config.world.movement_trace_log_path,
         login_database = %config.login_database.database,
         character_database = %config.character_database.database,
         world_database = %config.world_database.database,
@@ -158,6 +160,8 @@ async fn main() -> anyhow::Result<()> {
             movement_actor_enabled: config.world.experimental_movement_actor,
             movement_actor_queue_capacity: config.world.experimental_movement_actor_queue_capacity,
             movement_actor_max_batch_size: config.world.experimental_movement_actor_max_batch_size,
+            movement_trace_enabled: config.world.movement_trace_enabled,
+            movement_trace_log_path: config.world.movement_trace_log_path.clone().into(),
             playerbots,
         },
     )

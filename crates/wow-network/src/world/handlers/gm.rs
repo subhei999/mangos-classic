@@ -926,40 +926,11 @@ pub(in crate::world) async fn teleport_gm(
     }
 
     let character_guid = current_character.guid;
-    let client_time = current_character.client_time;
     let account_id = session.account.account_id;
-    let movement = MovementInfo {
-        flags: 0,
-        client_time,
-        position: target,
-        fall_time: 0,
-        jump: JumpInfo::default(),
-    };
-    let spell_cleanup_packets = deps
+    let observer_packets = deps
         .maps
-        .clear_player_active_spell_runtime(old_map_id, character_guid)
+        .set_player_position(old_map_id, character_guid, target)
         .await?;
-    let movement_outcome = deps
-        .maps
-        .update_player_position(
-            old_map_id,
-            character_guid,
-            WorldOpcode::MsgMoveHeartbeat as u16,
-            &movement,
-            movement.client_time,
-        )
-        .await?;
-    let observer_packets = match movement_outcome {
-        MovementUpdateOutcome::Applied { packets } => packets,
-        MovementUpdateOutcome::Superseded => {
-            warn!(
-                guid = character_guid,
-                "Skipping GM teleport follow-up because the movement actor superseded the update"
-            );
-            return Ok(());
-        }
-    };
-    deps.sessions.dispatch(spell_cleanup_packets).await;
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = target;
         character.movement_flags = 0;

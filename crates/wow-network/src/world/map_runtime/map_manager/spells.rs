@@ -82,33 +82,6 @@ impl MapRuntimeManager {
         Ok(event)
     }
 
-    pub(in crate::world) async fn clear_player_active_spell_runtime(
-        &self,
-        map_id: u32,
-        character_guid: u32,
-    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
-        let Some(map) = map else {
-            return Ok(Vec::new());
-        };
-        let mut map = map.lock().await;
-        let direct_session_id = map
-            .players
-            .get(&character_guid)
-            .and_then(PlayerRuntime::client_session_id);
-        let cleanup = map.clear_player_active_spell_runtime(character_guid)?;
-        let mut packets = cleanup.observer_packets;
-        if let Some(direct_session_id) = direct_session_id {
-            packets.extend(
-                cleanup
-                    .direct_packets
-                    .into_iter()
-                    .map(|packet| (direct_session_id, packet)),
-            );
-        }
-        Ok(packets)
-    }
-
     pub(in crate::world) async fn cancel_movement_interrupted_player_channel(
         &self,
         map_id: u32,

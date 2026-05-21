@@ -1891,6 +1891,7 @@ fn other_player_create_block_preserves_jump_launch_state() {
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 1.25);
     let mut player = test_player_runtime(7, SessionId(7), position);
     player.movement_flags = MOVEFLAG_JUMPING;
+    player.client_time = 1234;
     player.server_time = 5678;
     player.fall_time = 456;
     player.jump = JumpInfo {
@@ -2001,7 +2002,53 @@ fn map_runtime_broadcasts_turning_movement_to_observers() {
             MovementInfo::read(&packet.1.body[PackedGuid::packed_size(guid)..]).unwrap();
         assert_eq!(broadcast.client_time, 5678);
         assert_eq!(broadcast.position.orientation, 2.25);
+        if opcode == WorldOpcode::MsgMoveSetFacing as u32 {
+            assert_eq!(broadcast.position.x, movement.position.x);
+            assert_eq!(broadcast.position.y, movement.position.y);
+            assert_eq!(broadcast.position.z, movement.position.z);
+            let stored = map.players.get(&1).unwrap();
+            assert_eq!(stored.position.x, movement.position.x);
+            assert_eq!(stored.position.y, movement.position.y);
+            assert_eq!(stored.position.z, movement.position.z);
+        }
     }
+}
+
+#[test]
+fn map_runtime_set_facing_preserves_packet_position_in_late_create_block() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let set_facing = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1234,
+        position: WorldPosition::new(0, -8948.5, -129.25, 84.0, 2.25),
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+
+    map.update_player_position(1, WorldOpcode::MsgMoveSetFacing as u16, &set_facing, 5678)
+        .unwrap();
+
+    let stored = map.players.get(&1).unwrap();
+    assert_eq!(stored.position.x, set_facing.position.x);
+    assert_eq!(stored.position.y, set_facing.position.y);
+    assert_eq!(stored.position.z, set_facing.position.z);
+    assert_eq!(stored.position.orientation, 2.25);
+
+    let block = build_other_player_create_block(stored).unwrap();
+    let guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let movement_start = 1 + PackedGuid::packed_size(guid) + 2;
+    let late_visible = MovementInfo::read(&block[movement_start..]).unwrap();
+    assert_eq!(late_visible.position.x, set_facing.position.x);
+    assert_eq!(late_visible.position.y, set_facing.position.y);
+    assert_eq!(late_visible.position.z, set_facing.position.z);
+    assert_eq!(late_visible.position.orientation, 2.25);
 }
 
 #[test]
@@ -2321,7 +2368,6 @@ async fn map_runtime_manager_movement_actor_disabled_keeps_direct_mutex_path() {
         .unwrap()
     {
         MovementUpdateOutcome::Applied { packets } => packets,
-        MovementUpdateOutcome::Superseded => panic!("direct mutex path should apply movement"),
     };
 
     assert!(maps.movement_actors.lock().await.is_empty());
@@ -2360,7 +2406,6 @@ async fn map_runtime_manager_movement_actor_matches_direct_path_packets() {
         .unwrap()
     {
         MovementUpdateOutcome::Applied { packets } => packets,
-        MovementUpdateOutcome::Superseded => panic!("direct path should apply movement"),
     }
     .into_iter()
     .map(|(session, packet)| (session, packet.opcode, packet.body))
@@ -2371,7 +2416,6 @@ async fn map_runtime_manager_movement_actor_matches_direct_path_packets() {
         .unwrap()
     {
         MovementUpdateOutcome::Applied { packets } => packets,
-        MovementUpdateOutcome::Superseded => panic!("actor path should apply movement"),
     }
     .into_iter()
     .map(|(session, packet)| (session, packet.opcode, packet.body))
@@ -3743,6 +3787,72 @@ fn map_runtime_set_player_position_refreshes_environment_cache() {
         map.players.get(&1).unwrap().environment.last_flags_position,
         Some(destination)
     );
+}
+
+#[test]
+fn map_runtime_set_player_position_rebuilds_player_visibility_immediately() {
+    let mut map = MapRuntime::new(0, 0);
+    let mover_start = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let old_observer_position = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+    let destination = WorldPosition::new(0, 500.0, 0.0, 0.0, 1.25);
+    let new_observer_position = WorldPosition::new(0, 505.0, 0.0, 0.0, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), mover_start))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), old_observer_position))
+        .unwrap();
+    map.add_player(test_player_runtime(3, SessionId(3), new_observer_position))
+        .unwrap();
+
+    let packets = map.set_player_position(1, destination).unwrap();
+
+    assert!(packets.iter().any(|(session, packet)| {
+        *session == SessionId(1) && packet.opcode == WorldOpcode::SmsgDestroyObject as u16
+    }));
+    assert!(packets.iter().any(|(session, packet)| {
+        *session == SessionId(2) && packet.opcode == WorldOpcode::SmsgDestroyObject as u16
+    }));
+    let create_for_new_observer = packets
+        .iter()
+        .find(|(session, packet)| {
+            *session == SessionId(3) && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+        })
+        .expect("new nearby observer should receive a fresh player create block");
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let type_id_offset = 5 + 1 + PackedGuid::packed_size(player_guid);
+    let movement_start = type_id_offset + 2;
+    let movement = MovementInfo::read(&create_for_new_observer.1.body[movement_start..]).unwrap();
+    assert_eq!(movement.position, destination);
+    assert!(packets.iter().any(|(session, packet)| {
+        *session == SessionId(1) && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+    }));
+    assert!(map.pending_player_visibility_refreshes.is_empty());
+    assert!(map
+        .pending_player_visibility_refresh_old_positions
+        .is_empty());
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 2)));
+    assert!(!map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 3)));
+    assert!(map
+        .players
+        .get(&3)
+        .unwrap()
+        .visible_objects
+        .contains(&ObjectGuid::new(HighGuid::Player, 0, 1)));
 }
 
 #[test]

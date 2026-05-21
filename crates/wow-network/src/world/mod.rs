@@ -40,6 +40,7 @@ mod globals;
 mod handlers;
 mod map_runtime;
 mod motion;
+mod movement_trace;
 mod packet_builders;
 mod packets;
 mod playerbots;
@@ -59,6 +60,7 @@ use self::globals::*;
 use self::handlers::*;
 use self::map_runtime::*;
 use self::motion::*;
+use self::movement_trace::*;
 use self::packet_builders::*;
 #[cfg(test)]
 use self::playerbots::PlayerbotRosterEntry;
@@ -93,6 +95,8 @@ pub struct WorldServerOptions {
     pub movement_actor_enabled: bool,
     pub movement_actor_queue_capacity: usize,
     pub movement_actor_max_batch_size: usize,
+    pub movement_trace_enabled: bool,
+    pub movement_trace_log_path: PathBuf,
     pub playerbots: Vec<PlayerbotSpawnConfig>,
 }
 
@@ -111,11 +115,17 @@ impl WorldServer {
             movement_actor_enabled,
             movement_actor_queue_capacity,
             movement_actor_max_batch_size,
+            movement_trace_enabled,
+            movement_trace_log_path,
             playerbots,
         } = options;
         if world_tick_interval.is_zero() {
             anyhow::bail!("world tick interval must be greater than 0");
         }
+        init_movement_trace(MovementTraceSettings {
+            enabled: movement_trace_enabled,
+            log_path: movement_trace_log_path,
+        })?;
         let world_data_files = Arc::new(WorldDataFiles::inspect(data_dir));
         let game_event_schedules = wow_db::get_game_event_schedules(&world_db_pool).await?;
         let now_unix = SystemTime::now()

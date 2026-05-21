@@ -62,6 +62,10 @@ pub struct WorldConfig {
     pub experimental_movement_actor_queue_capacity: usize,
     #[serde(default = "default_experimental_movement_actor_max_batch_size")]
     pub experimental_movement_actor_max_batch_size: usize,
+    #[serde(default)]
+    pub movement_trace_enabled: bool,
+    #[serde(default = "default_movement_trace_log_path")]
+    pub movement_trace_log_path: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +261,9 @@ fn default_experimental_movement_actor_queue_capacity() -> usize {
 fn default_experimental_movement_actor_max_batch_size() -> usize {
     64
 }
+fn default_movement_trace_log_path() -> String {
+    "logs/movement-trace.log".to_string()
+}
 
 // ---------------------------------------------------------------------------
 // AuthServerConfig
@@ -325,6 +332,8 @@ impl Default for WorldConfig {
                 default_experimental_movement_actor_queue_capacity(),
             experimental_movement_actor_max_batch_size:
                 default_experimental_movement_actor_max_batch_size(),
+            movement_trace_enabled: false,
+            movement_trace_log_path: default_movement_trace_log_path(),
         }
     }
 }
@@ -449,6 +458,29 @@ experimental_movement_actor_max_batch_size = 128
             2048
         );
         assert_eq!(config.world.experimental_movement_actor_max_batch_size, 128);
+    }
+
+    #[test]
+    fn world_config_accepts_movement_trace_settings() {
+        let toml_content = r#"
+[world]
+movement_trace_enabled = true
+movement_trace_log_path = "logs/test-movement-trace.log"
+"#;
+        #[derive(Deserialize)]
+        struct WorldWrapper {
+            world: WorldConfig,
+        }
+        let config: WorldWrapper = Figment::new()
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("should parse movement trace config");
+
+        assert!(config.world.movement_trace_enabled);
+        assert_eq!(
+            config.world.movement_trace_log_path,
+            "logs/test-movement-trace.log"
+        );
     }
 
     #[test]

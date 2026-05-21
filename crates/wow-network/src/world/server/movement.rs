@@ -137,6 +137,17 @@ pub(in crate::world) async fn handle_movement(
     let server_time = synchronize_movement_server_time(session, movement.client_time);
     let mut map_owned_death_detected = false;
     if let Some(character) = &mut session.character.active_character {
+        trace_named_movement(
+            "dispatch_recv",
+            character.guid,
+            &character.name,
+            opcode,
+            &movement,
+            &format!(
+                "server_time={} corpse_movement={}",
+                server_time, corpse_movement
+            ),
+        );
         let previous_player_health = session.character.player_health;
         character.position.x = movement.position.x;
         character.position.y = movement.position.y;
@@ -175,69 +186,61 @@ pub(in crate::world) async fn handle_movement(
                     server_time,
                 )
                 .await?;
-            if let MovementUpdateOutcome::Applied { packets } = movement_outcome {
-                deps.sessions.dispatch(packets).await;
-                if let Some(snapshot) = deps
-                    .maps
-                    .player_runtime_session_snapshot(character.position.map_id, character.guid)
-                    .await
+            let MovementUpdateOutcome::Applied { packets } = movement_outcome;
+            deps.sessions.dispatch(packets).await;
+            if let Some(snapshot) = deps
+                .maps
+                .player_runtime_session_snapshot(character.position.map_id, character.guid)
+                .await
+            {
+                session.character.player_health = snapshot.health;
+                session.character.player_mana = snapshot.power1;
+                session.character.player_rage = snapshot.power2;
+                session.character.player_energy = snapshot.power4;
+                if !corpse_movement
+                    && previous_player_health > 0
+                    && session.character.player_health == 0
+                    && session.death.player_death_state == PlayerDeathState::Alive
                 {
-                    session.character.player_health = snapshot.health;
-                    session.character.player_mana = snapshot.power1;
-                    session.character.player_rage = snapshot.power2;
-                    session.character.player_energy = snapshot.power4;
-                    if !corpse_movement
-                        && previous_player_health > 0
-                        && session.character.player_health == 0
-                        && session.death.player_death_state == PlayerDeathState::Alive
-                    {
-                        map_owned_death_detected = true;
-                    }
+                    map_owned_death_detected = true;
                 }
-                if !corpse_movement {
-                    stream_newly_visible_db_creatures(
-                        stream,
-                        deps.character_db_pool,
-                        deps.world_db_pool,
-                        deps.maps,
-                        session,
-                        header_crypto,
-                    )
-                    .await?;
-                    stream_newly_visible_db_gameobjects(
-                        stream,
-                        deps.object_mgr,
-                        deps.world_db_pool,
-                        deps.maps,
-                        session,
-                        header_crypto,
-                    )
-                    .await?;
-                    stream_nearby_player_corpses(
-                        stream,
-                        deps.character_db_pool,
-                        deps.maps,
-                        session,
-                        header_crypto,
-                    )
-                    .await?;
-                    interrupt_player_consumable_auras(
-                        stream,
-                        deps.maps,
-                        deps.sessions,
-                        session,
-                        AURA_INTERRUPT_FLAG_MOVING,
-                        header_crypto,
-                    )
-                    .await?;
-                }
-            } else {
-                debug!(
-                    guid = character.guid,
-                    opcode = movement_opcode_name(opcode),
-                    "Skipping post-movement side effects for superseded movement update"
-                );
-                return Ok(());
+            }
+            if !corpse_movement {
+                stream_newly_visible_db_creatures(
+                    stream,
+                    deps.character_db_pool,
+                    deps.world_db_pool,
+                    deps.maps,
+                    session,
+                    header_crypto,
+                )
+                .await?;
+                stream_newly_visible_db_gameobjects(
+                    stream,
+                    deps.object_mgr,
+                    deps.world_db_pool,
+                    deps.maps,
+                    session,
+                    header_crypto,
+                )
+                .await?;
+                stream_nearby_player_corpses(
+                    stream,
+                    deps.character_db_pool,
+                    deps.maps,
+                    session,
+                    header_crypto,
+                )
+                .await?;
+                interrupt_player_consumable_auras(
+                    stream,
+                    deps.maps,
+                    deps.sessions,
+                    session,
+                    AURA_INTERRUPT_FLAG_MOVING,
+                    header_crypto,
+                )
+                .await?;
             }
         }
     } else {

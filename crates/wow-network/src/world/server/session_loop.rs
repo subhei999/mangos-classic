@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 use wow_proto::world::WorldOpcode;
 
 // CMaNGOS reference: src/game/WorldSocket.cpp and WorldSession opcode dispatch.
@@ -134,7 +135,7 @@ pub(in crate::world) async fn handle_client(
     let world_tick_interval = runtime_state.world_tick_interval;
     let mut next_world_tick_at = Instant::now() + world_tick_interval;
     let mut last_client_packet_at = Instant::now();
-    let mut pending_movement = None;
+    let mut pending_movement = VecDeque::new();
 
     let session_result: anyhow::Result<()> = async {
         loop {
@@ -173,7 +174,7 @@ pub(in crate::world) async fn handle_client(
             .await
             .min(WORLD_SESSION_IDLE_TIMEOUT - idle_elapsed);
             let loop_timeout =
-                pending_movement_timeout_duration(pending_movement.as_ref(), now, loop_timeout);
+                pending_movement_timeout_duration(&pending_movement, now, loop_timeout);
             tokio::select! {
                 disconnect_reason = disconnect_rx.recv() => {
                     let reason = if let Some(queued) = disconnect_reason {
@@ -200,8 +201,42 @@ pub(in crate::world) async fn handle_client(
                     let packet_received_at = Instant::now();
                     last_client_packet_at = packet_received_at;
                     if is_movement_opcode(opcode) {
-                        if pending_movement_due(pending_movement.as_ref(), packet_received_at) {
-                            if let Some(pending) = pending_movement.take() {
+                        let movement = MovementInfo::read(&body).ok();
+                        if let (Some(character), Some(movement)) =
+                            (session.character.active_character.as_ref(), movement.as_ref())
+                        {
+                            trace_named_movement(
+                                "session_enqueue",
+                                character.guid,
+                                &character.name,
+                                opcode,
+                                movement,
+                                &format!(
+                                    "queue_len_before={} queue_len_after={}",
+                                    pending_movement.len(),
+                                    pending_movement.len() + 1
+                                ),
+                            );
+                        }
+                        if pending_movement_due(&pending_movement, packet_received_at) {
+                            let queued_movements = std::mem::take(&mut pending_movement);
+                            for pending in queued_movements {
+                                if let (Some(character), Ok(movement)) = (
+                                    session.character.active_character.as_ref(),
+                                    MovementInfo::read(&pending.body),
+                                ) {
+                                    trace_named_movement(
+                                        "session_flush",
+                                        character.guid,
+                                        &character.name,
+                                        pending.opcode,
+                                        &movement,
+                                        &format!(
+                                            "flush_reason=enqueue_deadline queue_remaining={}",
+                                            pending_movement.len()
+                                        ),
+                                    );
+                                }
                                 process_authenticated_world_packet(
                                     &mut stream,
                                     &login_db_pool,
@@ -270,8 +305,25 @@ pub(in crate::world) async fn handle_client(
                     break Ok(());
                 }
                 Err(_) => {
-                    if pending_movement_due(pending_movement.as_ref(), Instant::now()) {
-                        if let Some(pending) = pending_movement.take() {
+                    if pending_movement_due(&pending_movement, Instant::now()) {
+                        let queued_movements = std::mem::take(&mut pending_movement);
+                        for pending in queued_movements {
+                            if let (Some(character), Ok(movement)) = (
+                                session.character.active_character.as_ref(),
+                                MovementInfo::read(&pending.body),
+                            ) {
+                                trace_named_movement(
+                                    "session_flush",
+                                    character.guid,
+                                    &character.name,
+                                    pending.opcode,
+                                    &movement,
+                                    &format!(
+                                        "flush_reason=timeout queue_remaining={}",
+                                        pending_movement.len()
+                                    ),
+                                );
+                            }
                             process_authenticated_world_packet(
                                 &mut stream,
                                 &login_db_pool,
@@ -290,8 +342,8 @@ pub(in crate::world) async fn handle_client(
                                 world_tick_interval,
                             )
                             .await?;
-                            continue;
                         }
+                        continue;
                     }
                     let timeout_branch_started_at = Instant::now();
                     let refresh_started_at = Instant::now();
@@ -752,12 +804,12 @@ fn packet_requires_post_dispatch_pending_spell_completion(
 }
 
 fn enqueue_pending_movement(
-    pending: &mut Option<QueuedMovementPacket>,
+    pending: &mut VecDeque<QueuedMovementPacket>,
     opcode: u32,
     body: Vec<u8>,
     received_at: Instant,
 ) {
-    *pending = Some(QueuedMovementPacket {
+    pending.push_back(QueuedMovementPacket {
         opcode,
         body,
         received_at,
@@ -765,16 +817,19 @@ fn enqueue_pending_movement(
     });
 }
 
-fn pending_movement_due(pending: Option<&QueuedMovementPacket>, now: Instant) -> bool {
-    pending.is_some_and(|pending| now >= pending.dispatch_due_at)
+fn pending_movement_due(pending: &VecDeque<QueuedMovementPacket>, now: Instant) -> bool {
+    pending
+        .front()
+        .is_some_and(|pending| now >= pending.dispatch_due_at)
 }
 
 fn pending_movement_timeout_duration(
-    pending: Option<&QueuedMovementPacket>,
+    pending: &VecDeque<QueuedMovementPacket>,
     now: Instant,
     base_timeout: Duration,
 ) -> Duration {
     pending
+        .front()
         .map(|pending| {
             pending
                 .dispatch_due_at
@@ -1050,9 +1105,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn enqueue_pending_movement_replaces_older_packet() {
+    fn enqueue_pending_movement_preserves_multiple_packets_in_order() {
         let received_at = Instant::now();
-        let mut pending = None;
+        let mut pending = VecDeque::new();
         enqueue_pending_movement(
             &mut pending,
             WorldOpcode::MsgMoveHeartbeat as u32,
@@ -1066,23 +1121,48 @@ mod tests {
             received_at + Duration::from_millis(1),
         );
 
-        let pending = pending.expect("pending movement");
-        assert_eq!(pending.opcode, WorldOpcode::MsgMoveStartForward as u32);
-        assert_eq!(pending.body, vec![9, 8, 7]);
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].opcode, WorldOpcode::MsgMoveHeartbeat as u32);
+        assert_eq!(pending[0].body, vec![1, 2, 3]);
+        assert_eq!(pending[1].opcode, WorldOpcode::MsgMoveStartForward as u32);
+        assert_eq!(pending[1].body, vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn enqueue_pending_movement_preserves_heartbeat_and_set_facing_in_order() {
+        let received_at = Instant::now();
+        let mut pending = VecDeque::new();
+        enqueue_pending_movement(
+            &mut pending,
+            WorldOpcode::MsgMoveHeartbeat as u32,
+            vec![1],
+            received_at,
+        );
+        enqueue_pending_movement(
+            &mut pending,
+            WorldOpcode::MsgMoveSetFacing as u32,
+            vec![2],
+            received_at + Duration::from_millis(1),
+        );
+
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].opcode, WorldOpcode::MsgMoveHeartbeat as u32);
+        assert_eq!(pending[1].opcode, WorldOpcode::MsgMoveSetFacing as u32);
     }
 
     #[test]
     fn pending_movement_timeout_uses_coalesce_deadline() {
         let received_at = Instant::now();
-        let pending = QueuedMovementPacket {
+        let mut pending = VecDeque::new();
+        pending.push_back(QueuedMovementPacket {
             opcode: WorldOpcode::MsgMoveHeartbeat as u32,
             body: Vec::new(),
             received_at,
             dispatch_due_at: received_at + Duration::from_millis(10),
-        };
+        });
 
         let timeout = pending_movement_timeout_duration(
-            Some(&pending),
+            &pending,
             received_at + Duration::from_millis(4),
             Duration::from_millis(50),
         );
@@ -1093,19 +1173,20 @@ mod tests {
     #[test]
     fn pending_movement_due_only_after_deadline() {
         let received_at = Instant::now();
-        let pending = QueuedMovementPacket {
+        let mut pending = VecDeque::new();
+        pending.push_back(QueuedMovementPacket {
             opcode: WorldOpcode::MsgMoveHeartbeat as u32,
             body: Vec::new(),
             received_at,
             dispatch_due_at: received_at + Duration::from_millis(10),
-        };
+        });
 
         assert!(!pending_movement_due(
-            Some(&pending),
+            &pending,
             received_at + Duration::from_millis(9)
         ));
         assert!(pending_movement_due(
-            Some(&pending),
+            &pending,
             received_at + Duration::from_millis(10)
         ));
     }

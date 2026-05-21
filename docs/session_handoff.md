@@ -12,6 +12,55 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Latest local integration state includes the pushed active-spell teleport
   cleanup checkpoint `02388436c` on `codex/rusty-mangos` and the latest
   aura/target invalidation spell slice.
+- Local multiplayer teleport RCA/fix is uncommitted: same-map teleport paths
+  (`set_player_position` callers such as near-teleport/hearth-style movement)
+  were refreshing environment flags but not immediately rebuilding
+  player-player visibility. That could leave stale observer sets and stale
+  nearby-player create/destroy state until relog. `MapRuntime::set_player_position`
+  now runs the player visibility diff immediately, reuses the same enter/leave
+  create/destroy flow as the batched visibility-refresh phase, and has focused
+  regression coverage that proves old observers get destroy packets, new
+  observers get create packets at the teleported position, and no pending
+  player-visibility refresh remains after the teleport reposition.
+- Local GM `.go` teleport RCA/fix is uncommitted: the GM path was still routing
+  same-map teleports through `update_player_position(..., MSG_MOVE_HEARTBEAT, ...)`
+  before sending `MSG_MOVE_TELEPORT_ACK`, unlike CMaNGOS' near-teleport flow.
+  That meant `.go` behaved like spoofed movement instead of an instant
+  relocation. `.go` now uses the same `set_player_position` relocation path as
+  the rest of Rust's same-map teleports, which clears active spell runtime,
+  refreshes environment state, and rebuilds immediate player visibility without
+  fabricating a heartbeat movement update first.
+- Local multiplayer right-click-turn RCA/fix is uncommitted: the movement actor
+  was coalescing batched movement updates by player GUID only, so a same-batch
+  `MSG_MOVE_SET_FACING` could supersede a heartbeat for that player. That fit
+  the live symptom where remote players briefly snapped to a nearby offset with
+  a slightly different facing only while holding right-click turn. The actor
+  now keeps the latest movement packet per `(player, opcode)` and preserves the
+  original order of the last surviving packets, so facing updates no longer
+  erase same-batch positional movement.
+- Local multiplayer movement-timestamp RCA/fix is uncommitted: the earlier
+  assumption about CMaNGOS was wrong. CMaNGOS `MovementInfo::Write()` serializes
+  synchronized `stime`, not raw `ctime`, for observer movement packets and
+  living create blocks. Rust now writes synchronized movement `server_time` in
+  `MSG_MOVE_*` observer broadcasts and in `build_other_player_create_block`,
+  matching the actual CMaNGOS relay shape.
+- Local multiplayer session-loop coalescing RCA/fix is uncommitted: the world
+  session loop still buffered only one pending movement packet for the `10 ms`
+  coalesce window and replaced older movement packets wholesale before
+  dispatch. That meant a right-click `MSG_MOVE_SET_FACING` could still erase a
+  heartbeat before the movement actor saw either packet. Rust now keeps an
+  ordered short batch of pending movement packets through the session coalesce
+  window instead of replacing the older one.
+- Local multiplayer movement-trace RCA/fix is uncommitted: live packet traces
+  now show the remaining right-click-turn glitch was not introduced by
+  timestamp rewrite alone. The client sends bursts of `MSG_MOVE_SET_FACING`
+  packets with orientation plus small XYZ drift, and CMaNGOS still relocates on
+  those packets; Rust's temporary facing-only clamp diverged from that and
+  matched the user's "turns in place, then teleports" symptom under slow
+  right-click movement. Rust has been moved back toward the CMaNGOS shape:
+  `MSG_MOVE_SET_FACING` again carries its packet position through map-owned
+  apply/broadcast, and the movement actor no longer drops intermediate movement
+  packets by coalescing to the latest `(player, opcode)` entry inside a batch.
 - Startup fix after the dialogue merge: `wow-db` now treats missing optional
   local-starter DB tables `unit_condition`, `combat_condition`, and
   `broadcast_text` as empty instead of failing world runtime initialization.
@@ -106,12 +155,32 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 ## Current Goal
 
-Immediate user-directed priority is real-client verification of trainer gossip
-selection after the dialogue service regression. Northshire class trainers
-having an intermediate gossip line is expected CMaNGOS behavior; the open
-question is whether selecting that line sends a populated trainer list to the
-client. After that, resume spell-system parity work, starting with Polymorph
-and generic hard-control aura behavior.
+Immediate user-directed priority is multiplayer visual parity around same-map
+teleport plus right-click-turn observation in Northshire. The latest local fixes
+make teleport/set-position rebuild player visibility immediately instead of
+waiting for relog or later movement, route GM `.go` through the real relocation
+path, and keep `MSG_MOVE_SET_FACING` from erasing same-batch heartbeat
+movement. The next local release stack restart already includes the additional
+  movement-timestamp fix that now preserves CMaNGOS-shaped synchronized
+  movement `server_time` in observer broadcasts and late create blocks. The
+  currently restarted local release stack also includes
+the session-loop pending-movement batch fix so heartbeat plus facing packets now
+survive both coalescing layers, plus the new map-owned `MSG_MOVE_SET_FACING`
+position clamp so right-click-turn packets rotate without dragging observers
+through the packet's tiny client-side XY drift. Next proof should be a
+two-client real-client smoke:
+
+- teleport one player into Northshire near another player and confirm the
+  observer immediately gets correct create/destroy behavior;
+- turn in place on both clients and confirm remote players rotate around their
+  correct position without the old pivot/offset symptom;
+- hold right-click turn while moving and while stationary, then confirm the
+  observer no longer sees the remote player snap to a nearby offset/facing and
+  back;
+- relog only if needed to compare the old broken state against the fixed one.
+
+After that, resume the prior trainer-gossip verification and spell-system
+parity work, starting with Polymorph and generic hard-control aura behavior.
 
 - Polymorph already has transform display, damage break, single-target
   replacement, helper regen, diminishing metadata, combat preservation, and
@@ -1395,6 +1464,24 @@ Player visibility relocation threshold:
 - The currently running live server, if still up from before this change, does
   not include the latest return-home/sight-aggro/OOC EventAI changes until the
   release stack is rebuilt and restarted.
+- The teleport/player-visibility fix is unit-test proven but still needs the
+  real-client two-player Northshire smoke that originally showed the remote
+  pivot/offset symptom.
+- The `.go`-specific teleport-path fix is compile/test proven but still needs
+  the exact user repro: `.go` away, `.go` back to Northshire, then remote
+  turn-in-place and short movement observation from a second client.
+- The right-click-turn movement-actor fix is compile/test proven but still
+  needs the exact live repro: hold right-click turn with a second client
+  observing and confirm the old nearby snap/facing jitter is gone.
+- The right-click-turn movement-timestamp fix is compile/test proven and the
+  local release stack has been restarted with it, but it still needs the exact
+  live repro from a second client observer.
+- The right-click-turn session-loop batching fix is compile/test proven and the
+  local release stack has been restarted with it, but it still needs the exact
+  live repro from a second client observer.
+- The right-click-turn `MSG_MOVE_SET_FACING` position-clamp fix is compile/test
+  proven and the local release stack has been restarted with it, but it still
+  needs the exact live repro from a second client observer.
 - Trainer gossip needs one more real-client login and mage trainer click after
   the latest restart. Watch `world-client-18085.log` for Khelden's menu `4660`
   with `text_id=538`, then `Dispatching DB gossip selection` followed by
@@ -1434,16 +1521,15 @@ Player visibility relocation threshold:
 
 ## Recommended Next Task
 
-1. Extend damage interrupt coverage to periodic/damage-shield/split-damage
-   distinctions if/when those player-damage paths are wired, matching CMaNGOS
-   `Unit::InterruptOrDelaySpell` dot and no-damage exclusions.
-2. Revisit cross-map transfer active-spell cleanup when that path exists; death,
-   logout/removal, combat-disconnect linger, near-teleport/set-position,
-   channeled-aura removal, DB-creature target death, and DB-creature runtime
-   deletion now have focused map-owned coverage.
-3. Continue the broader spell roadmap:
-   target outcomes for immune/evade/reflect/player/PvP/AoE, Polymorph edge
-   polish, triggered spells, aura procs, and class spell parity.
+1. Use the currently restarted local release stack and run a two-client
+   Northshire smoke covering `.go` away/back plus stationary and moving
+   right-click turn observation from a second client.
+2. If the pivot/offset and right-click snap symptoms are gone, update
+   `docs/playable_gate_board.md` / multiplayer notes with the real-client proof
+   and then return to the trainer-gossip verification.
+3. After the user-directed multiplayer proof, resume the prior spell roadmap:
+   damage-interrupt coverage, cross-map transfer active-spell cleanup, then the
+   broader target-outcome / Polymorph / triggered-spell parity slices.
 
 ## Key Files
 

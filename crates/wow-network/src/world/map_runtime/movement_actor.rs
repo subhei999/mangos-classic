@@ -52,7 +52,6 @@ pub(in crate::world) enum MovementUpdateOutcome {
     Applied {
         packets: Vec<(SessionId, OutboundWorldPacket)>,
     },
-    Superseded,
 }
 
 #[derive(Debug)]
@@ -155,12 +154,6 @@ impl MovementActorHandle {
     }
 }
 
-#[derive(Debug)]
-struct CoalescedMovementBatch {
-    latest: Vec<MovementUpdateCommand>,
-    superseded: Vec<MovementUpdateCommand>,
-}
-
 async fn run_movement_actor(
     map: Arc<Mutex<MapRuntime>>,
     mut receiver: mpsc::Receiver<MovementActorCommand>,
@@ -189,41 +182,21 @@ fn drain_movement_batch(
     batch
 }
 
-fn coalesce_movement_batch(batch: Vec<MovementActorCommand>) -> CoalescedMovementBatch {
-    let mut latest = Vec::new();
-    let mut latest_by_guid = HashMap::new();
-    let mut superseded = Vec::new();
-
-    for command in batch {
-        let MovementActorCommand::UpdatePlayerPosition(command) = command;
-        crate::observability::record_channel_queue_age(
-            MOVEMENT_ACTOR_CHANNEL,
-            command.enqueued_at.elapsed(),
-        );
-        if let Some(index) = latest_by_guid.get(&command.character_guid).copied() {
-            let replaced = std::mem::replace(&mut latest[index], command);
-            superseded.push(replaced);
-            continue;
-        }
-        latest_by_guid.insert(command.character_guid, latest.len());
-        latest.push(command);
-    }
-
-    CoalescedMovementBatch { latest, superseded }
-}
-
 async fn process_movement_batch(map: &Arc<Mutex<MapRuntime>>, batch: Vec<MovementActorCommand>) {
     crate::observability::record_movement_actor_batch_size(batch.len());
-
-    let CoalescedMovementBatch { latest, superseded } = coalesce_movement_batch(batch);
     let processing_started_at = Instant::now();
     let mutex_wait_started_at = Instant::now();
     let mut map = map.lock().await;
     crate::observability::record_movement_map_mutex_wait(mutex_wait_started_at.elapsed());
 
     let mutex_hold_started_at = Instant::now();
-    let mut replies = Vec::with_capacity(latest.len());
-    for command in latest {
+    let mut replies = Vec::new();
+    for command in batch {
+        let MovementActorCommand::UpdatePlayerPosition(command) = command;
+        crate::observability::record_channel_queue_age(
+            MOVEMENT_ACTOR_CHANNEL,
+            command.enqueued_at.elapsed(),
+        );
         crate::observability::record_movement_actor_apply_start_latency(
             command.enqueued_at.elapsed(),
         );
@@ -240,11 +213,6 @@ async fn process_movement_batch(map: &Arc<Mutex<MapRuntime>>, batch: Vec<Movemen
 
     crate::observability::record_movement_actor_processing_time(processing_started_at.elapsed());
 
-    for command in superseded {
-        crate::observability::record_movement_actor_reply_latency(command.enqueued_at.elapsed());
-        let _ = command.reply.send(Ok(MovementUpdateOutcome::Superseded));
-    }
-
     for (reply, enqueued_at, result) in replies {
         crate::observability::record_movement_actor_reply_latency(enqueued_at.elapsed());
         let _ = reply.send(result.map(|packets| MovementUpdateOutcome::Applied { packets }));
@@ -255,43 +223,114 @@ async fn process_movement_batch(map: &Arc<Mutex<MapRuntime>>, batch: Vec<Movemen
 mod tests {
     use super::*;
 
-    fn movement(character_guid: u32, orientation: f32) -> MovementActorCommand {
-        let (reply, _rx) = oneshot::channel();
-        MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
-            character_guid,
-            opcode: WorldOpcode::MsgMoveStop as u16,
-            movement: MovementInfo {
-                flags: 0,
-                client_time: character_guid,
-                position: WorldPosition::new(0, character_guid as f32, 0.0, 0.0, orientation),
-                fall_time: 0,
-                jump: JumpInfo::default(),
+    fn test_player_runtime(
+        guid: u32,
+        session_id: SessionId,
+        position: WorldPosition,
+    ) -> PlayerRuntime {
+        let world_stats = PlayerWorldStats {
+            base_health: 20,
+            base_mana: 0,
+            stats: [23, 20, 22, 20, 20],
+            next_level_xp: 400,
+        };
+        PlayerRuntime {
+            guid,
+            account_id: Some(guid),
+            controller: PlayerController::Client { session_id },
+            bot_runtime: None,
+            selected_target: None,
+            unit_target: None,
+            active_combat_target: None,
+            active_combat_attack_kind: PlayerAutoAttackKind::Melee,
+            active_combat_next_swing_at: None,
+            ranged_auto_attack_next_shot_at: None,
+            in_combat: false,
+            looting: false,
+            position,
+            movement_flags: 0,
+            client_time: 0,
+            server_time: 0,
+            fall_time: 0,
+            last_fall_z: None,
+            last_fall_time: 0,
+            environment: PlayerEnvironmentRuntime::default(),
+            jump: JumpInfo::default(),
+            cell: cell_coord_for_position(position),
+            visible_objects: HashSet::new(),
+            next_sight_aggro_check_at: None,
+            last_sight_aggro_check_position: None,
+            last_player_visibility_refresh_position: None,
+            last_creature_visibility_position: None,
+            last_gameobject_visibility_position: None,
+            last_player_corpse_visibility_position: None,
+            visual: PlayerVisualState {
+                gender: 0,
+                player_bytes: 0,
+                player_bytes2: 0,
+                equipment_cache: None,
+                guildid: None,
             },
-            server_time: character_guid,
-            enqueued_at: Instant::now(),
-            reply,
-        })
+            visible_equipment: [0; ENUM_EQUIPMENT_SLOTS],
+            flags: 0,
+            death_state: PlayerDeathState::Alive,
+            level: 1,
+            race: 1,
+            class: 1,
+            spirit: 20,
+            gender: 0,
+            base_world_stats: world_stats,
+            effective_world_stats: world_stats,
+            health: 20,
+            max_health: 20,
+            xp: 0,
+            power1: 0,
+            max_power1: 0,
+            last_mana_use_at: None,
+            power2: 0,
+            power4: 0,
+            max_power4: POWER_ENERGY_DEFAULT,
+            player_bytes: 0,
+            player_bytes2: 0,
+            combo_target: None,
+            combo_points: 0,
+            stand_state: PLAYER_STAND_STATE_STAND,
+            active_spells: HashSet::new(),
+            inventory: Vec::new(),
+            quest_statuses: HashMap::new(),
+            explored_zones: [0; PLAYER_EXPLORED_ZONES_SIZE],
+            active_auras: Vec::new(),
+            spell_global_cooldowns_until: HashMap::new(),
+            spell_cooldowns_until: HashMap::new(),
+            spell_cooldown_categories: HashMap::new(),
+            spell_cooldown_item_ids: HashMap::new(),
+            queued_next_melee_spell: None,
+            base_combat_stats: test_player_combat_stats(),
+            combat_stats: test_player_combat_stats(),
+        }
     }
 
-    #[test]
-    fn coalesce_movement_batch_keeps_latest_command_per_character() {
-        let batch = vec![movement(7, 0.25), movement(8, 0.5), movement(7, 1.5)];
-
-        let coalesced = coalesce_movement_batch(batch);
-
-        assert_eq!(coalesced.latest.len(), 2);
-        assert_eq!(coalesced.superseded.len(), 1);
-        let command = coalesced
-            .latest
-            .into_iter()
-            .find(|command| command.character_guid == 7)
-            .expect("latest command for player 7");
-        assert!((command.movement.position.orientation - 1.5).abs() < f32::EPSILON);
+    fn test_player_combat_stats() -> PlayerCombatStats {
+        let world_stats = PlayerWorldStats {
+            base_health: 20,
+            base_mana: 0,
+            stats: [23, 20, 22, 20, 20],
+            next_level_xp: 400,
+        };
+        player_combat_stats_for_values(1, 1, &world_stats, &[])
     }
 
     #[tokio::test]
-    async fn process_movement_batch_replies_superseded_for_older_same_character_updates() {
-        let map = Arc::new(Mutex::new(MapRuntime::new(0, 0)));
+    async fn process_movement_batch_applies_older_and_newer_updates_in_order() {
+        let mut runtime = MapRuntime::new(0, 0);
+        runtime
+            .add_player(test_player_runtime(
+                7,
+                SessionId(7),
+                WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            ))
+            .expect("add mover");
+        let map = Arc::new(Mutex::new(runtime));
 
         let (first_reply_tx, first_reply_rx) = oneshot::channel();
         let (latest_reply_tx, latest_reply_rx) = oneshot::channel();
@@ -328,20 +367,131 @@ mod tests {
 
         process_movement_batch(&map, batch).await;
 
-        assert!(matches!(
-            first_reply_rx
-                .await
-                .expect("first reply")
-                .expect("first result"),
-            MovementUpdateOutcome::Superseded
-        ));
+        match first_reply_rx
+            .await
+            .expect("first reply")
+            .expect("first result")
+        {
+            MovementUpdateOutcome::Applied { packets } => assert!(packets.is_empty()),
+        }
         let latest = latest_reply_rx
             .await
             .expect("latest reply")
             .expect("latest result");
         match latest {
             MovementUpdateOutcome::Applied { packets } => assert!(packets.is_empty()),
-            MovementUpdateOutcome::Superseded => panic!("latest movement should apply"),
         }
+
+        let map = map.lock().await;
+        let player = map.players.get(&7).expect("mover stored in map");
+        assert_eq!(player.position.orientation, 1.5);
+    }
+
+    #[tokio::test]
+    async fn process_movement_batch_preserves_facing_updates_alongside_latest_heartbeat() {
+        let mut runtime = MapRuntime::new(0, 0);
+        runtime
+            .add_player(test_player_runtime(
+                7,
+                SessionId(7),
+                WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+            ))
+            .expect("add mover");
+        runtime
+            .add_player(test_player_runtime(
+                8,
+                SessionId(8),
+                WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0),
+            ))
+            .expect("add observer");
+        let map = Arc::new(Mutex::new(runtime));
+
+        let (first_heartbeat_reply_tx, first_heartbeat_reply_rx) = oneshot::channel();
+        let (facing_reply_tx, facing_reply_rx) = oneshot::channel();
+        let (latest_heartbeat_reply_tx, latest_heartbeat_reply_rx) = oneshot::channel();
+        let batch = vec![
+            MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
+                character_guid: 7,
+                opcode: WorldOpcode::MsgMoveHeartbeat as u16,
+                movement: MovementInfo {
+                    flags: MOVEFLAG_FORWARD,
+                    client_time: 1,
+                    position: WorldPosition::new(0, -8949.5, -130.0, 83.5, 0.25),
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 1,
+                enqueued_at: Instant::now(),
+                reply: first_heartbeat_reply_tx,
+            }),
+            MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
+                character_guid: 7,
+                opcode: WorldOpcode::MsgMoveSetFacing as u16,
+                movement: MovementInfo {
+                    flags: MOVEFLAG_FORWARD,
+                    client_time: 2,
+                    position: WorldPosition::new(0, -8949.4, -130.0, 83.5, 0.75),
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 2,
+                enqueued_at: Instant::now(),
+                reply: facing_reply_tx,
+            }),
+            MovementActorCommand::UpdatePlayerPosition(MovementUpdateCommand {
+                character_guid: 7,
+                opcode: WorldOpcode::MsgMoveHeartbeat as u16,
+                movement: MovementInfo {
+                    flags: MOVEFLAG_FORWARD,
+                    client_time: 3,
+                    position: WorldPosition::new(0, -8949.0, -130.0, 83.5, 1.0),
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                },
+                server_time: 3,
+                enqueued_at: Instant::now(),
+                reply: latest_heartbeat_reply_tx,
+            }),
+        ];
+
+        process_movement_batch(&map, batch).await;
+
+        let first_heartbeat_packets = match first_heartbeat_reply_rx
+            .await
+            .expect("first heartbeat reply")
+            .expect("first heartbeat result")
+        {
+            MovementUpdateOutcome::Applied { packets } => packets,
+        };
+        assert!(first_heartbeat_packets.iter().any(|(session, packet)| {
+            *session == SessionId(8) && packet.opcode == WorldOpcode::MsgMoveHeartbeat as u16
+        }));
+
+        let facing_packets = match facing_reply_rx
+            .await
+            .expect("facing reply")
+            .expect("facing result")
+        {
+            MovementUpdateOutcome::Applied { packets } => packets,
+        };
+        assert!(facing_packets.iter().any(|(session, packet)| {
+            *session == SessionId(8) && packet.opcode == WorldOpcode::MsgMoveSetFacing as u16
+        }));
+
+        let heartbeat_packets = match latest_heartbeat_reply_rx
+            .await
+            .expect("latest heartbeat reply")
+            .expect("latest heartbeat result")
+        {
+            MovementUpdateOutcome::Applied { packets } => packets,
+        };
+        assert!(heartbeat_packets.iter().any(|(session, packet)| {
+            *session == SessionId(8) && packet.opcode == WorldOpcode::MsgMoveHeartbeat as u16
+        }));
+
+        let map = map.lock().await;
+        let player = map.players.get(&7).expect("mover stored in map");
+        assert_eq!(player.position.x, -8949.0);
+        assert_eq!(player.position.orientation, 1.0);
     }
 }

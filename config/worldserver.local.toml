@@ -30,8 +30,6 @@ database = "characters"
 MapUpdateInterval = 100
 char_delete_method = 0
 char_delete_min_level = 0
-movement_trace_enabled = true
-movement_trace_log_path = "logs/movement-trace.log"
 
 [playerbots]
 # Disabled for normal local starts so real-client multiplayer testing is not

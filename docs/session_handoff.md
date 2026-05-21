@@ -51,16 +51,13 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   heartbeat before the movement actor saw either packet. Rust now keeps an
   ordered short batch of pending movement packets through the session coalesce
   window instead of replacing the older one.
-- Local multiplayer movement-trace RCA/fix is uncommitted: live packet traces
-  now show the remaining right-click-turn glitch was not introduced by
-  timestamp rewrite alone. The client sends bursts of `MSG_MOVE_SET_FACING`
-  packets with orientation plus small XYZ drift, and CMaNGOS still relocates on
-  those packets; Rust's temporary facing-only clamp diverged from that and
-  matched the user's "turns in place, then teleports" symptom under slow
-  right-click movement. Rust has been moved back toward the CMaNGOS shape:
-  `MSG_MOVE_SET_FACING` again carries its packet position through map-owned
-  apply/broadcast, and the movement actor no longer drops intermediate movement
-  packets by coalescing to the latest `(player, opcode)` entry inside a batch.
+- Local multiplayer movement RCA/fix is uncommitted: live packet captures and
+  direct CMaNGOS contrast resolved the remaining right-click-turn glitch. Rust
+  now matches the key CMaNGOS movement shape more closely: synchronized
+  movement time is used for observer movement/create packets,
+  `MSG_MOVE_SET_FACING` carries its packet position through map-owned
+  apply/broadcast again, and the movement actor no longer drops intermediate
+  movement packets inside a batch.
 - Startup fix after the dialogue merge: `wow-db` now treats missing optional
   local-starter DB tables `unit_condition`, `combat_condition`, and
   `broadcast_text` as empty instead of failing world runtime initialization.

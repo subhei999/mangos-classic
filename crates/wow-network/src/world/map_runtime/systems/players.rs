@@ -1117,23 +1117,6 @@ impl MapRuntime {
         } else {
             0
         };
-        if mover_is_client_controlled {
-            trace_guid_movement(
-                "map_apply",
-                character_guid,
-                u32::from(opcode),
-                movement,
-                &format!(
-                    "old_x={:.3} old_y={:.3} old_z={:.3} old_o={:.6} observers={} should_broadcast={}",
-                    current_player.position.x,
-                    current_player.position.y,
-                    current_player.position.z,
-                    current_player.position.orientation,
-                    current_observers.len(),
-                    should_broadcast_movement,
-                ),
-            );
-        }
         crate::observability::record_movement_apply_observer_snapshot_time(
             observer_snapshot_started_at.elapsed(),
         );
@@ -1160,16 +1143,6 @@ impl MapRuntime {
                 let Some(other) = self.players.get(other_guid) else {
                     continue;
                 };
-                if mover_is_client_controlled {
-                    trace_movement_broadcast(
-                        "broadcast",
-                        character_guid,
-                        *other_guid,
-                        u32::from(opcode),
-                        &applied_movement,
-                        &format!("observer_session={:?}", other.client_session_id()),
-                    );
-                }
                 if let Some(packet) = other.packet_to_client(movement_packet.clone()) {
                     packets.push(packet);
                 }

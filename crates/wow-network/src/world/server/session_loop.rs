@@ -201,42 +201,9 @@ pub(in crate::world) async fn handle_client(
                     let packet_received_at = Instant::now();
                     last_client_packet_at = packet_received_at;
                     if is_movement_opcode(opcode) {
-                        let movement = MovementInfo::read(&body).ok();
-                        if let (Some(character), Some(movement)) =
-                            (session.character.active_character.as_ref(), movement.as_ref())
-                        {
-                            trace_named_movement(
-                                "session_enqueue",
-                                character.guid,
-                                &character.name,
-                                opcode,
-                                movement,
-                                &format!(
-                                    "queue_len_before={} queue_len_after={}",
-                                    pending_movement.len(),
-                                    pending_movement.len() + 1
-                                ),
-                            );
-                        }
                         if pending_movement_due(&pending_movement, packet_received_at) {
                             let queued_movements = std::mem::take(&mut pending_movement);
                             for pending in queued_movements {
-                                if let (Some(character), Ok(movement)) = (
-                                    session.character.active_character.as_ref(),
-                                    MovementInfo::read(&pending.body),
-                                ) {
-                                    trace_named_movement(
-                                        "session_flush",
-                                        character.guid,
-                                        &character.name,
-                                        pending.opcode,
-                                        &movement,
-                                        &format!(
-                                            "flush_reason=enqueue_deadline queue_remaining={}",
-                                            pending_movement.len()
-                                        ),
-                                    );
-                                }
                                 process_authenticated_world_packet(
                                     &mut stream,
                                     &login_db_pool,
@@ -308,22 +275,6 @@ pub(in crate::world) async fn handle_client(
                     if pending_movement_due(&pending_movement, Instant::now()) {
                         let queued_movements = std::mem::take(&mut pending_movement);
                         for pending in queued_movements {
-                            if let (Some(character), Ok(movement)) = (
-                                session.character.active_character.as_ref(),
-                                MovementInfo::read(&pending.body),
-                            ) {
-                                trace_named_movement(
-                                    "session_flush",
-                                    character.guid,
-                                    &character.name,
-                                    pending.opcode,
-                                    &movement,
-                                    &format!(
-                                        "flush_reason=timeout queue_remaining={}",
-                                        pending_movement.len()
-                                    ),
-                                );
-                            }
                             process_authenticated_world_packet(
                                 &mut stream,
                                 &login_db_pool,

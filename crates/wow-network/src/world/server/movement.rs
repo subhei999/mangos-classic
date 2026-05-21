@@ -137,17 +137,6 @@ pub(in crate::world) async fn handle_movement(
     let server_time = synchronize_movement_server_time(session, movement.client_time);
     let mut map_owned_death_detected = false;
     if let Some(character) = &mut session.character.active_character {
-        trace_named_movement(
-            "dispatch_recv",
-            character.guid,
-            &character.name,
-            opcode,
-            &movement,
-            &format!(
-                "server_time={} corpse_movement={}",
-                server_time, corpse_movement
-            ),
-        );
         let previous_player_health = session.character.player_health;
         character.position.x = movement.position.x;
         character.position.y = movement.position.y;

@@ -160,6 +160,10 @@ Copy-Item -LiteralPath "target\release\worldserver.exe" -Destination (Join-Path 
 
 $commit = (& git rev-parse HEAD).Trim()
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
+$remote = ((& git config --get remote.origin.url 2>$null) -join "").Trim()
+if ([string]::IsNullOrWhiteSpace($remote)) {
+    $remote = "https://github.com/subhei999/rusty-mangos"
+}
 $dirty = ((& git status --short) -join "`n").Trim()
 $dirtyState = "clean"
 if (-not [string]::IsNullOrWhiteSpace($dirty)) {
@@ -169,6 +173,7 @@ $buildInfo = @"
 Rusty MaNGOS launcher package
 
 Source branch: $branch
+Source repository: $remote
 Source commit: $commit
 Working tree: $dirtyState
 Built at UTC: $((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))

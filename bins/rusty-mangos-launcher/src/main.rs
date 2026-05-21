@@ -157,6 +157,7 @@ enum Page {
     Health,
     Logs,
     Repair,
+    Updates,
     Advanced,
 }
 
@@ -255,6 +256,55 @@ struct HealthSnapshot {
     checked_at: String,
 }
 
+#[derive(Clone)]
+struct UpdateSnapshot {
+    local_build: String,
+    release_tag: String,
+    release_commit: String,
+    published_at: String,
+    setup_url: String,
+    setup_size: String,
+    app_zip_url: String,
+    app_zip_size: String,
+    release_url: String,
+    available: Option<bool>,
+    last_download: String,
+}
+
+impl UpdateSnapshot {
+    fn new(local_build: String) -> Self {
+        Self {
+            local_build,
+            release_tag: "Not checked".to_string(),
+            release_commit: String::new(),
+            published_at: String::new(),
+            setup_url: String::new(),
+            setup_size: String::new(),
+            app_zip_url: String::new(),
+            app_zip_size: String::new(),
+            release_url: String::new(),
+            available: None,
+            last_download: String::new(),
+        }
+    }
+
+    fn status_label(&self) -> &'static str {
+        match self.available {
+            Some(true) => "Update available",
+            Some(false) => "Current",
+            None => "Not checked",
+        }
+    }
+
+    fn status_color(&self) -> Color32 {
+        match self.available {
+            Some(true) => Color32::from_rgb(239, 178, 72),
+            Some(false) => Color32::from_rgb(32, 196, 130),
+            None => muted(),
+        }
+    }
+}
+
 struct LauncherApp {
     paths: Result<LauncherPaths, String>,
     settings: LauncherSettings,
@@ -270,6 +320,7 @@ struct LauncherApp {
     last_status_check: Instant,
     ports: PortStatus,
     health: HealthSnapshot,
+    update: UpdateSnapshot,
     last_health_refresh: Instant,
     skip_world_import: bool,
     force_world_import: bool,
@@ -330,6 +381,7 @@ impl LauncherApp {
             last_status_check: Instant::now() - Duration::from_secs(10),
             ports: PortStatus::default(),
             health: HealthSnapshot::default(),
+            update: UpdateSnapshot::new(build_id),
             last_health_refresh: Instant::now() - Duration::from_secs(10),
             skip_world_import: false,
             force_world_import: false,
@@ -339,6 +391,10 @@ impl LauncherApp {
     }
 
     fn run_action(&mut self, action: &str) {
+        self.run_action_with_update_asset(action, None);
+    }
+
+    fn run_action_with_update_asset(&mut self, action: &str, update_asset: Option<&str>) {
         if self.state == OperationState::Running {
             self.append_log("An operation is already running.\n");
             return;
@@ -357,7 +413,7 @@ impl LauncherApp {
             return;
         }
 
-        let args = self.build_args(&paths, action);
+        let args = self.build_args(&paths, action, update_asset);
         let (tx, rx) = mpsc::channel();
         self.output = Some(OperationOutput { receiver: rx });
         self.state = OperationState::Running;
@@ -414,7 +470,12 @@ impl LauncherApp {
         });
     }
 
-    fn build_args(&self, paths: &LauncherPaths, action: &str) -> Vec<String> {
+    fn build_args(
+        &self,
+        paths: &LauncherPaths,
+        action: &str,
+        update_asset: Option<&str>,
+    ) -> Vec<String> {
         let mut args = vec![
             "-NoProfile".to_string(),
             "-ExecutionPolicy".to_string(),
@@ -451,6 +512,10 @@ impl LauncherApp {
             args.push("-MMapMaps".to_string());
             args.push(self.settings.mmap_maps.trim().to_string());
         }
+        if let Some(update_asset) = update_asset {
+            args.push("-UpdateAsset".to_string());
+            args.push(update_asset.to_string());
+        }
 
         args
     }
@@ -462,6 +527,7 @@ impl LauncherApp {
                 match event {
                     ProcessEvent::Line(line) => {
                         self.update_progress_from_line(&line);
+                        self.update_release_from_line(&line);
                         self.append_log(&line);
                     }
                     ProcessEvent::Finished(code) => finished = Some(code),
@@ -529,6 +595,37 @@ impl LauncherApp {
                 progress.index = progress_index_for_phase(&progress.action, phase);
                 break;
             }
+        }
+    }
+
+    fn update_release_from_line(&mut self, line: &str) {
+        let clean = line.trim();
+        let Some((key, value)) = clean.split_once('=') else {
+            return;
+        };
+        if !key.starts_with("UPDATE_") {
+            return;
+        }
+
+        match key {
+            "UPDATE_LOCAL_BUILD" => self.update.local_build = value.to_string(),
+            "UPDATE_RELEASE_TAG" => self.update.release_tag = value.to_string(),
+            "UPDATE_RELEASE_COMMIT" => self.update.release_commit = value.to_string(),
+            "UPDATE_PUBLISHED_AT" => self.update.published_at = value.to_string(),
+            "UPDATE_SETUP_URL" => self.update.setup_url = value.to_string(),
+            "UPDATE_SETUP_SIZE" => self.update.setup_size = value.to_string(),
+            "UPDATE_APP_URL" => self.update.app_zip_url = value.to_string(),
+            "UPDATE_APP_SIZE" => self.update.app_zip_size = value.to_string(),
+            "UPDATE_RELEASE_URL" => self.update.release_url = value.to_string(),
+            "UPDATE_DOWNLOAD_PATH" => self.update.last_download = value.to_string(),
+            "UPDATE_AVAILABLE" => {
+                self.update.available = match value {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                };
+            }
+            _ => {}
         }
     }
 
@@ -661,6 +758,7 @@ impl LauncherApp {
         nav_button(ui, &mut self.page, Page::Health, "HEALTH");
         nav_button(ui, &mut self.page, Page::Logs, "LOGS");
         nav_button(ui, &mut self.page, Page::Repair, "REPAIR");
+        nav_button(ui, &mut self.page, Page::Updates, "UPDATES");
         nav_button(ui, &mut self.page, Page::Advanced, "ADVANCED");
 
         ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
@@ -1052,6 +1150,103 @@ impl LauncherApp {
         });
     }
 
+    fn draw_updates(&mut self, ui: &mut Ui) {
+        panel(ui, "Updates", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(self.update.status_label())
+                        .strong()
+                        .color(self.update.status_color()),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(enabled_button(
+                            self.state == OperationState::Idle,
+                            "Check Updates",
+                        ))
+                        .clicked()
+                    {
+                        self.run_action("CheckUpdates");
+                    }
+                });
+            });
+            ui.add_space(12.0);
+            ui.columns(2, |columns| {
+                columns[0].label(RichText::new("Installed").color(muted()));
+                columns[0].label(
+                    RichText::new(self.update.local_build.clone())
+                        .strong()
+                        .color(Color32::from_rgb(235, 241, 250)),
+                );
+                columns[1].label(RichText::new("Release").color(muted()));
+                columns[1].label(
+                    RichText::new(if self.update.release_commit.is_empty() {
+                        self.update.release_tag.clone()
+                    } else {
+                        format!(
+                            "{} {}",
+                            self.update.release_tag,
+                            short_commit(&self.update.release_commit)
+                        )
+                    })
+                    .strong()
+                    .color(Color32::from_rgb(235, 241, 250)),
+                );
+            });
+            if !self.update.published_at.is_empty() {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("Published: {}", self.update.published_at))
+                        .color(muted()),
+                );
+            }
+            if !self.update.last_download.is_empty() {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("Downloaded: {}", self.update.last_download))
+                        .color(Color32::from_rgb(32, 196, 130)),
+                );
+            }
+            ui.add_space(16.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle && !self.update.app_zip_url.is_empty(),
+                        "Download App Zip",
+                    ))
+                    .clicked()
+                {
+                    self.run_action_with_update_asset("DownloadUpdate", Some("AppZip"));
+                }
+                if ui
+                    .add(enabled_button(
+                        self.state == OperationState::Idle && !self.update.setup_url.is_empty(),
+                        "Download Installer",
+                    ))
+                    .clicked()
+                {
+                    self.run_action_with_update_asset("DownloadUpdate", Some("Installer"));
+                }
+                if ui
+                    .add(enabled_button(
+                        !self.update.release_url.is_empty(),
+                        "Open Release",
+                    ))
+                    .clicked()
+                {
+                    open_url(&self.update.release_url);
+                }
+            });
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(asset_label("App zip", &self.update.app_zip_size)).color(muted()),
+            );
+            ui.label(
+                RichText::new(asset_label("Installer", &self.update.setup_size)).color(muted()),
+            );
+        });
+    }
+
     fn draw_advanced(&mut self, ui: &mut Ui) {
         panel(ui, "Advanced", |ui| {
             ui.horizontal(|ui| {
@@ -1122,6 +1317,7 @@ impl App for LauncherApp {
                 Page::Health => self.draw_health(ui),
                 Page::Logs => self.draw_logs(ui),
                 Page::Repair => self.draw_repair(ui),
+                Page::Updates => self.draw_updates(ui),
                 Page::Advanced => self.draw_advanced(ui),
             });
     }
@@ -1259,6 +1455,8 @@ fn progress_total_for_action(action: &str) -> usize {
         "ReextractVMaps" | "RebuildMMaps" => 3,
         "ReimportWorld" => 3,
         "ResetSeededCharacters" => 3,
+        "CheckUpdates" => 2,
+        "DownloadUpdate" => 3,
         _ => 2,
     }
 }
@@ -1280,6 +1478,10 @@ fn progress_index_for_phase(action: &str, phase: &str) -> usize {
         || normalized.contains("seeded")
     {
         4
+    } else if normalized.contains("checking launcher updates") {
+        1
+    } else if normalized.contains("downloading launcher update") {
+        2
     } else if normalized.contains("starting") {
         6
     } else if normalized.contains("ready") {
@@ -1307,6 +1509,23 @@ fn port_field(ui: &mut Ui, label: &str, value: &mut u16) {
 
 fn muted() -> Color32 {
     Color32::from_rgb(157, 170, 190)
+}
+
+fn short_commit(commit: &str) -> String {
+    let trimmed = commit.trim();
+    if trimmed.len() >= 8 {
+        trimmed[..8].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn asset_label(name: &str, size: &str) -> String {
+    if size.trim().is_empty() {
+        format!("{name}: not checked")
+    } else {
+        format!("{name}: {size}")
+    }
 }
 
 fn read_build_id(paths: &LauncherPaths) -> String {

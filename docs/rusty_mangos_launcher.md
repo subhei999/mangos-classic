@@ -69,6 +69,8 @@ The launcher is styled like a dark game launcher:
 - logs page with launcher, authserver, worldserver, and MariaDB log tabs;
 - repair page for database repair, vmap/mmap rebuilds, world reimport, and
   seeded character reset;
+- updates page for checking the rolling GitHub launcher release and downloading
+  the latest app zip or installer into launcher data;
 - advanced page for ports, ClassicDB path, and import/realmlist options.
 
 ## Start And Stop
@@ -89,6 +91,7 @@ Command wrappers are also available:
 .\scripts\rusty-mangos-launcher.cmd Start
 .\scripts\rusty-mangos-launcher.cmd Stop
 .\scripts\rusty-mangos-launcher.cmd Status
+.\scripts\rusty-mangos-launcher.cmd CheckUpdates
 ```
 
 The first install also writes convenience wrappers into `target\launcher`:

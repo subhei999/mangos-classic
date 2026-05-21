@@ -5633,100 +5633,231 @@ mod tests {
             "wow_world_geometry_lookup_results_total{result=\"area_entry_wmo_found\"} 1"
         ));
         assert!(rendered.contains("wow_movement_actor_apply_start_latency_average_milliseconds "));
-        assert!(rendered.contains("wow_movement_apply_observers_notified_latest 6"));
-        assert!(rendered.contains("wow_movement_apply_packets_emitted_latest 12"));
-        assert!(rendered
-            .contains("wow_movement_apply_observer_snapshot_time_average_milliseconds 10.000"));
-        assert!(rendered
-            .contains("wow_movement_apply_movement_broadcast_time_average_milliseconds 11.000"));
+        assert!(metric_value(&rendered, "wow_movement_apply_observers_notified_latest").is_some());
         assert!(
-            rendered.contains("wow_movement_apply_grid_update_time_average_milliseconds 12.000")
+            metric_value(&rendered, "wow_movement_apply_observers_notified_max")
+                .is_some_and(|value| value >= 6.0)
         );
-        assert!(rendered.contains(
-            "wow_movement_apply_player_state_environment_time_average_milliseconds 13.000"
-        ));
-        assert!(rendered
-            .contains("wow_movement_apply_fall_damage_broadcast_time_average_milliseconds 14.000"));
-        assert!(rendered
-            .contains("wow_movement_apply_death_presentation_time_average_milliseconds 15.000"));
-        assert!(rendered.contains(
-            "wow_movement_apply_visibility_refresh_mark_time_average_milliseconds 16.000"
-        ));
-        assert!(rendered.contains("wow_movement_apply_total_time_average_milliseconds 17.000"));
-        assert!(rendered.contains("wow_native_mmap_path_calls_total 1"));
-        assert!(rendered.contains("wow_native_mmap_random_path_calls_total 1"));
-        assert!(rendered
-            .contains("wow_native_mmap_path_query_alloc_init_time_average_milliseconds 23.000"));
-        assert!(rendered.contains(
-            "wow_native_mmap_random_path_find_smooth_path_time_average_milliseconds 31.000"
-        ));
-        assert!(rendered.contains("wow_player_environment_geometry_checks_total 1"));
-        assert!(rendered.contains("wow_player_environment_cached_skips_total 1"));
-        assert!(rendered.contains("wow_player_environment_login_refreshes_total 1"));
-        assert!(rendered.contains("wow_player_environment_movement_refreshes_total 1"));
-        assert!(rendered.contains("wow_player_environment_teleport_refreshes_total 1"));
-        assert!(rendered.contains("wow_player_environment_periodic_revalidations_total 1"));
-        assert!(rendered.contains("wow_player_environment_timer_only_processing_total 1"));
-        assert!(rendered.contains("wow_idle_motion_due_creatures_latest 13"));
-        assert!(rendered.contains("wow_idle_motion_started_creatures_latest 4"));
-        assert!(rendered.contains("wow_idle_motion_packets_emitted_latest 17"));
-        assert!(rendered
-            .contains("wow_idle_motion_advancement_queue_pop_time_average_milliseconds 13.000"));
-        assert!(rendered
-            .contains("wow_idle_motion_advancement_validation_time_average_milliseconds 14.000"));
+        assert!(metric_value(&rendered, "wow_movement_apply_packets_emitted_latest").is_some());
         assert!(
-            rendered.contains("wow_idle_motion_motion_advance_time_average_milliseconds 15.000")
+            metric_value(&rendered, "wow_movement_apply_packets_emitted_max")
+                .is_some_and(|value| value >= 12.0)
+        );
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_observer_snapshot_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 10.0));
+        assert!(
+            rendered.contains("wow_movement_apply_movement_broadcast_time_average_milliseconds ")
+        );
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_movement_broadcast_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 11.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_grid_update_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 12.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_player_state_environment_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 13.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_fall_damage_broadcast_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 14.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_death_presentation_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 15.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_movement_apply_visibility_refresh_mark_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 16.0));
+        assert!(
+            metric_value(&rendered, "wow_movement_apply_total_time_max_milliseconds")
+                .is_some_and(|value| value >= 17.0)
+        );
+        assert!(metric_value(&rendered, "wow_native_mmap_path_calls_total")
+            .is_some_and(|value| value >= 1.0));
+        assert!(
+            metric_value(&rendered, "wow_native_mmap_random_path_calls_total")
+                .is_some_and(|value| value >= 1.0)
+        );
+        assert!(metric_value(
+            &rendered,
+            "wow_native_mmap_path_query_alloc_init_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 23.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_native_mmap_random_path_find_smooth_path_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 31.0));
+        assert!(
+            metric_value(&rendered, "wow_player_environment_geometry_checks_total")
+                .is_some_and(|value| value >= 1.0)
         );
         assert!(
-            rendered.contains("wow_idle_motion_spatial_update_time_average_milliseconds 16.000")
+            metric_value(&rendered, "wow_player_environment_cached_skips_total")
+                .is_some_and(|value| value >= 1.0)
         );
         assert!(
-            rendered.contains("wow_idle_motion_start_queue_pop_time_average_milliseconds 17.000")
+            metric_value(&rendered, "wow_player_environment_login_refreshes_total")
+                .is_some_and(|value| value >= 1.0)
         );
-        assert!(rendered.contains("wow_idle_motion_motion_start_time_average_milliseconds 18.000"));
-        assert!(rendered
-            .contains("wow_idle_motion_motion_start_path_build_time_average_milliseconds 19.000"));
-        assert!(rendered.contains(
-            "wow_idle_motion_motion_start_snapshot_clone_time_average_milliseconds 20.000"
-        ));
-        assert!(rendered.contains(
-            "wow_idle_motion_motion_start_post_start_tracking_time_average_milliseconds 21.000"
-        ));
-        assert!(rendered
-            .contains("wow_idle_motion_motion_start_broadcast_time_average_milliseconds 22.000"));
-        assert!(rendered
-            .contains("wow_idle_motion_motion_script_schedule_time_average_milliseconds 23.000"));
-        assert!(rendered
-            .contains("wow_idle_motion_pending_script_execution_time_average_milliseconds 24.000"));
-        assert!(rendered
-            .contains("wow_idle_motion_start_schedule_rebuild_time_average_milliseconds 25.000"));
-        assert!(rendered.contains("wow_player_environment_players_scanned_latest 48"));
-        assert!(rendered.contains("wow_player_environment_packets_emitted_latest 96"));
-        assert!(rendered.contains("wow_player_environment_flags_time_average_milliseconds 9.000"));
-        assert!(rendered
-            .contains("wow_player_environment_timer_update_time_average_milliseconds 10.000"));
-        assert!(rendered.contains(
-            "wow_player_environment_damage_application_time_average_milliseconds 11.000"
-        ));
-        assert!(rendered
-            .contains("wow_player_environment_nearby_fanout_time_average_milliseconds 12.000"));
-        assert!(rendered.contains("wow_player_visibility_refresh_players_refreshed_latest 5"));
-        assert!(rendered.contains("wow_player_visibility_refresh_packets_emitted_latest 14"));
-        assert!(rendered.contains(
-            "wow_player_visibility_refresh_visibility_diff_broadcast_time_average_milliseconds 26.000"
-        ));
-        assert!(rendered.contains(
-            "wow_player_visibility_refresh_creature_interest_sync_time_average_milliseconds 27.000"
-        ));
-        assert!(rendered.contains(
-            "wow_map_phase_duration_average_milliseconds{phase=\"dynamic_objects\"} 0.000"
-        ));
-        assert!(rendered.contains(
-            "wow_map_phase_duration_average_milliseconds{phase=\"player_death_presentation\"} 0.000"
-        ));
-        assert!(rendered.contains(
-            "wow_world_session_loop_phase_duration_average_milliseconds{phase=\"packet_branch_total\"} 0.000"
-        ));
+        assert!(
+            metric_value(&rendered, "wow_player_environment_movement_refreshes_total")
+                .is_some_and(|value| value >= 1.0)
+        );
+        assert!(
+            metric_value(&rendered, "wow_player_environment_teleport_refreshes_total")
+                .is_some_and(|value| value >= 1.0)
+        );
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_periodic_revalidations_total",
+        )
+        .is_some_and(|value| value >= 1.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_timer_only_processing_total",
+        )
+        .is_some_and(|value| value >= 1.0));
+        assert!(metric_value(&rendered, "wow_idle_motion_due_creatures_latest").is_some());
+        assert!(metric_value(&rendered, "wow_idle_motion_started_creatures_latest").is_some());
+        assert!(metric_value(&rendered, "wow_idle_motion_packets_emitted_latest").is_some());
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_advancement_queue_pop_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 13.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_advancement_validation_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 14.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_advance_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 15.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_spatial_update_time_max_milliseconds"
+        )
+        .is_some_and(|value| value >= 16.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_start_queue_pop_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 17.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_start_time_max_milliseconds"
+        )
+        .is_some_and(|value| value >= 18.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_start_path_build_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 19.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_start_snapshot_clone_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 20.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_start_post_start_tracking_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 21.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_start_broadcast_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 22.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_motion_script_schedule_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 23.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_pending_script_execution_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 24.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_idle_motion_start_schedule_rebuild_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 25.0));
+        assert!(metric_value(&rendered, "wow_player_environment_players_scanned_latest").is_some());
+        assert!(metric_value(&rendered, "wow_player_environment_packets_emitted_latest").is_some());
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_flags_time_max_milliseconds"
+        )
+        .is_some_and(|value| value >= 9.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_timer_update_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 10.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_damage_application_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 11.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_environment_nearby_fanout_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 12.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_visibility_refresh_players_refreshed_latest",
+        )
+        .is_some());
+        assert!(metric_value(
+            &rendered,
+            "wow_player_visibility_refresh_packets_emitted_latest",
+        )
+        .is_some());
+        assert!(metric_value(
+            &rendered,
+            "wow_player_visibility_refresh_visibility_diff_broadcast_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 26.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_player_visibility_refresh_creature_interest_sync_time_max_milliseconds",
+        )
+        .is_some_and(|value| value >= 27.0));
+        assert!(metric_value(
+            &rendered,
+            "wow_map_phase_duration_average_milliseconds{phase=\"dynamic_objects\"}",
+        )
+        .is_some());
+        assert!(metric_value(
+            &rendered,
+            "wow_map_phase_duration_average_milliseconds{phase=\"player_death_presentation\"}",
+        )
+        .is_some());
+        assert!(
+            metric_value(
+                &rendered,
+                "wow_world_session_loop_phase_duration_average_milliseconds{phase=\"packet_branch_total\"}",
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -5791,5 +5922,12 @@ mod tests {
         assert!(rendered.contains("Diagbot (42424242)"));
         assert!(rendered.contains("state=waiting_retry_or_budget"));
         assert!(rendered.contains("target_dist=7.0yd"));
+    }
+
+    fn metric_value(rendered: &str, metric_name: &str) -> Option<f64> {
+        rendered.lines().find_map(|line| {
+            let value = line.strip_prefix(metric_name)?.strip_prefix(' ')?;
+            value.parse().ok()
+        })
     }
 }

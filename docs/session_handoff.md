@@ -9,6 +9,22 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
+- Local creature corpse/respawn timer fix is uncommitted: the May 14
+  corpse-lifecycle change started capping corpse decay to `90%` of the
+  creature respawn timer inside Rust runtime death handling. That made
+  short-respawn DB creatures such as Northshire `Young Wolf` (`entry 299`,
+  `spawntimesecsmin=max=15`) despawn in roughly `13s` and then respawn almost
+  immediately. Rust now keeps corpse expiration on the template/DB
+  `CorpseDecay` path again instead of collapsing it onto the respawn timer.
+- Current launcher/updater slice is uncommitted: the flaky global
+  `prometheus_render_includes_histogram_and_opcode_labels` test was made
+  parallel-safe by checking rendered shared metrics through presence/max bounds,
+  and the Rusty MaNGOS launcher now has an Updates page backed by
+  `CheckUpdates` / `DownloadUpdate` PowerShell actions. The update check reads
+  the local `BUILD_INFO.txt`, resolves the rolling `launcher-nightly` GitHub
+  release, falls back to authenticated `gh` for private release access, compares
+  commit ids, and downloads the app zip or installer into
+  `target\launcher\updates`.
 - Latest local integration state includes the pushed active-spell teleport
   cleanup checkpoint `02388436c` on `codex/rusty-mangos` and the latest
   aura/target invalidation spell slice.
@@ -151,6 +167,12 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
   should include its map-owned tick cost.
 
 ## Current Goal
+
+Immediate user-directed priority in the current thread is creature
+corpse/respawn timing: confirm the latest Rust fix restores corpse despawn to
+the DB/template timer path instead of collapsing short respawn timers into
+near-immediate corpse cleanup and respawn. After that proof, resume launcher
+polish and the parked multiplayer visual-parity smoke.
 
 Immediate user-directed priority is multiplayer visual parity around same-map
 teleport plus right-click-turn observation in Northshire. The latest local fixes
@@ -1518,13 +1540,21 @@ Player visibility relocation threshold:
 
 ## Recommended Next Task
 
-1. Use the currently restarted local release stack and run a two-client
-   Northshire smoke covering `.go` away/back plus stationary and moving
-   right-click turn observation from a second client.
-2. If the pivot/offset and right-click snap symptoms are gone, update
+0. Restart the local release stack and kill a short-respawn starter-zone
+   creature such as `Young Wolf` (`entry 299`) to confirm corpse despawn now
+   follows the template/DB corpse timer instead of vanishing around `10-13s`
+   and respawning immediately.
+1. After the corpse/respawn smoke, continue launcher work from the Updates page
+   by adding a safe out-of-process apply/relaunch helper that stops the stack,
+   replaces packaged files from the downloaded app zip, preserves launcher
+   data, and starts the refreshed launcher.
+2. Then return to the parked two-client Northshire smoke covering `.go`
+   away/back plus stationary and moving right-click turn observation from a
+   second client.
+3. If the pivot/offset and right-click snap symptoms are gone, update
    `docs/playable_gate_board.md` / multiplayer notes with the real-client proof
    and then return to the trainer-gossip verification.
-3. After the user-directed multiplayer proof, resume the prior spell roadmap:
+4. After the user-directed multiplayer proof, resume the prior spell roadmap:
    damage-interrupt coverage, cross-map transfer active-spell cleanup, then the
    broader target-outcome / Polymorph / triggered-spell parity slices.
 

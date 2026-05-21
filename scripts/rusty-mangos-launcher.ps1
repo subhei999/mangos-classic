@@ -1,8 +1,10 @@
 param(
-    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status", "RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters")]
+    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status", "RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters", "CheckUpdates", "DownloadUpdate")]
     [string]$Action = "InstallStart",
     [ValidateSet("Native", "Docker")]
     [string]$DatabaseMode = "Native",
+    [ValidateSet("AppZip", "Installer")]
+    [string]$UpdateAsset = "AppZip",
     [string]$ClientDir,
     [string]$ClassicDbPath,
     [int]$DbPort = 3307,
@@ -39,6 +41,8 @@ function Show-Usage {
     Write-Host "  RebuildMMaps   Rebuild starter movement maps from existing maps/vmaps."
     Write-Host "  ReimportWorld  Re-import the ClassicDB world database."
     Write-Host "  ResetSeededCharacters Reset the seeded RUSTAUTH characters."
+    Write-Host "  CheckUpdates   Check the rolling GitHub launcher release."
+    Write-Host "  DownloadUpdate Download the selected launcher update asset."
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -ClientDir <path>          WoW 1.12.1 client folder. Prompts when omitted."
@@ -53,6 +57,7 @@ function Show-Usage {
     Write-Host "  -NoRealmlistUpdate         Do not edit the client's realmlist.wtf."
     Write-Host "  -ResetCharacters           Reset only the seeded RUSTAUTH characters."
     Write-Host "  -DebugBuild                Build/run debug binaries instead of release."
+    Write-Host "  -UpdateAsset <asset>       AppZip or Installer for DownloadUpdate."
     Write-Host ""
     Write-Host "Native portable MariaDB is the default backend. Docker is intentionally not"
     Write-Host "required for the normal player flow."
@@ -1089,6 +1094,224 @@ function Get-LauncherBuildId {
     return "local"
 }
 
+function Get-LauncherBuildCommit {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $buildInfoPath = Join-Path $RepoRoot "BUILD_INFO.txt"
+    if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
+        $line = Get-Content -LiteralPath $buildInfoPath |
+            Where-Object { $_ -match '^Source commit:\s*([0-9a-fA-F]{8,})' } |
+            Select-Object -First 1
+        if ($line -and $line -match '^Source commit:\s*([0-9a-fA-F]{8,})') {
+            return $Matches[1]
+        }
+    }
+
+    try {
+        $commit = ((& git -C $RepoRoot rev-parse HEAD 2>$null) -join "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($commit)) {
+            return $commit
+        }
+    }
+    catch {
+    }
+
+    return "local"
+}
+
+function Get-LauncherRepositoryName {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+        return $env:GITHUB_REPOSITORY
+    }
+
+    $buildInfoPath = Join-Path $RepoRoot "BUILD_INFO.txt"
+    if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
+        $line = Get-Content -LiteralPath $buildInfoPath |
+            Where-Object { $_ -match '^Source repository:\s*(.+)$' } |
+            Select-Object -First 1
+        if ($line -and $line -match '^Source repository:\s*(.+)$') {
+            $remote = $Matches[1].Trim()
+            if ($remote -match 'github\.com[:/](?<owner>[^/]+)/(?<repo>[^/.]+)(\.git)?$') {
+                return "$($Matches["owner"])/$($Matches["repo"])"
+            }
+        }
+    }
+
+    try {
+        $remote = ((& git -C $RepoRoot config --get remote.origin.url 2>$null) -join "").Trim()
+        if ($remote -match 'github\.com[:/](?<owner>[^/]+)/(?<repo>[^/.]+)(\.git)?$') {
+            return "$($Matches["owner"])/$($Matches["repo"])"
+        }
+    }
+    catch {
+    }
+
+    return "subhei999/rusty-mangos"
+}
+
+function Invoke-GitHubLauncherApi {
+    param([Parameter(Mandatory = $true)][string]$Uri)
+
+    $headers = @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "RustyMangosLauncher"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+        $headers["Authorization"] = "Bearer $env:GH_TOKEN"
+    }
+
+    try {
+        return Invoke-RestMethod -Uri $Uri -Headers $headers
+    }
+    catch {
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            $json = (& gh api $Uri 2>$null) -join "`n"
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
+                return $json | ConvertFrom-Json
+            }
+        }
+        throw
+    }
+}
+
+function Get-LauncherRelease {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $repo = Get-LauncherRepositoryName $RepoRoot
+    $tag = "launcher-nightly"
+    return Invoke-GitHubLauncherApi "https://api.github.com/repos/$repo/releases/tags/$tag"
+}
+
+function Get-ReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)]$Release,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    return $Release.assets | Where-Object { $_.name -eq $Name } | Select-Object -First 1
+}
+
+function Format-LauncherSize {
+    param([object]$Bytes)
+
+    if ($null -eq $Bytes) {
+        return ""
+    }
+
+    $value = [double]$Bytes
+    if ($value -ge 1GB) {
+        return ("{0:N2} GB" -f ($value / 1GB))
+    }
+    if ($value -ge 1MB) {
+        return ("{0:N1} MB" -f ($value / 1MB))
+    }
+    if ($value -ge 1KB) {
+        return ("{0:N1} KB" -f ($value / 1KB))
+    }
+    return ("{0:N0} bytes" -f $value)
+}
+
+function Show-LauncherUpdateStatus {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    Write-Step "Checking launcher updates"
+    $localCommit = Get-LauncherBuildCommit $RepoRoot
+    $localBuild = Get-LauncherBuildId $RepoRoot
+    $release = Get-LauncherRelease $RepoRoot
+    $setup = Get-ReleaseAsset $release "RustyMangosSetup.exe"
+    $appZip = Get-ReleaseAsset $release "RustyMangosApp.zip"
+    $releaseCommit = [string]$release.target_commitish
+
+    $available = "unknown"
+    if ($localCommit -ne "local" -and -not [string]::IsNullOrWhiteSpace($releaseCommit)) {
+        if ($releaseCommit.StartsWith($localCommit) -or $localCommit.StartsWith($releaseCommit)) {
+            $available = "false"
+        }
+        else {
+            $available = "true"
+        }
+    }
+
+    Write-Host "UPDATE_LOCAL_BUILD=$localBuild"
+    Write-Host "UPDATE_RELEASE_TAG=$($release.tag_name)"
+    Write-Host "UPDATE_RELEASE_COMMIT=$releaseCommit"
+    Write-Host "UPDATE_PUBLISHED_AT=$($release.published_at)"
+    Write-Host "UPDATE_RELEASE_URL=$($release.html_url)"
+    Write-Host "UPDATE_AVAILABLE=$available"
+    if ($setup) {
+        Write-Host "UPDATE_SETUP_URL=$($setup.browser_download_url)"
+        Write-Host "UPDATE_SETUP_SIZE=$(Format-LauncherSize $setup.size)"
+    }
+    if ($appZip) {
+        Write-Host "UPDATE_APP_URL=$($appZip.browser_download_url)"
+        Write-Host "UPDATE_APP_SIZE=$(Format-LauncherSize $appZip.size)"
+    }
+
+    if ($available -eq "true") {
+        Write-Host "Launcher update is available."
+    }
+    elseif ($available -eq "false") {
+        Write-Host "Launcher is current."
+    }
+    else {
+        Write-Host "Launcher update status is unknown."
+    }
+}
+
+function Save-LauncherUpdateAsset {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$LauncherDir,
+        [Parameter(Mandatory = $true)][string]$AssetKind
+    )
+
+    Write-Step "Downloading launcher update"
+    $release = Get-LauncherRelease $RepoRoot
+    $repo = Get-LauncherRepositoryName $RepoRoot
+    $assetName = if ($AssetKind -eq "Installer") { "RustyMangosSetup.exe" } else { "RustyMangosApp.zip" }
+    $asset = Get-ReleaseAsset $release $assetName
+    if (-not $asset) {
+        throw "Release asset was not found: $assetName"
+    }
+
+    $updatesDir = Join-Path $LauncherDir "updates"
+    New-Item -ItemType Directory -Force -Path $updatesDir | Out-Null
+    $targetCommit = [string]$release.target_commitish
+    if ([string]::IsNullOrWhiteSpace($targetCommit) -or $targetCommit.Length -lt 8) {
+        $targetCommit = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss")
+    }
+    else {
+        $targetCommit = $targetCommit.Substring(0, 8)
+    }
+    $destination = Join-Path $updatesDir ("{0}-{1}" -f $targetCommit, $assetName)
+
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        $tempDownloadDir = Join-Path $updatesDir "download-temp"
+        Remove-Item -LiteralPath $tempDownloadDir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $tempDownloadDir | Out-Null
+        & gh release download "launcher-nightly" --repo $repo --pattern $assetName --dir $tempDownloadDir --clobber
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh release download failed for $assetName"
+        }
+        Move-Item -LiteralPath (Join-Path $tempDownloadDir $assetName) -Destination $destination -Force
+        Remove-Item -LiteralPath $tempDownloadDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        $headers = @{
+            "User-Agent" = "RustyMangosLauncher"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            $headers["Authorization"] = "Bearer $env:GH_TOKEN"
+        }
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $destination -Headers $headers
+    }
+
+    Write-Host "UPDATE_DOWNLOAD_PATH=$destination"
+    Write-Host "Downloaded $assetName to $destination"
+}
+
 function Seed-PlayAccount {
     param(
         [Parameter(Mandatory = $true)][string]$MariaRoot,
@@ -1397,6 +1620,16 @@ if ($Action -eq "Status") {
         throw "Rusty MaNGOS is not configured yet. Run .\scripts\rusty-mangos-launcher.cmd Install first."
     }
     Show-Status $settings $pidDir
+    exit 0
+}
+
+if ($Action -eq "CheckUpdates") {
+    Show-LauncherUpdateStatus $repoRoot
+    exit 0
+}
+
+if ($Action -eq "DownloadUpdate") {
+    Save-LauncherUpdateAsset $repoRoot $launcherDir $UpdateAsset
     exit 0
 }
 

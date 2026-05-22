@@ -133,8 +133,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
     )
     .await?;
 
-    match spell_profile.aura_target {
-        SpellAuraTarget::Caster => {
+    let spell_plan = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind);
+    let aura_target = spell_plan
+        .as_ref()
+        .map(|plan| plan.target)
+        .unwrap_or(SpellPlanTarget::Caster);
+
+    match aura_target {
+        SpellPlanTarget::Caster => {
             let resolution = aura_rank_conflict_resolution(
                 deps.shared_world.object_mgr,
                 deps.world_db_pool,
@@ -186,9 +194,21 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     .await?;
                 }
             }
+
+            start_player_self_aura_channel_if_needed(
+                stream,
+                deps.shared_world,
+                caster,
+                character_guid,
+                map_id,
+                spell_template,
+                now,
+                header_crypto,
+            )
+            .await?;
         }
 
-        SpellAuraTarget::UnitTarget => {
+        SpellPlanTarget::Unit | SpellPlanTarget::HostileUnit | SpellPlanTarget::FriendlyUnit => {
             if let Some(target) = targets.unit_target {
                 if target.is_player() {
                     let target_character_guid = target.counter();
@@ -384,12 +404,12 @@ pub(in crate::world) async fn apply_player_spell_aura(
             }
         }
 
-        SpellAuraTarget::CasterAreaEnemy => {
+        SpellPlanTarget::CasterAreaEnemy { cone } => {
             let spell_info = SpellInfo::from_template(spell_template);
 
             let Some(effect) = spell_info.effects.into_iter().find(|effect| {
                 effect.dispatch == SpellEffectDispatch::ApplyAura
-                    && effect_targets_caster_centered_hostile_area(*effect)
+                    && plan_effect_target(*effect).is_hostile()
             }) else {
                 return Ok(());
             };
@@ -404,15 +424,27 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 return Ok(());
             };
 
-            let targets = deps
-                .shared_world
-                .maps
-                .nearby_attackable_db_creature_guids_for_player_spell(
-                    map_id,
-                    character_guid,
-                    radius,
-                )
-                .await;
+            let targets = if cone {
+                let cone_radians = spell_cone_radians_for_spell(deps, spell_template.id).await?;
+                deps.shared_world
+                    .maps
+                    .nearby_attackable_db_creature_guids_in_player_spell_cone(
+                        map_id,
+                        character_guid,
+                        radius,
+                        cone_radians,
+                    )
+                    .await
+            } else {
+                deps.shared_world
+                    .maps
+                    .nearby_attackable_db_creature_guids_for_player_spell(
+                        map_id,
+                        character_guid,
+                        radius,
+                    )
+                    .await
+            };
 
             for target in targets {
                 let Some(target_creature) = deps
@@ -489,12 +521,12 @@ pub(in crate::world) async fn apply_player_spell_aura(
             }
         }
 
-        SpellAuraTarget::DestinationAreaEnemy => {
+        SpellPlanTarget::DestinationAreaEnemy => {
             let spell_info = SpellInfo::from_template(spell_template);
 
             let Some(effect) = spell_info.effects.into_iter().find(|effect| {
                 effect.dispatch == SpellEffectDispatch::ApplyAura
-                    && effect_targets_destination_hostile_area(*effect)
+                    && plan_effect_target(*effect) == SpellPlanEffectTarget::DestinationAreaEnemy
             }) else {
                 return Ok(());
             };
@@ -603,8 +635,70 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 .await?;
             }
         }
+        SpellPlanTarget::Destination => {}
     }
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_player_self_aura_channel_if_needed(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(SpellPlanChannel::SelfAura {
+        duration_index,
+        interrupt_flags,
+    }) = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .and_then(|plan| plan.channel)
+    else {
+        return Ok(());
+    };
+
+    let Some(duration) = shared_world.maps.spell_duration(duration_index) else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index, "Skipping self-channeled aura start with missing spell duration row"
+        );
+        return Ok(());
+    };
+    if duration.duration_millis <= 0 {
+        return Ok(());
+    }
+
+    let Some(event) = shared_world
+        .maps
+        .start_player_self_aura_channel(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            duration.duration_millis as u32,
+            interrupt_flags,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    shared_world.sessions.dispatch(event.observer_packets).await;
     Ok(())
 }
 

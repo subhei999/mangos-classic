@@ -4923,6 +4923,51 @@ fn map_runtime_mana_regen_obeys_recent_mana_use_interrupt() {
 }
 
 #[test]
+fn map_runtime_evocation_modifiers_regen_mana_during_interrupt() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.class = 8;
+    player.spirit = 80;
+    player.max_power1 = 500;
+    player.power1 = 10;
+    let now = Instant::now();
+    player.last_mana_use_at = Some(now);
+    player.active_auras.push(ActiveAura {
+        spell_id: 12051,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 1),
+        level: 20,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::PowerRegenPercent {
+                power_type: POWER_TYPE_MANA,
+                percent: 1500,
+            },
+            AuraStatModifier::ManaRegenInterruptPercent { percent: 100 },
+        ],
+        proc_triggers: Vec::new(),
+    });
+    map.add_player(player).unwrap();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert!(
+        map.players.get(&1).unwrap().power1 > 10,
+        "Evocation's generic aura modifiers should restore mana during the recent-cast window"
+    );
+}
+
+#[test]
 fn map_runtime_player_regen_tick_restores_rogue_energy() {
     let mut map = MapRuntime::new(0, 0);
     let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);

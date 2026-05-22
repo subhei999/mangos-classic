@@ -19,6 +19,7 @@ pub(in crate::world) struct MapRuntimeManager {
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
     pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
+    pub(in crate::world) spell_cones: HashMap<u32, SpellConeEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
     pub(in crate::world) skill_line_abilities_by_spell: HashMap<u32, Vec<SkillLineAbilityEntry>>,
     pub(in crate::world) skill_lines: HashMap<u32, SkillLineEntry>,
@@ -126,6 +127,7 @@ impl MapRuntimeManager {
             spell_cast_times: world_data_files.spell_cast_times.clone(),
             spell_durations: world_data_files.spell_durations.clone(),
             spell_radii: world_data_files.spell_radii.clone(),
+            spell_cones: world_data_files.spell_cones.clone(),
             spell_ranges: world_data_files.spell_ranges.clone(),
             skill_line_abilities_by_spell: world_data_files.skill_line_abilities_by_spell.clone(),
             skill_lines: world_data_files.skill_lines.clone(),
@@ -168,6 +170,18 @@ impl MapRuntimeManager {
 
     pub(in crate::world) fn spell_radius(&self, radius_index: u32) -> Option<SpellRadiusEntry> {
         self.spell_radii.get(&radius_index).copied()
+    }
+
+    pub(in crate::world) fn has_spell_cone(&self, spell_id: u32) -> bool {
+        self.spell_cones.contains_key(&spell_id)
+    }
+
+    pub(in crate::world) fn spell_cone_radians(&self, spell_id: u32) -> f32 {
+        self.spell_cones
+            .get(&spell_id)
+            .map(|entry| (entry.angle_degrees.unsigned_abs() as f32).to_radians())
+            .filter(|angle| *angle > 0.0)
+            .unwrap_or(SPELL_DEFAULT_CONE_RADIANS)
     }
 
     pub(in crate::world) fn has_async_playerbot_planner_work(&self) -> bool {

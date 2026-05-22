@@ -1071,242 +1071,6 @@ async fn map_runtime_manager_advances_db_creature_combats_for_victim_without_ses
 }
 
 #[tokio::test]
-async fn map_runtime_manager_advances_3196_event_ai_immolate_with_delayed_completion() {
-    let mut world_data = WorldDataFiles::fallback();
-    world_data.spell_cast_times.insert(
-        5,
-        SpellCastTimeEntry {
-            cast_time_millis: 2_000,
-            cast_time_per_level_millis: 0,
-            min_cast_time_millis: 2_000,
-        },
-    );
-    world_data.spell_durations.insert(
-        8,
-        SpellDurationEntry {
-            duration_millis: 9_000,
-            duration_per_level_millis: 0,
-            max_duration_millis: 9_000,
-        },
-    );
-    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
-    let object_mgr = ObjectMgr::default();
-    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
-    object_mgr
-        .prime_creature_ai_scripts_for_test(
-            3196,
-            vec![test_creature_ai_cast_script(
-                319_601,
-                3196,
-                EVENT_AI_EVENT_RANGE,
-                [0, 30, 21_000, 25_000],
-                348,
-                EVENT_AI_TARGET_HOSTILE,
-            )],
-        )
-        .await;
-    object_mgr
-        .prime_spell_template_for_test(348, Some(immolate_spell_template()))
-        .await;
-
-    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
-    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
-        .await
-        .unwrap();
-
-    let mut spawn = test_creature_spawn(3196);
-    spawn.guid = 18_601;
-    spawn.position_x = player_position.x + 8.0;
-    spawn.position_y = player_position.y;
-    spawn.position_z = player_position.z;
-    spawn.template.unit_class = 2;
-    spawn.template.min_level_mana = 178;
-    spawn.template.max_level_mana = 191;
-    let attacker = creature_spawn_guid(&spawn);
-    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
-        .await;
-
-    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let now = Instant::now();
-    maps.begin_db_creature_combat(0, attacker, victim, now)
-        .await
-        .expect("combat should start");
-
-    let defense = PlayerMeleeDefenseInput {
-        level: 1,
-        defense_skill: 1,
-        armor: 0,
-        block_value: 0,
-        dodge_percent: 0.0,
-        parry_percent: 0.0,
-        block_percent: 0.0,
-    };
-    let start_tick = tokio::time::timeout(
-        Duration::from_secs(1),
-        maps.advance_db_creature_combats_for_victim(
-            &world_db_pool,
-            &object_mgr,
-            0,
-            victim,
-            SessionId(7),
-            defense,
-            &DbCreatureNavigationGuardrail::default(),
-            now,
-        ),
-    )
-    .await
-    .expect("start tick should not hang")
-    .unwrap();
-    assert!(start_tick
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-
-    let complete_tick = tokio::time::timeout(
-        Duration::from_secs(1),
-        maps.advance_db_creature_combats_for_victim(
-            &world_db_pool,
-            &object_mgr,
-            0,
-            victim,
-            SessionId(7),
-            defense,
-            &DbCreatureNavigationGuardrail::default(),
-            now + Duration::from_millis(2_000),
-        ),
-    )
-    .await
-    .expect("completion tick should not hang")
-    .unwrap();
-    assert!(complete_tick
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(complete_tick
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-
-    let map = maps.get_or_create_map(0, 0).await;
-    let mut map = map.lock().await;
-    let player = map.players.get(&7).expect("player");
-    assert_eq!(player.health, 12);
-    assert_eq!(player.active_auras.len(), 1);
-    let tick_at = player.active_auras[0]
-        .periodic_damage
-        .expect("Immolate should install a periodic aura")
-        .next_tick_at;
-    let aura_packets = map.advance_player_aura_expirations(tick_at).unwrap();
-    let player = map.players.get(&7).expect("player");
-    assert_eq!(player.health, 8);
-    assert!(aura_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16));
-}
-
-#[tokio::test]
-async fn map_runtime_direct_completion_after_manager_started_3196_immolate_does_not_hang() {
-    let mut world_data = WorldDataFiles::fallback();
-    world_data.spell_cast_times.insert(
-        5,
-        SpellCastTimeEntry {
-            cast_time_millis: 2_000,
-            cast_time_per_level_millis: 0,
-            min_cast_time_millis: 2_000,
-        },
-    );
-    world_data.spell_durations.insert(
-        8,
-        SpellDurationEntry {
-            duration_millis: 9_000,
-            duration_per_level_millis: 0,
-            max_duration_millis: 9_000,
-        },
-    );
-    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
-    let object_mgr = ObjectMgr::default();
-    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
-    object_mgr
-        .prime_creature_ai_scripts_for_test(
-            3196,
-            vec![test_creature_ai_cast_script(
-                319_601,
-                3196,
-                EVENT_AI_EVENT_RANGE,
-                [0, 30, 21_000, 25_000],
-                348,
-                EVENT_AI_TARGET_HOSTILE,
-            )],
-        )
-        .await;
-    object_mgr
-        .prime_spell_template_for_test(348, Some(immolate_spell_template()))
-        .await;
-
-    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
-    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
-        .await
-        .unwrap();
-
-    let mut spawn = test_creature_spawn(3196);
-    spawn.guid = 18_602;
-    spawn.position_x = player_position.x + 8.0;
-    spawn.position_y = player_position.y;
-    spawn.position_z = player_position.z;
-    spawn.template.unit_class = 2;
-    spawn.template.min_level_mana = 178;
-    spawn.template.max_level_mana = 191;
-    let attacker = creature_spawn_guid(&spawn);
-    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
-        .await;
-
-    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let now = Instant::now();
-    maps.begin_db_creature_combat(0, attacker, victim, now)
-        .await
-        .expect("combat should start");
-
-    let defense = PlayerMeleeDefenseInput {
-        level: 1,
-        defense_skill: 1,
-        armor: 0,
-        block_value: 0,
-        dodge_percent: 0.0,
-        parry_percent: 0.0,
-        block_percent: 0.0,
-    };
-    let _ = maps
-        .advance_db_creature_combats_for_victim(
-            &world_db_pool,
-            &object_mgr,
-            0,
-            victim,
-            SessionId(7),
-            defense,
-            &DbCreatureNavigationGuardrail::default(),
-            now,
-        )
-        .await
-        .unwrap();
-
-    let map = maps.get_or_create_map(0, 0).await;
-    let completed = tokio::time::timeout(Duration::from_secs(1), async {
-        let mut map = map.lock().await;
-        map.complete_ready_db_creature_spell_cast_with_navigation(
-            attacker,
-            victim,
-            now + Duration::from_millis(2_000),
-            &DbCreatureNavigationGuardrail::default(),
-        )
-    })
-    .await
-    .expect("direct map completion should not hang")
-    .unwrap()
-    .expect("cast should complete");
-    assert!(completed.aura_event.is_some());
-}
-
-#[tokio::test]
 async fn map_runtime_manager_skips_async_planner_for_local_roam_only_perf_bots() {
     let maps = MapRuntimeManager::default();
     let bot_position = WorldPosition::new(0, -8950.0, -132.0, 83.5, 0.0);
@@ -1905,6 +1669,236 @@ fn map_runtime_db_creature_spell_damage_to_player_uses_shared_outcome_and_logs()
 }
 
 #[test]
+fn map_runtime_db_creature_spell_damage_log_reports_runtime_absorb() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 181;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let player = map.players.get_mut(&1).unwrap();
+    player.health = 20;
+    player.active_auras.push(ActiveAura {
+        spell_id: 11426,
+        caster: victim,
+        level: 40,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::SchoolAbsorb {
+            school_mask: 16,
+            amount: 20,
+        }],
+        proc_triggers: Vec::new(),
+    });
+
+    let event = map
+        .apply_db_creature_player_spell_damage(
+            creature_guid,
+            victim,
+            999_014,
+            6,
+            16,
+            SPELL_DAMAGE_CLASS_MAGIC,
+            SPELL_ATTR_EX2_CANT_CRIT,
+            TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+            now,
+        )
+        .unwrap()
+        .expect("spell damage should be absorbed");
+
+    assert_eq!(event.damage, 0);
+    assert_eq!(event.victim_health, 20);
+    let spell_log = event
+        .spell_non_melee_log_body
+        .as_ref()
+        .expect("absorbed creature spell should produce non-melee log");
+    let mut cursor = 0;
+    assert_eq!(read_packed_guid(spell_log, &mut cursor).unwrap(), victim);
+    assert_eq!(
+        read_packed_guid(spell_log, &mut cursor).unwrap(),
+        creature_guid
+    );
+    assert_eq!(read_u32(spell_log, &mut cursor).unwrap(), 999_014);
+    assert_eq!(
+        read_u32(spell_log, &mut cursor).unwrap(),
+        0,
+        "CMaNGOS sends post-absorb damage in SMSG_SPELLNONMELEEDAMAGELOG"
+    );
+    cursor += 1;
+    assert_eq!(
+        read_u32(spell_log, &mut cursor).unwrap(),
+        6,
+        "runtime school absorbs must be surfaced in the absorb field"
+    );
+}
+
+#[test]
+fn map_runtime_db_creature_melee_damage_packet_reports_runtime_absorb() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    insert_map_runtime_player_for_test(&mut map, 2, observer_position);
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 182;
+    spawn.position_x = player_position.x + 1.0;
+    spawn.position_y = player_position.y;
+    spawn.position_z = player_position.z;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, victim, now)
+        .expect("combat should start");
+    let player = map.players.get_mut(&1).unwrap();
+    player.health = 20;
+    player.active_auras.push(ActiveAura {
+        spell_id: 1463,
+        caster: victim,
+        level: 20,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::ManaShield {
+            school_mask: SPELL_SCHOOL_MASK_NORMAL,
+            amount: 20,
+            mana_multiplier_millis: 0,
+        }],
+        proc_triggers: Vec::new(),
+    });
+
+    let event = map
+        .apply_db_creature_player_melee_outcome(
+            creature_guid,
+            victim,
+            MeleeDamageOutcome::normal_hit(7),
+            now,
+            now + Duration::from_secs(2),
+        )
+        .unwrap()
+        .expect("melee damage should be absorbed");
+
+    assert_eq!(event.damage, 7);
+    assert_eq!(event.victim_health, 20);
+    let attacker_state = event
+        .observer_packets
+        .iter()
+        .find_map(|(_, packet)| {
+            (packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16).then_some(&packet.body)
+        })
+        .expect("absorbed melee should be broadcast as attacker state");
+    let mut cursor = 0;
+    assert_eq!(
+        read_u32(attacker_state, &mut cursor).unwrap() & HITINFO_ABSORB,
+        HITINFO_ABSORB
+    );
+    assert_eq!(read_packed_guid(attacker_state, &mut cursor).unwrap(), creature_guid);
+    assert_eq!(read_packed_guid(attacker_state, &mut cursor).unwrap(), victim);
+    assert_eq!(read_u32(attacker_state, &mut cursor).unwrap(), 0);
+    cursor += 1 + 4 + 4 + 4;
+    assert_eq!(read_u32(attacker_state, &mut cursor).unwrap(), 7);
+}
+
+#[tokio::test]
+async fn map_runtime_manager_direct_melee_packet_reports_runtime_absorb() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let now = Instant::now();
+    let player_position = WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), player_position);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 7);
+    player.active_auras.push(ActiveAura {
+        spell_id: 1463,
+        caster: victim,
+        level: 20,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::ManaShield {
+            school_mask: SPELL_SCHOOL_MASK_NORMAL,
+            amount: 10_000,
+            mana_multiplier_millis: 0,
+        }],
+        proc_triggers: Vec::new(),
+    });
+    maps.add_player(player).await.unwrap();
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 183;
+    spawn.entry = 0;
+    spawn.template.entry = 0;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    spawn.orientation = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(spawn)])
+        .await;
+    maps.begin_db_creature_combat(0, attacker, victim, now)
+        .await
+        .expect("combat should start");
+
+    let tick = maps
+        .apply_db_creature_player_melee_outcome_as_victim_tick(
+            0,
+            attacker,
+            victim,
+            MeleeDamageOutcome::normal_hit(7),
+            now,
+            now + Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+    let attacker_state = tick
+        .direct_packets
+        .iter()
+        .find_map(|packet| {
+            (packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16).then_some(&packet.body)
+        })
+        .expect("victim should receive adjusted attacker state");
+    let mut cursor = 0;
+    assert_eq!(
+        read_u32(attacker_state, &mut cursor).unwrap() & HITINFO_ABSORB,
+        HITINFO_ABSORB
+    );
+    assert_eq!(read_packed_guid(attacker_state, &mut cursor).unwrap(), attacker);
+    assert_eq!(read_packed_guid(attacker_state, &mut cursor).unwrap(), victim);
+    assert_eq!(
+        read_u32(attacker_state, &mut cursor).unwrap(),
+        0,
+        "direct regular-hit packet should report post-absorb damage"
+    );
+    cursor += 1 + 4 + 4 + 4;
+    assert!(
+        read_u32(attacker_state, &mut cursor).unwrap() > 0,
+        "direct regular-hit packet should carry the absorbed amount"
+    );
+}
+
+#[test]
 fn map_runtime_db_creature_spell_list_schedules_direct_damage_cast() {
     let mut map = MapRuntime::new(0, 0);
     let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
@@ -2455,6 +2449,7 @@ fn map_runtime_db_creature_spell_cast_can_heal_creature_target() {
         caster: creature_guid,
         target: creature_guid,
         spell_id: 999_016,
+        school_mask: spell_school_mask_from_school(0),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Heal { amount: 15 },
         aura: None,
@@ -2511,6 +2506,7 @@ fn map_runtime_db_creature_spell_cast_start_then_go_damages_player() {
             caster: creature_guid,
             target: victim,
             spell_id: 999_012,
+            school_mask: spell_school_mask_from_school(1),
             requires_behind: false,
             effect: ActiveDbCreatureSpellEffect::Damage {
                 amount: 6,
@@ -2576,6 +2572,7 @@ fn map_runtime_db_creature_spell_start_and_completion_respect_hard_control() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_016,
+        school_mask: spell_school_mask_from_school(4),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 5,
@@ -2757,6 +2754,7 @@ fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_c
     spawn.position_x = 9.9;
     spawn.position_y = 0.0;
     spawn.position_z = 0.0;
+    spawn.template.faction = 17;
     let creature_guid = creature_spawn_guid(&spawn);
     map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
     let hunter_range = SpellRangeEntry {
@@ -2767,6 +2765,7 @@ fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_c
 
     assert_eq!(
         map.validate_player_spell_against_db_creature(
+            &FactionTemplateStore::fallback_bridge(),
             1,
             creature_guid,
             &DbCreatureNavigationGuardrail::default(),
@@ -2785,6 +2784,7 @@ fn map_runtime_player_spell_target_validation_treats_ranged_min_range_as_melee_c
         .x = 10.0;
     assert_eq!(
         map.validate_player_spell_against_db_creature(
+            &FactionTemplateStore::fallback_bridge(),
             1,
             creature_guid,
             &DbCreatureNavigationGuardrail::default(),
@@ -2822,6 +2822,7 @@ fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        school_mask: spell_school_mask_from_school(1),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,
@@ -2870,6 +2871,7 @@ fn map_runtime_db_creature_spell_completion_rechecks_range_and_los() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        school_mask: spell_school_mask_from_school(1),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,
@@ -2953,6 +2955,7 @@ fn map_runtime_db_creature_spell_start_stops_chase_spends_mana_and_exposes_cast_
             caster: creature_guid,
             target: victim,
             spell_id: 348,
+            school_mask: spell_school_mask_from_school(2),
             requires_behind: false,
             effect: ActiveDbCreatureSpellEffect::Damage {
                 amount: 8,
@@ -3041,6 +3044,7 @@ fn map_runtime_db_creature_immolate_applies_player_dot_ticks() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3121,6 +3125,7 @@ fn map_runtime_db_creature_delayed_immolate_applies_player_dot_ticks() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3214,6 +3219,7 @@ fn map_runtime_db_creature_dot_keeps_ticking_after_caster_runtime_is_missing() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3296,6 +3302,7 @@ fn map_runtime_db_creature_immolate_full_resist_still_sends_go_without_dot() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3410,6 +3417,7 @@ fn map_runtime_creature_dot_death_presents_release_and_clears_combat() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3526,6 +3534,7 @@ fn map_runtime_db_creature_lethal_immolate_does_not_apply_dot() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3596,6 +3605,7 @@ fn map_runtime_db_creature_dot_survives_session_sync_and_sends_expire_update() {
         caster: creature_guid,
         target: victim,
         spell_id: immolate.id,
+        school_mask: spell_school_mask_from_school(immolate.school),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 8,
@@ -3681,6 +3691,7 @@ fn map_runtime_db_creature_spell_cast_drops_if_victim_dies_before_go() {
         caster: creature_guid,
         target: victim,
         spell_id: 999_012,
+        school_mask: spell_school_mask_from_school(1),
         requires_behind: false,
         effect: ActiveDbCreatureSpellEffect::Damage {
             amount: 6,

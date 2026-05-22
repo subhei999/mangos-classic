@@ -549,15 +549,15 @@ pub(in crate::world) struct ActivePlayerChannel {
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) caster_character_guid: u32,
     pub(in crate::world) spell_id: u32,
-    pub(in crate::world) target: ObjectGuid,
+    pub(in crate::world) target: Option<ObjectGuid>,
     pub(in crate::world) expires_at: Instant,
-    pub(in crate::world) next_tick_at: Instant,
+    pub(in crate::world) next_tick_at: Option<Instant>,
     pub(in crate::world) tick_millis: u32,
     pub(in crate::world) ticks_remaining: u32,
     pub(in crate::world) channel_interrupt_flags: u32,
     pub(in crate::world) damage_delay_count: u8,
     pub(in crate::world) triggered_spell_speed: f32,
-    pub(in crate::world) damage_effect: PlayerDirectDamageEffect,
+    pub(in crate::world) damage_effect: Option<PlayerDirectDamageEffect>,
 }
 
 #[derive(Debug, Default)]
@@ -581,6 +581,7 @@ pub(in crate::world) struct ActiveDbCreatureSpellCast {
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) target: ObjectGuid,
     pub(in crate::world) spell_id: u32,
+    pub(in crate::world) school_mask: u32,
     pub(in crate::world) requires_behind: bool,
     pub(in crate::world) effect: ActiveDbCreatureSpellEffect,
     pub(in crate::world) aura: Option<ActiveAura>,
@@ -729,6 +730,7 @@ pub(in crate::world) struct DbCreaturePlayerDamageEvent {
     pub(in crate::world) combat: CreatureCombatState,
     pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
     pub(in crate::world) aura_packet: Option<OutboundWorldPacket>,
+    pub(in crate::world) attacker_state_body: Vec<u8>,
     pub(in crate::world) health_update_body: Vec<u8>,
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
 }

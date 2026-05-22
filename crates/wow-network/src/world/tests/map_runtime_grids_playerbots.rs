@@ -1479,6 +1479,7 @@ fn map_runtime_player_spell_allows_in_range_evading_target_for_spell_miss_resolu
     spawn.position_x = 20.0;
     spawn.position_y = 0.0;
     spawn.position_z = 0.0;
+    spawn.template.faction = 17;
     let target = creature_spawn_guid(&spawn);
     let mut runtime = DbCreatureRuntime::new(spawn);
     runtime.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
@@ -1496,6 +1497,7 @@ fn map_runtime_player_spell_allows_in_range_evading_target_for_spell_miss_resolu
     };
 
     let in_range = map.validate_player_spell_against_db_creature(
+        &FactionTemplateStore::fallback_bridge(),
         1,
         target,
         &DbCreatureNavigationGuardrail::default(),
@@ -1514,6 +1516,7 @@ fn map_runtime_player_spell_allows_in_range_evading_target_for_spell_miss_resolu
         .current_position
         .x = 40.0;
     let far = map.validate_player_spell_against_db_creature(
+        &FactionTemplateStore::fallback_bridge(),
         1,
         target,
         &DbCreatureNavigationGuardrail::default(),

@@ -1345,6 +1345,7 @@ pub(in crate::world) async fn player_ranged_auto_attack_failure(
     Ok(match validation.check {
         PlayerSpellTargetCheck::Clear => None,
         PlayerSpellTargetCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        PlayerSpellTargetCheck::NotAttackable => Some(SPELL_FAILED_BAD_TARGETS),
         PlayerSpellTargetCheck::NavigationBlocked(
             DbCreatureNavigationResult::LineOfSightBlocked,
         ) => Some(SPELL_FAILED_LINE_OF_SIGHT),

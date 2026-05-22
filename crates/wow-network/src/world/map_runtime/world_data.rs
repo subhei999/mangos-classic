@@ -10,6 +10,7 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
     pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
+    pub(in crate::world) spell_cones: HashMap<u32, SpellConeEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
     pub(in crate::world) skill_line_abilities_by_spell: HashMap<u32, Vec<SkillLineAbilityEntry>>,
     pub(in crate::world) skill_lines: HashMap<u32, SkillLineEntry>,
@@ -38,6 +39,7 @@ impl WorldDataFiles {
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
+            spell_cones: HashMap::new(),
             spell_ranges: HashMap::new(),
             skill_line_abilities_by_spell: HashMap::new(),
             skill_lines: HashMap::new(),
@@ -66,6 +68,7 @@ impl WorldDataFiles {
             load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
         let spell_radii = load_spell_radii(&data_dir.join("dbc").join("SpellRadius.dbc"));
+        let spell_cones = load_spell_cones(&data_dir);
         let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
         let skill_line_abilities_by_spell =
             load_skill_line_abilities(&data_dir.join("dbc").join("SkillLineAbility.dbc"));
@@ -133,6 +136,7 @@ impl WorldDataFiles {
             spell_cast_times,
             spell_durations,
             spell_radii,
+            spell_cones,
             spell_ranges,
             skill_line_abilities_by_spell,
             skill_lines,
@@ -236,6 +240,11 @@ pub(in crate::world) struct AreaTableEntry {
     pub(in crate::world) explore_flag: u16,
     pub(in crate::world) flags: u32,
     pub(in crate::world) area_level: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct SpellConeEntry {
+    pub(in crate::world) angle_degrees: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1034,6 +1043,51 @@ pub(in crate::world) fn load_spell_radii(path: &std::path::Path) -> HashMap<u32,
         return HashMap::new();
     };
     parse_spell_radii(&bytes)
+}
+
+pub(in crate::world) fn load_spell_cones(
+    data_dir: &std::path::Path,
+) -> HashMap<u32, SpellConeEntry> {
+    let candidates = [
+        data_dir
+            .join("dbc")
+            .join("original_data")
+            .join("SpellCone.sql"),
+        data_dir.join("SpellCone.sql"),
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("sql")
+            .join("base")
+            .join("dbc")
+            .join("original_data")
+            .join("SpellCone.sql"),
+    ];
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .map(|sql| parse_spell_cones_sql(&sql))
+        .unwrap_or_default()
+}
+
+pub(in crate::world) fn parse_spell_cones_sql(sql: &str) -> HashMap<u32, SpellConeEntry> {
+    let Some(values_start) = sql.find("VALUES") else {
+        return HashMap::new();
+    };
+    let mut entries = HashMap::new();
+    for tuple in sql[values_start..].split('(').skip(1) {
+        let Some(tuple) = tuple.split(')').next() else {
+            continue;
+        };
+        let mut fields = tuple.split(',').map(str::trim);
+        let Some(id) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(angle_degrees) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
+            continue;
+        };
+        entries.insert(id, SpellConeEntry { angle_degrees });
+    }
+    entries
 }
 
 pub(in crate::world) fn load_skill_line_abilities(

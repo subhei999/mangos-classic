@@ -365,6 +365,7 @@ pub(in crate::world) const MAX_QUEST_LOG_SIZE: usize = 20;
 pub(in crate::world) const QUEST_STATE_COMPLETE: u32 = 0x0001;
 pub(in crate::world) const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
 pub(in crate::world) const HITINFO_MISS: u32 = 0x0000_0010;
+pub(in crate::world) const HITINFO_ABSORB: u32 = 0x0000_0020;
 pub(in crate::world) const HITINFO_CRITICALHIT: u32 = 0x0000_0080;
 pub(in crate::world) const HITINFO_BLOCK: u32 = 0x0000_0800;
 pub(in crate::world) const HITINFO_GLANCING: u32 = 0x0000_4000;

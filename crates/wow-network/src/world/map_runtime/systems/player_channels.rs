@@ -9,6 +9,77 @@ pub(in crate::world) struct PlayerChannelEvent {
 }
 
 impl MapRuntime {
+    pub(in crate::world) fn start_player_self_aura_channel(
+        &mut self,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        duration_millis: u32,
+        channel_interrupt_flags: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        if duration_millis == 0 {
+            return Ok(None);
+        }
+        let Some(caster_player) = self.players.get(&caster_character_guid) else {
+            return Ok(None);
+        };
+        let Some(direct_session_id) = caster_player.client_session_id() else {
+            return Ok(None);
+        };
+
+        self.active_player_channels.insert(
+            caster_character_guid,
+            ActivePlayerChannel {
+                caster,
+                caster_character_guid,
+                spell_id,
+                target: None,
+                expires_at: now + Duration::from_millis(duration_millis as u64),
+                next_tick_at: None,
+                tick_millis: 0,
+                ticks_remaining: 0,
+                channel_interrupt_flags,
+                damage_delay_count: 0,
+                triggered_spell_speed: 0.0,
+                damage_effect: None,
+            },
+        );
+
+        let direct_packets = vec![
+            OutboundWorldPacket {
+                opcode: WorldOpcode::MsgChannelStart as u16,
+                body: build_channel_start_body(caster, spell_id, duration_millis)?,
+            },
+            OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_player_channel_update_body(caster, None, spell_id)?,
+            },
+        ];
+        let observer_update = direct_packets[1].clone();
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(
+            caster_player.position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            Some(caster_character_guid),
+        ) {
+            let Some(session_id) = self
+                .players
+                .get(&player_guid)
+                .and_then(PlayerRuntime::client_session_id)
+            else {
+                continue;
+            };
+            observer_packets.push((session_id, observer_update.clone()));
+        }
+
+        Ok(Some(PlayerChannelEvent {
+            direct_session_id,
+            direct_packets,
+            observer_packets,
+        }))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(in crate::world) fn start_player_periodic_trigger_channel(
         &mut self,
@@ -46,15 +117,15 @@ impl MapRuntime {
                 caster,
                 caster_character_guid,
                 spell_id,
-                target,
+                target: Some(target),
                 expires_at: now + Duration::from_millis(duration_millis as u64),
-                next_tick_at: now,
+                next_tick_at: Some(now),
                 tick_millis,
                 ticks_remaining: channel_tick_count(duration_millis, tick_millis),
                 channel_interrupt_flags,
                 damage_delay_count: 0,
                 triggered_spell_speed,
-                damage_effect,
+                damage_effect: Some(damage_effect),
             },
         );
 
@@ -157,7 +228,7 @@ impl MapRuntime {
             .active_player_channels
             .iter()
             .filter_map(|(caster_guid, channel)| {
-                (channel.target == target && removed_spell_ids.contains(&channel.spell_id))
+                (channel.target == Some(target) && removed_spell_ids.contains(&channel.spell_id))
                     .then_some(*caster_guid)
             })
             .collect::<Vec<_>>();
@@ -196,7 +267,7 @@ impl MapRuntime {
         let channel_casters = self
             .active_player_channels
             .iter()
-            .filter(|(_, channel)| channel.target == target)
+            .filter(|(_, channel)| channel.target == Some(target))
             .map(|(caster_guid, _)| *caster_guid)
             .collect::<Vec<_>>();
         for caster_guid in channel_casters {
@@ -293,33 +364,38 @@ impl MapRuntime {
             else {
                 continue;
             };
-            let target_alive = self
-                .creatures
-                .get(&channel.target.raw())
-                .is_some_and(DbCreatureRuntime::is_alive);
-            if !target_alive {
-                self.active_player_channels.remove(&caster_character_guid);
-                if let Some(event) = self.player_channel_clear_event(channel)? {
-                    packets.extend(self.channel_event_packets(event));
+            if let Some(target) = channel.target {
+                let target_alive = self
+                    .creatures
+                    .get(&target.raw())
+                    .is_some_and(DbCreatureRuntime::is_alive);
+                if !target_alive {
+                    self.active_player_channels.remove(&caster_character_guid);
+                    if let Some(event) = self.player_channel_clear_event(channel)? {
+                        packets.extend(self.channel_event_packets(event));
+                    }
+                    continue;
                 }
-                continue;
             }
-            if now >= channel.next_tick_at
-                && channel.next_tick_at < channel.expires_at
-                && channel.ticks_remaining > 0
-            {
-                while channel.next_tick_at <= now
-                    && channel.next_tick_at < channel.expires_at
+            if let Some(mut next_tick_at) = channel.next_tick_at {
+                if now >= next_tick_at
+                    && next_tick_at < channel.expires_at
                     && channel.ticks_remaining > 0
                 {
-                    packets
-                        .extend(self.schedule_player_channel_tick(&channel, channel.next_tick_at)?);
-                    channel.ticks_remaining = channel.ticks_remaining.saturating_sub(1);
-                    channel.next_tick_at += Duration::from_millis(channel.tick_millis as u64);
-                }
-                if let Some(stored) = self.active_player_channels.get_mut(&caster_character_guid) {
-                    stored.next_tick_at = channel.next_tick_at;
-                    stored.ticks_remaining = channel.ticks_remaining;
+                    while next_tick_at <= now
+                        && next_tick_at < channel.expires_at
+                        && channel.ticks_remaining > 0
+                    {
+                        packets.extend(self.schedule_player_channel_tick(&channel, next_tick_at)?);
+                        channel.ticks_remaining = channel.ticks_remaining.saturating_sub(1);
+                        next_tick_at += Duration::from_millis(channel.tick_millis as u64);
+                    }
+                    if let Some(stored) =
+                        self.active_player_channels.get_mut(&caster_character_guid)
+                    {
+                        stored.next_tick_at = Some(next_tick_at);
+                        stored.ticks_remaining = channel.ticks_remaining;
+                    }
                 }
             }
             if now >= channel.expires_at {
@@ -344,28 +420,31 @@ impl MapRuntime {
         let Some(caster_session_id) = caster_player.client_session_id() else {
             return Ok(Vec::new());
         };
+        let (Some(target), Some(damage_effect)) = (channel.target, channel.damage_effect) else {
+            return Ok(Vec::new());
+        };
         let caster_position = caster_player.position;
         let caster_level = caster_player.level;
         let caster_class = caster_player.class;
         let caster_combat_stats = caster_player.combat_stats;
-        let Some(target_creature) = self.creatures.get(&channel.target.raw()).cloned() else {
+        let Some(target_creature) = self.creatures.get(&target.raw()).cloned() else {
             return Ok(Vec::new());
         };
         if !target_creature.is_alive() {
             return Ok(Vec::new());
         }
         let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
-            channel.damage_effect.damage,
-            channel.damage_effect.school,
-            channel.damage_effect.dmg_class,
-            channel.damage_effect.attributes_ex2,
-            channel.damage_effect.attributes_ex3,
+            damage_effect.damage,
+            damage_effect.school,
+            damage_effect.dmg_class,
+            damage_effect.attributes_ex2,
+            damage_effect.attributes_ex3,
             player_spell_snapshot(caster_level, caster_class, &caster_combat_stats),
             db_creature_spell_snapshot(&target_creature),
         ));
         let targets = SpellCastTargets {
             target_mask: SPELL_CAST_TARGET_UNIT,
-            unit_target: Some(channel.target),
+            unit_target: Some(target),
             gameobject_target: None,
             source_location: None,
             destination: None,
@@ -375,13 +454,13 @@ impl MapRuntime {
             .map(|miss_info| {
                 build_spell_go_body_with_miss(
                     channel.caster,
-                    channel.damage_effect.spell_id,
+                    damage_effect.spell_id,
                     &targets,
                     miss_info,
                 )
             })
             .unwrap_or_else(|| {
-                build_spell_go_body(channel.caster, channel.damage_effect.spell_id, &targets)
+                build_spell_go_body(channel.caster, damage_effect.spell_id, &targets)
             })?;
         let mut packets = vec![(
             caster_session_id,
@@ -408,9 +487,9 @@ impl MapRuntime {
             .push(PendingPlayerChannelImpact {
                 caster: channel.caster,
                 caster_character_guid: channel.caster_character_guid,
-                target: channel.target,
+                target,
                 impact_at: tick_at + Duration::from_millis(travel_millis as u64),
-                damage_effect: channel.damage_effect,
+                damage_effect,
                 outcome,
             });
         Ok(packets)

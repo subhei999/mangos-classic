@@ -29,6 +29,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let spell_info = SpellInfo::from_template(spell_template);
+    let spell_plan = spell_info.player_spell_plan();
 
     let mut charge_applied = false;
 
@@ -50,14 +51,9 @@ pub(in crate::world) async fn apply_player_spell_effects(
 
     let mut learned_spells = HashSet::new();
 
-    let spell_has_hostile_direct_damage = spell_info.effects.iter().any(|effect| {
-        matches!(
-            effect.dispatch,
-            SpellEffectDispatch::SchoolDamage
-                | SpellEffectDispatch::WeaponDamage
-                | SpellEffectDispatch::WeaponPercentDamage
-        ) && spell_info_effect_targets_hostile(*effect)
-    });
+    let spell_has_hostile_direct_damage = spell_plan
+        .as_ref()
+        .is_some_and(SpellPlan::has_hostile_direct_effect);
 
     let combo_points_for_effects = spell_combo_points_for_effects(
         deps.shared_world,
@@ -236,10 +232,10 @@ pub(in crate::world) async fn apply_player_spell_effects(
             }
 
             SpellEffectDispatch::ApplyAura
-                if effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
-                    && (spell_template.attributes_ex
-                        & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
-                        != 0 =>
+                if matches!(
+                    spell_plan.as_ref().and_then(|plan| plan.channel),
+                    Some(SpellPlanChannel::UnitPeriodicTrigger { .. })
+                ) && effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL =>
             {
                 apply_player_periodic_trigger_channel_effect(
                     stream,
@@ -263,13 +259,15 @@ pub(in crate::world) async fn apply_player_spell_effects(
             SpellEffectDispatch::ApplyAura
                 if matches!(
                     spell_profile.kind,
-                    SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
+                    SpellCastKind::AuraApplication
+                        | SpellCastKind::DirectHeal
+                        | SpellCastKind::Interrupt
                 ) && !aura_applied
                     && {
-                        if spell_has_hostile_direct_damage
-                            && spell_info_effect_targets_hostile(effect)
-                            && !landed_damage
-                        {
+                        let hostile_effect = spell_plan
+                            .as_ref()
+                            .is_some_and(|plan| plan.effect_target(effect_index).is_hostile());
+                        if spell_has_hostile_direct_damage && hostile_effect && !landed_damage {
                             if !direct_damage_processed {
                                 deferred_hostile_aura = true;
                             }
@@ -367,6 +365,13 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 );
             }
 
+            SpellEffectDispatch::InterruptCast
+                if spell_profile.kind == SpellCastKind::Interrupt =>
+            {
+                apply_player_interrupt_cast_effect(deps, map_id, spell_template, targets, now)
+                    .await?;
+            }
+
             SpellEffectDispatch::LearnSpell
                 if effect.trigger_spell != 0 && learned_spells.insert(effect.trigger_spell) =>
             {
@@ -429,19 +434,4 @@ pub(in crate::world) async fn apply_player_spell_effects(
     }
 
     Ok(())
-}
-
-fn spell_info_effect_targets_hostile(effect: SpellInfoEffect) -> bool {
-    [effect.implicit_target_a, effect.implicit_target_b]
-        .into_iter()
-        .any(|target| {
-            matches!(
-                target,
-                TARGET_UNIT_ENEMY
-                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC
-                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC
-                    | TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC
-                    | TARGET_LOCATION_CASTER_SRC
-            )
-        })
 }

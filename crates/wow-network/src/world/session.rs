@@ -583,6 +583,13 @@ pub(in crate::world) enum AuraStatModifier {
         amount: i32,
         mana_multiplier_millis: u32,
     },
+    PowerRegenPercent {
+        power_type: u32,
+        percent: i32,
+    },
+    ManaRegenInterruptPercent {
+        percent: i32,
+    },
     Stat {
         stat: Option<usize>,
         amount: i32,

@@ -130,6 +130,30 @@ impl MapRuntime {
         creatures
     }
 
+    pub(in crate::world) fn nearby_attackable_db_creature_guids_in_player_spell_cone(
+        &self,
+        faction_templates: &FactionTemplateStore,
+        character_guid: u32,
+        radius: f32,
+        cone_radians: f32,
+    ) -> Vec<ObjectGuid> {
+        let Some(player) = self.players.get(&character_guid) else {
+            return Vec::new();
+        };
+        self.nearby_attackable_db_creature_guids_for_player_spell(
+            faction_templates,
+            character_guid,
+            radius,
+        )
+        .into_iter()
+        .filter(|guid| {
+            self.creatures.get(&guid.raw()).is_some_and(|creature| {
+                has_in_arc(player.position, creature.current_position, cone_radians)
+            })
+        })
+        .collect()
+    }
+
     pub(in crate::world) fn visit_nearby_cells(
         &self,
         position: WorldPosition,

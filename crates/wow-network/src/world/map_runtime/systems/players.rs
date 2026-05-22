@@ -724,11 +724,39 @@ impl MapRuntime {
                 player.last_mana_use_at.is_some_and(|last_mana_use_at| {
                     now.saturating_duration_since(last_mana_use_at) < PLAYER_MANA_REGEN_INTERRUPT
                 });
-            if !mana_regen_blocked_by_recent_cast
-                && player.max_power1 > 0
-                && player.power1 < player.max_power1
-            {
-                let regen = mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+            if player.max_power1 > 0 && player.power1 < player.max_power1 {
+                let spirit_regen =
+                    mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+                let regen_multiplier = player
+                    .active_auras
+                    .iter()
+                    .flat_map(|aura| aura.stat_modifiers.iter())
+                    .filter_map(|modifier| match modifier {
+                        AuraStatModifier::PowerRegenPercent {
+                            power_type,
+                            percent,
+                        } if *power_type == POWER_TYPE_MANA => Some(*percent),
+                        _ => None,
+                    })
+                    .fold(1.0_f32, |multiplier, percent| {
+                        multiplier * (1.0 + percent as f32 / 100.0)
+                    });
+                let interrupt_percent = player
+                    .active_auras
+                    .iter()
+                    .flat_map(|aura| aura.stat_modifiers.iter())
+                    .filter_map(|modifier| match modifier {
+                        AuraStatModifier::ManaRegenInterruptPercent { percent } => Some(*percent),
+                        _ => None,
+                    })
+                    .sum::<i32>()
+                    .clamp(0, 100) as f32
+                    / 100.0;
+                let regen = if mana_regen_blocked_by_recent_cast {
+                    spirit_regen * regen_multiplier * interrupt_percent
+                } else {
+                    spirit_regen * regen_multiplier
+                };
                 let gained = (regen * 2.0).floor() as u32;
                 if gained > 0 {
                     let new_mana = player.power1.saturating_add(gained).min(player.max_power1);

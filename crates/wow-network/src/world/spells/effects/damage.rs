@@ -14,6 +14,7 @@ pub(in crate::world) struct PlayerDirectDamageEffect {
     pub(in crate::world) suppress_attacker_state: bool,
     pub(in crate::world) caster_centered_hostile_area: bool,
     pub(in crate::world) destination_hostile_area: bool,
+    pub(in crate::world) caster_centered_hostile_cone: bool,
     pub(in crate::world) radius_index: u32,
 }
 
@@ -28,6 +29,7 @@ pub(in crate::world) fn player_direct_damage_effect(
         SpellEffectDispatch::SchoolDamage => spell_template.school as u8,
         _ => return None,
     };
+    let target = plan_effect_target(effect);
     Some(PlayerDirectDamageEffect {
         spell_id: spell_profile.spell_id,
         damage,
@@ -39,8 +41,15 @@ pub(in crate::world) fn player_direct_damage_effect(
         requires_melee: spell_profile.requires_melee,
         uses_weapon_outcome: false,
         suppress_attacker_state: effect.dispatch == SpellEffectDispatch::SchoolDamage,
-        caster_centered_hostile_area: effect_targets_caster_centered_hostile_area(effect),
-        destination_hostile_area: effect_targets_destination_hostile_area(effect),
+        caster_centered_hostile_area: matches!(
+            target,
+            SpellPlanEffectTarget::CasterAreaEnemy { .. }
+        ),
+        destination_hostile_area: target == SpellPlanEffectTarget::DestinationAreaEnemy,
+        caster_centered_hostile_cone: matches!(
+            target,
+            SpellPlanEffectTarget::CasterAreaEnemy { cone: true }
+        ),
         radius_index: effect.radius_index,
     })
 }
@@ -61,6 +70,7 @@ pub(in crate::world) fn player_weapon_damage_effect(
         suppress_attacker_state: true,
         caster_centered_hostile_area: false,
         destination_hostile_area: false,
+        caster_centered_hostile_cone: false,
         radius_index: 0,
     }
 }
@@ -154,11 +164,27 @@ pub(in crate::world) async fn apply_player_direct_damage_effect(
             );
             return Ok(false);
         };
-        let targets = deps
-            .shared_world
-            .maps
-            .nearby_attackable_db_creature_guids_for_player_spell(map_id, character_guid, radius)
-            .await;
+        let targets = if damage_effect.caster_centered_hostile_cone {
+            let cone_radians = spell_cone_radians_for_spell(deps, damage_effect.spell_id).await?;
+            deps.shared_world
+                .maps
+                .nearby_attackable_db_creature_guids_in_player_spell_cone(
+                    map_id,
+                    character_guid,
+                    radius,
+                    cone_radians,
+                )
+                .await
+        } else {
+            deps.shared_world
+                .maps
+                .nearby_attackable_db_creature_guids_for_player_spell(
+                    map_id,
+                    character_guid,
+                    radius,
+                )
+                .await
+        };
         let mut landed = false;
         for target in targets {
             let area_targets = SpellCastTargets {

@@ -576,6 +576,23 @@ fn arcane_missile_trigger_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+fn counterspell_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(2139);
+    template.spell_name = "Counterspell".to_string();
+    template.school = 64;
+    template.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    template.range_index = 4;
+    template.power_type = POWER_TYPE_MANA;
+    template.mana_cost = 100;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_500;
+    template.duration_index = 9;
+    template.effect1 = SPELL_EFFECT_INTERRUPT_CAST;
+    template.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
+    template.dmg_class = SPELL_DAMAGE_CLASS_MAGIC;
+    template
+}
+
 fn frost_nova_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(122);
     template.spell_name = "Frost Nova".to_string();
@@ -585,6 +602,58 @@ fn frost_nova_spell_template() -> wow_db::SpellTemplateQuery {
     template.effect_radius_index1 = 11;
     template.start_recovery_category = 133;
     template.start_recovery_time = 1_500;
+    template
+}
+
+fn cone_of_cold_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(120);
+    template.spell_name = "Cone of Cold".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.school = 16;
+    template.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    template.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    template.range_index = 1;
+    template.power_type = POWER_TYPE_MANA;
+    template.mana_cost = 210;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_500;
+    template.duration_index = 3;
+    template.effect1 = SPELL_EFFECT_SCHOOL_DAMAGE;
+    template.effect_base_points1 = 97;
+    template.effect_die_sides1 = 18;
+    template.effect_base_dice1 = 1;
+    template.effect_implicit_target_a1 = TARGET_ENUM_UNITS_ENEMY_IN_CONE_24;
+    template.effect_radius_index1 = 9;
+    template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name2 = SPELL_AURA_MOD_DECREASE_SPEED;
+    template.effect_base_points2 = -51;
+    template.effect_die_sides2 = 1;
+    template.effect_implicit_target_a2 = TARGET_ENUM_UNITS_ENEMY_IN_CONE_24;
+    template.effect_radius_index2 = 9;
+    template.dmg_class = SPELL_DAMAGE_CLASS_MAGIC;
+    template
+}
+
+fn evocation_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(12051);
+    template.spell_name = "Evocation".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 65_536;
+    template.attributes_ex = SPELL_ATTR_EX_IS_SELF_CHANNELED;
+    template.interrupt_flags = 1;
+    template.channel_interrupt_flags = 31_756;
+    template.duration_index = 31;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_base_points1 = 1499;
+    template.effect_die_sides1 = 1;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_POWER_REGEN_PERCENT;
+    template.effect_misc_value1 = POWER_TYPE_MANA as i32;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template.effect2 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_base_points2 = 99;
+    template.effect_die_sides2 = 1;
+    template.effect_apply_aura_name2 = SPELL_AURA_MOD_MANA_REGEN_INTERRUPT;
+    template.effect_implicit_target_a2 = TARGET_UNIT_CASTER;
     template
 }
 
@@ -1434,7 +1503,7 @@ fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
     assert_eq!(profile.aura_target, SpellAuraTarget::CasterAreaEnemy);
     let spell_info = SpellInfo::from_template(&frost_nova);
     assert_eq!(
-        spell_info.unit_target_kind(profile.kind),
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
         SpellTargetKind::Caster
     );
 
@@ -1466,6 +1535,315 @@ fn caster_centered_hostile_root_spell_uses_aoe_target_and_radius_metadata() {
 }
 
 #[test]
+fn cone_of_cold_uses_caster_cone_targeting_not_caster_self_aura() {
+    let cone_of_cold = cone_of_cold_spell_template();
+    let profile = player_spell_cast_profile(&cone_of_cold).expect("cone of cold profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.aura_target, SpellAuraTarget::CasterAreaEnemy);
+
+    let spell_info = SpellInfo::from_template(&cone_of_cold);
+    assert_eq!(
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
+        SpellTargetKind::Caster
+    );
+    assert!(effect_targets_caster_centered_hostile_area(
+        spell_info.effects[0]
+    ));
+    assert!(effect_targets_caster_centered_hostile_cone(
+        spell_info.effects[0]
+    ));
+    assert!(effect_targets_caster_centered_hostile_cone(
+        spell_info.effects[1]
+    ));
+
+    let mut world_data = WorldDataFiles::fallback();
+    world_data
+        .spell_cones
+        .insert(120, SpellConeEntry { angle_degrees: 90 });
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+    assert_eq!(
+        maps.spell_cone_radians(120),
+        std::f32::consts::FRAC_PI_2
+    );
+}
+
+#[tokio::test]
+async fn spell_cone_metadata_uses_chain_root_for_higher_ranks() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data
+        .spell_cones
+        .insert(120, SpellConeEntry { angle_degrees: 90 });
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_chain_for_test(
+            8492,
+            Some(wow_db::SpellChainQuery {
+                spell_id: 8492,
+                prev_spell: 120,
+                first_spell: 120,
+                rank: 2,
+                req_spell: 120,
+            }),
+        )
+        .await;
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let parties = PartyManager::default();
+    let deps = SpellCastDeps {
+        character_db_pool: &character_db_pool,
+        world_db_pool: &world_db_pool,
+        account_id: 1,
+        shared_world: SharedWorldDeps {
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        },
+        parties: &parties,
+    };
+
+    assert_eq!(
+        spell_cone_radians_for_spell(deps, 8492).await.unwrap(),
+        std::f32::consts::FRAC_PI_2
+    );
+}
+
+#[test]
+fn evocation_builds_generic_mana_regen_aura_modifiers() {
+    let evocation = evocation_spell_template();
+    let profile = player_spell_cast_profile(&evocation).expect("evocation profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.aura_target, SpellAuraTarget::Caster);
+    let plan = SpellInfo::from_template(&evocation)
+        .player_spell_plan()
+        .expect("evocation plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(
+        plan.channel,
+        Some(SpellPlanChannel::SelfAura {
+            duration_index: 31,
+            interrupt_flags: 31_756,
+        })
+    );
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SpellEffectDispatch::ApplyAura,
+                SPELL_AURA_MOD_POWER_REGEN_PERCENT,
+                SpellPlanEffectTarget::Caster,
+            ),
+            (
+                SpellEffectDispatch::ApplyAura,
+                SPELL_AURA_MOD_MANA_REGEN_INTERRUPT,
+                SpellPlanEffectTarget::Caster,
+            ),
+        ]
+    );
+
+    let aura = build_active_aura(
+        &evocation,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        20,
+        test_spell_effect_value_context(&evocation),
+        Instant::now(),
+        None,
+    );
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![
+            AuraStatModifier::PowerRegenPercent {
+                power_type: POWER_TYPE_MANA,
+                percent: 1500,
+            },
+            AuraStatModifier::ManaRegenInterruptPercent { percent: 100 },
+        ]
+    );
+}
+
+#[test]
+fn spell_plan_classifies_core_mage_channel_and_cone_shapes() {
+    let cone = SpellInfo::from_template(&cone_of_cold_spell_template())
+        .player_spell_plan()
+        .expect("cone of cold plan");
+    assert_eq!(cone.target, SpellPlanTarget::CasterAreaEnemy { cone: true });
+    assert_eq!(cone.channel, None);
+    assert!(cone.effects.iter().all(|effect| {
+        effect.target == SpellPlanEffectTarget::CasterAreaEnemy { cone: true }
+    }));
+
+    let missiles = SpellInfo::from_template(&arcane_missiles_spell_template())
+        .player_spell_plan()
+        .expect("arcane missiles plan");
+    assert_eq!(missiles.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(
+        missiles.channel,
+        Some(SpellPlanChannel::UnitPeriodicTrigger {
+            trigger_spell: 7268,
+            tick_millis: 1_000,
+            duration_index: 6,
+            interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION,
+        })
+    );
+
+    let counterspell = SpellInfo::from_template(&counterspell_spell_template())
+        .player_spell_plan()
+        .expect("counterspell plan");
+    assert_eq!(counterspell.profile.kind, SpellCastKind::Interrupt);
+    assert_eq!(counterspell.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(
+        counterspell.effects[0].target,
+        SpellPlanEffectTarget::HostileUnit
+    );
+    assert!(counterspell.has_hostile_unit_interrupt());
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_INTERRUPT_CAST),
+        SpellMechanicSupport::Implemented
+    );
+
+    let blizzard = SpellInfo::from_template(&blizzard_spell_template())
+        .player_spell_plan()
+        .expect("blizzard plan");
+    assert_eq!(blizzard.target, SpellPlanTarget::DestinationAreaEnemy);
+    assert_eq!(
+        blizzard.channel,
+        Some(SpellPlanChannel::PersistentArea {
+            duration_index: 30,
+            interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION,
+        })
+    );
+    assert_eq!(
+        blizzard.effects[0].target,
+        SpellPlanEffectTarget::DestinationAreaEnemy
+    );
+
+    let mut blink_template = test_spell_template(1953);
+    blink_template.effect1 = SPELL_EFFECT_LEAP;
+    blink_template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    blink_template.effect_implicit_target_b1 = TARGET_LOCATION_CASTER_FRONT_LEAP;
+    let blink = SpellInfo::from_template(&blink_template)
+        .player_spell_plan()
+        .expect("blink plan");
+    assert_eq!(blink.target, SpellPlanTarget::Caster);
+    assert_eq!(blink.effects[0].target, SpellPlanEffectTarget::CasterFrontLeap);
+}
+
+#[test]
+fn spell_plan_owns_cast_behavior_and_creature_spell_shape() {
+    let mut fireball_template = fireball_spell_template();
+    fireball_template.interrupt_flags = SPELL_INTERRUPT_FLAG_COMBAT;
+    let fireball = SpellInfo::from_template(&fireball_template)
+        .player_spell_plan()
+        .expect("fireball plan");
+    assert_eq!(fireball.target, SpellPlanTarget::HostileUnit);
+    assert!(fireball.has_hostile_unit_damage());
+    assert!(fireball.uses_db_creature_unit_target_outcome());
+    assert!(fireball.should_retaliate_on_failed_hostile_cast());
+    assert!(fireball.behavior.resets_auto_attack_timers);
+    assert!(fireball.behavior.blocks_mana_regen);
+
+    let mut auto_shot_template = auto_shot_spell_template();
+    auto_shot_template.attributes_ex3 = SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT;
+    let auto_shot = SpellInfo::from_template(&auto_shot_template)
+        .player_spell_plan()
+        .expect("auto shot plan");
+    assert_eq!(auto_shot.profile.kind, SpellCastKind::AutoRepeatRanged);
+    assert!(!auto_shot.behavior.resets_auto_attack_timers);
+    assert!(auto_shot.behavior.cancels_auto_repeat_when_casting);
+
+    let mut passive = frost_armor_spell_template();
+    passive.attributes = SPELL_ATTR_PASSIVE;
+    assert!(SpellInfo::from_template(&passive).needs_passive_cast_at_learn());
+
+    let immolate = immolate_spell_template();
+    let creature_plan = SpellInfo::from_template(&immolate)
+        .db_creature_spell_plan(
+            ObjectGuid::new(HighGuid::Player, 0, 7),
+            SpellEffectValueContext::unranked(&immolate, 0),
+        )
+        .expect("creature immolate plan");
+    assert!(creature_plan.aura);
+    assert!(matches!(
+        creature_plan.effect,
+        DbCreatureSpellPlanEffect::Damage { amount: 8, .. }
+    ));
+}
+
+#[test]
+fn spell_plan_audits_dbc_attribute_flags_in_one_place() {
+    let missiles = SpellInfo::from_template(&arcane_missiles_spell_template())
+        .player_spell_plan()
+        .expect("arcane missiles plan");
+
+    assert!(missiles.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx
+            && flag.name == Some("SPELL_ATTR_EX_IS_CHANNELED")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ImplementedGeneric("generic channel lifecycle")
+            )
+    }));
+    assert!(missiles.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx2
+            && flag.name == Some("SPELL_ATTR_EX2_CANT_CRIT")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ExecutionPayload("spell damage outcome calculation")
+            )
+    }));
+    assert!(missiles.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx3
+            && flag.name == Some("SPELL_ATTR_EX3_ALWAYS_HIT")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ExecutionPayload("spell hit outcome calculation")
+            )
+    }));
+    let missile_unsupported = missiles.unsupported_flags();
+    assert!(missile_unsupported.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::Attributes
+            && flag.bit == 0x0000_0100
+            && flag.name.is_none()
+            && flag.support == SpellPlanFlagSupport::Unknown
+    }));
+
+    let mut payload_only = fireball_spell_template();
+    payload_only.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    payload_only.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    let payload_plan = SpellInfo::from_template(&payload_only)
+        .player_spell_plan()
+        .expect("payload-only fireball plan");
+    assert!(payload_plan.unsupported_flags().is_empty());
+
+    let mut future_spell = fireball_spell_template();
+    future_spell.attributes_ex = 0x0000_0008 | 0x8000_0000;
+    let future_plan = SpellInfo::from_template(&future_spell)
+        .player_spell_plan()
+        .expect("future spell plan");
+    let unsupported = future_plan.unsupported_flags();
+    assert!(unsupported.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx
+            && flag.name == Some("ATTRIBUTES_EX_BIT_0x00000008")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::PendingGeneric(
+                    "target/cast exception needs CMaNGOS parity mapping"
+                )
+            )
+    }));
+    assert!(unsupported.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx
+            && flag.bit == 0x8000_0000
+            && flag.name.is_none()
+            && flag.support == SpellPlanFlagSupport::Unknown
+    }));
+}
+
+#[test]
 fn thunder_clap_uses_caster_source_aoe_damage_and_attack_speed_debuff() {
     let thunder_clap = thunder_clap_spell_template();
     let profile = player_spell_cast_profile(&thunder_clap).expect("thunder clap profile");
@@ -1475,7 +1853,7 @@ fn thunder_clap_uses_caster_source_aoe_damage_and_attack_speed_debuff() {
 
     let spell_info = SpellInfo::from_template(&thunder_clap);
     assert_eq!(
-        spell_info.unit_target_kind(profile.kind),
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
         SpellTargetKind::Caster
     );
     assert!(effect_targets_caster_centered_hostile_area(
@@ -1523,7 +1901,7 @@ fn flamestrike_uses_destination_hostile_aoe_targeting() {
 
     let spell_info = SpellInfo::from_template(&flamestrike);
     assert_eq!(
-        spell_info.unit_target_kind(profile.kind),
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
         SpellTargetKind::Destination
     );
     assert!(effect_targets_destination_hostile_area(
@@ -1562,7 +1940,7 @@ fn blizzard_uses_destination_persistent_area_profile() {
 
     let spell_info = SpellInfo::from_template(&blizzard);
     assert_eq!(
-        spell_info.unit_target_kind(profile.kind),
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
         SpellTargetKind::Destination
     );
     assert!(effect_targets_destination_hostile_area(
@@ -1814,6 +2192,7 @@ async fn mixed_damage_aura_spell_does_not_precast_bounce_on_stronger_debuff() {
         .await
         .unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 901_348;
     let target = creature_spawn_guid(&spawn);
     let mut creature = DbCreatureRuntime::new(spawn);
@@ -1948,6 +2327,7 @@ async fn failed_hostile_aura_rank_cast_still_pulls_db_creature_aggro() {
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_118;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2076,6 +2456,7 @@ async fn resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_119;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2205,6 +2586,7 @@ async fn resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_mi
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_120;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2311,6 +2693,7 @@ async fn resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_121;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2470,6 +2853,7 @@ async fn resisted_item_hostile_damage_spell_sends_go_miss_without_damage_or_miss
     player.level = 12;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_122;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2593,6 +2977,7 @@ async fn successful_item_hostile_damage_spell_damages_db_creature() {
     player.level = 12;
     maps.add_player(player).await.unwrap();
     let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
     spawn.guid = 908_123;
     spawn.position_x = player_position.x + 2.0;
     spawn.position_y = player_position.y;
@@ -2883,9 +3268,8 @@ fn direct_friendly_unit_aura_targets_require_a_friendly_unit() {
     intellect.effect_implicit_target_a1 = TARGET_UNIT_FRIEND;
 
     let spell_info = SpellInfo::from_template(&intellect);
-    assert_eq!(spell_info.aura_target(), SpellAuraTarget::UnitTarget);
     assert_eq!(
-        spell_info.unit_target_kind(SpellCastKind::AuraApplication),
+        spell_info.player_spell_plan().unwrap().target.target_kind(),
         SpellTargetKind::FriendlyUnit
     );
 }
@@ -3145,6 +3529,7 @@ async fn player_damage_spell_executes_each_damage_effect_slot() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = -8947.0;
     kobold.position_y = -132.0;
@@ -3255,6 +3640,7 @@ async fn sinister_strike_cast_uses_energy_and_spell_damage_log_result() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 46;
     kobold.position_x = 1.0;
     kobold.position_y = 0.0;
@@ -3368,6 +3754,7 @@ async fn backstab_cast_requires_caster_behind_target_from_spell_metadata() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 46;
     kobold.position_x = 1.0;
     kobold.position_y = 0.0;
@@ -3465,6 +3852,7 @@ async fn eviscerate_requires_matching_combo_points_before_spending_energy() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 46;
     kobold.position_x = 1.0;
     kobold.position_y = 0.0;
@@ -3560,6 +3948,7 @@ async fn eviscerate_uses_combo_points_for_damage_and_clears_them_on_hit() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 46;
     kobold.position_x = 1.0;
     kobold.position_y = 0.0;
@@ -3769,6 +4158,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         )]),
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
+        spell_cones: HashMap::new(),
         spell_ranges: HashMap::new(),
         skill_line_abilities_by_spell: HashMap::new(),
         skill_lines: HashMap::new(),
@@ -3806,6 +4196,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         sessions: &sessions,
     };
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = -8947.0;
     kobold.position_y = -132.0;
@@ -4211,6 +4602,135 @@ async fn thunder_clap_damages_and_debuffs_nearby_hostile_creatures() {
             .filter(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
             .count(),
         2
+    );
+}
+
+#[tokio::test]
+async fn cone_of_cold_damages_and_debuffs_only_hostiles_in_front_cone() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        9,
+        SpellRadiusEntry {
+            radius: 10.0,
+            radius_per_level: 0.0,
+            max_radius: 10.0,
+        },
+    );
+    world_data
+        .spell_cones
+        .insert(120, SpellConeEntry { angle_degrees: 90 });
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(120, Some(cone_of_cold_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.power1 = 500;
+    maps.add_player(player).await.unwrap();
+    let mut front = test_creature_spawn(6);
+    front.guid = 45;
+    front.position_x = 5.0;
+    front.position_y = 0.0;
+    front.template.faction = 17;
+    let front_target = creature_spawn_guid(&front);
+    let mut side = test_creature_spawn(6);
+    side.guid = 46;
+    side.position_x = 0.0;
+    side.position_y = 5.0;
+    side.template.faction = 17;
+    let side_target = creature_spawn_guid(&side);
+    let mut behind = test_creature_spawn(6);
+    behind.guid = 47;
+    behind.position_x = -5.0;
+    behind.position_y = 0.0;
+    behind.template.faction = 17;
+    let behind_target = creature_spawn_guid(&behind);
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(front),
+            DbCreatureRuntime::new(side),
+            DbCreatureRuntime::new(behind),
+        ],
+    )
+    .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&120u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, 7)).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(120);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 26,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 500,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let front = maps.db_creature_snapshot(0, front_target).await.unwrap();
+    let side = maps.db_creature_snapshot(0, side_target).await.unwrap();
+    let behind = maps.db_creature_snapshot(0, behind_target).await.unwrap();
+    assert!(front.health < 120);
+    assert!(front.active_auras.iter().any(|aura| aura.spell_id == 120));
+    assert_eq!(side.health, 120);
+    assert!(side.active_auras.is_empty());
+    assert_eq!(behind.health, 120);
+    assert!(behind.active_auras.is_empty());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+            .count(),
+        1
     );
 }
 
@@ -5007,6 +5527,7 @@ fn arcane_missile_impact_death_stops_target_motion() {
                 uses_weapon_outcome: false,
                 suppress_attacker_state: true,
                 caster_centered_hostile_area: false,
+                caster_centered_hostile_cone: false,
                 destination_hostile_area: false,
                 radius_index: 0,
             },
@@ -5143,6 +5664,289 @@ async fn arcane_missiles_without_selected_target_fails_before_spending_mana() {
 }
 
 #[tokio::test]
+async fn arcane_missiles_rejects_friendly_creature_target_before_channel_start() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_durations.insert(
+        6,
+        SpellDurationEntry {
+            duration_millis: 3_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 3_000,
+        },
+    );
+    world_data.spell_ranges.insert(
+        4,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 30.0,
+            flags: 0,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(5143, Some(arcane_missiles_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(7268, Some(arcane_missile_trigger_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8958.0, -132.0, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.power1 = 500;
+    maps.add_player(player).await.unwrap();
+
+    let mut friendly = test_creature_spawn(6);
+    friendly.guid = 61;
+    friendly.position_x = player_position.x + 10.0;
+    friendly.position_y = player_position.y;
+    friendly.position_z = player_position.z;
+    friendly.template.faction = 12;
+    let friendly_target = creature_spawn_guid(&friendly);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(friendly)])
+        .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&5143u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, friendly_target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(5143);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 20,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 500,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let failure = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+        .expect("cast failure");
+    assert_eq!(failure.body[5], SPELL_FAILED_BAD_TARGETS);
+    assert!(!packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16));
+    assert_eq!(session.character.player_mana, 500);
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power1, 500);
+    let friendly = maps.db_creature_snapshot(0, friendly_target).await.unwrap();
+    assert_eq!(friendly.health, 120);
+}
+
+#[tokio::test]
+async fn counterspell_interrupts_active_db_creature_spell_cast() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_durations.insert(
+        9,
+        SpellDurationEntry {
+            duration_millis: 10_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 10_000,
+        },
+    );
+    world_data.spell_ranges.insert(
+        4,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 30.0,
+            flags: 0,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(2139, Some(counterspell_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8958.0, -132.0, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.power1 = 500;
+    maps.add_player(player).await.unwrap();
+
+    let mut hostile = test_creature_spawn(6);
+    hostile.guid = 62;
+    hostile.position_x = player_position.x + 10.0;
+    hostile.position_y = player_position.y;
+    hostile.position_z = player_position.z;
+    hostile.template.faction = 17;
+    hostile.template.min_level = 20;
+    hostile.template.max_level = 20;
+    let hostile_target = creature_spawn_guid(&hostile);
+    let creature = DbCreatureRuntime::new(hostile);
+    maps.share_db_creature_snapshots(0, vec![creature]).await;
+
+    let now = Instant::now();
+    maps.start_db_creature_spell_cast(
+        0,
+        ActiveDbCreatureSpellCast {
+            caster: hostile_target,
+            target: ObjectGuid::new(HighGuid::Player, 0, 7),
+            spell_id: 133,
+            school_mask: spell_school_mask_from_school(4),
+            requires_behind: false,
+            effect: ActiveDbCreatureSpellEffect::Damage {
+                amount: 20,
+                school: 4,
+                dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+                attributes_ex2: 0,
+                attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+            },
+            aura: None,
+            range: Some(SpellRangeEntry {
+                min_range: 0.0,
+                max_range: 30.0,
+                flags: 0,
+            }),
+            mana_cost: 0,
+            cast_time_millis: 3_000,
+            due_at: now + Duration::from_secs(3),
+        },
+    )
+    .await
+    .unwrap()
+    .expect("creature cast should start");
+    assert!(maps
+        .active_db_creature_spell_cast_due_at(0, hostile_target)
+        .await
+        .is_some());
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&2139u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, hostile_target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(2139);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 20,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 500,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body[4] == 0));
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(maps
+        .active_db_creature_spell_cast_due_at(0, hostile_target)
+        .await
+        .is_none());
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let after_counterspell = Instant::now();
+    assert!(maps
+        .prepare_db_creature_spell_cast_from_template(
+            0,
+            hostile_target,
+            player_guid,
+            &fireball_spell_template(),
+            after_counterspell,
+        )
+        .await
+        .is_none());
+    assert!(maps
+        .prepare_db_creature_spell_cast_from_template(
+            0,
+            hostile_target,
+            player_guid,
+            &fireball_spell_template(),
+            after_counterspell + Duration::from_secs(11),
+        )
+        .await
+        .is_some());
+    assert_eq!(session.character.player_mana, 400);
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power1, 400);
+}
+
+#[tokio::test]
 async fn cancel_cast_clears_active_unit_channel() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut stream = WorldPacketSink::new(tx);
@@ -5267,6 +6071,144 @@ async fn cancel_cast_clears_active_unit_channel() {
     assert!(!tick_packets
         .iter()
         .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+}
+
+#[tokio::test]
+async fn evocation_starts_self_channel_and_movement_cancels_it() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_durations.insert(
+        31,
+        SpellDurationEntry {
+            duration_millis: 8_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 8_000,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(12051, Some(evocation_spell_template()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let position = WorldPosition::new(0, -8958.0, -132.0, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.power1 = 100;
+    player.max_power1 = 500;
+    maps.add_player(player).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&12051u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(12051);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 20,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::MsgChannelStart as u16
+            && u32::from_le_bytes(packet.body[0..4].try_into().unwrap()) == 12051
+            && u32::from_le_bytes(packet.body[4..8].try_into().unwrap()) == 8_000
+    }));
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let channel_update_values = packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .find_map(|packet| {
+            if packet.body.len() <= 5 || packet.body[5] != UPDATE_TYPE_VALUES {
+                return None;
+            }
+            let values = decode_values_update_block(&packet.body[5..], player_guid).0;
+            (values[UNIT_CHANNEL_SPELL] == Some(12051)).then_some(values)
+        })
+        .expect("self-channel update packet");
+    assert_eq!(channel_update_values[UNIT_CHANNEL_SPELL], Some(12051));
+    assert_eq!(channel_update_values[UNIT_FIELD_CHANNEL_OBJECT], Some(0));
+    assert!(session
+        .auras
+        .active_auras
+        .iter()
+        .any(|aura| aura.spell_id == 12051
+            && active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_MOVING != 0));
+    {
+        let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
+        let map = map.lock().await;
+        let channel = map.active_player_channels.get(&7).unwrap();
+        assert_eq!(channel.spell_id, 12051);
+        assert_eq!(channel.target, None);
+    }
+
+    assert!(cancel_movement_interrupted_player_spell_cast(
+        &mut stream,
+        maps.as_ref(),
+        sessions.as_ref(),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap());
+    interrupt_player_consumable_auras(
+        &mut stream,
+        &maps,
+        &sessions,
+        &mut session,
+        AURA_INTERRUPT_FLAG_MOVING,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+    assert!(!session
+        .auras
+        .active_auras
+        .iter()
+        .any(|aura| aura.spell_id == 12051));
+    let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
+    assert!(!map.lock().await.active_player_channels.contains_key(&7));
 }
 
 #[tokio::test]
@@ -5687,6 +6629,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         )]),
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
+        spell_cones: HashMap::new(),
         spell_ranges: HashMap::new(),
         skill_line_abilities_by_spell: HashMap::new(),
         skill_lines: HashMap::new(),
@@ -5738,6 +6681,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     .await
     .unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = -8947.0;
     kobold.position_y = -132.0;
@@ -6057,6 +7001,7 @@ async fn movement_does_not_interrupt_channel_without_moving_interrupt_flag() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = creature_spawn_guid(&{
         let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
         spawn.guid = 45;
         spawn
     });
@@ -6070,6 +7015,7 @@ async fn movement_does_not_interrupt_channel_without_moving_interrupt_flag() {
             WorldPosition::new(map_id, -8949.95, -132.493, 83.5312, 0.0),
         );
         let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
         spawn.guid = 45;
         map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
     }
@@ -6112,6 +7058,7 @@ async fn movement_interrupts_channel_with_moving_interrupt_flag() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = creature_spawn_guid(&{
         let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
         spawn.guid = 45;
         spawn
     });
@@ -6125,6 +7072,7 @@ async fn movement_interrupts_channel_with_moving_interrupt_flag() {
             WorldPosition::new(map_id, -8949.95, -132.493, 83.5312, 0.0),
         );
         let mut spawn = test_creature_spawn(6);
+    spawn.template.faction = 17;
         spawn.guid = 45;
         map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
     }
@@ -6233,6 +7181,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
         )]),
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
+        spell_cones: HashMap::new(),
         spell_ranges: HashMap::from([(
             900,
             SpellRangeEntry {
@@ -6276,6 +7225,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 10.0;
     kobold.position_y = 0.0;
@@ -6393,6 +7343,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
         )]),
         spell_durations: HashMap::new(),
         spell_radii: HashMap::new(),
+        spell_cones: HashMap::new(),
         spell_ranges: HashMap::from([(
             900,
             SpellRangeEntry {
@@ -6433,6 +7384,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 10.0;
     kobold.position_y = 0.0;
@@ -6561,6 +7513,7 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 4.0;
     kobold.position_y = 0.0;
@@ -6678,6 +7631,7 @@ async fn fireball_against_evading_creature_casts_then_reports_evade_miss() {
     player.max_power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 46;
     kobold.position_x = 20.0;
     kobold.position_y = 0.0;
@@ -6894,6 +7848,7 @@ async fn heroic_strike_can_queue_before_target_is_in_melee_range() {
     player.power2 = POWER_RAGE_DEFAULT;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 8.0;
     kobold.position_y = 0.0;
@@ -7002,6 +7957,7 @@ async fn db_creature_death_clears_queued_next_melee_spell_for_target() {
     let map_id = 0;
     let now = Instant::now();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.template.min_level_health = 20;
     kobold.template.max_level_health = 20;
@@ -7319,6 +8275,7 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
     player.power2 = 200;
     maps.add_player(player).await.unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 4.0;
     kobold.position_y = 0.0;
@@ -7512,6 +8469,7 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
         .await
         .unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 10.0;
     kobold.position_y = 0.0;
@@ -7621,6 +8579,7 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
         .await
         .unwrap();
     let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
     kobold.guid = 45;
     kobold.position_x = 10.0;
     kobold.position_y = 0.0;
@@ -8116,6 +9075,7 @@ async fn hostile_spell_cast_failure_checks_range_los_and_facing_from_map() {
     player.power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut creature_spawn = test_creature_spawn(6);
+    creature_spawn.template.faction = 17;
     creature_spawn.guid = 66;
     creature_spawn.position_x = 40.0;
     creature_spawn.position_y = 0.0;
@@ -8278,6 +9238,7 @@ async fn polymorph_cast_failure_does_not_require_facing_without_spell_facing_fla
     player.power1 = 100;
     maps.add_player(player).await.unwrap();
     let mut creature_spawn = test_creature_spawn(6);
+    creature_spawn.template.faction = 17;
     creature_spawn.guid = 66;
     creature_spawn.position_x = 10.0;
     creature_spawn.position_y = 0.0;

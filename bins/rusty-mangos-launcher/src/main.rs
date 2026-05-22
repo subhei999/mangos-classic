@@ -608,7 +608,10 @@ impl LauncherApp {
                     }
                 } else if completed_action == "ApplyUpdate" && code == 0 {
                     self.status_message = "Applying launcher update".to_string();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.append_log("Launcher exiting so the packaged update can finish.\n");
+                    // Avoid egui viewport shutdown races during self-update. The helper
+                    // process is already staged and waiting on this pid to disappear.
+                    std::process::exit(0);
                 }
             } else {
                 self.output = Some(output);

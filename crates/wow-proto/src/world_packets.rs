@@ -65,6 +65,7 @@ pub enum WorldOpcode {
     SmsgReadItemFailed = 0x00AF,
     SmsgItemCooldown = 0x00B0,
     CmsgGameObjUse = 0x00B1,
+    CmsgAreaTrigger = 0x00B4,
     MsgMoveStartForward = 0x00B5,
     MsgMoveStartBackward = 0x00B6,
     MsgMoveStop = 0x00B7,
@@ -340,6 +341,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x00AF => Ok(Self::SmsgReadItemFailed),
             0x00B0 => Ok(Self::SmsgItemCooldown),
             0x00B1 => Ok(Self::CmsgGameObjUse),
+            0x00B4 => Ok(Self::CmsgAreaTrigger),
             0x00B5 => Ok(Self::MsgMoveStartForward),
             0x00B6 => Ok(Self::MsgMoveStartBackward),
             0x00B7 => Ok(Self::MsgMoveStop),
@@ -806,6 +808,29 @@ pub trait ServerWorldPacket {
         let mut body = Vec::new();
         self.write_body(&mut body);
         body
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaTriggerRequest {
+    pub trigger_id: u32,
+}
+
+impl AreaTriggerRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        if buf.remaining() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CMSG_AREATRIGGER missing trigger id",
+            ));
+        }
+        Ok(Self {
+            trigger_id: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.trigger_id);
     }
 }
 

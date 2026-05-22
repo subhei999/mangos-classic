@@ -594,6 +594,7 @@ pub(in crate::world) async fn refresh_session_from_map_owned_player_death(
     session.auras.active_auras = snapshot.active_auras;
     session.character.player_flags = snapshot.flags;
     session.combat.player_in_combat = false;
+    mark_player_auto_repop_if_corpse(session, Instant::now());
     mirror_session_player_auto_attack(session, None, None);
     clear_session_active_creature_combats(session);
     if let Some(character) = session.character.active_character.as_mut() {

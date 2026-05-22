@@ -203,6 +203,7 @@ async fn dispatch_db_gossip_selection(
                 stream,
                 deps.character_db_pool,
                 deps.world_db_pool,
+                deps.maps.as_ref(),
                 guid,
                 session,
                 header_crypto,

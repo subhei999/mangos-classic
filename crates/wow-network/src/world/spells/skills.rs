@@ -82,3 +82,30 @@ pub(in crate::world) fn sync_player_level_backed_skills(
         })
         .collect()
 }
+
+pub(in crate::world) fn cmangos_initial_trained_skill_values(
+    maps: &MapRuntimeManager,
+    skill_id: u32,
+    race: u8,
+    class: u8,
+    level: u8,
+) -> Option<(u16, u16)> {
+    let skill_line = maps.skill_line(skill_id)?;
+    let level_cap = u16::from(level.max(1)).saturating_mul(5);
+    let maxed = maps
+        .skill_race_class_info(skill_id, race, class)
+        .map(|entry| (entry.flags & CMANGOS_SKILL_FLAG_MAXIMIZED) != 0)
+        .unwrap_or(false);
+    match cmangos_skill_range_type(skill_line) {
+        CMaNGOSSkillRangeType::Language => Some((300, 300)),
+        CMaNGOSSkillRangeType::Level => {
+            if maxed {
+                Some((level_cap, level_cap))
+            } else {
+                Some((1, level_cap))
+            }
+        }
+        CMaNGOSSkillRangeType::Mono => Some((1, 1)),
+        CMaNGOSSkillRangeType::None => None,
+    }
+}

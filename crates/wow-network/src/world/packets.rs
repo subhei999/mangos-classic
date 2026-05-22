@@ -1,9 +1,9 @@
 use wow_proto::world::WorldOpcode;
 use wow_proto::{
-    AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest, BankItemRequest,
-    BankerActivateRequest, BuyBankSlotRequest, BuyItemInSlotRequest, BuyItemRequest,
-    BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest,
-    CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
+    AreaTriggerRequest, AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest,
+    BankItemRequest, BankerActivateRequest, BuyBankSlotRequest, BuyItemInSlotRequest,
+    BuyItemRequest, BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest,
+    CastSpellRequest, CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
     CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
     GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest,
     GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
@@ -100,6 +100,7 @@ pub(super) enum ParsedWorldClientPacket {
     AutoStoreBankItem(BankItemRequest),
     AttackSwing(AttackSwingRequest),
     AttackStop(AttackStopRequest),
+    AreaTrigger(AreaTriggerRequest),
     Repop(RepopRequest),
     ReclaimCorpse(ReclaimCorpseRequest),
     SpiritHealerActivate(SpiritHealerActivateRequest),
@@ -234,6 +235,7 @@ impl ParsedWorldClientPacket {
             Self::AutoStoreBankItem(_) => WorldOpcode::CmsgAutostoreBankItem.into(),
             Self::AttackSwing(_) => WorldOpcode::CmsgAttackSwing.into(),
             Self::AttackStop(_) => WorldOpcode::CmsgAttackStop.into(),
+            Self::AreaTrigger(_) => WorldOpcode::CmsgAreaTrigger.into(),
             Self::Repop(_) => WorldOpcode::CmsgRepopRequest.into(),
             Self::ReclaimCorpse(_) => WorldOpcode::CmsgReclaimCorpse.into(),
             Self::SpiritHealerActivate(_) => WorldOpcode::CmsgSpiritHealerActivate.into(),
@@ -563,6 +565,12 @@ impl ParsedWorldClientPacket {
         "CMSG_ATTACKSTOP"
     );
     packet_accessor!(repop, Repop, RepopRequest, "CMSG_REPOP_REQUEST");
+    packet_accessor!(
+        area_trigger,
+        AreaTrigger,
+        AreaTriggerRequest,
+        "CMSG_AREATRIGGER"
+    );
     packet_accessor!(
         reclaim_corpse,
         ReclaimCorpse,
@@ -1113,6 +1121,12 @@ pub(super) fn parse_world_client_packet(
                 AttackStopRequest::read(&mut body)?,
             ))
         }
+        Ok(WorldOpcode::CmsgAreaTrigger) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AreaTrigger(
+                AreaTriggerRequest::read(&mut body)?,
+            ))
+        }
         Ok(WorldOpcode::CmsgRepopRequest) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::Repop(RepopRequest::read(
@@ -1353,6 +1367,9 @@ mod packet_dispatch_tests {
             parsed.set_target_obsolete().unwrap().raw_guid,
             0x1122_3344_5566_7788
         );
+
+        let parsed = parse_world_client_packet(0x00B4, &71u32.to_le_bytes()).unwrap();
+        assert_eq!(parsed.area_trigger().unwrap().trigger_id, 71);
 
         let parsed =
             parse_world_client_packet(0x026A, &0x8877_6655_4433_2211u64.to_le_bytes()).unwrap();

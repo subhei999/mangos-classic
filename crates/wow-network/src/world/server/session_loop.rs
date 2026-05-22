@@ -188,6 +188,23 @@ pub(in crate::world) async fn handle_client(
             {
                 continue;
             }
+            if complete_pending_player_auto_repop_if_due(
+                &mut stream,
+                PlayerDeathDeps {
+                    character_db_pool: &character_db_pool,
+                    world_db_pool: &world_db_pool,
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                    account_id: account.id,
+                },
+                &mut session,
+                &mut header_crypto,
+                now,
+            )
+            .await?
+            {
+                continue;
+            }
             let loop_timeout = session_loop_timeout_duration(
                 runtime_state.maps.as_ref(),
                 &session,
@@ -347,6 +364,23 @@ pub(in crate::world) async fn handle_client(
                         crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
                         finalize_death_started_at.elapsed(),
                     );
+                    if complete_pending_player_auto_repop_if_due(
+                        &mut stream,
+                        PlayerDeathDeps {
+                            character_db_pool: &character_db_pool,
+                            world_db_pool: &world_db_pool,
+                            maps: &runtime_state.maps,
+                            sessions: &runtime_state.sessions,
+                            account_id: account.id,
+                        },
+                        &mut session,
+                        &mut header_crypto,
+                        Instant::now(),
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
                     if pending_player_spell_cast_is_due(
                         runtime_state.maps.as_ref(),
                         &session,
@@ -962,8 +996,10 @@ pub(in crate::world) async fn session_loop_timeout_duration(
         world_tick_timeout
     };
     pending_logout_due_at(session)
-        .map(|due_at| due_at.saturating_duration_since(now).min(spell_timeout))
-        .unwrap_or(spell_timeout)
+        .into_iter()
+        .chain(pending_player_auto_repop_due_at(session))
+        .map(|due_at| due_at.saturating_duration_since(now))
+        .fold(spell_timeout, Duration::min)
 }
 
 pub(in crate::world) fn advance_world_tick_deadline(
@@ -1011,6 +1047,7 @@ pub(in crate::world) async fn refresh_active_player_session_cache(
     session.quests.quest_statuses = snapshot.quest_statuses;
     session.auras.active_auras = snapshot.active_auras;
     session.character.player_flags = snapshot.flags;
+    mark_player_auto_repop_if_corpse(session, Instant::now());
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;
         character.movement_flags = snapshot.movement_flags;
@@ -1052,6 +1089,7 @@ pub(in crate::world) async fn refresh_active_player_session_tick_cache(
     session.character.player_energy = snapshot.power4;
     session.combat.player_in_combat = snapshot.in_combat;
     session.character.player_flags = snapshot.flags;
+    mark_player_auto_repop_if_corpse(session, Instant::now());
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;
         character.movement_flags = snapshot.movement_flags;
@@ -1084,6 +1122,7 @@ pub(in crate::world) async fn finalize_map_owned_player_death_if_needed(
     session.death.player_death_presentation_pending =
         session.death.player_death_state == PlayerDeathState::JustDied;
     session.death.player_corpse = None;
+    mark_player_auto_repop_if_corpse(session, Instant::now());
     session.character.player_health = 0;
     session.character.player_rage = 0;
     session.auras.active_auras.clear();

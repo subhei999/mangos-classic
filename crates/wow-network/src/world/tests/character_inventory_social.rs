@@ -1125,6 +1125,36 @@ fn parses_equipment_inventory_move_packets() {
 }
 
 #[test]
+fn two_handed_weapons_conflict_with_offhand_equipment_like_cmangos() {
+    assert_eq!(
+        two_handed_equipment_conflict(Some(INVTYPE_2HWEAPON), Some(INVTYPE_SHIELD)),
+        Some(EQUIP_ERR_CANT_EQUIP_WITH_TWOHANDED)
+    );
+    assert_eq!(
+        two_handed_equipment_conflict(Some(INVTYPE_2HWEAPON), Some(INVTYPE_HOLDABLE)),
+        Some(EQUIP_ERR_CANT_EQUIP_WITH_TWOHANDED)
+    );
+    assert_eq!(two_handed_equipment_conflict(Some(13), None), None);
+
+    let request = InventoryMoveRequest {
+        src_bag: INVENTORY_SLOT_BAG_0,
+        src_slot: 24,
+        dst_bag: INVENTORY_SLOT_BAG_0,
+        dst_slot: EQUIPMENT_SLOT_OFFHAND,
+    };
+    assert_eq!(
+        equipment_slot_inventory_type_after_move(
+            EQUIPMENT_SLOT_OFFHAND,
+            None,
+            &request,
+            INVTYPE_SHIELD,
+            None,
+        ),
+        Some(INVTYPE_SHIELD)
+    );
+}
+
+#[test]
 fn inventory_swap_validation_checks_displaced_item_against_source_equipment_slot() {
     let bread = test_item_template(117, 0, 0, 0.0, 0.0, 0);
     let mut sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);

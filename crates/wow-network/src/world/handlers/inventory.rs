@@ -173,6 +173,7 @@ pub(in crate::world) async fn handle_read_item(
 }
 
 pub(in crate::world) const INVTYPE_BAG: u32 = 18;
+pub(in crate::world) const INVTYPE_2HWEAPON: u32 = 17;
 pub(in crate::world) const INVTYPE_AMMO: u32 = 24;
 pub(in crate::world) const INVTYPE_THROWN: u32 = 25;
 pub(in crate::world) const ITEM_CLASS_CONTAINER: u32 = 1;
@@ -539,6 +540,36 @@ pub(in crate::world) async fn handle_inventory_swap(
             )
             .await;
         }
+    }
+
+    if let Some(error) = two_handed_equipment_conflict_after_move(
+        deps.world_db_pool,
+        &session.inventory.items,
+        &move_request,
+        src_template.inventory_type,
+        dst_template
+            .as_ref()
+            .map(|template| template.inventory_type),
+    )
+    .await?
+    {
+        info!(
+            opcode = inventory_opcode_name(opcode),
+            guid = character_guid,
+            src_bag = move_request.src_bag,
+            src_slot = move_request.src_slot,
+            dst_bag = move_request.dst_bag,
+            dst_slot = move_request.dst_slot,
+            "Rejected inventory move because a two-handed weapon conflicts with offhand equipment"
+        );
+        return send_inventory_change_failure(
+            stream,
+            error,
+            Some(ObjectGuid::new(HighGuid::Item, 0, src_item.item)),
+            dst_item.map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item)),
+            header_crypto,
+        )
+        .await;
     }
 
     if move_request.src_bag == INVENTORY_SLOT_BAG_0
@@ -2623,6 +2654,76 @@ pub(in crate::world) fn preferred_equipment_slot(inventory_type: u32) -> Option<
         19 => Some(18),           // INVTYPE_TABARD
         _ => None,
     }
+}
+
+pub(in crate::world) async fn two_handed_equipment_conflict_after_move(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+    request: &InventoryMoveRequest,
+    src_inventory_type: u32,
+    dst_inventory_type: Option<u32>,
+) -> anyhow::Result<Option<u8>> {
+    let current_mainhand =
+        equipped_slot_inventory_type(world_db_pool, inventory, EQUIPMENT_SLOT_MAINHAND).await?;
+    let current_offhand =
+        equipped_slot_inventory_type(world_db_pool, inventory, EQUIPMENT_SLOT_OFFHAND).await?;
+    let post_mainhand = equipment_slot_inventory_type_after_move(
+        EQUIPMENT_SLOT_MAINHAND,
+        current_mainhand,
+        request,
+        src_inventory_type,
+        dst_inventory_type,
+    );
+    let post_offhand = equipment_slot_inventory_type_after_move(
+        EQUIPMENT_SLOT_OFFHAND,
+        current_offhand,
+        request,
+        src_inventory_type,
+        dst_inventory_type,
+    );
+    Ok(two_handed_equipment_conflict(post_mainhand, post_offhand))
+}
+
+async fn equipped_slot_inventory_type(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+    slot: u8,
+) -> anyhow::Result<Option<u32>> {
+    let Some(item) = inventory
+        .iter()
+        .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == slot)
+    else {
+        return Ok(None);
+    };
+    Ok(
+        wow_db::get_item_template_query(world_db_pool, item.item_template)
+            .await?
+            .map(|template| template.inventory_type),
+    )
+}
+
+pub(in crate::world) fn equipment_slot_inventory_type_after_move(
+    slot: u8,
+    current_inventory_type: Option<u32>,
+    request: &InventoryMoveRequest,
+    src_inventory_type: u32,
+    dst_inventory_type: Option<u32>,
+) -> Option<u32> {
+    if request.dst_bag == INVENTORY_SLOT_BAG_0 && request.dst_slot == slot {
+        return Some(src_inventory_type);
+    }
+    if request.src_bag == INVENTORY_SLOT_BAG_0 && request.src_slot == slot {
+        return dst_inventory_type;
+    }
+    current_inventory_type
+}
+
+pub(in crate::world) fn two_handed_equipment_conflict(
+    mainhand_inventory_type: Option<u32>,
+    offhand_inventory_type: Option<u32>,
+) -> Option<u8> {
+    (mainhand_inventory_type == Some(INVTYPE_2HWEAPON) && offhand_inventory_type.is_some())
+        .then_some(EQUIP_ERR_CANT_EQUIP_WITH_TWOHANDED)
 }
 
 pub(in crate::world) fn item_fits_equipment_slot(inventory_type: u32, slot: u8) -> bool {

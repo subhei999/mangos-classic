@@ -1264,6 +1264,35 @@ fn level_backed_skill_sync_maximizes_class_skills_and_preserves_mono_skills() {
 }
 
 #[test]
+fn trained_skill_initial_values_follow_cmangos_range_types() {
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.skill_lines.insert(
+        43,
+        SkillLineEntry {
+            id: 43,
+            category_id: 6,
+        },
+    );
+    world_data.skill_lines.insert(
+        415,
+        SkillLineEntry {
+            id: 415,
+            category_id: 8,
+        },
+    );
+    let maps = MapRuntimeManager::with_world_data_files(&world_data);
+
+    assert_eq!(
+        cmangos_initial_trained_skill_values(&maps, 43, 1, 1, 12),
+        Some((1, 60))
+    );
+    assert_eq!(
+        cmangos_initial_trained_skill_values(&maps, 415, 1, 1, 12),
+        Some((1, 1))
+    );
+}
+
+#[test]
 fn spell_effect_value_matches_cmangos_level_scaling_floor_and_caps() {
     let mut template = test_spell_template(587);
     template.max_level = 15;

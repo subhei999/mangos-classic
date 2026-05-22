@@ -422,6 +422,7 @@ pub(in crate::world) struct QuestSessionState {
 pub(in crate::world) struct DeathSessionState {
     pub(in crate::world) player_death_state: PlayerDeathState,
     pub(in crate::world) player_death_presentation_pending: bool,
+    pub(in crate::world) player_auto_repop_at: Option<Instant>,
     pub(in crate::world) player_corpse: Option<PlayerCorpseRuntime>,
 }
 

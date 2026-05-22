@@ -10,6 +10,7 @@ pub(in crate::world) async fn handle_trainer_list(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
     request: wow_proto::TrainerListRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -19,6 +20,7 @@ pub(in crate::world) async fn handle_trainer_list(
         stream,
         character_db_pool,
         world_db_pool,
+        maps,
         guid,
         session,
         header_crypto,
@@ -30,6 +32,7 @@ pub(in crate::world) async fn send_trainer_list(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
     guid: ObjectGuid,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -72,8 +75,15 @@ pub(in crate::world) async fn send_trainer_list(
     let known_spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
     let list_spells: Vec<TrainerListSpell> = spells
         .iter()
-        .filter(|_| trainer_spell_matches_class(&template, character.class))
-        .map(|spell| TrainerListSpell::from_query(spell, character, &known_spells))
+        .filter(|spell| trainer_spell_matches_character(&template, spell, maps, character))
+        .map(|spell| {
+            TrainerListSpell::from_query(
+                spell,
+                character,
+                &known_spells,
+                &session.character.character_skills,
+            )
+        })
         .collect();
     if list_spells.is_empty() {
         warn!(
@@ -137,6 +147,7 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
     world_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
     request: wow_proto::TrainerBuySpellRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
@@ -159,8 +170,13 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
         return Ok(());
     };
     let known_spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
-    let list_spell = TrainerListSpell::from_query(spell, character, &known_spells);
-    if !trainer_spell_matches_class(&template, character.class)
+    let list_spell = TrainerListSpell::from_query(
+        spell,
+        character,
+        &known_spells,
+        &session.character.character_skills,
+    );
+    if !trainer_spell_matches_character(&template, spell, maps, character)
         || list_spell.state != TRAINER_SPELL_GREEN
     {
         return Ok(());
@@ -186,6 +202,19 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
         .character
         .active_spells
         .insert(list_spell.learned_spell);
+    let trained_skill_update = learn_trainer_skill_for_spell(
+        character_db_pool,
+        maps,
+        TrainerSkillLearnContext {
+            character_guid: character.guid,
+            race: character.race,
+            class: character.class,
+            level: character.level,
+        },
+        list_spell.learned_spell,
+        &mut session.character.character_skills,
+    )
+    .await?;
     send_packet(
         stream,
         WorldOpcode::SmsgPlaySpellVisual as u16,
@@ -214,6 +243,15 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
         Some(&mut *header_crypto),
     )
     .await?;
+    if let Some(update) = trained_skill_update {
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &build_player_skill_update_body(character.guid, update, &session.auras.active_auras)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     let known_spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
     send_known_proficiencies(
         stream,
@@ -273,6 +311,7 @@ impl TrainerListSpell {
         query: &wow_db::TrainerSpellQuery,
         character: &ActiveCharacter,
         known_spells: &[wow_db::CharacterSpell],
+        character_skills: &[wow_db::CharacterSkill],
     ) -> Self {
         let known = known_spells.iter().any(|spell| {
             spell.spell == query.learned_spell && spell.active != 0 && spell.disabled == 0
@@ -288,10 +327,16 @@ impl TrainerListSpell {
                     spell.spell == *ability && spell.active != 0 && spell.disabled == 0
                 })
         });
+        let missing_required_skill = query.req_skill != 0
+            && character_skills
+                .iter()
+                .find(|skill| u32::from(skill.skill) == query.req_skill)
+                .map(|skill| u32::from(skill.value) < query.req_skill_value)
+                .unwrap_or(true);
         let state = if known {
             TRAINER_SPELL_GRAY
         } else if character.level < query.req_level
-            || query.req_skill != 0
+            || missing_required_skill
             || missing_required_ability
         {
             TRAINER_SPELL_RED
@@ -316,6 +361,134 @@ pub(in crate::world) fn trainer_spell_matches_class(
     class: u8,
 ) -> bool {
     template.trainer_class == 0 || template.trainer_class == class
+}
+
+pub(in crate::world) fn trainer_spell_matches_character(
+    template: &wow_db::CreatureTemplateQuery,
+    spell: &wow_db::TrainerSpellQuery,
+    maps: &MapRuntimeManager,
+    character: &ActiveCharacter,
+) -> bool {
+    if !trainer_spell_matches_class(template, character.class) {
+        return false;
+    }
+    trainer_spell_skill_ability_allowed_for_character(
+        maps,
+        spell.learned_spell,
+        character.race,
+        character.class,
+    )
+}
+
+pub(in crate::world) fn trainer_spell_skill_ability_allowed_for_character(
+    maps: &MapRuntimeManager,
+    learned_spell: u32,
+    race: u8,
+    class: u8,
+) -> bool {
+    let Some(ability) = maps.skill_line_ability_for_spell(learned_spell) else {
+        return true;
+    };
+    let race_mask = 1u32
+        .checked_shl(u32::from(race.saturating_sub(1)))
+        .unwrap_or(0);
+    let class_mask = 1u32
+        .checked_shl(u32::from(class.saturating_sub(1)))
+        .unwrap_or(0);
+    (ability.race_mask == 0 || ability.race_mask & race_mask != 0)
+        && (ability.class_mask == 0 || ability.class_mask & class_mask != 0)
+        && maps
+            .skill_race_class_info(ability.skill_id, race, class)
+            .is_some()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct TrainerSkillLearnContext {
+    pub(in crate::world) character_guid: u32,
+    pub(in crate::world) race: u8,
+    pub(in crate::world) class: u8,
+    pub(in crate::world) level: u8,
+}
+
+pub(in crate::world) async fn learn_trainer_skill_for_spell(
+    character_db_pool: &MySqlPool,
+    maps: &MapRuntimeManager,
+    context: TrainerSkillLearnContext,
+    learned_spell: u32,
+    character_skills: &mut Vec<wow_db::CharacterSkill>,
+) -> anyhow::Result<Option<SkillProgressionUpdate>> {
+    let Some(ability) = maps.skill_line_ability_for_spell(learned_spell) else {
+        return Ok(None);
+    };
+    if !trainer_spell_skill_ability_allowed_for_character(
+        maps,
+        learned_spell,
+        context.race,
+        context.class,
+    ) {
+        return Ok(None);
+    }
+    let Some(skill_id) = u16::try_from(ability.skill_id).ok() else {
+        return Ok(None);
+    };
+    let Some((initial_value, initial_max)) = cmangos_initial_trained_skill_values(
+        maps,
+        ability.skill_id,
+        context.race,
+        context.class,
+        context.level,
+    ) else {
+        return Ok(None);
+    };
+    if let Some(slot) = character_skills
+        .iter()
+        .position(|skill| skill.skill == skill_id)
+    {
+        let skill = &mut character_skills[slot];
+        let old_value = skill.value;
+        let old_max = skill.max;
+        skill.value = skill.value.max(initial_value);
+        skill.max = skill.max.max(initial_max);
+        if skill.value == old_value && skill.max == old_max {
+            return Ok(None);
+        }
+        wow_db::upsert_character_skill(
+            character_db_pool,
+            context.character_guid,
+            skill.skill,
+            skill.value,
+            skill.max,
+        )
+        .await?;
+        return Ok(Some(SkillProgressionUpdate {
+            slot,
+            skill: skill.skill,
+            value: skill.value,
+            max: skill.max,
+        }));
+    }
+
+    let slot = character_skills.len();
+    let skill = wow_db::CharacterSkill {
+        skill: skill_id,
+        value: initial_value,
+        max: initial_max,
+    };
+    character_skills.push(skill);
+    wow_db::upsert_character_skill(
+        character_db_pool,
+        context.character_guid,
+        skill.skill,
+        skill.value,
+        skill.max,
+    )
+    .await?;
+    Ok(Some(SkillProgressionUpdate {
+        slot,
+        skill: skill.skill,
+        value: skill.value,
+        max: skill.max,
+    }))
 }
 
 pub(in crate::world) fn build_trainer_list_body(

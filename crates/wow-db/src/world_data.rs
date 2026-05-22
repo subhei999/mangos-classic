@@ -2003,6 +2003,16 @@ pub async fn get_trainer_greeting(
         .map_err(Into::into)
 }
 
+pub async fn is_tavern_area_trigger(pool: &MySqlPool, trigger_id: u32) -> Result<bool, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("tavern_area_trigger_lookup");
+    let found: Option<u8> =
+        sqlx::query_scalar("SELECT 1 FROM areatrigger_tavern WHERE id = ? LIMIT 1")
+            .bind(trigger_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(found.is_some())
+}
+
 async fn table_has_column(pool: &MySqlPool, table: &str, column: &str) -> Result<bool, DbError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS \

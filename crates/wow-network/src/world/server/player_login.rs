@@ -116,6 +116,7 @@ pub(in crate::world) async fn handle_player_login(
         PlayerDeathState::Alive
     };
     session.death.player_death_presentation_pending = false;
+    mark_player_auto_repop_if_corpse(session, Instant::now());
     session.death.player_corpse = if session.death.player_death_state == PlayerDeathState::Ghost {
         let corpse = wow_db::get_player_corpse(deps.character_db_pool, character.guid).await?;
         corpse.map(player_corpse_runtime_from_query)

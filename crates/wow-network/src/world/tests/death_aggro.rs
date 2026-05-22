@@ -77,6 +77,32 @@ fn player_death_update_sets_health_flags_and_release_timer() {
 }
 
 #[test]
+fn corpse_state_arms_auto_repop_deadline() {
+    let now = Instant::now();
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            player_health: 0,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Corpse,
+            ..DeathSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    mark_player_auto_repop_if_corpse(&mut session, now);
+
+    let due_at = pending_player_auto_repop_due_at(&session).unwrap();
+    assert_eq!(due_at, now + PLAYER_DEATH_AUTO_REPOP_DELAY);
+    assert!(!player_auto_repop_is_due(
+        &session,
+        due_at - Duration::from_millis(1)
+    ));
+    assert!(player_auto_repop_is_due(&session, due_at));
+}
+
+#[test]
 fn player_alive_recovery_update_clears_all_visible_aura_slots() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let body = build_player_death_update_body(PlayerDeathUpdate {

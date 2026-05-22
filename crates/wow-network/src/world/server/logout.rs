@@ -386,6 +386,7 @@ pub(in crate::world) async fn unregister_active_character(
     session.character.active_spells.clear();
     session.death.player_death_state = PlayerDeathState::Alive;
     session.death.player_death_presentation_pending = false;
+    session.death.player_auto_repop_at = None;
     session.death.player_corpse = None;
     session.character.player_visual = None;
     session.character.player_flags = 0;
@@ -420,6 +421,7 @@ pub(in crate::world) async fn unregister_active_character_after_disconnect(
     session.character.active_spells.clear();
     session.death.player_death_state = PlayerDeathState::Alive;
     session.death.player_death_presentation_pending = false;
+    session.death.player_auto_repop_at = None;
     session.death.player_corpse = None;
     session.character.player_visual = None;
     session.character.player_flags = 0;

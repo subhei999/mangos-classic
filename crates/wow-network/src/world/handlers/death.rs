@@ -71,6 +71,8 @@ pub(in crate::world) struct PlayerDeathDeps<'a> {
     pub(in crate::world) account_id: u32,
 }
 
+pub(in crate::world) const PLAYER_DEATH_AUTO_REPOP_DELAY: Duration = Duration::from_secs(6 * 60);
+
 pub(in crate::world) async fn handle_repop_request(
     stream: &mut WorldPacketSink,
     deps: PlayerDeathDeps<'_>,
@@ -88,6 +90,33 @@ pub(in crate::world) async fn handle_repop_request(
         );
         return Ok(());
     }
+    if session.character.active_character.is_none() {
+        return Ok(());
+    }
+
+    complete_player_repop(stream, deps, session, header_crypto).await
+}
+
+pub(in crate::world) async fn complete_pending_player_auto_repop_if_due(
+    stream: &mut WorldPacketSink,
+    deps: PlayerDeathDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+    now: Instant,
+) -> anyhow::Result<bool> {
+    if !player_auto_repop_is_due(session, now) {
+        return Ok(false);
+    }
+    handle_repop_request(stream, deps, session, header_crypto).await?;
+    Ok(true)
+}
+
+async fn complete_player_repop(
+    stream: &mut WorldPacketSink,
+    deps: PlayerDeathDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
     if session.character.active_character.is_none() {
         return Ok(());
     }
@@ -111,6 +140,7 @@ pub(in crate::world) async fn handle_repop_request(
         .unwrap_or(corpse_position.map_id);
     session.death.player_death_state = PlayerDeathState::Ghost;
     session.death.player_death_presentation_pending = false;
+    session.death.player_auto_repop_at = None;
     session.character.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
     session.character.player_rage = 0;
     session.character.player_flags |= PLAYER_FLAGS_GHOST;
@@ -193,6 +223,33 @@ pub(in crate::world) async fn handle_repop_request(
     persist_player_death_state(deps.character_db_pool, deps.account_id, session).await
 }
 
+pub(in crate::world) fn mark_player_auto_repop_if_corpse(
+    session: &mut WorldSessionState,
+    now: Instant,
+) {
+    if session.death.player_death_state == PlayerDeathState::Corpse
+        && session.character.player_health == 0
+        && session.death.player_auto_repop_at.is_none()
+    {
+        session.death.player_auto_repop_at = Some(now + PLAYER_DEATH_AUTO_REPOP_DELAY);
+    }
+}
+
+pub(in crate::world) fn pending_player_auto_repop_due_at(
+    session: &WorldSessionState,
+) -> Option<Instant> {
+    (session.death.player_death_state == PlayerDeathState::Corpse)
+        .then_some(session.death.player_auto_repop_at)
+        .flatten()
+}
+
+pub(in crate::world) fn player_auto_repop_is_due(
+    session: &WorldSessionState,
+    now: Instant,
+) -> bool {
+    pending_player_auto_repop_due_at(session).is_some_and(|due_at| now >= due_at)
+}
+
 pub(in crate::world) async fn refresh_session_death_state_before_repop(
     maps: &Arc<MapRuntimeManager>,
     session: &mut WorldSessionState,
@@ -216,6 +273,7 @@ pub(in crate::world) async fn refresh_session_death_state_before_repop(
     }
     if snapshot.health == 0 && snapshot.death_state != PlayerDeathState::Alive {
         refresh_session_from_map_owned_player_death(maps, map_id, session).await;
+        mark_player_auto_repop_if_corpse(session, Instant::now());
     }
     Ok(presentation_packets)
 }
@@ -419,6 +477,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
     let resurrected_health = (world_stats.max_health().max(1) / 2).max(1);
     session.death.player_death_state = PlayerDeathState::Alive;
     session.death.player_death_presentation_pending = false;
+    session.death.player_auto_repop_at = None;
     let corpse_to_bones = session.death.player_corpse.take();
     session.character.player_health = resurrected_health;
     session.character.player_rage = 0;

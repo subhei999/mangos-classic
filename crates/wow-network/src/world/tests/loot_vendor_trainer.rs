@@ -744,17 +744,24 @@ fn trainer_spell_state_marks_known_level_and_requirement_gates() {
         learned_spell: 6673,
         ..available.clone()
     };
+    let needs_skill = wow_db::TrainerSpellQuery {
+        req_skill: u32::from(SKILL_SWORDS),
+        req_skill_value: 10,
+        ..available.clone()
+    };
+    let skills = [test_skill(SKILL_SWORDS, 10, 20)];
+    let low_skills = [test_skill(SKILL_SWORDS, 9, 20)];
 
     assert_eq!(
-        TrainerListSpell::from_query(&available, &character, &known).state,
+        TrainerListSpell::from_query(&available, &character, &known, &[]).state,
         TRAINER_SPELL_GREEN
     );
     assert_eq!(
-        TrainerListSpell::from_query(&too_high, &character, &known).state,
+        TrainerListSpell::from_query(&too_high, &character, &known, &[]).state,
         TRAINER_SPELL_RED
     );
     assert_eq!(
-        TrainerListSpell::from_query(&known_spell, &character, &known).state,
+        TrainerListSpell::from_query(&known_spell, &character, &known, &[]).state,
         TRAINER_SPELL_GRAY
     );
     assert_eq!(
@@ -765,10 +772,19 @@ fn trainer_spell_state_marks_known_level_and_requirement_gates() {
                 spell: 6673,
                 active: 1,
                 disabled: 0,
-            }]
+            }],
+            &[]
         )
         .state,
         TRAINER_SPELL_GRAY
+    );
+    assert_eq!(
+        TrainerListSpell::from_query(&needs_skill, &character, &known, &skills).state,
+        TRAINER_SPELL_GREEN
+    );
+    assert_eq!(
+        TrainerListSpell::from_query(&needs_skill, &character, &known, &low_skills).state,
+        TRAINER_SPELL_RED
     );
 }
 

@@ -279,6 +279,7 @@ pub(in crate::world) const EQUIP_ERR_ITEM_DOESNT_GO_TO_SLOT: u8 = 3;
 pub(in crate::world) const EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER_BAG: u8 = 5;
 pub(in crate::world) const EQUIP_ERR_NO_REQUIRED_PROFICIENCY: u8 = 8;
 pub(in crate::world) const EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM: u8 = 10;
+pub(in crate::world) const EQUIP_ERR_CANT_EQUIP_WITH_TWOHANDED: u8 = 13;
 pub(in crate::world) const EQUIP_ERR_ITEM_CANT_BE_EQUIPPED: u8 = 20;
 pub(in crate::world) const EQUIP_ERR_YOU_ARE_DEAD: u8 = 21;
 pub(in crate::world) const EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS: u8 = 31;
